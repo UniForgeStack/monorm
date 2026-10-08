@@ -1,0 +1,23 @@
+// Needs the generic-relations extension (orm-generic). `orm identities` freezes the
+// ContentType values into generic-relations.identities.json first.
+
+model Photo {
+  id   Int        @id
+  url  String
+  tags Label[]    @generic.reverse
+  @@map("demo_photos")
+}
+
+model Video {
+  id    Int     @id
+  title String
+  tags  Label[] @generic.reverse
+  @@map("demo_videos")
+}
+
+model Label {
+  id     Int      @id
+  name   String
+  target Generic? @generic.relation(targets: ["Photo", "Video"])
+  @@map("demo_labels")
+}

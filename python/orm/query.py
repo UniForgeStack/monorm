@@ -926,6 +926,7 @@ class RelatedSet(QuerySet[M]):
         super().__init__(relation.target)
         self._relation = relation
         self._instance = instance
+        self._db = instance.__dict__.get("_db")
         key = instance._field_value(relation.from_)
         via: ColumnRef[Any] = ColumnRef(relation.target, (), relation.target._meta.fields[relation.via])
         self._filters = (as_condition(via == key),)
@@ -984,6 +985,7 @@ class ManyRelatedSet(QuerySet[M]):
         super().__init__(relation.target)
         self._relation = relation
         self._instance = instance
+        self._db = instance.__dict__.get("_db")
         join = relation.through
         fields = join._meta.fields
         source: ColumnRef[Any] = ColumnRef(join, (), fields[relation.source])

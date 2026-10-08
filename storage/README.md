@@ -7,8 +7,9 @@ Each directory has its own package manifest. To extract them, copy `storage/`
 (including `fixtures/`) into a repository of your choice. Runtime packages need
 only their own directory; fixture files are for development tests.
 
-The ORM extension is a separate integration deliverable. The packages below are
-usable now without ORM installation, model configuration, or native builds.
+The ORM file field is the `file-storage` build-time extension (`orm-extension/`) with
+its binding helpers (`integration/`); see [docs/file-storage.md](../docs/file-storage.md).
+The packages below work without the ORM, model configuration, or native builds.
 
 ## Python
 

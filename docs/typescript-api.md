@@ -21,12 +21,17 @@ const rows = await User.objects
 ```
 
 [`examples/blog/demo.ts`](../examples/blog/demo.ts) is a runnable tour, and it mirrors `demo.py`.
+Samples use the blog models (`examples/blog/schema.prisma`); a sample that starts with
+`// sketch` uses other models and is not run. Feature extensions (proxies, query
+defaults, composition, file fields, generic relations) have their own docs: see
+[README.md](README.md). They add no TypeScript exports: their models come from the
+schema, and `attach()` is a query set method.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `js/src/` | The package: `expr.ts` (expressions, `func`, `outer` / `exists`, windows), `model.ts` (`define()`, instances, related sets), `query.ts` (`QuerySet`, `Prefetch`, `Prepared`), `select.ts` (`select()`), `cte.ts`, `write.ts`, `build.ts` (rows → instances), `db.ts` (pools, transactions, locks), `migrations.ts`, `cli.ts` |
+| `js/src/` | The package: `expr.ts` (expressions, `func`, `outer` / `exists`, windows), `model.ts` (`define()`, `loads()`, `Registry`, instances), `query.ts` (`QuerySet`, related sets, `Prefetch`, `Prepared`), `select.ts` (`select()`), `cte.ts`, `write.ts`, `build.ts` (rows → instances), `pagination.ts`, `references.ts` (reference loaders), `protection.ts` (`allowWrites`), `debug.ts` (N+1 finder), `db.ts` (pools, transactions, locks), `errors.ts`, `meta.ts`, `decimal.ts`, `native.ts` (addon loading), `migrations.ts`, `cli.ts` |
 | `bindings/node/` | Rust crate `orm-node` (napi-rs) on top of `orm-engine`: `convert.rs` (JS ↔ values, strict), `js.rs`, `lib.rs` |
 | `core/src/codegen/typescript.rs` | `orm generate typescript`: `models.ts` from the schema |
 | `js/test/` | End-to-end tests (Node and Bun), SQL shape tests, `typing/check.ts` (compile-time checks) |
@@ -35,11 +40,14 @@ Node 20+ or Bun. Build and test:
 
 ```bash
 cd js && npm install
-npm run build:native        # cargo build of bindings/node → js/orm.node
+npm run build:native        # cargo build of bindings/node → js/orm.node (--release, --profile, --features)
 npm test                    # Node (node:test), against ORM_TEST_DATABASE_URL
 npm run test:bun            # the same suites under Bun
 npm run typecheck           # tsc over the package, the typing checks and the example
 ```
+
+`ORM_NATIVE=/path/orm.node` loads another addon, for example an extension build
+([`build-time-extensions.md`](build-time-extensions.md#select-feature-extensions)).
 
 ## Models: the generated module
 
@@ -52,7 +60,12 @@ writes one module with the compiled schema and a type for everything:
   (`User.email`, a `Column<string, "User">`), relation paths (`User.posts.views`),
   `User._meta`, `User.DoesNotExist` and `User.MultipleObjectsReturned`.
 * `UserInsert`, `UserUpdate`, `UserUpdateRow`: the shapes `insert()`, `update()` and
-  `updateMany()` take.
+  `updateMany()` take. A composed model also gets `UserAttach`
+  ([`model-composition.md`](model-composition.md)). `UserData`, `UserFields`, `UserPath`,
+  `UserSpec` and `UserModel` are the building blocks of these types.
+* `loadAuthor()` on an instance for each to-one relation `author` (with the default
+  `reference-loading` feature): `await post.loadAuthor({ reload })` reads and caches it
+  ([`async-reference-loading.md`](async-reference-loading.md)).
 * Enums are string literal unions (`Role = "member" | "editor" | "admin"`) with a value
   object of the same name (`Role.admin`).
 
@@ -73,8 +86,10 @@ Field names that would clash with the instance API are rejected by the generator
 The reserved names are `objects`, `_meta`, `DoesNotExist`, `MultipleObjectsReturned`,
 `pk`, `update`, `delete`, `refresh`, `toJSON`, `constructor`, `toString` and `then`.
 
-Without code generation, `define(schemaIR)` or `loads(schemaText)` builds the same models
-at runtime, but untyped.
+Without code generation, `define(schemaIR)`, `load(path)` or `loads(schemaText)` builds the
+same models at runtime, but untyped. Each takes `{ registry }`: models join the default
+`registry` unless you pass a `new Registry()`, and `connect(url, { registry })` uses it.
+`camel(name)` gives the TypeScript name of a schema field.
 
 ## Queries
 
@@ -92,7 +107,7 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 | `.inBulk(keys?, { field })` | `Promise<Map<key, R>>` |
 | `.batches(size)` / `.iterate(size)` | async generators that walk the primary key (keyset pagination) |
 | `.paginate({ first, after })` / `.paginate({ last, before })` | one page by keyset: `{ items, hasNext, hasPrevious, nextCursor, previousCursor }` |
-| `.sql()` | the SQL with values inlined, for reading |
+| `.sql()` / `.toString()` | the SQL with values inlined, for reading |
 
 **The result cache.** A query set runs on its first `await`; awaiting the same query set
 again gives the same rows (a new array each time) without another query, and concurrent
@@ -109,12 +124,16 @@ function to pass the query on.
 
 The builders are `filter(...)`, `exclude(...)`, `orderBy(...)`, `limit(n)`, `offset(n)`,
 `slice(start, end)`, `selectRelated(...)`, `prefetchRelated(...)`, `lock(...)`,
-`using(db)`, `select({...})`, `join(cte, on)`, `from(cte)` and `cte(name)`.
+`using(db)`, `select({...})`, `join(cte, on, { outer })`, `from(cte)` and `cte(name)`.
+`only(Post.title, ...)` gives partial instances (other fields throw `NotLoaded`; no
+arguments restores all fields). `withoutDefaults()` skips the schema query defaults
+([`selection-and-defaults.md`](selection-and-defaults.md)), and `withoutRelated()` drops
+default and explicit eager loading.
 
 Comparisons are methods: `.eq .ne .lt .lte .gt .gte .between .in .notIn .isNull
 .isNotNull`. String columns also have `.contains .icontains .startsWith .endsWith .like
 .ilike .concat`, and arrays have `.has .hasAll .hasAny .containedBy .element`. Arithmetic
-is `.add .sub .mul .div`, and orderings are `.asc() / .desc()`. `.asc({ nulls: "first" })` and `.desc({ nulls: "last" })` place NULLs. `orderBy` also takes field names, with
+is `.add .sub .mul .div`, and orderings are `.asc() / .desc()` (`ordering.reversed()` flips one). `.asc({ nulls: "first" })` and `.desc({ nulls: "last" })` place NULLs. `orderBy` also takes field names, with
 `-` for descending: `orderBy("-createdAt", "id")`. A name that is not a field of the
 model is a type error and a `TypeError`. Conditions combine with `and()`,
 `or()`, `not()`, or the methods of the same names. A boolean column is a condition by
@@ -139,7 +158,7 @@ const back = await Post.objects.orderBy("-createdAt").paginate({ last: 20, befor
 ```
 
 The rules are the same as Python's `paginate()` (see [`python-api.md`](python-api.md)).
-A nullable order column needs `{ nulls }`: `Post.rank.desc({ nulls: "last" })`.
+A nullable order column needs `{ nulls }`: `Comment.authorId.desc({ nulls: "last" })`.
 A cursor from Python works in TypeScript for the same schema and order, and the other way.
 A `Date` keeps milliseconds only. On Postgres, a `DateTime` order column with two values in one millisecond can skip or repeat rows: store such timestamps at millisecond precision, or order by another column.
 
@@ -173,8 +192,11 @@ typed from the columns they meet:
 
 ```ts
 const q = Post.objects.filter(Post.authorId.eq(param("author"))).limit(param("n")).prepare();
-await q.all({ author: 1n, n: 10 }); // { author: bigint | number; n: number }
+await q.all({ author: 1n, n: 10 }); // { author: bigint | number; n: number | bigint }
 ```
+
+A prepared query also has `.get(values)`, `.first(values)`, `.count(values)`,
+`.exists(values)` and `.sql(values)`.
 
 ## Columns and aggregates: `select()`
 
@@ -182,6 +204,7 @@ await q.all({ author: 1n, n: 10 }); // { author: bigint | number; n: number }
 avg min max coalesce lower upper length abs now cardinality unnest concat trim ltrim rtrim
 replace substr strpos` plus the window functions. `func.concat(a, " ", b)` reads a `null`
 part as an empty string; `a.concat(b)` (`a || b`) is `null` when either side is `null`.
+`func.count(col, { distinct: true })` and `func.sum(col, { distinct: true })` count or add distinct values.
 `Profile.links.element(1)` is SQL's 1-based element access (`null` out of range), and
 `func.unnest(...)` is valid only as a `select()` column; SQLite has no array columns.
 The result types follow the SQL: `count` is a `bigint`, `sum(Int)` is `number | null`,
@@ -190,7 +213,9 @@ nullable relation becomes nullable.
 
 Other `Select` methods:
 
-* `.groupBy(...)`, `.having(...)`, `.distinct()` and `.orderBy(...)`.
+* `.filter(...)`, `.exclude(...)`, `.groupBy(...)`, `.having(...)`, `.orderBy(...)`,
+  `.limit(n)`, `.offset(n)`, `.slice(start, end)`, `.using(db)` and `.cte(name)`.
+* `.distinct()`, and `.distinct(Post.authorId)` for `DISTINCT ON` (Postgres).
 * `await sel` (cached, like a query set) and the terminals `.all()`, `.first()`, `.one()`,
   `.scalar()` and `.scalars()`.
   `scalar()` and `scalars()` type-check only for one column.
@@ -226,6 +251,8 @@ await Post.objects.from(ranked).filter(ranked.c.rank.lte(3));
 const chain = User.objects.filter(User.id.eq(1)).cte("chain", { recursive: (c) => User.objects.filter(User.id.eq(c.c.id.add(1))) });
 ```
 
+`cte(name, { recursive, distinct, materialized })`: `distinct` makes a recursive CTE a
+`UNION` instead of `UNION ALL`, and `materialized` sets `MATERIALIZED` / `NOT MATERIALIZED`.
 `cte.c.<column>` is typed. Using a CTE column in a query that doesn't read the CTE is a
 type error. `from()` accepts only a CTE that has the model's columns.
 
@@ -238,16 +265,31 @@ Writes run when they are called and return a `Promise`:
   out gets its `@client_default` (filled natively, as in Python), else the database
   default; an explicit value, also `null`, wins.
 * `qs.update({...}, { returning })` gives a count, or the rows when `returning` is set.
-* `qs.delete()`.
+* `qs.delete({ returning })` gives a count, or the deleted rows.
 * `updateMany(rows, { batchSize, returning })` does a bulk update by primary key with
   `UPDATE ... FROM (VALUES ...)`, falling back to `CASE`. All its batches run in one
   transaction.
 * On an instance: `post.update({...})` (refreshed from `RETURNING`), `post.delete()` and
-  `post.refresh()`.
+  `post.refresh(...columns)` (no columns: every field).
+* `Composed.objects.attach(parentId, values)` adds a composed child to an existing parent
+  ([`model-composition.md`](model-composition.md)).
 
 Values in `update()` can be expressions over the same model (`Post.views.add(1)`).
 `excluded(col)` reads the proposed row in an upsert. A related row can stand in for its
 key (`{ author: alice }`); passing both the row and the key is a type error.
+
+### Connections
+
+```ts
+const db = await connect("postgres://user:pw@host/db", { maxConnections: 10 }); // also sqlite:///path, sqlite://:memory:
+const other = await connect(url, { default: false, registry });  // not the default database
+getDatabase();               // the default database; throws NotConnected before connect()
+await db.execute("VACUUM");  // raw SQL, gives the row count; no ORM checks apply
+await db.createTables(); await db.dropTables();
+await db.close();
+```
+
+`disable: ["ilike", ...]` switches dialect capabilities off for tests, as Python's `_disable`.
 
 ### Transactions
 
@@ -263,8 +305,9 @@ Raw SQL (`db.execute`), migrations, other ORM processes without this schema, and
 For database-level protection, use `@@trigger` or database grants.
 
 ```ts
+// sketch: Post declared with @@protected_write
 await allowWrites([Post], async () => { await post.update({ title: "new" }); });
-await Post.objects.filter(...).update({ title: "x" });   // throws WriteProtected
+await Post.objects.filter(Post.published).update({ title: "x" });   // throws WriteProtected
 ```
 
 Every ORM write to a `@@protected_write` model fails outside `allowWrites(models, fn)` with `WriteProtected`:
@@ -278,11 +321,12 @@ See `docs/schema.md`, "Protected writes".
 
 * `qs.lock({ exclusive, nowait, skipLocked })` adds `FOR UPDATE` / `FOR SHARE` on the
   model's rows. Setting both `nowait` and `skipLocked` is a type error.
-* `db.lock(key, { exclusive, nowait })` takes a transaction-scoped advisory lock. String
-  keys hash the way Python's do (BLAKE2b with an 8-byte digest), so both languages lock
-  the same name.
+* `db.lock(key, { exclusive, nowait })` takes a transaction-scoped advisory lock and gives
+  `true`; with `nowait` it gives `false` instead of waiting. String keys hash the way
+  Python's do (BLAKE2b with an 8-byte digest), so both languages lock the same name.
 
-Both throw `TransactionRequired` when called outside a transaction.
+Both throw `TransactionRequired` when called outside a transaction. SQLite has no row or
+advisory locks: both throw `QueryError` there.
 
 ### Finding N+1 queries: `debug`
 
@@ -293,16 +337,16 @@ The ORM never loads a relation by itself, so an N+1 comes from explicit code: a 
 import { debug } from "orm";
 
 await debug.nPlusOne(async () => {
-  for (const c of customers) await c.loadPerson();
+  for (const c of comments) await c.loadPost();
 }, { threshold: 5, fail: true });
-// NPlusOne: 20 queries with one shape `SELECT ... FROM "person" WHERE "person"."id" = $1 ...`
-//   at src/views.ts:42; use selectRelated(Customer.person)
+// NPlusOne: 20 queries with one shape `SELECT ... FROM "posts" WHERE "posts"."id" = $1 ...`
+//   at src/views.ts:42; use selectRelated(Comment.post)
 ```
 
 * The scope counts the queries of `fn` by statement shape: the query without its values.
   Work that `fn` starts counts too.
 * When `fn` resolves, a shape that ran more than `threshold` times (default 5) throws `debug.NPlusOne` with `fail: true`, or emits an `NPlusOneWarning` process warning.
-  `error.report` has each shape, its SQL, its count, the call site of its first query and the fix.
+  `error.report` is a `debug.Report`: `shapes` and `repeated` hold `debug.Shape` values (`key`, `sql`, `count`, `site`, `fix`), and `message()` gives the text above.
 * The fix is `selectRelated(...)` for a repeated `loadX()`, and `prefetchRelated(...)` for a repeated to-many query (`post.comments.all()`).
 * The call site and the SQL text are captured only inside the scope.
   Outside it, each query pays one `AsyncLocalStorage` read (about 2 ns, measured).
@@ -327,7 +371,7 @@ A package that changes writes and reads from outside the ORM (for example
 Errors map to classes with Python's names: `ORMError`, plus `DatabaseError`,
 `IntegrityError`, `LockNotAvailable`, `QueryError`, `SchemaError`, `NotConnected`,
 `NotLoaded`, `TransactionRequired`, `DoesNotExist`, `MultipleObjectsReturned`,
-`MigrationError` and `WriteProtected`. Values of the wrong type throw a `TypeError` before any SQL runs.
+`MigrationError`, `WriteProtected` and `debug.NPlusOne`. Values of the wrong type throw a `TypeError` before any SQL runs.
 
 ## Migrations and the CLI
 
@@ -336,7 +380,14 @@ program as `python -m orm` and the standalone `orm` binary, with the same comman
 (`check`, `generate`, `makemigrations [--check]`, `sqlmigrate`, `migrate`, `rollback`,
 `showmigrations`; see [`schema.md`](schema.md#migrations)). Under `npx`, `generate` writes
 TypeScript and `package.json`'s `"orm"` key is read first. `Migrations` and `Migrator`
-are the programmatic API; they call the same Rust migrator (`engine/src/migrate.rs`).
+are the programmatic API; they call the same Rust migrator (`engine/src/migrate.rs`):
+
+```ts
+const migrations = new Migrations("migrations", registry);   // or a schema path or source
+migrations.all(); migrations.plan(); migrations.make("add_tags");   // null when nothing changed
+const migrator = new Migrator(db, migrations);
+await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ steps: 1 });
+```
 
 ## Decisions
 

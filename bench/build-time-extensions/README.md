@@ -56,6 +56,12 @@ are part of the experiment.
 
 ## Current gate
 
+**Latest (2026-10-08, `10663b5`, `results/gate-2026-10-08/`): not passed** (measured, load 1.9 to 4.3, PostgreSQL in Docker).
+0 warm regressions, 20 of 44 warm cases accepted (upper bound below 1%), 24 inconclusive.
+The gate stays unmet until a quieter run resolves the inconclusive cases.
+How to run it: [`../README.md`](../README.md#build-time-extensions).
+The history below is kept for its evidence.
+
 The final source at `360685a` has fresh release artifacts and structural/allocation
 evidence in `results/final-structural.json`. Disabled allocations match the
 baseline for all three workloads on both databases; enabled allocations match

@@ -1,11 +1,25 @@
-# Performance optimization opportunities
+# Performance
+
+## Build-time extension cost gate
+
+A build with extensions must cost less than 1% on warm operations, compared with the same behavior written by hand into the core.
+`bench/build-time-extensions` measures it: paired batches of handwritten built-in controls against the generated extension build, for Python and Node, on PostgreSQL and SQLite.
+A case passes when its paired 95% upper bound is below 1%.
+
+The latest run (2026-10-08, `10663b5`, Apple M5, PostgreSQL in Docker) has **not passed** (measured, load 1.9 to 4.3):
+0 warm regressions, 20 of 44 cases accepted, 24 inconclusive.
+Most inconclusive cases change by −2.1% to +1.4%, but their intervals are too wide on a loaded machine to clear 1%.
+Definition (setup) cost and artifact size are reported separately: the disabled native library is 5.5% (Python) and 5.4% (Node) larger, from contract and IR decoders (measured at `360685a`).
+Details: [`gate-2026-10-08/summary.md`](../bench/build-time-extensions/results/gate-2026-10-08/summary.md), [`bench/RESULTS.md`](../bench/RESULTS.md).
+
+## Optimization opportunities
 
 Status: measured opportunities, not scheduled or implemented in the production
 engine. Evidence recorded on 2026-10-03. Start with result materialization for
 large reads; the measurements below do not establish priorities for every
 workload or language binding.
 
-## Evidence and scope
+### Evidence and scope
 
 The [benchmark report](../bench/RESULTS.md#diesel-investigation-and-pool-setting-correction--2026-10-03)
 contains the source investigation, corrected ORM comparisons, and raw results.
@@ -27,7 +41,7 @@ The controlled buffered/streamed pair uses the same SQL, pool, prepared-statemen
 cache, typed decoder, and final result type. Small reads showed little benefit
 from streaming.
 
-## 1. Stream into final results
+### 1. Stream into final results
 
 Today, [the PostgreSQL driver](../engine/src/db/postgres.rs) calls
 `Client::query`, collects a `Vec<Row>`, and returns a boxed `RowSet`. Consumers
@@ -48,7 +62,7 @@ runtime context their bindings require; the Rust-struct prototype does not
 measure those constraints. Measure binding materialization and thread hand-off
 costs before claiming the same improvement for Python or JavaScript.
 
-## 2. Reuse decoders for an output shape
+### 2. Reuse decoders for an output shape
 
 `RowSet::cell` dispatches on `ValueType` for each field of each row. Investigate
 choosing column decoders once from a validated output shape and reusing that
@@ -60,7 +74,7 @@ row decoding. That is a distinct opportunity from compiling schema metadata
 merely to reduce startup time. Shared Python/Node packages should continue to
 support dynamic schemas without requiring a native build for each schema.
 
-## 3. Keep planning and cache changes evidence-driven
+### 3. Keep planning and cache changes evidence-driven
 
 Prepared database statements are already cached by our driver. Diesel also
 caches prepared statements using typed query identities where available; the
@@ -74,7 +88,7 @@ unless complex-query profiling establishes enough benefit to justify binding
 recipes, cache memory, invalidation, and correctness work. Building typed Rust
 operations directly can avoid JSON parsing independently of plan caching.
 
-## Benchmark and acceptance requirements
+### Benchmark and acceptance requirements
 
 - Match pool checkout policies, transport, TLS, connection count, database
   settings, result shape, and decoded fields. Earlier SeaORM comparisons used

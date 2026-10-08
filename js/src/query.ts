@@ -1581,7 +1581,7 @@ function makeRelatedSet(rel: RelationMeta, instance: object): RelatedSet<ModelSp
   const target = owner.registry.get(rel.target);
   const via = target.column(target.fieldByIr.get(rel.to)!);
   const key = fieldValue(inst, owner.fieldByIr.get(rel.from)!.name);
-  const qs = new RelatedSet<ModelSpec>(target, { ...EMPTY, filters: [asCondition(via.eq(key as never))] });
+  const qs = new RelatedSet<ModelSpec>(target, { ...EMPTY, filters: [asCondition(via.eq(key as never))], db: inst[DB] as Database | undefined });
   Object.assign(qs, { relation: rel, instance: inst });
   return qs as never;
 }
@@ -1596,7 +1596,7 @@ function makeManyRelatedSet(rel: RelationMeta, instance: object): ManyRelatedSet
   const to = target.column(target.fieldByIr.get(rel.to)!);
   const key = fieldValue(inst, owner.fieldByIr.get(rel.from)!.name);
   const cond = exists(join.objects.filter(source.eq(key as never) as never, tcol.eq(outer(to) as never) as never) as never);
-  const qs = new ManyRelatedSet<ModelSpec>(target, { ...EMPTY, filters: [cond] });
+  const qs = new ManyRelatedSet<ModelSpec>(target, { ...EMPTY, filters: [cond], db: inst[DB] as Database | undefined });
   Object.assign(qs, { relation: rel, instance: inst });
   return qs;
 }

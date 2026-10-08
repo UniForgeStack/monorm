@@ -116,11 +116,13 @@ already does.
 | `.orm` | `.prisma` | |
 |---|---|---|
 | `@@index([a, b(sort: desc)])` | `@@index([a, b(sort: Desc)])` | native |
+| `@@index([a, b(sort: desc)])` | `@@index([a, -b])` (short form) | ours |
 | `where: "published"` | `where: raw("published")` | native |
 | `type: gin` (gist, brin, hash) | `type: Gin` | native |
 | `ops: gin_trgm_ops` | `ops: raw("gin_trgm_ops")` | native |
 | `@@unique([a, b])` | `@@unique([a, b])` | native |
-| `type: hnsw` / `ivfflat` / `bloom`, `nulls: last`, `include:`, `with:`, `nulls_not_distinct:`, `sql("expr")` keys, `collate:` | same arguments in `@@index` / `@@unique` | ours (Prisma flags the argument) |
+| `type: hnsw` / `ivfflat` / `bloom`, `include:`, `with:`, `sql("expr")` keys; key options `nulls: last`, `collate:` | same arguments in `@@index` | ours (Prisma flags the argument) |
+| `nulls_not_distinct:`, `deferrable:` | same arguments in `@@unique` (no key order) | ours |
 | `@@check("...", name: "...")` | same | ours |
 | `@@exclude([...], where: "...")` | same | ours |
 | `@@trigger(name, before: [...], function: f, args: [...])` | same, on one line | ours |
@@ -272,7 +274,7 @@ model Account {
   updated_at DateTime                               @default(now())
 
   @@unique([email, nick], nulls_not_distinct: true, deferrable: deferred)
-  @@index([email(sort: Desc)], nulls: last, include: [nick], name: "x")
+  @@index([email(sort: Desc, nulls: last)], include: [nick], name: "x")
   @@index([sql("lower(email)", collate: "C")], unique: true)
   @@index([embedding(ops: vector_cosine_ops)], type: hnsw, with: { m: 16, ef_construction: 64 })
   @@map("accounts")

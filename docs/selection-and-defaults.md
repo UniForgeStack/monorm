@@ -25,6 +25,11 @@ value, and omitted field access raises `NotLoaded` rather than returning `None`.
 filters or reference loading. Column expressions and writes remain usable for
 excluded fields. Insert requirements remain unchanged.
 
+`only()` is in the core. Schema query defaults need the `query-defaults` extension.
+
+**Enable:** select the `orm-query-defaults` crate (`query-defaults/`) in your build.
+See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
+
 The optional `query-defaults` native capability and compiler crate
 `orm-query-defaults` support schema policies:
 

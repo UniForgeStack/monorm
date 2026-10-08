@@ -185,4 +185,4 @@ The schema is already a `.prisma` file, so the move from Prisma is mostly runtim
 * **Codemod** for `$queryRaw` / `$executeRaw` → `` sql`...` ``, and
   `$transaction([...])` → `db.transaction()`.
 * **Benchmarks** against Prisma, Drizzle and Kysely on the same workloads as
-  `bench/js` (Drizzle only today), including cold start and `tsc` time.
+  the removed Phase 0 harness (`git show 889f1c4:bench/js`, Drizzle only), including cold start and `tsc` time.

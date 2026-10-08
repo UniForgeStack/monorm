@@ -76,6 +76,62 @@ Use a host with the optional-packaging contracts for backend/generator exclusion
 Cargo dependency feature unification remains authoritative.
 Selection is recorded in the build configuration and emitted binding manifests, and participates in rebuild guards.
 
+## Select feature extensions
+
+The repository ships five feature extensions.
+Each is a crate that you put in `dependencies`; its manifest capability turns on the host feature.
+
+| Feature | Dependency entry (`"alias": {...}`) | Doc |
+|---|---|---|
+| proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](proxy-models.md) |
+| query-defaults | `"query_defaults": {"package": "orm-query-defaults", "path": "query-defaults"}` | [selection-and-defaults.md](selection-and-defaults.md) |
+| model-composition | `"composition": {"package": "orm-model-composition", "path": "model-composition"}` | [model-composition.md](model-composition.md) |
+| file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "storage/orm-extension"}` | [file-storage.md](file-storage.md) |
+| generic-relations | `"generic": {"package": "orm-generic", "path": "extensions/generic"}` | [generic-identities.md](generic-identities.md) |
+
+Paths are relative to the repository root; write them relative to your configuration file.
+This configuration selects all five and emits the workspace only (`prepare_only`):
+
+```json
+{
+  "host": "/path/to/orm",
+  "output": "/path/to/build-all/build",
+  "prepare_only": true,
+  "bindings": ["python", "node"],
+  "dependencies": {
+    "proxy": {"package": "orm-proxy", "path": "/path/to/orm/extensions/proxy"},
+    "query_defaults": {"package": "orm-query-defaults", "path": "/path/to/orm/query-defaults"},
+    "composition": {"package": "orm-model-composition", "path": "/path/to/orm/model-composition"},
+    "file_storage": {"package": "orm-file-storage-extension", "path": "/path/to/orm/storage/orm-extension"},
+    "generic": {"package": "orm-generic", "path": "/path/to/orm/extensions/generic"}
+  }
+}
+```
+
+Build and package it (from the repository root; `DIR` is the parent of `output`):
+
+```bash
+cargo run -q -p orm-extension-build -- "$DIR/config.json"
+export ORM_CORE_COMPOSITION=$DIR/build/composition.rs ORM_ENGINE_COMPOSITION=$DIR/build/engine-composition.rs
+export ORM_PYTHON_METHODS=$DIR/build/python-methods.rs ORM_NODE_METHODS=$DIR/build/node-methods.rs
+(cd "$DIR/build" && cargo build -p orm-python -p orm-node)    # add --release for production
+mkdir -p "$DIR/py/orm_native_custom"
+cp packaging/python/custom/orm_native_custom/__init__.py "$DIR/py/orm_native_custom/"
+cp "$DIR/build/target/debug/lib_native.dylib" "$DIR/py/orm_native_custom/_native$(python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
+cp "$DIR/build/target/debug/liborm_node.dylib" "$DIR/orm.node"     # .so on Linux
+```
+
+Use the artifact with `PYTHONPATH=$DIR/py ORM_PROFILE=custom` in Python and `ORM_NATIVE=$DIR/orm.node` (an absolute path) in Node.
+Without `prepare_only`, the frontend builds the release libraries itself.
+`scripts/feature-check.sh all` does the same steps and runs every suite on the result.
+A schema that uses an extension attribute on an artifact without that extension fails during definition:
+`@proxy.of: not compiled into this artifact; rebuild with its extension`.
+
+Protected writes (`@@protected_write`), client defaults, cursor pagination, the N+1 finder and reference loaders are in the core.
+They need no extension.
+
+## Application source modules
+
 Instead of a dependency, `modules` accepts an application source module:
 `{"alias":"rules","source":"rules.rs","manifest":{...},"dependencies":{...}}`.
 The frontend wraps the source in a Cargo crate and supplies `orm-contracts`.
@@ -106,7 +162,7 @@ Unknown metadata fields are errors.
 An attribute declares its `name`, `target` (`model` or `field`), and typed `arguments` (`string`, `integer`, `boolean`, `list`, `value`).
 Only a `value` argument takes a bare name (as a string), `null` and objects; the other kinds take strict literals, also inside a list.
 The extension pass checks the shape of a `value` argument.
-Source declarations use namespaced attributes, for example `name String @app.rename(to: "public_name")` or `@@app.proxy(parent: "User")`.
+Source declarations use namespaced attributes, for example `name String @app.rename(to: "public_name")` or `@@app.audit(level: 2)`.
 Names, arguments and source locations are preserved in schema requirements.
 Unknown namespaces request a rebuild; `@db.*` keeps its existing database meaning.
 
@@ -145,8 +201,7 @@ Writes across owner tables belong to `orm_engine::composed`, the executor of the
 It plans creates, attaches, filtered updates and deletes, and each runs in one transaction or savepoint.
 `update_many` on a composed model is rejected.
 Ordinary model writes reject inherited storage instead of writing nonexistent columns.
-Full filters, selection defaults, proxy warnings, loaders and the composition-facing language APIs belong to plans 03–06;
-this framework does not expose those feature APIs yet.
+The language APIs of these features are in [model-composition.md](model-composition.md), [proxy-models.md](proxy-models.md) and [selection-and-defaults.md](selection-and-defaults.md).
 
 ## Native behavior profiles
 

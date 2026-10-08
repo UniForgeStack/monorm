@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": 1,
+      "model": "Label",
+      "retired": false
+    },
+    {
+      "id": 2,
+      "model": "Photo",
+      "retired": false
+    },
+    {
+      "id": 3,
+      "model": "Video",
+      "retired": false
+    }
+  ]
+}
