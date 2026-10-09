@@ -109,7 +109,7 @@ async def test_prepared_like_patterns_are_escaped_per_call(clean):
     assert await starts.count(t="a_") == 1
 
 
-async def test_prepared_has_and_prefetch(clean):
+async def test_prepared_has_and_prefetch(clean, observe_queries):
     (alice, bob), _ = await seed()
     await Profile.objects.insert_many(
         [{"user": alice, "links": ["x", "y"]}, {"user": bob, "links": ["y"]}]
@@ -125,9 +125,22 @@ async def test_prepared_has_and_prefetch(clean):
         )
         .prepare()
     )
-    users = await top(min=10, k=1)
+    result = top.inspect(min=10, k=1)
+    assert result.statement_count == 2
+    assert result.has_batching
+    assert [s.has_batching for s in result.statements] == [False, True]
+    assert all(s.joins_count == 0 for s in result.statements)
+    assert [s.subqueries for s in result.statements] == [
+        orm.SubqueryInspection(0, 0), orm.SubqueryInspection(0, 1),
+    ]
+    with observe_queries(clean) as events:
+        users = await top(min=10, k=1)
+    assert len(events) == 2
     assert [[p.title for p in u.posts.cached] for u in users] == [["a_2%"], ["b1"]]
-    users = await top(min=0, k=2)
+    assert top.inspect(min=0, k=2) == result
+    with observe_queries(clean) as events:
+        users = await top(min=0, k=2)
+    assert len(events) == 2
     assert [[p.title for p in u.posts.cached] for u in users] == [["a_2%", "a3"], ["b1"]]
 
 

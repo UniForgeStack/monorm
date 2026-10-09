@@ -6,10 +6,9 @@ import warnings
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+import orm
 import pytest
 from blog.models import Comment, Post, User
-
-import orm
 from conftest import DATABASE_URL
 
 NOW = datetime.now(timezone.utc)
@@ -104,12 +103,14 @@ async def test_upsert(clean):
     u = await User.objects.insert(email="a@example.com", name="A")
     same = (
         await User.objects.insert(email="a@example.com", name="A2")
-        .on_conflict(User.email, update=True).returning()
+        .on_conflict(User.email, update=True)
+        .returning()
     )
     assert (same.id, same.name, same.created_at) == (u.id, "A2", u.created_at)
     skipped = (
         await User.objects.insert(email="a@example.com", name="A3")
-        .on_conflict(User.email, update=False).returning()
+        .on_conflict(User.email, update=False)
+        .returning()
     )
     assert skipped is None
     rows = (
@@ -119,7 +120,8 @@ async def test_upsert(clean):
                 {"email": "b@example.com", "name": "B"},
             ]
         )
-        .on_conflict(User.email, update=False).returning()
+        .on_conflict(User.email, update=False)
+        .returning()
     )
     assert [r.email for r in rows] == ["b@example.com"]
     rows = (
@@ -129,7 +131,8 @@ async def test_upsert(clean):
                 {"email": "b@example.com", "name": "B2"},
             ]
         )
-        .on_conflict(User.email, update=True, update_fields=[User.name]).returning()
+        .on_conflict(User.email, update=True, update_fields=[User.name])
+        .returning()
     )
     assert [r.name for r in rows] == ["A5", "B2"]
     assert await User.objects.count() == 2
@@ -154,13 +157,20 @@ async def test_instances_are_read_only(clean):
         User(email="x", name="y")
 
 
-async def test_result_cache(clean):
+async def test_result_cache(clean, observe_queries):
     await User.objects.insert(email="a@example.com", name="A")
     qs = User.objects.filter(User.name != "Z")
-    first = await qs
+    assert qs.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 0, orm.SubqueryInspection(0, 0)),
+    ))
+    with observe_queries(clean) as events:
+        first = await qs
+    assert len(events) == 1
     await User.objects.insert(email="b@example.com", name="B")
     # The same query set gives its first rows again, without a query; a copy each time.
-    again = await qs
+    with observe_queries(clean) as events:
+        again = await qs
+    assert events == []
     assert names(again) == ["A"] and again == first and again is not first
     assert [u.name async for u in qs] == ["A"]
     # Builders and all() are new query sets: they query again. So does Model.objects.
@@ -170,7 +180,9 @@ async def test_result_cache(clean):
     assert len(await User.objects) == 3
     # Concurrent awaits share one run.
     fresh = User.objects.filter(User.name != "Z")
-    a, b = await asyncio.gather(fresh, fresh)
+    with observe_queries(clean) as events:
+        a, b = await asyncio.gather(fresh, fresh)
+    assert len(events) == 1
     assert names(a) == names(b) == ["A", "B", "C"] and fresh._result is not None
     rows = User.objects.select(User.name)
     assert await rows == await rows
@@ -245,14 +257,17 @@ async def test_nested_and_reverse_paths(clean):
     )
 
 
-async def test_load_to_one(clean):
+async def test_load_to_one(clean, observe_queries):
     await seed()
     query = Comment.objects.load(Comment.post.author, Comment.author).order_by(Comment.id)
     result = query.inspect()
     assert result.statement_count == 1
     assert not result.has_batching
     assert result.statements[0].joins_count == 3
-    comments = await query
+    assert result.statements[0].subqueries == orm.SubqueryInspection(0, 0)
+    with observe_queries(clean) as events:
+        comments = await query
+        assert len(events) == 1
     first, anon, _ = comments
     assert first.post.title == "new post"
     assert first.post.author.name == "Alice"
@@ -269,17 +284,23 @@ async def test_unloaded_to_one_raises(clean):
     assert c.author is None  # null FK needs no loading
 
 
-async def test_load_to_many(clean):
+async def test_load_to_many(clean, observe_queries):
     await seed()
     query = User.objects.load(User.posts).order_by(User.name)
     result = query.inspect()
     assert result.statement_count == 2
     assert result.has_batching
     assert all(s.joins_count == 0 for s in result.statements)
-    users = await query
+    assert [s.has_batching for s in result.statements] == [False, True]
+    assert all(s.subqueries == orm.SubqueryInspection(0, 0) for s in result.statements)
+    with observe_queries(clean) as events:
+        users = await query
+        assert len(events) == 2
     assert [len(u.posts.cached) for u in users] == [2, 1, 0]
     alice = users[0]
-    assert [p.title for p in await alice.posts] == ["old draft", "new post"]
+    with observe_queries(clean) as events:
+        assert [p.title for p in await alice.posts] == ["old draft", "new post"]
+        assert events == []  # the prefetched collection needs no additional query
     assert alice.posts.cached[0].author is alice  # reverse relation filled in
 
 
@@ -389,7 +410,12 @@ async def test_upsert_with_expressions(clean):
     again = {"id": p.id, "author": alice, "title": "t2", "body": "b", "views": 4}
     p2 = (
         await Post.objects.insert(**again)
-        .on_conflict(Post.id, update=True, update_values={"views": Post.views + orm.excluded(Post.views)}).returning()
+        .on_conflict(
+            Post.id,
+            update=True,
+            update_values={"views": Post.views + orm.excluded(Post.views)},
+        )
+        .returning()
     )
     assert (p2.id, p2.views, p2.title) == (
         p.id,
@@ -398,7 +424,13 @@ async def test_upsert_with_expressions(clean):
     )  # only the given assignment ran
     p3 = (
         await Post.objects.insert(**again)
-        .on_conflict(Post.id, update=True, update_fields=[Post.title], update_values={"published": True}).returning()
+        .on_conflict(
+            Post.id,
+            update=True,
+            update_fields=[Post.title],
+            update_values={"published": True},
+        )
+        .returning()
     )
     assert (p3.views, p3.title, p3.published) == (7, "t2", True)
     rows = [
@@ -407,7 +439,12 @@ async def test_upsert_with_expressions(clean):
     ]
     out = (
         await Post.objects.insert_many(rows)
-        .on_conflict(Post.id, update=True, update_values={"views": orm.excluded(Post.views) * 100}).returning()
+        .on_conflict(
+            Post.id,
+            update=True,
+            update_values={"views": orm.excluded(Post.views) * 100},
+        )
+        .returning()
     )
     assert sorted(o.views for o in out) == [2, 100]
     with pytest.raises(orm.QueryError):
@@ -454,7 +491,7 @@ async def test_update_many(clean):
     assert await Post.objects.update_many([]) == 0
 
 
-async def test_update_many_batches_are_one_transaction(clean):
+async def test_update_many_batches_are_one_transaction(clean, observe_queries):
     alice, bob, carol, (a1, a2, b1) = await seed()
     rows = [
         {"id": a1.id, "views": 7},
@@ -467,7 +504,9 @@ async def test_update_many_batches_are_one_transaction(clean):
     statement = Post.objects.update_many(rows[:2], batch_size=1).returning()
     assert statement.inspect().statement_count == 2
     assert statement.inspect().has_batching
-    assert len(await statement) == 2
+    with observe_queries(clean) as events:
+        assert len(await statement) == 2
+    assert len(events) == 2
 
 
 async def test_fallback_sql_runs_on_postgres(clean):
@@ -587,9 +626,15 @@ async def test_select_model_with_relation_aggregates(clean):
     from orm import func
 
     # Same-relation aggregates share one LATERAL subquery: empty counts stay 0, empty sums None.
-    rows = await User.objects.select(
+    query = User.objects.select(
         User, func.count(User.posts).label("posts"), func.sum(User.posts.views)
     ).order_by(User.id)
+    result = query.inspect()
+    assert result.statement_count == 1
+    assert not result.has_batching
+    assert result.statements[0].joins_count == 1
+    assert result.statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    rows = await query
     assert [(u.name, n, v) for u, n, v in rows] == [
         ("Alice", 2, 55),
         ("Bob", 1, 100),
@@ -597,9 +642,15 @@ async def test_select_model_with_relation_aggregates(clean):
     ]
     assert rows[0].user == alice and rows[0].posts == 2
     # Two counts over different relations don't multiply each other (no JOIN fan-out).
-    rows = await User.objects.select(
+    query = User.objects.select(
         User.name, func.count(User.posts), func.count(User.comments).label("c")
     ).order_by(User.id)
+    result = query.inspect()
+    assert result.statement_count == 1
+    assert not result.has_batching
+    assert result.statements[0].joins_count == 0
+    assert result.statements[0].subqueries == orm.SubqueryInspection(2, 0)
+    rows = await query
     assert rows == [("Alice", 2, 1), ("Bob", 1, 1), ("Carol", 0, 0)]
     # Per-aggregate filter and distinct inside one shared subquery, next to another relation.
     query = User.objects.select(
@@ -651,34 +702,27 @@ async def test_subqueries(clean):
     assert names(await User.objects.filter(User.id.in_(popular))) == ["Alice", "Bob"]
 
 
-async def test_batches(clean, monkeypatch):
+async def test_batches(clean, observe_queries):
     alice = await User.objects.insert(email="a@x.io", name="A")
     posts = await Post.objects.insert_many(
         [{"author": alice, "title": f"p{i}", "body": "b"} for i in range(25)]
     ).returning()
     sizes = [len(b) async for b in Post.objects.batches(10)]
     assert sizes == [10, 10, 5]
-    import json
-
-    db = clean
-    run = db._run
-    queries = []
-    fetched_sizes = []
-
-    async def counted_run(ir, params, *args, **kwargs):
-        queries.append(db._registry.native().statement(json.dumps(ir), params))
-        rows = await run(ir, params, *args, **kwargs)
-        fetched_sizes.append(len(rows))
-        return rows
-
-    with monkeypatch.context() as patch:
-        patch.setattr(db, "_run", counted_run)
+    query = Post.objects.filter(Post.views == 0)
+    result = query.inspect()
+    assert result.statement_count == 1
+    assert not result.has_batching  # iterate() repeats this template at runtime
+    assert result.statements[0].joins_count == 0
+    assert result.statements[0].subqueries == orm.SubqueryInspection(0, 0)
+    with observe_queries(clean) as events:
         seen = [
-            p.id async for p in Post.objects.filter(Post.views == 0).iterate(batch_size=7)
+            p.id
+            async for p in query.iterate(batch_size=7)
         ]
-    assert len(queries) == 4
-    assert all(" LIMIT $" in sql for sql in queries)  # the batch size is a parameter
-    assert fetched_sizes == [7, 7, 7, 4]
+    assert len(events) == 4
+    assert all(" LIMIT $" in event.sql for event in events)
+    assert [event.rows for event in events] == [7, 7, 7, 4]
     assert seen == sorted(p.id for p in posts)
     assert [len(b) async for b in Post.objects.filter(Post.id < 0).batches(10)] == []
     assert [
@@ -779,14 +823,21 @@ async def test_refresh_lock(clean):
         assert await alice.refresh(User.name, lock=True) is True
         # A partial refresh locks the whole row.
         with pytest.raises(orm.LockNotAvailable):
-            await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
+            await _in_new_tx(
+                lambda: User.objects.lock(nowait=True).get(User.id == alice.id)
+            )
     await User.objects.filter(User.id == alice.id).update(name="Alicia")
     await alice.refresh()
     assert alice.name == "Alicia"
 
     async with db.transaction():
         assert await bob.refresh(lock=True, exclusive=False) is True
-        assert await _in_new_tx(lambda: User.objects.lock(False, nowait=True).get(User.id == bob.id)) == bob
+        assert (
+            await _in_new_tx(
+                lambda: User.objects.lock(False, nowait=True).get(User.id == bob.id)
+            )
+            == bob
+        )
 
     other = await User.objects.get(User.id == alice.id)
     async with db.transaction():
@@ -794,7 +845,10 @@ async def test_refresh_lock(clean):
         await User.objects.filter(User.id == alice.id).update(name="Al")
         with pytest.raises(orm.LockNotAvailable):
             await _in_new_tx(lambda: other.refresh(lock=True, nowait=True))
-        assert await _in_new_tx(lambda: other.refresh(lock=True, skip_locked=True)) is False
+        assert (
+            await _in_new_tx(lambda: other.refresh(lock=True, skip_locked=True))
+            is False
+        )
         assert other.name == "Alicia"  # unchanged
     async with db.transaction():
         assert await other.refresh(lock=True, skip_locked=True) is True
@@ -871,7 +925,11 @@ async def test_integrity_error(clean):
     assert (e.value.sqlstate, e.value.constraint) == ("23503", "posts_author_id_fkey")
     with pytest.raises(orm.DatabaseError) as e:
         await orm.get_database().execute("SELECT 1/0")
-    assert (e.value.sqlstate, e.value.constraint, e.value.detail) == ("22012", None, None)
+    assert (e.value.sqlstate, e.value.constraint, e.value.detail) == (
+        "22012",
+        None,
+        None,
+    )
 
 
 def test_database_error_fields_default_to_none():

@@ -74,14 +74,20 @@ async def test_array_agg_is_postgres_only(sqlite):
     assert result.statements[0].subqueries == orm.SubqueryInspection(2, 0)
 
 
-async def test_bulk_writes(sqlite):
+async def test_bulk_writes(sqlite, observe_queries):
     db, m, _ = sqlite
     Author = m["Author"]
     with pytest.raises(orm.QueryError, match="needs Postgres"):
         await Author.objects.using(db).insert_many([{"email": "a@x.io", "name": "A"}], copy=True)
     # 32 766 parameters at most: 20 000 rows of two fields go to two statements.
     rows = [{"email": f"u{i}@x.io", "name": f"U{i}"} for i in range(20_000)]
-    assert len(await Author.objects.using(db).insert_many(rows).returning()) == 20_000
+    statement = Author.objects.using(db).insert_many(rows).returning()
+    result = statement.inspect()
+    assert result.statement_count == 2
+    assert result.has_batching and all(s.has_batching for s in result.statements)
+    with observe_queries(db) as events:
+        assert len(await statement) == 20_000
+    assert len(events) == 2
     first, created = await Author.objects.using(db).get_or_insert(email="u0@x.io", defaults={"name": "x"})
     assert not created and first.name == "U0"
     # A failed later batch rolls back the earlier ones.

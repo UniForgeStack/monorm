@@ -14,37 +14,51 @@ from conftest import DATABASE_URL
 # -- insert_many batches ----------------------------------------------------------------------
 
 
-async def test_insert_many_splits_by_the_parameter_limit(clean):
+async def test_insert_many_splits_by_the_parameter_limit(clean, observe_queries):
     # One field per row: 70 000 rows are 70 000 parameters, more than Postgres's 65 535.
     statement = Tag.objects.insert_many([{"name": f"t{i}"} for i in range(70_000)]).returning()
     assert statement.inspect().statement_count == 2
     assert statement.inspect().has_batching
-    tags = await statement
+    assert all(s.has_batching for s in statement.inspect().statements)
+    with observe_queries(clean) as events:
+        tags = await statement
+    assert len(events) == 2
     assert len(tags) == 70_000
     assert [t.name for t in tags[:2]] == ["t0", "t1"]
     assert tags[-1].name == "t69999"
     assert await Tag.objects.count() == 70_000
 
 
-async def test_insert_many_batch_size(clean):
+async def test_insert_many_batch_size(clean, observe_queries):
     # One statement can't update a row twice; one row per statement can.
     rows = [{"email": "a@x.io", "name": "A1"}, {"email": "a@x.io", "name": "A2"}]
     with pytest.raises(orm.DatabaseError, match="second time"):
         await User.objects.insert_many(rows).on_conflict(User.email, update=True)
-    users = await User.objects.insert_many(rows, batch_size=1).on_conflict(User.email, update=True).returning()
+    statement = User.objects.insert_many(rows, batch_size=1).on_conflict(User.email, update=True).returning()
+    result = statement.inspect()
+    assert result.statement_count == 2
+    assert result.has_batching and all(s.has_batching for s in result.statements)
+    with observe_queries(clean) as events:
+        users = await statement
+    assert len(events) == 2
     assert [u.name for u in users] == ["A1", "A2"]
     assert (await User.objects.get(User.email == "a@x.io")).name == "A2"
 
 
-async def test_insert_many_batches_run_in_one_transaction(clean):
+async def test_insert_many_batches_run_in_one_transaction(clean, observe_queries):
     await Tag.objects.insert(name="taken")
     rows = [{"name": f"n{i}"} for i in range(5)] + [{"name": "taken"}]
-    with pytest.raises(orm.IntegrityError):
-        await Tag.objects.insert_many(rows, batch_size=2)
+    statement = Tag.objects.insert_many(rows, batch_size=2)
+    result = statement.inspect()
+    assert result.statement_count == 3
+    assert result.has_batching and all(s.has_batching for s in result.statements)
+    with observe_queries(clean) as events, pytest.raises(orm.IntegrityError):
+        await statement
+    assert len(events) == 3 and events[-1].error is not None
     assert await Tag.objects.count() == 1
 
 
-async def test_insert_many_batches_by_max_params(clean):
+async def test_insert_many_batches_by_max_params(clean, observe_queries):
     db = await orm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("max_params=5",))
     try:
         rows = [{"email": "dup@x.io", "name": f"U{i}"} for i in range(3)]
@@ -54,7 +68,9 @@ async def test_insert_many_batches_by_max_params(clean):
         statement = User.objects.using(db).insert_many(rows).on_conflict(User.email, update=True).returning()
         assert statement.inspect().statement_count == 2
         assert statement.inspect().has_batching
-        users = await statement
+        with observe_queries(db) as events:
+            users = await statement
+        assert len(events) == 2
         assert [u.name for u in users] == ["U0", "B", "U1", "C"]
     finally:
         await db.close()

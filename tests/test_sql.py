@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from blog.models import Comment, Post, Profile, User
 
+import orm
 from orm import QueryError, and_, excluded, func, or_
 
 Y = datetime(2026, 10, 1, tzinfo=timezone.utc)
@@ -17,7 +18,11 @@ def where(qs) -> str:
 
 
 def test_to_many_filter_is_exists():
-    sql = User.objects.filter(User.posts.created_at < Y).sql()
+    query = User.objects.filter(User.posts.created_at < Y)
+    assert query.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 0, orm.SubqueryInspection(1, 0)),
+    ))
+    sql = query.sql()
     assert sql == (
         f"{USER_COLS} WHERE EXISTS(SELECT 1 FROM \"posts\" AS \"t1\" "
         "WHERE \"t1\".\"author_id\" = \"users\".\"id\" "
@@ -44,12 +49,16 @@ def test_or_inside_one_relation_shares_subquery():
 
 
 def test_or_with_local_column_keeps_rows_without_related():
-    w = where(User.objects.filter(or_(User.email == "a", User.posts.views > 10)))
+    query = User.objects.filter(or_(User.email == "a", User.posts.views > 10))
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert w.startswith('"users"."email" = \'a\' OR EXISTS(')
 
 
 def test_exclude_is_not_exists():
-    w = where(User.objects.exclude(User.posts.published == False))  # noqa: E712
+    query = User.objects.exclude(User.posts.published == False)  # noqa: E712
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert w.startswith("NOT EXISTS(")
 
 
@@ -68,17 +77,26 @@ def test_nested_relation_nests_subqueries():
 
 
 def test_to_one_filter():
-    w = where(Post.objects.filter(Post.author.email == "a@b.c"))
+    query = Post.objects.filter(Post.author.email == "a@b.c")
+    assert query.inspect().statements[0].joins_count == 0
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert w == 'EXISTS(SELECT 1 FROM "users" AS "t1" WHERE "t1"."id" = "posts"."author_id" AND "t1"."email" = \'a@b.c\')'
 
 
 def test_column_to_column_across_relation():
-    w = where(Post.objects.filter(Post.comments.created_at < Post.created_at))
+    query = Post.objects.filter(Post.comments.created_at < Post.created_at)
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert '"t1"."created_at" < "posts"."created_at"' in w
 
 
 def test_to_one_load_and_order_use_left_joins():
-    sql = Comment.objects.load(Comment.post.author).order_by(Comment.post.title.desc()).sql()
+    query = Comment.objects.load(Comment.post.author).order_by(Comment.post.title.desc())
+    assert query.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 2, orm.SubqueryInspection(0, 0)),
+    ))  # ordering reuses the load's join
+    sql = query.sql()
     assert 'LEFT JOIN "posts" AS "j1" ON "j1"."id" = "comments"."post_id"' in sql
     assert 'LEFT JOIN "users" AS "j2" ON "j2"."id" = "j1"."author_id"' in sql
     assert sql.endswith('ORDER BY "j1"."title" DESC')
@@ -170,11 +188,15 @@ def test_update_many_falls_back_to_case():
 
 
 def test_update_many_batches():
-    rows = [[i, "x"] for i in range(5)]
-    assert len(native().update_many_sql("Post", ["id", "title"], rows, batch_size=2)) == 3
+    rows = [{"id": i, "title": "x"} for i in range(5)]
+    result = Post.objects.update_many(rows, batch_size=2).inspect()
+    assert result.statement_count == 3
+    assert result.has_batching and all(s.has_batching for s in result.statements)
     # Without batch_size, as many rows as Postgres' 65535 parameters allow.
-    rows = [[i, i] for i in range(40_000)]
-    assert len(native().update_many_sql("Post", ["id", "views"], rows)) == 2
+    rows = [{"id": i, "views": i} for i in range(40_000)]
+    result = Post.objects.update_many(rows).inspect()
+    assert result.statement_count == 2
+    assert result.has_batching and all(s.has_batching for s in result.statements)
 
 
 def test_update_many_validation():
@@ -211,7 +233,9 @@ def test_select_group_by_having():
 
 
 def test_aggregate_over_relation_is_a_correlated_subquery():
-    one = User.objects.select(User.id, func.count(User.posts)).sql()
+    query = User.objects.select(User.id, func.count(User.posts))
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    one = query.sql()
     assert one == (
         'SELECT "users"."id", (SELECT COUNT(*) FROM "posts" AS "a1" WHERE "a1"."author_id" = "users"."id") FROM "users"'
     )
@@ -220,7 +244,10 @@ def test_aggregate_over_relation_is_a_correlated_subquery():
     assert two.statements[0].joins_count == 0
     assert two.statements[0].subqueries.correlated_count == 2
     # Two hops join inside the subquery; in WHERE it filters per row, no EXISTS / JOIN outside.
-    w = where(User.objects.filter(func.count(User.posts.comments) > 3))
+    query = User.objects.filter(func.count(User.posts.comments) > 3)
+    assert query.inspect().statements[0].joins_count == 1
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert w == (
         '(SELECT COUNT(*) FROM "posts" AS "a1" INNER JOIN "comments" AS "a2" ON "a2"."post_id" = "a1"."id" '
         'WHERE "a1"."author_id" = "users"."id") > 3'
@@ -228,7 +255,11 @@ def test_aggregate_over_relation_is_a_correlated_subquery():
 
 
 def test_same_relation_aggregates_share_one_lateral_join():
-    sql = User.objects.select(User.id, func.count(User.posts), func.max(User.posts.views)).sql()
+    query = User.objects.select(User.id, func.count(User.posts), func.max(User.posts.views))
+    assert query.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 1, orm.SubqueryInspection(1, 0)),
+    ))
+    sql = query.sql()
     assert sql == (
         'SELECT "users"."id", "l1"."c1", "l1"."c2" FROM "users" LEFT JOIN LATERAL '
         '(SELECT COUNT(*) AS "c1", MAX("a2"."views") AS "c2" FROM "posts" AS "a2" WHERE "a2"."author_id" = "users"."id") '
@@ -256,7 +287,11 @@ def test_same_relation_aggregates_share_one_lateral_join():
 
 
 def test_select_to_one_columns_join_and_to_many_is_rejected():
-    sql = Post.objects.select(Post.title, Post.author.name.label("author")).sql()
+    query = Post.objects.select(Post.title, Post.author.name.label("author"))
+    assert query.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 1, orm.SubqueryInspection(0, 0)),
+    ))
+    sql = query.sql()
     assert sql == (
         'SELECT "posts"."title", "j1"."name" FROM "posts" LEFT JOIN "users" AS "j1" ON "j1"."id" = "posts"."author_id"'
     )
@@ -266,6 +301,7 @@ def test_select_to_one_columns_join_and_to_many_is_rejected():
 
 def test_subquery_and_distinct():
     inner = User.objects.filter(User.name == "A").select(User.id)
+    assert Post.objects.filter(Post.author_id.in_(inner)).inspect().statements[0].subqueries == orm.SubqueryInspection(0, 1)
     assert where(Post.objects.filter(Post.author_id.in_(inner))) == (
         '"posts"."author_id" IN (SELECT "users"."id" FROM "users" WHERE "users"."name" = \'A\')'
     )
@@ -304,7 +340,9 @@ def orm_func(name, *args):
 def test_exists_with_outer_correlates():
     from orm import exists, outer
 
-    w = where(User.objects.filter(exists(Post.objects.filter(Post.author_id == outer(User.id)))))
+    query = User.objects.filter(exists(Post.objects.filter(Post.author_id == outer(User.id))))
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert w == 'EXISTS(SELECT 1 FROM "posts" WHERE "posts"."author_id" = "users"."id")'
 
 
@@ -312,7 +350,9 @@ def test_subquery_over_the_same_table_gets_an_alias():
     from orm import outer
 
     avg = Post.objects.filter(Post.author_id == outer(Post.author_id)).select(func.avg(Post.views)).as_scalar()
-    w = where(Post.objects.filter(Post.views > avg))
+    query = Post.objects.filter(Post.views > avg)
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert 'FROM "posts" AS "s1" WHERE "s1"."author_id" = "posts"."author_id"' in w
 
 
@@ -329,7 +369,9 @@ def test_window_function_sql():
 
 def test_cte_sql():
     totals = Post.objects.select(Post.author_id, func.count().label("n")).group_by(Post.author_id).cte("totals")
-    sql = User.objects.filter(User.id.in_(totals.select(totals.c.author_id).filter(totals.c.n > 2))).sql()
+    query = User.objects.filter(User.id.in_(totals.select(totals.c.author_id).filter(totals.c.n > 2)))
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(0, 2)
+    sql = query.sql()
     assert sql.startswith(
         'WITH "totals" ("author_id", "n") AS (SELECT "posts"."author_id" AS "author_id", COUNT(*) AS "n" '
         'FROM "posts" GROUP BY "posts"."author_id") SELECT'
@@ -339,7 +381,9 @@ def test_cte_sql():
 
 def test_recursive_cte_joins_itself():
     chain = User.objects.filter(User.id == 1).cte("chain", recursive=lambda c: User.objects.filter(User.id == c.c.id + 1))
-    sql = User.objects.from_(chain).sql()
+    query = User.objects.from_(chain)
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(0, 1)
+    sql = query.sql()
     assert sql.startswith('WITH RECURSIVE "chain"')
     assert 'FROM "users", "chain" WHERE "users"."id" = "chain"."id" + 1' in sql
     assert sql.endswith('FROM "chain"')
@@ -348,7 +392,10 @@ def test_recursive_cte_joins_itself():
 def test_many_to_many_filter_is_one_exists_through_the_join_table():
     from blog.models import Tag
 
-    w = where(Post.objects.filter(Post.tags.name == "x"))
+    query = Post.objects.filter(Post.tags.name == "x")
+    assert query.inspect().statements[0].joins_count == 1
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    w = where(query)
     assert w == (
         'EXISTS(SELECT 1 FROM "tags" AS "t1" INNER JOIN "post_tags" AS "t2" ON "t2"."tag_id" = "t1"."id" '
         "WHERE \"t2\".\"post_id\" = \"posts\".\"id\" AND \"t1\".\"name\" = 'x')"
@@ -360,7 +407,11 @@ def test_many_to_many_filter_is_one_exists_through_the_join_table():
 
 
 def test_has_one_joins_on_the_other_side():
-    sql = User.objects.load(User.profile).sql()
+    query = User.objects.load(User.profile)
+    assert query.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 1, orm.SubqueryInspection(0, 0)),
+    ))
+    sql = query.sql()
     assert 'LEFT JOIN "profiles" AS "j1" ON "j1"."user_id" = "users"."id"' in sql
 
 

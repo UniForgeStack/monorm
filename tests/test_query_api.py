@@ -174,7 +174,14 @@ async def test_prefetch_onto_loaded_instances(clean):
     alice, bob, posts = await seed()
     await Comment.objects.insert_many([{"post": posts[1], "body": "a"}, {"post": posts[1], "body": "b"}])
     users = await User.objects.order_by(User.id)
-    await orm.prefetch(users, User.posts.comments, User.posts.objects.filter(Post.published)[:1].label("top"))
+    top = User.posts.objects.filter(Post.published)[:1].label("top")
+    result = User.objects.load(User.posts.comments, top).inspect()
+    assert result.statement_count == 4  # root plus three prefetch templates
+    assert result.has_batching
+    assert [s.has_batching for s in result.statements] == [False, True, True, True]
+    assert all(s.joins_count == 0 for s in result.statements)
+    assert sum(s.subqueries.uncorrelated_count for s in result.statements) == 1
+    await orm.prefetch(users, User.posts.comments, top)
     assert [p.title for p in users[0].posts.cached] == ["draft", "hit", "quiet"]
     assert [c.body for c in users[0].posts.cached[1].comments.cached] == ["a", "b"]
     assert users[0].posts.cached[0].author is users[0]
@@ -186,6 +193,11 @@ async def test_prefetch_to_one_and_many_to_many(clean):
     tags = await Tag.objects.insert_many([{"name": "a"}, {"name": "b"}]).returning()
     await posts[0].tags.add(*tags)
     loaded = await Post.objects.order_by(Post.id)
+    # The equivalent load describes the batched many-to-many statement too.
+    assert Post.objects.load(Post.author, Post.tags).inspect() == orm.QueryInspection(2, True, (
+        orm.StatementInspection(False, 1, orm.SubqueryInspection(0, 0)),
+        orm.StatementInspection(True, 1, orm.SubqueryInspection(0, 0)),
+    ))
     await orm.prefetch(loaded, Post.author, Post.tags)
     assert [p.author.name for p in loaded] == ["Alice", "Alice", "Alice", "Bob"]
     assert [t.name for t in loaded[0].tags.cached] == ["a", "b"] and loaded[1].tags.cached == []
@@ -271,6 +283,9 @@ async def test_a_factory_needs_only_describe_and_insert(clean):
 async def test_only_through_a_to_one_path(clean):
     await seed()
     qs = Comment.objects.load(Comment.body, Comment.post.title)
+    assert qs.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 1, orm.SubqueryInspection(0, 0)),
+    ))
     sql = qs.sql()
     assert '"title"' in sql and '"views"' not in sql and '"published"' not in sql
     comment = await Comment.objects.insert(post=(await Post.objects.get(Post.title == "hit")), body="x")
@@ -286,7 +301,11 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
     # Q2.5.4: only a column of the model itself makes it partial
     _, _, posts = await seed()
     await Comment.objects.insert(post=posts[0], body="x")
-    (c,) = await Comment.objects.load(Comment.post.author.name)
+    query = Comment.objects.load(Comment.post.author.name)
+    assert query.inspect() == orm.QueryInspection(1, False, (
+        orm.StatementInspection(False, 2, orm.SubqueryInspection(0, 0)),
+    ))
+    (c,) = await query
     assert c.post.author.name == "Alice" and c.body == "x" and c.post.title == posts[0].title
     with pytest.raises(orm.NotLoaded):
         c.post.author.email
@@ -298,9 +317,16 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
     assert c.post.author.email == "alice@example.com"
 
 
-async def test_load_a_column_through_a_to_many_path(clean):
+async def test_load_a_column_through_a_to_many_path(clean, observe_queries):
     await seed()
-    users = await User.objects.load(User.posts.title).order_by(User.id)
+    query = User.objects.load(User.posts.title).order_by(User.id)
+    assert query.inspect() == orm.QueryInspection(2, True, (
+        orm.StatementInspection(False, 0, orm.SubqueryInspection(0, 0)),
+        orm.StatementInspection(True, 0, orm.SubqueryInspection(0, 0)),
+    ))
+    with observe_queries(clean) as events:
+        users = await query
+    assert len(events) == 2
     assert sorted(p.title for p in users[0].posts.cached) == ["draft", "hit", "quiet"]
     with pytest.raises(orm.NotLoaded):
         users[0].posts.cached[0].views
@@ -324,12 +350,19 @@ async def test_or_of_query_sets(clean):
         popular[:1] | drafts
 
 
-async def test_prefetch_one_stores_a_row_or_none(clean):
+async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
     await seed()
     await User.objects.insert(email="carol@example.com", name="Carol")
-    users = await User.objects.order_by(User.id).load(
+    query = User.objects.order_by(User.id).load(
         User.posts.objects.order_by(-Post.views).label("best", one=True)
     )
+    assert query.inspect() == orm.QueryInspection(2, True, (
+        orm.StatementInspection(False, 0, orm.SubqueryInspection(0, 0)),
+        orm.StatementInspection(True, 0, orm.SubqueryInspection(0, 1)),
+    ))
+    with observe_queries(clean) as events:
+        users = await query
+    assert len(events) == 2
     assert [u.best.title if u.best else None for u in users] == ["hit", "bob", None]
     with pytest.raises(ValueError, match="slice"):
         User.objects.load(User.posts.objects[:2].label("x", one=True))
