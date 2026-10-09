@@ -68,8 +68,10 @@ async def test_array_agg_is_postgres_only(sqlite):
     with pytest.raises(orm.QueryError, match="sqlite does not support array_agg"):
         await Author.objects.using(db).select(orm.func.array_agg(Author.name)).scalar()
     # Relation aggregates keep the scalar subqueries: no LATERAL join.
-    sql = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).sql()
-    assert "LATERAL" not in sql
+    result = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).inspect()
+    assert result.statement_count == 1
+    assert result.statements[0].joins_count == 0
+    assert result.statements[0].subqueries == orm.SubqueryInspection(2, 0)
 
 
 async def test_bulk_writes(sqlite):

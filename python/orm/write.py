@@ -22,9 +22,11 @@ upserts, updates and deletes return a row count, and use ``RETURNING`` only when
 from __future__ import annotations
 
 import warnings
+import json
 from collections.abc import Generator, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, overload
 
+from .inspection import QueryInspection, _inspect, _native as _inspection_native
 from . import _native
 from .expr import ColumnRef, ConditionLike, Expression, IRContext, Ordering, as_condition
 from .errors import QueryError
@@ -249,6 +251,21 @@ class _Insert:
                 raise TypeError(f"on_conflict() updates {', '.join(sorted(overlap))} in both update_fields and update_values")
         return cls(self._qs, self._fields, self._rows, self._provided, target, fields or [], set_, self._batch_size, where_ir)
 
+    def inspect(self) -> QueryInspection:
+        """Inspect planned INSERT batches without executing them."""
+        self._used = True
+        return self._inspect_returning(isinstance(self, InsertOne))
+
+    def _inspect_returning(self, returning: bool) -> QueryInspection:
+        if not self._rows:
+            return QueryInspection(0, False, ())
+        options = {"conflict": self._conflict, "update": self._update,
+                   "set": self._set[0] if self._set else [], "filter": self._where}
+        return QueryInspection._from_json(_inspection_native(self._qs).inspect_insert(
+            self._qs.model._meta.name, self._fields, self._rows, json.dumps(options),
+            self._set[1] if self._set else [], self._batch_size, returning,
+        ))
+
     async def _execute(self, returning: bool) -> Any:
         from .db import resolve
 
@@ -390,6 +407,10 @@ class InsertReturning(Generic[R_co]):
         self._one = one
         self._used = False
 
+    def inspect(self) -> QueryInspection:
+        self._used = True
+        return self._insert._inspect_returning(True)
+
     async def _rows(self) -> Any:
         objs: list[Any] = await self._insert._execute(True)
         if self._one:
@@ -472,6 +493,11 @@ class _SetStatement(Generic[M]):
         self._used = True
         return Returning(self._qs, None if self._ir is None else {**self._ir, "returning": True}, self._params)
 
+    def inspect(self) -> QueryInspection:
+        """Inspect this mutation without executing it."""
+        self._used = True
+        return _inspect(self._qs, self._ir, self._params)
+
     async def _count(self) -> int:
         if self._ir is None:
             return 0
@@ -529,6 +555,11 @@ class Returning(Generic[M]):
         self._params = params
         self._used = False
 
+    def inspect(self) -> QueryInspection:
+        """Inspect this mutation without executing it."""
+        self._used = True
+        return _inspect(self._qs, self._ir, self._params)
+
     async def _rows(self) -> list[M]:
         if self._ir is None:
             return []
@@ -562,6 +593,25 @@ class UpdateMany(Generic[M]):
         self._fields, self._rows = prepare_update_rows(qs.model, rows)
         self._batch_size = batch_size
         self._used = False
+
+    def inspect(self) -> QueryInspection:
+        self._used = True
+        return self._inspect_returning(False)
+
+    def _inspect_returning(self, returning: bool) -> QueryInspection:
+        from .db import _with_scope
+
+        if not self._rows:
+            return QueryInspection(0, False, ())
+        params: list[Any] = []
+        ir = self._qs._mutation_ir("update", params)
+        if "with" in ir:
+            raise QueryError("update_many() filters can't read CTEs")
+        filters, params = _with_scope(json.dumps(ir["filters"]), params, key="filters")
+        return QueryInspection._from_json(_inspection_native(self._qs).inspect_update_many(
+            self._qs.model._meta.name, self._fields, self._rows, filters, params,
+            self._batch_size, returning, self._qs._without_defaults,
+        ))
 
     async def _run(self, returning: bool) -> Any:
         from .db import resolve
@@ -604,6 +654,9 @@ class _UpdateManyReturning(Generic[M]):
 
     def __init__(self, stmt: UpdateMany[M]) -> None:
         self._stmt = stmt
+
+    def inspect(self) -> QueryInspection:
+        return self._stmt._inspect_returning(True)
 
     async def _rows(self) -> list[M]:
         rows: list[M] = await self._stmt._run(True)

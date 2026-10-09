@@ -26,19 +26,21 @@ def test_to_many_filter_is_exists():
 
 
 def test_same_filter_call_means_same_related_row():
-    w = where(User.objects.filter(User.posts.views > 10, User.posts.published == True))  # noqa: E712
-    assert w.count("EXISTS") == 1
+    query = User.objects.filter(User.posts.views > 10, User.posts.published == True)  # noqa: E712
+    assert query.inspect().statements[0].subqueries.correlated_count == 1
+    w = where(query)
     assert '"t1"."views" > 10 AND "t1"."published" = TRUE' in w
 
 
 def test_separate_filter_calls_are_independent():
-    w = where(User.objects.filter(User.posts.views > 10).filter(User.posts.published == True))  # noqa: E712
-    assert w.count("EXISTS") == 2
+    result = User.objects.filter(User.posts.views > 10).filter(User.posts.published == True).inspect()  # noqa: E712
+    assert result.statements[0].subqueries.correlated_count == 2
 
 
 def test_or_inside_one_relation_shares_subquery():
-    w = where(User.objects.filter((User.posts.views > 10) | (User.posts.title == "x")))
-    assert w.count("EXISTS") == 1 and " OR " in w
+    query = User.objects.filter((User.posts.views > 10) | (User.posts.title == "x"))
+    assert query.inspect().statements[0].subqueries.correlated_count == 1
+    assert " OR " in where(query)
 
 
 def test_or_with_local_column_keeps_rows_without_related():
@@ -52,13 +54,15 @@ def test_exclude_is_not_exists():
 
 
 def test_negation_stays_outside_subquery():
-    w = where(User.objects.filter(and_(User.posts.views > 10, ~(User.posts.published == True))))  # noqa: E712
-    assert w.count("EXISTS") == 2 and "NOT EXISTS" in w
+    query = User.objects.filter(and_(User.posts.views > 10, ~(User.posts.published == True)))  # noqa: E712
+    assert query.inspect().statements[0].subqueries.correlated_count == 2
+    assert "NOT EXISTS" in where(query)
 
 
 def test_nested_relation_nests_subqueries():
-    w = where(User.objects.filter(User.posts.comments.body.contains("50%")))
-    assert w.count("EXISTS") == 2
+    query = User.objects.filter(User.posts.comments.body.contains("50%"))
+    assert query.inspect().statements[0].subqueries.correlated_count == 2
+    w = where(query)
     assert '"t2"."post_id" = "t1"."id"' in w
     assert "LIKE E'%50\\\\%%'" in w  # escaped % (debug rendering inlines values)
 
@@ -212,8 +216,9 @@ def test_aggregate_over_relation_is_a_correlated_subquery():
         'SELECT "users"."id", (SELECT COUNT(*) FROM "posts" AS "a1" WHERE "a1"."author_id" = "users"."id") FROM "users"'
     )
     # Aggregates over different relations stay separate subqueries.
-    two = User.objects.select(User.id, func.count(User.posts), func.count(User.comments).label("c")).sql()
-    assert two.count("LATERAL") == 0 and two.count("(SELECT COUNT(*)") == 2
+    two = User.objects.select(User.id, func.count(User.posts), func.count(User.comments).label("c")).inspect()
+    assert two.statements[0].joins_count == 0
+    assert two.statements[0].subqueries.correlated_count == 2
     # Two hops join inside the subquery; in WHERE it filters per row, no EXISTS / JOIN outside.
     w = where(User.objects.filter(func.count(User.posts.comments) > 3))
     assert w == (
@@ -230,17 +235,24 @@ def test_same_relation_aggregates_share_one_lateral_join():
         'AS "l1" ON TRUE'
     )
     # Per-aggregate options stay inside their FILTER / DISTINCT; the other relation is its own subquery.
-    sql = User.objects.select(
+    query = User.objects.select(
         func.count(User.posts, filter=User.posts.views > 10).label("popular"),
         func.sum(User.posts.views, distinct=True),
         func.count(User.comments).label("comments"),
-    ).sql()
-    assert sql.count("LATERAL") == 1
+    )
+    result = query.inspect()
+    assert result.statements[0].joins_count == 1
+    assert result.statements[0].subqueries.correlated_count == 2
+    sql = query.sql()
     assert 'COUNT(*) FILTER (WHERE "a2"."views" > 10) AS "c1"' in sql and 'SUM(DISTINCT "a2"."views")' in sql
     assert '(SELECT COUNT(*) FROM "comments"' in sql
     # Grouped, locked and filter-only uses keep the correlated subqueries.
-    assert "LATERAL" not in User.objects.filter(func.count(User.posts) > 1, func.sum(User.posts.views) > 1).select(User.id).sql()
-    assert "LATERAL" not in User.objects.select(User.id, func.count(User.posts), func.sum(User.posts.views), func.count().label("all")).group_by(User.id).sql()
+    filtered = User.objects.filter(func.count(User.posts) > 1, func.sum(User.posts.views) > 1).select(User.id).inspect()
+    assert filtered.statements[0].joins_count == 0
+    assert filtered.statements[0].subqueries.correlated_count == 2
+    grouped = User.objects.select(User.id, func.count(User.posts), func.sum(User.posts.views), func.count().label("all")).group_by(User.id).inspect()
+    assert grouped.statements[0].joins_count == 0
+    assert grouped.statements[0].subqueries.correlated_count == 2
 
 
 def test_select_to_one_columns_join_and_to_many_is_rejected():
@@ -344,7 +356,7 @@ def test_many_to_many_filter_is_one_exists_through_the_join_table():
     sql = Post.objects.select(func.count(Post.tags)).sql()
     assert '(SELECT COUNT(*) FROM "tags" AS "a1" INNER JOIN "post_tags" AS "a2" ON "a2"."tag_id" = "a1"."id" ' \
            'WHERE "a2"."post_id" = "posts"."id")' in sql
-    assert Tag.objects.filter(Tag.posts.author.name == "A").sql().count("EXISTS") == 2
+    assert Tag.objects.filter(Tag.posts.author.name == "A").inspect().statements[0].subqueries.correlated_count == 2
 
 
 def test_has_one_joins_on_the_other_side():

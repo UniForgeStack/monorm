@@ -16,7 +16,10 @@ from conftest import DATABASE_URL
 
 async def test_insert_many_splits_by_the_parameter_limit(clean):
     # One field per row: 70 000 rows are 70 000 parameters, more than Postgres's 65 535.
-    tags = await Tag.objects.insert_many([{"name": f"t{i}"} for i in range(70_000)]).returning()
+    statement = Tag.objects.insert_many([{"name": f"t{i}"} for i in range(70_000)]).returning()
+    assert statement.inspect().statement_count == 2
+    assert statement.inspect().has_batching
+    tags = await statement
     assert len(tags) == 70_000
     assert [t.name for t in tags[:2]] == ["t0", "t1"]
     assert tags[-1].name == "t69999"
@@ -48,7 +51,10 @@ async def test_insert_many_batches_by_max_params(clean):
         # Two parameters per row: two rows per statement, so the duplicate email
         # appears once in each statement.
         rows = [rows[0], {"email": "b@x.io", "name": "B"}, rows[1], {"email": "c@x.io", "name": "C"}]
-        users = await User.objects.using(db).insert_many(rows).on_conflict(User.email, update=True).returning()
+        statement = User.objects.using(db).insert_many(rows).on_conflict(User.email, update=True).returning()
+        assert statement.inspect().statement_count == 2
+        assert statement.inspect().has_batching
+        users = await statement
         assert [u.name for u in users] == ["U0", "B", "U1", "C"]
     finally:
         await db.close()

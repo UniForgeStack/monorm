@@ -45,7 +45,13 @@ async def test_composed_create_attach_update_delete(provider):
     await db.drop_tables()
     await db.create_tables()
     try:
-        alice = await Manager.objects.using(db).insert(name="Alice", salary=20, level=1)
+        insert = Manager.objects.using(db).insert(name="Alice", salary=20, level=1)
+        result = insert.inspect()
+        assert result.statement_count == 4  # three owners and the logical identity read
+        assert not result.has_batching
+        assert result.statements[-1].joins_count == 1
+        assert result.statements[-1].subqueries == orm.SubqueryInspection(2, 0)
+        alice = await insert
         assert (alice.name, alice.salary, alice.level) == ("Alice", 20, 1)
         counts = [await m.objects.using(db).count() for m in (Person, Employee, Manager)]
         assert counts == [1, 1, 1]
@@ -67,7 +73,11 @@ async def test_composed_create_attach_update_delete(provider):
         assert await Person.objects.using(db).count() == 1
 
         # An inherited-field filter selects the composed rows to update.
-        assert await Manager.objects.using(db).filter(Manager.salary == 20).update(level=4) == 1
+        update = Manager.objects.using(db).filter(Manager.salary == 20).update(level=4)
+        result = update.inspect()
+        assert result.statement_count == 2  # capture identities, then repeat the owner update
+        assert result.has_batching
+        assert await update == 1
         assert await Manager.objects.using(db).filter(Manager.salary == 99).update(level=5) == 0
         assert (await Manager.objects.using(db).get(Manager.id == alice.id)).level == 4
         assert (await Employee.objects.using(db).filter(Employee.name == "Alice").get()).salary == 20
@@ -76,7 +86,10 @@ async def test_composed_create_attach_update_delete(provider):
         assert (person.employee.salary, person.customer.points) == (20, 5)
 
         # Deleting a child keeps its parent and the sibling child.
-        await Manager.objects.using(db).filter(Manager.id == alice.id).delete()
+        delete = Manager.objects.using(db).filter(Manager.id == alice.id).delete()
+        assert delete.inspect().statement_count == 2
+        assert delete.inspect().has_batching
+        await delete
         counts = [await m.objects.using(db).count() for m in (Person, Employee, Manager, Customer)]
         assert counts == [1, 1, 0, 1]
     finally:

@@ -40,6 +40,38 @@ use orm_engine::migrate as engine_migrate;
 use orm_engine::{parse_op, protect};
 use orm_core::ir::Operation;
 
+fn inspect_operation(schema: &schema::Schema, target: Target, op_json: &str, params: &[Bound<'_, PyAny>]) -> PyResult<String> {
+    let op = parse_op(op_json).map_err(engine_err)?;
+    let plan = Planner::plan(schema, target, &op, &PyParams(params)).map_err(engine_err)?;
+    inspection_json(orm_engine::inspect::Inspection::plans(&[plan], false))
+}
+fn inspection_json(result: orm_engine::inspect::Inspection) -> PyResult<String> {
+    serde_json::to_string(&result).map_err(|e| query_err(e.to_string()))
+}
+#[allow(clippy::too_many_arguments)]
+fn inspect_insert(schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: &Bound<'_, PyList>,
+    options: &str, params: &[Bound<'_, PyAny>], batch_size: Option<usize>, returning: bool) -> PyResult<String> {
+    let opts: orm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(|e| query_err(e.to_string()))?;
+    let conflict = opts.conflict.map(|target| match opts.update {
+        Some(update) => Conflict::Update { target, filter: opts.filter, update, set: opts.set },
+        None => Conflict::Nothing { target, filter: opts.filter },
+    });
+    let values = convert_rows(schema, model, fields, rows, true)?;
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &PyParams(params), batch_size, returning).map_err(engine_err)?;
+    let batching = plans.len() > 1;
+    inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
+}
+#[allow(clippy::too_many_arguments)]
+fn inspect_updates(schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: &Bound<'_, PyList>,
+    filters_json: &str, params: &[Bound<'_, PyAny>], batch_size: Option<usize>, returning: bool, without_defaults: bool) -> PyResult<String> {
+    let (stmts, _) = update_many_plan(schema, target, model, fields, rows, filters_json, params, returning, batch_size, without_defaults)?;
+    let batching = stmts.len() > 1;
+    inspection_json(orm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
+        use sea_query::QueryStatementBuilder;
+        orm_engine::inspect::statement(&s.into_sub_query_statement(), batching)
+    }).collect()))
+}
+
 /// Marker for "use the column's server default" in insert rows.
 #[pyclass(frozen, module = "orm._native", name = "_Default")]
 struct DefaultMarker;
@@ -147,6 +179,25 @@ impl PySchema {
             protect::ensure_writable(&self.inner, model, &allowed).map_err(engine_err)?;
         }
         plan::unique_row_update(&self.inner, Target::new(self.inner.dialect), &op, &PyParams(&params)).map_err(engine_err)
+    }
+
+    /// Planner inspection without executing or observing any statements.
+    fn inspect(&self, op_json: &str, params: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+        inspect_operation(&self.inner, Target::new(self.inner.dialect), op_json, &params)
+    }
+
+    #[pyo3(signature = (model, fields, rows, options, params, batch_size = None, returning = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn inspect_insert(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, options: &str,
+        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool) -> PyResult<String> {
+        inspect_insert(&self.inner, Target::new(self.inner.dialect), model, &fields, rows, options, &params, batch_size, returning)
+    }
+
+    #[pyo3(signature = (model, fields, rows, filters_json, params, batch_size = None, returning = false, without_defaults = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn inspect_update_many(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, filters_json: &str,
+        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool, without_defaults: bool) -> PyResult<String> {
+        inspect_updates(&self.inner, Target::new(self.inner.dialect), model, &fields, rows, filters_json, &params, batch_size, returning, without_defaults)
     }
 
     /// SQL for an operation with parameters inlined. For debugging and tests only.
@@ -328,6 +379,26 @@ impl Engine {
 
 #[pymethods]
 impl Engine {
+    /// Planner inspection without executing or observing any statements.
+    fn inspect(&self, op_json: &str, params: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+        inspect_operation(&self.schema, self.target, op_json, &params)
+    }
+
+    #[pyo3(signature = (model, fields, rows, options, params, batch_size = None, returning = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn inspect_insert(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, options: &str,
+        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool) -> PyResult<String> {
+        inspect_insert(&self.schema, self.target, model, &fields, rows, options, &params, batch_size, returning)
+    }
+
+    #[pyo3(signature = (model, fields, rows, filters_json, params, batch_size = None, returning = false, without_defaults = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn inspect_update_many(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, filters_json: &str,
+        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool, without_defaults: bool) -> PyResult<String> {
+        inspect_updates(&self.schema, self.target, model, &fields, rows, filters_json, &params, batch_size, returning, without_defaults)
+    }
+
+
     /// Runs one query IR document. Returns, by operation: select -> a list of model
     /// instances (prefetched relations attached), or of `row_cls(values)` rows for
     /// `select(...)` columns; count -> int; exists -> bool; update / delete -> rows

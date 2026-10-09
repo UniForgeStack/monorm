@@ -27,6 +27,7 @@ from collections.abc import AsyncIterator, Generator
 from operator import itemgetter
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, TypeVarTuple, Unpack, cast
 
+from .inspection import QueryInspection, _inspect
 from ._cache import cached
 from .errors import DoesNotExist, MultipleObjectsReturned, QueryError
 from .expr import ColumnRef, ConditionLike, Expression, Func, IRContext, Labeled, Ordering, ScalarSubquery, _Ctes, and_
@@ -257,6 +258,11 @@ class Select(Generic[Unpack[Ts]]):
         from .cte import Cte
 
         return Cte(name, self, recursive=recursive, distinct=distinct, materialized=materialized)
+
+    def inspect(self) -> QueryInspection:
+        """Inspect the generated SELECT structure without executing it."""
+        params: list[Any] = []
+        return _inspect(self._qs, self._ir(params), params)
 
     def sql(self) -> str:
         """The SELECT this runs, with parameters inlined (for debugging)."""

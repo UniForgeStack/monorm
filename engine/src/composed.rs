@@ -32,6 +32,40 @@ pub struct Insert {
     types: Vec<ValueType>,
 }
 
+impl Insert {
+    /// Fixed input rows determine the owner insert templates; identity reads
+    /// contain the generated joins of the logical model.
+    pub(crate) fn inspection(&self) -> Vec<crate::inspect::Statement> {
+        use sea_query::QueryStatementBuilder;
+        let batching = self.rows.len() > 1;
+        let mut statements = vec![];
+        for row in &self.rows {
+            for (index, step) in row.iter().enumerate() {
+                let mut insert = Query::insert();
+                insert.into_table(Alias::new(&step.table));
+                let mut fields = vec![];
+                let mut values = vec![];
+                for (field, value) in step.fields.iter().zip(&step.values) {
+                    if let Some(value) = value {
+                        fields.push(Alias::new(&field.column));
+                        values.push(plan::bind(value.clone(), Some(field)));
+                    }
+                }
+                if index > 0 {
+                    fields.push(Alias::new(&step.key.column));
+                    values.push(Expr::val(0)); // identity supplied by the preceding owner
+                }
+                if fields.is_empty() { insert.or_default_values(); }
+                else { insert.columns(fields).values_panic(values); }
+                insert.returning(Query::returning().expr(plan::returning_col(&step.key)));
+                statements.push(crate::inspect::statement(&insert.into_sub_query_statement(), batching));
+            }
+            statements.push(crate::inspect::statement(&self.read.clone().into_sub_query_statement(), batching));
+        }
+        statements
+    }
+}
+
 pub fn is_composed(schema: &Schema, model: &str) -> Result<bool> {
     let m = schema.model(schema.model_idx(model).map_err(query_err)?);
     Ok(schema.owner_links.iter().any(|l| l.child == m.owner))
@@ -227,6 +261,37 @@ pub struct Mutation {
     assignments: Vec<Assignment>,
     returning: bool,
     delete: bool,
+}
+
+impl Mutation {
+    /// Owner writes and optional identity reads repeat for captured parent rows,
+    /// whose number is known only after executing `matched`.
+    pub(crate) fn inspection(&self) -> Vec<crate::inspect::Statement> {
+        use sea_query::QueryStatementBuilder;
+        let mut statements = vec![crate::inspect::statement(&self.matched.clone().into_sub_query_statement(), false)];
+        if self.delete {
+            let mut delete = Query::delete();
+            delete.from_table(Alias::new(&self.table)).and_where(Expr::col(Alias::new(&self.key.column)).eq(0));
+            statements.push(crate::inspect::statement(&delete.into_sub_query_statement(), true));
+        } else {
+            let mut writes = std::collections::BTreeMap::new();
+            for assignment in &self.assignments {
+                let update = writes.entry(&assignment.table).or_insert_with(|| {
+                    let mut update = Query::update();
+                    update.table(Alias::new(&assignment.table)).and_where(Expr::col(Alias::new(&assignment.key.column)).eq(0));
+                    update
+                });
+                update.value(Alias::new(&assignment.field.column), plan::bind(Value::Int(Some(0)), Some(&assignment.field)));
+            }
+            for update in writes.into_values() {
+                statements.push(crate::inspect::statement(&update.into_sub_query_statement(), true));
+            }
+            if self.returning {
+                statements.push(crate::inspect::statement(&self.read.clone().into_sub_query_statement(), true));
+            }
+        }
+        statements
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

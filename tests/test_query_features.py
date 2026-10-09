@@ -71,13 +71,17 @@ async def test_in_bulk_chunks(clean, monkeypatch):
 async def test_exists_expression(clean):
     (alice, bob, carol), _ = await seed()
     popular = exists(Post.objects.filter(Post.author_id == outer(User.id), Post.views >= 50))
-    assert {u.name for u in await User.objects.filter(popular)} == {"Alice", "Bob"}
+    query = User.objects.filter(popular)
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    assert {u.name for u in await query} == {"Alice", "Bob"}
     assert {u.name for u in await User.objects.filter(~popular)} == {"Carol"}
     # In select(): a boolean per row.
     rows = await User.objects.select(User.name, popular.label("popular")).order_by(User.name)
     assert [tuple(r) for r in rows] == [("Alice", True), ("Bob", True), ("Carol", False)]
     # Uncorrelated.
-    assert len(await User.objects.filter(exists(Post.objects.filter(Post.views > 1000)))) == 0
+    query = User.objects.filter(exists(Post.objects.filter(Post.views > 1000)))
+    assert query.inspect().statements[0].subqueries == orm.SubqueryInspection(0, 1)
+    assert len(await query) == 0
     # A select() with group_by / having.
     many = exists(
         Post.objects.filter(Post.author_id == outer(User.id)).select(Post.author_id).group_by(Post.author_id).having(func.count() > 2)

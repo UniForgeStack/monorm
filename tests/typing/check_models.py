@@ -224,3 +224,19 @@ async def errors() -> None:
     await Profile.objects.insert(user_id=1, role="boss")  # E: roles are Role members
     Post.views.has(1)  # E: not an array
     await Profile.objects.insert(user_id=1, balance=1.5)  # E: a Decimal
+
+
+def inspection_types() -> None:
+    from orm import QueryInspection, StatementInspection, SubqueryInspection
+
+    result = User.objects.all().inspect()
+    assert_type(result, QueryInspection)
+    assert_type(result.statement_count, int)
+    assert_type(result.has_batching, bool)
+    assert_type(result.statements[0], StatementInspection)
+    assert_type(result.statements[0].subqueries, SubqueryInspection)
+    assert_type(result.statements[0].subqueries.correlated_count, int)
+    assert_type(User.objects.select(User.id).inspect(), QueryInspection)
+    assert_type(User.objects.update(name="A").inspect(), QueryInspection)
+    assert_type(User.objects.insert_many([]).inspect(), QueryInspection)
+    assert_type(User.objects.update_many([]).returning().inspect(), QueryInspection)

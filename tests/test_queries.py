@@ -247,9 +247,12 @@ async def test_nested_and_reverse_paths(clean):
 
 async def test_load_to_one(clean):
     await seed()
-    comments = await Comment.objects.load(
-        Comment.post.author, Comment.author
-    ).order_by(Comment.id)
+    query = Comment.objects.load(Comment.post.author, Comment.author).order_by(Comment.id)
+    result = query.inspect()
+    assert result.statement_count == 1
+    assert not result.has_batching
+    assert result.statements[0].joins_count == 3
+    comments = await query
     first, anon, _ = comments
     assert first.post.title == "new post"
     assert first.post.author.name == "Alice"
@@ -268,7 +271,12 @@ async def test_unloaded_to_one_raises(clean):
 
 async def test_load_to_many(clean):
     await seed()
-    users = await User.objects.load(User.posts).order_by(User.name)
+    query = User.objects.load(User.posts).order_by(User.name)
+    result = query.inspect()
+    assert result.statement_count == 2
+    assert result.has_batching
+    assert all(s.joins_count == 0 for s in result.statements)
+    users = await query
     assert [len(u.posts.cached) for u in users] == [2, 1, 0]
     alice = users[0]
     assert [p.title for p in await alice.posts] == ["old draft", "new post"]
@@ -413,7 +421,10 @@ async def test_update_many(clean):
         {"id": a2.id, "title": "A2", "views": 2},
         {"id": b1.id, "title": "B1", "views": 3},
     ]
-    assert await Post.objects.update_many(rows) == 3
+    statement = Post.objects.update_many(rows)
+    assert statement.inspect().statement_count == 1
+    assert not statement.inspect().has_batching
+    assert await statement == 3
     assert {(p.title, p.views) for p in await Post.objects} == {
         ("A1", 1),
         ("A2", 2),
@@ -453,7 +464,10 @@ async def test_update_many_batches_are_one_transaction(clean):
     with pytest.raises(orm.IntegrityError):  # views >= 0 fails in the third batch
         await Post.objects.update_many(rows, batch_size=1)
     assert sorted(p.views for p in await Post.objects) == [5, 50, 100]  # nothing kept
-    assert len(await Post.objects.update_many(rows[:2], batch_size=1).returning()) == 2
+    statement = Post.objects.update_many(rows[:2], batch_size=1).returning()
+    assert statement.inspect().statement_count == 2
+    assert statement.inspect().has_batching
+    assert len(await statement) == 2
 
 
 async def test_fallback_sql_runs_on_postgres(clean):
@@ -588,14 +602,25 @@ async def test_select_model_with_relation_aggregates(clean):
     ).order_by(User.id)
     assert rows == [("Alice", 2, 1), ("Bob", 1, 1), ("Carol", 0, 0)]
     # Per-aggregate filter and distinct inside one shared subquery, next to another relation.
-    rows = await User.objects.select(
+    query = User.objects.select(
         User.name,
         func.count(User.posts, filter=User.posts.views > 10).label("popular"),
         func.sum(User.posts.views, filter=User.posts.views > 10),
         func.count(User.posts.views, distinct=True),
         func.count(User.comments).label("comments"),
     ).order_by(User.id)
-    assert rows == [("Alice", 1, 50, 2, 1), ("Bob", 1, 100, 1, 1), ("Carol", 0, None, 0, 0)]
+    result = query.inspect()
+    assert result.statement_count == 1
+    assert not result.has_batching
+    assert result.statements[0].joins_count == 1
+    assert result.statements[0].subqueries == orm.SubqueryInspection(2, 0)
+    rows = await query
+    assert rows == [
+        ("Alice", 1, 50, 2, 1),
+        ("Bob", 1, 100, 1, 1),
+        ("Carol", 0, None, 0, 0),
+    ]
+
     # Comments on a user's posts: two hops in one subquery.
     assert (
         await User.objects.filter(User.id == alice.id)
@@ -787,8 +812,11 @@ async def test_refresh_lock(clean):
 async def test_relation_equals_instance(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     qs = Post.objects.filter(Post.author == alice).order_by(Post.id)
-    assert qs.sql() == Post.objects.filter(Post.author_id == alice.id).order_by(Post.id).sql()
-    assert " JOIN " not in qs.sql()
+    assert (
+        qs.sql()
+        == Post.objects.filter(Post.author_id == alice.id).order_by(Post.id).sql()
+    )
+    assert qs.inspect().statements[0].joins_count == 0
     assert [p.id for p in await qs] == [a1.id, a2.id]
     assert [p.id for p in await Post.objects.filter(Post.author != alice)] == [b1.id]
     assert await Post.objects.filter(Post.author == carol).count() == 0
@@ -796,8 +824,12 @@ async def test_relation_equals_instance(clean):
     assert "IS NOT NULL" in Post.objects.filter(Post.author != None).sql()  # noqa: E711
     comment = await Comment.objects.insert(post=b1, author=alice, body="hi")
     nested = Comment.objects.filter(Comment.post.author == bob)
-    assert '"users"' not in nested.sql()  # reaches posts, not users
-    expected = await Comment.objects.filter(Comment.post_id == b1.id).order_by(Comment.id)
+    result = nested.inspect()
+    assert result.statements[0].subqueries == orm.SubqueryInspection(1, 0)  # reaches posts, not users
+    assert result.statements[0].joins_count == 0
+    expected = await Comment.objects.filter(Comment.post_id == b1.id).order_by(
+        Comment.id
+    )
     assert comment in expected
     assert await nested.order_by(Comment.id) == expected
     with pytest.raises(TypeError, match="HasMany"):

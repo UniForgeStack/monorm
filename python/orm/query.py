@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncIterator, Generator, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeAlias, TypeVar, Unpack, cast, overload
 
+from .inspection import QueryInspection, _inspect
 from ._cache import cached
 from .errors import QueryError, TransactionRequired
 from .expr import (
@@ -776,6 +777,15 @@ class QuerySet(Generic[M]):
         sql: str = self._native().sql(*_with_scope(json.dumps(ir), params))
         return sql
 
+    def inspect(self) -> QueryInspection:
+        """Inspect planned statement templates without executing this query.
+
+        Includes prefetches once each; use ``Database.on_query()`` for actual
+        execution counts and ``explain()`` for the database's physical strategy.
+        """
+        params: list[Any] = []
+        return _inspect(self, self._select_ir("select", params), params)
+
     async def explain(self, analyze: bool = False) -> str:
         """The database's plan for this query's SELECT (not for its prefetch queries).
 
@@ -1195,6 +1205,16 @@ class Prepared(Generic[M]):
     async def exists(self, **values: Any) -> bool:
         b: bool = await self._start("exists", values)
         return b
+
+    def inspect(self, **values: Any) -> QueryInspection:
+        """Inspect the prepared SELECT for these bound parameter values."""
+        from .db import _with_scope
+        from .inspection import _native as inspection_native
+
+        c = self._statement("select")
+        return QueryInspection._from_json(inspection_native(self._qs).inspect(
+            *_with_scope(c.json, c.bind(values, self._names)),
+        ))
 
     def sql(self, **values: Any) -> str:
         """The SELECT for these values, parameters inlined (for debugging)."""
