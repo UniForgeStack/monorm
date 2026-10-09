@@ -87,6 +87,7 @@ async def test_insert_many_mixed_columns(clean):
     ).returning()
     assert [(p.title, p.views) for p in posts] == [("a", 0), ("c", 7)]
     assert posts[1].created_at == LAST_WEEK and posts[0].created_at > LAST_WEEK
+    # TODO: it shouldn't call db at all
     assert await Post.objects.insert_many([]).returning() == []
 
 
@@ -160,9 +161,9 @@ async def test_instances_are_read_only(clean):
 async def test_result_cache(clean, observe_queries):
     await User.objects.insert(email="a@example.com", name="A")
     qs = User.objects.filter(User.name != "Z")
-    assert qs.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 0, orm.SubqueryInspection(0, 0)),
-    ))
+    assert qs.inspect() == orm.QueryInspection(
+        1, False, (orm.StatementInspection(False, 0, orm.SubqueryInspection(0, 0)),)
+    )
     with observe_queries(clean) as events:
         first = await qs
     assert len(events) == 1
@@ -259,7 +260,9 @@ async def test_nested_and_reverse_paths(clean):
 
 async def test_load_to_one(clean, observe_queries):
     await seed()
-    query = Comment.objects.load(Comment.post.author, Comment.author).order_by(Comment.id)
+    query = Comment.objects.load(Comment.post.author, Comment.author).order_by(
+        Comment.id
+    )
     result = query.inspect()
     assert result.statement_count == 1
     assert not result.has_batching
@@ -716,10 +719,7 @@ async def test_batches(clean, observe_queries):
     assert result.statements[0].joins_count == 0
     assert result.statements[0].subqueries == orm.SubqueryInspection(0, 0)
     with observe_queries(clean) as events:
-        seen = [
-            p.id
-            async for p in query.iterate(batch_size=7)
-        ]
+        seen = [p.id async for p in query.iterate(batch_size=7)]
     assert len(events) == 4
     assert all(" LIMIT $" in event.sql for event in events)
     assert [event.rows for event in events] == [7, 7, 7, 4]
@@ -879,7 +879,9 @@ async def test_relation_equals_instance(clean):
     comment = await Comment.objects.insert(post=b1, author=alice, body="hi")
     nested = Comment.objects.filter(Comment.post.author == bob)
     result = nested.inspect()
-    assert result.statements[0].subqueries == orm.SubqueryInspection(1, 0)  # reaches posts, not users
+    assert result.statements[0].subqueries == orm.SubqueryInspection(
+        1, 0
+    )  # reaches posts, not users
     assert result.statements[0].joins_count == 0
     expected = await Comment.objects.filter(Comment.post_id == b1.id).order_by(
         Comment.id

@@ -33,6 +33,12 @@ pythonpath = ["examples"]
 strict = true
 mypy_path = "python:examples"
 
+[tool.pyright]
+extraPaths = ["python", "examples"]
+
+[tool.ty.environment]
+extra-paths = ["python", "examples"]
+
 # `python -m orm ...` from the repo root works on the blog example.
 [tool.orm]
 schema = "examples/blog/schema.prisma"
