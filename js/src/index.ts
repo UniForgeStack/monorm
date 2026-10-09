@@ -47,7 +47,7 @@ export type { Many, Compat, Operand, OrderOptions } from "./expr.js";
 export { ModelMeta, Registry, column, define, describe, load, loads, registry } from "./model.js";
 export type { FieldInfo, ModelInfo, RelationInfo } from "./model.js";
 export type { Instance, ModelClass, RefreshOptions, Row, SchemaIR, SoftDeletable } from "./model.js";
-export { InsertMany, InsertOne, ManyRelatedSet, Prepared, QuerySet, RelatedSet, UpsertOne, prefetch, useQuerySet } from "./query.js";
+export { InspectedStatement, InsertMany, InsertOne, ManyRelatedSet, Prepared, QuerySet, RelatedSet, UpsertOne, prefetch, useQuerySet } from "./query.js";
 export type { Page, PageOptions } from "./pagination.js";
 export type { AddOptions, BatchOptions, CopyOptions, FieldOrder, LoadAll, LoadItem, LoadOf, LockOptions, OnConflictOptions, PreparedInsert, PreparedUpdate, QueriesOf, QuerySetOf, Simplify, Via } from "./query.js";
 export { Select } from "./select.js";
@@ -74,3 +74,5 @@ export { allowWrites } from "./protection.js";
 export * as debug from "./debug.js";
 export { Migration, MigrationError, Migrations, Migrator, Pulled, pull } from "./migrations.js";
 export type { Drift, Plan, Status, Step, SchemaSource } from "./migrations.js";
+
+export type { QueryInspection, StatementInspection } from "./inspection.js";

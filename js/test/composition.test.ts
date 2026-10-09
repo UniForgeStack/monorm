@@ -1,7 +1,7 @@
 /** Model composition through the public API; needs an artifact with orm-model-composition selected. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, IntegrityError, loads, Registry } from "../src/index.js";
+import { connect, IntegrityError, loads, Registry, type InspectedStatement } from "../src/index.js";
 import { native } from "../src/native.js";
 
 const enabled = (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("model-composition");
@@ -29,14 +29,14 @@ model Customer {
 `;
 type Row = Record<string, unknown>;
 type Objects = {
-  insert(values: Row): Promise<Row>;
+  insert(values: Row): InspectedStatement<Row>;
   attach(parentId: unknown, values: Row): Promise<Row>;
   count(): Promise<number>;
   get(...filters: unknown[]): Promise<Row>;
   filter(...filters: unknown[]): Objects;
   load(...items: unknown[]): Objects;
-  update(values: Row): Promise<number>;
-  delete(): Promise<number>;
+  update(values: Row): InspectedStatement<number>;
+  delete(): InspectedStatement<number>;
 };
 
 for (const provider of ["sqlite", "postgresql"]) {
@@ -52,7 +52,13 @@ for (const provider of ["sqlite", "postgresql"]) {
     await db.dropTables();
     await db.createTables();
     try {
-      const alice = await objects(Manager).insert({ name: "Alice", salary: 20, level: 1 });
+      const insert = objects(Manager).insert({ name: "Alice", salary: 20, level: 1 });
+      assert.equal(insert.inspect().statementCount, 4); // three owners and the logical identity read
+      assert.equal(insert.inspect().hasBatching, false);
+      assert.equal(insert.inspect().statements[3]!.joinsCount, 1);
+      assert.equal(insert.inspect().statements[3]!.correlatedCount, 2);
+      assert.equal(insert.inspect().statements[3]!.uncorrelatedCount, 0);
+      const alice = await insert;
       assert.deepEqual([alice["name"], alice["salary"], alice["level"]], ["Alice", 20, 1]);
       assert.deepEqual(await counts(Person, Employee, Manager), [1, 1, 1]);
 
@@ -69,7 +75,10 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.equal(await objects(Person).count(), 1);
 
       // An inherited-field filter selects the composed rows to update.
-      assert.equal(await objects(Manager).filter(field(Manager, "salary").eq(20)).update({ level: 4 }), 1);
+      const update = objects(Manager).filter(field(Manager, "salary").eq(20)).update({ level: 4 });
+      assert.equal(update.inspect().statementCount, 2);
+      assert.equal(update.inspect().hasBatching, true);
+      assert.equal(await update, 1);
       assert.equal(await objects(Manager).filter(field(Manager, "salary").eq(99)).update({ level: 5 }), 0);
       assert.equal((await objects(Manager).get(field(Manager, "id").eq(alice["id"])))["level"], 4);
       assert.equal((await objects(Employee).filter(field(Employee, "name").eq("Alice")).get())["salary"], 20);
@@ -78,7 +87,10 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.deepEqual([(person["employee"] as Row)["salary"], (person["customer"] as Row)["points"]], [20, 5]);
 
       // Deleting a child keeps its parent and the sibling child.
-      await objects(Manager).filter(field(Manager, "id").eq(alice["id"])).delete();
+      const deletion = objects(Manager).filter(field(Manager, "id").eq(alice["id"])).delete();
+      assert.equal(deletion.inspect().statementCount, 2);
+      assert.equal(deletion.inspect().hasBatching, true);
+      await deletion;
       assert.deepEqual(await counts(Person, Employee, Manager, Customer), [1, 1, 0, 1]);
     } finally {
       await db.dropTables();

@@ -3,7 +3,10 @@
 use crate::plan::{Plan, PrefetchPlan};
 use sea_query::*;
 use serde::Serialize;
-use std::{cell::RefCell, collections::HashSet};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashSet,
+};
 
 #[derive(serde::Deserialize)]
 pub struct InsertOptions {
@@ -14,15 +17,12 @@ pub struct InsertOptions {
 }
 
 #[derive(Default, Debug, Serialize)]
-pub struct Subqueries {
-    pub correlated_count: usize,
-    pub uncorrelated_count: usize,
-}
-#[derive(Default, Debug, Serialize)]
 pub struct Statement {
     pub has_batching: bool,
     pub joins_count: usize,
-    pub subqueries: Subqueries,
+    pub correlated_count: usize,
+    pub uncorrelated_count: usize,
+    pub cte_count: usize,
 }
 #[derive(Default, Debug, Serialize)]
 pub struct Inspection {
@@ -53,6 +53,7 @@ struct Scope {
     columns: HashSet<String>,
     children: Vec<Scope>,
     union_branch: bool,
+    cte: bool,
 }
 
 /// SeaQuery hides statement fields. Its QueryBuilder traversal visits the actual
@@ -62,10 +63,15 @@ struct Scope {
 struct Visitor {
     scopes: RefCell<Vec<Scope>>,
     joins: RefCell<usize>,
+    ctes: Cell<usize>,
+    next_is_cte: Cell<bool>,
 }
 impl Visitor {
     fn nested(&self, query: &SubQueryStatement, sql: &mut impl SqlWriter) {
-        self.scopes.borrow_mut().push(Scope::default());
+        self.scopes.borrow_mut().push(Scope {
+            cte: self.next_is_cte.replace(false),
+            ..Scope::default()
+        });
         match query {
             SubQueryStatement::SelectStatement(s) => self.prepare_select_statement(s, sql),
             SubQueryStatement::InsertStatement(s) => self.prepare_insert_statement(s, sql),
@@ -85,12 +91,12 @@ impl Visitor {
         fn dependencies(
             scope: Scope,
             enclosing: &HashSet<String>,
-            counts: &mut Subqueries,
+            counts: &mut Statement,
         ) -> HashSet<String> {
             let visible = enclosing.union(&scope.tables).cloned().collect();
             let mut references = scope.columns;
             for child in scope.children {
-                let counted = !child.union_branch;
+                let counted = !child.union_branch && !child.cte;
                 let free = dependencies(child, &visible, counts);
                 if counted {
                     if free.iter().any(|r| visible.contains(r)) {
@@ -104,17 +110,18 @@ impl Visitor {
             references.retain(|r| !scope.tables.contains(r));
             references
         }
-        let mut subqueries = Subqueries::default();
+        let mut result = Statement {
+            has_batching: batching,
+            joins_count: self.joins.into_inner(),
+            cte_count: self.ctes.get(),
+            ..Statement::default()
+        };
         dependencies(
             self.scopes.into_inner().pop().unwrap(),
             &HashSet::new(),
-            &mut subqueries,
+            &mut result,
         );
-        Statement {
-            has_batching: batching,
-            joins_count: self.joins.into_inner(),
-            subqueries,
-        }
+        result
     }
 }
 impl QuotedBuilder for Visitor {
@@ -140,6 +147,20 @@ impl QueryBuilder for Visitor {
     }
     fn prepare_query_statement(&self, query: &SubQueryStatement, sql: &mut impl SqlWriter) {
         self.nested(query, sql);
+    }
+    fn prepare_with_query_clause_materialization(
+        &self,
+        _: &CommonTableExpression,
+        _: &mut impl SqlWriter,
+    ) {
+        // SeaQuery invokes this hook once per definition, immediately before
+        // visiting its query or VALUES body (the CTE fields are private).
+        self.ctes.set(self.ctes.get() + 1);
+        self.next_is_cte.set(true);
+    }
+    fn prepare_values_rows(&self, _: &[Values], _: &mut impl SqlWriter) {
+        // A VALUES CTE has no query scope to consume this marker.
+        self.next_is_cte.set(false);
     }
     fn prepare_select_into(&self, _: &SelectInto, _: &mut impl SqlWriter) {}
     fn prepare_explain_statement(&self, _: &ExplainStatement, _: &mut impl SqlWriter) {}
@@ -305,11 +326,8 @@ mod tests {
                 }
                 let result = inspect(root);
                 assert_eq!(result.joins_count, usize::from(lateral));
-                assert_eq!(result.subqueries.correlated_count, usize::from(correlated));
-                assert_eq!(
-                    result.subqueries.uncorrelated_count,
-                    usize::from(!correlated)
-                );
+                assert_eq!(result.correlated_count, usize::from(correlated));
+                assert_eq!(result.uncorrelated_count, usize::from(!correlated));
             }
         }
     }
@@ -328,8 +346,8 @@ mod tests {
             .to_owned();
         let root = Query::select().expr(Expr::exists(derived)).to_owned();
         let result = inspect(root);
-        assert_eq!(result.subqueries.correlated_count, 1);
-        assert_eq!(result.subqueries.uncorrelated_count, 1);
+        assert_eq!(result.correlated_count, 1);
+        assert_eq!(result.uncorrelated_count, 1);
     }
 
     #[test]
@@ -343,7 +361,56 @@ mod tests {
             .from(Alias::new("same"))
             .to_owned();
         let result = inspect(root);
-        assert_eq!(result.subqueries.correlated_count, 0);
-        assert_eq!(result.subqueries.uncorrelated_count, 1);
+        assert_eq!(result.correlated_count, 0);
+        assert_eq!(result.uncorrelated_count, 1);
+    }
+
+    #[test]
+    fn cte_definitions_are_separate_from_subqueries_in_their_bodies() {
+        let child = Query::select().expr(Expr::col(("parent", "id"))).to_owned();
+        let body = Query::select()
+            .expr(Expr::exists(child))
+            .from(Alias::new("parent"))
+            .union(
+                UnionType::All,
+                Query::select().expr(Expr::val(1)).to_owned(),
+            )
+            .to_owned();
+        let cte = CommonTableExpression::new()
+            .table_name("chain")
+            .query(body)
+            .to_owned();
+        let with = WithClause::new().recursive(true).cte(cte).to_owned();
+        let root = Query::select()
+            .column(Asterisk)
+            .from(Alias::new("chain"))
+            .with_cte(with)
+            .to_owned();
+        let result = inspect(root);
+        assert_eq!(result.cte_count, 1);
+        assert_eq!(result.correlated_count, 1);
+        assert_eq!(result.uncorrelated_count, 0);
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["cte_count"], 1);
+        assert_eq!(json["correlated_count"], 1);
+        assert!(json.get("subqueries").is_none());
+    }
+
+    #[test]
+    fn values_cte_does_not_hide_a_following_subquery() {
+        let cte = CommonTableExpression::new()
+            .table_name("numbers")
+            .values(vec![Values(vec![1.into()])])
+            .to_owned();
+        let with = WithClause::new().cte(cte).to_owned();
+        let child = Query::select().expr(Expr::val(1)).to_owned();
+        let root = Query::select()
+            .expr(Expr::exists(child))
+            .with_cte(with)
+            .to_owned();
+        let result = inspect(root);
+        assert_eq!(result.cte_count, 1);
+        assert_eq!(result.correlated_count, 0);
+        assert_eq!(result.uncorrelated_count, 1);
     }
 }

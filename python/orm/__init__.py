@@ -8,7 +8,7 @@ expressions over model attributes, Django-style managers on top::
     users = await User.objects.filter(User.posts.created_at < yesterday)
 """
 
-from .inspection import QueryInspection, StatementInspection, SubqueryInspection
+from .inspection import QueryInspection, StatementInspection
 from . import debug, fields
 from .db import Database, QueryEvent, connect, get_database, scope
 from .errors import (
@@ -61,7 +61,6 @@ from .write import CopyInsert, Delete, InsertMany, InsertOne, InsertReturning, R
 __all__ = [
     "QueryInspection",
     "StatementInspection",
-    "SubqueryInspection",
     "debug",
     "fields",
     "Registry",

@@ -315,6 +315,41 @@ fn update_many_plan(
         .map_err(engine_err)
 }
 
+fn inspection_json(result: orm_engine::inspect::Inspection) -> napi::Result<String> {
+    serde_json::to_string(&result).map_err(query_err)
+}
+
+fn inspect_operation(env: &Env, schema: &schema::Schema, target: Target, op_json: &str, params_: Unknown<'_>) -> napi::Result<String> {
+    let op = parse_op(op_json).map_err(engine_err)?;
+    let plan = Planner::plan(schema, target, &op, &params(env, params_)?).map_err(engine_err)?;
+    inspection_json(orm_engine::inspect::Inspection::plans(&[plan], false))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inspect_insert(env: &Env, schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: Unknown<'_>,
+    options: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool) -> napi::Result<String> {
+    let opts: orm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(query_err)?;
+    let conflict = opts.conflict.map(|target| match opts.update {
+        Some(update) => Conflict::Update { target, filter: opts.filter, update, set: opts.set },
+        None => Conflict::Nothing { target, filter: opts.filter },
+    });
+    let values = convert_rows(env, schema, model, fields, rows, true)?;
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params(env, params_)?, batch_size.map(|n| n as usize), returning).map_err(engine_err)?;
+    let batching = plans.len() > 1;
+    inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inspect_updates(env: &Env, schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: Unknown<'_>,
+    filters_json: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: bool) -> napi::Result<String> {
+    let (stmts, _) = update_many_plan(env, schema, target, model, fields, rows, filters_json, params_, returning, batch_size, without_defaults)?;
+    let batching = stmts.len() > 1;
+    inspection_json(orm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
+        use sea_query::QueryStatementBuilder;
+        orm_engine::inspect::statement(&s.into_sub_query_statement(), batching)
+    }).collect()))
+}
+
 // -- schema -----------------------------------------------------------------------------------
 
 /// The compiled schema. Usable without a connection, e.g. to render SQL.
@@ -325,6 +360,26 @@ pub struct JsSchema {
 
 #[napi]
 impl JsSchema {
+    /// Inspect planned templates without executing or collecting statement events.
+    #[napi]
+    pub fn inspect(&self, env: &Env, op_json: String, params_: Unknown<'_>) -> napi::Result<String> {
+        inspect_operation(env, &self.inner, Target::new(self.inner.dialect), &op_json, params_)
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn inspect_insert(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, options: String,
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool) -> napi::Result<String> {
+        inspect_insert(env, &self.inner, Target::new(self.inner.dialect), &model, &fields, rows, &options, params_, batch_size, returning)
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn inspect_update_many(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, filters_json: String,
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: bool) -> napi::Result<String> {
+        inspect_updates(env, &self.inner, Target::new(self.inner.dialect), &model, &fields, rows, &filters_json, params_, batch_size, returning, without_defaults)
+    }
+
     /// Converts and plans a single-row insert without SQL or I/O (`prepareInsert`); the
     /// write protection check runs here too, before a caller's own I/O.
     #[napi]
@@ -558,6 +613,26 @@ impl Engine {
 
 #[napi]
 impl Engine {
+    /// Inspect planned templates without executing or collecting statement events.
+    #[napi]
+    pub fn inspect(&self, env: &Env, op_json: String, params_: Unknown<'_>) -> napi::Result<String> {
+        inspect_operation(env, &self.schema, self.target, &op_json, params_)
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn inspect_insert(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, options: String,
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool) -> napi::Result<String> {
+        inspect_insert(env, &self.schema, self.target, &model, &fields, rows, &options, params_, batch_size, returning)
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn inspect_update_many(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, filters_json: String,
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: bool) -> napi::Result<String> {
+        inspect_updates(env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, batch_size, returning, without_defaults)
+    }
+
     /// Runs one query IR document (see `outcome_js` for what the promise gives).
     #[napi(ts_return_type = "Promise<unknown>")]
     pub fn run<'env>(

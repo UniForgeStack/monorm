@@ -11,16 +11,12 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class SubqueryInspection:
-    correlated_count: int
-    uncorrelated_count: int
-
-
-@dataclass(frozen=True)
 class StatementInspection:
     has_batching: bool
     joins_count: int
-    subqueries: SubqueryInspection
+    correlated_count: int
+    uncorrelated_count: int
+    cte_count: int
 
 
 @dataclass(frozen=True)
@@ -47,7 +43,9 @@ class QueryInspection:
                 StatementInspection(
                     s["has_batching"],
                     s["joins_count"],
-                    SubqueryInspection(**s["subqueries"]),
+                    s["correlated_count"],
+                    s["uncorrelated_count"],
+                    s["cte_count"],
                 )
                 for s in data["statements"]
             ),

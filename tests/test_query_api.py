@@ -180,7 +180,7 @@ async def test_prefetch_onto_loaded_instances(clean):
     assert result.has_batching
     assert [s.has_batching for s in result.statements] == [False, True, True, True]
     assert all(s.joins_count == 0 for s in result.statements)
-    assert sum(s.subqueries.uncorrelated_count for s in result.statements) == 1
+    assert sum(s.uncorrelated_count for s in result.statements) == 1
     await orm.prefetch(users, User.posts.comments, top)
     assert [p.title for p in users[0].posts.cached] == ["draft", "hit", "quiet"]
     assert [c.body for c in users[0].posts.cached[1].comments.cached] == ["a", "b"]
@@ -195,8 +195,8 @@ async def test_prefetch_to_one_and_many_to_many(clean):
     loaded = await Post.objects.order_by(Post.id)
     # The equivalent load describes the batched many-to-many statement too.
     assert Post.objects.load(Post.author, Post.tags).inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 1, orm.SubqueryInspection(0, 0)),
-        orm.StatementInspection(True, 1, orm.SubqueryInspection(0, 0)),
+        orm.StatementInspection(False, 1, 0, 0, 0),
+        orm.StatementInspection(True, 1, 0, 0, 0),
     ))
     await orm.prefetch(loaded, Post.author, Post.tags)
     assert [p.author.name for p in loaded] == ["Alice", "Alice", "Alice", "Bob"]
@@ -284,7 +284,7 @@ async def test_only_through_a_to_one_path(clean):
     await seed()
     qs = Comment.objects.load(Comment.body, Comment.post.title)
     assert qs.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 1, orm.SubqueryInspection(0, 0)),
+        orm.StatementInspection(False, 1, 0, 0, 0),
     ))
     sql = qs.sql()
     assert '"title"' in sql and '"views"' not in sql and '"published"' not in sql
@@ -303,7 +303,7 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
     await Comment.objects.insert(post=posts[0], body="x")
     query = Comment.objects.load(Comment.post.author.name)
     assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 2, orm.SubqueryInspection(0, 0)),
+        orm.StatementInspection(False, 2, 0, 0, 0),
     ))
     (c,) = await query
     assert c.post.author.name == "Alice" and c.body == "x" and c.post.title == posts[0].title
@@ -321,8 +321,8 @@ async def test_load_a_column_through_a_to_many_path(clean, observe_queries):
     await seed()
     query = User.objects.load(User.posts.title).order_by(User.id)
     assert query.inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 0, orm.SubqueryInspection(0, 0)),
-        orm.StatementInspection(True, 0, orm.SubqueryInspection(0, 0)),
+        orm.StatementInspection(False, 0, 0, 0, 0),
+        orm.StatementInspection(True, 0, 0, 0, 0),
     ))
     with observe_queries(clean) as events:
         users = await query
@@ -357,8 +357,8 @@ async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
         User.posts.objects.order_by(-Post.views).label("best", one=True)
     )
     assert query.inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 0, orm.SubqueryInspection(0, 0)),
-        orm.StatementInspection(True, 0, orm.SubqueryInspection(0, 1)),
+        orm.StatementInspection(False, 0, 0, 0, 0),
+        orm.StatementInspection(True, 0, 0, 1, 0),
     ))
     with observe_queries(clean) as events:
         users = await query

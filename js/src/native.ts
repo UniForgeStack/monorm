@@ -68,7 +68,13 @@ export interface NativeSessionLock {
   release(trace?: NativeTrace | null): Promise<void>;
 }
 
-export interface NativeSchema {
+export interface NativeInspector {
+  inspect(opJson: string, params: unknown[]): string;
+  inspectInsert(model: string, fields: string[], rows: unknown[][], options: string, params: unknown[], batchSize: number | null, returning: boolean): string;
+  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: boolean): string;
+}
+
+export interface NativeSchema extends NativeInspector {
   validateInsert(model: string, fields: string[], rows: unknown[][], allowed: readonly string[]): void;
   uniqueRowUpdate(opJson: string, params: unknown[], allowed: readonly string[]): boolean;
   sql(opJson: string, params: unknown[]): string;
@@ -108,7 +114,7 @@ export interface NativePrefetched {
   readonly prefetched: readonly NativePrefetch[];
 }
 
-export interface NativeEngine {
+export interface NativeEngine extends NativeInspector {
   run(opJson: string, params: unknown[], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<unknown>;
   prefetch(opJson: string, params: unknown[], keys: string[], rows: unknown[][], tx: NativeTransaction | null): Promise<NativePrefetched>;
   insert(

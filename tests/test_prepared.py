@@ -130,8 +130,8 @@ async def test_prepared_has_and_prefetch(clean, observe_queries):
     assert result.has_batching
     assert [s.has_batching for s in result.statements] == [False, True]
     assert all(s.joins_count == 0 for s in result.statements)
-    assert [s.subqueries for s in result.statements] == [
-        orm.SubqueryInspection(0, 0), orm.SubqueryInspection(0, 1),
+    assert [(s.correlated_count, s.uncorrelated_count) for s in result.statements] == [
+        (0, 0), (0, 1),
     ]
     with observe_queries(clean) as events:
         users = await top(min=10, k=1)

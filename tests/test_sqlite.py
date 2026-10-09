@@ -71,7 +71,8 @@ async def test_array_agg_is_postgres_only(sqlite):
     result = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).inspect()
     assert result.statement_count == 1
     assert result.statements[0].joins_count == 0
-    assert result.statements[0].subqueries == orm.SubqueryInspection(2, 0)
+    assert result.statements[0].correlated_count == 2
+    assert result.statements[0].uncorrelated_count == 0
 
 
 async def test_bulk_writes(sqlite, observe_queries):

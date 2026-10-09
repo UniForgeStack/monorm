@@ -227,15 +227,16 @@ async def errors() -> None:
 
 
 def inspection_types() -> None:
-    from orm import QueryInspection, StatementInspection, SubqueryInspection
+    from orm import QueryInspection, StatementInspection
 
     result = User.objects.all().inspect()
     assert_type(result, QueryInspection)
     assert_type(result.statement_count, int)
     assert_type(result.has_batching, bool)
     assert_type(result.statements[0], StatementInspection)
-    assert_type(result.statements[0].subqueries, SubqueryInspection)
-    assert_type(result.statements[0].subqueries.correlated_count, int)
+    assert_type(result.statements[0].correlated_count, int)
+    assert_type(result.statements[0].uncorrelated_count, int)
+    assert_type(result.statements[0].cte_count, int)
     assert_type(User.objects.select(User.id).inspect(), QueryInspection)
     assert_type(User.objects.update(name="A").inspect(), QueryInspection)
     assert_type(User.objects.insert_many([]).inspect(), QueryInspection)

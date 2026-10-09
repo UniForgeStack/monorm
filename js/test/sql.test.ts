@@ -18,6 +18,31 @@ function where(qs: { sql(): string }): string {
 const count = (s: string, part: string) => s.split(part).length - 1;
 const native = () => Post._meta.registry.native();
 
+test("inspection has flat counters and counts CTE definitions separately", () => {
+  const recent = Post.objects.filter(Post.comments.body.eq("hi")).cte("recent");
+  const totals = Post.objects.from(recent)
+    .select({ authorId: Post.authorId, n: func.count() })
+    .groupBy(Post.authorId).cte("totals");
+  const query = User.objects.filter(User.id.in(totals.select({ authorId: totals.c.authorId })));
+  const result = query.inspect();
+  assert.deepEqual(result.statements, [{
+    hasBatching: false, joinsCount: 0, correlatedCount: 1, uncorrelatedCount: 1, cteCount: 2,
+  }]);
+  assert.ok(Object.isFrozen(result.statements[0]));
+  const reused = User.objects.filter(
+    User.id.in(totals.select({ authorId: totals.c.authorId })),
+    User.id.in(totals.select({ authorId: totals.c.authorId })),
+  ).inspect().statements[0]!;
+  assert.equal(reused.cteCount, 2);
+  assert.equal(reused.uncorrelatedCount, 2);
+  const chain = User.objects.filter(User.id.eq(1n)).cte("chain", {
+    recursive: c => User.objects.filter(User.id.eq(c.c.id.add(1))),
+  });
+  assert.deepEqual(User.objects.from(chain).inspect().statements, [{
+    hasBatching: false, joinsCount: 0, correlatedCount: 0, uncorrelatedCount: 0, cteCount: 1,
+  }]);
+});
+
 test("a to-many filter is EXISTS", () => {
   assert.equal(
     User.objects.filter(User.posts.createdAt.lt(Y)).sql(),
@@ -71,9 +96,12 @@ test("aggregates over the same relation share one LATERAL join", () => {
   const sql = User.objects
     .select({ n: func.count(User.posts, { filter: User.posts.views.gt(10) }), s: func.sum(User.posts.views, { distinct: true }), c: func.count(User.comments) })
     .sql();
-  assert.equal(sql.split("LATERAL").length, 2);
+  const structure = User.objects.select({ n: func.count(User.posts, { filter: User.posts.views.gt(10) }), s: func.sum(User.posts.views, { distinct: true }), c: func.count(User.comments) }).inspect().statements[0]!;
+  assert.equal(structure.joinsCount, 1);
+  assert.equal(structure.correlatedCount, 2);
+  assert.equal(structure.uncorrelatedCount, 0);
   assert.ok(sql.includes('COUNT(*) FILTER (WHERE "a2"."views" > 10) AS "c1"') && sql.includes('SUM(DISTINCT "a2"."views")'));
-  assert.ok(!User.objects.filter(func.count(User.posts).gt(1), func.sum(User.posts.views).gt(1)).select({ id: User.id }).sql().includes("LATERAL"));
+  assert.equal(User.objects.filter(func.count(User.posts).gt(1), func.sum(User.posts.views).gt(1)).select({ id: User.id }).inspect().statements[0]!.joinsCount, 0);
 });
 
 test("a to-one load() and orderBy use LEFT JOINs", () => {
@@ -176,8 +204,10 @@ test("an aggregate over a relation is a correlated subquery", () => {
     User.objects.select({ id: User.id, posts: func.count(User.posts) }).sql(),
     'SELECT "users"."id", (SELECT COUNT(*) FROM "posts" AS "a1" WHERE "a1"."author_id" = "users"."id") FROM "users"',
   );
-  const two = User.objects.select({ id: User.id, posts: func.count(User.posts), c: func.count(User.comments) }).sql();
-  assert.ok(!two.includes("LATERAL") && two.split("(SELECT COUNT(*)").length === 3);
+  const two = User.objects.select({ id: User.id, posts: func.count(User.posts), c: func.count(User.comments) }).inspect().statements[0]!;
+  assert.equal(two.joinsCount, 0);
+  assert.equal(two.correlatedCount, 2);
+  assert.equal(two.uncorrelatedCount, 0);
   assert.equal(
     where(User.objects.filter(func.count(User.posts.comments).gt(3))),
     '(SELECT COUNT(*) FROM "posts" AS "a1" INNER JOIN "comments" AS "a2" ON "a2"."post_id" = "a1"."id" ' +
@@ -358,4 +388,10 @@ test("array element and unnest SQL", () => {
   );
   assert.throws(() => Profile.objects.filter(func.unnest(Profile.links).eq("x")).sql(), /only be a select\(\) column/);
   assert.throws(() => Post.objects.select({ x: Post.title.element.call(Post.title as never, 1) }).sql(), /an index needs an array/);
+});
+
+
+test("inspection works without a database connection", () => {
+  assert.equal(Post.objects.load(Post.author).inspect().statements[0]!.joinsCount, 1);
+  assert.equal(Tag.objects.insertMany([{ name: "inspect only" }]).inspect().statementCount, 1);
 });

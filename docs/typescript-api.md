@@ -326,7 +326,7 @@ type error. `from()` accepts only a CTE that has the model's columns.
 
 `insert()` and `insertMany()` give a statement that runs when it is awaited, once, in
 the async context where it was built (its transaction, `allowWrites` and `scope`).
-The other writes run when they are called and return a `Promise`:
+Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return inspectable statements. They execute once when first awaited (or when `then`, `catch` or `finally` is called), as inserts do. Instance writes still return a `Promise`.
 
 * `insert(row)` gives the stored row. A field left out gets its `@client_default`
   (filled natively, as in Python), else the database default; an explicit value, also
@@ -517,6 +517,32 @@ console.log(await Post.objects.filter(Post.authorId.eq(7n)).explain({ analyze: t
 They work as in Python (`docs/python-api.md`, "Raw SQL and query plans").
 A parameter's type comes from its JS value: `bigint` and integer numbers are `bigint`, strings are `text`, plain objects and arrays are JSON, and `Date` is `timestamptz`.
 `bigint` columns come back as `bigint`, and `timestamptz` and `date` as `Date`.
+
+### Planner inspection for assertions
+
+`inspect()` synchronously returns a deeply frozen `QueryInspection`, without SQL execution or query events. It works on query sets, selected queries, prepared queries with bound values, inserts/upserts (including `.returning()`), and query-set updates/deletes/bulk updates. It also works without a connection; with a matching default or explicit connection it uses that connection's planner capabilities.
+
+```ts
+const result = Post.objects.load(Post.author).inspect();
+assert.equal(result.statementCount, 1);
+assert.equal(result.hasBatching, false);
+assert.equal(result.statements[0]!.joinsCount, 1);
+assert.equal(result.statements[0]!.correlatedCount, 0);
+assert.equal(result.statements[0]!.uncorrelatedCount, 0);
+assert.equal(result.statements[0]!.cteCount, 0);
+
+const insert = Tag.objects.insertMany(rows, { batchSize: 100 }).returning();
+const planned = insert.inspect();
+const tags = await insert;
+const prepared = Post.objects.filter(Post.views.gt(param("minimum"))).prepare();
+const structure = prepared.inspect({ minimum: 5 });
+```
+
+The exported `QueryInspection` and `StatementInspection` interfaces contain only these counters. `statementCount` counts planned templates, including nested prefetches and composed writes. Empty parents can skip prefetches and key batches can repeat templates; use `db.onQuery()` to count actual statements. N+1 reports collapse some intentional batching and are not raw execution counts.
+
+Correlation follows dependencies on enclosing query columns, including implicit relation filters/aggregates and LATERAL queries. The flat statement counters `correlatedCount` and `uncorrelatedCount` count each nested subquery once according to its own dependencies. `cteCount` counts CTE definitions separately (a recursive CTE counts once); subqueries inside CTE bodies still contribute to the subquery counters. Correlation does not imply physical execution per row; use `explain()` for database strategy. PostgreSQL can share relation aggregates with LATERAL; SQLite can use separate correlated scalar subqueries.
+
+Ordinary planning and execution collect no inspection metadata. Keep exact SQL assertions for rendering and result assertions for correctness. `insertMany(..., { copy: true })` and many-to-many `relation.insert()` orchestration do not expose planner inspection; inspect the model and explicit link statements separately.
 
 ### Query hooks and OpenTelemetry
 

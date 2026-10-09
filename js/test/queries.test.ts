@@ -486,7 +486,7 @@ test("relation equals instance", async () => {
   const { alice, bob, carol, a1, a2, b1 } = await seed();
   const qs = Post.objects.filter(Post.author.eq(alice)).orderBy(Post.id);
   assert.equal(qs.sql(), Post.objects.filter(Post.authorId.eq(alice.id)).orderBy(Post.id).sql());
-  assert.ok(!qs.sql().includes(" JOIN "));
+  assert.equal(qs.inspect().statements[0]!.joinsCount, 0);
   assert.deepEqual((await qs.all()).map((p) => p.id), [a1.id, a2.id]);
   assert.deepEqual((await Post.objects.filter(Post.author.ne(alice)).all()).map((p) => p.id), [b1.id]);
   assert.equal(await Post.objects.filter(Post.author.eq(carol)).count(), 0);

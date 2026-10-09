@@ -1229,6 +1229,14 @@ do). Replacing it with tokio-postgres made most operations 5–33% faster with T
 TLS on, the TLS cost hides the difference)
 (`bench/engine_bench.py`, numbers in [`bench/RESULTS.md`](../bench/RESULTS.md#engine-seaorm-vs-tokio-postgres)).
 
+## Query inspection counters
+
+`inspect()` returns immutable `QueryInspection` results. Each
+`StatementInspection` exposes flat `has_batching`, `joins_count`,
+`correlated_count`, `uncorrelated_count`, and `cte_count` fields. CTE definitions
+count separately from subqueries; a recursive CTE counts once, and subqueries
+inside its body still contribute to the subquery counts.
+
 ## Not done yet
 
 * A MySQL driver.

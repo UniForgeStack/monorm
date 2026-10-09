@@ -1,9 +1,10 @@
 /**
  * Query sets: immutable query builders. Nothing runs until a terminal method is called:
- * `all()`, `first()`, `get()`, `count()`, `update()`, ... (or `for await`); `insert()` runs when awaited.
+ * `all()`, `first()`, `get()`, `count()`, ... (or `for await`); writes run when awaited.
  */
 
 import { AsyncResource } from "node:async_hooks";
+import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
 import { resolve, withScope, type Database } from "./db.js";
 import {
@@ -1049,6 +1050,18 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return call(() => this.meta.registry.native().sql(...withScope(JSON.stringify(ir), params)));
   }
 
+  /** Inspect planned templates without running the query. Use onQuery() for
+   * actual statements and explain() for the physical database strategy. */
+  inspect(...check: Runnable<P, X>): QueryInspection {
+    void check;
+    const params: unknown[] = [];
+    return this.inspectIr(this.selectIr("select", params), params);
+  }
+
+  private inspectIr(ir: IR, params: unknown[]): QueryInspection {
+    return call(() => inspection(inspector(this.meta, this.state.db).inspect(...withScope(JSON.stringify(ir), params))));
+  }
+
   /**
    * The database's plan for this query's SELECT (not for its prefetch queries).
    *
@@ -1245,11 +1258,18 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `UPDATE` every matching row; values may be expressions (`{ views: Post.views.add(1) }`).
    * Gives the number of rows updated, or with `{ returning: true }` the updated rows.
    */
-  update(values: M["update"]): Promise<number>;
-  update(values: M["update"], options: { readonly returning: true }): Promise<M["row"][]>;
-  update(values: M["update"], options?: { readonly returning?: boolean }): Promise<number | M["row"][]>;
-  async update(values: M["update"], options: { readonly returning?: boolean } = {}): Promise<number | M["row"][]> {
-    return this.updateValues(values, options.returning ?? false);
+  update(values: M["update"]): InspectedStatement<number>;
+  update(values: M["update"], options: { readonly returning: true }): InspectedStatement<M["row"][]>;
+  update(values: M["update"], options?: { readonly returning?: boolean }): InspectedStatement<number | M["row"][]>;
+  update(values: M["update"], options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
+    const returning = options.returning ?? false;
+    return new InspectedStatement(AsyncResource.bind(() => this.updateValues(values, returning)), AsyncResource.bind(() => {
+      const params: unknown[] = [];
+      const ir = this.mutationIr("update", params, values);
+      if (!(ir["set"] as unknown[]).length) return emptyInspection();
+      if (returning) ir["returning"] = true;
+      return this.inspectIr(ir, params);
+    }));
   }
 
   private async updateValues(values: M["update"], returning: boolean): Promise<number | M["row"][]> {
@@ -1279,12 +1299,23 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `{ returning: true }` the deleted rows. A model with `@soft_delete.deleted_at` sets
    * that field on its live rows instead.
    */
-  delete(): Promise<number>;
-  delete(options: { readonly returning: true }): Promise<M["row"][]>;
-  delete(options?: { readonly returning?: boolean }): Promise<number | M["row"][]>;
-  async delete(options: { readonly returning?: boolean } = {}): Promise<number | M["row"][]> {
-    const params: unknown[] = [];
-    return this.write(this.mutationIr("delete", params), params, options.returning ?? false);
+  delete(): InspectedStatement<number>;
+  delete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
+  delete(options?: { readonly returning?: boolean }): InspectedStatement<number | M["row"][]>;
+  delete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
+    const returning = options.returning ?? false;
+    const plan = () => {
+      const params: unknown[] = [];
+      const ir = { ...this.mutationIr("delete", params), returning };
+      return { ir, params };
+    };
+    return new InspectedStatement(AsyncResource.bind(() => {
+      const { ir, params } = plan();
+      return this.write(ir, params, returning);
+    }), AsyncResource.bind(() => {
+      const { ir, params } = plan();
+      return this.inspectIr(ir, params);
+    }));
   }
 
   /**
@@ -1292,19 +1323,33 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * database mode, the trigger soft-deletes a live row, so this deletes only rows that are
    * already soft-deleted.
    */
-  hardDelete(): Promise<number>;
-  hardDelete(options: { readonly returning: true }): Promise<M["row"][]>;
-  async hardDelete(options: { readonly returning?: boolean } = {}): Promise<number | M["row"][]> {
-    const params: unknown[] = [];
-    return this.write({ ...this.mutationIr("delete", params), hard: true }, params, options.returning ?? false);
+  hardDelete(): InspectedStatement<number>;
+  hardDelete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
+  hardDelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
+    const returning = options.returning ?? false;
+    const plan = () => {
+      const params: unknown[] = [];
+      const ir = { ...this.mutationIr("delete", params), hard: true, returning };
+      return { ir, params };
+    };
+    return new InspectedStatement(AsyncResource.bind(() => {
+      const { ir, params } = plan();
+      return this.write(ir, params, returning);
+    }), AsyncResource.bind(() => {
+      const { ir, params } = plan();
+      return this.inspectIr(ir, params);
+    }));
   }
 
   /** Clear the soft-delete field of the matching soft-deleted rows. */
-  undelete(): Promise<number>;
-  undelete(options: { readonly returning: true }): Promise<M["row"][]>;
-  async undelete(options: { readonly returning?: boolean } = {}): Promise<number | M["row"][]> {
-    const field = this.softDeleteField();
-    return this.filter(this.meta.column(field).isNotNull() as never).updateValues({ [field.name]: null } as never, options.returning ?? false);
+  undelete(): InspectedStatement<number>;
+  undelete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
+  undelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
+    const statement = () => {
+      const field = this.softDeleteField();
+      return this.filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
+    };
+    return new InspectedStatement(AsyncResource.bind(async () => await statement()), AsyncResource.bind(() => statement().inspect()));
   }
 
   /** The rows with the soft-deleted ones: the query set without the schema defaults
@@ -1339,12 +1384,18 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * alone. One statement per `batchSize` rows (by default as many as fit), all in one
    * transaction. Gives the number of rows updated, or the rows with `returning`.
    */
-  updateMany(rows: readonly M["updateRow"][], options?: { readonly batchSize?: number; readonly returning?: false }): Promise<number>;
-  updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning: true }): Promise<M["row"][]>;
-  async updateMany(
-    rows: readonly M["updateRow"][],
-    options: { readonly batchSize?: number; readonly returning?: boolean } = {},
-  ): Promise<number | M["row"][]> {
+  updateMany(rows: readonly M["updateRow"][], options?: { readonly batchSize?: number; readonly returning?: false }): InspectedStatement<number>;
+  updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning: true }): InspectedStatement<M["row"][]>;
+  updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
+    return new InspectedStatement(AsyncResource.bind(() => this.executeUpdateMany(rows, options)), AsyncResource.bind(() => {
+      const { prepared, batchSize, returning, params, ir } = this.updateManyPlan(rows, options);
+      if (ir === null) return emptyInspection();
+      const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
+      return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, this.state.withoutDefaults)));
+    }));
+  }
+
+  private updateManyPlan(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean }) {
     const { batchSize, returning = false } = options;
     if (batchSize !== undefined && (!Number.isInteger(batchSize) || batchSize < 1)) {
       throw new RangeError("batchSize must be at least 1");
@@ -1352,13 +1403,22 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     this.mutationIr("update", []); // refuses sliced and locked query sets
     const prepared = prepareUpdateRows(this.meta, rows);
     if (!prepared.rows.length) {
-      return returning ? [] : 0;
+      return { prepared, batchSize, returning, params: [], ir: null };
     }
     const params: unknown[] = [];
     const ir = this.mutationIr("update", params);
     if ("with" in ir) {
       throw new QueryError("updateMany() filters can't read CTEs");
     }
+    return { prepared, batchSize, returning, params, ir };
+  }
+
+  private async executeUpdateMany(
+    rows: readonly M["updateRow"][],
+    options: { readonly batchSize?: number; readonly returning?: boolean } = {},
+  ): Promise<number | M["row"][]> {
+    const { prepared, batchSize, returning, params, ir } = this.updateManyPlan(rows, options);
+    if (ir === null) return returning ? [] : 0;
     const db = this.db();
     const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
     const res = await db_wait(db, (tx, allowed, trace) =>
@@ -1373,7 +1433,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * or the row with `.returning()`.
    */
   insert(values: M["insert"]): InsertOne<M> {
-    return new InsertOne(bound((conflict, returning) => this.insertRows([values], conflict, returning, null)));
+    return new InsertOne(bound((conflict, returning) => this.insertRows([values], conflict, returning, null)), AsyncResource.bind((conflict, returning) => this.inspectInsert([values], conflict, returning, null)));
   }
 
   /**
@@ -1432,7 +1492,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       return this.copyRows(rows, options);
     }
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
-    return new InsertMany(bound((conflict, returning) => this.insertRows(rows, conflict, returning, batchSize)));
+    return new InsertMany(bound((conflict, returning) => this.insertRows(rows, conflict, returning, batchSize)), AsyncResource.bind((conflict, returning) => this.inspectInsert(rows, conflict, returning, batchSize)));
   }
 
   /** @internal */
@@ -1460,12 +1520,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** @internal */
-  protected async insertRows(
-    rows: readonly object[],
-    onConflict: Conflict | undefined,
-    returning: boolean,
-    batchSize: number | null,
-  ): Promise<M["row"][] | number> {
+  protected insertPlan(rows: readonly object[], onConflict: Conflict | undefined, batchSize: number | null) {
     const prepared = prepareRows(this.meta, rows);
     let conflict: string[] | null = null;
     let update: string[] | null = null;
@@ -1514,9 +1569,20 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
         }
       }
     }
-    if (!prepared.rows.length) {
-      return returning ? [] : 0;
-    }
+    return { prepared, conflict, update, set, params, conflictWhere };
+  }
+
+  protected inspectInsert(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null): QueryInspection {
+    const { prepared, conflict, update, set, params, conflictWhere } = this.insertPlan(rows, onConflict, batchSize);
+    if (!prepared.rows.length) return emptyInspection();
+    const options = JSON.stringify({ conflict, update, set: set ? JSON.parse(set) : [], filter: conflictWhere ? JSON.parse(conflictWhere) : null });
+    return call(() => inspection(inspector(this.meta, this.state.db).inspectInsert(this.meta.name, prepared.fields, prepared.rows, options, params, batchSize, returning)));
+  }
+
+  /** @internal */
+  protected async insertRows(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null): Promise<M["row"][] | number> {
+    const { prepared, conflict, update, set, params, conflictWhere } = this.insertPlan(rows, onConflict, batchSize);
+    if (!prepared.rows.length) return returning ? [] : 0;
     const db = this.db();
     const res = await db_wait(db, (tx, allowed, trace) =>
       db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictWhere, trace, returning),
@@ -1536,6 +1602,8 @@ interface Conflict {
 }
 
 /** Runs an insert: the rows with `returning`, else the affected-row count. */
+type InspectInsert = (conflict: Conflict | undefined, returning: boolean) => QueryInspection;
+
 type RunInsert = (conflict: Conflict | undefined, returning: boolean) => Promise<unknown[] | number>;
 
 /** `run` in the async context of the caller (its transaction, `allowWrites` and
@@ -1573,14 +1641,28 @@ abstract class Statement<T> implements Promise<T> {
   }
 }
 
+/** A write that can be inspected without execution and runs once when awaited. */
+export class InspectedStatement<T> extends Statement<T> {
+  /** @internal */
+  constructor(private readonly run: () => Promise<T>, private readonly inspectPlan: () => QueryInspection) { super(); }
+  inspect(): QueryInspection { return this.inspectPlan(); }
+  protected async execute(): Promise<T> { return this.run(); }
+}
+
 /** `insert(values)`: awaiting it gives the new instance. */
 export class InsertOne<M extends ModelSpec> extends Statement<M["row"]> {
   readonly #run: RunInsert;
+  readonly #inspect: InspectInsert;
 
   /** @internal */
-  constructor(run: RunInsert) {
+  constructor(run: RunInsert, inspect: InspectInsert) {
     super();
     this.#run = run;
+    this.#inspect = inspect;
+  }
+
+  inspect(): QueryInspection {
+    return this.#inspect(undefined, true);
   }
 
   /** @internal */
@@ -1594,20 +1676,26 @@ export class InsertOne<M extends ModelSpec> extends Statement<M["row"]> {
     columns: OwnColumn<M> | readonly OwnColumn<M>[],
     options: OnConflictOptions<M, U>,
   ): UpsertOne<M, [U] extends [true] ? M["row"] : M["row"] | null> {
-    return new UpsertOne(this.#run, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> });
+    return new UpsertOne(this.#run, this.#inspect, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> });
   }
 }
 
 /** `insert(values).onConflict(...)`: awaiting it gives the affected-row count. */
 export class UpsertOne<M extends ModelSpec, R> extends Statement<number> {
   readonly #run: RunInsert;
+  readonly #inspect: InspectInsert;
   readonly #conflict: Conflict;
 
   /** @internal */
-  constructor(run: RunInsert, conflict: Conflict) {
+  constructor(run: RunInsert, inspect: InspectInsert, conflict: Conflict) {
     super();
     this.#run = run;
+    this.#inspect = inspect;
     this.#conflict = conflict;
+  }
+
+  inspect(): QueryInspection {
+    return this.#inspect(this.#conflict, false);
   }
 
   /** @internal */
@@ -1617,21 +1705,28 @@ export class UpsertOne<M extends ModelSpec, R> extends Statement<number> {
 
   /** `RETURNING` the row: the inserted or updated instance; `null` when
    * `{ update: false }` skipped the row. */
-  async returning(): Promise<R> {
-    return (((await this.#run(this.#conflict, true)) as M["row"][])[0] ?? null) as R;
+  returning(): InspectedStatement<R> {
+    return new InspectedStatement(async () => (((await this.#run(this.#conflict, true)) as M["row"][])[0] ?? null) as R,
+      () => this.#inspect(this.#conflict, true));
   }
 }
 
 /** `insertMany(rows)`: awaiting it gives the number of rows inserted or updated. */
 export class InsertMany<M extends ModelSpec> extends Statement<number> {
   readonly #run: RunInsert;
+  readonly #inspect: InspectInsert;
   readonly #conflict: Conflict | undefined;
 
   /** @internal */
-  constructor(run: RunInsert, conflict?: Conflict) {
+  constructor(run: RunInsert, inspect: InspectInsert, conflict?: Conflict) {
     super();
     this.#run = run;
+    this.#inspect = inspect;
     this.#conflict = conflict;
+  }
+
+  inspect(): QueryInspection {
+    return this.#inspect(this.#conflict, false);
   }
 
   /** @internal */
@@ -1644,13 +1739,14 @@ export class InsertMany<M extends ModelSpec> extends Statement<number> {
     if (this.#conflict) {
       throw new TypeError("onConflict() is already given");
     }
-    return new InsertMany(this.#run, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> });
+    return new InsertMany(this.#run, this.#inspect, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> });
   }
 
   /** `RETURNING` the rows: the instances in input order; rows that
    * `{ update: false }` skipped are left out. */
-  async returning(): Promise<M["row"][]> {
-    return (await this.#run(this.#conflict, true)) as M["row"][];
+  returning(): InspectedStatement<M["row"][]> {
+    return new InspectedStatement(async () => (await this.#run(this.#conflict, true)) as M["row"][],
+      () => this.#inspect(this.#conflict, true));
   }
 }
 
@@ -1813,6 +1909,13 @@ export class Prepared<M extends ModelSpec, R, P> {
     return (await this.start("exists", values)) as boolean;
   }
 
+  /** Inspect the prepared SELECT with these bound values. */
+  inspect(...[values]: Values<P>): QueryInspection {
+    const c = this.statement("select");
+    const params = c.bind(values ?? {}, this.params as Set<string>);
+    return call(() => inspection(inspector(this.qs.meta, this.qs.state.db).inspect(...withScope(c.json, params))));
+  }
+
   /** The SELECT for these values, parameters inlined (for debugging). */
   sql(...[values]: Values<P>): string {
     const c = this.statement("select");
@@ -1865,7 +1968,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
 
   /** Inserts a related row pointing at this instance. */
   override insert(values: DistributiveOmit<M["insert"], L>): InsertOne<M> {
-    return new InsertOne(bound((conflict, returning) => this.insertRows([{ ...values, ...this.link() }], conflict, returning, null)));
+    return new InsertOne(bound((conflict, returning) => this.insertRows([{ ...values, ...this.link() }], conflict, returning, null)), AsyncResource.bind((conflict, returning) => this.inspectInsert([{ ...values, ...this.link() }], conflict, returning, null)));
   }
 
   /** The related row matching `lookup`, or a new one pointing at this instance; the link
@@ -1884,7 +1987,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
       return this.copyRows(linked, options);
     }
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
-    return new InsertMany(bound((conflict, returning) => this.insertRows(linked, conflict, returning, batchSize)));
+    return new InsertMany(bound((conflict, returning) => this.insertRows(linked, conflict, returning, batchSize)), AsyncResource.bind((conflict, returning) => this.inspectInsert(linked, conflict, returning, batchSize)));
   }
 
 }
@@ -2075,7 +2178,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
         await this.add(obj as never);
         return [obj];
       });
-    }));
+    }), () => { throw new QueryError("inspect() cannot plan a many-to-many insert before its generated key is known; inspect the model insert and link operations separately"); });
   }
 
   /** Not supported: `getOrInsert()` on the model's query set, then `add()`. */

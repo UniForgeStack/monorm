@@ -15,6 +15,7 @@
  * ```
  */
 
+import { inspection, inspector, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
 import { withScope, type Database } from "./db.js";
 import { DoesNotExist, MultipleObjectsReturned, QueryError, TransactionRequired } from "./errors.js";
@@ -262,6 +263,14 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
     const params: unknown[] = [];
     const ir = this.ir(params);
     return call(() => this.qs.meta.registry.native().sql(...withScope(JSON.stringify(ir), params)));
+  }
+
+  /** Inspect the selected query and its prefetch templates without execution. */
+  inspect(...check: Runnable<P, X>): QueryInspection {
+    void check;
+    const params: unknown[] = [];
+    const ir = this.ir(params);
+    return call(() => inspection(inspector(this.qs.meta, this.qs.state.db).inspect(...withScope(JSON.stringify(ir), params))));
   }
 
   // -- execution ------------------------------------------------------------------------------

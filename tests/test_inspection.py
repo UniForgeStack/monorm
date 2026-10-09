@@ -17,7 +17,8 @@ def test_inspection_is_typed_immutable_and_needs_no_connection():
     assert result.statement_count == 1
     assert not result.has_batching
     assert result.statements[0].joins_count == 1
-    assert result.statements[0].subqueries == orm.SubqueryInspection(0, 0)
+    assert result.statements[0].correlated_count == 0
+    assert result.statements[0].uncorrelated_count == 0
     assert query.inspect() == result
     with pytest.raises(FrozenInstanceError):
         result.statement_count = 2  # type: ignore[misc]
@@ -25,7 +26,8 @@ def test_inspection_is_typed_immutable_and_needs_no_connection():
 
 def test_nested_relation_filters_count_each_subquery_once():
     result = User.objects.filter(User.posts.comments.body == "hi").inspect()
-    assert result.statements[0].subqueries == orm.SubqueryInspection(2, 0)
+    assert result.statements[0].correlated_count == 2
+    assert result.statements[0].uncorrelated_count == 0
 
 
 def test_nested_subqueries_have_their_own_dependencies():
@@ -33,7 +35,8 @@ def test_nested_subqueries_have_their_own_dependencies():
     # query itself has no dependency on User, despite containing a correlation.
     comments = orm.exists(Comment.objects.filter(Comment.post_id == orm.outer(Post.id)))
     result = User.objects.filter(orm.exists(Post.objects.filter(comments))).inspect()
-    assert result.statements[0].subqueries == orm.SubqueryInspection(1, 1)
+    assert result.statements[0].correlated_count == 1
+    assert result.statements[0].uncorrelated_count == 1
     # Same-model aliases must not mistake a local reference for an outer one.
     average = (
         Post.objects.filter(Post.author_id == orm.outer(Post.author_id))
@@ -42,13 +45,18 @@ def test_nested_subqueries_have_their_own_dependencies():
     )
     assert Post.objects.filter(Post.views > average).inspect().statements[
         0
-    ].subqueries == orm.SubqueryInspection(1, 0)
+    ].correlated_count == 1
+    assert Post.objects.filter(Post.views > average).inspect().statements[
+        0
+    ].uncorrelated_count == 0
 
 
-def test_cte_and_from_subqueries_are_uncorrelated():
+def test_ctes_are_counted_separately_from_subqueries():
     recent = Post.objects.filter(Post.views > 5).cte("recent")
     result = Post.objects.from_(recent).inspect()
-    assert result.statements[0].subqueries == orm.SubqueryInspection(0, 1)
+    assert result.statements[0].correlated_count == 0
+    assert result.statements[0].uncorrelated_count == 0
+    assert result.statements[0].cte_count == 1
     totals = (
         Post.objects.select(Post.author_id, orm.func.count().label("n"))
         .group_by(Post.author_id)
@@ -57,7 +65,9 @@ def test_cte_and_from_subqueries_are_uncorrelated():
     result = User.objects.filter(
         User.id.in_(totals.select(totals.c.author_id))
     ).inspect()
-    assert result.statements[0].subqueries == orm.SubqueryInspection(0, 2)
+    assert result.statements[0].correlated_count == 0
+    assert result.statements[0].uncorrelated_count == 1
+    assert result.statements[0].cte_count == 1
 
 
 async def test_empty_parents_skip_prefetch_execution(clean):
@@ -137,10 +147,12 @@ async def test_mutations_inspect_generated_subqueries(clean):
         .as_scalar()
     )
     update = Post.objects.update(views=scalar)
-    assert update.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    assert update.inspect().statements[0].correlated_count == 1
+    assert update.inspect().statements[0].uncorrelated_count == 0
     assert await update == 0
     delete = Post.objects.filter(Post.comments.body == "hi").delete().returning()
-    assert delete.inspect().statements[0].subqueries == orm.SubqueryInspection(1, 0)
+    assert delete.inspect().statements[0].correlated_count == 1
+    assert delete.inspect().statements[0].uncorrelated_count == 0
     assert await delete == []
 
 

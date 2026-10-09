@@ -4,7 +4,7 @@
  * two types are identical. Never run.
  */
 
-import { Decimal, exists, func, outer, param, window, type JsonValue, type Page } from "../../src/index.js";
+import { Decimal, exists, func, outer, param, window, type JsonValue, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
 import { Comment, Post, Priority, Profile, Role, Tag, User } from "../blog/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -344,4 +344,37 @@ export async function prepared() {
   await q.all({ author: "1", t: "x", n: 1 });
   // @ts-expect-error a query with param() placeholders runs through prepare()
   await Post.objects.filter(Post.id.eq(param("id"))).all();
+}
+
+export function inspectionTypes() {
+  const result = Post.objects.load(Post.author).inspect();
+  same<typeof result, QueryInspection>();
+  same<typeof result.statements, readonly StatementInspection[]>();
+  const first = result.statements[0];
+  same<typeof first, StatementInspection | undefined>();
+  same<typeof result.statements[0]["correlatedCount"], number>();
+  same<typeof result.statements[0]["uncorrelatedCount"], number>();
+  same<typeof result.statements[0]["cteCount"], number>();
+  // @ts-expect-error immutable result
+  result.statementCount = 2;
+  // @ts-expect-error immutable statements
+  result.statements.push(result.statements[0]!);
+  // @ts-expect-error immutable counters
+  result.statements[0]!.correlatedCount = 0;
+  same<ReturnType<ReturnType<typeof Tag.objects.insert>["inspect"]>, QueryInspection>();
+  const update = Tag.objects.update({ name: "x" }).inspect();
+  same<typeof update, QueryInspection>();
+  const prepared = Post.objects.filter(Post.id.eq(param("id"))).prepare();
+  same<ReturnType<typeof prepared.inspect>, QueryInspection>();
+  prepared.inspect({ id: 1n });
+  // @ts-expect-error missing bound parameters
+  prepared.inspect();
+  // @ts-expect-error wrong parameter type
+  prepared.inspect({ id: "x" });
+  // @ts-expect-error inspect parameters through prepare()
+  Post.objects.filter(Post.id.eq(param("id"))).inspect();
+  // @ts-expect-error outer references need an enclosing query
+  Post.objects.filter(Post.authorId.eq(outer(User.id))).inspect();
+  // @ts-expect-error selected outer references also need an enclosing query
+  Post.objects.filter(Post.authorId.eq(outer(User.id))).select({ id: Post.id }).inspect();
 }
