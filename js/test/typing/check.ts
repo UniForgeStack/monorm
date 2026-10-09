@@ -64,6 +64,8 @@ export function json(meta: import("../../src/index.js").Column<JsonValue, "Post"
   same<ReturnType<ReturnType<typeof meta.get>["asText"]>, import("../../src/index.js").Expression<string | null, "Post", {}>>();
   void meta.jsonContains({ a: [1] }).and(meta.hasKey("a"));
   void Post.objects.update({ views: 1 });
+  // @ts-expect-error SQL NULL is not a JSON value to merge
+  meta.jsonMerge(null);
   // @ts-expect-error JSON paths need a JSON value
   Post.views.get("a");
 }

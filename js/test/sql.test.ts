@@ -306,8 +306,8 @@ test("JSON path, containment and merge SQL", () => {
   const registry = new Registry();
   const Doc = loads(`model Doc {\n id BigInt @id\n meta Json\n title String\n @@map("docs")\n}`, { registry })["Doc"] as any;
   const w = (c: unknown) => where(Doc.objects.filter(c));
-  assert.equal(w(Doc.meta.get("author", "name").eq("Ann")), `(("docs"."meta" -> 'author') -> 'name') = '"Ann"'`);
-  assert.equal(w(Doc.meta.get("tags").get(0).asText().eq("x")), `(("docs"."meta" -> 'tags') ->> 0) = 'x'`);
+  assert.equal(w(Doc.meta.get("author", "name").eq("Ann")), `((("docs"."meta" -> 'author') -> 'name')) = '"Ann"'`);
+  assert.equal(w(Doc.meta.get("tags").get(0).asText().eq("x")), `((("docs"."meta" -> 'tags') ->> 0)) = 'x'`);
   assert.equal(w(Doc.meta.jsonContains({ kind: "post" })), `"docs"."meta" @> '{"kind":"post"}'`);
   assert.equal(w(Doc.meta.hasKey("tags")), `"docs"."meta" ? 'tags'`);
   assert.throws(() => Doc.meta.get("a").asText().get("b"), /ends a JSON path/);

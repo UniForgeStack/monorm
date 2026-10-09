@@ -286,10 +286,12 @@ class Expression(Node, Generic[T]):
     def json_contains(self, value: Any) -> Condition:
         """JSON: the value contains ``value`` at the top level (``col @> value``):
         ``Post.meta.json_contains({"tags": ["a"]})``. PostgreSQL only."""
+        _not_none(value, "json_contains")
         return Comparison("contains", self, Literal(value))
 
     def json_contained_by(self, value: Any) -> Condition:
         """JSON: ``value`` contains the value (``col <@ value``). PostgreSQL only."""
+        _not_none(value, "json_contained_by")
         return Comparison("contained_by", self, Literal(value))
 
     def has_key(self, key: str) -> Condition:
@@ -303,6 +305,7 @@ class Expression(Node, Generic[T]):
         """JSON: ``col || value``: the objects merged (the keys of ``value`` win), or the
         arrays joined. For updates: ``update(meta=Post.meta.json_merge({"seen": True}))``.
         PostgreSQL only."""
+        _not_none(value, "json_merge")
         return Arith("json_merge", self, value if isinstance(value, Node) else Literal(value))
 
     # Full-text search ------------------------------------------------------------------------
@@ -375,6 +378,11 @@ class Expression(Node, Generic[T]):
     def desc(self, *, nulls: NullsPlace | None = None) -> Ordering:
         """Descending; ``nulls="first"`` / ``"last"`` places NULLs (the database's default otherwise)."""
         return Ordering(self, desc=True, nulls=nulls)
+
+
+def _not_none(value: Any, method: str) -> None:
+    if value is None:
+        raise TypeError(f"{method}() takes a JSON value, not None")
 
 
 def _escape_like(text: str) -> str:

@@ -322,12 +322,14 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
   }
 
   /** JSON: the value contains `value` at the top level (`col @> value`). PostgreSQL only. */
-  jsonContains(this: Expression<JsonValue | null, S, P>, value: JsonValue): Condition<S, P> {
+  jsonContains(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null>): Condition<S, P> {
+    notNull(value, "jsonContains");
     return new Comparison("contains", this, new Literal(value));
   }
 
   /** JSON: `value` contains the value (`col <@ value`). PostgreSQL only. */
-  jsonContainedBy(this: Expression<JsonValue | null, S, P>, value: JsonValue): Condition<S, P> {
+  jsonContainedBy(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null>): Condition<S, P> {
+    notNull(value, "jsonContainedBy");
     return new Comparison("contained_by", this, new Literal(value));
   }
 
@@ -344,8 +346,9 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
    * joined: `update({ meta: Post.meta.jsonMerge({ seen: true }) })`. PostgreSQL only. */
   jsonMerge<S2 extends string = never, P2 = {}>(
     this: Expression<JsonValue | null, S, P>,
-    value: JsonValue | Expression<JsonValue | null, S2, P2>,
+    value: Exclude<JsonValue, null> | Expression<JsonValue | null, S2, P2>,
   ): Expression<JsonValue, S | S2, P & P2> {
+    notNull(value, "jsonMerge");
     return new Arith("json_merge", this, value instanceof Node ? value : new Literal(value)) as never;
   }
 
@@ -448,6 +451,12 @@ function inValues(item: Expression<unknown, string, unknown>, values: unknown, n
     return new Const(neg);
   }
   return new InList(item, values.map(wrap), neg);
+}
+
+function notNull(value: unknown, method: string): void {
+  if (value === null) {
+    throw new TypeError(`${method}() takes a JSON value, not null`);
+  }
 }
 
 function escapeLike(text: string): string {
