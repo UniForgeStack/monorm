@@ -1,0 +1,67 @@
+datasource db {
+ provider = "sqlite"
+}
+model User {
+ id Int @id
+ email String @unique
+ nickname String?
+ type String @map("kind")
+ posts Post[]
+ @@map("rust_read_users")
+}
+model Post {
+ id Int @id
+ author_id Int
+ title String
+ views Int
+ author User @relation(fields: [author_id], references: [id])
+ @@map("rust_read_posts")
+}
+enum Status {
+ active @map("ACTIVE")
+ inactive
+ @@storage(text)
+}
+enum Priority {
+ low @value(1)
+ high @value(10)
+ @@storage(int)
+}
+model Scalar {
+ id Int @id
+ status Status
+ priority Priority
+ flag Boolean
+ big BigInt
+ ratio Float
+ moment DateTime
+ day DateTime @db.Date
+ key String @db.Uuid
+ payload Json
+ @@unique([status, priority])
+ @@map("rust_read_scalars")
+}
+enum S0 {
+ value
+ @@storage(text)
+}
+enum R {
+ value
+ @@storage(text)
+}
+enum C {
+ value
+ @@storage(text)
+}
+model KeyProbe {
+ id Int @id
+ a Int
+ b Int
+ c Int
+ d Int
+ e Int
+ st0 S0
+ root R
+ cardinal C
+ @@unique([a, b, c, d, e])
+}

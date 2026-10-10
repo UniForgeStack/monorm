@@ -21,6 +21,7 @@ storage-reference = { path = "../storage/reference", optional = true }
 
 [features]
 default = ["generate-python", "generate-typescript"]
+generate-rust = []
 generate-python = []
 generate-typescript = []
 composition = []
