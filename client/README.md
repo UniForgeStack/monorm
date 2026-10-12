@@ -16,7 +16,7 @@ use models::{Database, User};
 
 async fn readers(url: &str) -> orm_client::Result<()> {
     let db = Database::connect(url, 4).await?;
-    let query = User::objects()
+    let query = User::objects
         .filter(User::TYPE.eq("reader".into()))
         .order_by(User::ID.asc());
     let users = query.clone().using(&db).await?;
@@ -32,6 +32,31 @@ async fn readers(url: &str) -> orm_client::Result<()> {
     Ok(())
 }
 ```
+
+Configure a default for this generated schema to use direct terminals:
+
+```rust
+db.set_default();
+let user: Option<User> = User::objects.first().await?;
+let readers = User::objects.filter(User::email.eq("reader@example.com".into())).await?;
+Database::clear_default();
+```
+
+`User::objects` is an associated lazy query constant with the default scalar shape; it needs no parentheses or generic arguments. Each access creates an independent query. Snake_case associated columns, such as `User::email`, preserve instance syntax `user.email`; the uppercase column aliases remain available. Relation path builders remain `User::posts()` until the loading surface is added by ticket 02.
+
+Defaults are configured per generated schema identity, checked at connection time, and resolved when execution starts. Missing configuration returns a compatibility error. Explicit `using(&db)` bypasses the default. Changing the default affects subsequent executions; an executing query holds its own compatible handle. Clear the configured default before closing its driver. No transaction is retained as a default.
+
+Generated associated-type shape traits let consumers accept minimal and fuller loaded shapes through the same interface:
+
+```rust
+use models::UserShape;
+fn email<S: UserShape<Email = String>>(row: &S) -> &String {
+    row.email()
+}
+struct Reader<S: UserShape<Email = String>> { row: S }
+```
+
+Each instantiated generic model implements its shape trait. Scalar associated types are their actual exposed types, including `Option<T>` and `Unloaded`. Relation associated types are `Unloaded` in this ticket; ticket 02 adds queryable relation values, loaded caches, and nested target shape bounds. Concrete model fields retain ordinary field syntax; generic shape-bound consumers use immutable accessors. Separate per-field capability traits are unnecessary.
 
 Builders are lazy, owned transformations. Clone before reusing one. `using` binds a compatible live handle; awaiting the bound builder consumes it and reads a vector. Ordinary field access is synchronous and never performs I/O.
 

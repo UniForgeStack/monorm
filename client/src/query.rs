@@ -352,13 +352,13 @@ impl<M: Model> Default for Query<M> {
     }
 }
 impl<M: Model> Query<M> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             select: ir::Select {
-                model: M::NAME.into(),
-                model_fields: Some(M::fields()),
+                model: String::new(),
+                model_fields: None,
                 model_helpers: vec![],
-                scope: Default::default(),
+                scope: std::collections::BTreeMap::new(),
                 without_defaults: false,
                 without_related: false,
                 with: vec![],
@@ -445,6 +445,11 @@ impl<M: Model, R, L> Query<M, R, L> {
     fn erase(self) -> (ir::Select, Values) {
         let mut values = Values::default();
         let mut select = self.select;
+        // The associated constant is a lazy root, with no allocations at access time.
+        select.model = M::NAME.into();
+        if select.model_fields.is_none() && select.columns.is_none() {
+            select.model_fields = Some(M::fields());
+        }
         select.filters = self
             .filters
             .into_iter()
@@ -518,6 +523,37 @@ impl<M: Model, R> Query<M, R, Unsliced> {
             Ok(out)
         }
     }
+}
+impl<M: Model, R: Presence, L> Query<M, R, L> {
+    pub async fn all(self) -> Result<Vec<M>> {
+        let db = Database::<M::Schema>::configured()?;
+        self.using(&db).all().await
+    }
+    pub async fn first(self) -> Result<R::Single<M>> {
+        let db = Database::<M::Schema>::configured()?;
+        self.using(&db).first().await
+    }
+    pub async fn last(self) -> Result<R::Single<M>> {
+        let db = Database::<M::Schema>::configured()?;
+        self.using(&db).last().await
+    }
+    pub async fn get<V: KeyValues>(self, key: Unique<M::Source,V>, value: V::Input) -> Result<R::Single<M>> {
+        let db = Database::<M::Schema>::configured()?;
+        self.using(&db).get(key,value).await
+    }
+    pub async fn count(self) -> Result<i64> {
+        let db = Database::<M::Schema>::configured()?;
+        self.using(&db).count().await
+    }
+    pub async fn exists(self) -> Result<bool> {
+        let db = Database::<M::Schema>::configured()?;
+        self.using(&db).exists().await
+    }
+}
+impl<M: Model, R: Presence, L: Send + 'static> IntoFuture for Query<M,R,L> {
+    type Output = Result<Vec<M>>;
+    type IntoFuture = Pin<Box<dyn Future<Output=Self::Output> + Send>>;
+    fn into_future(self) -> Self::IntoFuture { Box::pin(self.all()) }
 }
 pub struct Bound<'a, M: Model, R = Optional, L = Unsliced> {
     query: Query<M, R, L>,

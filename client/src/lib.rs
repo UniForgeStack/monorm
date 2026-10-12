@@ -7,7 +7,12 @@ pub use orm_engine::db::Cell;
 pub use query::*;
 #[doc(hidden)]
 pub use sea_query::Value as BindValue;
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    marker::PhantomData,
+    sync::{Arc, Mutex, OnceLock},
+};
 pub use value::Codec;
 pub use {bigdecimal, chrono, serde_json, uuid};
 
@@ -107,6 +112,28 @@ impl<S: SchemaSpec> Clone for Database<S> {
     }
 }
 impl<S: SchemaSpec> Database<S> {
+    /// Configure ordinary queries for this generated schema. This is never a transaction.
+    pub fn set_default(&self) {
+        defaults()
+            .lock()
+            .unwrap()
+            .insert(TypeId::of::<S>(), Box::new(self.clone()));
+    }
+    /// Remove this schema's configured default without closing its driver.
+    pub fn clear_default() {
+        defaults().lock().unwrap().remove(&TypeId::of::<S>());
+    }
+    pub(crate) fn configured() -> Result<Self> {
+        defaults()
+            .lock()
+            .unwrap()
+            .get(&TypeId::of::<S>())
+            .and_then(|db| db.downcast_ref::<Self>())
+            .cloned()
+            .ok_or_else(|| {
+                Error::Compatibility("no default database configured for this generated schema".into())
+            })
+    }
     pub async fn connect(url: &str, pool_size: usize) -> Result<Self> {
         let ir = SchemaIr::from_json(S::JSON).map_err(Error::Compatibility)?;
         if ir.dialect != S::Dialect::DIALECT {
@@ -131,6 +158,11 @@ impl<S: SchemaSpec> Database<S> {
     pub async fn close(&self) {
         self.driver.close().await;
     }
+}
+type Defaults = Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>;
+fn defaults() -> &'static Defaults {
+    static DEFAULTS: OnceLock<Defaults> = OnceLock::new();
+    DEFAULTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 /// Private logical key data, constructible only from an executed model row.
 #[doc(hidden)]

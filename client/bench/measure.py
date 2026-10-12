@@ -48,7 +48,7 @@ tokio={{version="1",features=["rt-multi-thread","macros"]}}
                     relations = f"\n next_id Int\n next M{(i+1)%count} @relation(fields: [next_id], references: [id])\n previous M{(i-1)%count}[]"
                 models.append(f"model M{i} {{\n id Int @id\n{fields}{relations}\n}}")
                 states = ["orm_client::Unloaded"] + ["orm_client::Loaded" if j % 2 else "orm_client::Unloaded" for j in range(width)] + (["orm_client::Unloaded"] if cyclic else [])
-                reads.append(f"let rows=models::M{i}::objects().using(&db).all().await?; std::hint::black_box(rows);\nlet rows=models::M{i}::<{','.join(states)}>::query().using(&db).all().await?;std::hint::black_box(rows);")
+                reads.append(f"let rows=models::M{i}::objects.using(&db).all().await?; std::hint::black_box(rows);\nlet rows=models::M{i}::<{','.join(states)}>::query().using(&db).all().await?;std::hint::black_box(rows);")
             source = project / "schema.prisma"
             source.write_text("\n".join(models))
             generated = project / "src/models.rs"

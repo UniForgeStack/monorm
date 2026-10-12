@@ -6,6 +6,9 @@ fn generate(source: &str) -> Result<String, String> {
 #[test]
 fn collision_and_language_checks_are_offline() {
     let cases = [
+        ("model User {\n id Int @id\n}\nmodel UserShape {\n id Int @id\n}", "helper normalization collision"),
+        ("model User {\n id Int @id\n objects String\n}", "reserved Rust helper"),
+        ("model User {\n id Int @id\n foo_bar String\n foo__bar String\n}", "normalization collision"),
         (
             "model User {\n id Int @id\n userName String\n user_name String\n}",
             "normalization collision",

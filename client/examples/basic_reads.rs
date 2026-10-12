@@ -8,7 +8,10 @@ use orm_client::{Loaded, Unloaded};
 async fn main() -> orm_client::Result<()> {
     let url = std::env::var("ORM_DATABASE_URL").unwrap_or_else(|_| "sqlite://:memory:".into());
     let db = Database::connect(&url, 1).await?;
-    let rows = User::objects()
+    db.set_default();
+    let first: Option<User> = User::objects.first().await?;
+    if let Some(row) = first { println!("{}", row.email); }
+    let rows = User::objects
         .filter(User::EMAIL.eq("reader@example.com".into()))
         .using(&db)
         .await?;
@@ -23,6 +26,7 @@ async fn main() -> orm_client::Result<()> {
         let _marker = &row.id;
         println!("{}", row.email);
     }
+    Database::clear_default();
     db.close().await;
     Ok(())
 }

@@ -48,6 +48,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
         for n in [
             m.ir.name.clone(),
             format!("{}Fields", m.ir.name),
+            format!("{}Shape", m.ir.name),
             format!("{}Source", m.ir.name),
             format!("{}Path", m.ir.name),
         ] {
@@ -57,17 +58,18 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             }
         }
         let mut fields = BTreeSet::new();
+        let mut shape_fields = BTreeSet::new();
         let mut tokens: BTreeSet<String> = ["METADATA"].into_iter().map(str::to_owned).collect();
         for f in m.fields() {
             let n = snake(&f.name);
             ident(&n)?;
-            if n.starts_with("__orm_") {
+            if n.starts_with("__orm_") || matches!(n.as_str(), "objects" | "query") {
                 return Err(format!(
                     "{}.{}: reserved Rust helper name",
                     m.ir.name, f.name
                 ));
             }
-            if !fields.insert(n.clone()) {
+            if !shape_fields.insert(variant(&f.name)) || !fields.insert(n.clone()) {
                 return Err(format!(
                     "{}.{}: Rust field normalization collision",
                     m.ir.name, f.name
@@ -101,7 +103,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
                     m.ir.name
                 ));
             }
-            if !fields.insert(n.clone()) || !tokens.insert(n.to_ascii_uppercase()) {
+            if !shape_fields.insert(variant(&r.name)) || !fields.insert(n.clone()) || !tokens.insert(n.to_ascii_uppercase()) {
                 return Err(format!(
                     "{}.{n}: Rust relation/token normalization collision",
                     m.ir.name
@@ -226,6 +228,21 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             .collect::<Vec<_>>()
             .join(",");
         let args = vars.join(",");
+        writeln!(out, "pub trait {name}Shape {{").unwrap();
+        for f in fs {
+            writeln!(out, "type {}; fn {}(&self)->&Self::{};", ident(&variant(&f.name))?, ident(&snake(&f.name))?, ident(&variant(&f.name))?).unwrap();
+        }
+        for r in &m.ir.relations {
+            writeln!(out, "type {};", ident(&variant(&r.name))?).unwrap();
+        }
+        writeln!(out, "}}\nimpl<{decl}> {name}Shape for {name}<{args}> {{").unwrap();
+        for (i, f) in fs.iter().enumerate() {
+            writeln!(out, "type {}=S{i}::Value; fn {}(&self)->&Self::{} {{ &self.__orm_values.{} }}", ident(&variant(&f.name))?, ident(&snake(&f.name))?, ident(&variant(&f.name))?, ident(&snake(&f.name))?).unwrap();
+        }
+        for r in &m.ir.relations {
+            writeln!(out, "type {}=orm_client::Unloaded;", ident(&variant(&r.name))?).unwrap();
+        }
+        out.push_str("}\n");
         for columns in unique_columns(m) {
             let key = ident(&key_type(&m.ir.name, &columns))?;
             let ts = columns
@@ -278,8 +295,9 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             .unwrap();
         }
         writeln!(out, "}},__orm_identity:row.identity()? }}) }} }}").unwrap();
-        writeln!(out,"impl {name} {{ pub fn objects()->orm_client::Query<Self> {{ orm_client::Query::new() }}").unwrap();
+        writeln!(out,"impl {name} {{ #[allow(non_upper_case_globals)] pub const objects:orm_client::Query<Self>=orm_client::Query::new();").unwrap();
         for f in fs {
+            writeln!(out, "#[allow(non_upper_case_globals)] pub const {}:orm_client::Column<{name}Source,{}>=orm_client::Column::field({:?});", ident(&snake(&f.name))?,ty(f),f.name).unwrap();
             writeln!(
                 out,
                 "pub const {}:orm_client::Column<{name}Source,{}>=orm_client::Column::field({:?});",

@@ -5,6 +5,9 @@ mod sqlite {
 mod postgres {
     include!(concat!(env!("OUT_DIR"), "/postgres.rs"));
 }
+mod other_sqlite {
+    include!(concat!(env!("OUT_DIR"), "/models.rs"));
+}
 use orm_client::{Error, Loaded, Unloaded};
 use std::hash::{Hash, Hasher};
 fn hash<T: Hash>(v: &T) -> u64 {
@@ -21,9 +24,33 @@ macro_rules! exercise {
         fixture.batch(FIXTURE.into()).await.unwrap();
         fixture.close().await;
         let db = Database::connect($url, 1).await.unwrap();
-        let all = User::objects().using(&db).await.unwrap();
+        assert!(matches!(User::objects.first().await, Err(Error::Compatibility(_))));
+        db.set_default();
+        assert!(matches!(other_sqlite::User::objects.first().await, Err(Error::Compatibility(_))));
+        let direct: Option<User> = User::objects.first().await.unwrap();
+        assert_eq!(direct.unwrap().email, "a@example.com");
+        assert_eq!(User::objects.last().await.unwrap().unwrap().id, 3);
+        assert!(User::objects.get(User::ID_KEY, 99).await.unwrap().is_none());
+        assert!(matches!(User::objects.get(User::EMAIL_KEY, "a@example.com".into()).await, Err(Error::MultipleRows)));
+        let lazy = User::objects.filter(User::id.eq(1));
+        let rows: Vec<User> = lazy.clone().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(lazy.await.unwrap()[0].id, 1);
+        assert!(User::objects.filter(User::ID.eq(99)).first().await.unwrap().is_none());
+        assert!(matches!(User::objects.filter(User::ID.eq(99)).require().first().await, Err(Error::NotFound)));
+        assert_eq!(User::objects.count().await.unwrap(), 3);
+        assert!(User::objects.exists().await.unwrap());
+        let empty_path = std::env::temp_dir().join(format!("orm-rust-empty-{}-{}.db", std::process::id(), stringify!($module)));
+        // Explicit binding must override the configured default, rather than silently route to it.
+        let explicit = other_sqlite::Database::connect(&format!("sqlite://{}", empty_path.display()), 1).await.unwrap();
+        assert!(matches!(other_sqlite::User::objects.using(&explicit).count().await, Err(Error::Engine(_))));
+        explicit.close().await;
+        std::fs::remove_file(empty_path).unwrap();
+        Database::clear_default();
+        assert!(matches!(User::objects.first().await, Err(Error::Compatibility(_))));
+        let all = User::objects.using(&db).await.unwrap();
         assert_eq!(all.len(), 3);
-        let user = User::objects()
+        let user = User::objects
             .using(&db)
             .get(User::ID_KEY, 1)
             .await
@@ -32,8 +59,8 @@ macro_rules! exercise {
         assert_eq!(user.email, "a@example.com");
         assert_eq!(user.nickname, None);
         assert_eq!(user.r#type, "reader");
-        assert_eq!(User::objects().filter(User::NICKNAME.eq(None)).using(&db).count().await.unwrap(),1);
-        assert_eq!(User::objects().filter(User::NICKNAME.ne(None)).using(&db).count().await.unwrap(),2);
+        assert_eq!(User::objects.filter(User::NICKNAME.eq(None)).using(&db).count().await.unwrap(),1);
+        assert_eq!(User::objects.filter(User::NICKNAME.ne(None)).using(&db).count().await.unwrap(),2);
         let borrowed: &String = &user.email;
         assert_eq!(borrowed.clone(), "a@example.com");
         let partial = User::<Unloaded, Loaded, Unloaded, Unloaded>::query()
@@ -46,11 +73,17 @@ macro_rules! exercise {
         assert!(user==hidden); assert_eq!(hash(&user),hash(&hidden));
         let helpers=User::<Loaded,Unloaded,Unloaded,Unloaded>::query().in_bulk(User::EMAIL_KEY,["b@example.com".to_owned()],&db).await.unwrap();
         assert_eq!(helpers["b@example.com"].id,2); let _unloaded=&helpers["b@example.com"].email;
+        fn email<S: $module::UserShape<Email=String>>(row: &S) -> &String { row.email() }
+        struct Reader<S: $module::UserShape<Email=String>> { row: S }
+        assert_eq!(email(&user), email(&partial));
+        let consumer = Reader { row: partial };
+        assert_eq!(email(&consumer.row), "a@example.com");
+        let partial = consumer.row;
         let _marker = &partial.id;
         assert!(user == partial);
         assert_eq!(hash(&user), hash(&partial));
         assert_eq!(
-            User::objects()
+            User::objects
                 .using(&db)
                 .first()
                 .await
@@ -60,11 +93,11 @@ macro_rules! exercise {
             1
         );
         assert_eq!(
-            User::objects().using(&db).last().await.unwrap().unwrap().id,
+            User::objects.using(&db).last().await.unwrap().unwrap().id,
             3
         );
         assert_eq!(
-            User::objects()
+            User::objects
                 .order_by(User::EMAIL.desc())
                 .using(&db)
                 .first()
@@ -74,14 +107,14 @@ macro_rules! exercise {
                 .id,
             2
         );
-        assert!(User::objects()
+        assert!(User::objects
             .using(&db)
             .get(User::ID_KEY, 99)
             .await
             .unwrap()
             .is_none());
         assert!(matches!(
-            User::objects()
+            User::objects
                 .require()
                 .using(&db)
                 .get(User::ID_KEY, 99)
@@ -90,21 +123,21 @@ macro_rules! exercise {
         ));
         // Generated unique tokens do not trust deployed database constraints.
         assert!(matches!(
-            User::objects()
+            User::objects
                 .using(&db)
                 .get(User::EMAIL_KEY, "a@example.com".into())
                 .await,
             Err(Error::MultipleRows)
         ));
         assert!(matches!(
-            User::objects()
+            User::objects
                 .limit(1)
                 .using(&db)
                 .get(User::EMAIL_KEY, "a@example.com".into())
                 .await,
             Err(Error::MultipleRows)
         ));
-        let missing = User::objects().filter(User::ID.eq(99));
+        let missing = User::objects.filter(User::ID.eq(99));
         assert!(matches!(
             missing.clone().require().using(&db).all().await,
             Err(Error::NotFound)
@@ -115,7 +148,7 @@ macro_rules! exercise {
         );
         assert!(!missing.require().using(&db).exists().await.unwrap());
         assert_eq!(
-            User::objects()
+            User::objects
                 .slice(1, 3)
                 .unwrap()
                 .order_by(User::ID.asc())
@@ -139,7 +172,7 @@ macro_rules! exercise {
             .eq("alpha".into())
             .and(User::posts().views().gt(10));
         assert_eq!(
-            User::objects()
+            User::objects
                 .filter(same)
                 .using(&db)
                 .all()
@@ -150,15 +183,15 @@ macro_rules! exercise {
                 .collect::<Vec<_>>(),
             vec![2]
         );
-        let separate = User::objects()
+        let separate = User::objects
             .filter(User::posts().title().eq("alpha".into()))
             .filter(User::posts().views().gt(10));
         assert_eq!(separate.clone().using(&db).count().await.unwrap(), 2);
-        assert!(separate.or(User::objects()).is_err());
-        let either = User::objects()
+        assert!(separate.or(User::objects).is_err());
+        let either = User::objects
             .order_by(User::ID.desc())
             .filter(User::ID.eq(1))
-            .or(User::objects().filter(User::ID.eq(2)))
+            .or(User::objects.filter(User::ID.eq(2)))
             .unwrap();
         assert_eq!(
             either
@@ -172,7 +205,7 @@ macro_rules! exercise {
             vec![2, 1]
         );
         assert_eq!(
-            User::objects()
+            User::objects
                 .exclude(User::ID.eq(1).or(User::ID.eq(3)))
                 .using(&db)
                 .count()
@@ -180,7 +213,7 @@ macro_rules! exercise {
                 .unwrap(),
             1
         );
-        let stmt = Post::objects()
+        let stmt = Post::objects
             .filter(Post::author().email().eq("b@example.com".into()))
             .using(&db)
             .statement()
@@ -193,16 +226,16 @@ macro_rules! exercise {
         let fixture=orm_engine::db::connect($url,1).await.unwrap();
         let pg=fixture.dialect().is_postgres();
         fixture.batch("DROP TABLE IF EXISTS rust_read_scalars".into()).await.unwrap();
-        let failure=$module::Scalar::objects().using(&db).all().await;
+        let failure=$module::Scalar::objects.using(&db).all().await;
         match failure {Err(Error::Engine(orm_engine::Error::Db(e)))=>{assert!(!e.message.is_empty());if pg {assert_eq!(e.sqlstate.as_deref(),Some("42P01"));}},_=>panic!("expected structured database failure")}
         let types=if pg {"flag boolean,big bigint,ratio double precision,moment timestamptz,day date,key uuid,payload jsonb"}else{"flag boolean,big bigint,ratio double precision,moment text,day text,key text,payload text"};
         fixture.batch(format!("CREATE TABLE rust_read_scalars(id integer PRIMARY KEY,status text,priority integer,{types}); INSERT INTO rust_read_scalars VALUES(1,'ACTIVE',10,{},9007199254740993,1.5,'{}','2026-10-10','a03807af-cc91-4a3e-a65d-f573c7b8f31a','{{\"ok\":true}}')",if pg {"true"}else{"1"},if pg {"2026-10-10 12:00:00+00"}else{"2026-10-10 12:00:00"})).await.unwrap();
         fixture.close().await;
-        let scalar=$module::Scalar::objects().filter($module::Scalar::STATUS.eq($module::Status::Active)).using(&db).get($module::Scalar::STATUS_PRIORITY_KEY,($module::Status::Active,$module::Priority::High)).await.unwrap().unwrap();
+        let scalar=$module::Scalar::objects.filter($module::Scalar::STATUS.eq($module::Status::Active)).using(&db).get($module::Scalar::STATUS_PRIORITY_KEY,($module::Status::Active,$module::Priority::High)).await.unwrap().unwrap();
         assert_eq!(scalar.big,9007199254740993);assert_eq!(scalar.priority,$module::Priority::High);assert!(scalar.flag);assert_eq!(scalar.ratio,1.5);assert_eq!(scalar.payload,orm_client::serde_json::json!({"ok":true}));assert_eq!(scalar.day.to_string(),"2026-10-10");assert_eq!(scalar.moment.timestamp(),1791633600);assert_eq!(scalar.key.to_string(),"a03807af-cc91-4a3e-a65d-f573c7b8f31a");
-        assert!(matches!(User::objects().limit(u64::MAX).using(&db).all().await,Err(Error::Engine(orm_engine::Error::Value(_)))));
-        assert_eq!(User::objects().order_by(User::ID.asc()).slice(0,2).unwrap().slice(1,3).unwrap().using(&db).all().await.unwrap().iter().map(|u|u.id).collect::<Vec<_>>(),vec![2]);
-        assert_eq!(User::objects().slice(2,1).unwrap().using(&db).count().await.unwrap(),0);
+        assert!(matches!(User::objects.limit(u64::MAX).using(&db).all().await,Err(Error::Engine(orm_engine::Error::Value(_)))));
+        assert_eq!(User::objects.order_by(User::ID.asc()).slice(0,2).unwrap().slice(1,3).unwrap().using(&db).all().await.unwrap().iter().map(|u|u.id).collect::<Vec<_>>(),vec![2]);
+        assert_eq!(User::objects.slice(2,1).unwrap().using(&db).count().await.unwrap(),0);
         db.close().await;
     }};
 }
@@ -222,7 +255,7 @@ async fn postgres_public_reads() {
     fixture.batch("DROP TABLE IF EXISTS rust_read_extra; CREATE TABLE rust_read_extra(id integer PRIMARY KEY,amount numeric,tags text[],priorities integer[]); INSERT INTO rust_read_extra VALUES(1,12.50,ARRAY['a','b'],ARRAY[1,10]);".into()).await.unwrap();
     fixture.close().await;
     let db = postgres::Database::connect(&url, 1).await.unwrap();
-    let row = postgres::Extra::objects()
+    let row = postgres::Extra::objects
         .filter(postgres::Extra::TAGS.eq(vec!["a".into(), "b".into()]))
         .using(&db)
         .first()
@@ -235,7 +268,7 @@ async fn postgres_public_reads() {
         vec![postgres::Priority::Low, postgres::Priority::High]
     );
     assert_eq!(
-        postgres::Extra::objects()
+        postgres::Extra::objects
             .filter(postgres::Extra::TAGS.eq(vec![]))
             .using(&db)
             .count()

@@ -7,13 +7,13 @@
       "scalar_fields_per_model": 65,
       "cyclic": false,
       "shapes_per_model": 2,
-      "generated_bytes": 78353,
-      "generation_seconds": 0.7719698330038227,
-      "check_seconds": 0.17979245900642127,
-      "no_change_check_seconds": 0.07390654197661206,
-      "edited_check_seconds": 0.11085337499389425,
-      "release_seconds": 3.070315374992788,
-      "binary_bytes": 9131008
+      "generated_bytes": 99678,
+      "generation_seconds": 1.5830062919994816,
+      "check_seconds": 0.5501215840049554,
+      "no_change_check_seconds": 0.14768358299625106,
+      "edited_check_seconds": 0.28394770799786784,
+      "release_seconds": 6.678715416994237,
+      "binary_bytes": 9130672
     },
     {
       "schema": "cyclic",
@@ -21,13 +21,13 @@
       "scalar_fields_per_model": 18,
       "cyclic": true,
       "shapes_per_model": 2,
-      "generated_bytes": 363579,
-      "generation_seconds": 0.012893625011201948,
-      "check_seconds": 0.35499108297517523,
-      "no_change_check_seconds": 0.07358024996938184,
-      "edited_check_seconds": 0.14852787496056408,
-      "release_seconds": 3.118631584045943,
-      "binary_bytes": 9499376
+      "generated_bytes": 457577,
+      "generation_seconds": 0.02678083300270373,
+      "check_seconds": 1.1274249580019386,
+      "no_change_check_seconds": 0.19905283400294138,
+      "edited_check_seconds": 0.35142004199587973,
+      "release_seconds": 6.2268088750061,
+      "binary_bytes": 9491584
     }
   ]
 }
