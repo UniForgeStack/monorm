@@ -19,6 +19,19 @@ and languages it supports. Features can ship in separate tickets.
 7. [Independent storage and ORM file fields](07-file-storage.md).
 8. [Generic foreign keys with a schema-generated ContentType enum](08-generic-foreign-keys.md).
 
+Additional interface design:
+
+- [Rust client with build-time checks and ordinary field access](09-rust-api.md).
+  This draft inventories the existing Python/TypeScript surface and records the
+  open Rust interface decisions.
+- [Shared adapter behavioral conformance](10-shared-adapter-conformance.md).
+  This spec defines shared scenarios, public API runners, and an independently
+  consumable suite for language and database adapter authors.
+- [Composite primary keys and declarative partitioning](11-partitioning-and-composite-keys.md).
+  Base models declare partitions; a proxy can own one list partition and its constraints.
+- [Typed schema expressions](12-schema-expressions.md).
+  Checks, index filters and default filters use field references and `& | ~`, not SQL strings.
+
 Plans 3 and 4 can proceed independently once extension contracts are available.
 Plan 5 depends on plan 3. Plan 6 reuses relations, transactions, and plan 4; partial
 selection is needed when exposing flattened parent fields on child models.
