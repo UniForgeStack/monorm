@@ -38,8 +38,8 @@ export interface NativeColumns {
 export interface NativePrefetch {
   readonly attr: string;
   readonly many: boolean;
-  readonly keyPos: number;
-  readonly childKeyPos: number;
+  readonly keyPos: readonly number[];
+  readonly childKeyPos: readonly number[];
   readonly back: string | null;
   readonly rows: NativeRows;
   readonly output: NativeInstances;

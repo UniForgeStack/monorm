@@ -209,7 +209,7 @@ impl RowSet for ValueRows {
 
 /// Runs each prefetch query for the keys in `parent`, then the prefetches nested in it.
 ///
-/// Each key is one bound parameter, so keys beyond the dialect's parameter limit (less
+/// Each key column is one bound parameter, so keys beyond the dialect's parameter limit (less
 /// what the query binds itself) go to further queries. The chunks split the parents,
 /// never one parent's rows, so ordering and slices per parent hold.
 fn run_prefetch<'a>(
@@ -221,12 +221,12 @@ fn run_prefetch<'a>(
     Box::pin(async move {
         let mut out = Vec::with_capacity(plans.len());
         for mut p in plans {
-            let null = null_of(Some(p.key_type));
+            let nulls: Vec<Value> = p.key_type.iter().map(|t| null_of(Some(*t))).collect();
             let mut seen = std::collections::HashSet::new();
             let mut keys = vec![];
             for i in 0..parent.len() {
-                let k = parent.value(i, p.key_pos, p.key_type)?;
-                if k != null && seen.insert(k.clone()) {
+                let k = p.key_pos.iter().zip(&p.key_type).map(|(&pos, &ty)| parent.value(i, pos, ty)).collect::<DbResult<Vec<_>>>()?;
+                if k.iter().zip(&nulls).all(|(v, null)| v != null) && seen.insert(k.clone()) {
                     keys.push(k);
                 }
             }
@@ -234,7 +234,7 @@ fn run_prefetch<'a>(
                 None => Box::new(EmptyRows) as Box<dyn RowSet>,
                 Some(k) => {
                     let own = db::build(target.dialect, &p.statement(vec![k.clone()])).1.len() - 1;
-                    let chunk = target.caps.max_params.saturating_sub(own).max(1);
+                    let chunk = (target.caps.max_params.saturating_sub(own) / k.len()).max(1);
                     let mut parts = Vec::with_capacity(keys.len().div_ceil(chunk));
                     for keys in keys.chunks(chunk) {
                         let (sql, args) = db::build(target.dialect, &p.statement(keys.to_vec()));

@@ -266,10 +266,10 @@ impl<'a, 'py> Builder<'a, 'py> {
         for c in &f.children {
             self.attach(&children, f.rows.as_ref(), c)?;
         }
-        let key_type = p.types[p.child_key_pos];
+        let key_types: Vec<ValueType> = p.child_key_pos.iter().map(|&c| p.types[c]).collect();
         let groups = PyDict::new(py);
         for (i, c) in children.iter().enumerate() {
-            let key = raw_cell(py, f.rows.as_ref(), i, p.child_key_pos, key_type)?;
+            let key = key_cell(py, f.rows.as_ref(), i, &p.child_key_pos, &key_types)?;
             if p.many {
                 match groups.get_item(&key)? {
                     Some(list) => list.cast_into::<PyList>()?.append(&c.obj)?,
@@ -281,7 +281,7 @@ impl<'a, 'py> Builder<'a, 'py> {
         }
         let attr = PyString::intern(py, &p.attr);
         for (i, parent) in parents.iter().enumerate() {
-            let key = raw_cell(py, parent_rows, i, p.key_pos, p.key_type)?;
+            let key = key_cell(py, parent_rows, i, &p.key_pos, &p.key_type)?;
             let found = if key.is_none(py) { None } else { groups.get_item(&key)? };
             if !p.many {
                 if let (Some(back), Some(child)) = (&p.back, &found) {
@@ -318,4 +318,16 @@ impl<'a, 'py> Builder<'a, 'py> {
 /// One cell as a Python value, enum values as stored.
 fn raw_cell(py: Python<'_>, rows: &dyn RowSet, r: usize, c: usize, ty: ValueType) -> PyResult<Py<PyAny>> {
     cell_to_py(py, rows.cell(r, c, ty).map_err(db_err)?)
+}
+
+/// A relation key: its one value, or a tuple of every column (`None` when one is NULL).
+fn key_cell(py: Python<'_>, rows: &dyn RowSet, r: usize, cols: &[usize], types: &[ValueType]) -> PyResult<Py<PyAny>> {
+    if let ([c], [ty]) = (cols, types) { return raw_cell(py, rows, r, *c, *ty); }
+    let mut items = Vec::with_capacity(cols.len());
+    for (&c, &ty) in cols.iter().zip(types) {
+        let v = raw_cell(py, rows, r, c, ty)?;
+        if v.is_none(py) { return Ok(py.None()); }
+        items.push(v);
+    }
+    Ok(PyTuple::new(py, items)?.into_any().unbind())
 }

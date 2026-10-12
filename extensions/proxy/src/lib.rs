@@ -103,12 +103,12 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
                 return Err(format!("{}.{}: a NOT NULL field without a database default cannot be omitted, because an insert through the proxy would fail", spec.model, f.name));
             }
         }
-        if let Some(r) = source.relations.iter().find(|r| !omitted.contains(&r.name) && omitted.contains(&r.from)) {
-            return Err(format!("{}.{}: relation {} uses it as its key; omit the relation too", spec.model, r.from, r.name));
+        if let Some((r, key)) = source.relations.iter().filter(|r| !omitted.contains(&r.name)).find_map(|r| r.from.iter().find(|f| omitted.contains(*f)).map(|f| (r, f))) {
+            return Err(format!("{}.{key}: relation {} uses it as its key; omit the relation too", spec.model, r.name));
         }
         for other in &ir.models {
-            if let Some(r) = other.relations.iter().find(|r| r.target == spec.model && omitted.contains(&r.to)) {
-                return Err(format!("{}.{}: relation {}.{} references it", spec.model, r.to, other.name, r.name));
+            if let Some((r, key)) = other.relations.iter().filter(|r| r.target == spec.model).find_map(|r| r.to.iter().find(|f| omitted.contains(*f)).map(|f| (r, f))) {
+                return Err(format!("{}.{key}: relation {}.{} references it", spec.model, other.name, r.name));
             }
         }
         model.fields.retain(|f| !omitted.contains(&f.name));

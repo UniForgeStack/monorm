@@ -8,7 +8,10 @@ pub type Result<T> = std::result::Result<T, String>;
 
 pub struct Model {
     pub ir: ModelIr,
+    /// The first primary key field's position.
     pub pk: usize,
+    /// Every primary key field's position, in key order.
+    pub key: Vec<usize>,
     /// Prepared `@client_default`s by field position.
     pub client_defaults: Vec<(usize, crate::client_default::ClientDefault)>,
     #[cfg(feature = "file-storage")]
@@ -49,6 +52,8 @@ impl Model {
             name: name.to_owned(),
             table: name.to_owned(),
             fields,
+            primary_key: vec![],
+            pk_name: None,
             relations: vec![],
             indexes: vec![],
             constraints: vec![],
@@ -59,7 +64,7 @@ impl Model {
         };
         Ok(Model {
             #[cfg(feature = "file-storage")] file_fields: vec![],
-            ir, pk: 0, field_index, relation_index: HashMap::new(), client_defaults: vec![],
+            ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             #[cfg(feature = "query-defaults")] query_defaults: Default::default(),
             #[cfg(feature = "updated-at")] updated_at: vec![],
             #[cfg(feature = "soft-delete")] soft_delete: None,
@@ -101,6 +106,11 @@ impl Model {
 
     pub fn pk_field(&self) -> &FieldIr {
         &self.ir.fields[self.pk]
+    }
+
+    /// The primary key fields in key order; `pk_field()` is the first.
+    pub fn key_fields(&self) -> Vec<&FieldIr> {
+        self.key.iter().map(|&i| &self.ir.fields[i]).collect()
     }
 
     /// Returns the relation and the index of its target model.
@@ -189,24 +199,26 @@ impl Schema {
             let field_index: HashMap<String, usize> =
                 m.fields.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect();
             if field_index.len() != m.fields.len() { return Err(format!("model {} has duplicate field names", m.name)); }
-            let pks: Vec<usize> = m
-                .fields
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.primary_key)
-                .map(|(i, _)| i)
-                .collect();
-            let pk = match pks.as_slice() {
-                [pk] => *pk,
-                _ => return Err(format!("model {} must have exactly one primary key", m.name)),
+            let flagged = m.fields.iter().filter(|f| f.primary_key).count();
+            let key: Vec<usize> = m.key_fields().iter().filter_map(|f| field_index.get(*f).copied()).collect();
+            let pk = match key.as_slice() {
+                [pk] if flagged == 1 => *pk,
+                [pk, ..] if flagged == key.len() && m.primary_key.len() == key.len() => *pk,
+                _ => return Err(format!("model {} must have exactly one primary key: @id on one field or @@id([...])", m.name)),
             };
             let mut relation_index = HashMap::new();
             for (i, r) in m.relations.iter().enumerate() {
                 let target = *model_index.get(&r.target).ok_or_else(|| {
                     format!("relation {}.{} targets unknown model {}", m.name, r.name, r.target)
                 })?;
-                if !field_index.contains_key(&r.from) {
-                    return Err(format!("relation {}.{}: no field {:?}", m.name, r.name, r.from));
+                if let Some(missing) = r.from.iter().find(|f| !field_index.contains_key(*f)) {
+                    return Err(format!("relation {}.{}: no field {missing:?}", m.name, r.name));
+                }
+                if r.from.is_empty() || r.from.len() != r.to.len() {
+                    return Err(format!("relation {}.{}: from and to need the same number of fields", m.name, r.name));
+                }
+                if r.through.is_some() && r.from.len() != 1 {
+                    return Err(format!("relation {}.{}: a many-to-many relation has one key field on each side", m.name, r.name));
                 }
                 if field_index.contains_key(&r.name) {
                     return Err(format!("{}.{} is both a field and a relation", m.name, r.name));
@@ -219,7 +231,7 @@ impl Schema {
             let client_defaults = crate::client_default::prepare(&m.name, &m.fields, &enums)?;
             models.push(Model {
                 #[cfg(feature = "file-storage")] file_fields: file_fields.next().expect("prepared file model"),
-                ir: m, pk, field_index, relation_index, client_defaults,
+                ir: m, pk, key, field_index, relation_index, client_defaults,
                 #[cfg(feature = "query-defaults")] query_defaults: Default::default(),
                 #[cfg(feature = "updated-at")] updated_at: vec![],
                 #[cfg(feature = "soft-delete")] soft_delete: None,
@@ -233,7 +245,9 @@ impl Schema {
             for r in &m.ir.relations {
                 let (_, t) = m.relation(&r.name)?;
                 let what = |e: String| format!("relation {}.{}: {e}", m.ir.name, r.name);
-                models[t].field(&r.to).map_err(what)?;
+                for to in &r.to {
+                    models[t].field(to).map_err(what)?;
+                }
                 if let Some(th) = &r.through {
                     if r.kind != RelKind::Many {
                         return Err(what("a relation through a join model is to-many".into()));

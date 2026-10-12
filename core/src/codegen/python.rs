@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, SchemaIr};
+use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr};
 use crate::schema::{Model, Schema};
 
 pub struct Generated {
@@ -222,7 +222,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                     writeln!(body, "    {}: f.HasOne[{} | None, _{}Path]", r.name, r.target, r.target).unwrap()
                 }
                 RelKind::One => {
-                    let nullable = m.field(&r.from)?.nullable;
+                    let nullable = r.from.iter().map(|f| m.field(f).map(|f| f.nullable)).collect::<Result<Vec<_>, _>>()?.contains(&true);
                     #[cfg(feature = "reference-loading")]
                     let nullable = nullable || super::reference_target_filtered(ir, &r.target);
                     #[cfg(feature = "query-defaults")]
@@ -251,8 +251,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         body.push('\n');
 
         // insert / update shapes; a to-one relation can be given instead of its key
-        let belongs =
-            |field: &str| m.ir.relations.iter().find(|r| r.kind == RelKind::One && r.foreign_key && r.from == field);
+        let belongs = |field: &str| {
+            m.ir.relations.iter().find(|r| r.kind == RelKind::One && r.foreign_key && r.from.iter().any(|f| f == field))
+        };
+        // a relation of several key fields is listed once, after its last one
+        let last = |r: &RelationIr, field: &str| r.from.last().is_some_and(|f| f == field);
         writeln!(body, "class {name}Insert(TypedDict):").unwrap();
         for (position, f) in m.fields().iter().enumerate() {
             #[cfg(feature = "composition")]
@@ -268,7 +271,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                         writeln!(body, "    # One of {} / {} is required (checked at runtime).", f.name, r.name).unwrap();
                     }
                     writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap();
-                    writeln!(body, "    {}: NotRequired[{target}]", r.name).unwrap();
+                    if last(r, &f.name) { writeln!(body, "    {}: NotRequired[{target}]", r.name).unwrap(); }
                 }
                 None if f.nullable || has_server_value(f) || f.client_default.is_some() => writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap(),
                 None => writeln!(body, "    {}: {t}", f.name).unwrap(),
@@ -299,7 +302,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let t = if m.is_file_field(&f.name) { format!("{t} | Upload") } else { t };
             if expression { writeln!(body, "    {}: {t} | Expression[{t}]", f.name).unwrap(); }
             else { writeln!(body, "    {}: {t}", f.name).unwrap(); }
-            if let Some(r) = belongs(&f.name) {
+            if let Some(r) = belongs(&f.name).filter(|r| last(r, &f.name)) {
                 let target = if f.nullable { format!("{} | None", r.target) } else { r.target.clone() };
                 writeln!(body, "    {}: {target}", r.name).unwrap();
             }
@@ -317,7 +320,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             } else {
                 writeln!(body, "    {}: {t}", f.name).unwrap();
             }
-            if let Some(r) = belongs(&f.name) {
+            if let Some(r) = belongs(&f.name).filter(|r| last(r, &f.name)) {
                 let target = if f.nullable { format!("{} | None", r.target) } else { r.target.clone() };
                 writeln!(body, "    {}: {target}", r.name).unwrap();
             }
@@ -330,7 +333,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             #[cfg(not(feature = "composition"))]
             let _ = position;
             writeln!(body, "    {}: {}", f.name, file_value_type(m, f)).unwrap();
-            if let Some(r) = belongs(&f.name) {
+            if let Some(r) = belongs(&f.name).filter(|r| last(r, &f.name)) {
                 writeln!(body, "    {}: {}", r.name, r.target).unwrap();
             }
         }

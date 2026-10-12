@@ -17,7 +17,7 @@ pub fn resolve(models: &mut [Model], physical: Option<&Schema>, mappings: &[Fiel
         if child_key != owners[child].pk || parent_key != owners[parent].pk || owners[child].pk_field().value_type() != owners[parent].pk_field().value_type() {
             return Err("owner links require compatible shared primary keys".into());
         }
-        if !owners[child].ir.relations.iter().any(|r| r.foreign_key && r.target == owners[parent].ir.name && r.from == link.child_key && r.to == link.parent_key) {
+        if !owners[child].ir.relations.iter().any(|r| r.foreign_key && r.target == owners[parent].ir.name && r.from == [link.child_key.clone()] && r.to == [link.parent_key.clone()]) {
             return Err("owner links require a declared physical foreign key".into());
         }
         prepared.push(PreparedOwnerLink { child: OwnerId(child), parent: OwnerId(parent), child_key, parent_key });
@@ -68,7 +68,9 @@ pub fn resolve(models: &mut [Model], physical: Option<&Schema>, mappings: &[Fiel
         // Relation links are local for this primitive. Explicit inherited relations
         // need a prepared relation-owner contribution rather than guessed columns.
         for rel in &model.ir.relations {
-            if fields[model.field_pos(&rel.from)?].storage.owner != OwnerId(local) { return Err("inherited relation links require a relation-owner primitive".into()); }
+            for from in &rel.from {
+                if fields[model.field_pos(from)?].storage.owner != OwnerId(local) { return Err("inherited relation links require a relation-owner primitive".into()); }
+            }
         }
         resolved.push((OwnerId(local), fields));
     }

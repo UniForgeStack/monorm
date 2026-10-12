@@ -345,18 +345,18 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     let mut models: Vec<ModelOut<'_>> = vec![];
     for t in &db.tables {
         let pk = match &t.primary_key {
-            Some(pk) if pk.columns.len() == 1 => pk,
-            Some(pk) => {
-                gaps.push(format!("table {} has a composite primary key ({}); it is left out", t.name, pk.columns.join(", ")));
-                continue;
-            }
-            None => {
+            Some(pk) if !pk.columns.is_empty() => pk,
+            _ => {
                 gaps.push(format!("table {} has no primary key; it is left out", t.name));
                 continue;
             }
         };
+        if pk.columns.iter().any(|c| t.column(c).is_none_or(|c| field_type(&c.ty, dialect, &enums).is_none())) {
+            gaps.push(format!("table {} has a primary key column the schema can't declare; it is left out", t.name));
+            continue;
+        }
         let expected_pk = object_name(&[&t.name, "pkey"]);
-        if pk.name != expected_pk {
+        if pk.columns.len() == 1 && pk.name != expected_pk {
             gaps.push(format!("primary key {} of {} is named {expected_pk} by the schema", pk.name, t.name));
         }
         let name = unique_name(pascal(&t.name), &mut type_names);
@@ -371,7 +371,7 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
 
     for m in &mut models {
         let t = m.table;
-        let pk = t.primary_key.as_ref().map(|p| p.columns[0].clone()).unwrap_or_default();
+        let pk = t.primary_key.as_ref().filter(|p| p.columns.len() == 1).map(|p| p.columns[0].clone()).unwrap_or_default();
         let single_uniques: BTreeSet<&str> = t
             .uniques
             .iter()
@@ -417,6 +417,13 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
             m.lines.push(line);
         }
         let keep = |cols: &[String], m: &ModelOut<'_>| cols.iter().all(|c| m.fields.contains_key(c));
+        if let Some(pk) = t.primary_key.as_ref().filter(|p| p.columns.len() > 1) {
+            let mut args = vec![m.fields_list(&pk.columns)];
+            if pk.name != object_name(&[&t.name, "pkey"]) {
+                args.push(format!("map: {}", quoted(&pk.name)));
+            }
+            m.attrs.push(format!("@@id({})", args.join(", ")));
+        }
 
         for u in &t.uniques {
             if shorthand_unique(t, u) {
@@ -463,14 +470,10 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
                 gaps.push(format!("foreign key {}.{} references {}, which is left out", m.table.name, fk.name, fk.ref_table));
                 continue;
             };
-            if fk.columns.len() != 1 {
-                gaps.push(format!("foreign key {}.{} is composite; composite keys are not supported", m.table.name, fk.name));
-                continue;
-            }
             let parent = &models[pi];
             let target_unique = parent.table.primary_key.as_ref().is_some_and(|p| p.columns == fk.ref_columns)
                 || parent.table.uniques.iter().any(|u| u.columns == fk.ref_columns);
-            if !target_unique || !m.fields.contains_key(&fk.columns[0]) || !parent.fields.contains_key(&fk.ref_columns[0]) {
+            if !target_unique || !fk.columns.iter().all(|c| m.fields.contains_key(c)) || !fk.ref_columns.iter().all(|c| parent.fields.contains_key(c)) {
                 gaps.push(format!("foreign key {}.{} references a column that is not a key; it is left out", m.table.name, fk.name));
                 continue;
             }
@@ -480,15 +483,17 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     }
     for (ci, pi, fk) in links {
         let named = ci == pi || pairs[&(ci.min(pi), ci.max(pi))] > 1;
-        let column = &fk.columns[0];
         let (child_name, parent_name) = (models[ci].name.clone(), models[pi].name.clone());
         let child = &models[ci];
-        let nullable = child.table.column(column).is_some_and(|c| c.nullable);
+        let nullable = fk.columns.iter().any(|column| child.table.column(column).is_some_and(|c| c.nullable));
         let one_to_one = child.table.primary_key.as_ref().is_some_and(|p| p.columns == fk.columns)
             || child.table.uniques.iter().any(|u| u.columns == fk.columns);
-        let key_field = child.field(column);
-        let ref_field = models[pi].field(&fk.ref_columns[0]);
-        let base = column.strip_suffix("_id").filter(|b| !b.is_empty()).map(identifier).unwrap_or_else(|| format!("{}_rel", identifier(column)));
+        let key_fields = child.fields_list(&fk.columns);
+        let ref_fields = models[pi].fields_list(&fk.ref_columns);
+        let base = match fk.columns.as_slice() {
+            [column] => column.strip_suffix("_id").filter(|b| !b.is_empty()).map(identifier).unwrap_or_else(|| format!("{}_rel", identifier(column))),
+            _ => identifier(&fk.ref_table),
+        };
         let rel_field = unique_name(base, &mut models[ci].used);
         let back_base = if named {
             format!("{}_{}_set", identifier(&models[ci].table.name), rel_field)
@@ -503,8 +508,8 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
         if named {
             args.push(quoted(&rel_name));
         }
-        args.push(format!("fields: [{key_field}]"));
-        args.push(format!("references: [{ref_field}]"));
+        args.push(format!("fields: {key_fields}"));
+        args.push(format!("references: {ref_fields}"));
         if let Some(a) = fk.on_delete {
             args.push(format!("onDelete: {}", action(a)));
         }
@@ -512,7 +517,10 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
             args.push(format!("onUpdate: {}", action(a)));
         }
         args.extend(deferrable(fk.deferrable).map(str::to_owned));
-        if fk.name != object_name(&[&models[ci].table.name, column, "fkey"]) {
+        let mut default_name = vec![models[ci].table.name.as_str()];
+        default_name.extend(fk.columns.iter().map(String::as_str));
+        default_name.push("fkey");
+        if fk.name != object_name(&default_name) {
             args.push(format!("map: {}", quoted(&fk.name)));
         }
         models[ci].lines.push(format!("{rel_field} {parent_name}{} @relation({})", if nullable { "?" } else { "" }, args.join(", ")));
@@ -741,5 +749,31 @@ mod tests {
         assert!(out.contains("author Users @relation(fields: [author_id], references: [id], onDelete: Cascade, deferrable: deferred, map: \"blog_post_author_id_fk\")"), "{out}");
         assert!(out.contains("blog_post_set BlogPost[]"), "{out}");
         assert!(out.contains("id BigInt @id @default(autoincrement())"), "{out}");
+    }
+
+    #[test]
+    fn writes_composite_keys() {
+        let mut items = Table { name: "item".into(), columns: vec![col("shop", "bigint"), col("id", "bigint")], ..Default::default() };
+        items.primary_key = Some(PrimaryKey { name: "item_key".into(), columns: vec!["shop".into(), "id".into()] });
+        let mut lines = Table { name: "line".into(), columns: vec![col("id", "bigint"), col("shop", "bigint"), col("item_id", "bigint")], ..Default::default() };
+        lines.primary_key = Some(PrimaryKey { name: "line_pkey".into(), columns: vec!["id".into()] });
+        lines.foreign_keys.push(ForeignKey {
+            name: "line_shop_item_id_fkey".into(),
+            columns: vec!["shop".into(), "item_id".into()],
+            ref_table: "item".into(),
+            ref_columns: vec!["shop".into(), "id".into()],
+            on_delete: None,
+            on_update: None,
+            deferrable: None,
+        });
+        let db = DbSchema { tables: vec![items, lines], version: 1, ..Default::default() };
+        let pulled = pull(&db, &[]);
+        let out = &pulled.schema;
+        assert!(pulled.gaps.is_empty(), "{:?}", pulled.gaps);
+        assert!(out.contains("@@id([shop, id], map: \"item_key\")"), "{out}");
+        assert!(out.contains("item Item @relation(fields: [shop, item_id], references: [shop, id])"), "{out}");
+        let ir = crate::dsl::compile(out, None).unwrap();
+        assert_eq!(ir.models[0].primary_key, ["shop", "id"]);
+        assert_eq!(ir.models[0].pk_name.as_deref(), Some("item_key"));
     }
 }

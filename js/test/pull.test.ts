@@ -19,7 +19,6 @@ const PULL_URL = Object.assign(new URL(DATABASE_URL), { pathname: "/" + PULL_DB 
 
 // What the fixture holds that the schema language can't say (see the `gap:` lines).
 const EXPECTED = [
-  "drop table bundles_tag",
   "drop default of bundles_bundle.id",
   "make bundles_bundle.id an identity column",
   "drop column bundles_slot.during",

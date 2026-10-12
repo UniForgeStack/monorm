@@ -58,16 +58,17 @@ pub struct PrefetchPlan {
     pub attr: String,
     /// A list per parent (to-many) or one object or None (to-one).
     pub many: bool,
-    /// Position and type of the relation's `from` field in the parent rows.
-    pub key_pos: usize,
-    pub key_type: ValueType,
-    /// Position of the relation's `to` field in the related rows.
-    pub child_key_pos: usize,
+    /// Positions and types of the relation's `from` fields in the parent rows.
+    pub key_pos: Vec<usize>,
+    pub key_type: Vec<ValueType>,
+    /// Positions of the relation's `to` fields in the related rows.
+    pub child_key_pos: Vec<usize>,
     /// The related model's to-one relation back to the parent, filled in too.
     pub back: Option<String>,
     stmt: SelectStatement,
-    key: SExpr,
-    key_field: FieldIr,
+    dialect: Dialect,
+    key: Vec<SExpr>,
+    key_field: Vec<FieldIr>,
     /// A slice per parent: (offset, limit) over the `_rn` column `stmt` computes.
     slice: Option<(u64, Option<u64>)>,
     pub types: Vec<ValueType>,
@@ -78,10 +79,15 @@ pub struct PrefetchPlan {
 }
 
 impl PrefetchPlan {
-    /// The statement for these parent keys (non-NULL, distinct).
-    pub fn statement(&self, keys: Vec<sea_query::Value>) -> SelectStatement {
+    /// The statement for these parent keys (non-NULL, distinct), one value per key column.
+    pub fn statement(&self, keys: Vec<Vec<sea_query::Value>>) -> SelectStatement {
         let mut stmt = self.stmt.clone();
-        stmt.and_where(self.key.clone().is_in(keys.into_iter().map(|k| bind(k, Some(&self.key_field)))));
+        if let ([key], [field]) = (self.key.as_slice(), self.key_field.as_slice()) {
+            stmt.and_where(key.clone().is_in(keys.into_iter().flatten().map(|k| bind(k, Some(field)))));
+        } else {
+            let rows = keys.into_iter().map(|row| row.into_iter().zip(&self.key_field).map(|(k, f)| bind(k, Some(f))).collect()).collect();
+            stmt.and_where(row_in(self.dialect, self.key.clone(), rows));
+        }
         let Some((offset, limit)) = self.slice else { return stmt };
         let mut outer = Query::select();
         outer.column(sea_query::Asterisk).from_subquery(stmt, Alias::new("p"));
@@ -207,6 +213,18 @@ fn template(dialect: Dialect, sql: impl Into<String>, exprs: Vec<SExpr>) -> SExp
         } else { rendered.push(c); }
     }
     SExpr::cust_with_exprs(rendered, values)
+}
+
+/// `(a, b) IN ((x, y), ...)`. SQLite takes a row value on the left of IN only with a
+/// subquery on the right, so it gets `IN (VALUES ...)`.
+fn row_in(dialect: Dialect, cols: Vec<SExpr>, rows: Vec<Vec<SExpr>>) -> SExpr {
+    let width = cols.len();
+    let slots = |start: usize| (start..start + width).map(|i| format!("${i}")).collect::<Vec<_>>().join(", ");
+    let list = (0..rows.len()).map(|r| format!("({})", slots(width * (r + 1) + 1))).collect::<Vec<_>>().join(", ");
+    let list = if dialect == Dialect::Sqlite { format!("VALUES {list}") } else { list };
+    let mut exprs = cols;
+    exprs.extend(rows.into_iter().flatten());
+    template(dialect, format!("({}) IN ({list})", slots(1)), exprs)
 }
 
 fn fold(items: Vec<SExpr>, and: bool) -> SExpr {
@@ -904,6 +922,16 @@ impl<'s> Planner<'s> {
         hop
     }
 
+    /// `dst.<to> = src.<from>` over every column pair of the relation.
+    fn link(&self, src: (&str, usize), rel: &RelationIr, dst: (&str, usize)) -> Result<SExpr> {
+        let (sm, dm) = (self.model(src.1), self.model(dst.1));
+        let mut pairs = vec![];
+        for (from, to) in rel.from.iter().zip(&rel.to) {
+            pairs.push(col(dst.0, &dm.field(to).map_err(query_err)?.column).eq(col(src.0, &sm.field(from).map_err(query_err)?.column)));
+        }
+        Ok(fold(pairs, true))
+    }
+
     /// First relation below the current scope referenced by a leaf condition.
     fn any_hop<'e>(&self, e: &'e Expr) -> Option<&'e str> {
         let (mut paths, mut has_not) = (vec![], false);
@@ -927,14 +955,12 @@ impl<'s> Planner<'s> {
         target: usize,
         prefix: &str,
     ) -> Result<String> {
-        let from_col = &self.model(src.1).field(&rel.from).map_err(query_err)?.column;
         let tm = self.model(target);
-        let to_col = &tm.field(&rel.to).map_err(query_err)?.column;
         let table = Alias::new(tm.table());
         let alias = self.alias(prefix);
         match &rel.through {
             None => {
-                let link = col(&alias, to_col).eq(col(src.0, from_col));
+                let link = self.link(src, rel, (&alias, target))?;
                 if first {
                     stmt.from_as(table, Alias::new(&alias)).and_where(link);
                 } else {
@@ -942,6 +968,8 @@ impl<'s> Planner<'s> {
                 }
             }
             Some(th) => {
+                let from_col = &self.model(src.1).field(&rel.from[0]).map_err(query_err)?.column;
+                let to_col = &tm.field(&rel.to[0]).map_err(query_err)?.column;
                 let jm = self.model(self.model_idx(&th.model)?);
                 let jalias = self.alias(prefix);
                 let jtable = Alias::new(jm.table());
@@ -2094,10 +2122,8 @@ impl<'s> Planner<'s> {
                     prefix.join(".")
                 )));
             }
-            let from_col = &m.field(&rel.from).map_err(query_err)?.column;
-            let to_col = &self.model(target).field(&rel.to).map_err(query_err)?.column;
             let new_alias = self.alias("j");
-            let on = col(&new_alias, to_col).eq(col(&alias, from_col));
+            let on = self.link((&alias, model), rel, (&new_alias, target))?;
             #[cfg(feature = "query-defaults")]
             let on = match self.model(target).query_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
                 Some(filter) => on.and(self.target_default(target, &new_alias, filter)?), None => on,
@@ -2201,11 +2227,11 @@ impl<'s> Planner<'s> {
         if positions.len() == m.fields().len() && positions.iter().enumerate().all(|(i, &p)| i == p) { return Ok(None); }
         let public = positions.len();
         // Identity and relation keys remain private when omitted by the caller.
-        let mut helpers = vec![m.pk];
-        for r in &m.ir.relations { helpers.push(m.field_pos(&r.from).map_err(query_err)?); }
+        let mut helpers = m.key.clone();
+        for r in &m.ir.relations { for f in &r.from { helpers.push(m.field_pos(f).map_err(query_err)?); } }
         for source in &self.schema.models {
             for relation in &source.ir.relations {
-                if relation.target == m.ir.name { helpers.push(m.field_pos(&relation.to).map_err(query_err)?); }
+                if relation.target == m.ir.name { for f in &relation.to { helpers.push(m.field_pos(f).map_err(query_err)?); } }
             }
         }
         for name in extra { helpers.push(m.field_pos(name).map_err(query_err)?); }
@@ -2326,7 +2352,7 @@ impl<'s> Planner<'s> {
         let mut prefetch = vec![];
         for node in &q.prefetch {
             let mut plan = plan_prefetch(self.schema, self.target, self.params, self.root, node, q.without_defaults)?;
-            plan.key_pos = positions.iter().position(|f| f == plan.key_pos).expect("selected relation helper");
+            plan.key_pos = plan.key_pos.iter().map(|&k| positions.iter().position(|f| f == k).expect("selected relation helper")).collect();
             prefetch.push(plan);
         }
         #[cfg(feature = "composition")]
@@ -2616,7 +2642,7 @@ fn plan_prefetch(
         q.limit = Some(Count::Value(1));
     }
     q.without_defaults |= without_defaults;
-    let pk_order = Order { expr: Expr::Col { path: vec![], name: cm.pk_field().name.clone() }, desc: false, nulls: None };
+    let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone() }, desc: false, nulls: None }).collect();
     #[cfg(feature = "query-defaults")]
     if q.order.is_empty() && !q.without_defaults {
         q.order = cm.query_defaults.order.clone();
@@ -2632,38 +2658,49 @@ fn plan_prefetch(
     let mut window_order = vec![];
     if sliced {
         window_order = std::mem::take(&mut q.order);
-        window_order.push(pk_order);
+        window_order.extend(pk_order);
         (q.limit, q.offset) = (None, None);
     } else if q.order.is_empty() {
-        q.order.push(pk_order);
+        q.order = pk_order;
     }
     let virt = derive_ctes(schema, target, &q.with, params)?;
     let mut p = Planner::new(schema, &virt, target, &q.model, q.from.as_deref(), params, vec![], 0)?;
     let mut plan = p.build_select(&q)?;
     // the parent key each row belongs to: the row's own `to` field, or (many-to-many)
     // the join row's source field, selected as an extra `_key` column
-    let (key_field, key, child_key_pos) = match &rel.through {
+    let (mut key_field, mut key, mut child_key_pos) = (vec![], vec![], vec![]);
+    match &rel.through {
         None => {
-            let f = cm.field(&rel.to).map_err(query_err)?;
-            (f, col(p.root_alias(), &f.column), match &plan.output { Output::Instances { shape, .. } => shape_positions(cm, shape.as_ref()).iter().position(|pos| pos == cm.field_pos(&rel.to).expect("validated relation")).ok_or_else(|| Error::query("missing prefetch key"))?, _ => unreachable!() })
+            let Output::Instances { shape, .. } = &plan.output else { unreachable!() };
+            let positions = shape_positions(cm, shape.as_ref());
+            for to in &rel.to {
+                let f = cm.field(to).map_err(query_err)?;
+                let pos = cm.field_pos(to).map_err(query_err)?;
+                key.push(col(p.root_alias(), &f.column));
+                key_field.push(f.clone());
+                child_key_pos.push(positions.iter().position(|p| p == pos).ok_or_else(|| Error::query("missing prefetch key"))?);
+            }
         }
         Some(th) => {
             let jm = schema.model(schema.model_idx(&th.model).map_err(query_err)?);
             let (src, dst) = (jm.field(&th.source).map_err(query_err)?, jm.field(&th.target).map_err(query_err)?);
             let jalias = p.alias("m");
-            let on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to).map_err(query_err)?.column));
+            let on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to[0]).map_err(query_err)?.column));
             plan.stmt.join_as(JoinType::InnerJoin, Alias::new(jm.table()), Alias::new(&jalias), on);
-            let key = col(&jalias, &src.column);
-            plan.stmt.expr_as(key.clone(), Alias::new("_key"));
+            let k = col(&jalias, &src.column);
+            plan.stmt.expr_as(k.clone(), Alias::new("_key"));
             plan.types.push(src.value_type());
-            (src, key, plan.types.len() - 1)
+            key.push(k);
+            key_field.push(src.clone());
+            child_key_pos.push(plan.types.len() - 1);
         }
-    };
+    }
     if sliced {
         // ROW_NUMBER() OVER (PARTITION BY <key> ORDER BY ...); the ORDER BY may follow
         // to-one relations not joined yet
         let joined = p.joins.len();
-        let mut exprs = vec![key.clone()];
+        let mut exprs = key.clone();
+        let partition = (1..=exprs.len()).map(|i| format!("${i}")).collect::<Vec<_>>().join(", ");
         let mut slots = vec![];
         for o in &window_order {
             p.join_paths(&o.expr, "a prefetch's order_by()")?;
@@ -2673,7 +2710,7 @@ fn plan_prefetch(
             exprs.push(e?);
             slots.push(format!("${}{}", exprs.len(), order_sql(o)));
         }
-        let e = template(target.dialect, format!("ROW_NUMBER() OVER (PARTITION BY $1 ORDER BY {})", slots.join(", ")), exprs);
+        let e = template(target.dialect, format!("ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY {})", slots.join(", ")), exprs);
         for (s, on) in &p.joins[joined..] {
             plan.stmt.join_as(JoinType::LeftJoin, Alias::new(p.model(s.model).table()), Alias::new(&s.alias), on.clone());
         }
@@ -2698,13 +2735,14 @@ fn plan_prefetch(
     Ok(PrefetchPlan {
         attr: node.attr.clone().unwrap_or_else(|| node.relation.clone()),
         many,
-        key_pos: pm.field_pos(&rel.from).map_err(query_err)?,
-        key_type: pm.field(&rel.from).map_err(query_err)?.value_type(),
+        key_pos: rel.from.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
+        key_type: rel.from.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
         back,
         stmt: plan.stmt,
+        dialect: target.dialect,
         key,
-        key_field: key_field.clone(),
+        key_field,
         slice,
         types: plan.types,
         output: plan.output,
@@ -2941,39 +2979,49 @@ pub fn plan_update_many(
     crate::ownership::require_local_write(m)?;
     let table = m.table().to_owned();
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;
-    match cols.first() {
-        Some(pk) if pk.primary_key && cols.len() > 1 => {}
-        _ => return Err(Error::query("update_many needs the primary key followed by the fields to set")),
+    let width = m.key.len();
+    let mut lead: Vec<&str> = cols.iter().take(width).map(|f| f.name.as_str()).collect();
+    lead.sort_unstable();
+    let mut key: Vec<&str> = m.key_fields().iter().map(|f| f.name.as_str()).collect();
+    key.sort_unstable();
+    if cols.len() <= width || lead != key {
+        return Err(Error::query("update_many needs the primary key followed by the fields to set"));
     }
     if returning {
         planner.require(planner.caps.returning, "update_many().returning()")?;
     }
     let where_ = planner.apply_filters(filters, without_defaults)?;
-    let pk_col = col(&table, &cols[0].column);
+    let key_cols: Vec<SExpr> = cols[..width].iter().map(|c| col(&table, &c.column)).collect();
     let mut stmts = vec![];
     for chunk in rows.chunks(chunk_rows.max(1)) {
         let mut stmt = Query::update();
         stmt.table(Alias::new(&table));
         if planner.caps.update_from_values {
-            for (i, c) in cols.iter().enumerate().skip(1) {
+            for (i, c) in cols.iter().enumerate().skip(width) {
                 stmt.value(Alias::new(&c.column), write_expr(col("v", &format!("column{}", i + 1)), c));
             }
             let tuples = chunk.iter().map(|r| sea_query::ValueTuple::Many(r.clone())).collect();
             stmt.from(sea_query::TableRef::ValuesList(tuples, Alias::new("v").into_iden()));
-            stmt.and_where(pk_col.clone().eq(col("v", "column1")));
+            for (i, k) in key_cols.iter().enumerate() {
+                stmt.and_where(k.clone().eq(col("v", &format!("column{}", i + 1))));
+            }
         } else {
-            for (i, c) in cols.iter().enumerate().skip(1) {
+            let matches = |r: &[sea_query::Value]| fold(key_cols.iter().zip(&cols).zip(r).map(|((k, c), v)| k.clone().eq(bind(v.clone(), Some(c)))).collect(), true);
+            for (i, c) in cols.iter().enumerate().skip(width) {
                 let mut case = sea_query::CaseStatement::new();
                 for r in chunk {
-                    case = case.case(pk_col.clone().eq(bind(r[0].clone(), Some(cols[0]))), bind(r[i].clone(), Some(c)));
+                    case = case.case(matches(r), bind(r[i].clone(), Some(c)));
                 }
                 let case: SExpr = case.into();
                 stmt.value(Alias::new(&c.column), case);
             }
-            stmt.and_where(pk_col.clone().is_in(chunk.iter().map(|r| bind(r[0].clone(), Some(cols[0])))));
+            match width {
+                1 => stmt.and_where(key_cols[0].clone().is_in(chunk.iter().map(|r| bind(r[0].clone(), Some(cols[0]))))),
+                _ => stmt.and_where(row_in(target.dialect, key_cols.clone(), chunk.iter().map(|r| r.iter().zip(&cols).take(width).map(|(v, c)| bind(v.clone(), Some(c))).collect()).collect())),
+            };
         }
         #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
-        for (column, v) in maintained(m, |name| fields.iter().skip(1).any(|f| f == name)) {
+        for (column, v) in maintained(m, |name| fields.iter().skip(width).any(|f| f == name)) {
             stmt.value(Alias::new(column), v);
         }
         for w in &where_ {
@@ -3040,33 +3088,32 @@ pub type Returned = (usize, Vec<ValueType>, Option<orm_core::behavior::ResultSha
 pub type ReturnColumns = (Vec<ValueType>, Option<orm_core::behavior::ResultShape>);
 
 /// Plans `op`, an update, without running it, and tells whether its filters pin one
-/// row: an `and`-reachable `field == param` on the primary key or a unique field, with
-/// a non-null parameter. Packages that must change exactly one row check this first.
+/// row: `and`-reachable `field == param` on every primary key field or on a unique field,
+/// with non-null parameters. Packages that must change exactly one row check this first.
 pub fn unique_row_update(schema: &Schema, target: Target, op: &Operation, params: &dyn Params) -> Result<bool> {
     let Operation::Update(update) = op else { return Err(Error::query("unique_row_update takes an update")) };
     Planner::plan(schema, target, op, params)?;
     let model = schema.model(schema.model_idx(&update.model).map_err(query_err)?);
-    fn proves(e: &Expr, model: &orm_core::schema::Model, params: &dyn Params) -> Result<bool> {
+    fn pins(e: &Expr, model: &orm_core::schema::Model, params: &dyn Params, out: &mut Vec<usize>) -> Result<()> {
         match e {
             Expr::And { items } => {
-                for item in items { if proves(item, model, params)? { return Ok(true); } }
-                Ok(false)
+                for item in items { pins(item, model, params, out)?; }
             }
             Expr::Cmp { op: CmpOp::Eq, l, r } => {
                 for (column, parameter) in [(l, r), (r, l)] {
                     let (Expr::Col { path, name }, Expr::Param { i }) = (column.as_ref(), parameter.as_ref()) else { continue };
-                    let Ok(field) = model.field(name) else { continue };
+                    let Ok(pos) = model.field_pos(name) else { continue };
+                    let field = &model.fields()[pos];
                     if !path.is_empty() || !(field.primary_key || field.unique) || *i >= params.len() { continue; }
                     let value = params.value(*i, Some(field.value_type()))?;
-                    if value != value.as_null() { return Ok(true); }
+                    if value != value.as_null() { out.push(pos); }
                 }
-                Ok(false)
             }
-            _ => Ok(false),
+            _ => {}
         }
+        Ok(())
     }
-    for filter in &update.filters {
-        if proves(filter, model, params)? { return Ok(true); }
-    }
-    Ok(false)
+    let mut pinned = vec![];
+    for filter in &update.filters { pins(filter, model, params, &mut pinned)?; }
+    Ok(pinned.iter().any(|&p| model.fields()[p].unique) || model.key.iter().all(|k| pinned.contains(k)))
 }

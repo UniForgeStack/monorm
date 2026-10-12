@@ -26,7 +26,6 @@ PULL_URL = urlunsplit(_url._replace(path="/" + PULL_DB))
 
 # What the fixture holds that the schema language can't say (see the `gap:` lines).
 EXPECTED_DIFFERENCES = [
-    "drop table bundles_tag",
     "drop default of bundles_bundle.id",
     "make bundles_bundle.id an identity column",
     "drop column bundles_slot.during",
@@ -70,8 +69,9 @@ async def test_pull_baseline_and_drift_of_a_django_style_database(tmp_path):
         assert "status ShopStatus @default(active)" in text
         assert '@relation("BundlesBundle_parent"' in text
         assert "rank Int @default(-1)" in text
+        assert "@@id([bundle_id, tag])" in text
         gaps = "\n".join(pulled.gaps)
-        for what in ["rule bundles_bundle_soft_delete", "view live_bundles", "composite primary key", "tstzrange", "uses a sequence"]:
+        for what in ["rule bundles_bundle_soft_delete", "view live_bundles", "tstzrange", "uses a sequence"]:
             assert what in gaps
             assert what in text  # also listed at the end of the file
         assert [s.summary for s in pulled.differences] == EXPECTED_DIFFERENCES

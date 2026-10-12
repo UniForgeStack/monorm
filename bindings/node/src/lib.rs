@@ -197,8 +197,8 @@ fn prefetched_js(c: Conv, schema: &schema::Schema, fetched: &[Fetched]) -> napi:
         let o = js.object()?;
         js.set(o, "attr", js.str(&p.attr)?)?;
         js.set(o, "many", js.boolean(p.many)?)?;
-        js.set(o, "keyPos", js.number(p.key_pos as f64)?)?;
-        js.set(o, "childKeyPos", js.number(p.child_key_pos as f64)?)?;
+        js.set(o, "keyPos", js.array_of(p.key_pos.iter().map(|&k| js.number(k as f64)))?)?;
+        js.set(o, "childKeyPos", js.array_of(p.child_key_pos.iter().map(|&k| js.number(k as f64)))?)?;
         js.set(o, "back", match &p.back {
             Some(b) => js.str(b)?,
             None => js.null()?,
@@ -254,10 +254,12 @@ fn outcome_js(env: &Env, schema: &schema::Schema, out: Outcome) -> napi::Result<
 /// The column types of parent key rows: only the key columns the prefetches read are
 /// set, so every other cell is read as its own `NULL`'s type.
 fn parents_model(_schema: &schema::Schema, prefetched: &[Fetched]) -> Vec<ValueType> {
-    let width = prefetched.iter().map(|f| f.plan.key_pos + 1).max().unwrap_or(0);
+    let width = prefetched.iter().flat_map(|f| f.plan.key_pos.iter().map(|k| k + 1)).max().unwrap_or(0);
     let mut types = vec![ValueType { ty: ir::ColType::Bool, array: false, enum_idx: None }; width];
     for f in prefetched {
-        types[f.plan.key_pos] = f.plan.key_type;
+        for (&pos, &ty) in f.plan.key_pos.iter().zip(&f.plan.key_type) {
+            types[pos] = ty;
+        }
     }
     types
 }

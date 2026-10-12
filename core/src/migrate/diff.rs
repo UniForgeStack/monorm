@@ -410,6 +410,8 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
     let mut create_indexes = vec![];
     let mut create_triggers = vec![];
     let mut comments = vec![];
+    // Keys dropped and created again: (table, columns before the change).
+    let mut rebuilt_keys: Vec<(String, Vec<String>)> = vec![];
 
     for ((o, n), ro) in pairs.iter().zip(&renamed_old) {
         let table = n.name.clone();
@@ -448,6 +450,13 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
         let (old_c, new_c) = (constraints(ro), constraints(n));
         let (c_new, c_drop, c_ren) = match_named(&old_c, &new_c, |c| c.name(), |c, nm| c.renamed(nm));
         drop_other.extend(c_drop.iter().map(|c| Op::DropConstraint { table: o.name.clone(), name: c.name().into() }));
+        for c in &c_drop {
+            match c {
+                Constraint::PrimaryKey(k) => rebuilt_keys.push((table.clone(), k.columns.clone())),
+                Constraint::Unique(u) => rebuilt_keys.push((table.clone(), u.columns.clone())),
+                _ => {}
+            }
+        }
         renames_ops.extend(
             c_ren
                 .iter()
@@ -468,6 +477,17 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
 
         if o.comment != n.comment {
             comments.push(Op::CommentOnTable { table: table.clone(), comment: n.comment.clone() });
+        }
+    }
+    // A foreign key depends on the key it references, so it is dropped before that key
+    // and created again after it.
+    for ((o, n), ro) in pairs.iter().zip(&renamed_old) {
+        for fk in &ro.foreign_keys {
+            let kept = n.foreign_keys.iter().find(|x| x.name == fk.name).filter(|x| *x == fk);
+            if kept.is_some() && rebuilt_keys.iter().any(|(t, cols)| *t == fk.ref_table && *cols == fk.ref_columns) {
+                drop_fks.push(Op::DropConstraint { table: o.name.clone(), name: fk.name.clone() });
+                add_fks.push(Op::AddConstraint { table: n.name.clone(), constraint: Constraint::ForeignKey(fk.clone()) });
+            }
         }
     }
     // Foreign keys of dropped tables go first, so tables can then be dropped in any order.

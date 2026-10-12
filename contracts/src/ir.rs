@@ -21,6 +21,32 @@ pub(crate) fn yes() -> bool {
     true
 }
 
+/// Key columns: one name serializes as a string, several as a list.
+pub mod columns {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    pub fn serialize<S: Serializer>(v: &[String], s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            [one] => one.serialize(s),
+            many => many.serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+        Ok(match OneOrMany::deserialize(d)? {
+            OneOrMany::One(one) => vec![one],
+            OneOrMany::Many(many) => many,
+        })
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ColType {
@@ -148,6 +174,12 @@ pub struct ModelIr {
     pub name: String,
     pub table: String,
     pub fields: Vec<FieldIr>,
+    /// `@@id([a, b])`: the key fields in key order. Empty for a one-field `@id`.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub primary_key: Vec<String>,
+    /// The primary key constraint's database name (`@@id(map:)`); default `<table>_pkey`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pk_name: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub relations: Vec<RelationIr>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -165,6 +197,17 @@ pub struct ModelIr {
     /// `@@protected_write`: ORM writes need a scope that allows them. No DDL, no snapshot.
     #[serde(skip_serializing_if = "crate::ir::is_false", default)]
     pub protected_write: bool,
+}
+
+impl ModelIr {
+    /// The primary key field names in key order.
+    pub fn key_fields(&self) -> Vec<&str> {
+        if self.primary_key.is_empty() {
+            self.fields.iter().filter(|f| f.primary_key).map(|f| f.name.as_str()).collect()
+        } else {
+            self.primary_key.iter().map(String::as_str).collect()
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -328,8 +371,11 @@ pub struct RelationIr {
     pub name: String,
     pub kind: RelKind,
     pub target: String,
-    pub from: String,
-    pub to: String,
+    /// `source.from[i] == target.to[i]`, one pair per key column.
+    #[serde(with = "columns")]
+    pub from: Vec<String>,
+    #[serde(with = "columns")]
+    pub to: Vec<String>,
     /// True on the side that owns the foreign key constraint (`from` is the FK column).
     #[serde(skip_serializing_if = "crate::ir::is_false", default)]
     pub foreign_key: bool,

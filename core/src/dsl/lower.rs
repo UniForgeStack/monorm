@@ -515,6 +515,8 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         name: m.name.clone(),
         table: m.name.to_lowercase(),
         fields: vec![],
+        primary_key: vec![],
+        pk_name: None,
         relations: vec![],
         indexes: vec![],
         constraints: vec![],
@@ -550,7 +552,53 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         }
         ir.fields.push(field(m, member, ctx)?);
     }
+    for a in m.blocks.iter().filter(|a| a.name == "id") {
+        composite_id(&mut ir, a)?;
+    }
     Ok(ir)
+}
+
+/// `@@id([a, b], map: "name")`: marks the fields as the key, in this order.
+fn composite_id(ir: &mut ModelIr, a: &Attr) -> Result<()> {
+    let what = format!("{}: @@id", ir.name);
+    if !ir.primary_key.is_empty() {
+        return err(a.pos, format!("{what} is declared twice"));
+    }
+    if let Some(f) = ir.fields.iter().find(|f| f.primary_key) {
+        return err(a.pos, format!("{what}: {}.{} has @id; a model has @id or @@id, not both", ir.name, f.name));
+    }
+    let Some((lp, Value::List(items))) = a.args.positional.first() else {
+        return err(a.pos, format!("{what} takes a list of fields, e.g. @@id([id, type])"));
+    };
+    if a.args.positional.len() > 1 {
+        return err(a.args.positional[1].0, format!("{what} takes one list of fields"));
+    }
+    if items.len() < 2 {
+        return err(*lp, format!("{what} takes two fields or more; use @id on one field"));
+    }
+    let mut n = Named::new(what.clone(), &a.args);
+    let name = n.str("name")?;
+    let map = n.str("map")?;
+    n.finish()?;
+    for (p, v) in items {
+        let field = name_of(*p, v, &what)?;
+        let Some(f) = ir.fields.iter_mut().find(|f| f.name == field) else {
+            return err(*p, format!("{what}: no field {field} in this model"));
+        };
+        if ir.primary_key.contains(&field) {
+            return err(*p, format!("{what}: {field} is listed twice"));
+        }
+        if f.nullable {
+            return err(*p, format!("{what}: {}.{field} is optional; a primary key can't be", ir.name));
+        }
+        if f.array {
+            return err(*p, format!("{what}: {}.{field} is an array; an array can't be a primary key", ir.name));
+        }
+        f.primary_key = true;
+        ir.primary_key.push(field);
+    }
+    ir.pk_name = map.or(name);
+    Ok(())
 }
 
 fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>) -> Result<FieldIr> {
@@ -883,13 +931,11 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
         .filter(|m| !models.contains_key(m.ty.name.as_str()))
         .map(|m| m.name.as_str())
         .collect();
-    let field_list = |n: &mut Named<'_>, key: &'static str| -> Result<Option<(Pos, String)>> {
+    let field_list = |n: &mut Named<'_>, key: &'static str| -> Result<Option<(Pos, Vec<String>)>> {
         match n.get(key) {
             None => Ok(None),
-            Some((p, Value::List(items))) => match items.as_slice() {
-                [(fp, v)] => Ok(Some((*fp, name_of(*fp, v, &what)?))),
-                _ => err(p, format!("{what}: {key}: takes one field (composite keys aren't supported)")),
-            },
+            Some((p, Value::List(items))) if items.is_empty() => err(p, format!("{what}: {key}: takes one field or more")),
+            Some((p, Value::List(items))) => Ok(Some((p, items.iter().map(|(fp, v)| name_of(*fp, v, &what)).collect::<Result<_>>()?))),
             Some((p, _)) => err(p, format!("{what}: {key}: takes a list, e.g. [author_id]")),
         }
     };
@@ -929,9 +975,10 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
             }
             _ => return err(member.pos, format!("{what}: {target} has several relations to {}; name them: @relation(\"name\", ...) on both sides", m.name)),
         };
-        let (Some(from), Some(to)) = (back.references.first(), back.fields.first()) else {
-            return err(member.pos, format!("{what}: the relation on {target} needs references:"));
-        };
+        let (from, to) = (&back.references, &back.fields);
+        if from.len() != to.len() {
+            return err(member.pos, format!("{what}: the relation on {target} needs references: with one field for each of fields:"));
+        }
         let kind = if member.ty.list {
             if member.ty.optional {
                 return err(member.ty.pos, format!("{what}: a to-many relation can't be optional"));
@@ -945,7 +992,10 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
             if !is_unique(target_decl, to) {
                 return err(
                     member.pos,
-                    format!("{what}: {target}.{to} must be unique for a one-to-one relation (@unique, or {target}[] for to-many)"),
+                    format!(
+                        "{what}: {target}.{} must be unique for a one-to-one relation (@unique, or {target}[] for to-many)",
+                        key_text(to)
+                    ),
                 );
             }
             RelKind::One
@@ -967,16 +1017,29 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
     if member.ty.list {
         return err(rel.pos, format!("{what}: fields: goes on the to-one side, not on {target}[]"));
     }
-    let Some(local) = fields.iter().find(|f| f.name == from) else {
-        return err(fpos, format!("{what}: no field {from} in this model"));
-    };
-    if local.nullable != member.ty.optional {
-        let hint = if local.nullable { format!("{target}?") } else { target.clone() };
-        return err(member.ty.pos, format!("{what}: {from} is {}nullable, so the relation type is `{hint}`", if local.nullable { "" } else { "not " }));
+    for name in &from {
+        let Some(local) = fields.iter().find(|f| &f.name == name) else {
+            return err(fpos, format!("{what}: no field {name} in this model"));
+        };
+        if local.nullable != member.ty.optional {
+            let hint = if local.nullable { format!("{target}?") } else { target.clone() };
+            return err(member.ty.pos, format!("{what}: {name} is {}nullable, so the relation type is `{hint}`", if local.nullable { "" } else { "not " }));
+        }
     }
     let Some((tpos, to)) = to else { return err(rel.pos, format!("{what}: fields: needs references: [<field of {target}>]")) };
-    if !target_fields.contains(&to.as_str()) && !deferred_identity.contains(target) {
-        return err(tpos, format!("{what}: {target} has no field {to}"));
+    if to.len() != from.len() {
+        return err(tpos, format!("{what}: references: needs one field for each of fields: ({} for {})", to.len(), from.len()));
+    }
+    if !deferred_identity.contains(target) {
+        if let Some(missing) = to.iter().find(|t| !target_fields.contains(&t.as_str())) {
+            return err(tpos, format!("{what}: {target} has no field {missing}"));
+        }
+        if to.len() > 1 && !is_unique(target_decl, &to) {
+            return err(
+                tpos,
+                format!("{what}: references: {} must be the primary key or a unique constraint of {target}, in that order", key_text(&to)),
+            );
+        }
     }
     let on_delete = match n.get("onDelete") {
         Some((p, v)) => Some(action(p, &name_of(p, v, &what)?)?),
@@ -1004,17 +1067,26 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
     })
 }
 
-/// Whether `field` of `model` holds unique values: `@id`, `@unique` or a one-field
-/// `@@unique([field])`.
-fn is_unique(model: &ModelDecl, field: &str) -> bool {
-    let own = model
-        .members
-        .iter()
-        .any(|mm| mm.name == field && mm.attrs.iter().any(|a| a.name == "unique" || a.name == "id"));
+/// `[a, b]` for several key fields, `a` for one.
+fn key_text(fields: &[String]) -> String {
+    match fields {
+        [one] => one.clone(),
+        many => format!("[{}]", many.join(", ")),
+    }
+}
+
+/// Whether `fields` of `model` hold unique values together: `@id` / `@unique` on the one
+/// field, or `@@id` / `@@unique` with exactly these fields in this order.
+fn is_unique(model: &ModelDecl, fields: &[String]) -> bool {
+    let own = match fields {
+        [field] => model.members.iter().any(|mm| &mm.name == field && mm.attrs.iter().any(|a| a.name == "unique" || a.name == "id")),
+        _ => false,
+    };
     own || model.blocks.iter().any(|b| {
-        b.name == "unique"
+        (b.name == "unique" || b.name == "id")
             && matches!(b.args.positional.first(), Some((_, Value::List(items)))
-                if items.len() == 1 && matches!(&items[0].1, Value::Path(p, None) if p.len() == 1 && p[0] == field))
+                if items.len() == fields.len()
+                    && items.iter().zip(fields).all(|((_, v), f)| matches!(v, Value::Path(p, None) if p.len() == 1 && &p[0] == f)))
     })
 }
 
@@ -1068,18 +1140,18 @@ fn many_to_many(
         [a, b] => (pick(Some(a), &m.name, "source")?, pick(Some(b), target, "target")?),
         _ => return err(pos, format!("{what}: through_fields takes two relations of {join}, e.g. [post, tag]")),
     };
-    let (Some(from), Some(src)) = (source.references.first(), source.fields.first()) else {
-        return err(pos, format!("{what}: the relation of {join} to {} needs fields: and references:", m.name));
+    let ([from], [src]) = (source.references.as_slice(), source.fields.as_slice()) else {
+        return err(pos, format!("{what}: the relation of {join} to {} needs fields: and references: with one field each", m.name));
     };
-    let (Some(to), Some(dst)) = (target_link.references.first(), target_link.fields.first()) else {
-        return err(pos, format!("{what}: the relation of {join} to {target} needs fields: and references:"));
+    let ([to], [dst]) = (target_link.references.as_slice(), target_link.fields.as_slice()) else {
+        return err(pos, format!("{what}: the relation of {join} to {target} needs fields: and references: with one field each"));
     };
     Ok(RelationIr {
         name: member.name.clone(),
         kind: RelKind::Many,
         target: target.clone(),
-        from: from.clone(),
-        to: to.clone(),
+        from: vec![from.clone()],
+        to: vec![to.clone()],
         foreign_key: false,
         on_delete: None,
         on_update: None,
@@ -1319,7 +1391,7 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
             }
             m.triggers.push(t);
         }
-        "id" => return err(b.pos, format!("{what}: composite primary keys aren't supported yet")),
+        "id" => {}
         other => {
             return err(
                 b.pos,

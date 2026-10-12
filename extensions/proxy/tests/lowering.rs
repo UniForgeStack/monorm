@@ -152,7 +152,7 @@ fn omitted_fields_follow_the_key_null_and_relation_rules() {
     lower_specs(&mut schema(), &[select("Active", "User", ProxySelection::Exclude(names(&["status"])))]).unwrap();
     // A relation from another model into the proxy keeps its referenced field.
     let mut ir = schema();
-    ir.models[3].relations[0].to = "code".into();
+    ir.models[3].relations[0].to = vec!["code".into()];
     ir.models[3].relations[0].target = "Active".into();
     ir.models[0].fields[4].default = Some(json!("c"));
     let error = lower_specs(&mut ir, &[select("Active", "User", ProxySelection::Exclude(names(&["code"])))]).unwrap_err();

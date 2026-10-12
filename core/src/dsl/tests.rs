@@ -194,7 +194,7 @@ model Message {
 }
 "#);
     let user = &ir.models[0];
-    assert_eq!((user.relations[0].to.as_str(), user.relations[1].to.as_str()), ("author_id", "reader_id"));
+    assert_eq!((user.relations[0].to.as_slice(), user.relations[1].to.as_slice()), (&["author_id".to_string()][..], &["reader_id".to_string()][..]));
     let e = fails(r#"
 model User {
   id      BigInt    @id
@@ -716,4 +716,73 @@ fn protected_write_is_a_model_flag_without_ddl() {
     assert_eq!(snapshot(source), snapshot(&source.replace(" @@protected_write\n", "")));
     let error = compile(&source.replace("@@protected_write", "@@protected_write(true)"), None).unwrap_err();
     assert!(error.contains("@@protected_write takes no arguments"), "{error}");
+}
+
+const COMPOSITE: &str = r#"
+model Item {
+  shop  BigInt
+  id    BigInt @default(autoincrement())
+  title String
+  lines Line[]
+
+  @@id([shop, id])
+}
+model Line {
+  id      BigInt @id @default(autoincrement())
+  shop    BigInt
+  item_id BigInt
+  item    Item   @relation(fields: [shop, item_id], references: [shop, id])
+}
+"#;
+
+#[test]
+fn composite_keys_lower_to_one_primary_key_and_foreign_key() {
+    let (ir, schema) = check(ok(COMPOSITE)).unwrap();
+    let item = &ir.models[0];
+    assert_eq!(item.primary_key, ["shop", "id"]);
+    assert_eq!(item.key_fields(), ["shop", "id"]);
+    assert_eq!(schema.model(0).key, [0, 1]);
+    let line = &ir.models[1].relations[0];
+    assert_eq!((line.from.as_slice(), line.to.as_slice()), (&["shop".to_owned(), "item_id".to_owned()][..], &["shop".to_owned(), "id".to_owned()][..]));
+    // One column stays a string in the IR; several are a list.
+    let json = serde_json::to_value(&ir).unwrap();
+    assert_eq!(json["models"][1]["relations"][0]["from"], json!(["shop", "item_id"]));
+    assert_eq!(json["models"][0]["relations"][0]["from"], json!(["shop", "id"]));
+    let up = crate::migrate::create_all(&schema).unwrap().join("\n");
+    assert!(up.contains("CONSTRAINT \"item_pkey\" PRIMARY KEY (\"shop\", \"id\")"), "{up}");
+    assert!(up.contains("CONSTRAINT \"line_shop_item_id_fkey\" FOREIGN KEY (\"shop\", \"item_id\") REFERENCES \"item\" (\"shop\", \"id\")"), "{up}");
+    let named = ok(&COMPOSITE.replace("@@id([shop, id])", "@@id([shop, id], map: \"item_key\")"));
+    assert_eq!(named.models[0].pk_name.as_deref(), Some("item_key"));
+}
+
+#[test]
+fn composite_key_errors() {
+    for (src, message) in [
+        ("model A {\n  a BigInt @id\n  b BigInt\n  @@id([a, b])\n}", "@@id"),
+        ("model A {\n  a BigInt\n  b BigInt?\n  @@id([a, b])\n}", "optional"),
+        ("model A {\n  a BigInt\n  @@id([a])\n}", "two fields or more"),
+        ("model A {\n  a BigInt\n  b BigInt\n  @@id([a, c])\n}", "c"),
+        ("model A {\n  a BigInt\n  b BigInt\n  @@id([a, b])\n  @@id([b, a])\n}", "@@id"),
+        (&COMPOSITE.replace("references: [shop, id]", "references: [id, shop]"), "must be the primary key or a unique constraint of Item, in that order"),
+        (&COMPOSITE.replace("fields: [shop, item_id], references: [shop, id]", "fields: [item_id], references: [shop, id]"), "references"),
+    ] {
+        let e = fails(src);
+        assert!(e.contains(message), "{src}: {e}");
+    }
+    let sqlite = format!("datasource db {{\n  provider = \"sqlite\"\n}}\n{COMPOSITE}");
+    assert!(fails(&sqlite).contains("SQLite has no autoincrement in a primary key of several columns"));
+    let (_, schema) = check(ok(&sqlite.replace("id    BigInt @default(autoincrement())", "id    BigInt"))).unwrap();
+    assert!(crate::migrate::create_all(&schema).unwrap().join("\n").contains("PRIMARY KEY (\"shop\", \"id\")"));
+}
+
+#[test]
+fn a_changed_primary_key_rebuilds_the_foreign_keys_on_it() {
+    let (_, before) = check(ok(COMPOSITE)).unwrap();
+    let old = crate::migrate::snapshot(&before).unwrap();
+    let reordered = COMPOSITE.replace("@@id([shop, id])", "@@id([id, shop])").replace("fields: [shop, item_id], references: [shop, id]", "fields: [item_id, shop], references: [id, shop]");
+    let (_, reordered) = check(ok(&reordered)).unwrap();
+    let up: Vec<String> = crate::migrate::plan(&reordered, &old).unwrap().up.into_iter().map(|s| s.sql).collect();
+    let pos = |needle: &str| up.iter().position(|s| s.contains(needle)).unwrap_or_else(|| panic!("{needle}: {up:#?}"));
+    assert!(pos("DROP CONSTRAINT \"line_shop_item_id_fkey\"") < pos("DROP CONSTRAINT \"item_pkey\""), "{up:#?}");
+    assert!(pos("ADD CONSTRAINT \"item_pkey\" PRIMARY KEY (\"id\", \"shop\")") < pos("ADD CONSTRAINT \"line_item_id_shop_fkey\""), "{up:#?}");
 }

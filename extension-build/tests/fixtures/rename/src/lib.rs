@@ -30,7 +30,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         let old = d.field.as_ref().ok_or("rename requires a field")?;
         let new = d.arguments["to"].as_str().ok_or("rename requires a string")?;
         if m.fields.iter().any(|f| f.name == new) { return Err(format!("{}.{} already exists", m.name, new)); }
-        if m.relations.iter().any(|r| r.from == *old || r.to == *old) { return Err("rename proof does not support relation key renames".into()); }
+        if m.relations.iter().any(|r| r.from.contains(old) || r.to.contains(old)) { return Err("rename proof does not support relation key renames".into()); }
         let f = m.fields.iter_mut().find(|f| f.name == *old).ok_or("unknown rename field")?;
         f.name = new.into();
     }

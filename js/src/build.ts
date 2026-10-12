@@ -29,6 +29,24 @@ function key(v: unknown): unknown {
   return v;
 }
 
+/** The relation key of a row: its one value, or one string for several columns (`null` when one is NULL). */
+function rowKey(values: readonly unknown[], base: number, positions: readonly number[]): unknown {
+  if (positions.length === 1) {
+    const v = values[base + positions[0]!];
+    return v === null ? null : key(v);
+  }
+  const parts: string[] = [];
+  for (const p of positions) {
+    const v = values[base + p];
+    if (v === null) {
+      return null;
+    }
+    const k = key(v);
+    parts.push(`${typeof k}:${String(k)}`);
+  }
+  return parts.join("\u0000");
+}
+
 export class Builder {
   constructor(
     readonly registry: Registry,
@@ -125,7 +143,7 @@ export class Builder {
     const groups = new Map<unknown, Obj | Obj[]>();
     const cw = f.rows.width;
     for (let i = 0; i < children.length; i++) {
-      const k = key(f.rows.values[i * cw + f.childKeyPos]);
+      const k = rowKey(f.rows.values, i * cw, f.childKeyPos);
       if (f.many) {
         const list = groups.get(k) as Obj[] | undefined;
         if (list) {
@@ -143,8 +161,8 @@ export class Builder {
     const pw = parentRows.width;
     for (let i = 0; i < parents.length; i++) {
       const parent = parents[i]!;
-      const k = parentRows.values[i * pw + f.keyPos];
-      const found = k === null ? undefined : groups.get(key(k));
+      const k = rowKey(parentRows.values, i * pw, f.keyPos);
+      const found = k === null ? undefined : groups.get(k);
       let value: unknown;
       if (f.many) {
         const list = (found as Obj[] | undefined) ?? [];

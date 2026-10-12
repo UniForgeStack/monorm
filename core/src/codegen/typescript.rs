@@ -93,9 +93,14 @@ fn quote(s: &str) -> String {
     serde_json::to_string(s).expect("a string serializes")
 }
 
-/// The to-one relation of `m` whose key is field `field` (a foreign key on `m`).
+/// The to-one relation of `m` whose key holds field `field` (a foreign key on `m`).
 fn belongs_to<'a>(m: &'a Model, field: &str) -> Option<&'a RelationIr> {
-    m.ir.relations.iter().find(|r| r.kind == RelKind::One && r.foreign_key && r.from == field)
+    m.ir.relations.iter().find(|r| r.kind == RelKind::One && r.foreign_key && r.from.iter().any(|f| f == field))
+}
+
+/// Whether `field` is the last key field of `r`; a relation of several fields is listed once.
+fn last_key(r: &RelationIr, field: &str) -> bool {
+    r.from.last().is_some_and(|f| f == field)
 }
 
 /// The hop kind of a relation, for loaded-relation types.
@@ -106,7 +111,7 @@ fn hop_kind(_schema: &Schema, m: &Model, r: &RelationIr) -> Result<&'static str,
         RelKind::Many if r.through.is_some() => "m2m",
         RelKind::Many => "many",
         RelKind::One if !r.foreign_key => "opt",
-        RelKind::One if m.field(&r.from)?.nullable => "opt",
+        RelKind::One if r.from.iter().map(|f| m.field(f).map(|f| f.nullable)).collect::<Result<Vec<_>, _>>()?.contains(&true) => "opt",
         RelKind::One => "one",
     })
 }
@@ -114,7 +119,8 @@ fn hop_kind(_schema: &Schema, m: &Model, r: &RelationIr) -> Result<&'static str,
 /// A to-one relation as a value: the related row (any object with its key).
 fn related_ref(schema: &Schema, r: &RelationIr) -> Result<String, String> {
     let target = schema.model(schema.model_idx(&r.target)?);
-    Ok(format!("{{ readonly {}: {} }}", camel(&r.to), input_type(target.field(&r.to)?)))
+    let keys = r.to.iter().map(|k| Ok(format!("readonly {}: {}", camel(k), input_type(target.field(k)?)))).collect::<Result<Vec<_>, String>>()?;
+    Ok(format!("{{ {} }}", keys.join("; ")))
 }
 
 /// Generates `models.ts` for `ir` (already validated as `schema`). `source` names the
@@ -208,7 +214,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 RelKind::Many => {
                     // the key and the to-one relation back, filled in by insert()
                     let target = schema.model(schema.model_idx(&r.target)?);
-                    let mut link = vec![quote(&camel(&r.to))];
+                    let mut link: Vec<String> = r.to.iter().map(|k| quote(&camel(k))).collect();
                     if let Some(back) = target
                         .ir
                         .relations
@@ -236,11 +242,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             let _ = position;
             let optional = f.nullable || has_server_value(f) || f.client_default.is_some();
             match belongs_to(m, &f.name) {
-                Some(r) if !optional => one_of.push((f, r)),
+                Some(r) if !optional && r.from.len() == 1 => one_of.push((f, r)),
                 Some(r) => {
+                    // several key fields: the key or the relation is checked at runtime
                     let null = if f.nullable { " | null" } else { "" };
                     writeln!(body, "  {}?: {};", camel(&f.name), file_input_type(m, f)).unwrap();
-                    writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
+                    if last_key(r, &f.name) {
+                        writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
+                    }
                 }
                 None => {
                     let q = if optional { "?" } else { "" };
@@ -276,7 +285,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             if expression {
                 writeln!(body, "  {}?: {} | Expression<Compat<{t}>, \"{name}\" | \"~{name}\", {{}}>;", camel(&f.name), file_input_type(m, f)).unwrap();
             } else { writeln!(body, "  {}?: {};", camel(&f.name), file_input_type(m, f)).unwrap(); }
-            if let Some(r) = belongs_to(m, &f.name) {
+            if let Some(r) = belongs_to(m, &f.name).filter(|r| last_key(r, &f.name)) {
                 let null = if f.nullable { " | null" } else { "" };
                 writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
             }
@@ -292,7 +301,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             let _ = position;
             let q = if f.primary_key { "" } else { "?" };
             writeln!(body, "  {}{q}: {};", camel(&f.name), file_input_type(m, f)).unwrap();
-            if let Some(r) = belongs_to(m, &f.name) {
+            if let Some(r) = belongs_to(m, &f.name).filter(|r| last_key(r, &f.name)) {
                 let null = if f.nullable { " | null" } else { "" };
                 writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
             }
@@ -316,7 +325,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         if composed { writeln!(body, "  readonly attach: {name}Attach;").unwrap(); }
         writeln!(body, "  readonly update: {name}Update;").unwrap();
         writeln!(body, "  readonly updateRow: {name}UpdateRow;").unwrap();
-        writeln!(body, "  readonly pk: {};", value_type(pk)).unwrap();
+        match m.key_fields().as_slice() {
+            [_] => writeln!(body, "  readonly pk: {};", value_type(pk)).unwrap(),
+            keys => {
+                let keys: Vec<String> = keys.iter().map(|f| format!("readonly {}: {}", camel(&f.name), value_type(f))).collect();
+                writeln!(body, "  readonly pk: {{ {} }};", keys.join("; ")).unwrap()
+            }
+        }
         if let Some(class) = query_set(name) { writeln!(body, "  readonly queries: {class};").unwrap(); }
         writeln!(body, "}}\n").unwrap();
 

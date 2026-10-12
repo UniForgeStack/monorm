@@ -32,6 +32,7 @@ pub fn resolve(schema: &Schema, identities: &IdentityManifest, declarations: &[G
         for target in &declaration.targets {
             let identity = identities.active().find(|e| &e.model == target).ok_or_else(|| format!("{target} is not an active concrete ContentType"))?;
             let target_model = ModelId(schema.model_idx(target)?);
+            if schema.model(target_model.0).key.len() > 1 { return Err(format!("{target} has a composite primary key; a generic relation needs one key column")); }
             let pk = schema.model(target_model.0).pk_field();
             if !compatible(key_field, pk) || !matches!(pk.ty, ColType::Int | ColType::BigInt | ColType::Uuid | ColType::String | ColType::Text) {
                 return Err(format!("{target} has an incompatible generic key codec"));

@@ -510,10 +510,6 @@ impl Builder<'_> {
                 identity: f.auto_increment,
                 comment: f.comment.clone(),
             });
-            if f.primary_key {
-                table.primary_key =
-                    Some(PrimaryKey { name: self.claim(object_name(&[&t, "pkey"]), m)?, columns: vec![f.column.clone()] });
-            }
             if f.unique && !f.primary_key {
                 table.uniques.push(Unique {
                     name: self.claim(object_name(&[&t, &f.column, "key"]), m)?,
@@ -560,14 +556,29 @@ impl Builder<'_> {
             }
         }
 
+        if schema.dialect == crate::dialect::Dialect::Sqlite && m.key.len() > 1 {
+            if let Some(f) = m.fields().iter().find(|f| f.auto_increment) {
+                return Err(format!("{}.{}: SQLite has no autoincrement in a primary key of several columns", m.ir.name, f.name));
+            }
+        }
+        let name = m.ir.pk_name.clone().unwrap_or_else(|| object_name(&[&t, "pkey"]));
+        table.primary_key =
+            Some(PrimaryKey { name: self.claim(name, m)?, columns: m.key_fields().iter().map(|f| f.column.clone()).collect() });
+
         for r in m.ir.relations.iter().filter(|r| r.foreign_key) {
             let target = schema.model(schema.model_idx(&r.target)?);
-            let column = m.field(&r.from)?.column.clone();
+            let columns = r.from.iter().map(|f| Ok(m.field(f)?.column.clone())).collect::<Result<Vec<_>>>()?;
+            let default_name = {
+                let mut parts: Vec<&str> = vec![&t];
+                parts.extend(columns.iter().map(String::as_str));
+                parts.push("fkey");
+                object_name(&parts)
+            };
             table.foreign_keys.push(ForeignKey {
-                name: self.claim_local(r.fk_name.clone().unwrap_or_else(|| object_name(&[&t, &column, "fkey"])), m)?,
-                columns: vec![column],
+                name: self.claim_local(r.fk_name.clone().unwrap_or(default_name), m)?,
+                columns,
                 ref_table: target.table().to_owned(),
-                ref_columns: vec![target.field(&r.to)?.column.clone()],
+                ref_columns: r.to.iter().map(|f| Ok(target.field(f)?.column.clone())).collect::<Result<_>>()?,
                 on_delete: r.on_delete.filter(|a| *a != OnDelete::NoAction),
                 on_update: r.on_update.filter(|a| *a != OnDelete::NoAction),
                 deferrable: r.deferrable,

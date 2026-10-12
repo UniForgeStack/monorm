@@ -224,8 +224,8 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
             }
             for relation in &model.relations {
                 if let Some(target) = ir.models.iter().find(|m| m.name == relation.target) {
-                    if !target.fields.iter().any(|f| f.name == relation.to) {
-                        return Err(at(&model.name, Some(&relation.name), format!("relation {}.{}: {} has no field {} after extension lowering", model.name, relation.name, relation.target, relation.to)));
+                    if let Some(to) = relation.to.iter().find(|to| !target.fields.iter().any(|f| &f.name == *to)) {
+                        return Err(at(&model.name, Some(&relation.name), format!("relation {}.{}: {} has no field {to} after extension lowering", model.name, relation.name, relation.target)));
                     }
                 }
             }

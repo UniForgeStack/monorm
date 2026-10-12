@@ -22,23 +22,26 @@ fn trigger(name: &str, value: serde_json::Value) -> Result<TriggerIr, String> {
 /// `BEFORE DELETE` of a live row: set the field and cancel the delete. A row that is
 /// already soft-deleted is deleted.
 fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str) -> Result<TriggerIr, String> {
-    let pk = model.fields.iter().find(|f| f.primary_key).ok_or_else(|| format!("{} has no primary key", model.name))?;
-    let (c, t, pk) = (ident(column(model, field)?), ident(&model.table), ident(&pk.column));
+    let keys = model.key_fields();
+    if keys.is_empty() { return Err(format!("{} has no primary key", model.name)); }
+    let pk = keys.iter().map(|k| Ok(format!("{0} = OLD.{0}", ident(column(model, k)?)))).collect::<Result<Vec<_>, String>>()?.join(" AND ");
+    let (c, t) = (ident(column(model, field)?), ident(&model.table));
     let body = match dialect {
-        Dialect::Postgres => format!("BEGIN UPDATE {t} SET {c} = now() WHERE {pk} = OLD.{pk}; RETURN NULL; END;"),
-        Dialect::Sqlite => format!("UPDATE {t} SET {c} = CURRENT_TIMESTAMP WHERE {pk} = OLD.{pk}; SELECT RAISE(IGNORE)"),
+        Dialect::Postgres => format!("BEGIN UPDATE {t} SET {c} = now() WHERE {pk}; RETURN NULL; END;"),
+        Dialect::Sqlite => format!("UPDATE {t} SET {c} = CURRENT_TIMESTAMP WHERE {pk}; SELECT RAISE(IGNORE)"),
     };
     trigger("soft_delete", serde_json::json!({"timing": "before", "events": ["delete"], "when": format!("OLD.{c} IS NULL"), "body": body}))
 }
 
 /// `AFTER UPDATE OF` the field, when a row becomes soft-deleted: soft-delete the live rows
 /// of each soft-delete child whose relation cascades deletes. A child is
-/// `(table, soft-delete column, foreign key column, referenced parent column)`.
-fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[(String, String, String, String)]) -> Result<TriggerIr, String> {
+/// `(table, soft-delete column, [(foreign key column, referenced parent column)])`.
+fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[(String, String, Vec<(String, String)>)]) -> Result<TriggerIr, String> {
     let c = ident(column(parent, field)?);
-    let statements: Vec<String> = children.iter().map(|(table, child, key, to)| {
-        let (table, child, key, to) = (ident(table), ident(child), ident(key), ident(to));
-        format!("UPDATE {table} SET {child} = NEW.{c} WHERE {key} = NEW.{to} AND {child} IS NULL")
+    let statements: Vec<String> = children.iter().map(|(table, child, keys)| {
+        let (table, child) = (ident(table), ident(child));
+        let link: Vec<String> = keys.iter().map(|(key, to)| format!("{} = NEW.{}", ident(key), ident(to))).collect();
+        format!("UPDATE {table} SET {child} = NEW.{c} WHERE {} AND {child} IS NULL", link.join(" AND "))
     }).collect();
     let body = match dialect {
         Dialect::Postgres => format!("BEGIN {}; RETURN NULL; END;", statements.join("; ")),
@@ -69,14 +72,18 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         for child in &ir.models {
             let Some(child_field) = ir.behavior.soft_delete.iter().find(|c| c.model == child.name) else { continue };
             for r in child.relations.iter().filter(|r| r.foreign_key && r.target == s.model && r.on_delete == Some(OnDelete::Cascade)) {
-                children.push((child.table.clone(), column(child, &child_field.field)?.to_owned(), column(child, &r.from)?.to_owned(), r.to.clone()));
+                let keys = r.from.iter().map(|f| Ok(column(child, f)?.to_owned())).collect::<Result<Vec<_>, String>>()?;
+                children.push((child.table.clone(), column(child, &child_field.field)?.to_owned(), keys, r.to.clone()));
             }
         }
         let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|st| st.models.iter_mut()));
         for model in models.filter(|m| m.name == s.model) {
             let mut triggers = vec![delete_trigger(dialect, model, &s.field)?];
             if !children.is_empty() {
-                let resolved = children.iter().map(|(t, c, k, to)| Ok((t.clone(), c.clone(), k.clone(), column(model, to)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
+                let resolved = children.iter().map(|(t, c, keys, to)| {
+                    let pairs = keys.iter().zip(to).map(|(k, to)| Ok((k.clone(), column(model, to)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
+                    Ok((t.clone(), c.clone(), pairs))
+                }).collect::<Result<Vec<_>, String>>()?;
                 triggers.push(cascade_trigger(dialect, model, &s.field, &resolved)?);
             }
             for t in triggers {
