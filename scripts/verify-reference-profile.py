@@ -15,8 +15,9 @@ registry = orm.Registry()
 m = orm.loads('''datasource db {\n provider = "sqlite"\n}
 model Parent {\n id Int @id\n children Child[]\n}
 model Child {\n id Int @id\n parent_id Int\n parent Parent @relation(fields: [parent_id], references: [id])\n}''', registry=registry)
-assert hasattr(m["Child"], "load_parent") is expected
-assert (m["Child"]._apply_row is Model._apply_row) is not expected
+assert hasattr(m["Child"], "load")
+assert not hasattr(m["Child"], "load_parent")
+assert (m["Child"]._replace_from is Model._replace_from) is not expected
 if not expected:
     before = registry.ir()
     try:
@@ -35,9 +36,9 @@ async def verify():
         child = await m["Child"].objects.using(db).insert(id=1, parent_id=1)
         await child.update(parent_id=1)
         await child.refresh()
-        if expected:
-            assert (await child.load_parent()).id == 1
-        else:
+        assert await child.load(m["Child"].parent) is child
+        assert child.parent.id == 1
+        if not expected:
             assert not any(name.startswith("_reference_") for name in child.__dict__)
             joined = await m["Child"].objects.using(db).load(m["Child"].parent).get()
             assert joined.parent.id == 1

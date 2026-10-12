@@ -174,7 +174,7 @@ test("a factory needs only describe and insert", async () => {
   const post = await make(Post);
   assert.match(post["title"] as string, /^title-/);
   assert.equal(post["views"], 0);
-  const author = await User.objects.get(User.id.eq(post["authorId"] as bigint));
+  const author = await User.objects.require().get(User.id.eq(post["authorId"] as bigint));
   assert.match(author.email, /^email-/);
   const link = await make(PostTag, { post });
   assert.equal(link["postId"], post["id"]);

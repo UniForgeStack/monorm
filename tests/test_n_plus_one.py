@@ -44,7 +44,7 @@ async def test_a_loader_in_a_loop_raises_with_the_shape_the_site_and_the_fix(sho
     with pytest.raises(debug.NPlusOne) as raised:
         with debug.n_plus_one(threshold=5, fail=True):
             for c in customers:
-                await c.load_person()  # the call site
+                await c.load(Customer.person)  # the call site
     report = raised.value.report
     [shape] = report.repeated
     assert shape.count == 8

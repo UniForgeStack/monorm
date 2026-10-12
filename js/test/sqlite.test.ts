@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { connect, func, IntegrityError, loads, Migrations, Migrator, outer, QueryError, Registry, SchemaError } from "../src/index.js";
+import { connect, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, Migrator, outer, QueryError, Registry, SchemaError } from "../src/index.js";
 import { Author, Book, Status, sqliteRegistry } from "./sqlite/models.js";
 
 test("SQLite has no array_agg and no LATERAL join", async () => {
@@ -215,8 +215,12 @@ test("SQLite aggregate FILTER", async () => {
   try {
     await db.createTables();
     await Note.objects.using(db).insertMany([{ n: 1 }, { n: 5 }, { n: 10 }]);
-    const row = await Note.objects.using(db).select({ c: func.count({ filter: Note.n.gte(5) }), s: func.sum(Note.n, { filter: Note.n.lt(10) }) }).one();
+    const row = await Note.objects.using(db).select({ c: func.count({ filter: Note.n.gte(5) }), s: func.sum(Note.n, { filter: Note.n.lt(10) }) }).get();
     assert.deepEqual(row, { c: 2n, s: 6n });
+    const selected = Note.objects.using(db).select({ n: Note.n });
+    assert.deepEqual(await selected.get(Note.n.eq(5)), { n: 5 });
+    await assert.rejects(selected.require().get(Note.n.eq(-1)), DoesNotExist);
+    await assert.rejects(selected.get(), MultipleObjectsReturned);
   } finally { await db.close(); }
 });
 

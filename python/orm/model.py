@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from . import _native
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
-from .expr import ColumnRef
+from .expr import ColumnRef, RelationPath
 from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, ManyToMany, Relation, String
 
 if TYPE_CHECKING:
@@ -227,8 +227,6 @@ class Registry:
             for old in model._meta.relations.keys() - relations.keys():
                 if old not in vars(model):
                     raise TypeError("class preparation cannot remove inherited members; use define() for this logical view")
-            if _reference_adapter is not None:
-                _reference_adapter.validate(model, fields, relations, prepared.get("behavior", {}))
             associations.append((model, ir, fields, relations))
         methods_by_model: dict[str, dict[str, Any]] = {}
         for method in prepared.get("behavior", {}).get("methods", ()):
@@ -303,7 +301,7 @@ class Registry:
         return self._native
 
 
-_RESERVED = {"pk", "objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", "update", "delete", "hard_delete", "undelete", "refresh", "to_dict", "_field_value", "_orm_internal"}
+_RESERVED = {"pk", "objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", "update", "delete", "hard_delete", "undelete", "refresh", "load", "to_dict", "_field_value", "_orm_internal"}
 
 registry = Registry()
 
@@ -499,6 +497,17 @@ class Model:
         """Serialize public loaded scalar fields, retaining loaded NULL values."""
         return {n: self.__dict__[n] for n in self._meta.field_names if n in self.__dict__}
 
+    async def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any], reload: bool = False) -> Self:
+        """Populate requested fields and relations, preserving loaded values by default.
+
+        Accepts the same arguments as QuerySet.load(). No arguments loads all scalar
+        fields. Returns this instance; reload=True refreshes the requested values.
+        """
+        from ._loading import load_instance
+
+        await load_instance(self, items, reload)
+        return self
+
     # -- writes --------------------------------------------------------------------------
     # Each method is one statement on this row (matched by primary key), run on the
     # database the instance was read from.
@@ -620,7 +629,7 @@ class Model:
                 exclusive is not False, nowait=bool(nowait), skip_locked=bool(skip_locked)
             )
         try:
-            fresh = await query.get()
+            fresh = await query.require().get()
         except self.DoesNotExist:
             if skip_locked:
                 return False

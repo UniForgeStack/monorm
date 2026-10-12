@@ -195,9 +195,9 @@ test("terminal methods", async () => {
   assert.equal((await User.objects.last())!.name, "Carol");
   assert.equal((await User.objects.orderBy(User.name.desc()).first())!.name, "Carol");
   assert.equal(await User.objects.filter(User.name.eq("Nobody")).first(), null);
-  assert.equal((await User.objects.get(User.email.eq("bob@example.com"))).name, "Bob");
-  await assert.rejects(User.objects.get(User.email.eq("nobody@example.com")), User.DoesNotExist);
-  await assert.rejects(User.objects.get(User.email.eq("nobody@example.com")), DoesNotExist);
+  assert.equal((await User.objects.require().get(User.email.eq("bob@example.com"))).name, "Bob");
+  await assert.rejects(User.objects.require().get(User.email.eq("nobody@example.com")), User.DoesNotExist);
+  await assert.rejects(User.objects.require().get(User.email.eq("nobody@example.com")), DoesNotExist);
   await assert.rejects(User.objects.get(User.name.startsWith("")), MultipleObjectsReturned);
   assert.equal(await User.objects.slice(1).count(), 2);
   assert.deepEqual((await collect(User.objects.orderBy(User.id).slice(1, 3))).map((u) => u.name), ["Bob", "Carol"]);
@@ -330,10 +330,11 @@ test("select rows", async () => {
   assert.ok(Math.abs((await Post.objects.select({ avg: func.avg(Post.views) }).scalar())! - 155 / 3) < 1e-9);
   assert.deepEqual((await Post.objects.select({ title: Post.title }).scalars()).sort(), ["bob's old", "new post", "old draft"]);
   assert.deepEqual(await Post.objects.select({ t: func.lower(Post.title) }).orderBy(Post.id).first(), { t: "old draft" });
-  const one = await Post.objects.filter(Post.id.eq(b1.id)).select({ title: Post.title, author: Post.author.name }).one();
+  const one = await Post.objects.filter(Post.id.eq(b1.id)).select({ title: Post.title, author: Post.author.name }).get();
   assert.deepEqual(one, { title: "bob's old", author: "Bob" });
-  await assert.rejects(Post.objects.filter(Post.id.eq(-1)).select({ id: Post.id }).one(), DoesNotExist);
-  await assert.rejects(Post.objects.select({ id: Post.id }).one(), MultipleObjectsReturned);
+  assert.deepEqual(await Post.objects.select({ title: Post.title }).get(Post.id.eq(b1.id)), { title: "bob's old" });
+  await assert.rejects(Post.objects.select({ id: Post.id }).require().get(Post.id.eq(-1)), DoesNotExist);
+  await assert.rejects(Post.objects.select({ id: Post.id }).get(), MultipleObjectsReturned);
   await assert.rejects((Post.objects.select({ id: Post.id, t: Post.title }) as never as { scalars(): Promise<unknown> }).scalars(), QueryError);
   assert.deepEqual((await Post.objects.select({ a: Post.authorId }).distinct().scalars()).sort(), [alice.id, bob.id].sort());
   const top = await Post.objects.select({ authorId: Post.authorId, title: Post.title }).distinct(Post.authorId).orderBy(Post.authorId, Post.views.desc()).all();
@@ -419,7 +420,7 @@ test("row locks", async () => {
     await assert.rejects(User.objects.lock().get(User.id.eq(alice.id)), TransactionRequired);
     await assert.rejects(User.objects.lock().count(), QueryError);
     await db.transaction(async () => {
-      const locked = await User.objects.lock().get(User.id.eq(alice.id));
+      const locked = await User.objects.lock().require().get(User.id.eq(alice.id));
       assert.equal(locked.id, alice.id);
       const elsewhere = <T>(fn: () => Promise<T>) => other.transaction(fn);
       await assert.rejects(elsewhere(() => User.objects.using(other).lock({ nowait: true }).get(User.id.eq(alice.id))), LockNotAvailable);
@@ -428,7 +429,7 @@ test("row locks", async () => {
       const others = await elsewhere(() => User.objects.using(other).orderBy(User.id).lock({ skipLocked: true }).all());
       assert.deepEqual(names(others), ["Bob", "Carol"]);
       // plain reads aren't blocked
-      assert.equal((await User.objects.using(other).get(User.id.eq(alice.id))).name, "Alice");
+      assert.equal((await User.objects.using(other).require().get(User.id.eq(alice.id))).name, "Alice");
     });
     await db.transaction(async () => {
       await Post.objects.load(Post.author).lock({ exclusive: false }).filter(Post.id.eq(a1.id)).all();
@@ -461,7 +462,7 @@ test("refresh with a row lock", async () => {
       assert.equal(await bob.refresh({ lock: true, exclusive: false }), true);
       await other.transaction(() => User.objects.using(other).lock({ exclusive: false, nowait: true }).get(User.id.eq(bob.id)));
     });
-    const copy = await User.objects.using(other).get(User.id.eq(alice.id));
+    const copy = await User.objects.using(other).require().get(User.id.eq(alice.id));
     await db.transaction(async () => {
       await User.objects.lock().get(User.id.eq(alice.id));
       await User.objects.filter(User.id.eq(alice.id)).update({ name: "Al" });

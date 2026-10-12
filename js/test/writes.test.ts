@@ -30,7 +30,7 @@ test("insertMany batchSize", async () => {
   await assert.rejects(User.objects.insertMany(rows).onConflict(User.email, { update: true }), (e) => e instanceof DatabaseError && /second time/.test(e.message));
   const users = await User.objects.insertMany(rows, { batchSize: 1 }).onConflict(User.email, { update: true }).returning();
   assert.deepEqual(users.map((u) => u.name), ["A1", "A2"]);
-  assert.equal((await User.objects.get(User.email.eq("a@x.io"))).name, "A2");
+  assert.equal((await User.objects.require().get(User.email.eq("a@x.io"))).name, "A2");
 });
 
 test("insertMany batches run in one transaction", async () => {
@@ -145,7 +145,7 @@ test("a single upsert gives a count", async () => {
   assert.equal(await User.objects.insert({ email: "a@x.io", name: "B" }).onConflict(User.email, { update: false }), 0);
   assert.equal(await User.objects.insert({ email: "b@x.io", name: "B" }).onConflict(User.email, { update: false }), 1);
   assert.equal(await User.objects.insert({ email: "a@x.io", name: "A2" }).onConflict(User.email, { update: true }), 1);
-  assert.equal((await User.objects.get(User.id.eq(alice.id))).name, "A2");
+  assert.equal((await User.objects.require().get(User.id.eq(alice.id))).name, "A2");
   // A statement runs once, however often it is awaited.
   const once = User.objects.insert({ email: "c@x.io", name: "C" });
   assert.equal((await once).id, (await once).id);
@@ -279,7 +279,7 @@ test("add with throughDefaults", async () => {
     [t4.id, 3],
   ]);
   await post.tags.add(t2);
-  assert.equal((await PostTag.objects.get(PostTag.tagId.eq(t2.id))).position, null);
+  assert.equal((await PostTag.objects.require().get(PostTag.tagId.eq(t2.id))).position, null);
 });
 
 test("throughDefaults cannot set the link keys", async () => {
@@ -322,7 +322,7 @@ test("insertMany copy loads many rows", async () => {
   const rows = Array.from({ length: 100_000 }, (_, i) => ({ author: alice, title: `t${i}`, body: "b", views: i }));
   assert.equal(await Post.objects.insertMany(rows, { copy: true }), 100_000);
   assert.equal(await Post.objects.count(), 100_000);
-  const last = await Post.objects.get(Post.title.eq("t99999"));
+  const last = await Post.objects.require().get(Post.title.eq("t99999"));
   assert.equal(last.views, 99_999);
   assert.equal(last.published, false);
 });
@@ -330,7 +330,7 @@ test("insertMany copy loads many rows", async () => {
 test("insertMany copy column types", async () => {
   const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
   assert.equal(await Profile.objects.insertMany([{ user: alice, role: "admin", balance: new Decimal("12.50"), links: ["x", "y"] }], { copy: true }), 1);
-  const p = await Profile.objects.get(Profile.userId.eq(alice.id));
+  const p = await Profile.objects.require().get(Profile.userId.eq(alice.id));
   assert.equal(p.role, "admin");
   assert.equal(p.balance.toString(), "12.5");
   assert.deepEqual(p.links, ["x", "y"]);

@@ -54,12 +54,6 @@ pub fn reference_target_filtered(ir: &crate::ir::SchemaIr, target: &str) -> bool
     })
 }
 
-/// The loader result is optional for a reverse reference, a nullable key, or a filtered target.
-#[cfg(feature = "reference-loading")]
-pub fn reference_loader_nullable(ir: &crate::ir::SchemaIr, model: &crate::schema::Model, r: &crate::ir::RelationIr) -> Result<bool, String> {
-    Ok(!r.foreign_key || model.field(&r.from)?.nullable || reference_target_filtered(ir, &r.target))
-}
-
 #[cfg(test)]
 mod reference_tests {
     use super::*;
@@ -74,8 +68,8 @@ mod reference_tests {
         let py = python::generate(&ir, &schema, "schema.prisma").unwrap();
         let ts = typescript::generate(&ir, &schema, "schema.prisma", "orm").unwrap();
         if cfg!(feature = "reference-loading") {
-            assert!(py.stub.contains("async def load_author(self, *, reload: bool = False) -> User | None"));
-            assert!(ts.contains("loadAuthor(options?: { readonly reload?: boolean }): Promise<User | null>"));
+            assert!(!py.stub.contains("async def load_author"));
+            assert!(!ts.contains("loadAuthor("));
             assert!(py.module.contains("required_capabilities=(\"reference-loading\",)"));
             assert!(ts.contains("requiredCapabilities: [\"reference-loading\"]"));
         } else {
@@ -89,12 +83,12 @@ mod reference_tests {
     }
     #[cfg(feature = "reference-loading")]
     #[test]
-    fn loader_collisions_rejected_by_both_generators() {
+    fn legacy_loader_names_are_available_to_fields() {
         // Declared in the source, so a composition build also captures its physical column.
         let ir = crate::dsl::compile("model User {\n id Int @id\n posts Post[]\n}\nmodel Post {\n id Int @id\n load_author Int\n author_id Int?\n author User? @relation(fields: [author_id], references: [id])\n}", None).unwrap();
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
-        assert!(python::generate(&ir, &schema, "schema.prisma").err().unwrap().contains("collides"));
-        assert!(typescript::generate(&ir, &schema, "schema.prisma", "orm").err().unwrap().contains("collides"));
+        assert!(python::generate(&ir, &schema, "schema.prisma").unwrap().stub.contains("load_author: f.Integer"));
+        assert!(typescript::generate(&ir, &schema, "schema.prisma", "orm").unwrap().contains("readonly loadAuthor: number"));
     }
 
     #[test]

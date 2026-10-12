@@ -209,7 +209,7 @@ async def test_same_row_vs_independent_filters(clean):
     # One filter() call: the same post must be old AND unpublished.
     same = await User.objects.filter(
         User.posts.created_at < YESTERDAY, User.posts.published == False
-    )  # noqa: E712
+    )
     assert names(same) == ["Alice"]
     # Two calls: an old post, and an unpublished post (possibly different ones).
     indep = await User.objects.filter(User.posts.created_at < YESTERDAY).filter(
@@ -296,7 +296,9 @@ async def test_load_to_many(clean, observe_queries):
     assert result.has_batching
     assert all(s.joins_count == 0 for s in result.statements)
     assert [s.has_batching for s in result.statements] == [False, True]
-    assert all((s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements)
+    assert all(
+        (s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements
+    )
     with observe_queries(clean) as events:
         users = await query
         assert len(events) == 2
@@ -310,7 +312,6 @@ async def test_load_to_many(clean, observe_queries):
 
 async def test_related_set_queries_and_insert(clean):
     alice, *_ = await seed()
-    alice = cast(User, alice)
     with pytest.raises(orm.NotLoaded):
         alice.posts.cached  # noqa: B018
     assert len(await alice.posts) == 2
@@ -334,7 +335,7 @@ async def test_terminal_methods(clean):
     assert await User.objects.filter(User.name == "Nobody").first() is None
     assert (await User.objects.get(User.email == "bob@example.com")).name == "Bob"
     with pytest.raises(User.DoesNotExist):
-        await User.objects.get(User.email == "nobody@example.com")
+        await User.objects.require().get(User.email == "nobody@example.com")
     with pytest.raises(orm.MultipleObjectsReturned):
         await User.objects.get(User.name.startswith(""))
     assert await User.objects.all()[1:].count() == 2
@@ -421,11 +422,8 @@ async def test_upsert_with_expressions(clean):
         )
         .returning()
     )
-    assert (p2.id, p2.views, p2.title) == (
-        p.id,
-        7,
-        "t",
-    )  # only the given assignment ran
+    # only the given assignment ran
+    assert (p2.id, p2.views, p2.title) == (p.id, 7, "t")
     p3 = (
         await Post.objects.insert(**again)
         .on_conflict(
@@ -548,7 +546,7 @@ async def test_select_rows(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     from orm import func
 
-    rows = await (
+    query = (
         Post.objects.select(
             Post.author_id,
             func.count().label("posts"),
@@ -557,6 +555,10 @@ async def test_select_rows(clean):
         .group_by(Post.author_id)
         .order_by(Post.author_id)
     )
+    assert query.inspect() == orm.QueryInspection(
+        1, False, (orm.StatementInspection(False, 0, 0, 0, 0),)
+    )
+    rows = await query
     assert rows == [(alice.id, 2, 55), (bob.id, 1, 100)]
     r = rows[0]
     assert (r.author_id, r.posts, r.views) == (alice.id, 2, 55)
@@ -600,13 +602,14 @@ async def test_select_rows(clean):
     one = (
         await Post.objects.filter(Post.id == b1.id)
         .select(Post.title, Post.author.name.label("author"))
-        .one()
+        .get()
     )
     assert (one.title, one.author) == ("bob's old", "Bob")
+    assert await Post.objects.select(Post.title).get(Post.id == b1.id) == ("bob's old",)
     with pytest.raises(orm.DoesNotExist):
-        await Post.objects.filter(Post.id == -1).select(Post.id).one()
+        await Post.objects.select(Post.id).require().get(Post.id == -1)
     with pytest.raises(orm.MultipleObjectsReturned):
-        await Post.objects.select(Post.id).one()
+        await Post.objects.select(Post.id).get()
     with pytest.raises(orm.QueryError):
         await Post.objects.select(Post.id, Post.title).scalars()
     assert sorted(

@@ -75,7 +75,7 @@ async def test_prepared_reads(clean):
     p = await by_id.get(id=posts[3].id)
     assert p.title == "b1" and p.author.name == "Bob"
     with pytest.raises(Post.DoesNotExist):
-        await by_id.get(id=-1)
+        await by_id.require().get(id=-1)
     with pytest.raises(Post.MultipleObjectsReturned):
         await by_author.get(author=alice.id)
 

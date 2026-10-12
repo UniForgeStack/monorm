@@ -1,41 +1,55 @@
 # Explicit async reference loading
 
-The `reference-loading` Cargo feature adds explicit reference loaders. The Python
-and Node bindings, the `orm` CLI and the tooling profile enable it. The runtime
-profiles `postgres`, `sqlite` and `combined` are baseline artifacts. A baseline artifact keeps
-ordinary eager and prefetch relation support, but it does not have this adapter or
-the generated loader methods. Generated modules record the capability that they
-require. An artifact without that capability rejects them at definition.
-
-For a belongs-to or reverse one-to-one relation:
+Instances accept the same load arguments as querysets:
 
 ```python
-person = await customer.load_person()
-assert customer.person is person
-person = await customer.load_person(reload=True)
+await post.load(Post.body, Post.author, Post.comments)
+await post.load(Post.author.name)
+await post.load(Post.comments.objects.filter(Comment.body == "hello").label("matching_comments"))
+await post.load(Post.author, reload=True)
 ```
 
 ```typescript
-const person = await customer.loadPerson();
-const fresh = await customer.loadPerson({ reload: true });
+const loaded = await post.load(Post.body, Post.author, Post.comments);
+await post.load(Post.author.name);
+await post.load(Post.comments.objects.filter(Comment.body.eq("hello")).label("matchingComments"));
+await post.load(Post.author, { reload: true });
 ```
 
-Synchronous access does no I/O. It raises `NotLoaded` until the reference is
-loaded. TypeScript loaders return the target type. Relation properties keep the
-existing query-loaded typing rules, with one exception: a target with a prepared
-default filter makes the relation property nullable too. A generated loader name
-must not be the same as a field, a relation, a runtime member, or an extension
-method. The schema fails with an error when two names are the same.
+The method returns the same instance. Loaded fields and related objects are
+preserved when filling a partial shape. Already-loaded values, including nulls
+and empty collections, need no query. `reload=True` (TypeScript: `{ reload: true }`)
+refreshes requested values. Calling `.load()` without items fills all scalar
+fields. Queryset `.load(...)` configures a query; instance `.load(...)` executes
+immediately when awaited and adds to the existing instance.
 
-The loader uses ordinary target queries and the database of the owner instance.
-When the current task has a transaction, the loader uses that transaction. The
+Synchronous attribute access does no I/O and raises `NotLoaded` for missing
+values. TypeScript's returned instance type includes the requested fields and
+relations; use the returned value to access its expanded type. There are no
+generated `load_author()` / `loadAuthor()` methods.
+
+Relation paths, target columns, filters, ordering, slices, labels and nested loads
+use the existing queryset load planner. Collection relations remain relation
+querysets: read their prefetched values through `.cached`. Scalar loading reads
+the owner row; relation loading uses the owner's keys without refreshing its
+other scalar fields. For several owners, `prefetch(instances, ...items)` batches
+relation loading.
+
+The `reference-loading` Cargo feature enables the to-one cache adapter and shared
+in-progress queries for simple reference loads. The Python and Node bindings,
+the CLI and the tooling profile enable it. Baseline profiles support instance
+`.load(...)` through the ordinary relation prefetch planner, but do not import
+this adapter. Generated modules still record their required capabilities.
+
+Simple reference loads use ordinary target queries and the database of the owner instance.
+When the current task has a transaction, loading uses that transaction. The
 reference cache belongs to the owner instance. There is no global identity map.
 A valid cached object or a cached optional absence needs no query. An absent
-reverse one-to-one target and an absent optional target return `None` in Python
-and `null` in TypeScript. A required target that is not in the database raises
+reverse one-to-one target and an absent optional target are cached as `None` in
+Python and `null` in TypeScript. A required target that is not in the database raises
 `IntegrityError`. A target with a prepared default filter can be absent because
-the filter hides it. This applies to required references too, so the generated
-return types for these targets are nullable.
+the filter hides it. This applies to required references too, so query-loaded
+relation types for these targets are nullable.
 
 Calls for the same reference, key, database, and transaction share one query that
 is in progress. Concurrent forced reloads also share it. After a query fails, a
@@ -47,9 +61,9 @@ cancellation API.
 When an instance update or refresh changes a source key, the reference becomes
 invalid. A refresh also makes reverse one-to-one caches invalid, even when the
 source key does not change. Thus a refresh after you insert a target replaces a
-cached absence. A query that started before such a change can still return its
-original result to its callers, but it does not write that result to the cache.
-A forced reload replaces the cached reference and does not change the scalar
+cached absence. A query that started before such a change does not write its stale result to
+the cache.
+A forced load of a bare reference replaces the cached reference and does not change the scalar
 fields of the owner row. Other instances stay as they are until you refresh or
 reload them.
 

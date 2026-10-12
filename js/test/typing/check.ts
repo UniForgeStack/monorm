@@ -378,3 +378,59 @@ export function inspectionTypes() {
   // @ts-expect-error selected outer references also need an enclosing query
   Post.objects.filter(Post.authorId.eq(outer(User.id))).select({ id: Post.id }).inspect();
 }
+
+export async function instanceLoading() {
+  const partial = await Post.objects.load(Post.title).require().get();
+  // @ts-expect-error body is still unloaded
+  void partial.body;
+  const filled = await partial.load(Post.body, Post.author.name);
+  same<typeof filled.title, string>();
+  same<typeof filled.body, string>();
+  same<typeof filled.author.name, string>();
+  // @ts-expect-error only the author's name was requested
+  void filled.author.email;
+  const full = await partial.load();
+  same<typeof full.body, string>();
+  const reloaded = await partial.load(Post.body, { reload: true });
+  same<typeof reloaded.body, string>();
+  const author = await post.load(Post.author);
+  same<typeof author.author.name, string>();
+  const comments = await post.load(Post.comments.objects.load(Comment.body).label("selected"));
+  same<(typeof comments.selected)[number]["body"], string>();
+  // @ts-expect-error columns must belong to Post
+  await partial.load(User.email);
+  // @ts-expect-error relation querysets must be rooted at Post
+  await partial.load(User.posts.objects);
+}
+
+export async function requiredResults() {
+  const optional = await Post.objects.get(Post.id.eq(1n));
+  same<typeof optional, Post | null>();
+  const required = await Post.objects.require().filter(Post.id.eq(1n)).get();
+  same<typeof required, Post>();
+  const first = await Post.objects.require().first();
+  same<typeof first, Post>();
+  const last = await Post.objects.require().last();
+  same<typeof last, Post>();
+  const all = await Post.objects.require().all();
+  same<typeof all, Post[]>();
+  const selectedOptional = await Post.objects.select({ title: Post.title }).get();
+  same<typeof selectedOptional, { title: string } | null>();
+  const selectedRequired = await Post.objects.select({ title: Post.title }).require().filter(Post.id.eq(1n)).get();
+  same<typeof selectedRequired, { title: string }>();
+  const selectedFirst = await Post.objects.require().select({ title: Post.title }).first();
+  same<typeof selectedFirst, { title: string }>();
+  const prepared = Post.objects.filter(Post.id.eq(param("id"))).prepare();
+  const preparedOptional = await prepared.get({ id: 1n });
+  same<typeof preparedOptional, Post | null>();
+  const preparedRequired = await prepared.require().get({ id: 1n });
+  same<typeof preparedRequired, Post>();
+  const preparedFirst = await prepared.require().first({ id: 1n });
+  same<typeof preparedFirst, Post>();
+  const requiredPrepared = await Post.objects.require().filter(Post.id.eq(param("id"))).prepare().get({ id: 1n });
+  same<typeof requiredPrepared, Post>();
+  // @ts-expect-error required queries still need prepared parameter values
+  Post.objects.filter(Post.id.eq(param("id"))).require().get();
+  // @ts-expect-error required queries still cannot execute outer references directly
+  Post.objects.filter(Post.authorId.eq(outer(User.id))).require().first();
+}

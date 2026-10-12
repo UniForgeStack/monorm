@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from .cte import Cte
     from .db import Database
     from .model import Model
-    from .select import Select
+    from .select import RequiredSelect, Select
 
 M = TypeVar("M", bound="Model")
 T1 = TypeVar("T1")
@@ -278,9 +278,10 @@ class QuerySet(Generic[M]):
     ``exclude(User.posts.published == False)`` keeps users with no unpublished post.
     """
 
-    __slots__ = ("_model_helpers", "_without_defaults", "_without_related", "_model_fields", "_related_fields", "_model", "_filters", "_order", "_limit", "_offset", "_related", "_prefetch", "_loads", "_via", "_label", "_one", "_as_prefetch", "_lock", "_db", "_from", "_joins", "_result")
+    __slots__ = ("_required", "_model_helpers", "_without_defaults", "_without_related", "_model_fields", "_related_fields", "_model", "_filters", "_order", "_limit", "_offset", "_related", "_prefetch", "_loads", "_via", "_label", "_one", "_as_prefetch", "_lock", "_db", "_from", "_joins", "_result")
 
     def __init__(self, model: type[M]) -> None:
+        self._required = False
         self._model_helpers: tuple[str, ...] = ()
         self._without_defaults = False
         self._without_related = False
@@ -315,6 +316,7 @@ class QuerySet(Generic[M]):
         # Every builder step clones; explicit slot copies keep that step cheap.
         cls = type(self)
         new = cls.__new__(cls)
+        new._required = self._required
         new._model_helpers = self._model_helpers
         new._without_defaults = self._without_defaults
         new._without_related = self._without_related
@@ -344,6 +346,10 @@ class QuerySet(Generic[M]):
         return new
 
     # -- building ------------------------------------------------------------------------
+
+    def require(self) -> RequiredQuerySet[M]:
+        """Reject absent results when reading rows; leave the original query unchanged."""
+        return cast("RequiredQuerySet[M]", self._clone(_required=True))
 
     def all(self) -> Self:
         return self._clone()
@@ -841,8 +847,16 @@ class QuerySet(Generic[M]):
                     "query ends; run it inside `async with db.transaction():`"
                 )
 
+    def _check_rows(self, rows: list[M]) -> list[M]:
+        if self._required and not rows:
+            raise self._model.DoesNotExist(f"no {self._model.__name__} matches the query")
+        return rows
+
+    async def _read(self) -> list[M]:
+        return self._check_rows(await self._fetch())
+
     def __await__(self) -> Generator[Any, None, list[M]]:
-        return cached(self, self._fetch, enabled=self is not self._model.__dict__.get("objects")).__await__()
+        return cached(self, self._read, enabled=self is not self._model.__dict__.get("objects")).__await__()
 
     async def __aiter__(self) -> AsyncIterator[M]:
         for obj in await self:
@@ -890,26 +904,25 @@ class QuerySet(Generic[M]):
 
     async def first(self) -> M | None:
         """First row by the current ordering (primary key if none), or None."""
-        objs = await self._clone(_order=self._default_order())[:1]._fetch()
+        objs = await self._clone(_order=self._default_order())[:1]._read()
         return objs[0] if objs else None
 
     async def last(self) -> M | None:
         """Last row by the current ordering (primary key if none), or None."""
         order = tuple(o.reversed() for o in self._default_order())
-        objs = await self._clone(_order=order)[:1]._fetch()
+        objs = await self._clone(_order=order)[:1]._read()
         return objs[0] if objs else None
 
-    async def get(self, *conditions: ConditionLike) -> M:
-        """The single row matching ``conditions``; raises ``Model.DoesNotExist`` or
-        ``Model.MultipleObjectsReturned`` otherwise."""
-        objs = await self.filter(*conditions).limit(2)._fetch()
-        if not objs:
-            raise self._model.DoesNotExist(f"no {self._model.__name__} matches the query")
+    async def get(self, *conditions: ConditionLike) -> M | None:
+        """The single matching row, or None; multiple matches always raise.
+
+        ``require().get()`` also raises ``Model.DoesNotExist`` when absent."""
+        objs = await self.filter(*conditions).limit(2)._read()
         if len(objs) > 1:
             raise self._model.MultipleObjectsReturned(
                 f"more than one {self._model.__name__} matches the query"
             )
-        return objs[0]
+        return objs[0] if objs else None
 
     async def count(self) -> int:
         params: list[Any] = []
@@ -1023,13 +1036,10 @@ class QuerySet(Generic[M]):
         values = {**(defaults or {}), **lookup}
         where = [c == key[c._field.name] for c in cols]
         # A replica can lag behind the insert's conflict, so the reads see the primary too.
-        reads = self.using("primary")._clone(_limit=None, _offset=None)
+        reads = self.using("primary")._clone(_limit=None, _offset=None, _required=False)
 
         async def read() -> M | None:
-            try:
-                return await reads.get(*where)
-            except self._model.DoesNotExist:
-                return None
+            return await reads.get(*where)
 
         found = await read()
         for _ in range(GET_OR_INSERT_ROUNDS):
@@ -1181,21 +1191,29 @@ class Prepared(Generic[M]):
         engine, tx, allowed = db._reader(), db._tx(), allowed_writes()
         return db._call(lambda t: engine.run(op, params, tx, None, qs._db, allowed, t))
 
+    def require(self) -> RequiredPrepared[M]:
+        """Require at least one row from each prepared read."""
+        return cast("RequiredPrepared[M]", Prepared(self._qs.require()))
+
+    async def all(self, **values: Any) -> list[M]:
+        rows: list[M] = await self._start("select", values)
+        return self._qs._check_rows(rows)
+
     def __call__(self, **values: Any) -> Awaitable[list[M]]:
         """The rows, like awaiting the query set."""
-        return self._start("select", values)
+        return self.all(**values) if self._qs._required else self._start("select", values)
 
-    async def get(self, **values: Any) -> M:
+    async def get(self, **values: Any) -> M | None:
         objs: list[M] = await self._start("get", values)
+        self._qs._check_rows(objs)
         model = self._qs.model
-        if not objs:
-            raise model.DoesNotExist(f"no {model.__name__} matches the query")
         if len(objs) > 1:
             raise model.MultipleObjectsReturned(f"more than one {model.__name__} matches the query")
-        return objs[0]
+        return objs[0] if objs else None
 
     async def first(self, **values: Any) -> M | None:
         objs: list[M] = await self._start("first", values)
+        self._qs._check_rows(objs)
         return objs[0] if objs else None
 
     async def count(self, **values: Any) -> int:
@@ -1577,3 +1595,59 @@ class ManyRelatedSet(QuerySet[M]):
             f"{self._relation.model.__name__}.{self._relation.name}.insert_many() isn't supported; "
             f"insert the rows, then link them with add()"
         )
+
+
+if TYPE_CHECKING:
+    class RequiredQuerySet(QuerySet[M]):
+        """The type of a query whose row reads require a result."""
+
+        async def get(self, *conditions: ConditionLike) -> M: ...
+        async def first(self) -> M: ...
+        async def last(self) -> M: ...
+        def prepare(self) -> RequiredPrepared[M]: ...
+
+        @overload
+        def select(self, a: Expression[T1] | type[T1], /) -> RequiredSelect[T1]: ...
+        @overload
+        def select(self, a: Expression[T1] | type[T1], b: Expression[T2] | type[T2], /) -> RequiredSelect[T1, T2]: ...
+        @overload
+        def select(
+            self, a: Expression[T1] | type[T1], b: Expression[T2] | type[T2], c: Expression[T3] | type[T3], /
+        ) -> RequiredSelect[T1, T2, T3]: ...
+        @overload
+        def select(
+            self,
+            a: Expression[T1] | type[T1],
+            b: Expression[T2] | type[T2],
+            c: Expression[T3] | type[T3],
+            d: Expression[T4] | type[T4],
+            /,
+        ) -> RequiredSelect[T1, T2, T3, T4]: ...
+        @overload
+        def select(
+            self,
+            a: Expression[T1] | type[T1],
+            b: Expression[T2] | type[T2],
+            c: Expression[T3] | type[T3],
+            d: Expression[T4] | type[T4],
+            e: Expression[T5] | type[T5],
+            /,
+        ) -> RequiredSelect[T1, T2, T3, T4, T5]: ...
+        @overload
+        def select(
+            self,
+            a: Expression[T1] | type[T1],
+            b: Expression[T2] | type[T2],
+            c: Expression[T3] | type[T3],
+            d: Expression[T4] | type[T4],
+            e: Expression[T5] | type[T5],
+            f: Expression[T6] | type[T6],
+            /,
+        ) -> RequiredSelect[T1, T2, T3, T4, T5, T6]: ...
+        @overload
+        def select(self, *items: Expression[Any] | type[Model]) -> RequiredSelect[Unpack[tuple[Any, ...]]]: ...
+        def select(self, *items: Any) -> Any: ...
+
+    class RequiredPrepared(Prepared[M]):
+        async def get(self, **values: Any) -> M: ...
+        async def first(self, **values: Any) -> M: ...

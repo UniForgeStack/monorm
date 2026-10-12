@@ -150,6 +150,14 @@ class Select(Generic[Unpack[Ts]]):
 
     # -- building (the WHERE / ORDER BY / LIMIT part goes to the query set) ---------------
 
+    def require(self) -> RequiredSelect[Unpack[Ts]]:
+        """Reject queries returning no rows, while allowing NULL column values."""
+        return cast("RequiredSelect[Unpack[Ts]]", self._clone(_qs=self._qs.require()))
+
+    def all(self) -> Self:
+        """Read the rows afresh, without using this query's result cache."""
+        return self._clone()
+
     def filter(self, *conditions: ConditionLike) -> Self:
         return self._clone(_qs=self._qs.filter(*conditions))
 
@@ -281,6 +289,8 @@ class Select(Generic[Unpack[Ts]]):
         ir = self._ir(params)
         qs._check_lock()
         rows: list[Any] = await qs._run(ir, params, row_class(self._names))
+        if qs._required and not rows:
+            raise DoesNotExist("the query returned no row")
         return rows
 
     def __await__(self) -> Generator[Any, None, list[Row[Unpack[Ts]]]]:
@@ -295,14 +305,14 @@ class Select(Generic[Unpack[Ts]]):
         rows = await self[:1]._rows()
         return rows[0] if rows else None
 
-    async def one(self) -> Row[Unpack[Ts]]:
-        """The only row; raises ``DoesNotExist`` / ``MultipleObjectsReturned`` otherwise."""
-        rows = await self.limit(2)._rows()
-        if not rows:
-            raise DoesNotExist("the query returned no row")
+    async def get(self, *conditions: ConditionLike) -> Row[Unpack[Ts]] | None:
+        """The single matching row, or None; multiple matches always raise.
+
+        ``require().get()`` also raises ``DoesNotExist`` when absent."""
+        rows = await self.filter(*conditions).limit(2)._rows()
         if len(rows) > 1:
             raise MultipleObjectsReturned("the query returned more than one row")
-        return rows[0]  # type: ignore[no-any-return]
+        return rows[0] if rows else None
 
     async def scalar(self: Select[T]) -> T | None:
         """The single column of the first row, or ``None`` without rows:
@@ -327,3 +337,11 @@ class Select(Generic[Unpack[Ts]]):
         if self._having:
             parts.append(f"having{self._having!r}")
         return f"<Select {self._qs!r} {'.'.join(parts)}>"
+
+
+if TYPE_CHECKING:
+    class RequiredSelect(Select[Unpack[Ts]]):
+        """The type of a selection whose row reads require a result."""
+
+        async def get(self, *conditions: ConditionLike) -> Row[Unpack[Ts]]: ...
+        async def first(self) -> Row[Unpack[Ts]]: ...

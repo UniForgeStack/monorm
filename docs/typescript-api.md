@@ -127,12 +127,21 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 | `await qs` / `for await (const u of qs)` | `R[]`, cached per query set (below) |
 | `.all()` | `Promise<R[]>`, always a fresh query |
 | `.first()` / `.last()` | `Promise<R \| null>` |
-| `.get(...conditions)` | `Promise<R>`; throws `User.DoesNotExist` / `User.MultipleObjectsReturned` |
+| `.get(...conditions)` | `Promise<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
+| `.require().get(...)` | `Promise<R>`; throws on zero or multiple matches |
+| `.require().first()` / `.require().last()` | `Promise<R>`; throws on zero matches |
+| `.require().all()` | `Promise<R[]>`; throws if the result is empty |
 | `.count()` / `.exists()` | `Promise<number>` / `Promise<boolean>` |
 | `.inBulk(keys?, { field })` | `Promise<Map<key, R>>` |
 | `.batches(size)` / `.iterate(size)` | async generators that walk the primary key (keyset pagination) |
 | `.paginate({ first, after })` / `.paginate({ last, before })` | one page by keyset: `{ items, hasNext, hasPrevious, nextCursor, previousCursor }` |
 | `.sql()` | the SQL with values inlined, for reading |
+
+`.require()` clones the query and rejects absent row results with
+`Model.DoesNotExist`. Builders retain the modifier, which also applies when awaiting
+the query or iterating it. Prepared queries support it before or after `.prepare()`.
+`.get()` always rejects multiple matches, including without `.require()`.
+Counts and existence checks keep their normal zero/false results.
 
 **The result cache.** A query set runs on its first `await`; awaiting the same query set
 again gives the same rows (a new array each time) without another query, and concurrent
@@ -222,6 +231,11 @@ objects and an instance without a key throw `TypeError`.
   `Comment.post.objects.asPrefetch()` loads a to-one relation with an `IN` query instead of a join.
   A label that is a field, relation or member of the model throws `QueryError`; `label()` and `asPrefetch()` on a query set that is not a relation query set throw `TypeError`.
 
+* `const loaded = await post.load(Post.body, Post.author, Post.comments)` fills the existing
+  instance and returns it with a type that includes the requested fields and relations.
+  It preserves loaded values; a trailing `{ reload: true }` refreshes requested values.
+  `await post.load()` fills all scalar fields. Nested paths and filtered relation querysets
+  work as on querysets, and collection values remain in `.cached`.
 * `await prefetch(instances, ...items)` loads relations onto instances you already have, with the items of `load()` (no columns of the instances' model), always by `IN` query.
   Only the prefetch queries run: the keys come from the instances. A last `{ using: db }` argument names the database.
   The row type does not change; read the relations as `cached` or cast.
@@ -284,8 +298,13 @@ nullable relation becomes nullable.
 Other `Select` methods:
 
 * `.groupBy(...)`, `.having(...)`, `.distinct()` and `.orderBy(...)`.
-* `await sel` (cached, like a query set) and the terminals `.all()`, `.first()`, `.one()`,
+* `await sel` (cached, like a query set) and the terminals `.all()`, `.first()`, `.get()`,
   `.scalar()` and `.scalars()`.
+  `get(...conditions)` returns the single row or `null`, throwing
+  `MultipleObjectsReturned` for multiple matches; `first()` returns the first row or `null`.
+  `.require()` rejects queries returning no rows with `DoesNotExist`, including
+  `.all()`, `.get()`, `.first()`, awaiting the selection, `.scalar()` and `.scalars()`.
+  NULL column values are valid results, so a required scalar can still return `null`.
   `scalar()` and `scalars()` type-check only for one column.
 
 ## Subqueries
@@ -478,14 +497,14 @@ Replicas get the same setting. SQLite throws `QueryError`.
 
 ### Finding N+1 queries: `debug`
 
-The ORM never loads a relation by itself, so an N+1 comes from explicit code: a `loadX()` call or a query in a loop.
+The ORM never loads a relation by itself, so an N+1 comes from explicit code: an instance `load(...)` call or a query in a loop.
 `debug.nPlusOne` finds it:
 
 ```ts
 import { debug } from "orm";
 
 await debug.nPlusOne(async () => {
-  for (const c of customers) await c.loadPerson();
+  for (const c of customers) await c.load(Customer.person);
 }, { threshold: 5, fail: true });
 // NPlusOne: 20 queries with one shape `SELECT ... FROM "person" WHERE "person"."id" = $1 ...`
 //   at src/views.ts:42; use load(Customer.person)
@@ -498,7 +517,7 @@ await debug.nPlusOne(async () => {
   The pages of one ORM loop (`batches()`, `iterate()`, the chunks of `inBulk()`) count as one query when they have one shape.
 * When `fn` resolves, a shape that ran more than `threshold` times (default 5) throws `debug.NPlusOne` with `fail: true`, or emits an `NPlusOneWarning` process warning.
   `error.report` has each shape, its SQL, its count, the call site of its first query and the fix.
-* The fix is `load(...)` for a repeated `loadX()` and for a repeated unchanged to-many or many-to-many query (`post.comments.all()`, `post.tags.all()`).
+* The fix is `load(...)` for a repeated instance `load(...)` and for a repeated unchanged to-many or many-to-many query (`post.comments.all()`, `post.tags.all()`).
 * The call site and the SQL text are captured only inside the scope.
   Outside it, each query pays one `AsyncLocalStorage` read (about 2 ns, measured).
 * In tests, `await debug.expectNoNPlusOne(fn, { threshold })` throws `NPlusOne` when `fn` sends an N+1.

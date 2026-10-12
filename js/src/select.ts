@@ -48,6 +48,9 @@ import {
   type ParamsOfAll,
   type Awaitable,
   type Runnable,
+  type RequiredQuery,
+  type RequiredResult,
+  type PreserveRequired,
   cachedRows,
   type ScopesOf,
   type UnionToIntersection,
@@ -119,42 +122,47 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
 
   // -- building (WHERE / ORDER BY / LIMIT go to the query set) --------------------------------
 
+  /** Reject queries returning no rows, while allowing NULL column values. */
+  require(): this & RequiredQuery {
+    return this.with(this.qs.require()) as this & RequiredQuery;
+  }
+
   filter<const Cs extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: Cs
-  ): Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
     return this.with(this.qs.filter(...(conditions as unknown as never[])) as never);
   }
 
   exclude<const Cs extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: Cs
-  ): Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
     return this.with(this.qs.exclude(...(conditions as unknown as never[])) as never);
   }
 
   orderBy<const Cs extends readonly (Expression<unknown, AllowedOne<S>, unknown> | Ordering<AllowedOne<S>, unknown> | FieldOrder<M>)[]>(
     ...items: Cs
-  ): Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
     return this.with(this.qs.orderBy(...(items as unknown as never[])) as never);
   }
 
-  limit<N extends string>(n: ParamRef<N>): Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C>;
-  limit(n: number | null): Select<M, Row, S, P, X, C>;
+  limit<N extends string>(n: ParamRef<N>): PreserveRequired<this, Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C>>;
+  limit(n: number | null): PreserveRequired<this, Select<M, Row, S, P, X, C>>;
   limit(n: number | null | ParamRef<string>): unknown {
     return this.with(this.qs.limit(n as never) as never);
   }
 
-  offset<N extends string>(n: ParamRef<N>): Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C>;
-  offset(n: number | null): Select<M, Row, S, P, X, C>;
+  offset<N extends string>(n: ParamRef<N>): PreserveRequired<this, Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C>>;
+  offset(n: number | null): PreserveRequired<this, Select<M, Row, S, P, X, C>>;
   offset(n: number | null | ParamRef<string>): unknown {
     return this.with(this.qs.offset(n as never) as never);
   }
 
   /** Rows `start` to `end` (exclusive), like `Array.slice`. */
-  slice(start: number, end?: number): Select<M, Row, S, P, X, C> {
+  slice(start: number, end?: number): PreserveRequired<this, Select<M, Row, S, P, X, C>> {
     return this.with(this.qs.slice(start, end) as never);
   }
 
-  using(db: Database | undefined): Select<M, Row, S, P, X, C> {
+  using(db: Database | undefined): PreserveRequired<this, Select<M, Row, S, P, X, C>> {
     return this.with(this.qs.using(db) as never);
   }
 
@@ -162,7 +170,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
    * itself (`groupBy(Post)`) groups by its primary key. */
   groupBy<const Cs extends readonly (Expression<unknown, AllowedOne<S>, unknown> | ModelClass<M>)[]>(
     ...exprs: Cs
-  ): Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
     const out = exprs.map((e) => {
       const meta = modelMeta(e);
       if (meta) {
@@ -182,7 +190,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   /** Keep groups matching all `conditions`: `having(func.count().gt(2))`. */
   having<const Cs extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: Cs
-  ): Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
     if (!conditions.length) {
       return this as never;
     }
@@ -191,7 +199,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
 
   /** `SELECT DISTINCT`; with columns, Postgres' `DISTINCT ON (...)`: the first row (by
    * `orderBy`) of each distinct value. */
-  distinct(...on: readonly Column<unknown, S>[]): Select<M, Row, S, P, X, C> {
+  distinct(...on: readonly Column<unknown, S>[]): PreserveRequired<this, Select<M, Row, S, P, X, C>> {
     return this.with(this.qs, { ...this.state, distinct: true, distinctOn: on });
   }
 
@@ -285,7 +293,9 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
       );
     }
     const res = (await db.run(ir, params)) as NativeSelect;
-    return new Builder(db.registry, sel.qs.state.db).select(res, this.items.map(([k]) => k)) as Row[];
+    const rows = new Builder(db.registry, sel.qs.state.db).select(res, this.items.map(([k]) => k)) as Row[];
+    if (sel.qs.state.required && !rows.length) throw new DoesNotExist("the query returned no row");
+    return rows;
   }
 
   /** The rows, queried afresh (unlike `await sel`, which reuses its first result). */
@@ -308,22 +318,21 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   }
 
   /** The first row (by `orderBy`; unordered otherwise), or `null`. */
-  async first(...check: Runnable<P, X>): Promise<Row | null> {
+  async first(...check: Runnable<P, X>): Promise<RequiredResult<this, Row>> {
     void check;
-    return (await this.rows(this.slice(0, 1)))[0] ?? null;
+    return ((await this.rows(this.slice(0, 1)))[0] ?? null) as RequiredResult<this, Row>;
   }
 
-  /** The only row; throws `DoesNotExist` / `MultipleObjectsReturned` otherwise. */
-  async one(...check: Runnable<P, X>): Promise<Row> {
-    void check;
-    const rows = await this.rows(this.limit(2));
-    if (!rows.length) {
-      throw new DoesNotExist("the query returned no row");
-    }
+  /** The single matching row or null; multiple matches always throw.
+   * `require().get()` also throws `DoesNotExist` when absent. */
+  async get<const Cs extends readonly Expression<boolean | null, Allowed<S>, {}>[]>(
+    ...conditions: Cs & ([X] extends [never] ? ([keyof P] extends [never] ? unknown : never) : never)
+  ): Promise<RequiredResult<this, Row>> {
+    const rows = await this.rows(this.filter(...(conditions as unknown as never[])).limit(2));
     if (rows.length > 1) {
       throw new MultipleObjectsReturned("the query returned more than one row");
     }
-    return rows[0]!;
+    return (rows[0] ?? null) as RequiredResult<this, Row>;
   }
 
   /** The single column of the first row, or `null` without rows. */

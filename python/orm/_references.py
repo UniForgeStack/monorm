@@ -45,22 +45,7 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
                     return value
         elif key is None:
             return None
-        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; use {loader_name(self.name)}() or load({owner.__name__}.{self.name})")
-
-
-def loader_name(name: str) -> str:
-    return f"load_{name}"
-
-
-def validate(model: Any, fields: Any, relations: Any, behavior: Any) -> None:
-    methods = {m["name"] for m in behavior.get("methods", ()) if m["model"] == model.__name__}
-    for name, relation in relations.items():
-        if not isinstance(relation, (BelongsTo, HasOne)):
-            continue
-        method = loader_name(name)
-        existing = getattr(model, method, None)
-        if method in fields or method in relations or method in methods or (hasattr(model, method) and getattr(existing, "_reference_relation", None) != name):
-            raise TypeError(f"{model.__name__}.{method}: reference loader collides with an existing member")
+        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; use await obj.load({owner.__name__}.{self.name})")
 
 
 def install(model: Any) -> None:
@@ -79,11 +64,6 @@ def install(model: Any) -> None:
             relation.filtered = filtered
             relation.optional = model._meta.fields[relation.via].nullable
         references.append((name, relation))
-        method = loader_name(name)
-        existing = getattr(model, method, None)
-        if hasattr(model, method) and getattr(existing, "_reference_relation", None) != name:
-            raise TypeError(f"{model.__name__}.{method}: reference loader collides with an existing member")
-        setattr(model, method, make_loader(name, filtered=filtered))
     if not references:
         return
     # Capture only relation source keys; ordinary rows keep the baseline method.
@@ -116,14 +96,6 @@ def install(model: Any) -> None:
     refresh._reference_adapter = True  # type: ignore[attr-defined]
     refresh._reference_base = baseline_refresh  # type: ignore[attr-defined]
     setattr(model, "refresh", refresh)
-
-
-def make_loader(name: str, *, filtered: bool = False) -> Any:
-    async def load(self: Any, *, reload: bool = False) -> Any:
-        return await load_reference(self, name, reload=reload, filtered=filtered)
-    load.__name__ = loader_name(name)
-    load._reference_relation = name  # type: ignore[attr-defined]
-    return load
 
 
 async def load_reference(owner: Any, name: str, *, reload: bool = False, filtered: bool = False) -> Any:

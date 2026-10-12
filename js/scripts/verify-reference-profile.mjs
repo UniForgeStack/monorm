@@ -12,11 +12,13 @@ try {
   await db.createTables();
   await m.Parent.objects.using(db).insert({ id: 1 });
   const child = await m.Child.objects.using(db).insert({ id: 1, parentId: 1 });
-  assert.equal(typeof child.loadParent === "function", expected);
+  assert.equal(typeof child.load, "function");
+  assert.equal(child.loadParent, undefined);
   await child.update({ parentId: 1 });
   await child.refresh();
-  if (expected) assert.equal((await child.loadParent()).id, 1);
-  else {
+  assert.equal(await child.load(m.Child.parent), child);
+  assert.equal(child.parent.id, 1);
+  if (!expected) {
     assert.ok(!Object.getOwnPropertySymbols(child).some((symbol) => symbol.description === "orm.referenceState"));
     const joined = await m.Child.objects.using(db).load(m.Child.parent).get();
     assert.equal(joined.parent.id, 1);

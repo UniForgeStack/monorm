@@ -35,13 +35,10 @@ type ReferenceState = { pending: Map<string, ReferenceLoad>; tokens: Map<string,
 function referenceState(row: Row): ReferenceState {
   return ((row as ReferenceRow)[REFERENCE_STATE] ??= { pending: new Map(), tokens: new Map(), keys: new Map() });
 }
-export function referenceLoaderName(name: string): string {
-  return `load${name[0]!.toUpperCase()}${name.slice(1)}`;
-}
 
 type ReferenceRow = Row & { [REFERENCE_STATE]?: ReferenceState };
 /** One query per relation/key/context; successful loads enter the ordinary cache. */
-async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta, reload: boolean, host: Host, filtered: boolean): Promise<unknown> {
+export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta, reload: boolean, host: Host, filtered = targetFiltered(meta, r.target)): Promise<unknown> {
   const from = meta.fieldByIr.get(r.from)!;
   const key = keyValue(owner, from.name, host.INTERNAL);
   if (!reload) {
@@ -110,22 +107,12 @@ export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) =
         if (targetKey === key || (targetKey === MISSING && state?.keys.has(r.name) && state.keys.get(r.name) === key)) return value;
       }
     } else if (key === null) return null;
-    throw new NotLoaded(`${meta.name}.${r.name} is not loaded; use ${referenceLoaderName(r.name)}() or load(${meta.name}.${r.name})`);
+    throw new NotLoaded(`${meta.name}.${r.name} is not loaded; use await obj.load(${meta.name}.${r.name})`);
   };
 }
 
 export function install(meta: ModelMeta, proto: Record<string, unknown>, host: Host): void {
   const refs = [...meta.relations.values()].filter((r) => r.kind === "belongsTo" || r.kind === "hasOne");
-  for (const r of refs) {
-    const filtered = targetFiltered(meta, r.target);
-    const method = referenceLoaderName(r.name);
-    if (meta.fields.has(method) || meta.relations.has(method) || Object.hasOwn(proto, method)) {
-      throw new TypeError(`${meta.name}.${method}: reference loader collides with an existing member`);
-    }
-    Object.defineProperty(proto, method, { value(this: Row, options: { readonly reload?: boolean } = {}) {
-      return loadReference(this, meta, r, options.reload ?? false, host, filtered);
-    }});
-  }
   if (!refs.length) return;
   const dependencies = refs.map((relation) => ({ relation, source: meta.fieldByIr.get(relation.from)!.name }));
   const invalidate = (row: Row, before: Map<string, unknown>, refresh: boolean): void => {

@@ -198,12 +198,17 @@ type Narrow<R, M extends ModelSpec, N> = [N] extends [never]
     ? Fields<R, M["data"], N>
     : R & Pick<M["data"], N & keyof M["data"]>;
 
+/** The shape additive instance loading adds without narrowing existing fields. */
+export type InstanceLoaded<M extends ModelSpec, R, C extends readonly unknown[]> =
+  R & LoadAll<C> & Pick<M["data"], Extract<RootNames<C>, keyof M["data"]>>;
+
 /** What `load()` takes: a column, a relation path or a relation query set of model `M`. */
 export type LoadItem<M extends ModelSpec> =
   | Column<unknown, M["name"] | Many, string, readonly Hop[]>
   | RelationPath<ModelSpec, M["name"] | Many, readonly Hop[]>
+  // Compare relation metadata only; result modifiers do not change load eligibility.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `any`, not a contextual type the label literal would widen to
-  | QuerySet<any, any, string, any, never, Via<any, any, any, M["name"] | Many>>;
+  | Pick<QuerySet<any, any, string, any, never, Via<any, any, any, M["name"] | Many>>, "~qs" | "meta" | "state">;
 
 /** Columns of model `M` (the root of its queries). */
 export type OwnColumn<M extends ModelSpec> = Column<unknown, M["name"]>;
@@ -269,7 +274,7 @@ export interface PrefetchItem {
 }
 
 /** @internal */
-type LoadEntry = Column<unknown, string> | RelationPath<ModelSpec, string, readonly Hop[]> | QuerySet<ModelSpec, unknown, string, unknown, never>;
+export type LoadEntry = Column<unknown, string> | RelationPath<ModelSpec, string, readonly Hop[]> | QuerySet<ModelSpec, unknown, string, unknown, never>;
 
 function loadPath(item: LoadEntry): readonly string[] {
   return item instanceof Column ? item.path : item instanceof QuerySet ? item.state.via![PATH].path : item[PATH].path;
@@ -466,8 +471,14 @@ export type QueriesOf<M extends ModelSpec> = M extends { readonly queries: infer
 export type QuerySetOf<M extends ModelSpec, R = M["row"], S extends string = M["name"], P = {}, X extends string = never, V = null> =
   QuerySet<M, R, S, P, X, V> & QueriesOf<M>;
 
+/** @internal The non-null result view of a required query. */
+export interface RequiredQuery { readonly "~required": true }
+export type RequiredResult<Q, R> = Q extends RequiredQuery ? R : R | null;
+export type PreserveRequired<Q, T> = T & Pick<Q, Extract<keyof Q, "~required">>;
+
 /** @internal The state of a query set; copied, never changed. */
 export interface QueryState {
+  readonly required?: boolean;
   readonly modelHelpers?: readonly string[];
   readonly withoutDefaults: boolean;
   readonly withoutRelated: boolean;
@@ -561,6 +572,11 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return o;
   }
 
+  /** Require at least one result from row reads; leave the original query unchanged. */
+  require(): this & RequiredQuery {
+    return this.clone({ required: true }) as this & RequiredQuery;
+  }
+
   /** @internal The query's source in IR (`ModelMeta`, or a CTE for `cte.select()`). */
   protected source(): Source {
     return this.meta;
@@ -616,8 +632,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * Calls add up. `load()` without items gives full instances again (it bypasses a
    * default selection).
    */
-  load(): QuerySetOf<M, R & M["row"], S, P, X, V>;
-  load<const C extends readonly LoadItem<M>[]>(...items: C): QuerySetOf<M, Narrow<R, M, RootNames<C>> & LoadAll<C>, S, P & LoadParams<C>, X, V>;
+  load(): PreserveRequired<this, QuerySetOf<M, R & M["row"], S, P, X, V>>;
+  load<const C extends readonly LoadItem<M>[]>(...items: C): PreserveRequired<this, QuerySetOf<M, Narrow<R, M, RootNames<C>> & LoadAll<C>, S, P & LoadParams<C>, X, V>>;
   load(...items: readonly LoadEntry[]): unknown {
     const loads = this.state.loads ?? [];
     if (!items.length) {
@@ -657,7 +673,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   label<const A extends string, const O extends boolean = false>(
     name: A,
     options?: { readonly one?: O },
-  ): QuerySetOf<M, R, S, P, X, V extends Via<infer H, string | undefined, boolean, infer S0> ? Via<H, A, O, S0> : never> {
+  ): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V extends Via<infer H, string | undefined, boolean, infer S0> ? Via<H, A, O, S0> : never>> {
     this.bound("label");
     if (typeof name !== "string" || !/^[A-Za-z$][\w$]*$/.test(name)) {
       throw new TypeError(`label ${JSON.stringify(name)} must be an identifier not starting with '_'`);
@@ -666,7 +682,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** Loads this relation with an `IN (...)` query instead of a join; the rows are the same. */
-  asPrefetch(): QuerySetOf<M, R, S, P, X, V> {
+  asPrefetch(): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>> {
     this.bound("asPrefetch");
     return this.clone({ asPrefetch: true }) as never;
   }
@@ -697,7 +713,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** Keep rows matching all `conditions`. */
   filter<const C extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: C
-  ): QuerySetOf<M, R, S, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>, V> {
+  ): PreserveRequired<this, QuerySetOf<M, R, S, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>, V>> {
     if (!conditions.length) {
       return this as never;
     }
@@ -711,7 +727,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `filter()`/`exclude()` call: conditions of one call through a to-many relation hold
    * for one related row, so two calls can't be joined.
    */
-  or<P2, X2 extends string>(other: QuerySet<M, unknown, S, P2, X2>): QuerySetOf<M, R, S, P & P2, X | X2, V> {
+  or<P2, X2 extends string>(other: QuerySet<M, unknown, S, P2, X2>): PreserveRequired<this, QuerySetOf<M, R, S, P & P2, X | X2, V>> {
     if (!(other instanceof QuerySet) || other.meta !== this.meta) throw new TypeError(`or() combines query sets of ${this.meta.name}`);
     for (const qs of [this.state, other.state]) {
       if (qs.limit !== undefined || qs.offset !== undefined) throw new QueryError("or() can't combine a sliced query set");
@@ -729,7 +745,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** Drop rows matching all `conditions`. */
   exclude<const C extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: C
-  ): QuerySetOf<M, R, S, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>, V> {
+  ): PreserveRequired<this, QuerySetOf<M, R, S, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>, V>> {
     if (!conditions.length) {
       return this as never;
     }
@@ -741,7 +757,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * relations are joined. */
   orderBy<const C extends readonly (Expression<unknown, AllowedOne<S>, unknown> | Ordering<AllowedOne<S>, unknown> | FieldOrder<M>)[]>(
     ...items: C
-  ): QuerySetOf<M, R, S, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>, V> {
+  ): PreserveRequired<this, QuerySetOf<M, R, S, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>, V>> {
     const named = items.map((i) => {
       if (typeof i !== "string") return i;
       const column = this.meta.column(this.meta.field(i.startsWith("-") ? i.slice(1) : i));
@@ -751,15 +767,15 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** At most `n` rows; `n` may be a `param()` in a prepared query. */
-  limit<N extends string>(n: ParamRef<N>): QuerySetOf<M, R, S, P & ParamValues<N, number | bigint>, X, V>;
-  limit(n: number | null): QuerySetOf<M, R, S, P, X, V>;
+  limit<N extends string>(n: ParamRef<N>): PreserveRequired<this, QuerySetOf<M, R, S, P & ParamValues<N, number | bigint>, X, V>>;
+  limit(n: number | null): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>>;
   limit(n: number | null | ParamRef<string>): unknown {
     return this.clone({ limit: count(n, "limit") });
   }
 
   /** Skip `n` rows; `n` may be a `param()` in a prepared query. */
-  offset<N extends string>(n: ParamRef<N>): QuerySetOf<M, R, S, P & ParamValues<N, number | bigint>, X, V>;
-  offset(n: number | null): QuerySetOf<M, R, S, P, X, V>;
+  offset<N extends string>(n: ParamRef<N>): PreserveRequired<this, QuerySetOf<M, R, S, P & ParamValues<N, number | bigint>, X, V>>;
+  offset(n: number | null): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>>;
   offset(n: number | null | ParamRef<string>): unknown {
     const v = count(n, "offset");
     return this.clone({ offset: v === 0 ? undefined : v });
@@ -767,7 +783,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   /** Rows `start` (inclusive) to `end` (exclusive) of the current ordering, like
    * `Array.slice`: `slice(10, 20)` is `offset(10).limit(10)`. Non-negative only. */
-  slice(start: number, end?: number): QuerySetOf<M, R, S, P, X, V> {
+  slice(start: number, end?: number): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>> {
     const { limit, offset } = this.state;
     if (limit instanceof ParamRef || offset instanceof ParamRef) {
       throw new QueryError("a query set limited by param() can't be sliced; use limit() and offset()");
@@ -791,7 +807,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `FOR SHARE` with `exclusive: false`. Only this model's rows are locked, not rows joined
    * by `load()`. Must run inside `db.transaction()`.
    */
-  lock(options: LockOptions & ({ readonly nowait?: false } | { readonly skipLocked?: false }) = {}): QuerySetOf<M, R, S, P, X, V> {
+  lock(options: LockOptions & ({ readonly nowait?: false } | { readonly skipLocked?: false }) = {}): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>> {
     const { exclusive = true, nowait = false, skipLocked = false } = options as LockOptions;
     if (nowait && skipLocked) {
       throw new TypeError("lock() takes nowait or skipLocked, not both");
@@ -833,7 +849,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     cte: Cte<N, C, ModelSpec | null>,
     on: On,
     options: { readonly outer?: boolean } = {},
-  ): QuerySetOf<M, R, S | N, P & ParamsOfAll<[On]>, X | OuterRefs<ScopesOf<[On]>, S | N>, V> {
+  ): PreserveRequired<this, QuerySetOf<M, R, S | N, P & ParamsOfAll<[On]>, X | OuterRefs<ScopesOf<[On]>, S | N>, V>> {
     if (!isCte(cte)) {
       throw new TypeError(`join() takes a CTE, got ${String(cte)}`);
     }
@@ -847,7 +863,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * Reads the rows from `cte` instead of the model's table (a subquery in `FROM`). The
    * CTE must have the model's columns; its other columns are `cte.c.<name>`.
    */
-  from<N extends string>(cte: Cte<N, unknown, M>): QuerySetOf<M, R, S | N, P, X, V> {
+  from<N extends string>(cte: Cte<N, unknown, M>): PreserveRequired<this, QuerySetOf<M, R, S | N, P, X, V>> {
     if (!isCte(cte)) {
       throw new TypeError(`from() takes a CTE, got ${String(cte)}`);
     }
@@ -869,7 +885,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    */
   select<const I extends SelectItems<M, S>>(
     items: I,
-  ): Select<M, Simplify<SelectRow<I>>, S, P & ItemsParams<I>, X | ItemsOuter<I, S>, CteColumnsOf<I>> {
+  ): PreserveRequired<this, Select<M, Simplify<SelectRow<I>>, S, P & ItemsParams<I>, X | ItemsOuter<I, S>, CteColumnsOf<I>>> {
     return makeSelect(this as never, items) as never;
   }
 
@@ -1037,9 +1053,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * const posts = await byAuthor.all({ author: 3n });
    * ```
    */
-  prepare(...check: [X] extends [never] ? [] : [error: "a prepared query can't read outer() columns"]): Prepared<M, R, P> {
+  prepare(...check: [X] extends [never] ? [] : [error: "a prepared query can't read outer() columns"]): PreserveRequired<this, Prepared<M, R, P>> {
     void check;
-    return new Prepared(this as never);
+    return new Prepared(this as never) as never;
   }
 
   /** The SELECT this query runs, parameters inlined (for debugging). */
@@ -1101,7 +1117,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** The rows, queried afresh (unlike `await qs`, which reuses its first result). */
   all(...check: Runnable<P, X>): Promise<R[]> {
     void check;
-    return this.fetch();
+    return this.fetch().then((rows) => this.checkRows(rows));
   }
 
   /**
@@ -1118,11 +1134,19 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   /** @internal */
   fromCache(): Promise<R[]> {
-    return cachedRows(this, () => this.fetch(), this !== (this.meta.objects as unknown));
+    return cachedRows(this, () => this.fetch().then((rows) => this.checkRows(rows)), this !== (this.meta.objects as unknown));
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<R, void, undefined> {
     yield* await this.fromCache();
+  }
+
+  /** @internal Check presence without changing result values or uniqueness. */
+  checkRows<T>(rows: T[]): T[] {
+    if (this.state.required && !rows.length) {
+      throw new (this.meta.model.DoesNotExist)(`no ${this.meta.name} matches the query`);
+    }
+    return rows;
   }
 
   /** @internal The order of this read: `orderBy()`, else the schema default order, else the pk. */
@@ -1176,26 +1200,29 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** The first row by the current ordering (the primary key if none), or `null`. */
-  async first(...check: Runnable<P, X>): Promise<R | null> {
+  async first(...check: Runnable<P, X>): Promise<RequiredResult<this, R>> {
     void check;
     const objs = await this.clone({ order: this.defaultOrder() }).slice(0, 1).fetch();
-    return objs[0] ?? null;
+    this.checkRows(objs);
+    return (objs[0] ?? null) as RequiredResult<this, R>;
   }
 
   /** The last row by the current ordering (the primary key if none), or `null`. */
-  async last(...check: Runnable<P, X>): Promise<R | null> {
+  async last(...check: Runnable<P, X>): Promise<RequiredResult<this, R>> {
     void check;
     const objs = await this.clone({ order: this.defaultOrder().map((o) => o.reversed()) }).slice(0, 1).fetch();
-    return objs[0] ?? null;
+    this.checkRows(objs);
+    return (objs[0] ?? null) as RequiredResult<this, R>;
   }
 
-  /** The single row matching `conditions`; throws `Model.DoesNotExist` or
-   * `Model.MultipleObjectsReturned` otherwise. */
+  /** The single matching row or null; multiple matches always throw.
+   * `require().get()` also throws `Model.DoesNotExist` when absent. */
   async get<const C extends readonly Expression<boolean | null, Allowed<S>, {}>[]>(
     ...conditions: C & ([X] extends [never] ? ([keyof P] extends [never] ? unknown : never) : never)
-  ): Promise<R> {
+  ): Promise<RequiredResult<this, R>> {
     const objs = await (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2).fetch();
-    return one(this.meta, objs);
+    this.checkRows(objs);
+    return (objs.length ? one(this.meta, objs) : null) as RequiredResult<this, R>;
   }
 
   /** The number of rows. */
@@ -1449,7 +1476,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const values = { ...options?.defaults, ...given } as M["insert"];
     const where = cols.map((c) => c.eq(key.get(c.field.ir) as never)) as never[];
     // A replica can lag behind the insert's conflict, so the reads see the primary too.
-    const reads = this.using("primary").clone({ limit: undefined, offset: undefined });
+    const reads = this.using("primary").clone({ limit: undefined, offset: undefined, required: false });
     const read = async (): Promise<M["row"] | null> => {
       const found = await reads.filter(...where).limit(2).fetch();
       return found.length ? (one(this.meta, found) as M["row"]) : null;
@@ -1886,19 +1913,25 @@ export class Prepared<M extends ModelSpec, R, P> {
   }
 
   /** The rows. */
+  require(): this & RequiredQuery {
+    return new Prepared(this.qs.require()) as this & RequiredQuery;
+  }
+
   async all(...[values]: Values<P>): Promise<R[]> {
     const res = (await this.start("select", values)) as NativeSelect;
-    return new Builder(this.qs.db().registry, this.qs.state.db).select(res) as R[];
+    return this.qs.checkRows(new Builder(this.qs.db().registry, this.qs.state.db).select(res) as R[]);
   }
 
-  async get(...[values]: Values<P>): Promise<R> {
+  async get(...[values]: Values<P>): Promise<RequiredResult<this, R>> {
     const res = (await this.start("get", values)) as NativeSelect;
-    return one(this.qs.meta, new Builder(this.qs.db().registry, this.qs.state.db).select(res) as R[]);
+    const rows = this.qs.checkRows(new Builder(this.qs.db().registry, this.qs.state.db).select(res) as R[]);
+    return (rows.length ? one(this.qs.meta, rows) : null) as RequiredResult<this, R>;
   }
 
-  async first(...[values]: Values<P>): Promise<R | null> {
+  async first(...[values]: Values<P>): Promise<RequiredResult<this, R>> {
     const res = (await this.start("first", values)) as NativeSelect;
-    return (new Builder(this.qs.db().registry, this.qs.state.db).select(res)[0] as R | undefined) ?? null;
+    const rows = this.qs.checkRows(new Builder(this.qs.db().registry, this.qs.state.db).select(res) as R[]);
+    return (rows[0] ?? null) as RequiredResult<this, R>;
   }
 
   async count(...[values]: Values<P>): Promise<number> {

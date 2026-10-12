@@ -64,10 +64,10 @@ test("prepared reads", async () => {
   assert.equal(await byAuthor.first({ author: -1 }), null);
 
   const byId = Post.objects.load(Post.author).filter(Post.id.eq(param("id"))).prepare();
-  const p = await byId.get({ id: posts[3].id });
+  const p = await byId.require().get({ id: posts[3].id });
   assert.equal(p.title, "b1");
   assert.equal(p.author.name, "Bob");
-  await assert.rejects(byId.get({ id: -1 }), Post.DoesNotExist);
+  await assert.rejects(byId.require().get({ id: -1 }), Post.DoesNotExist);
   await assert.rejects(byAuthor.get({ author: alice.id }), Post.MultipleObjectsReturned);
 });
 

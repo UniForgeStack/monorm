@@ -44,7 +44,6 @@ export interface UserData {
 export interface User extends UserData, Instance<UserSpec> {
   readonly posts: RelatedSet<PostSpec, "authorId" | "author"> & QueriesOf<PostSpec>;
   readonly comments: RelatedSet<CommentSpec, "authorId" | "author">;
-  loadProfile(options?: { readonly reload?: boolean }): Promise<Profile | null>;
 }
 
 export type UserInsert = {
@@ -112,7 +111,6 @@ export interface ProfileData {
 
 /** A Profile row. To-one relations are typed on rows of queries that load them. */
 export interface Profile extends ProfileData, Instance<ProfileSpec> {
-  loadUser(options?: { readonly reload?: boolean }): Promise<User>;
 }
 
 export type ProfileInsert = {
@@ -188,7 +186,6 @@ export interface PostData {
 
 /** A Post row. To-one relations are typed on rows of queries that load them. */
 export interface Post extends PostData, Instance<PostSpec> {
-  loadAuthor(options?: { readonly reload?: boolean }): Promise<User>;
   readonly comments: RelatedSet<CommentSpec, "postId" | "post">;
   readonly tags: ManyRelatedSet<TagSpec> & QueriesOf<TagSpec>;
   readonly postTags: RelatedSet<PostTagSpec, "postId" | "post">;
@@ -279,8 +276,6 @@ export interface CommentData {
 
 /** A Comment row. To-one relations are typed on rows of queries that load them. */
 export interface Comment extends CommentData, Instance<CommentSpec> {
-  loadPost(options?: { readonly reload?: boolean }): Promise<Post>;
-  loadAuthor(options?: { readonly reload?: boolean }): Promise<User | null>;
 }
 
 export type CommentInsert = {
@@ -422,8 +417,6 @@ export interface PostTagData {
 
 /** A PostTag row. To-one relations are typed on rows of queries that load them. */
 export interface PostTag extends PostTagData, Instance<PostTagSpec> {
-  loadPost(options?: { readonly reload?: boolean }): Promise<Post>;
-  loadTag(options?: { readonly reload?: boolean }): Promise<Tag>;
 }
 
 export type PostTagInsert = {

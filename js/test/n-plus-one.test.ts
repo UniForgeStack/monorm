@@ -36,7 +36,7 @@ test("a loader in a loop throws with the shape, the call site and the fix", asyn
   try {
     const customers = await Customer.objects.using(db).orderBy(Customer.id).all();
     const error = await debug.nPlusOne(async () => {
-      for (const c of customers) await c.loadPerson(); // the call site
+      for (const c of customers) await c.load(Customer.person); // the call site
     }, { threshold: 5, fail: true }).then(() => null, (e: unknown) => e);
     assert.ok(error instanceof debug.NPlusOne);
     const [shape] = error.report.repeated;

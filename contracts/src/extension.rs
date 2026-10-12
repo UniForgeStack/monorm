@@ -105,8 +105,8 @@ pub struct FileField {
 pub const FILE_REFERENCE_ADAPTER: &str = "file-storage.reference.v1";
 
 /// Names the host runtimes give meaning to on models and instances.
-pub const RESERVED_MEMBERS: [&str; 12] =
-    ["objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "toJSON", "constructor", "toString", "then"];
+pub const RESERVED_MEMBERS: [&str; 13] =
+    ["objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then"];
 
 /// Reject a file field whose generated Python or TypeScript operations collide with a model member.
 pub fn check_file_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, field: &str) -> Result<(), String> {

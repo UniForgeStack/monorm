@@ -35,13 +35,6 @@ pub use crate::behavior::camel;
 
 use crate::behavior::RESERVED_MEMBERS as RESERVED;
 
-#[cfg(feature = "reference-loading")]
-pub fn reference_loader_name(name: &str) -> String {
-    let name = camel(name);
-    let mut chars = name.chars();
-    format!("load{}{}", chars.next().unwrap().to_uppercase(), chars.as_str())
-}
-
 fn element_type(f: &FieldIr) -> String {
     if let Some(h) = f.hints.get("typescript") {
         return h.clone();
@@ -150,17 +143,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 return Err(format!("{} has two members named {c} in TypeScript (camelCase)", m.ir.name));
             }
         }
-        #[cfg(feature = "reference-loading")]
-        for method in ir.behavior.methods.iter().filter(|method| method.model == m.ir.name) {
-            seen.insert(camel(&method.name));
-        }
-        #[cfg(feature = "reference-loading")]
-        for r in m.ir.relations.iter().filter(|r| r.kind == RelKind::One) {
-            let method = reference_loader_name(&r.name);
-            if !seen.insert(method.clone()) {
-                return Err(format!("{}.{method}: reference loader collides with an existing member", m.ir.name));
-            }
-        }
     }
     let ir_json = super::embedded_schema_json(ir)?;
     let mut used: BTreeSet<&str> = BTreeSet::new();
@@ -238,14 +220,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                     let queries = if query_set(&r.target).is_some() { format!(" & QueriesOf<{}Spec>", r.target) } else { String::new() };
                     writeln!(body, "  readonly {}: RelatedSet<{}Spec, {}>{queries};", camel(&r.name), r.target, link.join(" | ")).unwrap()
                 }
-                RelKind::One => {
-                    #[cfg(feature = "reference-loading")]
-                    {
-                        let nullable = super::reference_loader_nullable(ir, m, r)?;
-                        let t = if nullable { format!("{} | null", r.target) } else { r.target.clone() };
-                        writeln!(body, "  {}(options?: {{ readonly reload?: boolean }}): Promise<{t}>;", reference_loader_name(&r.name)).unwrap();
-                    }
-                }
+                RelKind::One => {}
             }
         }
         writeln!(body, "}}\n").unwrap();

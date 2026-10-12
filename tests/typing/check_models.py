@@ -56,7 +56,7 @@ async def check() -> None:
     assert_type(u.email, str)
     assert_type(u.posts, RelatedSet[Post])
     assert_type(await u.posts, list[Post])
-    post = await Post.objects.load(Post.author).get(Post.id == 1)
+    post = await Post.objects.load(Post.author).require().get(Post.id == 1)
     assert_type(post.author, User)
     c = await Comment.objects.first()
     if c is not None:
@@ -120,7 +120,7 @@ async def check() -> None:
         assert_type(one, Post)
     Post.objects.filter(Post.author_id.in_(User.objects.select(User.id)))
     assert_type(Post.objects.lock(exclusive=False, skip_locked=True), PostQuerySet)
-    assert_type(await Post.objects.lock().get(Post.id == 1), Post)
+    assert_type(await Post.objects.lock().get(Post.id == 1), Post | None)
     assert_type(await orm_db().lock("key", nowait=True), bool)
     assert_type(await post.refresh(Post.title, lock=True, skip_locked=True), bool)
     assert_type(Post.author == alice, Condition)
@@ -188,7 +188,7 @@ async def check() -> None:
     assert_type(alice.profile, Profile | None)
     assert_type(post.tags, ManyRelatedSet[Tag])
     assert_type(await post.tags, list[Tag])
-    await post.tags.add(await Tag.objects.get(Tag.id == 1))
+    await post.tags.add(await Tag.objects.require().get(Tag.id == 1))
     assert_type(await post.tags.remove(1), int)
     assert_type(await post.tags.insert(name="go"), Tag)
     assert_type(await Post.objects.load(Post.tags), list[Post])
@@ -197,7 +197,7 @@ async def check() -> None:
     by_author = Post.objects.filter(Post.author_id == param("a")).limit(param("n")).prepare()
     assert_type(by_author, Prepared[Post])
     assert_type(await by_author(a=1, n=10), list[Post])
-    assert_type(await by_author.get(a=1, n=10), Post)
+    assert_type(await by_author.get(a=1, n=10), Post | None)
     assert_type(await by_author.first(a=1, n=10), Post | None)
     assert_type(await by_author.count(a=1, n=10), int)
 
@@ -214,7 +214,7 @@ async def errors() -> None:
     await Post.objects.select(Post.id, Post.title).scalars()  # E: scalars() needs one column
     func.lower(Post.views)  # E: lower() of an int column
     await Post.objects.update_many([{"id": 1, "views": Post.views + 1}])  # E: no expressions
-    u = await User.objects.get(User.id == 1)
+    u = await User.objects.require().get(User.id == 1)
     u.name = "B"  # E: instances are read-only
     await u.update(name=1)  # E: wrong type
     u.posts = []  # E: read-only relation
@@ -241,3 +241,19 @@ def inspection_types() -> None:
     assert_type(User.objects.update(name="A").inspect(), QueryInspection)
     assert_type(User.objects.insert_many([]).inspect(), QueryInspection)
     assert_type(User.objects.update_many([]).returning().inspect(), QueryInspection)
+
+
+async def required_results() -> None:
+    assert_type(await Post.objects.get(Post.id == 1), Post | None)
+    assert_type(await Post.objects.require().get(Post.id == 1), Post)
+    assert_type(await Post.objects.require().filter(Post.id == 1).first(), Post)
+    assert_type(await Post.objects.require().last(), Post)
+    assert_type(await Post.objects.require().all(), list[Post])
+    assert_type(await Post.objects.select(Post.title).get(), Row[str] | None)
+    assert_type(await Post.objects.select(Post.title).require().get(), Row[str])
+    assert_type(await Post.objects.require().select(Post.title).first(), Row[str])
+    prepared = Post.objects.filter(Post.id == param("id")).prepare()
+    assert_type(await prepared.get(id=1), Post | None)
+    assert_type(await prepared.require().get(id=1), Post)
+    assert_type(await prepared.require().first(id=1), Post)
+    assert_type(await Post.objects.require().filter(Post.id == param("id")).prepare().get(id=1), Post)

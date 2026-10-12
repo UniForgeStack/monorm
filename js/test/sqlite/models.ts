@@ -236,7 +236,6 @@ export interface BookData {
 
 /** A Book row. To-one relations are typed on rows of queries that load them. */
 export interface Book extends BookData, Instance<BookSpec> {
-  loadAuthor(options?: { readonly reload?: boolean }): Promise<Author>;
 }
 
 export type BookInsert = {

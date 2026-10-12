@@ -108,18 +108,6 @@ pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str) -> Result<Generate
 /// [`generate`] with generator options (the user's query-set classes).
 pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &super::Options) -> Result<Generated, String> {
     let query_sets = options.query_sets(schema, ':')?;
-    #[cfg(feature = "reference-loading")]
-    for m in &schema.models {
-        let mut seen: BTreeSet<String> = m.fields().iter().map(|f| f.name.clone())
-            .chain(m.ir.relations.iter().map(|r| r.name.clone()))
-            .chain(ir.behavior.methods.iter().filter(|method| method.model == m.ir.name).map(|method| method.name.clone())).collect();
-        for r in m.ir.relations.iter().filter(|r| r.kind == RelKind::One) {
-            let method = format!("load_{}", r.name);
-            if !seen.insert(method.clone()) {
-                return Err(format!("{}.{method}: reference loader collides with an existing member", m.ir.name));
-            }
-        }
-    }
     let ir_json = super::embedded_schema_json(ir)?;
     if ir_json.contains("\"\"\"") {
         return Err("schema text contains \"\"\" which can't be embedded in the generated module".into());
@@ -243,12 +231,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                     writeln!(body, "    {}: f.BelongsTo[{t}, _{}Path]", r.name, r.target).unwrap();
                 }
             }
-        }
-        #[cfg(feature = "reference-loading")]
-        for r in m.ir.relations.iter().filter(|r| r.kind == RelKind::One) {
-            let nullable = super::reference_loader_nullable(ir, m, r)?;
-            let t = if nullable { format!("{} | None", r.target) } else { r.target.clone() };
-            writeln!(body, "    async def load_{}(self, *, reload: bool = False) -> {t}: ...", r.name).unwrap();
         }
         let objects = if query_sets.contains_key(name.as_str()) { format!("_{name}Objects") } else { format!("{name}QuerySet") };
         writeln!(body, "\n    objects: ClassVar[{objects}]\n").unwrap();

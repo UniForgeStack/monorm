@@ -237,8 +237,14 @@ async def test_aggregate_filter():
     try:
         await db.create_tables()
         await Note.objects.using(db).insert_many([{"n": 1}, {"n": 5}, {"n": 10}])
-        row = await Note.objects.using(db).select(func.count(filter=Note.n >= 5), func.sum(Note.n, filter=Note.n < 10)).one()
+        row = await Note.objects.using(db).select(func.count(filter=Note.n >= 5), func.sum(Note.n, filter=Note.n < 10)).get()
         assert tuple(row) == (2, 6)
+        selected = Note.objects.using(db).select(Note.n)
+        assert await selected.get(Note.n == 5) == (5,)
+        with pytest.raises(orm.DoesNotExist):
+            await selected.require().get(Note.n == -1)
+        with pytest.raises(orm.MultipleObjectsReturned):
+            await selected.get()
     finally:
         await db.close()
 

@@ -127,12 +127,22 @@ User.objects.all()[10:20]                     # LIMIT 10 OFFSET 10
 async for u in User.objects.filter(...): ...
 
 await qs.first() / qs.last()                  # by ordering, else pk; None if empty
-await qs.get(cond)                            # User.DoesNotExist / MultipleObjectsReturned
+await qs.get(cond)                            # User | None; rejects multiple matches
+await qs.require().get(cond)                  # User; rejects zero or multiple matches
+await qs.require().first()                    # User; rejects zero matches
+await qs.require().all()                      # list[User]; rejects an empty list
 await qs.count() / qs.exists()
 await qs.in_bulk([1, 2, 3])                   # {1: <User 1>, 3: <User 3>}: by pk, missing ids left out
 await qs.in_bulk(emails, field=User.email)    # by a unique field; no ids: every row
 qs.sql()                                      # SQL with values inlined, for debugging
 ```
+
+`.require()` clones the query and rejects absent row results with
+`Model.DoesNotExist`. It applies to `.get()`, `.first()`, `.last()`, `.all()`,
+awaiting the query and async iteration. Builders retain the modifier, and prepared
+queries support it before or after `.prepare()`. `.get()` always rejects multiple
+matches, including without `.require()`. Counts and existence checks keep their
+normal zero/false results.
 
 `.asc(nulls="first")` and `.desc(nulls="last")` place NULLs; without `nulls`, the database decides.
 `-column` is a descending `Ordering`, for `order_by()` and a relation query set.
@@ -229,10 +239,16 @@ SQL text client-side, so the limit doesn't apply to it.)
   planned as `ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY views DESC, id)` in a
   subquery and `WHERE _rn <= 3` around it (Django 4.2 does the same).
 
+**One instance.** `await post.load(Post.body, Post.author, Post.comments)` accepts the
+same arguments as queryset `load()`, fills the existing instance, and returns it.
+It preserves loaded fields and skips loaded values. `reload=True` refreshes the
+requested values; `await post.load()` fills all scalar fields. Nested paths and
+filtered relation querysets work too. Collection values remain in `.cached`.
+
 **Instances you already have.** `await orm.prefetch(instances, *items)` loads relations onto them, as `load()` does for the rows of a query (Django's `prefetch_related_objects`):
 
 ```python
-bundle = await Bundle.objects.get(Bundle.id == 1)
+bundle = await Bundle.objects.require().get(Bundle.id == 1)
 await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.order_by(-Version.id)[:1].label("latest"))
 ```
 
@@ -419,7 +435,8 @@ latest = (Post.objects.filter(Post.author_id == orm.param("user"))
           .order_by(Post.created_at.desc())
           .limit(orm.param("n")).offset(orm.param("skip")).prepare())
 
-post = await post_by_id.get(id=post_id)         # also .first() .count() .exists()
+post = await post_by_id.get(id=post_id)         # Post | None; also .first() .count() .exists()
+post = await post_by_id.require().get(id=post_id)  # Post; absence raises
 posts = await latest(user=me.id, n=20, skip=40) # the rows
 latest.params                                   # frozenset({'user', 'n', 'skip'})
 ```
@@ -462,7 +479,9 @@ rows[0].posts; rows[0][1]; author_id, posts, views = rows[0]    # Row: a tuple w
 
 await Post.objects.select(func.max(Post.views)).scalar()         # int | None
 await Post.objects.filter(...).select(Post.id).scalars()          # list[int]
-await qs.select(...).first() / .one()                             # one Row
+await qs.select(...).first()                                    # Row | None
+await qs.select(...).get()                                      # Row | None; rejects multiple
+await qs.select(...).require().get(Post.id == post_id)           # exactly one matching Row
 await Post.objects.select(Post.title, Post.author.name.label("author"))   # to-one: LEFT JOIN
 await Post.objects.select(Post.author_id).distinct()
 await Post.objects.select(Post.title).distinct(Post.author_id).order_by(Post.author_id, Post.views.desc())
@@ -475,6 +494,13 @@ await User.objects.filter(func.count(User.posts) > 2)
 # Subqueries:
 await Post.objects.filter(Post.author_id.in_(User.objects.filter(...).select(User.id)))
 ```
+
+Like model queries, selected-row queries use `.get(*conditions)` to return zero or
+one result, rejecting multiple matches with `orm.MultipleObjectsReturned`.
+`.require()` rejects queries returning no rows with `orm.DoesNotExist`; it also
+applies to `.first()`, `.all()`, awaiting the selection, `.scalar()` and `.scalars()`.
+A row containing NULL values is still a result: a required scalar may return `None`
+when its row exists but its column is NULL.
 
 | Django | here |
 |---|---|
@@ -922,7 +948,7 @@ See `docs/schema.md`, "Protected writes".
 
 ```python
 async with db.transaction():
-    post = await Post.objects.lock().get(Post.id == 1)                      # FOR UPDATE
+    post = await Post.objects.lock().require().get(Post.id == 1)                      # FOR UPDATE
     await Post.objects.filter(...).lock(exclusive=False)                     # FOR SHARE
     jobs = await Job.objects.filter(Job.state == "ready").lock(skip_locked=True).limit(10)
     await Post.objects.lock(nowait=True).get(...)       # raises orm.LockNotAvailable if locked
@@ -1004,13 +1030,13 @@ with db.tenant(shop.id):                 # a sync `with`: it does no I/O
 
 ### Finding N+1 queries: `orm.debug`
 
-The ORM never loads a relation by itself, so an N+1 comes from explicit code: a `load_x()` call or a query in a loop.
+The ORM never loads a relation by itself, so an N+1 comes from explicit code: an instance `load(...)` call or a query in a loop.
 `orm.debug.n_plus_one` finds it:
 
 ```python
 with orm.debug.n_plus_one(threshold=5, fail=True):
     for c in customers:
-        await c.load_person()
+        await c.load(Customer.person)
 # orm.debug.NPlusOne: 20 queries with one shape `SELECT ... FROM "person" WHERE "person"."id" = $1 ...`
 #   at app/views.py:42; use load(Customer.person)
 ```
@@ -1024,7 +1050,7 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
   A query that `asyncio.gather()` or `create_task()` runs reports the line that started the event loop.
 * When the block ends, a shape that ran more than `threshold` times (default 5) raises `orm.debug.NPlusOne` with `fail=True`, or gives an `orm.debug.NPlusOneWarning`.
   The exception and the `with ... as report` value carry the report: each shape, its SQL, its count, the call site of its first query and the fix.
-* The fix is `load(...)` for a repeated `load_x()` and for a repeated unchanged to-many or many-to-many query (`await post.comments`, `await post.tags`).
+* The fix is `load(...)` for a repeated instance `load(...)` and for a repeated unchanged to-many or many-to-many query (`await post.comments`, `await post.tags`).
 * The call site and the SQL text are captured only inside the scope.
   Outside it, each query pays one `ContextVar` read (about 15 ns, measured).
 * In a test suite, add `pytest_plugins = ["orm.testing"]` to `conftest.py`.

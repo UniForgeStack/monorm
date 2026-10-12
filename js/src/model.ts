@@ -12,7 +12,7 @@ import { Column, PATH, RelationPath, type PathState, type Source } from "./expr.
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { resolve, type Database } from "./db.js";
-import type { LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
+import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
 /** Where an instance keeps its loaded relations. */
 export const RELATED: unique symbol = Symbol("orm.related");
@@ -77,6 +77,10 @@ export interface ModelClass<M extends ModelSpec> {
 /** What every instance has, besides its columns and relations. Instances are snapshots
  * of a row: columns are read-only, writes are explicit statements. */
 export interface Instance<M extends ModelSpec> {
+  /** Populate fields and relations on this instance; preserve loaded values unless reload is true. */
+  load(options?: { readonly reload?: boolean }): Promise<this & M["data"]>;
+  load<const C extends readonly LoadItem<M>[]>(...items: C): Promise<InstanceLoaded<M, this, C>>;
+  load<const C extends readonly LoadItem<M>[]>(...args: [...items: C, options: { readonly reload?: boolean }]): Promise<InstanceLoaded<M, this, C>>;
   /** The primary key's value. */
   readonly pk: M["pk"];
   /**
@@ -299,6 +303,7 @@ export class ModelMeta implements Source {
       },
       update: { value: instanceUpdate, writable: true, configurable: true },
       delete: { value: instanceDelete, writable: true },
+      load: { value: instanceLoad },
       refresh: { value: instanceRefresh, writable: true, configurable: true },
       toJSON: {
         value(this: Row) {
@@ -388,7 +393,7 @@ export class ModelMeta implements Source {
 /** Names the runtime gives meaning to on models / instances. */
 const RESERVED = new Set([
   "objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", // models
-  "pk", "update", "delete", "refresh", "toJSON", "constructor", "toString", "then", // instances
+  "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then", // instances
 ]);
 
 function checkName(model: string, name: string, seen: Map<string, unknown>): void {
@@ -573,6 +578,18 @@ async function instanceUndelete(this: Row): Promise<void> {
   await instanceUpdate.call(this, { [metaOf(this).softDelete!.name]: null });
 }
 
+async function instanceLoad(this: Row, ...args: unknown[]): Promise<Row> {
+  const last = args.at(-1);
+  const options = last !== undefined && typeof last === "object" && last !== null && Object.getPrototypeOf(last) === Object.prototype
+    ? args.pop() as { readonly reload?: boolean } : {};
+  const { loadInstance } = await import("./loading.js");
+  const meta = metaOf(this);
+  await loadInstance(this, args as LoadItem<ModelSpec>[], options.reload ?? false,
+    referenceAdapter ? (owner, name, reload) => referenceAdapter.loadReference(owner, meta, meta.relations.get(name)!, reload,
+      { DB, RELATED, INTERNAL, resolve, related, instanceUpdate, instanceRefresh }) : undefined, referenceAdapter?.invalidateReference);
+  return this;
+}
+
 async function instanceRefresh(this: Row, ...args: unknown[]): Promise<boolean> {
   const last = args.at(-1);
   const options = (last !== undefined && !(last instanceof Column) ? args.pop() : {}) as {
@@ -593,7 +610,7 @@ async function instanceRefresh(this: Row, ...args: unknown[]): Promise<boolean> 
   if (lock) query = query.lock({ exclusive: exclusive ?? true, nowait: nowait ?? false, skipLocked: skipLocked ?? false } as never);
   let fresh: Row;
   try {
-    fresh = (await query.get()) as Row;
+    fresh = (await query.require().get()) as Row;
   } catch (e) {
     if (skipLocked && e instanceof DoesNotExist) return false;
     throw e;
