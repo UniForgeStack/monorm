@@ -1216,15 +1216,19 @@ class RelationPath(Generic[M]):
                 f"{self!r} is a {type(rel).__name__} relation; only a BelongsTo relation "
                 "compares with an instance (compare a key column instead)"
             )
-        column: ColumnRef[Any] = ColumnRef(self._root, self._path[:-1], owner._meta.fields[rel.via])
+        columns: list[ColumnRef[Any]] = [ColumnRef(self._root, self._path[:-1], owner._meta.fields[n]) for n in rel.via_fields]
         if other is None:
-            return IsNull(column, neg=neg)
+            nulls: list[Condition] = [IsNull(c, neg=neg) for c in columns]
+            return nulls[0] if len(nulls) == 1 else (or_ if neg else and_)(*nulls)
         if not isinstance(other, self._target):
             raise TypeError(f"{self!r} compares with a {self._target.__name__}, not {other!r}")
-        key = other._field_value(rel.to)
-        if key is None:
-            raise ValueError(f"{self!r} can't compare with {other!r}: its {rel.to} is None")
-        return Comparison("ne" if neg else "eq", column, _wrap(key))
+        keys = [other._field_value(n) for n in rel.to_fields]
+        if any(k is None for k in keys):
+            raise ValueError(f"{self!r} can't compare with {other!r}: its {', '.join(rel.to_fields)} is None")
+        if len(columns) == 1:
+            return Comparison("ne" if neg else "eq", columns[0], _wrap(keys[0]))
+        match = and_(*(Comparison("eq", c, _wrap(k)) for c, k in zip(columns, keys, strict=True)))
+        return not_(match) if neg else match
 
     __bool__ = _bool_misuse
 

@@ -69,8 +69,8 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
         elif reload or name not in data:
             if name in owner._meta.fields and data.get(name, data.get("_orm_internal", {}).get(name)) != value:
                 for rel_name, rel in owner._meta.relations.items():
-                    source = rel.via if isinstance(rel, BelongsTo) else getattr(rel, "from_", None)
-                    if source == name:
+                    sources = rel.via_fields if isinstance(rel, BelongsTo) else getattr(rel, "from_fields", ())
+                    if name in sources:
                         if _reference_adapter is not None:
                             _reference_adapter.invalidate_reference(owner, rel_name)
                         else:
@@ -126,8 +126,8 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
             path = item._via if isinstance(item, QuerySet) else item
             assert path is not None
             rel = owner._meta.relations[path._path[0]]
-            source = rel.via if isinstance(rel, BelongsTo) else rel.from_
-            keys[source] = _peek(owner, source)
+            for source in rel.via_fields if isinstance(rel, BelongsTo) else rel.from_fields:
+                keys[source] = _peek(owner, source)
         await prefetch([staged], *relations)
         # Publish only the fetched roots/labels; staging protects the existing cache on failure.
         fresh_relations = object.__new__(model)
@@ -135,8 +135,8 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
             path = item._via if isinstance(item, QuerySet) else item
             assert path is not None
             rel = owner._meta.relations[path._path[0]]
-            source = rel.via if isinstance(rel, BelongsTo) else rel.from_
-            if _peek(owner, source) != keys[source]:
+            sources = rel.via_fields if isinstance(rel, BelongsTo) else rel.from_fields
+            if any(_peek(owner, source) != keys[source] for source in sources):
                 continue
             name = item._label if isinstance(item, QuerySet) and item._label and len(path._path) == 1 else path._path[0]
             fresh_relations.__dict__[name] = staged.__dict__[name]

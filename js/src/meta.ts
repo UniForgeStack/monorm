@@ -93,9 +93,9 @@ export interface RelationMeta {
   readonly ir: string;
   readonly kind: RelationKind;
   readonly target: string;
-  /** IR field names: `source.from == target.to` (or through the join model). */
-  readonly from: string;
-  readonly to: string;
+  /** IR field names, one per key column: `source.from[i] == target.to[i]` (or through the join model). */
+  readonly from: readonly string[];
+  readonly to: readonly string[];
   readonly through: { readonly model: string; readonly source: string; readonly target: string } | undefined;
 }
 

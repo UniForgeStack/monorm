@@ -76,8 +76,9 @@ def keyset(model: type[Model], order: tuple[Ordering, ...]) -> list[Key]:
             direction = "desc" if o.desc else "asc"
             raise QueryError(f"{e!r} is nullable: order by {e!r}.{direction}(nulls='first') or (nulls='last') to paginate")
         keys.append((f, o))
-    if not any(f.primary_key or (f.unique and not stored_nullable(model, f)) for f, _ in keys):
-        keys.append((model._meta.pk, Ordering(model._meta.pk_ref(), desc=False)))
+    names = {f.name for f, _ in keys}
+    if not (names.issuperset(model._meta.key_names) or any(f.unique and not stored_nullable(model, f) for f, _ in keys)):
+        keys += [(r._field, Ordering(r, desc=False)) for r in model._meta.key_refs() if r._field.name not in names]
     return keys
 
 

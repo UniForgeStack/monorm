@@ -72,7 +72,7 @@ function merge(row: Row, fresh: Row, reload: boolean, invalidate?: (row: Row, na
         catch (e) { if (!(e instanceof NotLoaded)) throw e; }
       }
       if (meta.fields.has(name) && before !== value) {
-        for (const r of meta.relations.values()) if (meta.fieldByIr.get(r.from)!.name === name) {
+        for (const r of meta.relations.values()) if (r.from.some((ir) => meta.fieldByIr.get(ir)!.name === name)) {
           if (row[RELATED]) delete row[RELATED][r.name];
           invalidate?.(row, r.name);
         }
@@ -102,7 +102,7 @@ export async function loadInstance(
   const own = requested.filter((item): item is Column<unknown, string> => item instanceof Column && !item.path.length
     && (reload || !Object.hasOwn(owner, item.field.name)));
   if (own.length) {
-    const rowQuery = meta.objects.withoutDefaults().using(owner[DB]).filter(meta.column(meta.pk).eq(owner["pk"] as never) as never);
+    const rowQuery = meta.objects.withoutDefaults().using(owner[DB]).filter(meta.keyMatch(meta.key, owner["pk"]) as never);
     const fresh = await (rowQuery.load as (...items: Column<unknown, string>[]) => QuerySet<ModelSpec>)(...own).require().get() as Row;
     merge(owner, fresh, reload, invalidate);
   }
@@ -129,8 +129,10 @@ export async function loadInstance(
     for (const item of relations) {
       const path = itemPath(item);
       const hops = path instanceof Column ? path.path : path[PATH].path;
-      const source = meta.fieldByIr.get(meta.relationByIr.get(hops[0]!)!.from)!.name;
-      keys.set(source, fieldValue(owner, source));
+      for (const ir of meta.relationByIr.get(hops[0]!)!.from) {
+        const source = meta.fieldByIr.get(ir)!.name;
+        keys.set(source, fieldValue(owner, source));
+      }
     }
     await prefetch([staged], ...relations);
     const fresh = Object.create(Object.getPrototypeOf(owner)) as Row;
@@ -138,8 +140,8 @@ export async function loadInstance(
     for (const item of relations) {
       const path = itemPath(item);
       const hops = path instanceof Column ? path.path : path[PATH].path;
-      const source = meta.fieldByIr.get(meta.relationByIr.get(hops[0]!)!.from)!.name;
-      try { if (fieldValue(owner, source) !== keys.get(source)) continue; }
+      const sources = meta.relationByIr.get(hops[0]!)!.from.map((ir) => meta.fieldByIr.get(ir)!.name);
+      try { if (sources.some((source) => fieldValue(owner, source) !== keys.get(source))) continue; }
       catch (e) { if (e instanceof NotLoaded) continue; throw e; }
       const label = item instanceof QuerySet ? item.state.label : undefined;
       if (label && hops.length === 1) fresh[label] = staged[label];

@@ -8,7 +8,7 @@
  */
 
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
-import { Column, PATH, RelationPath, type PathState, type Source } from "./expr.js";
+import { Column, PATH, RelationPath, and, type Condition, type PathState, type Source } from "./expr.js";
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { resolve, type Database } from "./db.js";
@@ -49,8 +49,8 @@ export type IRRelation = {
   name: string;
   kind: "one" | "many";
   target: string;
-  from: string;
-  to: string;
+  from: string | string[];
+  to: string | string[];
   foreign_key?: boolean;
   through?: { model: string; source: string; target: string };
   [key: string]: unknown;
@@ -142,7 +142,8 @@ export class ModelMeta implements Source {
   inputFieldList: readonly FieldMeta[] = this.fieldList;
   readonly relations = new Map<string, RelationMeta>();
   readonly relationByIr = new Map<string, RelationMeta>();
-  readonly pk: FieldMeta;
+  /** The primary key fields in key order. */
+  readonly key: readonly FieldMeta[];
   /** Makes instances: `new meta.Row()`, then the fields are assigned in schema order. */
   readonly Row: new () => Row;
   private partialRow: (new () => Row) | undefined;
@@ -191,7 +192,7 @@ export class ModelMeta implements Source {
           : r.foreign_key
             ? "belongsTo"
             : "hasOne";
-      const rm: RelationMeta = { name: camel(r.name), ir: r.name, kind, target: r.target, from: r.from, to: r.to, through: r.through };
+      const rm: RelationMeta = { name: camel(r.name), ir: r.name, kind, target: r.target, from: keyList(r.from), to: keyList(r.to), through: r.through };
       if (this.fields.has(rm.name)) {
         throw new TypeError(`${ir.name}.${rm.name} is both a field and a relation`);
       }
@@ -200,10 +201,11 @@ export class ModelMeta implements Source {
       this.relationByIr.set(rm.ir, rm);
     }
     const pks = this.fieldList.filter((f) => f.primaryKey);
-    if (pks.length !== 1) {
+    const order = (ir["primary_key"] as string[] | undefined)?.map((n) => this.fieldByIr.get(n)!) ?? pks;
+    if (!pks.length || order.length !== pks.length || pks.some((f) => !order.includes(f))) {
       throw new TypeError(`model ${ir.name} must have exactly one primary key`);
     }
-    this.pk = pks[0]!;
+    this.key = order;
     this.pathProto = this.makePathProto();
     this.Row = this.makeRow();
     const model = Object.create(this.pathProto) as Record<PropertyKey, unknown>;
@@ -257,6 +259,19 @@ export class ModelMeta implements Source {
     return new Column(this, [], f, `${this.name}.${f.name}`);
   }
 
+  /** The primary key field of a model with a one-field key. */
+  get pk(): FieldMeta {
+    if (this.key.length !== 1) throw new TypeError(`${this.name} has a primary key of several fields; use _meta.key`);
+    return this.key[0]!;
+  }
+
+  /** `field = value` for each of `fields`; `value` is an object keyed by field name for several fields. */
+  keyMatch(fields: readonly FieldMeta[], value: unknown): Condition<string, never> {
+    if (fields.length === 1) return this.column(fields[0]!).eq(value as never) as never;
+    const parts = keyParts(fields.map((f) => f.name), value);
+    return and(...fields.map((f) => this.column(f).eq(parts[f.name] as never))) as never;
+  }
+
   private makePathProto(): object {
     const proto = Object.create(RelationPath.prototype) as object;
     for (const f of this.fieldList) {
@@ -298,7 +313,16 @@ export class ModelMeta implements Source {
     Object.defineProperties(proto, {
       pk: {
         get(this: Row) {
-          return Object.hasOwn(this, meta.pk.name) ? this[meta.pk.name] : (this[INTERNAL] as Record<string, unknown> | undefined)?.[meta.pk.name];
+          const internal = this[INTERNAL] as Record<string, unknown> | undefined;
+          const part = (name: string) => (Object.hasOwn(this, name) ? this[name] : internal?.[name]);
+          if (meta.key.length === 1) return part(meta.key[0]!.name);
+          const out: Record<string, unknown> = {};
+          for (const f of meta.key) {
+            const v = part(f.name);
+            if (v === null || v === undefined) return null;
+            out[f.name] = v;
+          }
+          return out;
         },
       },
       update: { value: instanceUpdate, writable: true, configurable: true },
@@ -426,19 +450,20 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
   const loadHint = `load it with load(${meta.name}.${r.name})`;
   switch (r.kind) {
     case "belongsTo": {
-      const via = meta.fieldByIr.get(r.from)!.name;
+      const via = r.from.map((name) => meta.fieldByIr.get(name)!.name);
       return function (this) {
-        const key = fieldValue(this, via);
+        const key = via.map((name) => fieldValue(this, name));
+        const absent = key.some((k) => k === null);
         const loaded = this[RELATED];
         if (loaded && r.name in loaded) {
           const value = loaded[r.name] as Row | null;
           const target = registry.get(r.target);
-          const to = target.fieldByIr.get(r.to)!.name;
+          const to = r.to.map((name) => target.fieldByIr.get(name)!.name);
           // A default-filtered target joins as absent even when the key is set.
-          if (value === null ? key === null || target.defaultFilter !== undefined : fieldValue(value, to) === key) {
+          if (value === null ? absent || target.defaultFilter !== undefined : to.every((name, i) => fieldValue(value, name) === key[i])) {
             return value;
           }
-        } else if (key === null) {
+        } else if (absent) {
           return null;
         }
         throw new NotLoaded(`${meta.name}.${r.name} is not loaded; ${loadHint}`);
@@ -481,14 +506,16 @@ export function registerQueries(
 
 /** The foreign key column of `r` at path `s`, and how to read the key it references. */
 function belongsToKey(owner: ModelMeta, s: PathState, r: RelationMeta): NonNullable<PathState["belongsTo"]> {
-  const f = owner.fieldByIr.get(r.from)!;
-  const key = new Column(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."));
-  const read = (o: object): unknown => {
+  const key = r.from.map((name) => {
+    const f = owner.fieldByIr.get(name)!;
+    return new Column(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."));
+  });
+  const read = (o: object): unknown[] => {
     const target = owner.registry.get(r.target);
     if (metaOf(o as Row) !== target) {
       throw new TypeError(`${[s.root.name, ...s.names, r.name].join(".")} compares with a ${r.target} instance`);
     }
-    return fieldValue(o, target.fieldByIr.get(r.to)!.name);
+    return r.to.map((name) => fieldValue(o, target.fieldByIr.get(name)!.name));
   };
   return { key, read };
 }
@@ -501,14 +528,14 @@ function metaOf(o: Row): ModelMeta {
 
 function rowQuery(o: Row): QuerySet<ModelSpec> {
   const meta = metaOf(o);
-  return meta.objects.withoutDefaults().using(o[DB]).filter(meta.column(meta.pk).eq(o["pk"] as never) as never) as never;
+  return meta.objects.withoutDefaults().using(o[DB]).filter(meta.keyMatch(meta.key, o["pk"]) as never) as never;
 }
 
 function invalidateChangedKeys(o: Row, fresh: Row): void {
   const meta = metaOf(o);
   for (const relation of meta.relations.values()) {
-    const source = meta.fieldByIr.get(relation.from)!.name;
-    if (fieldValue(o, source) !== fieldValue(fresh, source) && o[RELATED]) delete o[RELATED][relation.name];
+    const sources = relation.from.map((name) => meta.fieldByIr.get(name)!.name);
+    if (sources.some((source) => fieldValue(o, source) !== fieldValue(fresh, source)) && o[RELATED]) delete o[RELATED][relation.name];
   }
 }
 
@@ -869,6 +896,33 @@ export function modelMeta(x: unknown): ModelMeta | undefined {
 }
 
 /** Internal relation-key access without changing public loaded state. */
+export function keyList(names: string | readonly string[]): readonly string[] {
+  return typeof names === "string" ? [names] : names;
+}
+
+/** The value of a key: one field's value, or an object keyed by field name (null when a part is null). */
+export function keyValue(o: object, names: readonly string[]): unknown {
+  if (names.length === 1) return fieldValue(o, names[0]!);
+  const out: Record<string, unknown> = {};
+  for (const name of names) {
+    const v = fieldValue(o, name);
+    if (v === null || v === undefined) return null;
+    out[name] = v;
+  }
+  return out;
+}
+
+/** The field values of a key value. */
+export function keyParts(names: readonly string[], value: unknown): Record<string, unknown> {
+  if (names.length === 1) return { [names[0]!]: value };
+  if (value === null || value === undefined) return Object.fromEntries(names.map((n) => [n, null]));
+  const parts = value as Record<string, unknown>;
+  if (typeof value !== "object" || names.some((n) => !Object.hasOwn(parts, n))) {
+    throw new TypeError(`a key of ${names.join(", ")} is an object with those fields, not ${String(value)}`);
+  }
+  return Object.fromEntries(names.map((n) => [n, parts[n]]));
+}
+
 export function fieldValue(o: object, name: string): unknown {
   const row = o as Row;
   if (Object.hasOwn(row, name)) return row[name];
@@ -900,8 +954,9 @@ export interface RelationInfo {
   readonly name: string;
   readonly kind: "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
   readonly target: ModelClass<ModelSpec>;
-  readonly from: string;
-  readonly to: string;
+  /** The key field, or the key fields of a composite key. */
+  readonly from: string | readonly string[];
+  readonly to: string | readonly string[];
   readonly through: ModelClass<ModelSpec> | null;
   /** The relation can be absent: a nullable key, or any relation but a to-one by key. */
   readonly nullable: boolean;
@@ -911,7 +966,8 @@ export interface RelationInfo {
 export interface ModelInfo {
   readonly name: string;
   readonly table: string;
-  readonly primaryKey: string;
+  /** The key field, or the key fields in key order. */
+  readonly primaryKey: string | readonly string[];
   readonly fields: readonly FieldInfo[];
   readonly relations: readonly RelationInfo[];
   readonly unique: readonly (readonly string[])[];
@@ -936,7 +992,7 @@ export function describe(model: ModelClass<ModelSpec>): ModelInfo {
       enum: fm.enumName ?? null,
       maxLength: typeof f["max_length"] === "number" ? f["max_length"] : null,
       primaryKey: fm.primaryKey,
-      unique: fm.unique || fm.primaryKey,
+      unique: fm.unique || (fm.primaryKey && meta.key.length === 1),
       default: fm.hasServerValue ? "database" : f.client_default !== undefined ? "client" : null,
       insert: meta.inputFields.has(fm.name),
     };
@@ -947,20 +1003,25 @@ export function describe(model: ModelClass<ModelSpec>): ModelInfo {
       name: r.name,
       kind: r.kind,
       target: target.model,
-      from: meta.fieldByIr.get(r.from)!.name,
-      to: target.fieldByIr.get(r.to)!.name,
+      from: oneOrList(r.from.map((n) => meta.fieldByIr.get(n)!.name)),
+      to: oneOrList(r.to.map((n) => target.fieldByIr.get(n)!.name)),
       through: r.through ? registry.get(r.through.model).model : null,
-      nullable: r.kind !== "belongsTo" || meta.fieldByIr.get(r.from)!.nullable,
+      nullable: r.kind !== "belongsTo" || r.from.some((n) => meta.fieldByIr.get(n)!.nullable),
     };
   });
   const name = (ir: string) => meta.fieldByIr.get(ir)!.name;
   const constraints = (meta.ir["constraints"] as { kind: string; fields?: string[] }[] | undefined) ?? [];
+  const key = meta.key.map((f) => f.name);
   const unique = [
-    [meta.pk.name],
-    ...meta.ir.fields.filter((f) => f.unique && !f.primary_key).map((f) => [name(f.name)]),
+    key,
+    ...meta.ir.fields.filter((f) => f.unique && !(key.length === 1 && f.primary_key)).map((f) => [name(f.name)]),
     ...constraints.filter((c) => c.kind === "unique" && c.fields).map((c) => c.fields!.map(name)),
   ];
-  return { name: meta.name, table: meta.table, primaryKey: meta.pk.name, fields, relations, unique };
+  return { name: meta.name, table: meta.table, primaryKey: oneOrList(key), fields, relations, unique };
+}
+
+function oneOrList(names: readonly string[]): string | readonly string[] {
+  return names.length === 1 ? names[0]! : names;
 }
 
 /**

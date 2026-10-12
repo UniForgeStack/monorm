@@ -12,16 +12,27 @@ from .fields import BelongsTo, HasOne
 _MISSING = object()
 
 
-def peek_key(owner: Any, name: str) -> Any:
+def peek_key(owner: Any, names: tuple[str, ...]) -> Any:
+    """A key value (a tuple for several fields), or ``_MISSING`` when a part is not loaded."""
     data = owner.__dict__
-    return data[name] if name in data else data.get("_orm_internal", {}).get(name, _MISSING)
+    internal = data.get("_orm_internal", {})
+    values = tuple(data[n] if n in data else internal.get(n, _MISSING) for n in names)
+    if any(v is _MISSING for v in values):
+        return _MISSING
+    if len(values) == 1:
+        return values[0]
+    return None if any(v is None for v in values) else values
 
 
-def key_value(owner: Any, name: str) -> Any:
-    value = peek_key(owner, name)
+def key_value(owner: Any, names: tuple[str, ...]) -> Any:
+    value = peek_key(owner, names)
     if value is _MISSING:
-        raise NotLoaded(f"{owner._meta.name}.{name} is not loaded")
+        raise NotLoaded(f"{owner._meta.name}.{', '.join(names)} is not loaded")
     return value
+
+
+def _sources(relation: Any) -> tuple[str, ...]:
+    return relation.via_fields if isinstance(relation, BelongsTo) else relation.from_fields
 
 
 class ReferenceBelongsTo(BelongsTo[Any, Any]):
@@ -32,7 +43,7 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
         if obj is None:
             return super().__get__(obj, owner)
         data = obj.__dict__
-        key = key_value(obj, self.via)
+        key = key_value(obj, self.via_fields)
         if self.name in data:
             value = data[self.name]
             keys = data.get("_reference_keys", {})
@@ -40,7 +51,7 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
             if value is None and absent_is_valid:
                 return None
             if value is not None:
-                target_key = peek_key(value, self.to)
+                target_key = peek_key(value, self.to_fields)
                 if target_key == key or (target_key is _MISSING and keys.get(self.name, _MISSING) == key):
                     return value
         elif key is None:
@@ -62,12 +73,12 @@ def install(model: Any) -> None:
         filtered = any(policy.get("model") == relation.target_name and policy.get("filter") is not None for policy in model._meta.registry._behavior.get("query_defaults", ()))
         if isinstance(relation, ReferenceBelongsTo):
             relation.filtered = filtered
-            relation.optional = model._meta.fields[relation.via].nullable
+            relation.optional = any(model._meta.fields[n].nullable for n in relation.via_fields)
         references.append((name, relation))
     if not references:
         return
     # Capture only relation source keys; ordinary rows keep the baseline method.
-    dependencies = tuple((name, r.via if isinstance(r, BelongsTo) else r.from_) for name, r in references)
+    dependencies = tuple((name, _sources(r)) for name, r in references)
     sources = tuple(source for _, source in dependencies)
     reverse_names = tuple(name for name, r in references if isinstance(r, HasOne))
     replace = model._replace_from
@@ -101,8 +112,10 @@ def install(model: Any) -> None:
 async def load_reference(owner: Any, name: str, *, reload: bool = False, filtered: bool = False) -> Any:
     from .db import resolve
 
+    from .model import key_match
+
     relation = owner._meta.relations[name]
-    source = relation.via if isinstance(relation, BelongsTo) else relation.from_
+    source = _sources(relation)
     key = key_value(owner, source)
     data = owner.__dict__
     if not reload:
@@ -114,9 +127,11 @@ async def load_reference(owner: Any, name: str, *, reload: bool = False, filtere
     context = (key, db, db._tx())
     async def fetch() -> Any:
         target = relation.target
-        to = relation.to if isinstance(relation, BelongsTo) else relation.via
-        value = None if key is None else await target.objects.using(db).filter(getattr(target, to) == key).first()
-        if value is None and isinstance(relation, BelongsTo) and not owner._meta.fields[source].nullable and not filtered:
+        to = relation.to_fields if isinstance(relation, BelongsTo) else relation.via_fields
+        match = key_match(target, (), [target._meta.fields[n] for n in to], key)
+        value = None if key is None else await target.objects.using(db).filter(match).first()
+        nullable = any(owner._meta.fields[n].nullable for n in source)
+        if value is None and isinstance(relation, BelongsTo) and not nullable and not filtered:
             raise IntegrityError(f"{owner._meta.name}.{name}: required target {relation.target_name} is missing")
         return value
     def publish(value: Any) -> None:

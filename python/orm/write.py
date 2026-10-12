@@ -57,6 +57,13 @@ def _key_of(value: Any, name: str) -> Any:
     return value._field_value(name) if hasattr(value, "_field_value") else getattr(value, name)
 
 
+def _link(rel: BelongsTo[Any, Any], value: Any) -> dict[str, Any]:
+    """The foreign key fields that point at ``value`` (``None`` clears them)."""
+    if value is None:
+        return dict.fromkeys(rel.via_fields)
+    return {via: _key_of(value, to) for via, to in zip(rel.via_fields, rel.to_fields, strict=True)}
+
+
 def prepare_rows(
     model: type[Model], rows: Iterable[Mapping[str, Any]]
 ) -> tuple[list[str], list[list[Any]], set[str]]:
@@ -79,7 +86,7 @@ def prepare_rows(
             if key in meta.input_fields:
                 values[key] = value
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
-                values[rel.via] = None if value is None else _key_of(value, rel.to)
+                values.update(_link(rel, value))
             else:
                 raise TypeError(f"{meta.name} has no field {key!r}")
         provided.update(values)
@@ -105,12 +112,15 @@ def lookup_values(model: type[Model], values: Mapping[str, Any]) -> dict[str, An
         if isinstance(value, Expression):
             raise TypeError(f"{meta.name}.{key}: get_or_insert takes plain values, not expressions")
         if isinstance(rel := meta.relations.get(key), BelongsTo):
-            key, value = rel.via, (None if value is None else _key_of(value, rel.to))
+            items = _link(rel, value)
         elif key not in meta.input_fields:
             raise TypeError(f"{meta.name} has no field {key!r}")
-        if value is None:
-            raise ValueError(f"get_or_insert: {meta.name}.{key} is None; NULL never conflicts, so the row is not unique")
-        out[key] = value
+        else:
+            items = {key: value}
+        for key, value in items.items():
+            if value is None:
+                raise ValueError(f"get_or_insert: {meta.name}.{key} is None; NULL never conflicts, so the row is not unique")
+            out[key] = value
     if not out:
         raise TypeError("get_or_insert() needs the fields of a unique constraint")
     return out
@@ -121,7 +131,8 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
     plain values only, no primary key twice. Returns (fields, rows) with the primary key
     first and the other fields in schema order."""
     meta = model._meta
-    pk = meta.pk.name
+    pk = meta.key_names
+    shown = ", ".join(pk)
     normalized: list[dict[str, Any]] = []
     seen: set[Any] = set()
     fields: set[str] | None = None
@@ -133,18 +144,19 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
             if key in meta.input_fields:
                 values[key] = value
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
-                values[rel.via] = None if value is None else _key_of(value, rel.to)
+                values.update(_link(rel, value))
             else:
                 raise TypeError(f"{meta.name} has no field {key!r}")
-        if values.get(pk) is None:
-            raise ValueError(f"update_many row {n} has no {pk}")
-        if values[pk] in seen:
-            raise ValueError(f"update_many: {pk}={values[pk]!r} appears twice")
-        seen.add(values[pk])
+        if any(values.get(k) is None for k in pk):
+            raise ValueError(f"update_many row {n} has no {shown}")
+        row_key = tuple(values[k] for k in pk)
+        if row_key in seen:
+            raise ValueError(f"update_many: {shown}={row_key[0] if len(pk) == 1 else row_key!r} appears twice")
+        seen.add(row_key)
         keys = set(values)
         if fields is None:
-            if keys == {pk}:
-                raise ValueError(f"update_many rows need a field to set besides {pk}")
+            if keys == set(pk):
+                raise ValueError(f"update_many rows need a field to set besides {shown}")
             fields = keys
         elif keys != fields:
             diff = ", ".join(sorted(keys ^ fields))
@@ -152,7 +164,7 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
         normalized.append(values)
     if fields is None:
         return [], []
-    names = [pk, *(f for f in meta.field_names if f in fields and f != pk)]
+    names = [*pk, *(f for f in meta.field_names if f in fields and f not in pk)]
     return names, [[v[f] for f in names] for v in normalized]
 
 
@@ -163,14 +175,13 @@ def assignments(model: type[Model], values: Mapping[str, Any], ctx: IRContext) -
     out = []
     for name, value in values.items():
         rel = meta.relations.get(name)
-        if isinstance(rel, BelongsTo):
-            name, value = rel.via, (None if value is None else _key_of(value, rel.to))
-        if name not in meta.input_fields:
-            raise TypeError(f"{meta.name} has no field {name!r}")
-        if isinstance(value, Ordering):
-            raise TypeError(f"{name}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value")
-        node = value._ir(ctx) if isinstance(value, Expression) else ctx.param(value)
-        out.append({"field": name, "value": node})
+        for name, value in (_link(rel, value) if isinstance(rel, BelongsTo) else {name: value}).items():
+            if name not in meta.input_fields:
+                raise TypeError(f"{meta.name} has no field {name!r}")
+            if isinstance(value, Ordering):
+                raise TypeError(f"{name}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value")
+            node = value._ir(ctx) if isinstance(value, Expression) else ctx.param(value)
+            out.append({"field": name, "value": node})
     return out
 
 
@@ -242,8 +253,8 @@ class _Insert:
         if update_values is not None and not update_values:
             raise TypeError("on_conflict(update_values={}) updates nothing; use update=False to skip conflicting rows")
         if fields is None and update_values is None:
-            pk = model._meta.pk.name
-            fields = [f for f in self._fields if f in self._provided and f not in target and f != pk]
+            key = model._meta.key_names
+            fields = [f for f in self._fields if f in self._provided and f not in target and f not in key]
         if update_values is not None:
             set_ = (assignments(model, update_values, IRContext(model, params)), params)
             overlap = set(fields or ()) & {a["field"] for a in set_[0]}

@@ -187,7 +187,7 @@ class Select(Generic[Unpack[Ts]]):
             if isinstance(e, type):
                 if e is not self._qs.model:
                     raise TypeError(f"group_by() takes {self._qs.model.__name__} itself or expressions")
-                out.append(e._meta.pk_ref())
+                out.extend(e._meta.key_refs())
             elif isinstance(e, Expression):
                 out.append(e)
             else:

@@ -132,7 +132,7 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 | `.require().first()` / `.require().last()` | `Promise<R>`; throws on zero matches |
 | `.require().all()` | `Promise<R[]>`; throws if the result is empty |
 | `.count()` / `.exists()` | `Promise<number>` / `Promise<boolean>` |
-| `.inBulk(keys?, { field })` | `Promise<Map<key, R>>` |
+| `.inBulk(keys?, { field })` | `Promise<Map<key, R>>`; a model with a composite key needs `field` |
 | `.batches(size)` / `.iterate(size)` | async generators that walk the primary key (keyset pagination) |
 | `.paginate({ first, after })` / `.paginate({ last, before })` | one page by keyset: `{ items, hasNext, hasPrevious, nextCursor, previousCursor }` |
 | `.sql()` | the SQL with values inlined, for reading |
@@ -402,6 +402,8 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   transaction.
 * On an instance: `post.update({...})` (refreshed from `RETURNING`), `post.delete()` and
   `post.refresh(...fields)`.
+* A model with a composite primary key (`@@id([shop, id])`) has an object `pk` keyed by field name, `{ shop: 1, id: 7 }`.
+  Writes, `refresh()`, `updateMany()`, `batches()` and `paginate()` use the whole key.
 * With the column-role extensions (`schema-extensions.md`): `@timestamps.updated_at` and
   `@locking.version` are set on each update; on a `@soft_delete.deleted_at` model,
   `delete()` soft-deletes, and `hardDelete()`, `undelete()`, `allWithDeleted()` and

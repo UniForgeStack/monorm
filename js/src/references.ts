@@ -18,15 +18,29 @@ type Host = {
   instanceRefresh(this: Row, ...args: unknown[]): Promise<boolean>;
 };
 const MISSING = Symbol("orm.missingReferenceKey");
-function peekKey(row: Row, name: string, internal: symbol): unknown {
+function peekField(row: Row, name: string, internal: symbol): unknown {
   if (Object.hasOwn(row, name)) return row[name];
   const values = row[internal] as Record<string, unknown> | undefined;
   return values && Object.hasOwn(values, name) ? values[name] : MISSING;
 }
-export function keyValue(row: Row, name: string, internal: symbol): unknown {
-  const value = peekKey(row, name, internal);
-  if (value === MISSING) throw new NotLoaded(`${name} is not loaded`);
+/** One field's value, or an array of the values of several fields (null when a part is null). */
+function peekKey(row: Row, names: readonly string[], internal: symbol): unknown {
+  if (names.length === 1) return peekField(row, names[0]!, internal);
+  const parts = names.map((n) => peekField(row, n, internal));
+  if (parts.includes(MISSING)) return MISSING;
+  return parts.some((v) => v === null || v === undefined) ? null : parts;
+}
+function sameKey(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => v === b[i]);
+  return a === b;
+}
+export function keyValue(row: Row, names: readonly string[], internal: symbol): unknown {
+  const value = peekKey(row, names, internal);
+  if (value === MISSING) throw new NotLoaded(`${names.join(", ")} is not loaded`);
   return value;
+}
+function fieldNames(meta: ModelMeta, irs: readonly string[]): string[] {
+  return irs.map((ir) => meta.fieldByIr.get(ir)!.name);
 }
 
 const REFERENCE_STATE: unique symbol = Symbol("orm.referenceState");
@@ -39,8 +53,8 @@ function referenceState(row: Row): ReferenceState {
 type ReferenceRow = Row & { [REFERENCE_STATE]?: ReferenceState };
 /** One query per relation/key/context; successful loads enter the ordinary cache. */
 export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta, reload: boolean, host: Host, filtered = targetFiltered(meta, r.target)): Promise<unknown> {
-  const from = meta.fieldByIr.get(r.from)!;
-  const key = keyValue(owner, from.name, host.INTERNAL);
+  const from = fieldNames(meta, r.from);
+  const key = keyValue(owner, from, host.INTERNAL);
   if (!reload) {
     try { return owner[r.name]; }
     catch (error) { if (!(error instanceof NotLoaded)) throw error; }
@@ -49,16 +63,17 @@ export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta
   const db = host.resolve(owner[host.DB] as Database | undefined);
   const tx = db.tx();
   const target = meta.registry.get(r.target);
-  const to = target.fieldByIr.get(r.to)!;
+  const to = r.to.map((ir) => target.fieldByIr.get(ir)!);
+  const parts = to.length === 1 ? [key] : key as unknown[];
   const fetch = async (): Promise<unknown> => {
-    const value = key === null ? null : await target.objects.using(db).filter(target.column(to).eq(key as never) as never).first();
-    if (value === null && r.kind === "belongsTo" && !from.nullable && !filtered) {
+    const value = key === null ? null : await target.objects.using(db).filter(...to.map((f, i) => target.column(f).eq(parts[i] as never) as never)).first();
+    if (value === null && r.kind === "belongsTo" && r.from.every((ir) => !meta.fieldByIr.get(ir)!.nullable) && !filtered) {
       throw new IntegrityError(`${meta.name}.${r.name}: required target ${r.target} is missing`);
     }
     return value;
   };
-  const load = () => coalescedLoad(owner, r.name, [key, db, tx], fetch, (value) => {
-    if (keyValue(owner, from.name, host.INTERNAL) === key) {
+  const load = () => coalescedLoad(owner, r.name, [...(key === null ? [key] : parts), db, tx], fetch, (value) => {
+    if (sameKey(keyValue(owner, from, host.INTERNAL), key)) {
       host.related(owner)[r.name] = value;
       state.keys.set(r.name, key);
     }
@@ -93,7 +108,9 @@ export function invalidateReference(owner: Row, name: string): void {
 
 export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) => unknown, internal: symbol, related: symbol): (this: Row) => unknown {
   if (r.kind !== "belongsTo") return baseline;
-  const from = meta.fieldByIr.get(r.from)!.name;
+  const from = fieldNames(meta, r.from);
+  const to = fieldNames(meta.registry.get(r.target), r.to);
+  const nullable = r.from.some((ir) => meta.fieldByIr.get(ir)!.nullable);
   const filtered = targetFiltered(meta, r.target);
   return function (this: Row): unknown {
     const key = keyValue(this, from, internal);
@@ -101,10 +118,10 @@ export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) =
     if (loaded && Object.hasOwn(loaded, r.name)) {
       const value = loaded[r.name] as Row | null;
       const state = (this as ReferenceRow)[REFERENCE_STATE];
-      if (value === null && (key === null || filtered || (meta.fieldByIr.get(r.from)!.nullable && !state?.keys.has(r.name)) || (state?.keys.has(r.name) && state.keys.get(r.name) === key))) return null;
+      if (value === null && (key === null || filtered || (nullable && !state?.keys.has(r.name)) || (state?.keys.has(r.name) && sameKey(state.keys.get(r.name), key)))) return null;
       if (value !== null) {
-        const targetKey = peekKey(value, meta.registry.get(r.target).fieldByIr.get(r.to)!.name, internal);
-        if (targetKey === key || (targetKey === MISSING && state?.keys.has(r.name) && state.keys.get(r.name) === key)) return value;
+        const targetKey = peekKey(value, to, internal);
+        if (sameKey(targetKey, key) || (targetKey === MISSING && state?.keys.has(r.name) && sameKey(state.keys.get(r.name), key))) return value;
       }
     } else if (key === null) return null;
     throw new NotLoaded(`${meta.name}.${r.name} is not loaded; use await obj.load(${meta.name}.${r.name})`);
@@ -114,16 +131,16 @@ export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) =
 export function install(meta: ModelMeta, proto: Record<string, unknown>, host: Host): void {
   const refs = [...meta.relations.values()].filter((r) => r.kind === "belongsTo" || r.kind === "hasOne");
   if (!refs.length) return;
-  const dependencies = refs.map((relation) => ({ relation, source: meta.fieldByIr.get(relation.from)!.name }));
-  const invalidate = (row: Row, before: Map<string, unknown>, refresh: boolean): void => {
+  const dependencies = refs.map((relation) => ({ relation, source: fieldNames(meta, relation.from) }));
+  const invalidate = (row: Row, before: Map<RelationMeta, unknown>, refresh: boolean): void => {
     for (const { relation: r, source: from } of dependencies) {
-      if (!(refresh && r.kind === "hasOne") && before.get(from) === peekKey(row, from, host.INTERNAL)) continue;
+      if (!(refresh && r.kind === "hasOne") && sameKey(before.get(r), peekKey(row, from, host.INTERNAL))) continue;
       const loaded = row[host.RELATED] as Record<string, unknown> | undefined;
       if (loaded) delete loaded[r.name];
       invalidateReference(row, r.name);
     }
   };
-  const keys = (row: Row): Map<string, unknown> => new Map(dependencies.map(({ source }) => [source, peekKey(row, source, host.INTERNAL)]));
+  const keys = (row: Row): Map<RelationMeta, unknown> => new Map(dependencies.map(({ relation, source }) => [relation, peekKey(row, source, host.INTERNAL)]));
   Object.defineProperty(proto, "update", { value: async function (this: Row, values: object) {
     const before = keys(this);
     await host.instanceUpdate.call(this, values);

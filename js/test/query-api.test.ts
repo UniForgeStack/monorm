@@ -157,7 +157,7 @@ async function make(model: ModelClass<ModelSpec>, values: Record<string, unknown
   const info = describe(model);
   made += 1;
   for (const rel of info.relations) {
-    if (rel.kind === "belongsTo" && !rel.nullable && !(rel.name in values) && !(rel.from in values)) {
+    if (rel.kind === "belongsTo" && !rel.nullable && !(rel.name in values) && ![rel.from].flat().some((f) => f in values)) {
       values[rel.name] = await make(rel.target);
     }
   }

@@ -22,8 +22,9 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
     const rel = meta.relations.get(key);
     if (rel?.kind === "belongsTo") {
       const target = meta.registry.get(rel.target);
-      const to = target.fieldByIr.get(rel.to)!.name;
-      values.set(rel.from, value === null ? null : fieldValue(value as object, to));
+      rel.from.forEach((from, i) => {
+        values.set(from, value === null ? null : fieldValue(value as object, target.fieldByIr.get(rel.to[i]!)!.name));
+      });
       continue;
     }
     throw new TypeError(`${meta.name} has no field ${JSON.stringify(key)}`);
@@ -79,25 +80,26 @@ export function lookupValues(meta: ModelMeta, lookup: object): Map<string, unkno
  * and the rows aligned on them.
  */
 export function prepareUpdateRows(meta: ModelMeta, rows: readonly object[]): { fields: string[]; rows: unknown[][] } {
-  const pk = meta.pk.ir;
+  const pk = meta.key.map((f) => f.ir);
+  const label = meta.key.map((f) => f.name).join(", ");
   const normalized: Map<string, unknown>[] = [];
-  const seen = new Set<unknown>();
+  const seen = new Set<string>();
   let fields: Set<string> | undefined;
   rows.forEach((row, n) => {
     const values = normalize(meta, row, "updateMany", false);
-    const id = values.get(pk);
-    if (id === undefined || id === null) {
-      throw new TypeError(`updateMany row ${n} has no ${meta.pk.name}`);
+    const id = pk.map((f) => values.get(f));
+    if (id.some((v) => v === undefined || v === null)) {
+      throw new TypeError(`updateMany row ${n} has no ${label}`);
     }
-    const k = typeof id === "number" ? BigInt(id) : id;
+    const k = id.map((v) => (typeof v === "number" ? BigInt(v) : v)).map((v) => `${typeof v}:${String(v)}`).join("\u0000");
     if (seen.has(k)) {
-      throw new TypeError(`updateMany: ${meta.pk.name}=${String(id)} appears twice`);
+      throw new TypeError(`updateMany: ${label}=${id.map(String).join(", ")} appears twice`);
     }
     seen.add(k);
     const keys = new Set(values.keys());
     if (fields === undefined) {
-      if (keys.size === 1) {
-        throw new TypeError(`updateMany rows need a field to set besides ${meta.pk.name}`);
+      if (keys.size === pk.length) {
+        throw new TypeError(`updateMany rows need a field to set besides ${label}`);
       }
       fields = keys;
     } else if (keys.size !== fields.size || [...keys].some((x) => !fields!.has(x))) {
@@ -108,7 +110,7 @@ export function prepareUpdateRows(meta: ModelMeta, rows: readonly object[]): { f
   if (fields === undefined) {
     return { fields: [], rows: [] };
   }
-  const names = [pk, ...meta.fieldList.map((f) => f.ir).filter((f) => fields!.has(f) && f !== pk)];
+  const names = [...pk, ...meta.fieldList.map((f) => f.ir).filter((f) => fields!.has(f) && !pk.includes(f))];
   return { fields: names, rows: normalized.map((v) => names.map((f) => v.get(f))) };
 }
 

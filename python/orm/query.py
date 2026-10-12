@@ -26,9 +26,10 @@ from .expr import (
     and_,
     as_condition,
     not_,
+    or_,
 )
 from . import pagination
-from .fields import BelongsTo, HasMany, ManyToMany
+from .fields import BelongsTo, HasMany, ManyToMany, key_items, key_value
 from .pagination import Page
 from .protection import allowed_writes
 from . import debug
@@ -56,6 +57,19 @@ __all__ = ["QuerySet", "RelatedSet", "ManyRelatedSet", "Prepared", "prefetch", "
 
 # Ids per query in in_bulk(), well below Postgres' 65535 parameters.
 IN_BULK_CHUNK = 10_000
+# A key of several fields matches as an OR of ANDs; SQLite limits the expression depth.
+IN_BULK_KEY_CHUNK = 500
+
+
+def _key_after(refs: tuple[ColumnRef[Any], ...], value: Any) -> Condition:
+    """The rows after ``value`` in key order."""
+    if len(refs) == 1:
+        return as_condition(refs[0] > value)
+    items = key_items(tuple(r._field.name for r in refs), value)
+    return or_(*(
+        and_(*(r == items[r._field.name] for r in refs[:i]), refs[i] > items[refs[i]._field.name])
+        for i in range(len(refs))
+    ))
 # get_or_insert: rounds of read, then insert, before a concurrent delete wins.
 GET_OR_INSERT_ROUNDS = 3
 
@@ -639,14 +653,14 @@ class QuerySet(Generic[M]):
             raise QueryError("batches() walk the primary key in order; drop order_by()")
         if self._limit is not None or self._offset is not None:
             raise QueryError("batches() can't be used on a sliced query set")
-        pk = self._model._meta.pk_ref()
+        key = self._model._meta.key_refs()
         last: Any = None
         seen: set[str] = set()
         while True:
-            page = self if last is None else self.filter(pk > last)
+            page = self if last is None else self.filter(_key_after(key, last))
             # No `yield` inside: the loop scope must not reach the consumer's queries.
             with debug.internal_loop(seen):
-                objs = await page.order_by(pk)[:size]._fetch()
+                objs = await page.order_by(*key)[:size]._fetch()
             if objs:
                 yield objs
             if len(objs) < size:
@@ -828,7 +842,7 @@ class QuerySet(Generic[M]):
                 Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k.get("desc", False), k.get("nulls"))
                 for k in meta.default_order
             )
-        return (Ordering(meta.pk_ref(), desc=False),)
+        return tuple(Ordering(ref, desc=False) for ref in meta.key_refs())
 
     async def _fetch(self) -> list[M]:
         params: list[Any] = []
@@ -942,6 +956,8 @@ class QuerySet(Generic[M]):
         ids are left out. Without ``ids``, every row. Large id lists run as several
         queries of 10 000 ids."""
         meta = self._model._meta
+        if field is None and len(meta.key) > 1:
+            return await self._in_bulk_by_key(ids)
         col = meta.pk_ref() if field is None else field
         if not isinstance(col, ColumnRef) or col._root is not self._model or col._path:
             raise TypeError(f"in_bulk(field=...) takes a column of {self._model.__name__}, got {col!r}")
@@ -960,6 +976,26 @@ class QuerySet(Generic[M]):
                 chunk = await self.filter(col.in_(keys[i : i + IN_BULK_CHUNK]))._clone(_model_helpers=(*self._model_helpers, name))._fetch()
             for o in chunk:
                 out[o._field_value(name)] = o
+        return out
+
+    async def _in_bulk_by_key(self, ids: Iterable[Any] | None) -> dict[Any, M]:
+        from .model import key_match
+
+        if self._limit is not None or self._offset is not None:
+            raise QueryError("in_bulk() can't be used on a sliced query set")
+        meta = self._model._meta
+        qs = self._clone(_model_helpers=(*self._model_helpers, *meta.key_names))
+        if ids is None:
+            return {o.pk: o for o in await qs._fetch()}
+        keys = list(dict.fromkeys(ids))
+        out: dict[Any, M] = {}
+        seen: set[str] = set()
+        for i in range(0, len(keys), IN_BULK_KEY_CHUNK):
+            match = or_(*(key_match(self._model, (), meta.key, k) for k in keys[i : i + IN_BULK_KEY_CHUNK]))
+            with debug.internal_loop(seen):
+                chunk = await qs.filter(match)._fetch()
+            for o in chunk:
+                out[o.pk] = o
         return out
 
     def update(self, **values: Any) -> Update[M]:
@@ -1283,9 +1319,9 @@ async def prefetch(
     keys: list[str] = []
     for node in _prefetch_tree(model, ((p.path._path, p) for p in qs._prefetch)).values():
         rel = meta.relations[node.relation]
-        key = rel.via if isinstance(rel, BelongsTo) else rel.from_  # type: ignore[attr-defined]
-        if key not in keys:
-            keys.append(key)
+        for key in rel.via_fields if isinstance(rel, BelongsTo) else rel.from_fields:  # type: ignore[attr-defined]
+            if key not in keys:
+                keys.append(key)
     rows = [[o._field_value(k) for k in keys] for o in objs]
     db = using if using is not None else objs[0].__dict__.get("_db")
     database = resolve(db)
@@ -1372,9 +1408,11 @@ class RelatedSet(QuerySet[M]):
         super().__init__(relation.target)
         self._relation = relation
         self._instance = instance
-        key = instance._field_value(relation.from_)
-        via: ColumnRef[Any] = ColumnRef(relation.target, (), relation.target._meta.fields[relation.via])
-        self._filters = (as_condition(via == key),)
+        from .model import key_match
+
+        fields = relation.target._meta.fields
+        key = key_value(instance, relation.from_fields)
+        self._filters = (key_match(relation.target, (), [fields[n] for n in relation.via_fields], key),)
 
     @property
     def cached(self) -> list[M]:
@@ -1428,7 +1466,7 @@ class RelatedSet(QuerySet[M]):
         return super().insert_many(linked, batch_size=batch_size)
 
     def _link(self) -> dict[str, Any]:
-        return {self._relation.via: self._instance._field_value(self._relation.from_)}
+        return key_items(self._relation.via_fields, key_value(self._instance, self._relation.from_fields))
 
 
 class ManyRelatedSet(QuerySet[M]):
@@ -1534,7 +1572,7 @@ class ManyRelatedSet(QuerySet[M]):
         join = self._relation.through
         keys = {self._relation.source, self._relation.target_field}
         for rel in join._meta.relations.values():
-            if isinstance(rel, BelongsTo) and rel.via in keys:
+            if isinstance(rel, BelongsTo) and keys.issuperset(rel.via_fields):
                 keys.add(rel.name)
         bad = sorted(keys & set(values or ()))
         if bad:

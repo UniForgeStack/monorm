@@ -374,8 +374,12 @@ foreign key's name (default `<table>_<column>_fkey`). The relation is
 optional (`User?`) exactly when the key field is nullable; the compiler checks this.
 A to-many relation (`Post[]`) is paired with the to-one relation on the other model.
 When two models have more than one relation between them, name both sides:
-`@relation("author", fields: ...)` and `@relation("author")`. Composite keys aren't
-supported yet.
+`@relation("author", fields: ...)` and `@relation("author")`.
+A composite foreign key names several fields:
+`item Item @relation(fields: [shop, item_id], references: [shop, id])`.
+Its `references:` are the target's primary key or a unique constraint, in that order.
+Its default name is `<table>_<columns>_fkey`, such as `lines_shop_item_id_fkey`.
+A generic relation can't point at a model with a composite key.
 
 ```
 profile  Profile?                                   // one-to-one: Profile.user_id is @unique
@@ -398,6 +402,7 @@ followers User[]  @relation(through: Follow, through_fields: [followee, follower
 ### Model attributes (`@@`)
 
 ```
+@@id([shop, id], name: "items_pkey")
 @@index([author_id])
 @@index([author_id, created_at(sort: Desc, nulls: last)], where: raw("published"), name: "x")
 @@index([author_id, -created_at(nulls: last)])   // -field is sort: Desc
@@ -414,6 +419,12 @@ followers User[]  @relation(through: Follow, through_fields: [followee, follower
 @@trigger(audit, after: [insert, update, delete], for_each: statement, function: audit_row, args: ["posts"])
 ```
 
+* `@@id([a, b])` is a composite primary key, in that column order.
+  A model has `@id` or `@@id`, never both.
+  A field in `@@id` can take `@default(autoincrement())`.
+  `name:` or `map:` names the constraint; the default is `<table>_pkey`.
+  A changed key migrates as a drop and an add of the constraint:
+  the foreign keys that reference it drop first and come back after it.
 * Index keys are field names or `sql("expression")`, with options `sort: Asc|Desc`,
   `nulls: first|last`, `ops: <operator class>` (a name or `raw("...")`),
   `collate: "..."`, and `op: "..."` in `@@exclude`.
@@ -683,7 +694,7 @@ out, printed, and listed at the end of the file as `// gap:` lines:
 
 * rules (`CREATE RULE`), views, row-level security policies, domains, composite and
   range types, partitioned tables, generated columns, column collations;
-* tables with a composite primary key or none, composite foreign keys, columns of a type
+* tables without a primary key, columns of a type
   without a schema type (`tstzrange`, `interval`, ...);
 * a `serial` column becomes an identity column (`@default(autoincrement())`), so drift
   reports `drop default` and `make ... an identity column` for it;
@@ -742,6 +753,6 @@ dependency) is the natural base.
 * TypeScript generation and the JS binding.
 * `CREATE INDEX CONCURRENTLY` / non-transactional migrations.
 * Generated columns, views, domains, row-level security, partitioning, multiple
-  database schemas, composite keys (primary and foreign).
+  database schemas.
 * Renaming a native enum value in place (`ALTER TYPE ... RENAME VALUE`): a renamed
   value is a removal plus an addition today.

@@ -1307,9 +1307,9 @@ export interface PathState {
   /** TypeScript relation names from the root. */
   readonly names: readonly string[];
   readonly target: string;
-  /** A path that ends in a `belongsTo` relation: its foreign key column, and how to read
-   * the referenced key of a target instance. */
-  readonly belongsTo?: { readonly key: Column<unknown, string>; readonly read: (o: object) => unknown };
+  /** A path that ends in a `belongsTo` relation: its foreign key columns, and how to read
+   * the referenced key of a target instance (one value per column). */
+  readonly belongsTo?: { readonly key: readonly Column<unknown, string>[]; readonly read: (o: object) => unknown[] };
 }
 
 export class RelationPath<M extends ModelSpec, S extends string, H extends readonly Hop[]> {
@@ -1346,12 +1346,19 @@ function compareRelation(path: RelationPath<ModelSpec, string, readonly Hop[]>, 
   if (!s.belongsTo) {
     throw new TypeError(`${String(path)} is not a belongsTo relation; only a belongsTo relation compares with an instance (compare a key column instead)`);
   }
-  if (value === null) return new IsNull(s.belongsTo.key, neg);
-  const key = s.belongsTo.read(value as object);
-  if (key === null || key === undefined) {
-    throw new TypeError(`${String(path)} can't compare with an instance whose key is ${String(key)}`);
+  const columns = s.belongsTo.key;
+  if (value === null) {
+    const nulls = columns.map((c) => new IsNull(c, neg));
+    return nulls.length === 1 ? nulls[0]! : neg ? or(...nulls) : and(...nulls);
   }
-  return new Comparison(neg ? "ne" : "eq", s.belongsTo.key, wrap(key));
+  const key = s.belongsTo.read(value as object);
+  const missing = key.find((k) => k === null || k === undefined);
+  if (key.length !== columns.length || missing !== undefined) {
+    throw new TypeError(`${String(path)} can't compare with an instance whose key is ${String(missing)}`);
+  }
+  if (columns.length === 1) return new Comparison(neg ? "ne" : "eq", columns[0]!, wrap(key[0]));
+  const match = and(...columns.map((c, i) => new Comparison("eq", c, wrap(key[i]))));
+  return neg ? not(match) : match;
 }
 
 /** Where NULLs go in an ordering. */

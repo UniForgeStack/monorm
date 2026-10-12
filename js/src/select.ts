@@ -171,18 +171,18 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   groupBy<const Cs extends readonly (Expression<unknown, AllowedOne<S>, unknown> | ModelClass<M>)[]>(
     ...exprs: Cs
   ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
-    const out = exprs.map((e) => {
+    const out = exprs.flatMap((e): Node[] => {
       const meta = modelMeta(e);
       if (meta) {
         if (meta !== this.qs.meta) {
           throw new TypeError(`groupBy() takes ${this.qs.meta.name} itself or expressions`);
         }
-        return meta.column(meta.pk);
+        return meta.key.map((f) => meta.column(f) as Node);
       }
       if (!(e instanceof Expression)) {
         throw new TypeError(`groupBy() takes columns and expressions, got ${String(e)}`);
       }
-      return e;
+      return [e];
     });
     return this.with(this.qs, { ...this.state, group: [...this.state.group, ...out] });
   }

@@ -11,13 +11,14 @@ fn ident(s: &str) -> String { format!("\"{}\"", s.replace('"', "\"\"")) }
 /// The trigger that sets `column` on an update that leaves it unchanged, so a written value
 /// wins. SQLite can't assign `NEW`, so its trigger updates the row after the update.
 fn trigger(dialect: Dialect, model: &ModelIr, column: &str) -> Result<TriggerIr, String> {
-    let pk = model.fields.iter().find(|f| f.primary_key).ok_or_else(|| format!("{} has no primary key", model.name))?;
+    let key: Vec<_> = model.fields.iter().filter(|f| f.primary_key).map(|f| format!("{c} = NEW.{c}", c = ident(&f.column))).collect();
+    if key.is_empty() { return Err(format!("{} has no primary key", model.name)); }
     let c = ident(column);
     let value = match dialect {
         Dialect::Postgres => serde_json::json!({"timing": "before", "when": format!("NEW.{c} IS NOT DISTINCT FROM OLD.{c}"),
             "body": format!("BEGIN NEW.{c} := now(); RETURN NEW; END;")}),
         Dialect::Sqlite => serde_json::json!({"timing": "after", "when": format!("NEW.{c} IS OLD.{c}"),
-            "body": format!("UPDATE {} SET {c} = CURRENT_TIMESTAMP WHERE {pk} = NEW.{pk}", ident(&model.table), pk = ident(&pk.column))}),
+            "body": format!("UPDATE {} SET {c} = CURRENT_TIMESTAMP WHERE {}", ident(&model.table), key.join(" AND "))}),
     };
     let mut value = value;
     value["name"] = format!("updated_at_{column}").into();
@@ -97,6 +98,15 @@ mod tests {
         assert_eq!(serde_json::to_value(t.timing).unwrap(), "after");
         assert_eq!(t.when.as_deref(), Some("NEW.\"changed_at\" IS OLD.\"changed_at\""));
         assert_eq!(t.body.as_deref(), Some("UPDATE \"posts\" SET \"changed_at\" = CURRENT_TIMESTAMP WHERE \"id\" = NEW.\"id\""));
+    }
+
+    #[test]
+    fn the_sqlite_trigger_matches_the_whole_composite_key() {
+        let mut ir = schema("sqlite", None, "date_time");
+        ir.models[0].fields.insert(0, serde_json::from_value(serde_json::json!({"name": "shop", "column": "shop", "type": "int", "primary_key": true})).unwrap());
+        prepared(&mut ir).unwrap();
+        let t = &ir.behavior.storage.as_ref().unwrap().models[0].triggers[0];
+        assert_eq!(t.body.as_deref(), Some("UPDATE \"posts\" SET \"changed_at\" = CURRENT_TIMESTAMP WHERE \"shop\" = NEW.\"shop\" AND \"id\" = NEW.\"id\""));
     }
 
     #[test]

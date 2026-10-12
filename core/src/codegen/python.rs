@@ -234,6 +234,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         let objects = if query_sets.contains_key(name.as_str()) { format!("_{name}Objects") } else { format!("{name}QuerySet") };
         writeln!(body, "\n    objects: ClassVar[{objects}]\n").unwrap();
+        if let keys @ [_, _, ..] = m.key_fields().as_slice() {
+            let parts: Vec<String> = keys.iter().map(|f| value_type(f)).collect();
+            writeln!(body, "    @property\n    def pk(self) -> tuple[{}]: ...\n", parts.join(", ")).unwrap();
+        }
         writeln!(
             body,
             "    async def update(self, **values: Unpack[{name}Update]) -> None: ...  # type: ignore[override]\n"

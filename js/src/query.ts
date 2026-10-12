@@ -53,6 +53,11 @@ import type { Select, SelectItems, SelectRow, ItemsParams, ItemsOuter } from "./
 
 /** Ids per query in `inBulk()`, well below Postgres' 65535 parameters. */
 const IN_BULK_CHUNK = 10_000;
+
+/** Rows after `last` in the order of `key`: `(a, b) > (x, y)` as `a > x OR (a = x AND b > y)`. */
+function keyAfter(key: readonly Column<unknown, string>[], last: readonly unknown[]): Condition<string, never> {
+  return or(...key.map((c, i) => and(...key.slice(0, i).map((p, j) => p.eq(last[j] as never)), c.gt(last[i] as never)))) as never;
+}
 // getOrInsert: rounds of read, then insert, before a concurrent delete wins.
 const GET_OR_INSERT_ROUNDS = 3;
 
@@ -908,19 +913,19 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (this.state.limit !== undefined || this.state.offset !== undefined) {
       throw new QueryError("batches() can't be used on a sliced query set");
     }
-    const pk = this.meta.column(this.meta.pk);
-    let last: unknown = undefined;
+    const pk = this.meta.key.map((f) => this.meta.column(f));
+    let last: unknown[] | undefined = undefined;
     const seen = new Set<string>();
     for (;;) {
-      const page = last === undefined ? this : this.clone({ filters: [...this.state.filters, pk.gt(last as never)] });
-      const objs = (await internalLoop(seen, () => page.clone({ order: [pk.asc()], limit: size }).fetch())) as R[];
+      const page = last === undefined ? this : this.clone({ filters: [...this.state.filters, keyAfter(pk, last)] });
+      const objs = (await internalLoop(seen, () => page.clone({ order: pk.map((c) => c.asc()), limit: size }).fetch())) as R[];
       if (objs.length) {
         yield objs;
       }
       if (objs.length < size) {
         return;
       }
-      last = fieldValue(objs[objs.length - 1] as object, this.meta.pk.name);
+      last = this.meta.key.map((f) => fieldValue(objs[objs.length - 1] as object, f.name));
     }
   }
 
@@ -1156,7 +1161,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (keys.length && !this.state.withoutDefaults && !this.state.from) {
       return keys.map((k) => new Ordering(this.meta.column(this.meta.fieldByIr.get(k.field)!), k.desc ?? false, k.nulls));
     }
-    return [this.meta.column(this.meta.pk).asc()];
+    return this.meta.key.map((f) => this.meta.column(f).asc());
   }
 
   /**
@@ -1250,6 +1255,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     ids?: readonly In<T>[] | null,
     options: { readonly field?: Column<T, M["name"]> } = {},
   ): Promise<Map<T, R>> {
+    if (options.field === undefined && this.meta.key.length > 1) {
+      throw new QueryError(`inBulk() maps one key field; ${this.meta.name} has a key of several fields, so pass { field } or use filter()`);
+    }
     const col = options.field ?? (this.meta.column(this.meta.pk) as Column<T, M["name"]>);
     if (!(col instanceof Column) || col.root !== this.meta || col.path.length) {
       throw new TypeError(`inBulk({ field }) takes a column of ${this.meta.name}, got ${String(col)}`);
@@ -1584,7 +1592,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
           o.updateFields !== undefined
             ? ownFields(this.meta, o.updateFields, "updateFields")
             : o.updateValues === undefined
-              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && f !== this.meta.pk.ir)
+              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f))
               : [];
         if (o.updateValues !== undefined) {
           const items = assignments(this.meta, o.updateValues, new IRContext(this.meta, params));
@@ -1994,9 +2002,12 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
 
   private link(): Record<string, unknown> {
     const meta = this.meta;
-    const via = meta.fieldByIr.get(this.relation.to)!.name;
     const owner = (this.instance.constructor as unknown as { meta: ModelMeta }).meta;
-    return { [via]: fieldValue(this.instance, owner.fieldByIr.get(this.relation.from)!.name) };
+    const out: Record<string, unknown> = {};
+    this.relation.to.forEach((to, i) => {
+      out[meta.fieldByIr.get(to)!.name] = fieldValue(this.instance, owner.fieldByIr.get(this.relation.from[i]!)!.name);
+    });
+    return out;
   }
 
   /** Inserts a related row pointing at this instance. */
@@ -2067,7 +2078,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
 
   private key(): unknown {
     const owner = (this.instance.constructor as unknown as { meta: ModelMeta }).meta;
-    return fieldValue(this.instance, owner.fieldByIr.get(this.relation.from)!.name);
+    return fieldValue(this.instance, owner.fieldByIr.get(this.relation.from[0]!)!.name);
   }
 
   /** The join rows of this instance. */
@@ -2085,7 +2096,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
 
   /** Keys of related instances (or the keys themselves). */
   private targetKeys(objs: readonly unknown[]): unknown[] {
-    const to = this.meta.fieldByIr.get(this.relation.to)!.name;
+    const to = this.meta.fieldByIr.get(this.relation.to[0]!)!.name;
     const keys: unknown[] = [];
     for (const o of objs) {
       if (o !== null && typeof o === "object" && !(o instanceof Date)) {
@@ -2153,7 +2164,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     const join = this.through;
     const keys = new Set([this.relation.through!.source, this.relation.through!.target].map((ir) => join.fieldByIr.get(ir)!.name));
     for (const [name, rel] of join.relations) {
-      if (rel.kind === "belongsTo" && (rel.from === this.relation.through!.source || rel.from === this.relation.through!.target)) {
+      if (rel.kind === "belongsTo" && (rel.from[0] === this.relation.through!.source || rel.from[0] === this.relation.through!.target)) {
         keys.add(name);
       }
     }
@@ -2278,7 +2289,7 @@ export async function prefetch(
   const keys: string[] = [];
   for (const node of prefetchTree(meta, qs.state.prefetch.map((p) => [[...p.path[PATH].path], p] as [string[], typeof p])).values()) {
     const rel = meta.relationByIr.get(node.relation)!;
-    if (!keys.includes(rel.from)) keys.push(rel.from);
+    for (const from of rel.from) if (!keys.includes(from)) keys.push(from);
   }
   const names = keys.map((k) => meta.fieldByIr.get(k)!.name);
   const rows = objs.map((o) => names.map((n) => fieldValue(o, n)));
@@ -2369,9 +2380,8 @@ function makeRelatedSet(rel: RelationMeta, instance: object): RelatedSet<ModelSp
   const inst = instance as Record<PropertyKey, unknown>;
   const owner = (inst.constructor as unknown as { meta: ModelMeta }).meta;
   const target = owner.registry.get(rel.target);
-  const via = target.column(target.fieldByIr.get(rel.to)!);
-  const key = fieldValue(inst, owner.fieldByIr.get(rel.from)!.name);
-  const qs = new (relationSetClass(RelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters: [asCondition(via.eq(key as never))] });
+  const filters = rel.to.map((to, i) => asCondition(target.column(target.fieldByIr.get(to)!).eq(fieldValue(inst, owner.fieldByIr.get(rel.from[i]!)!.name) as never)));
+  const qs = new (relationSetClass(RelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters });
   Object.assign(qs, { relation: rel, instance: inst });
   return qs as never;
 }
@@ -2383,8 +2393,8 @@ function makeManyRelatedSet(rel: RelationMeta, instance: object): ManyRelatedSet
   const join = owner.registry.get(rel.through!.model);
   const source = join.column(join.fieldByIr.get(rel.through!.source)!);
   const tcol = join.column(join.fieldByIr.get(rel.through!.target)!);
-  const to = target.column(target.fieldByIr.get(rel.to)!);
-  const key = fieldValue(inst, owner.fieldByIr.get(rel.from)!.name);
+  const to = target.column(target.fieldByIr.get(rel.to[0]!)!);
+  const key = fieldValue(inst, owner.fieldByIr.get(rel.from[0]!)!.name);
   const cond = exists(join.objects.filter(source.eq(key as never) as never, tcol.eq(outer(to) as never) as never) as never);
   const qs = new (relationSetClass(ManyRelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters: [cond] });
   Object.assign(qs, { relation: rel, instance: inst });

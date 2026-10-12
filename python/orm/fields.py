@@ -13,7 +13,7 @@ not loaded (async code can't lazy-load on attribute access).
 from __future__ import annotations
 
 import enum
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Never, TypeVar, cast, overload
 
 from .errors import NotLoaded
@@ -244,6 +244,34 @@ BY_TYPE: dict[str, type[Field[Any]]] = {
 # -- relations ----------------------------------------------------------------------------
 
 
+def key_names(names: str | Sequence[str]) -> tuple[str, ...]:
+    return (names,) if isinstance(names, str) else tuple(names)
+
+
+def key_value(obj: Model, names: tuple[str, ...]) -> Any:
+    """The value of a key: one field's value, or a tuple for several fields (``None``
+    when a part is ``None``)."""
+    if len(names) == 1:
+        return obj._field_value(names[0])
+    values = tuple(obj._field_value(n) for n in names)
+    return None if any(v is None for v in values) else values
+
+
+def key_items(names: tuple[str, ...], value: Any) -> dict[str, Any]:
+    """The field values of a key value."""
+    if len(names) == 1:
+        return {names[0]: value}
+    if value is None:
+        return dict.fromkeys(names)
+    if not isinstance(value, tuple) or len(value) != len(names):
+        raise TypeError(f"a key of {', '.join(names)} is a tuple of {len(names)} values, not {value!r}")
+    return dict(zip(names, value, strict=True))
+
+
+def _ir_names(names: tuple[str, ...]) -> str | list[str]:
+    return names[0] if len(names) == 1 else list(names)
+
+
 class Relation(Generic[M, P]):
     kind: ClassVar[str]
 
@@ -270,6 +298,11 @@ class Relation(Generic[M, P]):
     def ir(self) -> dict[str, Any]:
         raise NotImplementedError
 
+    def _single(self, names: tuple[str, ...], attr: str) -> str:
+        if len(names) != 1:
+            raise TypeError(f"{self.model.__name__}.{self.name} has a key of several fields; use {attr}_fields")
+        return names[0]
+
     def __repr__(self) -> str:
         return f"<{type(self).__name__} {self.model.__name__}.{self.name} -> {self.target_name}>"
 
@@ -287,18 +320,26 @@ class BelongsTo(Relation[M, P]):
         self,
         target: str | type[M],
         *,
-        via: str,
-        to: str | None = None,
+        via: str | Sequence[str],
+        to: str | Sequence[str] | None = None,
         on_delete: OnDelete = "cascade",
     ) -> None:
         super().__init__(target)
-        self.via = via
-        self._to = to
+        self.via_fields = key_names(via)
+        self._to = None if to is None else key_names(to)
         self.on_delete = on_delete
 
     @property
+    def via(self) -> str:
+        return self._single(self.via_fields, "via")
+
+    @property
+    def to_fields(self) -> tuple[str, ...]:
+        return self._to or cast("type[Model]", self.target)._meta.key_names
+
+    @property
     def to(self) -> str:
-        return self._to or cast("type[Model]", self.target)._meta.pk.name
+        return self._single(self.to_fields, "to")
 
     @overload
     def __get__(self, obj: None, owner: type[Any]) -> P: ...
@@ -308,20 +349,20 @@ class BelongsTo(Relation[M, P]):
         if obj is None:
             return RelationPath(owner, (self.name,), cast("type[Model]", self.target))
         d = obj.__dict__
-        key = cast("Model", obj)._field_value(self.via)
+        key = key_value(cast("Model", obj), self.via_fields)
         if self.name in d:
             related = d[self.name]
             # A default-filtered target joins as absent even when the key is set.
             if related is None and (key is None or cast("type[Model]", self.target)._meta.default_filter is not None):
                 return None
-            if related is not None and related._field_value(self.to) == key:
+            if related is not None and key_value(related, self.to_fields) == key:
                 return related
         elif key is None:
             return None
         raise NotLoaded(
             f"{owner.__name__}.{self.name} is not loaded; use "
             f"load({owner.__name__}.{self.name}) or query "
-            f"{self.target_name} by {owner.__name__}.{self.via}"
+            f"{self.target_name} by {owner.__name__}.{', '.join(self.via_fields)}"
         )
 
     def __set__(self, obj: Model, value: Never) -> None:
@@ -335,8 +376,8 @@ class BelongsTo(Relation[M, P]):
             "name": self.name,
             "kind": "one",
             "target": self.target_name,
-            "from": self.via,
-            "to": self.to,
+            "from": _ir_names(self.via_fields),
+            "to": _ir_names(self.to_fields),
             "foreign_key": True,
             "on_delete": self.on_delete,
         }
@@ -352,14 +393,22 @@ class HasMany(Relation[MM, P]):
 
     kind = "many"
 
-    def __init__(self, target: str | type[MM], *, via: str, from_: str | None = None) -> None:
+    def __init__(self, target: str | type[MM], *, via: str | Sequence[str], from_: str | Sequence[str] | None = None) -> None:
         super().__init__(target)
-        self.via = via
-        self._from = from_
+        self.via_fields = key_names(via)
+        self._from = None if from_ is None else key_names(from_)
+
+    @property
+    def via(self) -> str:
+        return self._single(self.via_fields, "via")
+
+    @property
+    def from_fields(self) -> tuple[str, ...]:
+        return self._from or self.model._meta.key_names
 
     @property
     def from_(self) -> str:
-        return self._from or self.model._meta.pk.name
+        return self._single(self.from_fields, "from")
 
     @overload
     def __get__(self, obj: None, owner: type[Any]) -> P: ...
@@ -383,8 +432,8 @@ class HasMany(Relation[MM, P]):
             "name": self.name,
             "kind": "many",
             "target": self.target_name,
-            "from": self.from_,
-            "to": self.via,
+            "from": _ir_names(self.from_fields),
+            "to": _ir_names(self.via_fields),
         }
 
 
@@ -395,14 +444,22 @@ class HasOne(Relation[M, P]):
 
     kind = "one"
 
-    def __init__(self, target: str | type[M], *, via: str, from_: str | None = None) -> None:
+    def __init__(self, target: str | type[M], *, via: str | Sequence[str], from_: str | Sequence[str] | None = None) -> None:
         super().__init__(target)
-        self.via = via
-        self._from = from_
+        self.via_fields = key_names(via)
+        self._from = None if from_ is None else key_names(from_)
+
+    @property
+    def via(self) -> str:
+        return self._single(self.via_fields, "via")
+
+    @property
+    def from_fields(self) -> tuple[str, ...]:
+        return self._from or self.model._meta.key_names
 
     @property
     def from_(self) -> str:
-        return self._from or self.model._meta.pk.name
+        return self._single(self.from_fields, "from")
 
     @overload
     def __get__(self, obj: None, owner: type[Any]) -> P: ...
@@ -421,11 +478,12 @@ class HasOne(Relation[M, P]):
     def __set__(self, obj: Model, value: Never) -> None:
         raise AttributeError(
             f"{self.model.__name__}.{self.name} is read-only; the key is "
-            f"{self.target_name}.{self.via}"
+            f"{self.target_name}.{', '.join(self.via_fields)}"
         )
 
     def ir(self) -> dict[str, Any]:
-        return {"name": self.name, "kind": "one", "target": self.target_name, "from": self.from_, "to": self.via}
+        return {"name": self.name, "kind": "one", "target": self.target_name,
+                "from": _ir_names(self.from_fields), "to": _ir_names(self.via_fields)}
 
 
 class ManyToMany(Relation[MM, P]):
@@ -459,11 +517,15 @@ class ManyToMany(Relation[MM, P]):
 
     @property
     def from_(self) -> str:
-        return self._from or self.model._meta.pk.name
+        return self._from or self.model._meta.key_name
+
+    @property
+    def from_fields(self) -> tuple[str, ...]:
+        return (self.from_,)
 
     @property
     def to(self) -> str:
-        return self._to or cast("type[Model]", self.target)._meta.pk.name
+        return self._to or cast("type[Model]", self.target)._meta.key_name
 
     @overload
     def __get__(self, obj: None, owner: type[Any]) -> P: ...

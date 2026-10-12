@@ -55,8 +55,9 @@ export function keyset(meta: ModelMeta, order: readonly Ordering<string, unknown
     }
     return [f, o] as const;
   });
-  if (!keys.some(([f]) => f.primaryKey || (f.unique && !storedNullable(meta, f)))) {
-    keys.push([meta.pk, meta.column(meta.pk).asc()]);
+  const covered = (f: FieldMeta) => keys.some(([k]) => k === f);
+  if (!meta.key.every(covered) && !keys.some(([f]) => f.unique && !storedNullable(meta, f))) {
+    for (const f of meta.key) if (!covered(f)) keys.push([f, meta.column(f).asc()]);
   }
   return keys;
 }

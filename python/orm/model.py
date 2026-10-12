@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from . import _native
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
-from .expr import ColumnRef, RelationPath
-from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, ManyToMany, Relation, String
+from collections.abc import Sequence
+
+from .expr import ColumnRef, Condition, RelationPath, and_
+from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, ManyToMany, Relation, String, key_items
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -52,10 +54,25 @@ def _peek(row: Model, name: str) -> Any:
     return data[name] if name in data else data.get("_orm_internal", {}).get(name, _ABSENT)
 
 
+def _key_fields(name: str, fields: dict[str, Field[Any]], order: Sequence[str] | None) -> tuple[Field[Any], ...]:
+    """The primary key fields in key order (``@@id`` order, else declaration order)."""
+    pks = [n for n, f in fields.items() if f.primary_key]
+    names = list(order) if order else pks
+    if not pks or sorted(names) != sorted(pks):
+        raise TypeError(f"model {name} must declare exactly one primary key: one field, or the fields of @@id in key order")
+    return tuple(fields[n] for n in names)
+
+
+def key_match(model: type[Model], path: tuple[str, ...], fields: Sequence[Field[Any]], value: Any) -> Condition:
+    """``field = value`` for each key field; ``value`` is a tuple for several fields."""
+    items = key_items(tuple(f.name for f in fields), value)
+    return and_(*(ColumnRef(model, path, f) == items[f.name] for f in fields))
+
+
 class ModelMeta:
     """Schema information about one model (``User._meta``)."""
 
-    def __init__(self, model: type[Model], table: str, registry: Registry) -> None:
+    def __init__(self, model: type[Model], table: str, registry: Registry, key: Sequence[str] | None = None) -> None:
         self.model = model
         self.name = model.__name__
         self.table = table
@@ -73,10 +90,7 @@ class ModelMeta:
                     self.fields[attr] = value
                 elif isinstance(value, Relation):
                     self.relations[attr] = value
-        pks = [f for f in self.fields.values() if f.primary_key]
-        if len(pks) != 1:
-            raise TypeError(f"model {self.name} must declare exactly one primary key")
-        self.pk: Field[Any] = pks[0]
+        self.key: tuple[Field[Any], ...] = _key_fields(self.name, self.fields, key)
         # Row tuples from the engine follow this order.
         self.field_names: tuple[str, ...] = tuple(self.fields)
         self.input_fields: dict[str, Field[Any]] = self.fields
@@ -94,18 +108,40 @@ class ModelMeta:
         self.query_set: type[QuerySet[Any]] | str | None = None
         self.related_sets: dict[type, type] = {}
 
+    @property
+    def key_names(self) -> tuple[str, ...]:
+        return tuple(f.name for f in self.key)
+
+    @property
+    def pk(self) -> Field[Any]:
+        """The primary key field of a model with a one-field key."""
+        if len(self.key) != 1:
+            raise TypeError(f"{self.name} has a primary key of several fields; use _meta.key")
+        return self.key[0]
+
+    @property
+    def key_name(self) -> str:
+        name: str = self.pk.name
+        return name
+
     def pk_ref(self) -> ColumnRef[Any]:
         return ColumnRef(self.model, (), self.pk)
+
+    def key_refs(self) -> tuple[ColumnRef[Any], ...]:
+        return tuple(ColumnRef(self.model, (), f) for f in self.key)
 
     def ir(self) -> dict[str, Any]:
         if self.schema_ir is not None:
             return self.schema_ir
-        return {
+        out: dict[str, Any] = {
             "name": self.name,
             "table": self.table,
             "fields": [f.ir() for f in self.fields.values()],
             "relations": [r.ir() for r in self.relations.values()],
         }
+        if len(self.key) > 1:
+            out["primary_key"] = list(self.key_names)
+        return out
 
     def __repr__(self) -> str:
         return f"<ModelMeta {self.name} table={self.table!r}>"
@@ -256,7 +292,7 @@ class Registry:
             meta.relations = relations
             meta.fields = fields
             meta.table = ir["table"]
-            meta.pk = next(field for field in fields.values() if field.primary_key)
+            meta.key = _key_fields(meta.name, fields, ir.get("primary_key"))
             meta.schema_ir = ir
             policy: dict[str, Any] = next((d for d in prepared.get("behavior", {}).get("query_defaults", ()) if d["model"] == meta.name), {})
             meta.default_filter = policy.get("filter")
@@ -267,7 +303,7 @@ class Registry:
             proxy: dict[str, Any] = next((p for p in prepared.get("behavior", {}).get("proxy_models", ()) if p["model"] == meta.name), {})
             meta.narrowed = frozenset(f["field"] for f in proxy.get("fields", ()) if f.get("non_null"))
             meta.field_names = tuple(fields)
-            pk_ir = next(f for f in ir["fields"] if f.get("primary_key"))
+            pk_ir = next(f for f in ir["fields"] if f["name"] == meta.key[0].name)
             meta.attach_fields = (
                 {f["name"]: fields[f["name"]] for f in ir["fields"] if f.get("hints", {}).get("composition.local") == "true"}
                 if pk_ir.get("hints", {}).get("composition.child") == "true"
@@ -401,14 +437,14 @@ def define(
         if module is not None:
             ns["__module__"] = module
         cls: type[Model] = types.new_class(
-            m["name"], (Model,), {"table": m["table"], "registry": reg}, lambda body: body.update(ns)
+            m["name"], (Model,), {"table": m["table"], "registry": reg, "key": m.get("primary_key")}, lambda body: body.update(ns)
         )
         for method in ir.get("behavior", {}).get("methods", ()):
             if method["model"] == m["name"]:
                 if method["name"] in ns or method["name"] in _RESERVED:
                     raise TypeError(f"{m['name']}.{method['name']}: model method collision")
         cls._meta.schema_ir = m
-        cls._meta.pk = cls._meta.fields[cls._meta.pk.name]
+        cls._meta.key = tuple(cls._meta.fields[f.name] for f in cls._meta.key)
         computed = {f["field"] for f in ir.get("behavior", {}).get("result_fields", ()) if f["model"] == m["name"]}
         if computed:
             cls._meta.input_fields = {k: v for k, v in cls._meta.fields.items() if k not in computed}
@@ -452,12 +488,14 @@ class Model:
     DoesNotExist: ClassVar[type[DoesNotExist]] = DoesNotExist
     MultipleObjectsReturned: ClassVar[type[MultipleObjectsReturned]] = MultipleObjectsReturned
 
-    def __init_subclass__(cls, *, table: str | None = None, registry: Registry | None = None, **kwargs: Any) -> None:
+    def __init_subclass__(
+        cls, *, table: str | None = None, registry: Registry | None = None, key: Sequence[str] | None = None, **kwargs: Any
+    ) -> None:
         super().__init_subclass__(**kwargs)
         from .query import QuerySet
 
         reg = registry if registry is not None else _default_registry()
-        cls._meta = ModelMeta(cls, table or cls.__name__.lower(), reg)
+        cls._meta = ModelMeta(cls, table or cls.__name__.lower(), reg, key)
         cls.objects = QuerySet(cls)
         for base in (DoesNotExist, MultipleObjectsReturned):
             ns = {"__qualname__": f"{cls.__qualname__}.{base.__name__}", "__module__": cls.__module__}
@@ -482,7 +520,12 @@ class Model:
 
     @property
     def pk(self) -> Any:
-        return self.__dict__.get(self._meta.pk.name, self.__dict__.get("_orm_internal", {}).get(self._meta.pk.name))
+        """The primary key value; a tuple in key order for a key of several fields."""
+        data, internal = self.__dict__, self.__dict__.get("_orm_internal", {})
+        values = tuple(data.get(f.name, internal.get(f.name)) for f in self._meta.key)
+        if len(values) == 1:
+            return values[0]
+        return None if any(v is None for v in values) else values
 
     def _field_value(self, name: str) -> Any:
         """Internal key access for relation loaders; never marks a field loaded."""
@@ -513,7 +556,8 @@ class Model:
     # database the instance was read from.
 
     def _row_query(self) -> QuerySet[Self]:
-        return type(self).objects.without_defaults().using(self.__dict__.get("_db")).filter(self._meta.pk_ref() == self.pk)
+        query = type(self).objects.without_defaults().using(self.__dict__.get("_db"))
+        return query.filter(key_match(type(self), (), self._meta.key, self.pk))
 
     def _loaded_query(self, *extra: str) -> QuerySet[Self]:
         """The row query; a partial instance keeps its public shape plus ``extra``."""
@@ -526,8 +570,8 @@ class Model:
 
     def _replace_from(self, fresh: Model) -> None:
         for name, relation in self._meta.relations.items():
-            source = relation.via if isinstance(relation, BelongsTo) else getattr(relation, "from_", None)
-            if source and _peek(self, source) != _peek(fresh, source):
+            sources = relation.via_fields if isinstance(relation, BelongsTo) else getattr(relation, "from_fields", ())
+            if any(_peek(self, source) != _peek(fresh, source) for source in sources):
                 self.__dict__.pop(name, None)
         for name in self._meta.field_names:
             self.__dict__.pop(name, None)
@@ -708,7 +752,7 @@ def describe(model: type[Model]) -> dict[str, Any]:
             "enum": enum_cls,
             "max_length": f.get("max_length"),
             "primary_key": bool(f.get("primary_key")),
-            "unique": bool(f.get("unique") or f.get("primary_key")),
+            "unique": bool(f.get("unique")) or (f["name"],) == meta.key_names,
             "default": "database" if database else "client" if "client_default" in f else None,
             "insert": f["name"] in meta.input_fields,
         })
@@ -723,12 +767,12 @@ def describe(model: type[Model]) -> dict[str, Any]:
             "from": r["from"],
             "to": r["to"],
             "through": registry.get(r["through"]["model"]) if "through" in r else None,
-            "nullable": kind != "belongs_to" or bool(meta.fields[r["from"]].nullable),
+            "nullable": kind != "belongs_to" or any(meta.fields[n].nullable for n in rel.via_fields),  # type: ignore[attr-defined]
         })
-    unique: list[tuple[str, ...]] = [(meta.pk.name,)]
-    unique += [(f["name"],) for f in ir["fields"] if f.get("unique") and not f.get("primary_key")]
+    unique: list[tuple[str, ...]] = [meta.key_names]
+    unique += [(f["name"],) for f in ir["fields"] if f.get("unique") and (f["name"],) != meta.key_names]
     unique += [tuple(c["fields"]) for c in ir.get("constraints", ()) if c.get("kind") == "unique"]
-    return {"name": meta.name, "table": meta.table, "primary_key": meta.pk.name, "fields": fields, "relations": relations, "unique": unique}
+    return {"name": meta.name, "table": meta.table, "primary_key": meta.key_names[0] if len(meta.key) == 1 else meta.key_names, "fields": fields, "relations": relations, "unique": unique}
 
 
 def loads(

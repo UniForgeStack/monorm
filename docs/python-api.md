@@ -137,6 +137,10 @@ await qs.in_bulk(emails, field=User.email)    # by a unique field; no ids: every
 qs.sql()                                      # SQL with values inlined, for debugging
 ```
 
+A model with a composite primary key (`@@id([shop, id])`) has a tuple `pk` in key order, `(1, 7)`.
+`in_bulk()` takes and gives these tuples.
+A relation through a composite foreign key reads the whole key: `rel.via_fields` and `rel.to_fields` are tuples, and `rel.via` raises.
+
 `.require()` clones the query and rejects absent row results with
 `Model.DoesNotExist`. It applies to `.get()`, `.first()`, `.last()`, `.all()`,
 awaiting the query and async iteration. Builders retain the modifier, and prepared
