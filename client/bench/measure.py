@@ -48,7 +48,9 @@ tokio={{version="1",features=["rt-multi-thread","macros"]}}
                     relations = f"\n next_id Int\n next M{(i+1)%count} @relation(fields: [next_id], references: [id])\n previous M{(i-1)%count}[]"
                 models.append(f"model M{i} {{\n id Int @id\n{fields}{relations}\n}}")
                 states = ["orm_client::Unloaded"] + ["orm_client::Loaded" if j % 2 else "orm_client::Unloaded" for j in range(width)] + (["orm_client::Unloaded"] if cyclic else [])
-                reads.append(f"let rows=models::M{i}::objects().using(&db).all().await?; std::hint::black_box(rows);\nlet rows=models::M{i}::<{','.join(states)}>::query().using(&db).all().await?;std::hint::black_box(rows);")
+                reads.append(f"let rows=models::M{i}::objects.using(&db).all().await?; std::hint::black_box(rows);\nlet rows=models::M{i}::<{','.join(states)}>::query().using(&db).all().await?;std::hint::black_box(rows);")
+                if cyclic:
+                    reads.append(f"let rows=models::M{i}::objects.load(models::M{i}::next.load(models::M{(i+1)%count}::f1)).using(&db).all().await?;std::hint::black_box(rows);")
             source = project / "schema.prisma"
             source.write_text("\n".join(models))
             generated = project / "src/models.rs"
@@ -66,8 +68,8 @@ let db=models::Database::connect(&url,1).await?;
                 file.write("\n// Incremental consumer edit.\n")
             incremental_edit = run("cargo", "check", "--offline", "-q", cwd=project)
             release = run("cargo", "build", "--release", "--offline", "-q", cwd=project)
-            records.append(dict(schema=label, models=count, scalar_fields_per_model=width + 1 + int(cyclic), cyclic=cyclic, shapes_per_model=2, generated_bytes=generated.stat().st_size, generation_seconds=generation, check_seconds=check, no_change_check_seconds=incremental, edited_check_seconds=incremental_edit, release_seconds=release, binary_bytes=(TARGET / "release/orm-measured-consumer").stat().st_size))
-    (ROOT / "client/bench/results.json").write_text(json.dumps(dict(rustc=subprocess.check_output(["rustc", "--version"], text=True).strip(), records=records), indent=2) + "\n")
+            records.append(dict(schema=label, models=count, scalar_fields_per_model=width + 1 + int(cyclic), cyclic=cyclic, shapes_per_model=3 if cyclic else 2, generated_bytes=generated.stat().st_size, generation_seconds=generation, check_seconds=check, no_change_check_seconds=incremental, edited_check_seconds=incremental_edit, release_seconds=release, binary_bytes=(TARGET / "release/orm-measured-consumer").stat().st_size))
+    (ROOT / "client/bench/selection-results.json").write_text(json.dumps(dict(rustc=subprocess.check_output(["rustc", "--version"], text=True).strip(), records=records), indent=2) + "\n")
 
 
 if __name__ == "__main__":

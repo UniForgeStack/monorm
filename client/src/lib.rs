@@ -1,5 +1,19 @@
 //! Generated, typed Rust reads over the shared ORM planner and drivers.
+mod defaults;
+mod dynamic;
+mod named;
 mod query;
+mod relation;
+mod row;
+mod runtime;
+mod selection;
+mod unify;
+pub use named::*;
+pub use relation::*;
+pub use row::RowData;
+pub use runtime::*;
+pub use selection::*;
+pub use unify::*;
 pub mod value;
 pub use orm_core::dialect::Dialect;
 use orm_core::{ir::SchemaIr, schema::Schema};
@@ -9,7 +23,7 @@ pub use query::*;
 pub use sea_query::Value as BindValue;
 use std::{marker::PhantomData, sync::Arc};
 pub use value::Codec;
-pub use {bigdecimal, chrono, serde_json, uuid};
+pub use {bigdecimal, chrono, serde, serde_json, uuid};
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
@@ -19,6 +33,7 @@ pub enum Error {
     NotFound,
     MultipleRows,
     Compatibility(String),
+    Unloaded(String),
 }
 impl From<orm_engine::Error> for Error {
     fn from(e: orm_engine::Error) -> Self {
@@ -35,6 +50,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Engine(e) => e.fmt(f),
             Self::Decode(e) | Self::Compatibility(e) => f.write_str(e),
+            Self::Unloaded(name) => write!(f, "field or cache {name} is unloaded"),
             Self::NotFound => f.write_str("required query returned no rows"),
             Self::MultipleRows => f.write_str("get returned multiple rows"),
         }
@@ -54,11 +70,11 @@ impl sealed::Sealed for Loaded {}
 impl sealed::Sealed for Unloaded {}
 /// Closed field states: loaded values are ordinary values, unloaded values are markers.
 pub trait State<T: Codec>: sealed::Sealed {
-    type Value;
+    type Value: Send + Sync;
     const LOADED: bool;
     fn read(row: &DecodedRow<'_>, field: &str) -> Result<Self::Value>;
 }
-impl<T: Codec> State<T> for Loaded {
+impl<T: Codec + Send + Sync> State<T> for Loaded {
     type Value = T;
     const LOADED: bool = true;
     fn read(row: &DecodedRow<'_>, field: &str) -> Result<T> {
@@ -134,7 +150,7 @@ impl<S: SchemaSpec> Database<S> {
 }
 /// Private logical key data, constructible only from an executed model row.
 #[doc(hidden)]
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Identity {
     value: BindValue,
 }
@@ -142,52 +158,44 @@ pub struct Identity {
 /// Decoder witness: only the client can construct one from an executed plan.
 /// Generated codecs can read it but callers cannot forge a row or private identity.
 pub struct DecodedRow<'a> {
-    pub(crate) selected: &'a orm_engine::exec::Selected,
-    pub(crate) schema: &'a Schema,
-    pub(crate) index: usize,
-    pub(crate) model: usize,
+    pub(crate) data: &'a RowData,
 }
 impl DecodedRow<'_> {
     #[doc(hidden)]
-    pub fn identity(&self) -> Result<Identity> {
-        let model = &self.schema.models[self.model];
-        let slot = self.slot(model.pk)?;
-        Ok(Identity {
-            value: self
-                .selected
-                .rows
-                .value(self.index, slot, self.selected.plan.types[slot])?,
-        })
-    }
-    fn slot(&self, pos: usize) -> Result<usize> {
-        use orm_engine::plan::Output;
-        match &self.selected.plan.output {
-            Output::Instances {
-                shape: Some(shape), ..
-            } => shape.fields.iter().position(|f| f.field.position == pos),
-            Output::Instances { shape: None, .. } => Some(pos),
-            _ => None,
+    pub fn check_model(&self, name: &str) -> Result<()> {
+        if self.data.model == name {
+            Ok(())
+        } else {
+            Err(Error::Compatibility("wrong decoded model".into()))
         }
-        .ok_or_else(|| Error::Decode("missing selected identity/field".into()))
     }
 
+    #[doc(hidden)]
+    pub fn identity(&self) -> Result<Identity> {
+        Ok(self.data.identity.clone())
+    }
+    #[doc(hidden)]
+    pub fn data(&self) -> RowData {
+        self.data.clone()
+    }
     pub fn read<T: Codec>(&self, name: &str) -> Result<T> {
-        let model = &self.schema.models[self.model];
-        let pos = model.field_pos(name).map_err(Error::Decode)?;
-        let slot = self.slot(pos)?;
-        T::decode(
-            self.selected
-                .rows
-                .cell(self.index, slot, self.selected.plan.types[slot])?,
-        )
+        self.data.read(name)
     }
 }
 /// Implemented by the schema generator; shapes disappear before async execution.
-pub trait Model: Sized + Send + 'static {
+pub trait Model: Sized + Send + Sync + 'static {
     type Schema: SchemaSpec;
     type Source: Send + 'static;
+    type Normal: Model<Schema = Self::Schema, Source = Self::Source>;
     const NAME: &'static str;
     fn fields() -> Vec<String>;
+    fn configure(_: &mut orm_core::ir::Select) {}
+    #[doc(hidden)]
+    fn selection(q: &mut SelectionPlan) {
+        q.model_fields = Some(Self::fields());
+    }
+
+    fn data(&self) -> &RowData;
     fn decode(row: &DecodedRow<'_>) -> Result<Self>;
 }
 #[derive(Debug)]
@@ -203,3 +211,6 @@ pub struct ModelMetadata {
     pub table: &'static str,
     pub fields: &'static [FieldMetadata],
 }
+
+#[doc(hidden)]
+pub type SelectionPlan = orm_core::ir::Select;

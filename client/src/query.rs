@@ -167,22 +167,25 @@ impl<M, T> Column<M, T, One> {
     }
 }
 #[derive(Clone)]
-enum Tree {
+#[doc(hidden)]
+pub enum Tree {
     Expr(Expr),
     Compare(Expr, ir::CmpOp, sea_query::Value),
     In(Expr, Vec<sea_query::Value>),
     And(Vec<Tree>),
     Or(Vec<Tree>),
     Not(Box<Tree>),
+    Nested(String, Vec<Tree>),
 }
 impl Tree {
-    fn erase(self, params: &mut Values) -> Expr {
+    pub(crate) fn erase(self, params: &mut Values) -> Expr {
         let mut bind = |v| {
             let i = params.0.len();
             params.0.push(v);
             Expr::Param { i }
         };
         match self {
+            Self::Nested(_, _) => unreachable!("nested filters are erased with their select"),
             Self::Expr(e) => e,
             Self::Compare(l, op, v)
                 if v == v.as_null() && matches!(op, ir::CmpOp::Eq | ir::CmpOp::Ne) =>
@@ -332,12 +335,12 @@ impl Presence for Required {
 pub enum Unsliced {}
 pub enum Sliced {}
 /// Lazy owned builder. Clone explicitly to reuse it.
-pub struct Query<M: Model, R = Optional, L = Unsliced> {
-    select: ir::Select,
-    filters: Vec<Tree>,
-    _type: PhantomData<(M, R, L)>,
+pub struct Query<M: Model, R = Optional, L = Unsliced, D = DefaultSelection> {
+    pub(crate) select: ir::Select,
+    pub(crate) filters: Vec<Tree>,
+    pub(crate) _type: PhantomData<(M, R, L, D)>,
 }
-impl<M: Model, R, L> Clone for Query<M, R, L> {
+impl<M: Model, R, L, D> Clone for Query<M, R, L, D> {
     fn clone(&self) -> Self {
         Self {
             select: self.select.clone(),
@@ -353,7 +356,7 @@ impl<M: Model> Default for Query<M> {
 }
 impl<M: Model> Query<M> {
     pub fn new() -> Self {
-        Self {
+        let mut query = Self {
             select: ir::Select {
                 model: M::NAME.into(),
                 model_fields: Some(M::fields()),
@@ -381,10 +384,12 @@ impl<M: Model> Query<M> {
             },
             filters: vec![],
             _type: PhantomData,
-        }
+        };
+        M::configure(&mut query.select);
+        query
     }
 }
-impl<M: Model, R, L> Query<M, R, L> {
+impl<M: Model, R, L, D> Query<M, R, L, D> {
     pub fn filter(mut self, p: Predicate<M::Source>) -> Self {
         self.filters.push(p.tree);
         self
@@ -400,14 +405,14 @@ impl<M: Model, R, L> Query<M, R, L> {
         self.select.order.push(order.order);
         self
     }
-    pub fn require(self) -> Query<M, Required, L> {
+    pub fn require(self) -> Query<M, Required, L, D> {
         Query {
             select: self.select,
             filters: self.filters,
             _type: PhantomData,
         }
     }
-    pub fn limit(mut self, n: u64) -> Query<M, R, Sliced> {
+    pub fn limit(mut self, n: u64) -> Query<M, R, Sliced, D> {
         self.select.limit = Some(ir::Count::Value(n));
         Query {
             select: self.select,
@@ -415,7 +420,7 @@ impl<M: Model, R, L> Query<M, R, L> {
             _type: PhantomData,
         }
     }
-    pub fn offset(mut self, n: u64) -> Query<M, R, Sliced> {
+    pub fn offset(mut self, n: u64) -> Query<M, R, Sliced, D> {
         self.select.offset = Some(ir::Count::Value(n));
         Query {
             select: self.select,
@@ -423,7 +428,7 @@ impl<M: Model, R, L> Query<M, R, L> {
             _type: PhantomData,
         }
     }
-    pub fn slice(self, start: u64, end: u64) -> Result<Query<M, R, Sliced>> {
+    pub fn slice(self, start: u64, end: u64) -> Result<Query<M, R, Sliced, D>> {
         let offset = match self.select.offset {
             Some(ir::Count::Value(n)) => n,
             _ => 0,
@@ -440,31 +445,51 @@ impl<M: Model, R, L> Query<M, R, L> {
     }
 
     pub fn using(self, db: &Database<M::Schema>) -> Bound<'_, M, R, L> {
-        Bound { query: self, db }
+        Bound {
+            query: Query {
+                select: self.select,
+                filters: self.filters,
+                _type: PhantomData,
+            },
+            db,
+        }
     }
-    fn erase(self) -> (ir::Select, Values) {
+    pub(crate) fn erase(self) -> (ir::Select, Values) {
         let mut values = Values::default();
         let mut select = self.select;
-        select.filters = self
-            .filters
-            .into_iter()
-            .map(|t| t.erase(&mut values))
-            .collect();
+        erase_filters(&mut select, self.filters, &mut values);
         (select, values)
     }
 }
-impl<M: Model, R> Query<M, R, Unsliced> {
-    pub fn or(mut self, other: Self) -> Result<Self> {
+impl<M: Model, R, D> Query<M, R, Unsliced, D> {
+    pub fn or(mut self, other: impl Into<Self>) -> Result<Self> {
+        let other = other.into();
         // The left keeps its order; the right supplies only one grouped filter.
-        if !other.select.order.is_empty() || self.filters.len() > 1 || other.filters.len() > 1 {
+        let root_filter_count = |filters: &[Tree]| {
+            filters
+                .iter()
+                .filter(|t| !matches!(t, Tree::Nested(..)))
+                .count()
+        };
+        if !other.select.order.is_empty()
+            || root_filter_count(&self.filters) > 1
+            || root_filter_count(&other.filters) > 1
+        {
             return Err(Error::Compatibility(
                 "queryset or requires one filter per side and filters only on the right".into(),
             ));
         }
-        self.filters = vec![Tree::Or(vec![
-            Tree::And(self.filters),
-            Tree::And(other.filters),
-        ])];
+        let (mut nested, roots): (Vec<_>, Vec<_>) = self
+            .filters
+            .into_iter()
+            .partition(|t| matches!(t, Tree::Nested(..)));
+        let right = other
+            .filters
+            .into_iter()
+            .filter(|t| !matches!(t, Tree::Nested(..)))
+            .collect();
+        nested.push(Tree::Or(vec![Tree::And(roots), Tree::And(right)]));
+        self.filters = nested;
         Ok(self)
     }
     pub async fn in_bulk<V: Codec + Eq + std::hash::Hash + Clone>(
@@ -507,9 +532,9 @@ impl<M: Model, R> Query<M, R, Unsliced> {
                     q.model_helpers.push(key.fields[0].into());
                 }
                 let selected = run_select(db, q, params).await?;
-                for i in 0..selected.rows.len() {
-                    let row = witness(db, &selected, i)?;
-                    out.insert(row.read::<V>(key.fields[0])?, M::decode(&row)?);
+                for data in crate::row::snapshot(&db.schema, &selected)? {
+                    let key_value = V::decode(crate::row::cell(data.key(key.fields[0])?)?)?;
+                    out.insert(key_value, M::decode(&DecodedRow { data: &data })?);
                 }
             }
             if out.is_empty() {
@@ -553,14 +578,19 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
                 .iter()
                 .find(|m| m.ir.name == M::NAME)
                 .ok_or_else(|| Error::Compatibility("unknown model".into()))?;
-            q.order.push(ir::Order {
-                expr: Expr::Col {
-                    path: vec![],
-                    name: m.pk_field().name.clone(),
-                },
-                desc: false,
-                nulls: None,
-            });
+            if !q.without_defaults {
+                q.order = m.query_defaults.order.clone();
+            }
+            if q.order.is_empty() {
+                q.order.push(ir::Order {
+                    expr: Expr::Col {
+                        path: vec![],
+                        name: m.pk_field().name.clone(),
+                    },
+                    desc: false,
+                    nulls: None,
+                });
+            }
         }
         if last {
             for o in &mut q.order {
@@ -642,12 +672,13 @@ impl<M: Model, R: Presence> Statement<'_, M, R> {
         }
     }
 }
-fn plan<S: SchemaSpec>(
+pub(crate) fn plan<S: SchemaSpec>(
     db: &Database<S>,
     op: Operation,
     p: &Values,
 ) -> Result<orm_engine::plan::Plan> {
     if let Operation::Select(q) | Operation::Count(q) | Operation::Exists(q) = &op {
+        validate_views(&db.schema, q)?;
         for count in [q.limit, q.offset].into_iter().flatten() {
             if let ir::Count::Value(n) = count {
                 if n > i64::MAX as u64 {
@@ -679,7 +710,7 @@ async fn execute<S: SchemaSpec>(
     )
     .await?)
 }
-async fn run_select<S: SchemaSpec>(
+pub(crate) async fn run_select<S: SchemaSpec>(
     db: &Database<S>,
     q: ir::Select,
     p: Values,
@@ -689,24 +720,54 @@ async fn run_select<S: SchemaSpec>(
         _ => Err(Error::Decode("unexpected read result".into())),
     }
 }
-fn witness<'a, S: SchemaSpec>(
-    db: &'a Database<S>,
-    s: &'a orm_engine::exec::Selected,
-    index: usize,
-) -> Result<DecodedRow<'a>> {
-    if let orm_engine::plan::Output::Instances { model, .. } = s.plan.output {
-        Ok(DecodedRow {
-            selected: s,
-            schema: &db.schema,
-            index,
-            model,
-        })
-    } else {
-        Err(Error::Decode("expected model rows".into()))
+fn decode<M: Model>(db: &Database<M::Schema>, s: &orm_engine::exec::Selected) -> Result<Vec<M>> {
+    crate::row::snapshot(&db.schema, s)?
+        .iter()
+        .map(|data| M::decode(&DecodedRow { data }))
+        .collect()
+}
+
+pub(crate) fn erase_filters(select: &mut ir::Select, filters: Vec<Tree>, values: &mut Values) {
+    for tree in filters {
+        match tree {
+            Tree::Nested(attr, children) => {
+                if let Some(node) = select
+                    .prefetch
+                    .iter_mut()
+                    .find(|p| p.attr.as_deref().unwrap_or(&p.relation) == attr)
+                {
+                    erase_filters(&mut node.query, children, values);
+                }
+            }
+            tree => select.filters.push(tree.erase(values)),
+        }
     }
 }
-fn decode<M: Model>(db: &Database<M::Schema>, s: &orm_engine::exec::Selected) -> Result<Vec<M>> {
-    (0..s.rows.len())
-        .map(|i| M::decode(&witness(db, s, i)?))
-        .collect()
+
+pub(crate) fn validate_views(schema: &Schema, q: &ir::Select) -> Result<()> {
+    let model = schema
+        .models
+        .iter()
+        .find(|m| m.ir.name == q.model)
+        .ok_or_else(|| Error::Compatibility("unknown relation root".into()))?;
+    let mut labels = std::collections::BTreeSet::new();
+    for p in &q.prefetch {
+        if let Some(label) = &p.attr {
+            if model.fields().iter().any(|f| f.name == *label)
+                || model.ir.relations.iter().any(|r| r.name == *label)
+                || !labels.insert(label)
+                || label.starts_with("__orm_")
+            {
+                return Err(Error::Compatibility(format!(
+                    "named relation view collision: {label}"
+                )));
+            }
+        }
+        let (_, target) = model.relation(&p.relation).map_err(Error::Compatibility)?;
+        if schema.models[target].ir.name != p.query.model {
+            return Err(Error::Compatibility("wrong prefetch target".into()));
+        }
+        validate_views(schema, &p.query)?;
+    }
+    Ok(())
 }

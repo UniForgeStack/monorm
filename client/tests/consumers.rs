@@ -11,12 +11,38 @@ fn generated_consumer_contracts() {
         include_str!(concat!(env!("OUT_DIR"), "/models.rs")),
     )
     .unwrap();
-    let prefix="#![allow(dead_code,unused_variables,unused_mut)]\nmod models;\nuse models::{User,Post,Database};\nuse orm_client::{Loaded,Unloaded};\n";
+    let prefix="#![allow(dead_code,unused_variables,unused_mut)]\nmod models;\nuse models::{User,Post,Database};\nuse orm_client::{Loaded,Unloaded,Instance};\n";
     let cases=[
-        ("arbitrary composite keys and enum names matching generics", "async fn check(db:&Database,path:models::KeyProbePath<models::UserSource,orm_client::One>) { let _=models::KeyProbe::objects().filter(models::KeyProbe::ST0.eq(models::S0::Value)).using(db).get(models::KeyProbe::A_B_C_D_E_KEY,(1,2,3,4,5)).await; let _:orm_client::Predicate<models::UserSource>=path.root().eq(models::R::Value).and(path.cardinal().eq(models::C::Value)); }", ""),
-        ("composite key arity", "async fn bad(db:&Database) { models::KeyProbe::objects().using(db).get(models::KeyProbe::A_B_C_D_E_KEY,(1,2)).await; }", "E0308"),
+        ("repeated runtime selections retain a fixed row type", "async fn check(db:&Database) {let row:orm_client::RuntimeRow<User>=User::objects.runtime(&[\"email\"]).unwrap().runtime(&[\"nickname\"]).unwrap().require().using(db).first().await.unwrap();let erased:orm_client::RuntimeRow<User>=row.into_runtime();}", ""),
+        ("dropping consuming future consumes row ownership", "fn bad(row:User,db:&Database) {let future=row.load(User::email,db);drop(future);println!(\"{}\",row.email);}", "E0382"),
+
+        ("snake case comparison and relation paths", "fn check() {use orm_client::PathDescriptor;let query=User::objects.load(User::email).filter(User::email.eq(\"a\".to_owned())).filter(User::posts.path().title().eq(\"one\".to_owned())).order_by(User::id.desc());}", ""),
+        ("consuming transitions have Send futures", "fn send<T:Send>(_:T) {} fn check(row:User,db:&Database) {send(row.load(User::posts,db));}", ""),
+
+        ("root required loaded collection", "async fn check() {let row=User::objects.load((User::email,User::posts)).require().first().await.unwrap();let _: &String=&row.email;let _: &orm_client::LoadedMany<Post>=&row.posts;}", ""),
+        ("shape structs accept superset", "struct View<S:models::UserShape<Email=String>> {row:S} async fn check(db:&Database) {let a=View{row:User::objects.load(User::email).require().using(db).first().await.unwrap()};let b=View{row:User::objects.require().using(db).first().await.unwrap()};}", ""),
+        ("same runtime row for static branches", "fn check(a:User,b:User<Unloaded,Loaded,Unloaded,Unloaded>,flag:bool)->orm_client::RuntimeRow<User> {if flag {a.into_runtime()} else {b.into_runtime()}}", ""),
+        ("runtime checked nested requirements", "fn consume<S,P>(row:&S) where S:models::UserShape<Email=String,Posts=orm_client::LoadedMany<P>>,P:models::PostShape<Title=String> {} fn check(row:orm_client::RuntimeRow<User>) {type Requested=User<Unloaded,Loaded,Unloaded,Unloaded,orm_client::Cached<Post<Unloaded,Unloaded,Loaded,Unloaded>>>;let requested:Requested=row.try_into_static().unwrap();consume(&requested);}", ""),
+        ("queryable cache is not loaded", "fn consume<S:models::UserShape<Posts=orm_client::LoadedMany<Post>>>(_:&S) {} fn bad(row:User) {consume(&row);}", "E0271"),
+        ("missing nested title", "fn consume<S,P>(_:&S) where S:models::UserShape<Posts=orm_client::LoadedMany<P>>,P:models::PostShape<Title=String> {} async fn bad(db:&Database) {let row=User::objects.load(User::posts.load(Post::views)).require().using(db).first().await.unwrap();consume(&row);}", "E0271"),
+        ("missing root shape requirement", "fn consume<S:models::UserShape<Email=String>>(_:S) {} async fn bad(db:&Database) {let row=User::objects.load(User::nickname).require().using(db).first().await.unwrap();consume(row);}", "E0271"),
+        ("runtime row does not satisfy static requirements", "fn consume<S:models::UserShape<Email=String>>(_:S) {} async fn bad(db:&Database) {let row=User::objects.runtime(&[\"email\"]).unwrap().require().using(db).first().await.unwrap();consume(row);}", "E0277"),
+        ("runtime strings create no named fields", "fn bad(row:orm_client::RuntimeRow<User>) {let _=&row.email;}", "E0609"),
+        ("scalar labels forbidden", "fn bad() {User::email.label(\"alias\");}", "E0599"),
+        ("wrong selection root", "fn bad() {User::objects.load(Post::title);}", "E0277"),
+        ("wrong relation target", "fn bad() {User::posts.as_prefetch(User::objects.query());}", "E0271"),
+        ("unloaded caches cannot be read", "fn bad(row:User) {row.posts.cached();}", "E0599"),
+        ("mixed static rows need explicit erasure", "fn bad(a:User,b:User<Unloaded,Loaded,Unloaded,Unloaded>,flag:bool) {let row=if flag {a} else {b};}", "E0308"),
+        ("duplicate literal views", "async fn bad(row:User,db:&Database) {orm_client::relation_views!(row,db; recent=>User::posts,recent=>User::posts).await;}", "E0124"),
+        ("named views are immutable", "async fn bad(row:User,db:&Database) {let mut view=orm_client::relation_views!(row,db; recent=>User::posts).await.unwrap();view.row.email.clear();}", "E0596"),
+
+        ("direct shape requirements", "fn email<S:models::UserShape<Email=String>>(row:&S)->&String {row.email()} async fn check(db:&Database) {let partial=User::objects.load(User::email).require().using(db).first().await.unwrap(); email(&partial);let full=User::objects.require().using(db).first().await.unwrap();email(&full);}", ""),
+        ("nested shape requirements", "fn titles<S,P>(row:&S) where S:models::UserShape<Posts=orm_client::LoadedMany<P>>, P:models::PostShape<Title=String> {for post in row.posts().cached() {let _: &String=post.title();}} async fn check(db:&Database) {let row=User::objects.load(User::posts.load(Post::title)).require().using(db).first().await.unwrap();titles(&row);let full=User::objects.load(User::posts).require().using(db).first().await.unwrap();titles(&full);}", ""),
+
+        ("arbitrary composite keys and enum names matching generics", "async fn check(db:&Database,path:models::KeyProbePath<models::UserSource,orm_client::One>) { let _=models::KeyProbe::objects.filter(models::KeyProbe::ST0.eq(models::S0::Value)).using(db).get(models::KeyProbe::A_B_C_D_E_KEY,(1,2,3,4,5)).await; let _:orm_client::Predicate<models::UserSource>=path.root().eq(models::R::Value).and(path.cardinal().eq(models::C::Value)); }", ""),
+        ("composite key arity", "async fn bad(db:&Database) { models::KeyProbe::objects.using(db).get(models::KeyProbe::A_B_C_D_E_KEY,(1,2)).await; }", "E0308"),
         ("ordinary borrow/clone, nullable, copy, marker ownership", "fn use_rows(row:User, partial:User<Unloaded,Loaded,Unloaded,Unloaded>) { let text:&String=&row.email; let cloned:String=row.email.clone(); let id:i32=row.id; let nullable:&Option<String>=&row.nickname; let _marker=&partial.id; let moved=partial.id; }", ""),
-        ("custom methods preserve query state", "trait Queries: Sized { fn readers(self)->Self; } impl<M:orm_client::Model<Source=models::UserSource>,R,L> Queries for orm_client::Query<M,R,L> { fn readers(self)->Self { self.filter(User::TYPE.eq(\"reader\".into())) } } async fn check(db:&Database) { let a:Vec<User>=User::objects().readers().require().using(db).await.unwrap(); let b:Vec<User>=User::objects().require().readers().using(db).await.unwrap(); }", ""),
+        ("custom methods preserve query state", "trait Queries: Sized { fn readers(self)->Self; } impl<M:orm_client::Model<Source=models::UserSource>,R,L,D> Queries for orm_client::Query<M,R,L,D> { fn readers(self)->Self { self.filter(User::TYPE.eq(\"reader\".into())) } } async fn check(db:&Database) { let a:Vec<User>=User::objects.query().readers().require().using(db).await.unwrap(); let b:Vec<User>=User::objects.require().readers().using(db).await.unwrap(); }", ""),
         ("unloaded value method", "fn bad(row:User<Unloaded,Loaded,Unloaded,Unloaded>) { row.id.to_string(); }", "E0599"),
         ("unloaded display", "fn bad(row:User<Unloaded,Loaded,Unloaded,Unloaded>) { println!(\"{}\",row.id); }", "E0277"),
         ("unloaded deref", "fn bad(row:User<Unloaded,Loaded,Unloaded,Unloaded>) { let _=*row.id; }", "E0614"),
@@ -27,18 +53,18 @@ fn generated_consumer_contracts() {
         ("noncopy move", "fn bad(row:User) { let moved:String=row.email; drop(moved); }", "E0507"),
         ("forged identity", "fn bad(row:User) { let _=row.__orm_identity; }", "E0616"),
         ("forged state", "struct Fake; impl orm_client::State<i32> for Fake {type Value=i32; const LOADED:bool=true; fn read(_: &orm_client::DecodedRow<'_>,_:&str)->orm_client::Result<i32> {Ok(7)} }", "E0277"),
-        ("wrong filter model", "fn bad() { User::objects().filter(Post::ID.eq(1)); }", "E0308"),
+        ("wrong filter model", "fn bad() { User::objects.filter(Post::ID.eq(1)); }", "E0308"),
         ("wrong filter value", "fn bad() { User::ID.eq(\"1\".to_owned()); }", "E0308"),
         ("wrong field source", "fn bad() { User::ID.eq_field(Post::ID); }", "E0308"),
-        ("to-many ordering", "fn bad() { User::objects().order_by(User::posts().views().asc()); }", "E0599"),
-        ("many remains many through one", "fn bad() { User::objects().order_by(User::posts().author().email().asc()); }", "E0599"),
-        ("sliced union", "fn bad() { User::objects().limit(1).or(User::objects()); }", "E0599"),
-        ("sliced bulk", "async fn bad(db:&Database) { User::objects().limit(1).in_bulk(User::ID_KEY,[1],db).await; }", "E0599"),
-        ("wrong unique type", "async fn bad(db:&Database) { User::objects().using(db).get(User::ID_KEY,\"1\".to_owned()).await; }", "E0308"),
-        ("wrong unique model", "async fn bad(db:&Database) { User::objects().using(db).get(Post::ID_KEY,1).await; }", "E0308"),
-        ("unsupported dialect/schema handle", "enum Other {} impl orm_client::SchemaSpec for Other {type Dialect=orm_client::Postgres; const JSON:&'static str=\"\";} fn bad(db:&orm_client::Database<Other>) { User::objects().using(db); }", "E0308"),
-        ("required optionality", "async fn bad(db:&Database) { let _:Option<User>=User::objects().require().using(db).first().await.unwrap(); }", "E0308"),
-        ("statement executes once", "async fn bad(db:&Database) { let s=User::objects().using(db).statement().unwrap(); s.execute().await; s.execute().await; }", "E0382"),
+        ("to-many ordering", "fn bad() { User::objects.order_by(User::posts_path().views().asc()); }", "E0599"),
+        ("many remains many through one", "fn bad() { User::objects.order_by(User::posts_path().author().email().asc()); }", "E0599"),
+        ("sliced union", "fn bad() { User::objects.limit(1).or(User::objects); }", "E0599"),
+        ("sliced bulk", "async fn bad(db:&Database) { User::objects.limit(1).in_bulk(User::ID_KEY,[1],db).await; }", "E0599"),
+        ("wrong unique type", "async fn bad(db:&Database) { User::objects.using(db).get(User::ID_KEY,\"1\".to_owned()).await; }", "E0308"),
+        ("wrong unique model", "async fn bad(db:&Database) { User::objects.using(db).get(Post::ID_KEY,1).await; }", "E0308"),
+        ("unsupported dialect/schema handle", "enum Other {} impl orm_client::SchemaSpec for Other {type Dialect=orm_client::Postgres; const JSON:&'static str=\"\";} fn bad(db:&orm_client::Database<Other>) { User::objects.using(db); }", "E0308"),
+        ("required optionality", "async fn bad(db:&Database) { let _:Option<User>=User::objects.require().using(db).first().await.unwrap(); }", "E0308"),
+        ("statement executes once", "async fn bad(db:&Database) { let s=User::objects.using(db).statement().unwrap(); s.execute().await; s.execute().await; }", "E0382"),
     ];
     for (name, body, category) in cases {
         std::fs::write(dir.join("src/lib.rs"), format!("{prefix}{body}\n")).unwrap();
