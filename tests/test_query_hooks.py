@@ -330,3 +330,50 @@ async def test_postgres_a_cancelled_statement_gives_an_event_with_the_error_canc
         remove()
     [e] = events
     assert (e.sql, e.rows, e.error) == ("SELECT pg_sleep(1.5)::text", 0, "cancelled") and 0.3 < e.duration < 1.5
+
+
+async def test_postgres_the_error_of_an_event_has_the_first_line_only(clean):
+    db = orm.get_database()
+    await User.objects.insert(email="dup@example.com", name="A")
+    events: list[orm.QueryEvent] = []
+    remove = db.on_query(events.append)
+    try:
+        with pytest.raises(orm.IntegrityError) as caught:
+            await User.objects.insert(email="dup@example.com", name="B")
+    finally:
+        remove()
+    [e] = events
+    assert e.error is not None and "\n" not in e.error and "dup@example.com" not in e.error
+    assert "dup@example.com" in str(caught.value)
+
+
+async def test_postgres_a_failed_nowait_lock_reports_0_rows_and_a_won_lock_1(clean):
+    db = orm.get_database()
+    other = await orm.connect(db.url, default=False)
+    events: list[orm.QueryEvent] = []
+    remove = db.on_query(events.append)
+    try:
+        async with other.transaction():
+            await other.lock(4242)
+            async with db.transaction():
+                assert await db.lock(4242, nowait=True) is False
+                await other.execute("SELECT 1")  # keeps `other` busy: the lock is still held
+        async with db.transaction():
+            assert await db.lock(4242, nowait=True) is True
+    finally:
+        remove()
+        await other.close()
+    assert [e.rows for e in events if "advisory" in e.sql] == [0, 1]
+
+
+async def test_otel_cuts_a_long_statement_at_4096_characters(shop, opentelemetry):
+    _, _, db = shop
+    spans = FakeTracer()
+    stop = orm.otel.instrument(db, tracer=spans)
+    try:
+        await db.execute("SELECT 1 /* " + "x" * 5000 + " */")
+        await db.execute("SELECT 2")
+    finally:
+        stop()
+    long, short = (s.attributes["db.query.text"] for s in spans.spans)
+    assert len(long) == 4099 and long.endswith("...") and short == "SELECT 2"

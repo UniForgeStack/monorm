@@ -257,3 +257,67 @@ test("the N+1 finder counts the traced SQL", async () => {
     assert.match(shape!.sql, /^INSERT INTO "person".*\?/);
   } finally { await db.close(); }
 });
+
+const postgresUrl = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
+const blog = `datasource db {
+  provider = "postgresql"
+}
+model Account {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+}
+`;
+
+test("postgres: the error of an event has the first line only", async () => {
+  const registry = new Registry();
+  const { Account } = loads(blog, { registry }) as Record<string, Any>;
+  const db = await connect(postgresUrl, { registry, default: false });
+  try {
+    await db.execute("DROP TABLE IF EXISTS account");
+    await db.createTables();
+    await Account.objects.using(db).insert({ email: "dup@example.com" });
+    const events: QueryEvent[] = [];
+    db.onQuery((e) => { events.push(e); });
+    await assert.rejects(Account.objects.using(db).insert({ email: "dup@example.com" }), (error: Error) => {
+      assert.ok(error instanceof IntegrityError);
+      assert.match(error.message, /dup@example\.com/);
+      return true;
+    });
+    assert.equal(events.length, 1);
+    assert.ok(!events[0]!.error!.includes("\n") && !events[0]!.error!.includes("dup@example.com"));
+  } finally { await db.execute("DROP TABLE IF EXISTS account"); await db.close(); }
+});
+
+test("postgres: a failed nowait lock reports 0 rows and a won lock 1", async () => {
+  const db = await connect(postgresUrl, { default: false });
+  const other = await connect(postgresUrl, { default: false });
+  try {
+    const events: QueryEvent[] = [];
+    db.onQuery((e) => { events.push(e); });
+    await other.transaction(async () => {
+      await other.lock(4243);
+      await db.transaction(async () => {
+        assert.equal(await db.lock(4243, { nowait: true }), false);
+      });
+    });
+    await db.transaction(async () => {
+      assert.equal(await db.lock(4243, { nowait: true }), true);
+    });
+    assert.deepEqual(events.filter((e) => e.sql.includes("advisory")).map((e) => e.rows), [0, 1]);
+  } finally { await other.close(); await db.close(); }
+});
+
+test("otel cuts a long statement at 4096 characters", async () => {
+  const { db } = await shop();
+  try {
+    const tracer = new FakeTracer();
+    const stop = await instrument(db, { tracer });
+    await db.execute("SELECT 1 /* " + "x".repeat(5000) + " */");
+    await db.execute("SELECT 2");
+    stop();
+    const [long, short] = tracer.spans.map((s) => String(s.options!.attributes!["db.query.text"]));
+    assert.equal(long!.length, 4099);
+    assert.ok(long!.endsWith("..."));
+    assert.equal(short, "SELECT 2");
+  } finally { await db.close(); }
+});

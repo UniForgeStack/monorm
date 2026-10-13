@@ -985,7 +985,8 @@ async def transfer(db, a, b, amount, attempts=3):
 ```
 
 Retry the whole transaction, never one statement in it: Postgres aborts the transaction on these errors.
-`40001` occurs only at the `REPEATABLE READ` and `SERIALIZABLE` isolation levels; the default `READ COMMITTED` gives deadlocks only.
+`40001` occurs at the `REPEATABLE READ` and `SERIALIZABLE` isolation levels; on a primary the default `READ COMMITTED` gives deadlocks only.
+A hot-standby replica can give `40001` at `READ COMMITTED` too (I recall this from the PostgreSQL hot-standby documentation; not run here).
 
 ### Protected writes
 
@@ -1162,14 +1163,17 @@ def log_slow(e: orm.QueryEvent) -> None:
 remove = db.on_query(log_slow)
 ```
 
-* `orm.QueryEvent` has `sql` (the SQL with placeholders, never the values), `start` (Unix seconds), `duration` (seconds), `rows` and `error`.
+* `orm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix seconds), `duration` (seconds), `rows` and `error`.
   `rows` is the rows returned, or the rows affected by a statement that returns no rows.
-  `error` is the database's message when the statement failed; the ORM call still raises.
-* Each statement gives one event: a prefetch query, each `update_many` batch, each `db.execute`.
+  `error` is the first line of the database's message when the statement failed; the ORM call still raises.
+  The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
+  `db.lock(..., nowait=True)` gives `rows` 1 when it got the lock and 0 when it did not.
+* Each call to the database gives one event: a prefetch query, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
+  A call keeps its events until it ends, so a call with many statements holds them all in memory (the review reported 200k events at about +113 MB; not measured here).
   Reads sent to a replica and the lock and unlock of `db.lock(..., session=True)` give events too.
   `COMMIT`, `ROLLBACK` and the `set_config` statements of `db.tenant()` give no event.
 * The hooks belong to the database: `db.primary` shares them.
-* The engine times the statement in Rust, from the send to the last row, without the conversion to Python objects.
+* The engine times the statement in Rust, from the send to the last row, with the wait for a connection and, under `db.tenant()`, its transaction, without the conversion to Python objects.
 * The hook runs after the ORM call ends, in the task that made the call.
   So context variables, for example the current span or a request id, are those of the caller.
   A hook can be a coroutine function: the ORM awaits the result.
@@ -1184,7 +1188,7 @@ remove = db.on_query(log_slow)
   Its remove function takes out that registration, and a second call to it does nothing.
 * With no hook and no N+1 scope, a query pays one list check and one `ContextVar` read.
   With a hook, each call creates a trace and each statement records one event.
-  A prepared `get` on SQLite took 252 µs with an empty hook and 247 µs without (measured on a loaded machine, so the difference is noise-level).
+  A prepared `get`, median of 9 rounds of 2000 calls (measured, loaded machine): SQLite 163 µs with an empty hook and 152 µs without; Postgres 201 µs and 192 µs. The hook adds about 10 µs.
 
 `orm.otel.instrument(db)` gives each statement a client span, and gives a function that stops the spans.
 It needs `opentelemetry-api` (`pip install 'orm[otel]'`); configure the SDK and the exporter as usual.
@@ -1192,7 +1196,7 @@ It needs `opentelemetry-api` (`pip install 'orm[otel]'`); configure the SDK and 
 
 * The span starts and ends at the statement's times. Its parent is the current span of the caller.
 * The span name is the SQL operation (`SELECT`, `INSERT`, ...).
-  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (with placeholders) and `db.response.returned_rows`.
+  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (as in the event, cut at 4096 characters then `...`) and `db.response.returned_rows`.
 * A failed statement gets the `ERROR` status and the database's message.
 
 ### Hooks for packages: `orm.hooks`

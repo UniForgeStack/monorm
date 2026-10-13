@@ -618,7 +618,7 @@ const off = db.onQuery((e: QueryEvent) => {
 });
 ```
 
-* `QueryEvent` has `sql` (the SQL with placeholders, never the values), `start` (Unix milliseconds), `duration` (milliseconds), `rows` and `error` (`null` on success).
+* `QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix milliseconds), `duration` (milliseconds), `rows` and `error` (`null` on success; the first line of the database's message, without `DETAIL`, but it can hold an input value for a type error).
 * The events, the timing and the context are the same as in Python (`docs/python-api.md`, "Query hooks and OpenTelemetry").
   The hook runs in the async context of the caller, after the ORM call ends.
   The ORM awaits the promise that a hook returns.
@@ -627,6 +627,7 @@ const off = db.onQuery((e: QueryEvent) => {
   The statement has already run then: an autocommit `insert()` is committed when its hook throws.
   When the call failed, its own error stays, and the hook errors become its `cause` unless it has a `cause` already.
 * The statements that a hook sends give no event and no N+1 count.
+* A prepared `get()`, median of 9 rounds of 2000 calls (measured, loaded machine): SQLite 125 µs with an empty hook and 113 µs without; Postgres 154 µs and 141 µs. The hook adds about 12 µs.
 * Each call to `onQuery` is one registration, also for the same function.
   Its remove function takes out that registration, and a second call to it does nothing.
 

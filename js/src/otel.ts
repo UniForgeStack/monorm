@@ -26,14 +26,15 @@ export interface InstrumentOptions {
 // The values of the OpenTelemetry API's SpanKind.CLIENT and SpanStatusCode.ERROR.
 const CLIENT = 2;
 const ERROR = 2;
+const MAX_TEXT = 4096;
 
 /**
  * Gives each statement of `db` a client span; resolves to a function that stops it.
  *
  * The span starts and ends at the statement's own times and has the active span of the
  * calling async context as its parent. Its name is the SQL operation (`SELECT`), and it
- * has `db.system.name`, `db.operation.name`, `db.query.text` (the SQL with placeholders,
- * never the values) and `db.response.returned_rows`. A failed statement gets the error
+ * has `db.system.name`, `db.operation.name`, `db.query.text` (the SQL with placeholders for
+ * ORM-built SQL, as written for raw SQL; cut at 4096 characters then `...`) and `db.response.returned_rows`. A failed statement gets the error
  * status and the database's message.
  */
 export async function instrument(db: Database, options: InstrumentOptions = {}): Promise<() => void> {
@@ -46,7 +47,7 @@ export async function instrument(db: Database, options: InstrumentOptions = {}):
       attributes: {
         "db.system.name": system,
         "db.operation.name": operation,
-        "db.query.text": e.sql,
+        "db.query.text": e.sql.length <= MAX_TEXT ? e.sql : `${e.sql.slice(0, MAX_TEXT)}...`,
         "db.response.returned_rows": e.rows,
       },
       startTime: e.start,

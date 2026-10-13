@@ -110,7 +110,7 @@ pub async fn timed<T>(trace: Option<&Trace>, sql: String, run: impl Future<Outpu
     let out = run.await;
     let (rows, error) = match &out {
         Ok(v) => (rows(v), None),
-        Err(e) => (0, Some(e.message.clone())),
+        Err(e) => (0, Some(e.message.lines().next().unwrap_or_default().to_owned())),
     };
     trace.finish(id, rows, error);
     out
@@ -161,7 +161,7 @@ impl Executor for Traced {
     }
     fn advisory_lock(&self, key: i64, exclusive: bool, nowait: bool) -> BoxFuture<'_, DbResult<bool>> {
         let sql = crate::advisory::sql(key, exclusive, nowait);
-        Box::pin(self.timed(sql, self.conn.advisory_lock(key, exclusive, nowait), |_| 1))
+        Box::pin(self.timed(sql, self.conn.advisory_lock(key, exclusive, nowait), |ok| u64::from(*ok)))
     }
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move { Ok(self.traced_tx(self.conn.begin().await?)) })
@@ -242,5 +242,16 @@ mod tests {
         });
         let events = t.take();
         assert_eq!(events.iter().map(|e| (e.sql.as_str(), e.rows, e.error.as_deref())).collect::<Vec<_>>(), [("SELECT 1", 3, None), ("SELECT 2", 0, Some("boom"))]);
+    }
+
+    #[test]
+    fn an_error_event_keeps_the_first_line_of_the_message() {
+        let t = Trace::new();
+        let e = crate::db::DbError::other("ERROR (23505): duplicate key\nDETAIL: Key (name)=(secret) already exists.");
+        runtime().block_on(async {
+            let err = timed(Some(&t), "INSERT".into(), async { Err::<u64, _>(e) }, |n| *n).await.unwrap_err();
+            assert!(err.message.contains("secret"));
+        });
+        assert_eq!(t.take()[0].error.as_deref(), Some("ERROR (23505): duplicate key"));
     }
 }
