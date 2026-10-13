@@ -1,0 +1,25 @@
+model PolicyAuthor {
+ id Int @id
+ name String
+ bio String
+ note String?
+ visible Boolean
+ books PolicyBook[] @relation("Books")
+ edited PolicyBook[] @relation("Edited")
+ @@map("rust_load_authors")
+}
+model PolicyBook {
+ id Int @id
+ author_id Int
+ editor_id Int?
+ title String
+ author PolicyAuthor @relation("Books", fields: [author_id], references: [id])
+ editor PolicyAuthor? @relation("Edited", fields: [editor_id], references: [id])
+ @@map("rust_load_books")
+}
+model OrderedAuthor {
+ id Int @id
+ name String
+ visible Boolean
+ @@map("rust_load_ordered_authors")
+}

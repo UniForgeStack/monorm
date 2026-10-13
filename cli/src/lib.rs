@@ -8,7 +8,7 @@
 //! orm [--schema FILE] [--dir DIR] [--url URL] <command>
 //!   check                                         compile the schema and report errors
 //!   compile [-o ir.json]                          the compiled schema (JSON IR)
-//!   generate [python|typescript] [-o FILE] [--import MODULE] [--query-set Model=TARGET]...
+//!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]...
 //!   makemigrations [name] [--empty] [--check]
 //!   sqlmigrate <migration> [--down]
 //!   migrate [target]
@@ -68,7 +68,7 @@ impl Host {
 
 const COMMANDS: &str = "  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check                                    compile the schema and report errors
   compile [-o ir.json]                     print or write the compiled schema (JSON IR)
-  generate [python|typescript] [-o FILE] [--import MODULE] [--query-set Model=TARGET]...
+  generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]...
                                            the models module from the schema; TARGET is
                                            module:Class (Python) or specifier#Export (TypeScript)
   makemigrations [name] [--empty] [--check]
@@ -199,6 +199,7 @@ fn package_json() -> Option<Config> {
 /// The query-set classes of `language` from its configuration file: `[tool.orm.query_sets]`
 /// in `pyproject.toml` (Python) or `"orm": {"querySets": ...}` in `package.json`.
 fn configured_query_sets(language: &str) -> Result<std::collections::BTreeMap<String, String>> {
+    if language == "rust" { return Ok(Default::default()); }
     let table: Option<Vec<(String, Option<String>)>> = if language == "python" {
         std::fs::read_to_string("pyproject.toml").ok().and_then(|t| t.parse::<toml::Table>().ok()).and_then(|doc| {
             let sets = doc.get("tool")?.get("orm")?.get("query_sets")?.as_table()?.clone();
@@ -400,9 +401,10 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         (Some(l), _, _) => l,
         (None, Some("py" | "pyi"), _) => "python",
         (None, Some("ts" | "mts"), _) => "typescript",
+        (None, Some("rs"), _) => "rust",
         (None, _, Host::Python) => "python",
         (None, _, Host::Node) => "typescript",
-        (None, _, Host::Binary) => return Err(Failure::Usage("generate needs a language: python or typescript".into())),
+        (None, _, Host::Binary) => return Err(Failure::Usage("generate needs a language: python, typescript or rust".into())),
     };
     let project = dsl::compile_project_file(schema).map_err(Failure::Failed)?;
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
@@ -416,6 +418,15 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         }
     }
     match language {
+        #[cfg(feature = "generate-rust")]
+        "rust" => {
+            if !options.query_sets.is_empty() || args.opt(&["--import"]).is_some() { return Err(Failure::Usage("Rust generation uses native extension traits; --query-set and --import are unsupported".into())); }
+            let out = out.unwrap_or_else(|| schema.with_file_name("models.rs"));
+            write(&out, &codegen::rust::generate(&ir, &compiled).map_err(Failure::Failed)?)?;
+            println!("wrote {}", out.display());
+        }
+        #[cfg(not(feature = "generate-rust"))]
+        "rust" => return Err(Failure::Usage("rust generator is not compiled into this profile".into())),
         #[cfg(feature = "generate-python")]
         "python" => {
             if args.opt(&["--import"]).is_some() {
@@ -461,7 +472,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         "python" => return Err(Failure::Usage("python generator is not compiled into this profile".into())),
         #[cfg(not(feature = "generate-typescript"))]
         "typescript" => return Err(Failure::Usage("typescript generator is not compiled into this profile".into())),
-        other => return Err(Failure::Usage(format!("unknown language {other}; known: python, typescript"))),
+        other => return Err(Failure::Usage(format!("unknown language {other}; known: python, typescript, rust"))),
     }
     Ok(())
 }

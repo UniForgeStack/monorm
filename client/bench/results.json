@@ -1,0 +1,33 @@
+{
+  "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+  "records": [
+    {
+      "schema": "wide",
+      "models": 1,
+      "scalar_fields_per_model": 65,
+      "cyclic": false,
+      "shapes_per_model": 2,
+      "generated_bytes": 78353,
+      "generation_seconds": 0.7719698330038227,
+      "check_seconds": 0.17979245900642127,
+      "no_change_check_seconds": 0.07390654197661206,
+      "edited_check_seconds": 0.11085337499389425,
+      "release_seconds": 3.070315374992788,
+      "binary_bytes": 9131008
+    },
+    {
+      "schema": "cyclic",
+      "models": 16,
+      "scalar_fields_per_model": 18,
+      "cyclic": true,
+      "shapes_per_model": 2,
+      "generated_bytes": 363579,
+      "generation_seconds": 0.012893625011201948,
+      "check_seconds": 0.35499108297517523,
+      "no_change_check_seconds": 0.07358024996938184,
+      "edited_check_seconds": 0.14852787496056408,
+      "release_seconds": 3.118631584045943,
+      "binary_bytes": 9499376
+    }
+  ]
+}

@@ -20,9 +20,10 @@ toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [features]
-default = ["postgres", "sqlite", "generate-python", "generate-typescript", "reference-loading"]
+default = ["postgres", "sqlite", "generate-python", "generate-typescript", "generate-rust", "reference-loading"]
 postgres = ["orm-engine/postgres"]
 sqlite = ["orm-engine/sqlite"]
+generate-rust = ["orm-core/generate-rust"]
 generate-python = ["orm-core/generate-python"]
 generate-typescript = ["orm-core/generate-typescript"]
 reference-loading = ["orm-core/reference-loading"]

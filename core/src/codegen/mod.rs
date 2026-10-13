@@ -1,4 +1,6 @@
 //! Code generation from the schema, one module per language.
+#[cfg(feature = "generate-rust")]
+pub mod rust;
 #[cfg(feature = "generate-python")]
 pub mod python;
 #[cfg(feature = "generate-typescript")]
