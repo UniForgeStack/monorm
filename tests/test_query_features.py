@@ -149,6 +149,12 @@ async def test_string_functions_and_concatenation(clean):
     assert await Post.objects.filter(Post.title == "b1").select(func.concat(Post.views, "!")).scalar() == "100!"
 
 
+async def test_case_null_first_branch(clean):
+    await seed()
+    rows = await Post.objects.order_by(Post.title).select(func.case((Post.views >= 50, None), default=1)).scalars()
+    assert rows == [1, None, 1, None]
+
+
 async def test_case_expression(clean):
     (alice, bob, carol), _ = await seed()
     heat = func.case((Post.views >= 50, "hot"), (Post.views >= 20, "warm"), default="cold")
