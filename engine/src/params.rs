@@ -136,16 +136,16 @@ pub fn null_of(ty: Option<ValueType>) -> Value {
 /// expression's type (`CASE` with only plain values).
 pub fn type_of(v: &Value) -> Option<ValueType> {
     let ty = match v {
-        Value::Bool(_) => ColType::Bool,
-        Value::Int(_) => ColType::Int,
-        Value::BigInt(_) => ColType::BigInt,
-        Value::Double(_) => ColType::Float,
-        Value::String(_) => ColType::Text,
-        Value::ChronoDateTimeWithTimeZone(_) => ColType::DateTime,
-        Value::ChronoDate(_) => ColType::Date,
-        Value::Uuid(_) => ColType::Uuid,
-        Value::Json(_) => ColType::Json,
-        Value::BigDecimal(_) => ColType::Decimal,
+        Value::Bool(Some(_)) => ColType::Bool,
+        Value::Int(Some(_)) => ColType::Int,
+        Value::BigInt(Some(_)) => ColType::BigInt,
+        Value::Double(Some(_)) => ColType::Float,
+        Value::String(Some(_)) => ColType::Text,
+        Value::ChronoDateTimeWithTimeZone(Some(_)) => ColType::DateTime,
+        Value::ChronoDate(Some(_)) => ColType::Date,
+        Value::Uuid(Some(_)) => ColType::Uuid,
+        Value::Json(Some(_)) => ColType::Json,
+        Value::BigDecimal(Some(_)) => ColType::Decimal,
         _ => return None,
     };
     Some(ValueType::scalar(ty))

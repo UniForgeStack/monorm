@@ -20,7 +20,7 @@ use sea_query::extension::postgres::PgExpr;
 use sea_query::{
     self,
     Alias, IntoIden, DeleteStatement, Expr as SExpr, ExprTrait, InsertStatement,
-    JoinType, LikeExpr, LockBehavior, LockType, NullOrdering, Order as SOrder, OrderedStatement, Query, SelectStatement, UpdateStatement,
+    JoinType, LikeExpr, LockBehavior, LockType, NullOrdering, Order as SOrder, OrderedStatement, Query, SelectStatement, UpdateStatement, Value,
 };
 
 use crate::error::{query_err, Error, Result};
@@ -1324,16 +1324,25 @@ impl<'s> Planner<'s> {
             return Some(t);
         }
         let mut found: Option<ValueType> = None;
+        let mut all_i32 = true;
         for v in values() {
             let Expr::Param { i } = v else { continue };
-            let Some(t) = self.params.value(*i, None).ok().and_then(|v| crate::params::type_of(&v)) else { continue };
+            let Some(value) = self.params.value(*i, None).ok() else { continue };
+            let Some(t) = crate::params::type_of(&value) else { continue };
+            if let Value::BigInt(Some(n)) = &value {
+                all_i32 &= i32::try_from(*n).is_ok();
+            }
             found = match found.map(|f| f.ty) {
                 None => Some(t),
                 Some(ColType::Int | ColType::BigInt) if matches!(t.ty, ColType::Float | ColType::Decimal) => Some(t),
                 _ => found,
             };
         }
-        found
+        // A plain integer that fits i32 decodes as a number, not a bigint, in the TS client.
+        match found {
+            Some(t) if t.ty == ColType::BigInt && all_i32 => Some(ValueType::scalar(ColType::Int)),
+            _ => found,
+        }
     }
 
     // -- functions ----------------------------------------------------------------------

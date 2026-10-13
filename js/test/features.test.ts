@@ -116,6 +116,21 @@ test("outer() through relation paths", async () => {
   assert.deepEqual(bodies, [{ body: "c1", email: "alice@example.com" }, { body: "c2", email: "alice@example.com" }, { body: "c3", email: "bob@example.com" }]);
 });
 
+test("CASE with a null first branch", async () => {
+  await seed();
+  const rows = await Post.objects.orderBy(Post.title).select({ v: func.case([Post.views.gte(50), null], { default: 1 }) }).scalars();
+  assert.deepEqual(rows, [1, null, 1, null]);
+});
+
+test("a CASE of plain integers decodes as number", async () => {
+  await seed();
+  const rows = await Post.objects.select({ v: func.case([Post.views.gt(0), 1], { default: 0 }) }).scalars();
+  assert.ok(rows.length > 0);
+  for (const v of rows) {
+    assert.equal(typeof v, "number");
+  }
+});
+
 test("CASE expressions", async () => {
   const { alice, bob } = await seed();
   const heat = func.case([Post.views.gte(50), "hot"], [Post.views.gte(20), "warm"], { default: "cold" });
