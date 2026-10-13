@@ -31,6 +31,8 @@ Additional interface design:
   Base models declare partitions; a proxy can own one list partition and its constraints.
 - [Typed schema expressions](12-schema-expressions.md).
   Checks, index filters and default filters use field references and `& | ~`, not SQL strings.
+- [Remaining work from the suggestion groups, human-issue2 and the merge reviews](13-remaining-work.md).
+  What is not built yet, the reviews not done, and the deferred items.
 
 Plans 3 and 4 can proceed independently once extension contracts are available.
 Plan 5 depends on plan 3. Plan 6 reuses relations, transactions, and plan 4; partial
