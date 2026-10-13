@@ -32,6 +32,9 @@ Each spec file ends with a section `## Status on main (2026-10-13)` that gives t
 6. **Native code generation with a query-set argument** (spec 4, F4): `generate_python` and `generateTypescript` in the bindings.
 7. **Docs that name removed APIs** (human-issue2 item 5): `docs/model-composition.md:42` (`select_related`), `docs/proxy-models.md:99` and `docs/selection-and-defaults.md:28` (`only()`).
 8. **Optional:** aggregates in `select` and `filter()` share one LATERAL join (human-issue2 item 8, Q2.8.2).
+9. **Declarative partitioning** ([plan 11](11-partitioning-and-composite-keys.md), tickets 3 and 4; "PR B" in `composite-keys/plan.md`): `@@partition` and `partition` blocks, then `@@partition.values` on proxies.
+   Composite primary and foreign keys (tickets 1 and 2) are done: `82f8a4c`, `671f567`.
+   Open question first: identity columns on a partitioned table need Postgres 17 by the spec; check Postgres 16, then set the floor or emit a sequence default.
 
 ## Review
 
