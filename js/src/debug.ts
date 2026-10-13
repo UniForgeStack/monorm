@@ -124,26 +124,32 @@ export function capture(): { readonly site: string; readonly fix: string | null 
   return h ? { site: h.site, fix: h.fix } : { site: callSite(), fix: null };
 }
 
-/** @internal Counts one query of shape `sql` (the SQL with placeholders), sent at `origin`. */
-export function record(sql: string, origin: { readonly site: string; readonly fix: string | null }): void {
+/** @internal The key of a write call: `insert:{model}:{fields}:{conflict}`. Arrays join with commas. */
+export function writeKey(parts: readonly unknown[]): string {
+  return parts.map((p) => (Array.isArray(p) ? p.join(",") : p == null ? "" : String(p))).join(":");
+}
+
+/** @internal Counts one query under `key` (the SQL with placeholders for a read, the call key for a
+ * write); `sql` is the first real SQL, which the report prints. Sent at `origin`. */
+export function record(key: string, sql: string, origin: { readonly site: string; readonly fix: string | null }): void {
   const report = scope.getStore();
   if (report === undefined) return;
   const seen = loop.getStore();
   if (seen !== undefined) {
-    if (seen.has(sql)) return;
-    seen.add(sql);
+    if (seen.has(key)) return;
+    seen.add(key);
   }
-  let shape = report.shapes.get(sql);
+  let shape = report.shapes.get(key);
   if (shape === undefined) {
-    shape = { key: sql, sql, count: 0, site: origin.site, fix: origin.fix };
-    report.shapes.set(sql, shape);
+    shape = { key, sql, count: 0, site: origin.site, fix: origin.fix };
+    report.shapes.set(key, shape);
   }
   shape.count++;
   for (const outer of outers.getStore() ?? []) {
-    let counted = outer.shapes.get(sql);
+    let counted = outer.shapes.get(key);
     if (counted === undefined) {
-      counted = { key: sql, sql: shape.sql, count: 0, site: shape.site, fix: shape.fix };
-      outer.shapes.set(sql, counted);
+      counted = { key, sql: shape.sql, count: 0, site: shape.site, fix: shape.fix };
+      outer.shapes.set(key, counted);
     }
     counted.count++;
   }

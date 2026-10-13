@@ -37,5 +37,8 @@ async def attach(qs: QuerySet[M], parent_id: Any, values: Mapping[str, Any]) -> 
     names = list(local)
     db = resolve(qs._db)
     local_rows, tx, allowed = [[local[n] for n in names]], db._tx(), allowed_writes()
-    rows = await db._call(lambda t: db._engine.attach(meta.name, parent_id, names, local_rows, tx, qs._db, allowed, t))
+    rows = await db._call(
+        lambda t: db._engine.attach(meta.name, parent_id, names, local_rows, tx, qs._db, allowed, t),
+        ("attach", meta.name, names),
+    )
     return cast(M, rows[0])

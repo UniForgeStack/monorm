@@ -369,7 +369,7 @@ async def test_postgres_a_failed_nowait_lock_reports_0_rows_and_a_won_lock_1(cle
 async def test_otel_cuts_a_long_statement_at_4096_characters(shop, opentelemetry):
     _, _, db = shop
     spans = FakeTracer()
-    stop = orm.otel.instrument(db, tracer=spans)
+    stop = orm.otel.instrument(db, tracer=spans, raw_sql=True)
     try:
         await db.execute("SELECT 1 /* " + "x" * 5000 + " */")
         await db.execute("SELECT 2")
@@ -377,3 +377,33 @@ async def test_otel_cuts_a_long_statement_at_4096_characters(shop, opentelemetry
         stop()
     long, short = (s.attributes["db.query.text"] for s in spans.spans)
     assert len(long) == 4099 and long.endswith("...") and short == "SELECT 2"
+
+
+async def test_raw_sql_without_parameters_has_the_raw_flag_and_no_span_text_by_default(shop, opentelemetry):
+    Person, _, db = shop
+    events: list[orm.QueryEvent] = []
+    db.on_query(events.append)
+    spans = FakeTracer()
+    stop = orm.otel.instrument(db, tracer=spans)
+    await db.execute("UPDATE person SET name = 'secret-literal' WHERE id = 1")
+    await db.fetch("SELECT name FROM person WHERE id = ?", 1)
+    await Person.objects.using(db).filter(Person.id == 1)
+    stop()
+    assert [e.raw for e in events] == [True, False, False]
+    assert "secret-literal" in events[0].sql
+    execute, fetch, built = spans.spans
+    assert "db.query.text" not in execute.attributes and execute.name == "UPDATE"
+    assert fetch.attributes["db.query.text"].startswith("SELECT name") and built.attributes["db.query.text"]
+
+    stop = orm.otel.instrument(db, tracer=(opted := FakeTracer()), raw_sql=True)
+    await db.execute("UPDATE person SET name = 'secret-literal' WHERE id = 1")
+    stop()
+    assert "secret-literal" in opted.spans[0].attributes["db.query.text"]
+
+
+async def test_postgres_raw_sql_has_the_raw_flag(clean):
+    events: list[orm.QueryEvent] = []
+    clean.on_query(events.append)
+    await clean.execute("SELECT 'secret-literal'")
+    await clean.fetch("SELECT $1::text", "x")
+    assert [e.raw for e in events] == [True, False]

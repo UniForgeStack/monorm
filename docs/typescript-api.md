@@ -578,8 +578,12 @@ await debug.nPlusOne(async () => {
 //   at src/views.ts:42; use load(Customer.person)
 ```
 
-* The scope counts the statements of `fn` by shape: the SQL with placeholders, without values.
-  It reads the same events as `db.onQuery`, so prefetch queries and `updateMany` batches count one by one.
+* The scope counts writes by call, reads by shape, each counted once per call.
+  A read's shape is its SQL with placeholders, without values.
+  A write (`insert`, `insertMany`, `updateMany`, attach, COPY) counts under a key of the call: `insert:{model}:{fields}:{conflict}`, `update_many:{model}:{fields}:{filters}`.
+  So the batches of one `updateMany`, or the chunks of one `insertMany`, are one query, and a loop of `insertMany` calls with different row counts is an N+1.
+  The same shape counts once per engine call, so the prefetch chunks of one call are one query.
+  The report prints the first real SQL of the key.
   The statements that a query hook sends do not count.
   Work that `fn` starts counts too, and so do the queries of an inner scope.
   An inner scope cannot raise the threshold of an outer scope; the outer scope also counts the inner queries.
@@ -647,7 +651,7 @@ const off = db.onQuery((e: QueryEvent) => {
 });
 ```
 
-* `QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix milliseconds), `duration` (milliseconds), `rows` and `error` (`null` on success; the first line of the database's message, without `DETAIL`, but it can hold an input value for a type error).
+* `QueryEvent` has `sql` (the SQL as sent: ORM-built SQL and `db.fetch(sql, ...params)` have placeholders; `db.execute(sql)` goes as written, with any literal value in it), `start` (Unix milliseconds), `duration` (milliseconds), `rows`, `raw` (`true` for `db.execute(sql)`, which takes no parameters) and `error` (`null` on success; the first line of the database's message, without `DETAIL`, but it can hold an input value for a type error).
 * The events, the timing and the context are the same as in Python (`docs/python-api.md`, "Query hooks and OpenTelemetry").
   The hook runs in the async context of the caller, after the ORM call ends.
   The ORM awaits the promise that a hook returns.
@@ -661,6 +665,7 @@ const off = db.onQuery((e: QueryEvent) => {
   Its remove function takes out that registration, and a second call to it does nothing.
 
 `await instrument(db, { tracer })` from `orm/otel` gives each statement a client span with the same name, attributes and status as in Python, and resolves to a function that stops the spans.
+`db.execute(sql)` spans have no `db.query.text`, because its SQL can hold literal values; `instrument(db, { rawSql: true })` keeps it.
 Without `tracer`, it loads `@opentelemetry/api` (an optional peer dependency) and uses `trace.getTracer("orm")`.
 
 ### Hooks for packages

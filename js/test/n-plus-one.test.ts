@@ -169,3 +169,34 @@ test("nested scopes count in the outer scope; updateMany counts; a changed relat
     assert.deepEqual(outerReport!.repeated.map((s) => [s.count, s.fix]), [[3, null], [3, null], [3, null]]);
   } finally { await db.close(); }
 });
+
+test("one updateMany call counts once and a loop of insertMany is an N+1", async () => {
+  const { Person, Customer, db } = await shop();
+  try {
+    const people = [...Array(8).keys()].map((i) => ({ id: i, name: `q${i}` }));
+    // SQLite updateMany batches: CASE arms + an IN list, so each batch has its own SQL text.
+    await debug.nPlusOne(async () => {
+      await Person.objects.using(db).updateMany(people, { batchSize: 1 });
+      await Person.objects.using(db).updateMany(people, { batchSize: 3 });
+    }, { threshold: 5, fail: true });
+    const inserts = await debug.nPlusOne(async () => {
+      for (let n = 1; n <= 8; n++) {
+        await Customer.objects.using(db).insertMany([...Array(n).keys()].map((i) => ({ id: 100 + n * 10 + i, personId: 0 })));
+      }
+    }, { threshold: 5, fail: true }).then(() => null, (e: unknown) => e);
+    assert.ok(inserts instanceof debug.NPlusOne);
+    const [shape] = inserts.report.repeated;
+    assert.equal(shape!.count, 8);
+    assert.ok(shape!.key.startsWith("insert:Customer:"));
+    assert.match(shape!.sql, /^INSERT/);
+    const updates = await debug.nPlusOne(async () => {
+      for (let n = 1; n <= 8; n++) await Person.objects.using(db).updateMany(people.slice(0, n));
+    }, { threshold: 5, fail: true }).then(() => null, (e: unknown) => e);
+    assert.ok(updates instanceof debug.NPlusOne);
+    assert.deepEqual(updates.report.repeated.map((s) => [s.count, s.key.startsWith("update_many:Person:")]), [[8, true]]);
+    // Reads keep the SQL shape: a different IN size is a different shape.
+    await debug.nPlusOne(async () => {
+      for (let n = 1; n <= 8; n++) await Person.objects.using(db).filter(Person.id.in([...Array(n).keys()])).count();
+    }, { threshold: 5, fail: true });
+  } finally { await db.close(); }
+});
