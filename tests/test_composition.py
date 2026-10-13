@@ -143,3 +143,27 @@ async def test_composed_writes_read_the_scope(provider):
     finally:
         await db.drop_tables()
         await db.close()
+
+
+@pytest.mark.parametrize("field,capability", [
+    ("version Int @default(0) @locking.version", "optimistic-locking"),
+    ("deleted DateTime? @soft_delete.deleted_at", "soft-delete"),
+    ("changed DateTime @default(now()) @timestamps.updated_at", "updated-at"),
+])
+def test_a_role_on_a_composed_model_is_rejected(field, capability):
+    if capability not in json.loads(_native.native_artifact())["capabilities"]:
+        pytest.skip(f"requires a {capability} native artifact")
+    source = f'''
+model Person {{
+ id Int @id
+ @@map("composition06_role_people")
+}}
+model Employee {{
+ salary Int
+ {field}
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+ @@map("composition06_role_employees")
+}}
+'''
+    with pytest.raises(Exception, match="not supported on a composed model"):
+        orm.loads('datasource db {\n provider = "sqlite"\n}\n' + source, registry=orm.Registry())

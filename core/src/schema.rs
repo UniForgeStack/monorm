@@ -265,6 +265,18 @@ impl Schema {
         crate::tracking::prepare(&mut models, &model_index, &ir.behavior)?;
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
+        // Composed writes run no column role, so a role there would be silently skipped.
+        #[cfg(feature = "composition")]
+        for m in models.iter().filter(|m| owner_links.iter().any(|l| l.child == m.owner)) {
+            let roles = [
+                #[cfg(feature = "updated-at")] ("@timestamps.updated_at", !m.updated_at.is_empty()),
+                #[cfg(feature = "soft-delete")] ("@soft_delete.deleted_at", m.soft_delete.is_some()),
+                #[cfg(feature = "optimistic-locking")] ("@locking.version", m.version.is_some()),
+            ];
+            if let Some((role, _)) = roles.iter().find(|(_, declared)| *declared) {
+                return Err(format!("model {}: {role} is not supported on a composed model", m.ir.name));
+            }
+        }
         #[cfg(feature = "proxy-models")]
         let proxy_models = {
             let mut seen = std::collections::BTreeSet::new();

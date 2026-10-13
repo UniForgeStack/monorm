@@ -98,3 +98,26 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 }
+
+const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
+for (const [field, capability] of [
+  ["version Int @default(0) @locking.version", "optimistic-locking"],
+  ["deleted DateTime? @soft_delete.deleted_at", "soft-delete"],
+  ["changed DateTime @default(now()) @timestamps.updated_at", "updated-at"],
+] as const) {
+  test(`a role on a composed model is rejected (${capability})`, { skip: !enabled || !capabilities.includes(capability) }, () => {
+    const roleSource = `datasource db {\n provider = "sqlite"\n}
+model Person {
+ id Int @id
+ @@map("composition06_node_role_people")
+}
+model Employee {
+ salary Int
+ ${field}
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+ @@map("composition06_node_role_employees")
+}
+`;
+    assert.throws(() => loads(roleSource, { registry: new Registry() }), /not supported on a composed model/);
+  });
+}

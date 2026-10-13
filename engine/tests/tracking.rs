@@ -128,3 +128,27 @@ fn an_upsert_maintains_the_version_and_updated_at() {
         assert!(!statement.contains("\"posts\".\"version\" + "), "{statement}");
     }
 }
+
+#[cfg(feature = "model-composition")]
+#[test]
+fn a_role_on_a_composed_model_is_rejected_at_definition() {
+    let source = |field: &str| format!(r#"
+model Person {{
+ id Int @id
+ @@map("tracking_people")
+}}
+model Employee {{
+ {field}
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+ @@map("tracking_employees")
+}}
+"#);
+    let check = |field: &str| orm_core::dsl::compile(&source(field), None).and_then(orm_core::dsl::check).map(|_| ());
+    assert!(check("salary Int").is_ok());
+    #[cfg(feature = "updated-at")]
+    assert!(check("changed DateTime @default(now()) @timestamps.updated_at").unwrap_err().to_string().contains("Employee: @timestamps.updated_at"));
+    #[cfg(feature = "soft-delete")]
+    assert!(check("deleted DateTime? @soft_delete.deleted_at").unwrap_err().to_string().contains("Employee: @soft_delete.deleted_at"));
+    #[cfg(feature = "optimistic-locking")]
+    assert!(check("version Int @default(0) @locking.version").unwrap_err().to_string().contains("Employee: @locking.version"));
+}
