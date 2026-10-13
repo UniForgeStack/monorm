@@ -1111,6 +1111,7 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
 
 * The scope counts its statements by shape: the SQL with placeholders, without values.
   It reads the same events as `db.on_query`, so prefetch queries and `update_many` batches count one by one.
+  The statements that a query hook sends do not count.
   Tasks started in the scope count too, and so do the queries of an inner scope.
   An inner scope cannot raise the threshold of an outer scope; the outer scope also counts the inner queries.
   The pages of one ORM loop (`batches()`, `iterate()`, the chunks of `in_bulk()`) count as one query when they have one shape.
@@ -1171,7 +1172,16 @@ remove = db.on_query(log_slow)
 * The engine times the statement in Rust, from the send to the last row, without the conversion to Python objects.
 * The hook runs after the ORM call ends, in the task that made the call.
   So context variables, for example the current span or a request id, are those of the caller.
-  An exception in a hook propagates to that caller.
+  A hook can be a coroutine function: the ORM awaits the result.
+* Every hook gets every event of the call, also when a hook raises.
+  When the call succeeded, the first hook exception propagates to the caller after all hooks ran; the other hook exceptions are notes on it (`add_note`).
+  The statement has already run then: an autocommit `insert` is committed when its hook raises.
+  When the call failed, the exception of the call propagates, and the hook exceptions become notes on it.
+* The statements that a hook sends give no event and no N+1 count, so a hook that writes an audit row does not call itself.
+* When the caller cancels a call (`asyncio.timeout`, a closed request), each statement still in flight gives an event with `error` set to `"cancelled"`, `rows` 0 and the time up to the cancel.
+  The event does not tell whether the database finished the statement.
+* Each call to `on_query` is one registration, also for the same function.
+  Its remove function takes out that registration, and a second call to it does nothing.
 * With no hook and no N+1 scope, a query pays one list check and one `ContextVar` read.
   With a hook, each call creates a trace and each statement records one event.
   A prepared `get` on SQLite took 252 µs with an empty hook and 247 µs without (measured on a loaded machine, so the difference is noise-level).

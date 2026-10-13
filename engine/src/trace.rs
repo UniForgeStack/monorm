@@ -3,10 +3,12 @@
 //! A binding passes a [`Trace`] only when something listens; [`wrap`] then puts a
 //! [`Traced`] executor around the pool or transaction, which records each statement it
 //! sends (prefetch queries and `update_many` batches included). The binding drains the
-//! trace after the call, in the caller's task, also when the call failed.
+//! trace after the call, in the caller's task, also when the call failed. A statement
+//! that is still in flight then (the caller cancelled the call) gives an event with the
+//! error "cancelled".
 
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use sea_query::Value;
@@ -29,20 +31,66 @@ pub struct QueryEvent {
 
 /// The events of the calls that share it.
 #[derive(Debug, Default, Clone)]
-pub struct Trace(Arc<Mutex<Vec<QueryEvent>>>);
+pub struct Trace(Arc<Mutex<Inner>>);
+
+#[derive(Debug, Default)]
+struct Inner {
+    next: u64,
+    /// The statements that have started and not ended, oldest first.
+    open: Vec<Open>,
+    done: Vec<QueryEvent>,
+}
+
+#[derive(Debug)]
+struct Open {
+    id: u64,
+    sql: String,
+    start: SystemTime,
+    clock: Instant,
+}
+
+impl Open {
+    fn end(self, rows: u64, error: Option<String>) -> QueryEvent {
+        QueryEvent { sql: self.sql, start: self.start, duration: self.clock.elapsed(), rows, error }
+    }
+}
 
 impl Trace {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The events so far, oldest first; the trace is empty afterwards.
+    /// The events so far, oldest first, then one "cancelled" event for each statement
+    /// still in flight; the trace is empty afterwards.
+    ///
+    /// A dropped statement cannot report itself: the runtime stops the task of a
+    /// cancelled call after the caller has drained the trace.
     pub fn take(&self) -> Vec<QueryEvent> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+        let mut inner = self.lock();
+        let mut events = std::mem::take(&mut inner.done);
+        events.extend(inner.open.drain(..).map(|o| o.end(0, Some("cancelled".into()))));
+        events
     }
 
-    fn push(&self, event: QueryEvent) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(event);
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn start(&self, sql: String) -> u64 {
+        let mut inner = self.lock();
+        let id = inner.next;
+        inner.next += 1;
+        inner.open.push(Open { id, sql, start: SystemTime::now(), clock: Instant::now() });
+        id
+    }
+
+    /// Ends statement `id`; nothing happens when `take` already reported it as cancelled.
+    fn finish(&self, id: u64, rows: u64, error: Option<String>) {
+        let mut inner = self.lock();
+        if let Some(at) = inner.open.iter().position(|o| o.id == id) {
+            let event = inner.open.remove(at).end(rows, error);
+            inner.done.push(event);
+        }
     }
 }
 
@@ -58,15 +106,13 @@ pub fn wrap(conn: Arc<dyn Executor>, trace: Option<&Trace>) -> Arc<dyn Executor>
 /// work outside an executor, such as session advisory locks.
 pub async fn timed<T>(trace: Option<&Trace>, sql: String, run: impl Future<Output = DbResult<T>>, rows: impl Fn(&T) -> u64) -> DbResult<T> {
     let Some(trace) = trace else { return run.await };
-    let start = SystemTime::now();
-    let clock = Instant::now();
+    let id = trace.start(sql);
     let out = run.await;
-    let duration = clock.elapsed();
     let (rows, error) = match &out {
         Ok(v) => (rows(v), None),
         Err(e) => (0, Some(e.message.clone())),
     };
-    trace.push(QueryEvent { sql, start, duration, rows, error });
+    trace.finish(id, rows, error);
     out
 }
 
@@ -144,8 +190,57 @@ mod tests {
     #[test]
     fn take_drains() {
         let t = Trace::new();
-        t.push(QueryEvent { sql: "SELECT 1".into(), start: SystemTime::now(), duration: Duration::ZERO, rows: 1, error: None });
+        let id = t.start("SELECT 1".into());
+        t.finish(id, 1, None);
         assert_eq!(t.take().len(), 1);
         assert!(t.take().is_empty());
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap()
+    }
+
+    #[test]
+    fn a_dropped_statement_is_reported_as_cancelled() {
+        let t = Trace::new();
+        runtime().block_on(async {
+            let never = timed(Some(&t), "SELECT pg_sleep(60)".into(), std::future::pending::<DbResult<()>>(), |_| 0);
+            assert!(tokio::time::timeout(Duration::from_millis(20), never).await.is_err());
+        });
+        let events = t.take();
+        assert_eq!(events.len(), 1);
+        assert_eq!((events[0].sql.as_str(), events[0].rows, events[0].error.as_deref()), ("SELECT pg_sleep(60)", 0, Some("cancelled")));
+        assert!(events[0].duration >= Duration::from_millis(20));
+        assert!(t.take().is_empty());
+    }
+
+    #[test]
+    fn a_statement_that_ends_after_take_gives_no_second_event() {
+        let t = Trace::new();
+        runtime().block_on(async {
+            let (done, wait) = tokio::sync::oneshot::channel::<()>();
+            let own = t.clone();
+            let task = tokio::spawn(async move {
+                timed(Some(&own), "SELECT 1".into(), async { wait.await.ok(); Ok(1u64) }, |n| *n).await
+            });
+            tokio::task::yield_now().await;
+            let events = t.take();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].error.as_deref(), Some("cancelled"));
+            done.send(()).unwrap();
+            task.await.unwrap().unwrap();
+        });
+        assert!(t.take().is_empty());
+    }
+
+    #[test]
+    fn a_finished_statement_keeps_its_rows_and_error() {
+        let t = Trace::new();
+        runtime().block_on(async {
+            timed(Some(&t), "SELECT 1".into(), async { Ok(3u64) }, |n| *n).await.unwrap();
+            timed(Some(&t), "SELECT 2".into(), async { Err::<u64, _>(crate::db::DbError::other("boom")) }, |n| *n).await.unwrap_err();
+        });
+        let events = t.take();
+        assert_eq!(events.iter().map(|e| (e.sql.as_str(), e.rows, e.error.as_deref())).collect::<Vec<_>>(), [("SELECT 1", 3, None), ("SELECT 2", 0, Some("boom"))]);
     }
 }

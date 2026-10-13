@@ -8,12 +8,15 @@ provider of the process.
 from __future__ import annotations
 
 import importlib
+import re
 from collections.abc import Callable
 from typing import Any, Protocol
 
 from .db import Database, QueryEvent
 
 __all__ = ["Tracer", "instrument"]
+
+_OPERATION = re.compile(r"[\s(]*(\w+)")
 
 
 class Tracer(Protocol):
@@ -39,7 +42,8 @@ def instrument(db: Database, *, tracer: Tracer | None = None) -> Callable[[], No
     system = "sqlite" if db.url.startswith("sqlite:") else "postgresql"
 
     def hook(e: QueryEvent) -> None:
-        operation = e.sql.lstrip("( \n").split(None, 1)[0].upper() if e.sql.strip() else "SQL"
+        found = _OPERATION.match(e.sql)
+        operation = found.group(1).upper() if found else "SQL"
         start = int(e.start * 1e9)
         span = spans.start_span(
             operation,

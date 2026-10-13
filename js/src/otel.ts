@@ -28,7 +28,7 @@ const CLIENT = 2;
 const ERROR = 2;
 
 /**
- * Gives each statement of `db` a client span; gives a function that stops it.
+ * Gives each statement of `db` a client span; resolves to a function that stops it.
  *
  * The span starts and ends at the statement's own times and has the active span of the
  * calling async context as its parent. Its name is the SQL operation (`SELECT`), and it
