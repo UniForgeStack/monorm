@@ -154,3 +154,85 @@ model Doc {
     finally:
         await db.drop_tables()
         await db.close()
+
+
+UPSERT_DOC = """
+model Doc {
+  id      Int      @id
+  title   String
+  changed DateTime @default(now()) @timestamps.updated_at(mode: "%s")
+  version Int      @default(0) @locking.version
+  @@map("tracking_upsert_docs")
+}
+"""
+
+
+@requires("optimistic-locking")
+@requires("updated-at")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_upsert_bumps_the_version(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "application")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a")
+        stale = await docs.get(Doc.id == 1)
+        await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        assert (await docs.get(Doc.id == 1)).version == 1
+        await docs.insert(id=1, title="c").on_conflict(Doc.id, update=True, update_fields=[Doc.title])
+        await docs.insert(id=1, title="d").on_conflict(Doc.id, update=True, update_values={"title": "e"})
+        assert (await docs.get(Doc.id == 1)).version == 3
+        with pytest.raises(orm.VersionConflict):
+            await stale.update(title="x")
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("updated-at")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "application")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", changed=OLD)
+        await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        assert as_utc((await docs.get(Doc.id == 1)).changed) > OLD
+        await docs.update(changed=OLD)
+        await docs.insert(id=1, title="c", changed=OLD).on_conflict(Doc.id, update=True, update_fields=[Doc.title, Doc.changed])
+        assert as_utc((await docs.get(Doc.id == 1)).changed) == OLD
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "application")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a")
+        await docs.filter(Doc.id == 1).update(title="a2")
+        await docs.insert(id=1, title="b", version=0).on_conflict(Doc.id, update=True)
+        assert (await docs.get(Doc.id == 1)).version == 2
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("updated-at")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "database")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", changed=OLD)
+        await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        assert as_utc((await docs.get(Doc.id == 1)).changed) > OLD
+    finally:
+        await db.drop_tables()
+        await db.close()

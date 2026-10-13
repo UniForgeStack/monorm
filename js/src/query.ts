@@ -1592,7 +1592,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
           o.updateFields !== undefined
             ? ownFields(this.meta, o.updateFields, "updateFields")
             : o.updateValues === undefined
-              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f))
+              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f) && f !== this.meta.versionField?.ir)
               : [];
         if (o.updateValues !== undefined) {
           const items = assignments(this.meta, o.updateValues, new IRContext(this.meta, params));

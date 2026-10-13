@@ -102,3 +102,29 @@ fn an_update_increments_the_version_unless_it_sets_it() {
     let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Sqlite), "Post", &["id".into(), "views".into()], rows, &[], &Ints(vec![]), false, None, false).unwrap();
     assert!(plan.statements[0].0.contains("\"version\" = \"posts\".\"version\" + "), "{}", plan.statements[0].0);
 }
+
+#[cfg(all(feature = "updated-at", feature = "optimistic-locking"))]
+#[test]
+fn an_upsert_maintains_the_version_and_updated_at() {
+    let schema = schema(json!({"updated_at":[{"model":"Post","field":"changed"}],"versions":[{"model":"Post","field":"version"}]})).unwrap();
+    let set = |field: &str| vec![serde_json::from_value(json!({"field":field,"value":{"t":"param","i":0}})).unwrap()];
+    let upsert = |dialect, update: &[&str], set| {
+        let target = Target::new(dialect);
+        let conflict = exec::Conflict::Update { target: vec!["id".into()], filter: None, update: update.iter().map(|f| f.to_string()).collect(), set };
+        let fields: Vec<String> = ["id", "views"].iter().map(|f| f.to_string()).collect();
+        let rows = vec![vec![Some(Value::Int(Some(1))), Some(Value::Int(Some(2)))]];
+        exec::statement(target, &exec::plan_insert(&schema, target, "Post", &fields, rows, Some(conflict), &Ints(vec![7])).unwrap())
+    };
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        for statement in [upsert(dialect, &["views"], vec![]), upsert(dialect, &[], set("views"))] {
+            assert!(statement.contains("\"version\" = \"posts\".\"version\" + "), "{statement}");
+            assert!(statement.contains("\"changed_at\" = "), "{statement}");
+        }
+        let statement = upsert(dialect, &["views", "changed", "version"], vec![]);
+        assert_eq!(statement.matches("\"version\" = ").count(), 1, "{statement}");
+        assert_eq!(statement.matches("\"changed_at\" = ").count(), 1, "{statement}");
+        let statement = upsert(dialect, &[], set("version"));
+        assert_eq!(statement.matches("\"version\" = ").count(), 1, "{statement}");
+        assert!(!statement.contains("\"posts\".\"version\" + "), "{statement}");
+    }
+}

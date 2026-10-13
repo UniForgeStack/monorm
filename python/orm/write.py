@@ -254,7 +254,7 @@ class _Insert:
             raise TypeError("on_conflict(update_values={}) updates nothing; use update=False to skip conflicting rows")
         if fields is None and update_values is None:
             key = model._meta.key_names
-            fields = [f for f in self._fields if f in self._provided and f not in target and f not in key]
+            fields = [f for f in self._fields if f in self._provided and f not in target and f not in key and f != model._meta.version_field]
         if update_values is not None:
             set_ = (assignments(model, update_values, IRContext(model, params)), params)
             overlap = set(fields or ()) & {a["field"] for a in set_[0]}

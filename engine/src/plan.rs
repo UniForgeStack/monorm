@@ -3007,6 +3007,10 @@ pub fn plan_insert(
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
                     clause.value(Alias::new(&f.column), v);
                 }
+                #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
+                for (column, expr) in maintained(m, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name)) {
+                    clause.value(Alias::new(column), expr);
+                }
                 clause.to_owned()
             }
         };

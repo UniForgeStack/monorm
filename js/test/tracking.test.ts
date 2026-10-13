@@ -113,4 +113,62 @@ model Doc {
       assert.throws(() => docs.deletedOnly(), /no @soft_delete/);
     } finally { await db.dropTables(); await db.close(); }
   });
+
+  const upsertDoc = (mode: string) => `
+model Doc {
+  id      Int      @id
+  title   String
+  changed DateTime @default(now()) @timestamps.updated_at(mode: "${mode}")
+  version Int      @default(0) @locking.version
+  @@map("tracking_node_upsert_docs")
+}`;
+
+  test(`an upsert bumps the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") || !capabilities.includes("updated-at") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("application"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a" });
+      const stale = await docs.get(Doc.id.eq(1));
+      await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      assert.equal((await docs.get(Doc.id.eq(1))).version, 1);
+      await docs.insert({ id: 1, title: "c" }).onConflict(Doc.id, { update: true, updateFields: [Doc.title] });
+      await docs.insert({ id: 1, title: "d" }).onConflict(Doc.id, { update: true, updateValues: { title: "e" } });
+      assert.equal((await docs.get(Doc.id.eq(1))).version, 3);
+      await assert.rejects(stale.update({ title: "x" }), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an upsert sets updated_at in application mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("application"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a", changed: OLD });
+      await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      assert.ok((await docs.get(Doc.id.eq(1))).changed > OLD);
+      await docs.update({ changed: OLD });
+      await docs.insert({ id: 1, title: "c", changed: OLD }).onConflict(Doc.id, { update: true, updateFields: [Doc.title, Doc.changed] });
+      assert.equal((await docs.get(Doc.id.eq(1))).changed.getTime(), OLD.getTime());
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an update: true upsert does not reset the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("application"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a" });
+      await docs.filter(Doc.id.eq(1)).update({ title: "a2" });
+      await docs.insert({ id: 1, title: "b", version: 0 }).onConflict(Doc.id, { update: true });
+      assert.equal((await docs.get(Doc.id.eq(1))).version, 2);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("database"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a", changed: OLD });
+      await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      assert.ok((await docs.get(Doc.id.eq(1))).changed > OLD);
+    } finally { await db.dropTables(); await db.close(); }
+  });
 }
