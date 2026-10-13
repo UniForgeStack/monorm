@@ -293,6 +293,11 @@ impl Transaction {
         let tx = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move { tx.rollback().await.map_err(db_err) })
     }
+
+    /// Marks the transaction failed, as if a statement had failed with `message`.
+    fn mark_failed(&self, message: String) {
+        self.inner.mark_failed(db::DbError::other(message));
+    }
 }
 
 /// The statements of the engine calls it is passed to, drained by `take()`.
@@ -605,7 +610,7 @@ impl Engine {
     fn begin<'py>(&self, py: Python<'py>, tx: Option<&Bound<'py, Transaction>>) -> PyResult<Bound<'py, PyAny>> {
         let conn = self.conn(tx);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = conn.begin().await.map_err(db_err)?;
+            let inner = db::guard(conn.begin().await.map_err(db_err)?);
             Ok(Transaction { inner })
         })
     }
@@ -1065,6 +1070,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DatabaseError", py.get_type::<errors::DatabaseError>())?;
     m.add("IntegrityError", py.get_type::<errors::IntegrityError>())?;
     m.add("LockNotAvailable", py.get_type::<errors::LockNotAvailable>())?;
+    m.add("TransactionAborted", py.get_type::<errors::TransactionAborted>())?;
     m.add("QueryError", py.get_type::<errors::QueryError>())?;
     m.add("WriteProtected", py.get_type::<errors::WriteProtected>())?;
     m.add("SchemaError", py.get_type::<errors::SchemaError>())?;

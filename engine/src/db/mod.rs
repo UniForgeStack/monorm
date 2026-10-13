@@ -37,10 +37,12 @@ pub enum ErrorKind {
     Integrity,
     /// A `NOWAIT` lock (or a lock timeout) found the rows locked.
     LockNotAvailable,
+    /// A statement ran in a transaction (or savepoint) that an earlier error aborted.
+    TransactionAborted,
     Other,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DbError {
     pub kind: ErrorKind,
     pub message: String,
@@ -51,11 +53,13 @@ pub struct DbError {
     pub constraint: Option<String>,
     /// The database's DETAIL line (Postgres only).
     pub detail: Option<String>,
+    /// For `TransactionAborted`: the first error of the transaction.
+    pub cause: Option<Arc<DbError>>,
 }
 
 impl DbError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        DbError { kind, message: message.into(), sqlstate: None, constraint: None, detail: None }
+        DbError { kind, message: message.into(), sqlstate: None, constraint: None, detail: None, cause: None }
     }
 
     pub fn other(message: impl Into<String>) -> Self {
@@ -149,6 +153,105 @@ pub trait Executor: Send + Sync {
 pub trait Transaction: Executor {
     fn commit(&self) -> BoxFuture<'_, DbResult<()>>;
     fn rollback(&self) -> BoxFuture<'_, DbResult<()>>;
+    /// Marks the transaction failed as if a statement had failed with `e`
+    /// (a no-op for a transaction that does not track failures).
+    fn mark_failed(&self, _e: DbError) {}
+}
+
+/// A transaction that remembers its first failed statement, also when the caller catches
+/// the error. A later statement and `commit` then give `TransactionAborted`, so Postgres
+/// (which aborts the transaction) and SQLite (which keeps the other writes) behave the
+/// same. A savepoint is guarded on its own: rolling it back clears its mark and leaves
+/// the enclosing transaction usable.
+struct Guarded {
+    inner: Arc<dyn Transaction>,
+    failed: std::sync::Mutex<Option<Arc<DbError>>>,
+}
+
+/// `tx` with the failed mark; give the bindings this, never a bare driver transaction.
+pub fn guard(tx: Arc<dyn Transaction>) -> Arc<dyn Transaction> {
+    Arc::new(Guarded { inner: tx, failed: std::sync::Mutex::new(None) })
+}
+
+impl Guarded {
+    fn aborted(&self) -> Option<DbError> {
+        let first = self.failed.lock().unwrap().clone()?;
+        let line = first.message.lines().next().unwrap_or_default();
+        let mut e = DbError::new(
+            ErrorKind::TransactionAborted,
+            format!("the transaction is aborted by an earlier error ({line}); roll it back, or catch errors only around a savepoint (a nested transaction block)"),
+        );
+        e.cause = Some(first);
+        Some(e)
+    }
+
+    fn note<T>(&self, out: DbResult<T>) -> DbResult<T> {
+        if let Err(e) = &out {
+            self.mark_failed(e.clone());
+        }
+        out
+    }
+
+    async fn guarded<T>(&self, run: impl Future<Output = DbResult<T>>) -> DbResult<T> {
+        if let Some(e) = self.aborted() {
+            return Err(e);
+        }
+        self.note(run.await)
+    }
+}
+
+impl Executor for Guarded {
+    fn dialect(&self) -> Dialect {
+        self.inner.dialect()
+    }
+    fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
+        Box::pin(self.guarded(self.inner.query(sql, args)))
+    }
+    fn fetch(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
+        Box::pin(self.guarded(self.inner.fetch(sql, args)))
+    }
+    fn execute(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(self.guarded(self.inner.execute(sql, args)))
+    }
+    fn batch(&self, sql: String) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(self.guarded(self.inner.batch(sql)))
+    }
+    fn query_text(&self, sql: String) -> BoxFuture<'_, DbResult<Vec<Vec<Option<String>>>>> {
+        Box::pin(self.guarded(self.inner.query_text(sql)))
+    }
+    fn advisory_lock(&self, key: i64, exclusive: bool, nowait: bool) -> BoxFuture<'_, DbResult<bool>> {
+        Box::pin(self.guarded(self.inner.advisory_lock(key, exclusive, nowait)))
+    }
+    fn copy_in(&self, table: String, columns: Vec<String>, rows: Vec<Vec<Value>>) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(self.guarded(self.inner.copy_in(table, columns, rows)))
+    }
+    fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
+        Box::pin(async move {
+            let tx = self.guarded(self.inner.begin()).await?;
+            Ok(guard(tx))
+        })
+    }
+}
+
+impl Transaction for Guarded {
+    fn commit(&self) -> BoxFuture<'_, DbResult<()>> {
+        Box::pin(async move {
+            if let Some(e) = self.aborted() {
+                let _ = self.inner.rollback().await;
+                return Err(e);
+            }
+            self.inner.commit().await
+        })
+    }
+    fn rollback(&self) -> BoxFuture<'_, DbResult<()>> {
+        self.inner.rollback()
+    }
+    fn mark_failed(&self, e: DbError) {
+        let mut failed = self.failed.lock().unwrap();
+        if failed.is_none() && e.kind != ErrorKind::TransactionAborted {
+            *failed = Some(Arc::new(e));
+        }
+    }
 }
 
 pub trait Driver: Executor {

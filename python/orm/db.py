@@ -220,14 +220,32 @@ class Database:
         )
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
+    async def transaction(self, *, savepoint: bool = True) -> AsyncIterator[None]:
         """``async with db.transaction():`` — commits on success, rolls back on error.
 
         Queries on this database inside the block (in this task, and in tasks it starts)
         run in the transaction. Nested blocks use savepoints.
+
+        A statement that fails marks its transaction (or savepoint) failed, also when
+        the block catches the error: later statements and the commit raise
+        :class:`~orm.TransactionAborted` (``__cause__`` is the first error), and nothing
+        commits. Catch errors only around a savepoint, a nested ``transaction()`` block,
+        whose rollback leaves the enclosing transaction usable.
+
+        ``savepoint=False`` makes a nested block join the enclosing transaction with no
+        savepoint: an error that leaves it marks the enclosing transaction failed. On an
+        outermost block it has no effect.
         """
-        outer = self._tx() is None
-        tx = await self._engine.begin(self._tx())
+        enclosing = self._tx()
+        if enclosing is not None and not savepoint:
+            try:
+                yield
+            except BaseException as e:
+                enclosing.mark_failed(f"{type(e).__name__}: {e}")
+                raise
+            return
+        outer = enclosing is None
+        tx = await self._engine.begin(enclosing)
         token = _current_tx.set({**_current_tx.get(), self._root: tx})
         callbacks = _Callbacks()
         cb_token = _callbacks.set({**_callbacks.get(), self._root: callbacks})

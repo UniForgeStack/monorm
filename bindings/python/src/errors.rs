@@ -18,6 +18,12 @@ create_exception!(
     DatabaseError,
     "A row lock taken with `nowait` (or a lock timeout) found the rows locked."
 );
+create_exception!(
+    _native,
+    TransactionAborted,
+    DatabaseError,
+    "A statement or commit ran in a transaction that an earlier error aborted; `__cause__` is that error."
+);
 create_exception!(_native, QueryError, PyValueError, "The query IR does not match the schema.");
 create_exception!(_native, SchemaError, PyValueError, "The schema file or IR is invalid.");
 create_exception!(
@@ -38,8 +44,13 @@ pub fn db_err(e: DbError) -> PyErr {
     let err = match e.kind {
         ErrorKind::Integrity => IntegrityError::new_err(e.message),
         ErrorKind::LockNotAvailable => LockNotAvailable::new_err(e.message),
+        ErrorKind::TransactionAborted => TransactionAborted::new_err(e.message),
         ErrorKind::Other => DatabaseError::new_err(e.message),
     };
+    if let Some(cause) = e.cause {
+        let cause = db_err((*cause).clone());
+        Python::attach(|py| err.set_cause(py, Some(cause)));
+    }
     if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() {
         return err;
     }

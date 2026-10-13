@@ -27,6 +27,15 @@ export class LockNotAvailable extends DatabaseError {
   override name = "LockNotAvailable";
 }
 
+/**
+ * A statement or commit ran in a transaction that an earlier error aborted, also when
+ * the code caught that error. `cause` is the first error. Catch errors only around a
+ * savepoint (a nested `db.transaction()`).
+ */
+export class TransactionAborted extends DatabaseError {
+  override name = "TransactionAborted";
+}
+
 /** The query does not match the schema, or asks for something unsupported. */
 export class QueryError extends ORMError {
   override name = "QueryError";
@@ -88,11 +97,33 @@ const KINDS: Record<string, new (message: string) => Error> = {
   DatabaseError,
   IntegrityError,
   LockNotAvailable,
+  TransactionAborted,
   QueryError,
   SchemaError,
   TypeError,
   WriteProtected,
 };
+
+interface NativeFields {
+  sqlstate?: string | null;
+  constraint?: string | null;
+  detail?: string | null;
+  cause?: NativeFields & { kind: string; message: string };
+}
+
+function build(cls: new (message: string) => Error, message: string, fields: NativeFields): Error {
+  const out = new cls(message);
+  if (out instanceof DatabaseError) {
+    out.sqlstate = fields.sqlstate ?? null;
+    out.constraint = fields.constraint ?? null;
+    out.detail = fields.detail ?? null;
+  }
+  const cause = fields.cause;
+  if (cause !== undefined) {
+    out.cause = build(KINDS[cause.kind] ?? DatabaseError, cause.message, cause);
+  }
+  return out;
+}
 
 /** The error class for an error the native engine threw (`[orm:<Kind>] message`). */
 export function fromNative(e: unknown): unknown {
@@ -106,18 +137,13 @@ export function fromNative(e: unknown): unknown {
   }
   // `+`: a JSON line of database error fields comes before the message.
   let message = m[3]!;
-  let fields: { sqlstate?: string | null; constraint?: string | null; detail?: string | null } = {};
+  let fields: NativeFields = {};
   if (m[2]) {
     const nl = message.indexOf("\n");
-    fields = JSON.parse(message.slice(0, nl)) as typeof fields;
+    fields = JSON.parse(message.slice(0, nl)) as NativeFields;
     message = message.slice(nl + 1);
   }
-  const out = new cls(message);
-  if (out instanceof DatabaseError) {
-    out.sqlstate = fields.sqlstate ?? null;
-    out.constraint = fields.constraint ?? null;
-    out.detail = fields.detail ?? null;
-  }
+  const out = build(cls, message, fields);
   if (e.stack) {
     out.stack = `${out.name}: ${message}\n${e.stack.split("\n").slice(1).join("\n")}`;
   }

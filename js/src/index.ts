@@ -66,6 +66,7 @@ export {
   ORMError,
   QueryError,
   SchemaError,
+  TransactionAborted,
   TransactionRequired,
   VersionConflict,
   WriteProtected,
