@@ -290,9 +290,15 @@ part as an empty string; `a.concat(b)` (`a || b`) is `null` when either side is 
 first true condition, else `default` (`null` without one). It works in `select()`,
 `filter()`, `orderBy()` and `update()`, for example
 `func.sum(func.case([Post.published, 1], { default: 0 }))` for a conditional count.
+Plain values take the type of the other side of a comparison only when the `CASE` is on the
+right of it, else the type of the first branch that is not a plain value.
 Aggregates take `{ filter: cond }` (`FILTER (WHERE cond)`), for example
 `func.count({ filter: Post.published })` or
-`func.count(User.posts, { filter: User.posts.published })`.
+`func.count(User.posts, { filter: User.posts.published })`. Over a relation the filter follows
+Django's rule: a condition on the aggregate's own relation is inside the subquery (`FILTER`);
+a condition that reads only to-one hops (`User.profile.role.eq(x)`) is an `EXISTS` at the
+outer level and keeps all posts of a matching user; a condition that reads no column of the
+relation filters the parent row.
 `func.arrayAgg(expr, { orderBy, distinct, filter })` is `ARRAY_AGG`: an array with the `null`
 values kept, `null` (not `[]`) over no rows; `orderBy` fixes the element order (with `distinct`
 it must use the same expression). It works over a relation, takes no array column, is not a
@@ -301,15 +307,20 @@ In a `select()` without `groupBy()`, `distinct()` or `lock()`, two or more aggre
 same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
 `null` empty sums, per-aggregate `filter` and `distinct`); SQLite keeps scalar subqueries.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
-compared as JSON), `.asText()` for the last step as text (`->>`),
+compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
+`.asText()` for the last step as text (`->>`, no step can follow),
 `Doc.meta.jsonContains({ kind: "post" })` (`@>`), `.jsonContainedBy(...)` (`<@`),
-`.hasKey("tags")` (`?`) and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`).
-Keys are strings, indexes 0-based integers. PostgreSQL only.
+`.hasKey("tags")` (`?`) and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`: a
+scalar merged with an object or array makes an array; `NULL` stays `NULL`).
+A GIN index serves containment and `hasKey` on the column, not on a path. `jsonContains`,
+`jsonContainedBy` and `matches` take a `param()`.
+Keys are strings, indexes 0-based integers (a `String[]` column indexes from 1). PostgreSQL only.
 Full-text search (PostgreSQL only): `func.toTsvector("english", Post.body).matches("running dogs")`
 (`@@`, a plain string is `plainto_tsquery` with the vector's configuration),
-`func.toTsquery`, `func.plaintoTsquery`, `func.websearchToTsquery` and `func.tsRank(vector, query)`.
-The configuration is written into the SQL as `'english'::regconfig`, so it matches a GIN
-index on the same expression: `@@index([sql("to_tsvector('english', body)")], type: Gin)`.
+`func.toTsquery`, `func.plaintoTsquery`, `func.websearchToTsquery` and `func.tsRank(vector, query)`
+(`tsRank` takes no plain string; a vector that is not `toTsvector(config, ...)` uses the server
+default configuration). The configuration is written into the SQL as `'english'::regconfig`,
+so a GIN index on the same expression is used (a bound document is not covered): `@@index([sql("to_tsvector('english', body)")], type: Gin)`.
 The result types follow the SQL: `count` is a `bigint`, `sum(Int)` is `number | null`,
 `sum(Decimal)` is `Decimal | null`, and `avg` is `number | null`. A column read through a
 nullable relation becomes nullable.

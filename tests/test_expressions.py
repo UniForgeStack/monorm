@@ -101,12 +101,36 @@ async def test_json_merge_with_a_path_keeps_the_object(docs):
     assert await objects.filter(Doc.title == "d").select(Doc.title.concat(Doc.meta["k"].as_text())).scalars() == ["dv"]
 
 
+async def test_json_merge_with_a_column(docs):
+    Doc, objects = docs
+    await objects.filter(Doc.title == "c").update(meta=Doc.meta.json_merge(Doc.meta))
+    assert (await objects.get(Doc.title == "c")).meta == {"kind": "post", "n": 9}
+
+
 async def test_json_methods_refuse_none(docs):
     Doc, objects = docs
     for call in (Doc.meta.json_merge, Doc.meta.json_contains, Doc.meta.json_contained_by):
         with pytest.raises(TypeError, match="not None"):
             call(None)
     assert (await objects.get(Doc.title == "c")).meta == {"kind": "post", "n": 9}
+
+
+async def test_json_contains_prepared_param(docs):
+    Doc, objects = docs
+    contains = objects.filter(Doc.meta.json_contains(orm.param("v"))).order_by(Doc.title).prepare()
+    assert [d.title for d in await contains(v={"kind": "post"})] == ["a", "c"]
+    contained = objects.filter(Doc.meta.json_contained_by(orm.param("v"))).prepare()
+    assert [d.title for d in await contained(v={"kind": "page", "n": 1, "author": {"name": "Bob"}, "tags": ["y"], "z": 0})] == ["b"]
+    with pytest.raises(TypeError, match="not the expression"):
+        Doc.meta.json_contains(Doc.meta["a"])
+
+
+def test_json_index_out_of_range(docs):
+    Doc, objects = docs
+    assert "-> 2147483647" in objects.select(Doc.meta["arr"][2**31 - 1]).sql()
+    for index in (2**31, 2**62, -(2**31) - 1, -(2**63)):
+        with pytest.raises(QueryError, match="JSON index"):
+            objects.select(Doc.meta["arr"][index]).sql()
 
 
 async def test_json_on_sqlite_is_an_error():
@@ -160,6 +184,62 @@ def test_full_text_search_sql():
         Article.objects.filter(func.to_tsvector("english'; drop", Article.body).matches("x")).sql()
 
 
+def test_full_text_search_config_names():
+    from orm import func
+
+    registry, Article = load_articles()
+    assert "'español'::regconfig" in Article.objects.filter(func.to_tsvector("español", Article.body).matches("x")).sql()
+    for bad in ("a'b", "a b", "a.b.c", "1a", ""):
+        with pytest.raises(QueryError, match="text search configuration"):
+            Article.objects.filter(func.to_tsvector(bad, Article.body).matches("x")).sql()
+
+
+async def test_matches_prepared_param():
+    from orm import func
+
+    registry, Article = load_articles()
+    try:
+        db = await orm.connect(URL, registry=registry, default=False, max_connections=2)
+    except orm.DatabaseError as e:
+        pytest.skip(f"Postgres not reachable at {URL}: {e}")
+    try:
+        await db.drop_tables()
+        await db.create_tables()
+        objects = Article.objects.using(db)
+        await objects.insert_many([{"body": "The quick brown fox"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running"}])
+        vector = func.to_tsvector("english", Article.body)
+        found = objects.filter(vector.matches(orm.param("q"))).order_by(Article.id).prepare()
+        assert [a.id for a in await found(q="dogs")] == [2, 3]
+        assert [a.id for a in await found(q="fox")] == [1]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+async def test_matches_forms():
+    from orm import func
+
+    registry, Article = load_articles()
+    try:
+        db = await orm.connect(URL, registry=registry, default=False, max_connections=2)
+    except orm.DatabaseError as e:
+        pytest.skip(f"Postgres not reachable at {URL}: {e}")
+    try:
+        await db.drop_tables()
+        await db.create_tables()
+        objects = Article.objects.using(db)
+        await objects.insert_many([{"body": "The quick brown fox"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running"}])
+        vector = func.to_tsvector("english", Article.body)
+        both = func.plainto_tsquery("english", "lazy dog")
+        assert await objects.filter(vector.matches(both)).select(Article.id).scalars() == [2]
+        # a vector that is not to_tsvector(config, ...) is searched with the server's default config
+        wrapped = func.coalesce(vector, func.to_tsvector("english", ""))
+        assert await objects.filter(wrapped.matches("fox")).select(Article.id).scalars() == [1]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 async def test_full_text_search():
     from orm import func
 
@@ -197,7 +277,7 @@ async def test_full_text_search_on_sqlite_is_an_error():
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
-        with pytest.raises(QueryError, match="full-text search needs PostgreSQL"):
+        with pytest.raises(QueryError, match="sqlite does not support full-text search"):
             await Article.objects.using(db).filter(func.to_tsvector(Article.body).matches("x")).count()
     finally:
         await db.close()

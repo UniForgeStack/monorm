@@ -257,3 +257,8 @@ async def required_results() -> None:
     assert_type(await prepared.require().get(id=1), Post)
     assert_type(await prepared.require().first(id=1), Post)
     assert_type(await Post.objects.require().filter(Post.id == param("id")).prepare().get(id=1), Post)
+
+
+def json_paths(meta: ColumnRef[Any]) -> None:
+    """A Json column: a path continues with keys and indexes, ``as_text()`` ends it."""
+    assert_type(meta["tags"][0].as_text() == "x", Condition)

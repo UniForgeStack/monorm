@@ -286,13 +286,11 @@ class Expression(Node, Generic[T]):
     def json_contains(self, value: Any) -> Condition:
         """JSON: the value contains ``value`` at the top level (``col @> value``):
         ``Post.meta.json_contains({"tags": ["a"]})``. PostgreSQL only."""
-        _not_none(value, "json_contains")
-        return Comparison("contains", self, Literal(value))
+        return Comparison("contains", self, _json_operand(value, "json_contains"))
 
     def json_contained_by(self, value: Any) -> Condition:
         """JSON: ``value`` contains the value (``col <@ value``). PostgreSQL only."""
-        _not_none(value, "json_contained_by")
-        return Comparison("contained_by", self, Literal(value))
+        return Comparison("contained_by", self, _json_operand(value, "json_contained_by"))
 
     def has_key(self, key: str) -> Condition:
         """JSON: the object has the top-level key ``key``, or the array the string element
@@ -313,7 +311,7 @@ class Expression(Node, Generic[T]):
     def matches(self: Expression[TsVector], query: Expression[TsQuery] | str) -> Condition:
         """``vector @@ query``: the document matches the search. A plain string is
         ``plainto_tsquery(<config of the vector>, query)``. PostgreSQL only."""
-        if isinstance(query, str):
+        if isinstance(query, (str, Param)):
             config = self._args[0] if isinstance(self, Func) and self._name == "to_tsvector" and len(self._args) == 2 else None
             query = Func("plainto_tsquery", (query,) if config is None else (config, query))
         return Comparison("match", self, query)
@@ -383,6 +381,16 @@ class Expression(Node, Generic[T]):
 def _not_none(value: Any, method: str) -> None:
     if value is None:
         raise TypeError(f"{method}() takes a JSON value, not None")
+
+
+def _json_operand(value: Any, method: str) -> Node:
+    """A JSON value (or a :func:`param`) as the operand of a containment test."""
+    _not_none(value, method)
+    if isinstance(value, Param):
+        return value
+    if isinstance(value, Node):
+        raise TypeError(f"{method}() takes a JSON value or a param(), not the expression {value!r}")
+    return Literal(value)
 
 
 def _escape_like(text: str) -> str:
@@ -826,6 +834,10 @@ class JsonPath(Expression[Any]):
         self._path: tuple[str | int, ...] = path
         self._text: bool = text
 
+    def __getitem__(self, index: int | str) -> JsonPath:  # type: ignore[override]
+        """The value under a key or at a 0-based array index, one step deeper."""
+        return JsonPath(self, (index,))
+
     def as_text(self) -> Expression[str | None]:
         """The value as text (the last step is ``->>``): a JSON string without quotes, so
         ``like``, ``contains`` and string functions work on it."""
@@ -1031,8 +1043,6 @@ class _Functions:
     def now(self) -> Func[datetime]:
         return Func("now")
 
-    # Branches of expressions only first: mypy can't solve `T` from `Expression[T] | T`
-    # when no plain value pins it.
     # Full-text search: PostgreSQL only. An optional first argument names the text search
     # configuration (``"english"``); without it the server's default applies.
 
@@ -1074,6 +1084,8 @@ class _Functions:
         """``ts_rank(vector, query)``: how well the document matches, for ``order_by``."""
         return Func("ts_rank", (vector, query))
 
+    # Branches of expressions only first: mypy can't solve `T` from `Expression[T] | T`
+    # when no plain value pins it.
     @overload
     def case(self, *whens: tuple[ConditionLike, Expression[T]], default: Expression[T] | T) -> Case[T]: ...
     @overload

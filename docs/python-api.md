@@ -390,15 +390,21 @@ Doc.meta.json_contained_by(value) / Doc.meta.has_key("tags")        # <@ / ?
 await Doc.objects.filter(...).update(meta=Doc.meta.json_merge({"seen": True}))   # meta || '{...}'
 ```
 
-* A path step is a string key or a 0-based integer index. The value is `jsonb`, so a
+* A path step is a string key or a 0-based integer index (a `String[]` column indexes
+  from 1, JSON from 0). The value is `jsonb`, so a
   comparison binds the other side as JSON: `== "x"` is the JSON string `"x"`, `== 5` the
-  number. `as_text()` ends a path and reads the value as text (`->>`).
+  number. `as_text()` reads the value as text (`->>`) and ends the path: no step can follow.
+  `== None` is `IS NULL` (a JSON `null` value is not SQL `NULL`). The comparison is `jsonb`
+  ordering across types, so `> 3` also matches `true`, `{}` and `[1]`.
 * On an array column, `col[1]` stays SQL's 1-based element access; a string key on a
   column that is not `Json` is a `TypeError`.
 * `json_contains`, `json_contained_by` and `has_key` work on the column and on a path,
-  and use a GIN index on the column (`@@index([meta], type: Gin)`).
+  and a GIN index on the column (`@@index([meta], type: Gin)`) serves `json_contains`,
+  `json_contained_by` and `has_key` on the column only, not on a path. They take a
+  `param()` in a prepared query.
 * `json_merge(value)` is `||`: objects merge one level deep (the keys of `value` win);
-  arrays join.
+  arrays join, and a scalar merged with an object or array makes an array. A column that is
+  `NULL` stays `NULL` after a merge.
 * PostgreSQL only: on SQLite these are a `QueryError`.
 
 ### Full-text search
@@ -413,13 +419,16 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
 
 * The first argument `"english"` names the text search configuration; without it the
   server's `default_text_search_config` applies. It is written into the SQL as
-  `'english'::regconfig` (it must be a name), so the expression matches an expression
-  index in every plan, also a prepared statement's generic plan.
+  `'english'::regconfig` (it must be a name), so an expression index on the same expression
+  is used in every plan, also a prepared statement's generic plan. A document bound as a
+  value (`param()`) is not an expression, so no index covers it.
 * `vector.matches("text")` with a plain string uses `plainto_tsquery` with the vector's
+  configuration; a `param()` query is wrapped the same way. A vector that is not
+  `to_tsvector(config, ...)` (for example a `coalesce(...)`) uses the server default
   configuration.
 * Index the same expression with a GIN index in the schema:
   `@@index([sql("to_tsvector('english', body)")], type: Gin)`.
-* `ts_rank` is a `float`. A tsvector or tsquery itself can't be a `select()` column.
+* `ts_rank` takes no plain string: pass a tsquery. It is a `float`. A tsvector or tsquery itself can't be a `select()` column.
 * PostgreSQL only: on SQLite these are a `QueryError`.
 
 ### Partial rows, OR of query sets, column paths
@@ -594,8 +603,11 @@ when its row exists but its column is NULL.
   await User.objects.select(User, func.count(User.posts, filter=User.posts.published))
   ```
 
-  Over a relation, the filter applies inside the correlated subquery; it must read the
-  same relation path as the aggregate. With `.over(...)` the filter comes before `OVER`.
+  Over a relation, the filter follows Django's rule: a condition on the aggregate's own
+  relation applies inside the correlated subquery (`FILTER`); a condition that reads only
+  to-one hops (`User.profile.role == x`) is a join, so it is an `EXISTS` at the outer level
+  and keeps all posts of a matching user; a condition that reads no column of the relation
+  filters the user, not the posts. With `.over(...)` the filter comes before `OVER`.
   SQLite supports `FILTER` since 3.30 (the bundled SQLite is newer).
 * **`func.array_agg(expr, order_by=, distinct=, filter=)`** collects the values into a
   `list` (`ARRAY_AGG`); `NULL` values are kept as `None`. Over no rows it gives `None`,
@@ -635,8 +647,8 @@ when its row exists but its column is NULL.
   await Post.objects.update(views=func.case((Post.views > 100, 100), default=Post.views))
   ```
 
-  Plain values bind with the type the context expects (the updated field, the other side
-  of a comparison), else with the type of the first branch that is not a plain value.
+  Plain values bind with the type the context expects (the updated field, or the other side
+  of a comparison when the `CASE` is on the right of it), else with the type of the first branch that is not a plain value.
   With only plain values, a float or `Decimal` among integers makes the result a float or
   `Decimal`.
 

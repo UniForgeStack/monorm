@@ -43,7 +43,7 @@ export {
   param,
   window,
 } from "./expr.js";
-export type { Many, Compat, Operand, OrderOptions } from "./expr.js";
+export type { AggregateOptions, CaseDefault, Many, Compat, Operand, OrderOptions } from "./expr.js";
 export { ModelMeta, Registry, column, define, describe, load, loads, registry } from "./model.js";
 export type { FieldInfo, ModelInfo, RelationInfo } from "./model.js";
 export type { Instance, ModelClass, RefreshOptions, Row, SchemaIR, SoftDeletable } from "./model.js";

@@ -322,15 +322,13 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
   }
 
   /** JSON: the value contains `value` at the top level (`col @> value`). PostgreSQL only. */
-  jsonContains(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null>): Condition<S, P> {
-    notNull(value, "jsonContains");
-    return new Comparison("contains", this, new Literal(value));
+  jsonContains(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null> | ParamRef<string>): Condition<S, P> {
+    return new Comparison("contains", this, jsonOperand(value, "jsonContains"));
   }
 
   /** JSON: `value` contains the value (`col <@ value`). PostgreSQL only. */
-  jsonContainedBy(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null>): Condition<S, P> {
-    notNull(value, "jsonContainedBy");
-    return new Comparison("contained_by", this, new Literal(value));
+  jsonContainedBy(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null> | ParamRef<string>): Condition<S, P> {
+    return new Comparison("contained_by", this, jsonOperand(value, "jsonContainedBy"));
   }
 
   /** JSON: the object has the top-level key `key`, or the array the string element
@@ -356,10 +354,10 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
 
   /** `vector @@ query`: the document matches the search. A plain string is
    * `plainto_tsquery(<config of the vector>, query)`. PostgreSQL only. */
-  matches<S2 extends string = never, P2 = {}>(this: Expression<TsVector, S, P>, query: string | Expression<TsQuery, S2, P2>): Condition<S | S2, P & P2> {
-    if (typeof query === "string") {
+  matches<S2 extends string = never, P2 = {}>(this: Expression<TsVector, S, P>, query: string | ParamRef<string> | Expression<TsQuery, S2, P2>): Condition<S | S2, P & P2> {
+    if (typeof query === "string" || query instanceof ParamRef) {
       const config = this instanceof Func && this.name === "to_tsvector" && this.args.length === 2 ? this.args[0]! : undefined;
-      query = new Func("plainto_tsquery", config === undefined ? [new Literal(query)] : [config, new Literal(query)]);
+      query = new Func("plainto_tsquery", config === undefined ? [wrap(query)] : [config, wrap(query)]);
     }
     return new Comparison("match", this, query) as never;
   }
@@ -457,6 +455,15 @@ function notNull(value: unknown, method: string): void {
   if (value === null) {
     throw new TypeError(`${method}() takes a JSON value, not null`);
   }
+}
+
+/** A JSON value (or a `param()`) as the operand of a containment test. */
+function jsonOperand(value: unknown, method: string): Node {
+  notNull(value, method);
+  if (value instanceof Node) {
+    throw new TypeError(`${method}() takes a JSON value or a param(), not an expression`);
+  }
+  return wrap(value);
 }
 
 function escapeLike(text: string): string {
@@ -827,6 +834,17 @@ export type CaseBranch = readonly [unknown, unknown];
 type CaseOf<Br extends CaseBranch, T, S extends string, P> = [Exclude<Br[0], Expression<boolean | null, string, unknown>>] extends [never]
   ? Case<T, S, P>
   : never;
+/** The branches of `B`, with every condition that is not a boolean expression replaced by the
+ * type a condition needs, so the call does not compile. */
+type CaseChecked<B extends readonly unknown[]> = {
+  [K in keyof B]: B[K] extends readonly [infer C, ...unknown[]]
+    ? 0 extends 1 & C
+      ? unknown
+      : [Exclude<C, Expression<boolean | null, string, unknown>>] extends [never]
+      ? unknown
+      : readonly [never, unknown]
+    : unknown;
+};
 /** The options of {@link Functions.case}: the value when no condition holds. */
 export type CaseDefault = { readonly default: unknown };
 /** The value type of a branch value: an expression's type, or a plain value's widened type. */
@@ -1225,9 +1243,9 @@ class Functions {
    * func.sum(func.case([Post.published, 1], { default: 0 }))
    * ```
    */
-  case<const B extends readonly CaseBranch[]>(...branches: B): CaseOf<B[number], CaseValue<B[number][1]> | null, CaseScope<B[number]>, CaseParams<B[number]>>;
+  case<const B extends readonly CaseBranch[]>(...branches: B & CaseChecked<B>): CaseOf<B[number], CaseValue<B[number][1]> | null, CaseScope<B[number]>, CaseParams<B[number]>>;
   case<const A extends readonly [...CaseBranch[], CaseDefault]>(
-    ...args: A
+    ...args: A & CaseChecked<A>
   ): CaseOf<
     Extract<A[number], CaseBranch>,
     CaseValue<Extract<A[number], CaseBranch>[1]> | CaseValue<Extract<A[number], CaseDefault>["default"]>,

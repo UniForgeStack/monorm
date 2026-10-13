@@ -176,5 +176,5 @@ fn full_text_search() {
     assert!(plan(Dialect::Postgres, vec![col("id")], vec![cmp("match", bad, query.clone())]).unwrap_err().contains("not a text search configuration"));
     assert!(plan(Dialect::Postgres, vec![vector.clone()], vec![]).unwrap_err().contains("can't be a select() column"));
     let error = plan(Dialect::Sqlite, vec![col("id")], vec![matches]).unwrap_err();
-    assert!(error.contains("full-text search needs PostgreSQL"), "{error}");
+    assert!(error.contains("sqlite does not support full-text search"), "{error}");
 }

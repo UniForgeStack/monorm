@@ -528,3 +528,13 @@ test("prefetch beyond the parameter limit", async () => {
   assert.equal(users.length, 70000);
   assert.equal(users.reduce((n, u) => n + u.posts.cached.length, 0), 7);
 });
+
+test("min() and avg() take a FILTER", async () => {
+  await seed();
+  const rows = await Post.objects
+    .select({ a: Post.authorId, lo: func.min(Post.views, { filter: Post.views.gt(10) }), mean: func.avg(Post.views, { filter: Post.views.gt(10) }) })
+    .groupBy(Post.authorId)
+    .orderBy(Post.authorId)
+    .all();
+  assert.deepEqual(rows.map((r) => [r.lo, Number(r.mean)]), [[20, 35], [100, 100]]);
+});

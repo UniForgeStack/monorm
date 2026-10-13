@@ -365,6 +365,7 @@ test("full-text search SQL", () => {
   assert.ok(Post.objects.orderBy(func.tsRank(vector, query).desc()).sql().includes(`ORDER BY CAST(TS_RANK(TO_TSVECTOR('english'::regconfig, "posts"."title"), WEBSEARCH_TO_TSQUERY('english'::regconfig, 'fox -lazy')) AS DOUBLE PRECISION) DESC`));
   assert.equal(where(Post.objects.filter(func.toTsvector(Post.body).matches(func.toTsquery("cat & !dog")))), `TO_TSVECTOR("posts"."body") @@ TO_TSQUERY('cat & !dog')`);
   assert.throws(() => Post.objects.filter(func.toTsvector("x'y", Post.title).matches("a")).sql(), /not a text search configuration/);
+  assert.ok(where(Post.objects.filter(func.toTsvector("español", Post.title).matches("a"))).startsWith(`TO_TSVECTOR('español'::regconfig`));
 });
 
 test("string functions and concatenation SQL", () => {
