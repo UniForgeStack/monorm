@@ -1134,8 +1134,12 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
 #   at app/views.py:42; use load(Customer.person)
 ```
 
-* The scope counts its statements by shape: the SQL with placeholders, without values.
-  It reads the same events as `db.on_query`, so prefetch queries and `update_many` batches count one by one.
+* The scope counts writes by call, reads by shape, each counted once per call.
+  A read's shape is its SQL with placeholders, without values.
+  A write (`insert`, `insert_many`, `update_many`, attach, COPY) counts under a key of the call: `insert:{model}:{fields}:{conflict}`, `update_many:{model}:{fields}:{filters}`.
+  So the batches of one `update_many`, or the chunks of one `insert_many`, are one query, and a loop of `insert_many` calls with different row counts is an N+1.
+  The same shape counts once per engine call, so the prefetch chunks of one call are one query.
+  The report prints the first real SQL of the key.
   The statements that a query hook sends do not count.
   Tasks started in the scope count too, and so do the queries of an inner scope.
   An inner scope cannot raise the threshold of an outer scope; the outer scope also counts the inner queries.
@@ -1191,7 +1195,7 @@ def log_slow(e: orm.QueryEvent) -> None:
 remove = db.on_query(log_slow)
 ```
 
-* `orm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix seconds), `duration` (seconds), `rows` and `error`.
+* `orm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL and `db.fetch(sql, *params)` have placeholders; `db.execute(sql)` goes as written, with any literal value in it), `start` (Unix seconds), `duration` (seconds), `rows`, `error` and `raw` (`True` for `db.execute(sql)`, which takes no parameters).
   `rows` is the rows returned, or the rows affected by a statement that returns no rows.
   `error` is the first line of the database's message when the statement failed; the ORM call still raises.
   The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
@@ -1224,7 +1228,7 @@ It needs `opentelemetry-api` (`pip install 'orm[otel]'`); configure the SDK and 
 
 * The span starts and ends at the statement's times. Its parent is the current span of the caller.
 * The span name is the SQL operation (`SELECT`, `INSERT`, ...).
-  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (as in the event, cut at 4096 characters then `...`) and `db.response.returned_rows`.
+  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (as in the event, cut at 4096 characters then `...`; left out for `db.execute(sql)` unless `instrument(db, raw_sql=True)`, because its SQL can hold literal values) and `db.response.returned_rows`.
 * A failed statement gets the `ERROR` status and the database's message.
 
 ### Hooks for packages: `orm.hooks`

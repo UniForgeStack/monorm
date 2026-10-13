@@ -7,7 +7,7 @@ import type { IR } from "./expr.js";
 import { registry as defaultRegistry, type Registry } from "./model.js";
 import { call, native, wait, type NativeEngine, type NativeTrace, type NativeTransaction } from "./native.js";
 import { allowedWrites } from "./protection.js";
-import { active as debugging, capture, record } from "./debug.js";
+import { active as debugging, capture, record, writeKey } from "./debug.js";
 
 let defaultDb: Database | undefined;
 
@@ -46,6 +46,15 @@ export interface QueryEvent {
   /** The database's error message when the statement failed, or `"cancelled"` when the call
    * ended before the statement did. */
   readonly error: string | null;
+  /** True for SQL the caller wrote as a string with no parameters ({@link Database.execute}): it
+   * can hold literal values. ORM-built SQL and {@link Database.fetch} are `false`. */
+  readonly raw: boolean;
+}
+
+/** @internal What an engine call tells the tracer: the parts of a write's N+1 key, and whether its SQL is raw. */
+export interface CallInfo {
+  readonly key?: readonly unknown[];
+  readonly raw?: boolean;
 }
 
 export interface SessionLockOptions {
@@ -130,31 +139,41 @@ export class Database {
 
   /** @internal Runs an engine call in the current transaction; traced when a hook or an
    * N+1 scope listens. */
-  send<T>(start: (tx: NativeTransaction | null, trace: NativeTrace | null) => Promise<T>): Promise<T> {
+  send<T>(start: (tx: NativeTransaction | null, trace: NativeTrace | null) => Promise<T>, call: CallInfo = {}): Promise<T> {
     const tx = this.tx();
     if (inHook.getStore() || (!this.root.#hooks.size && !debugging())) return wait(() => start(tx, null));
     const trace = new (native().Trace)();
-    return this.#observe(trace, capture(), wait(() => start(tx, trace)));
+    return this.#observe(trace, capture(), wait(() => start(tx, trace)), call);
   }
 
-  async #observe<T>(trace: NativeTrace, origin: ReturnType<typeof capture>, pending: Promise<T>): Promise<T> {
+  async #observe<T>(trace: NativeTrace, origin: ReturnType<typeof capture>, pending: Promise<T>, call: CallInfo): Promise<T> {
     let result: T;
     try {
       result = await pending;
     } catch (error) {
-      await this.#report(trace, origin, { error });
+      await this.#report(trace, origin, { error }, call);
       throw error;
     }
-    await this.#report(trace, origin, null);
+    await this.#report(trace, origin, null, call);
     return result;
   }
 
   /** Gives the events of a call to the N+1 finder and to every hook. `failed` is the error of
    * the call: it stays, and the hook errors become its `cause`. Throws the first hook error
    * when the call did not fail. */
-  async #report(trace: NativeTrace, origin: ReturnType<typeof capture>, failed: { readonly error: unknown } | null): Promise<void> {
-    const events: QueryEvent[] = trace.take().map((e) => ({ ...e, error: e.error ?? null }));
-    if (origin) for (const e of events) record(e.sql, origin);
+  async #report(trace: NativeTrace, origin: ReturnType<typeof capture>, failed: { readonly error: unknown } | null, call: CallInfo): Promise<void> {
+    const events: QueryEvent[] = trace.take().map((e) => ({ ...e, error: e.error ?? null, raw: call.raw === true }));
+    if (origin) {
+      // A write counts by its call, a read by its SQL shape; each key once per engine call.
+      const callKey = call.key ? writeKey(call.key) : null;
+      const seen = new Set<string>();
+      for (const e of events) {
+        const key = callKey ?? e.sql;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        record(key, e.sql, origin);
+      }
+    }
     const errors: unknown[] = [];
     for (const hook of [...this.root.#hooks.values()]) {
       for (const e of events) {
@@ -384,7 +403,7 @@ export class Database {
 
   /** Runs raw SQL (one or more statements); gives the number of rows affected. */
   execute(sql: string): Promise<number> {
-    return this.send((tx, trace) => this.engine.execute(sql, tx, trace));
+    return this.send((tx, trace) => this.engine.execute(sql, tx, trace), { raw: true });
   }
 
   /**

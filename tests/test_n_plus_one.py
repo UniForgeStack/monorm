@@ -208,3 +208,33 @@ async def test_a_block_that_raises_keeps_its_own_error(shop):
             for _ in range(3):
                 await Person.objects.using(db).filter(Person.id == 1).exists()
             raise KeyError("mine")
+
+
+async def test_one_update_many_call_counts_once_and_a_loop_of_insert_many_is_an_n_plus_one(shop):
+    Person, Customer, db = shop
+    people = [{"id": i, "name": f"q{i}"} for i in range(8)]
+    # SQLite update_many batches: CASE arms + an IN list, so each batch has its own SQL text.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with debug.n_plus_one(threshold=5, fail=True):
+            await Person.objects.using(db).update_many(people, batch_size=1)
+            await Person.objects.using(db).update_many(people, batch_size=3)
+    with pytest.raises(debug.NPlusOne) as raised:
+        with debug.n_plus_one(threshold=5, fail=True):
+            for n in range(1, 9):
+                await Customer.objects.using(db).insert_many(
+                    [{"id": 100 + n * 10 + i, "person_id": 0} for i in range(n)]
+                )
+    [shape] = raised.value.report.repeated
+    assert shape.count == 8 and shape.key.startswith("insert:Customer:") and shape.sql.startswith("INSERT")
+    with pytest.raises(debug.NPlusOne) as raised:
+        with debug.n_plus_one(threshold=5, fail=True):
+            for n in range(1, 9):
+                await Person.objects.using(db).update_many(people[:n])
+    assert [s.count for s in raised.value.report.repeated] == [8]
+    assert next(iter(raised.value.report.shapes)).startswith("update_many:Person:")
+    # Reads keep the SQL shape: a different IN size is a different shape.
+    with debug.n_plus_one(threshold=5, fail=True) as report:
+        for n in range(1, 9):
+            await Person.objects.using(db).filter(Person.id.in_(list(range(n)))).count()
+    assert not report.repeated

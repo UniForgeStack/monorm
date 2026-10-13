@@ -61,6 +61,9 @@ class QueryEvent:
     #: The database's error message when the statement failed, or ``"cancelled"`` when the
     #: caller stopped waiting for it.
     error: str | None
+    #: True for SQL the caller wrote as a string with no parameters (:meth:`Database.execute`):
+    #: it can hold literal values. ORM-built SQL and :meth:`Database.fetch` are False.
+    raw: bool = False
 
 
 class Database:
@@ -151,32 +154,56 @@ class Database:
 
         return remove
 
-    def _call(self, start: Callable[[_native.Trace | None], Awaitable[T]]) -> Awaitable[T]:
+    def _call(
+        self,
+        start: Callable[[_native.Trace | None], Awaitable[T]],
+        key: tuple[object, ...] | None = None,
+        raw: bool = False,
+    ) -> Awaitable[T]:
         """``start(trace)`` starts an engine call. Without hooks or an N+1 scope the
-        engine's awaitable comes back as is, untraced."""
+        engine's awaitable comes back as is, untraced. ``key`` (parts of a write's key)
+        makes the N+1 finder count the call once; ``raw`` marks its events as raw SQL."""
         if _in_hook.get() or (not self._root._hooks and debug._scope.get() is None):
             return start(None)
         trace = _native.Trace()
-        return self._observe(trace, debug.capture(), start(trace))
+        return self._observe(trace, debug.capture(), start(trace), key, raw)
 
-    async def _observe(self, trace: _native.Trace, origin: tuple[str, str | None] | None, call: Awaitable[T]) -> T:
+    async def _observe(
+        self,
+        trace: _native.Trace,
+        origin: tuple[str, str | None] | None,
+        call: Awaitable[T],
+        key: tuple[object, ...] | None,
+        raw: bool,
+    ) -> T:
         try:
             result = await call
         except BaseException as error:
-            await self._report(trace, origin, error)
+            await self._report(trace, origin, error, key, raw)
             raise
-        await self._report(trace, origin, None)
+        await self._report(trace, origin, None, key, raw)
         return result
 
     async def _report(
-        self, trace: _native.Trace, origin: tuple[str, str | None] | None, failed: BaseException | None
+        self,
+        trace: _native.Trace,
+        origin: tuple[str, str | None] | None,
+        failed: BaseException | None,
+        key: tuple[object, ...] | None,
+        raw: bool,
     ) -> None:
         """Gives the events of a call to the N+1 finder and to every hook. ``failed`` is the
         error of the call: it stays, and the hook errors become notes on it."""
-        events = [QueryEvent(*e) for e in trace.take()]
+        events = [QueryEvent(*e, raw) for e in trace.take()]
         if origin is not None:
+            # A write counts by its call, a read by its SQL shape; each key once per engine call.
+            call_key = debug.write_key(key) if key is not None else None
+            seen: set[str] = set()
             for e in events:
-                debug.record(e.sql, origin)
+                k = call_key if call_key is not None else e.sql
+                if k not in seen:
+                    seen.add(k)
+                    debug.record(k, e.sql, origin)
         errors: list[Exception] = []
         for hook in list(self._root._hooks.values()):
             for e in events:
@@ -229,12 +256,15 @@ class Database:
         return await self._call(
             lambda t: self._engine.insert(
                 model, fields, rows, conflict, update, set_json, params, tx, db, allowed, batch_size, wh, t, returning
-            )
+            ),
+            ("insert", model, fields, conflict),
         )
 
     async def _copy(self, model: str, fields: list[str], rows: list[list[Any]]) -> int:
         tx, allowed = self._tx(), allowed_writes()
-        n: int = await self._call(lambda t: self._engine.copy_insert(model, fields, rows, tx, allowed, t))
+        n: int = await self._call(
+            lambda t: self._engine.copy_insert(model, fields, rows, tx, allowed, t), ("copy", model, fields)
+        )
         return n
 
     async def _update_many(
@@ -254,7 +284,8 @@ class Database:
         return await self._call(
             lambda t: self._engine.update_many(
                 model, fields, rows, filters_json, params, returning, batch_size, tx, db, without_defaults, allowed, t
-            )
+            ),
+            ("update_many", model, fields, filters_json),
         )
 
     @asynccontextmanager
@@ -420,7 +451,7 @@ class Database:
     async def execute(self, sql: str) -> int:
         """Run raw SQL (one or more statements); returns the number of rows affected."""
         tx = self._tx()
-        return await self._call(lambda t: self._engine.execute(sql, tx, t))
+        return await self._call(lambda t: self._engine.execute(sql, tx, t), raw=True)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         """Run one raw SQL query with parameters; returns its rows as dicts by column name.
