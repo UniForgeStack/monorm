@@ -1419,7 +1419,7 @@ impl<'s> Planner<'s> {
                 }
             };
         }
-        Ok(template(self.target.dialect, sql, exprs))
+        Ok(template(self.target.dialect, format!("({sql})"), exprs))
     }
 
     /// `CASE WHEN ... THEN ... ELSE ... END`. Plain values bind with the type the context

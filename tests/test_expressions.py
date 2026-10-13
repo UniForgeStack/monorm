@@ -49,10 +49,10 @@ async def docs():
 def test_json_path_sql():
     _, Doc = load()
     assert Doc.objects.filter(Doc.meta["author"]["name"] == "Ann").sql().endswith(
-        """WHERE (("expr_docs"."meta" -> 'author') -> 'name') = '"Ann"'"""
+        """WHERE ((("expr_docs"."meta" -> 'author') -> 'name')) = '"Ann"'"""
     )
     assert Doc.objects.filter(Doc.meta["tags"][0].as_text() == "x").sql().endswith(
-        """WHERE (("expr_docs"."meta" -> 'tags') ->> 0) = 'x'"""
+        """WHERE ((("expr_docs"."meta" -> 'tags') ->> 0)) = 'x'"""
     )
     assert Doc.objects.filter(Doc.meta.json_contains({"kind": "post"})).sql().endswith(
         """WHERE "expr_docs"."meta" @> '{"kind":"post"}'"""
@@ -91,6 +91,22 @@ async def test_json_merge_in_update(docs):
     await objects.filter(Doc.title == "c").update(meta=Doc.meta.json_merge({"n": 10, "seen": True}))
     doc = await objects.get(Doc.title == "c")
     assert doc.meta == {"kind": "post", "n": 10, "seen": True}
+
+
+async def test_json_merge_with_a_path_keeps_the_object(docs):
+    Doc, objects = docs
+    await objects.insert_many([{"title": "d", "meta": {"a": {"x": 1}, "b": 2, "k": "v"}}])
+    await objects.filter(Doc.title == "d").update(meta=Doc.meta.json_merge(Doc.meta["a"]))
+    assert (await objects.get(Doc.title == "d")).meta == {"a": {"x": 1}, "b": 2, "k": "v", "x": 1}
+    assert await objects.filter(Doc.title == "d").select(Doc.title.concat(Doc.meta["k"].as_text())).scalars() == ["dv"]
+
+
+async def test_json_methods_refuse_none(docs):
+    Doc, objects = docs
+    for call in (Doc.meta.json_merge, Doc.meta.json_contains, Doc.meta.json_contained_by):
+        with pytest.raises(TypeError, match="not None"):
+            call(None)
+    assert (await objects.get(Doc.title == "c")).meta == {"kind": "post", "n": 9}
 
 
 async def test_json_on_sqlite_is_an_error():

@@ -63,6 +63,21 @@ test("JSON merge in an update", async () => {
   assert.deepEqual(doc.meta, { kind: "post", n: 10, seen: true });
 });
 
+test("JSON merge with a path on the right keeps the object", async () => {
+  await objects().insertMany([{ title: "d", meta: { a: { x: 1 }, b: 2, k: "v" } }]);
+  await objects().filter(Doc.title.eq("d")).update({ meta: Doc.meta.jsonMerge(Doc.meta.get("a")) });
+  assert.deepEqual((await objects().get(Doc.title.eq("d"))).meta, { a: { x: 1 }, b: 2, k: "v", x: 1 });
+  const rows = await objects().filter(Doc.title.eq("d")).select({ v: Doc.title.concat(Doc.meta.get("k").asText()) }).scalars();
+  assert.deepEqual(rows, ["dv"]);
+});
+
+test("JSON methods refuse null", async () => {
+  for (const call of ["jsonMerge", "jsonContains", "jsonContainedBy"]) {
+    assert.throws(() => Doc.meta[call](null), TypeError);
+  }
+  assert.deepEqual((await objects().get(Doc.title.eq("c"))).meta, { kind: "post", n: 10, seen: true });
+});
+
 test("JSON operators on SQLite are an error", async () => {
   const lite = new Registry();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

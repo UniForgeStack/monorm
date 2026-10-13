@@ -154,7 +154,7 @@ fn json_paths_containment_and_merge() {
     let has = json!({"t":"cmp","op":"has_key","l":col("meta"),"r":text("k")});
     let merge = json!({"t":"arith","op":"json_merge","l":col("meta"),"r":col("meta")});
     assert_eq!(plan(&pg, Dialect::Postgres, vec![path.clone(), has.clone(), merge.clone()]).unwrap(),
-        r#"SELECT (("docs"."meta" -> $1) -> 0) ->> $2, "docs"."meta" ? $3, "docs"."meta" || "docs"."meta" FROM "docs""#);
+        r#"SELECT ((("docs"."meta" -> $1) -> 0) ->> $2), "docs"."meta" ? $3, "docs"."meta" || "docs"."meta" FROM "docs""#);
     let not_json = json!({"t":"json_path","item":col("title"),"path":["a"]});
     assert!(plan(&pg, Dialect::Postgres, vec![not_json]).unwrap_err().contains("needs a Json column"));
     fields.truncate(3);
