@@ -1408,6 +1408,7 @@ class RelatedSet(QuerySet[M]):
         super().__init__(relation.target)
         self._relation = relation
         self._instance = instance
+        self._db = instance.__dict__.get("_db")
         from .model import key_match
 
         fields = relation.target._meta.fields
@@ -1490,6 +1491,7 @@ class ManyRelatedSet(QuerySet[M]):
         super().__init__(relation.target)
         self._relation = relation
         self._instance = instance
+        self._db = instance.__dict__.get("_db")
         join = relation.through
         fields = join._meta.fields
         source: ColumnRef[Any] = ColumnRef(join, (), fields[relation.source])

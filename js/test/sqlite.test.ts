@@ -159,6 +159,17 @@ test("SQLite outer() through a relation path", async () => {
   } finally { await db.close(); }
 });
 
+test("SQLite related sets use the database of their instance", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const alice = await Author.objects.using(db).insert({ email: "a@example.com", name: "Alice" });
+    await alice.books.insert({ title: "one" });
+    assert.deepEqual((await alice.books.all()).map((b) => b.title), ["one"]);
+    assert.equal(await alice.books.filter(Book.pages.eq(0)).count(), 1);
+  } finally { await db.close(); }
+});
+
 test("SQLite string functions and concatenation", async () => {
   const registry = new Registry();
   const Note = loads(`

@@ -4,8 +4,9 @@ The schema is written once, in a `.prisma` file, and every language uses it:
 
 ```
 schema.prisma ──▶ orm-core (Rust) ──▶ schema IR (JSON) ──▶ Python: orm.load() / generated models.py + .pyi
-   ▲                 │                                └──▶ JS / Go / ...: the same IR (bindings to come)
-extensions/*.toml    │
+   ▲                 │                                └──▶ TypeScript: loads() / generated models.ts
+core/extensions/     │
+  postgres/*.toml    │
                      ├──▶ migrations/NNNN_name/{up.sql, down.sql, snapshot.json}
                      └──▶ PostgreSQL / SQLite DDL (create_tables)
 ```
@@ -19,16 +20,16 @@ the mapping from the old `.orm` syntax, is in [`prisma-syntax.md`](prisma-syntax
 
 No Python, Rust or JS class describes the schema. The parser, the extension catalog,
 the migration generator and the code generators live in the binding-free `core/` crate,
-so each language binding only loads the result. The same crate builds the `orm`
-command-line tool, which needs no Python.
+so each language binding only loads the result. The `orm` command-line tool (`cli/`,
+crate `orm-cli`) uses the same crate and needs no Python.
 
 | Path | What |
 |---|---|
 | `core/src/dsl/` | parser (`syntax.rs`) and lowering to the IR (`lower.rs`) |
 | `core/src/ext.rs`, `core/extensions/postgres/*.toml` | extension files and the catalog built from them |
 | `core/src/migrate/` | snapshot model, diff, PostgreSQL / SQLite renderers, migration folders |
-| `core/src/codegen/python.rs` | `models.py` / `models.pyi` generator |
-| `core/src/main.rs` | the `orm` CLI |
+| `core/src/codegen/python.rs`, `typescript.rs` | `models.py` / `models.pyi` and `models.ts` generators |
+| `cli/src/` | the `orm` CLI |
 | `python/orm/model.py` | `orm.load()` / `orm.loads()` / `orm.define()`: model classes from the IR |
 | `python/orm/migrations.py`, `__main__.py` | migration runner and `python -m orm` |
 
@@ -541,6 +542,25 @@ as `Unsupported("money(12)")`. Unknown keys in a file are an error.
 The planner applies `read` / `write` in `SELECT`, `RETURNING`, `INSERT`, `UPDATE` and
 comparisons, so queries on extension-typed columns look like any other.
 
+These catalog files add database types and functions only.
+Behavior (new attributes, proxies, defaults) comes from build-time extensions, below.
+
+### Build-time extension attributes
+
+A namespaced attribute belongs to a build-time extension crate.
+The artifact must be built with that crate ([build-time-extensions.md](build-time-extensions.md#select-feature-extensions));
+otherwise definition fails with `@<name>: not compiled into this artifact; rebuild with its extension`.
+
+| Attribute | Extension | Doc |
+|---|---|---|
+| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | proxy-models | [proxy-models.md](proxy-models.md) |
+| `@@query.defaults(filter:, fields:, related:, parent:, order:)`, `@@query.filter`, `@@query.fields`, `@@query.related`, `@@query.order`, `@@query.parent`, `@query.selectOut` | query-defaults | [selection-and-defaults.md](selection-and-defaults.md) |
+| `@@composition.model(parent:, parentRef:, childRef:)` | model-composition | [model-composition.md](model-composition.md) |
+| `@storage.file(storage:)` | file-storage | [file-storage.md](file-storage.md) |
+| `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic-relations | [generic-identities.md](generic-identities.md) |
+
+`@client_default`, enum subsets in proxies (`Status(ACTIVE)`) and `@@protected_write` are core syntax.
+
 ## Code generation
 
 ```bash
@@ -553,7 +573,7 @@ orm generate python -o app/models.py     # the standalone binary: say which lang
 schema detail is restated in Python. `models.pyi` gives editors and type checkers the
 typed classes, relation paths (`User.posts.created_at` is `ColumnRef[datetime]`),
 insert / update `TypedDict`s and query sets (see [`python-api.md`](python-api.md)).
-`tests/test_migrations.py` checks that the committed blog module is up to date.
+`tests/test_migrations.py` and `js/test/migrations.test.ts` check that the committed blog modules are up to date.
 Without generation, `orm.load("schema.prisma")` returns the same classes at runtime.
 TypeScript: see [`typescript-api.md`](typescript-api.md).
 
@@ -744,13 +764,11 @@ snapshot uses must be installed.
 `sea-orm-migration` and Refinery are runners for hand-written migrations. Refinery
 has no down migrations and doesn't use sqlx. SeaORM's entity schema sync only adds
 missing tables and columns. None has triggers, exclusion constraints, extensions,
-renames or snapshot diffs, and using them would tie the migration IR to one engine. If
-the runner moves into Rust so every binding shares it, `sqlx::migrate` (already a
-dependency) is the natural base.
+renames or snapshot diffs, and using them would tie the migration IR to one engine.
+The runner is in Rust (`engine/src/migrate.rs`), shared by every binding.
 
 ## Not done yet
 
-* TypeScript generation and the JS binding.
 * `CREATE INDEX CONCURRENTLY` / non-transactional migrations.
 * Generated columns, views, domains, row-level security, partitioning, multiple
   database schemas.

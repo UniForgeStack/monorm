@@ -1,0 +1,7 @@
+// Needs the file-storage extension (orm-file-storage-extension) and the storage packages.
+
+model Report {
+  id   Int   @id
+  file Json? @storage.file(storage: "reports")
+  @@map("demo_reports")
+}

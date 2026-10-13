@@ -99,10 +99,10 @@ for paired nulls and the allowed discriminator subset, plus forward/reverse setu
 metadata. It contributes no conventional multi-target foreign key. Database checks
 preserve pair validity for external scalar writes without promising target existence.
 
-**Delivery state:** this milestone implements identities and compiler contributions.
-The `orm-generic` manifest declares the `generic-relations` capability, so selecting
-it in `orm-extension-build` compiles the native generic modules and the artifact
-accepts generic setup metadata. Native artifacts without it reject that metadata at
-definition. The binding generic routing/loading/prefetch/reverse APIs and binding
-unions are still being implemented; the key and discriminator columns are ordinary
-fields until then.
+**Enable:** select the `orm-generic` crate (`extensions/generic`) in your build.
+See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
+Its manifest declares the `generic-relations` capability; native artifacts without it reject generic setup metadata at definition.
+Frozen identities and `ContentType` work in every build.
+
+**Limits:** the bindings have no generic accessor, loader, prefetch or reverse query API, and no generated target union.
+The type and key columns are ordinary fields: write `ContentType.<Model>` and the target key, and filter on them.

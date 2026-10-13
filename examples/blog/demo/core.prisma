@@ -1,0 +1,71 @@
+// The core section of demo.py / demo.ts: no extension attribute, so every build runs it.
+// The demos put `datasource db { provider = "sqlite" | "postgresql" }` in front.
+
+enum Role {
+  member
+  admin
+  @@storage(text)
+}
+
+model User {
+  id         BigInt    @id @default(autoincrement())
+  email      String    @unique
+  name       String
+  role       Role      @default(member)
+  token      String    @client_default(uuid())
+  created_at DateTime  @default(now())
+  posts      Post[]
+  comments   Comment[]
+  @@map("demo_users")
+}
+
+model Post {
+  id         BigInt    @id @default(autoincrement())
+  author_id  BigInt
+  title      String
+  views      Int       @default(0)
+  published  Boolean   @default(false)
+  created_at DateTime  @default(now())
+  author     User      @relation(fields: [author_id], references: [id], onDelete: Cascade)
+  comments   Comment[]
+  tags       Tag[]     @relation(through: PostTag)
+  post_tags  PostTag[]
+  @@index([author_id, -created_at])
+  @@map("demo_posts")
+}
+
+model Comment {
+  id        BigInt  @id @default(autoincrement())
+  post_id   BigInt
+  author_id BigInt?
+  body      String
+  post      Post    @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  author    User?   @relation(fields: [author_id], references: [id], onDelete: SetNull)
+  @@map("demo_comments")
+}
+
+model Tag {
+  id        BigInt    @id @default(autoincrement())
+  name      String    @unique
+  posts     Post[]    @relation(through: PostTag)
+  post_tags PostTag[]
+  @@map("demo_tags")
+}
+
+model PostTag {
+  id      BigInt @id @default(autoincrement())
+  post_id BigInt
+  tag_id  BigInt
+  post    Post   @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  tag     Tag    @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+  @@unique([post_id, tag_id])
+  @@map("demo_post_tags")
+}
+
+// Only code inside allow_writes / allowWrites can write this table through the ORM.
+model AuditLog {
+  id     BigInt @id @default(autoincrement())
+  action String
+  @@protected_write
+  @@map("demo_audit_log")
+}

@@ -63,11 +63,15 @@ static extension host; extension contract/compiler logic belongs to the build-ti
 extension system. It is distinct from model composition.
 
 Baseline native profiles do not claim optional query-defaults, reference-loading,
-proxy-models, model-composition, file-storage or generic-relations support. Their
-feature owners supply the real code and exclusion gates. Custom source artifacts
-may select verified capabilities and extensions. A marker package cannot add code
-to an already compiled engine. Refer to [build-time extensions](build-time-extensions.md)
-for extension manifests and build environment requirements.
+proxy-models, model-composition, file-storage or generic-relations support.
+The tooling profile and the default binding builds add `reference-loading`.
+The five feature extensions come only from extension crates selected in
+`orm-extension-build`; do not pass their host features by hand (for example
+`maturin build --features proxy-models`). A marker package cannot add code to an
+already compiled engine. [Build-time extensions](build-time-extensions.md#select-feature-extensions)
+has the configuration, the build commands and the packaging step: the Python library
+goes into an `orm_native_custom` package (`ORM_PROFILE=custom`), and the Node library
+is selected with `ORM_NATIVE`.
 
 Build a custom Python artifact using the `custom` template. Every artifact embeds
 its build record in `profile_metadata()["build"]`: the exact Cargo features, the

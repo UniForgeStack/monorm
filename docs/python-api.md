@@ -1,10 +1,10 @@
-# Python API (Phase 1 prototype)
+# Python API
 
 The query style is SQLAlchemy's: typed expressions over model attributes. The model
 layer is Django's: `Model.objects` managers, `load()` (Django's `only` / `select_related` / `prefetch_related`),
 `DoesNotExist` per model. Everything is async. Queries compile to the ORM IR in Python
 and cross into Rust once per operation. Rust plans the SQL with sea-query and runs it
-with its own Postgres driver (tokio-postgres; see [Drivers and dialects](#drivers-and-dialects)).
+with its own drivers (tokio-postgres for PostgreSQL, rusqlite for SQLite; see [Drivers and dialects](#drivers-and-dialects)).
 
 ```python
 yesterday = datetime.now(timezone.utc) - timedelta(days=1)
@@ -15,15 +15,21 @@ users = await User.objects.filter(User.posts.created_at < yesterday)
 the `.pyi` stub, `User.posts` is the path class of `Post`. The filter joins
 automatically: each relation hop becomes a correlated `EXISTS`.
 
+Samples use the blog models (`examples/blog/schema.prisma`). A sample that starts
+with `# sketch` uses other models and is not run. `examples/blog/demo.py` runs the
+main API on SQLite and PostgreSQL. Feature extensions (proxies, query defaults,
+composition, file fields, generic relations) have their own docs: see [README.md](README.md).
+
 ## Layout
 
 | Path | What |
 |---|---|
-| `python/orm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `db.py` (connections, transactions), `schema.py` / `migrations.py` / `ext/` (schema objects, migrations, extensions: [`schema.md`](schema.md)) |
+| `python/orm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](schema.md)), `_profiles.py` (native profile selection) |
 | `core/` | Rust crate `orm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `orm` CLI (see [`schema.md`](schema.md)) |
-| `engine/` | Rust crate `orm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
+| `engine/` | Rust crate `orm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
 | `cli/` | Rust crate `orm-cli`: the `orm` command line, run as the `orm` binary, `python -m orm` and `npx orm` |
-| `bindings/python/` | Rust crate `orm._native` (PyO3) on top of `orm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `lib.rs` |
+| `bindings/python/` | Rust crate `orm-python` (PyO3) on top of `orm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `orm_native_<profile>._native`; `orm._native` forwards to the selected profile |
+| `packaging/python/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation), `custom` (an extension build): [`optional-packaging.md`](optional-packaging.md) |
 | `bindings/node/`, `js/` | The TypeScript package on the same engine: [`typescript-api.md`](typescript-api.md) |
 | `examples/blog/` | `schema.prisma`, the `models.py` / `models.pyi` generated from it, its migrations, `demo.py` |
 | `tests/` | SQL shape tests (no DB), Postgres end-to-end tests, mypy + pyright stub checks |
@@ -36,8 +42,12 @@ uv pip install maturin pytest pytest-asyncio mypy pyright
 uv pip install -e .        # the thin orm package
 (cd packaging/python/tooling && maturin develop)   # native tooling profile; --release for benchmarks
 python -m pytest           # needs Postgres; ORM_TEST_DATABASE_URL overrides the default URL
-python examples/blog/demo.py
+python examples/blog/demo.py sqlite://:memory:
 ```
+
+`orm` needs exactly one native profile: install `orm[postgres]`, `orm[sqlite]`,
+`orm[combined]` or `orm[tooling]`. Set `ORM_PROFILE` when more than one is installed;
+`ORM_PROFILE=custom` selects an extension build ([`build-time-extensions.md`](build-time-extensions.md)).
 
 ## Models: the generated module
 
@@ -51,11 +61,41 @@ python examples/blog/demo.py
     `update()`);
   * a **path class** `_PostPath` listing the model's columns as `ColumnRef[T]` and its
     relations as other path classes. This is what makes `User.posts.<TAB>` complete;
-  * `PostInsert` / `PostUpdate` **TypedDicts**: the row shapes `insert` and `update`
-    accept (required vs optional fields come from the schema);
-  * a **query set class** `PostQuerySet` with `insert()`, `insert_many()` and
-    `update()` typed by those TypedDicts, since `objects`, `filter()` and the other
-    builders return `Self`.
+  * `PostInsert` / `PostUpdate` / `PostUpdateRow` **TypedDicts**: the row shapes `insert`,
+    `update` and `update_many` accept (required vs optional fields come from the schema);
+    a composed model also gets `<Model>Attach` ([`model-composition.md`](model-composition.md));
+  * a **query set class** `PostQuerySet` with `insert()`, `insert_many()`, `update()` and
+    `update_many()` typed by those TypedDicts, since `objects`, `filter()` and the other
+    builders return `Self`;
+  * a `load_<relation>()` method for each to-one relation ([`async-reference-loading.md`](async-reference-loading.md)).
+
+`orm.define(schema, *, registry=None, module=None, required_capabilities=())` builds the
+classes from a compiled IR; `orm.load(path)` and `orm.loads(source)` compile a schema
+file or text first. Each returns the model and enum classes by name. Classes join
+`orm.registry` unless you pass `registry=orm.Registry()`; `connect(..., registry=...)`
+uses that registry.
+
+Models can also be declared as classes, without a schema file:
+
+```python
+from orm.fields import Integer, String
+
+class Counter(orm.Model, registry=registry, table="counters"):
+    id = Integer(primary_key=True)
+    label = String(default=lambda: "new", nullable=True)          # Python callable default
+    token = String(client_default={"call": "uuid"}, nullable=True)  # the IR of @client_default(uuid())
+
+registry.prepare()
+```
+
+`Field(*, primary_key=False, auto_increment=False, nullable=False, unique=False,
+index=False, column=None, default=MISSING, default_now=False, server_default=False,
+client_default=None)` is the base of every field class in `orm.fields`. `default` is a
+literal (a database default) or a callable (run by the ORM for each insert).
+`client_default` takes the IR form of `@client_default`: a literal or
+`{"call": "uuid" | "uuid7" | "now"}`. `has_insert_default` tells whether an omitted
+value gets filled. Queries on an unprepared class registry fail; `connect()` also
+prepares it.
 
 The descriptors behave differently on the class and on an instance:
 
@@ -65,6 +105,9 @@ The descriptors behave differently on the class and on an instance:
 | to-one `Post.author` | `_UserPath` | `User`, if loaded, else `NotLoaded` |
 | to-many `User.posts` | `_PostPath` | `RelatedSet[Post]`: a query set over the user's posts |
 | one-to-one `User.profile` | `_ProfilePath` | `Profile` or `None`, if loaded, else `NotLoaded` |
+
+An instance also has `pk` (its primary key value), `to_dict()` (its loaded fields) and
+the write methods in [Writes](#writes).
 | many-to-many `Post.tags` | `_TagPath` | `ManyRelatedSet[Tag]`: the post's tags, with `add()` / `remove()` |
 
 ## Custom query-set methods
@@ -135,6 +178,11 @@ await qs.count() / qs.exists()
 await qs.in_bulk([1, 2, 3])                   # {1: <User 1>, 3: <User 3>}: by pk, missing ids left out
 await qs.in_bulk(emails, field=User.email)    # by a unique field; no ids: every row
 qs.sql()                                      # SQL with values inlined, for debugging
+qs.limit(n) / qs.offset(n)                    # the same as a slice; takes orm.param()
+qs.load(User.name, User.email)                # partial instances: other fields raise NotLoaded
+qs.without_defaults()                         # skip the schema query defaults (query-defaults extension)
+qs.without_related()                          # drop default and explicit relation loading
+qs.model                                      # the model class
 ```
 
 A model with a composite primary key (`@@id([shop, id])`) has a tuple `pk` in key order, `(1, 7)`.
@@ -151,10 +199,11 @@ normal zero/false results.
 `.asc(nulls="first")` and `.desc(nulls="last")` place NULLs; without `nulls`, the database decides.
 `-column` is a descending `Ordering`, for `order_by()` and a relation query set.
 It is never SQL negation: write `0 - Post.views` for that.
+`ordering.reversed()` gives the opposite order, NULL placement included.
 `-` works on a column only, and an ordering in `filter()` or `select()` is a `TypeError`.
 
 Expressions: `== != < <= > >=` (with `== None` meaning `IS NULL`), `.in_()`,
-`.not_in()`, `.is_null()`, `.between()`, `.like()` / `.ilike()` / `.contains()` /
+`.not_in()`, `.is_null()` / `.is_not_null()`, `.between()`, `.like()` / `.ilike()` / `.contains()` /
 `.icontains()` / `.startswith()` / `.endswith()` (only on string columns; wildcards in
 the argument are escaped), `+ - * /`. Combine with `& | ~` or `and_() / or_() / not_()`.
 A boolean column is a condition by itself: `filter(Post.published)`. Using Python's
@@ -216,7 +265,7 @@ await Comment.objects.load(Comment.post.objects.as_prefetch())   # to-one by IN 
 
 The main query and its prefetch queries run in the same Rust call, one query per
 relation level (keys deduplicated, `NULL` keys skipped). Each key is a bound parameter,
-so more keys than a statement takes (65 535 on Postgres, the dialect's `max_params`)
+so more keys than a statement takes (the dialect's `max_params`: 65 535 on Postgres, 32 766 on SQLite)
 split into several queries; the split is between parents, so ordering and slices per
 parent are unaffected. (Django doesn't split: on Postgres it inlines the values into the
 SQL text client-side, so the limit doesn't apply to it.)
@@ -419,7 +468,7 @@ The primary key is added as the last order column when no column of the order is
 * `next_cursor` is the cursor of the last item, and `previous_cursor` that of the first; both are `None` on an empty page.
 * `has_next` / `has_previous` come from one extra row in the direction of reading. In the other direction, they are `True` when the call gave a cursor.
 * Order columns are columns of the model itself: an expression or a related column is a `QueryError`. JSON, array and enum columns are a `QueryError` too.
-* A nullable order column needs `nulls=`: `Post.rank.desc(nulls="last")`.
+* A nullable order column needs `nulls=`: `Comment.author_id.desc(nulls="last")`.
 * A cursor is opaque base64 of the order values and a fingerprint of the order. A cursor from another order or model is a `QueryError`.
 * A cursor is not signed. A client can change it to start at any position of the same order, so do not use it for access control.
 * A malformed cursor, or one with a value its column can't hold, is `QueryError("invalid cursor")`; a cursor that is not a string is a `TypeError`.
@@ -443,6 +492,7 @@ post = await post_by_id.get(id=post_id)         # Post | None; also .first() .co
 post = await post_by_id.require().get(id=post_id)  # Post; absence raises
 posts = await latest(user=me.id, n=20, skip=40) # the rows
 latest.params                                   # frozenset({'user', 'n', 'skip'})
+latest.sql(user=1, n=20, skip=0)                # the SQL with these values, for debugging
 ```
 
 A call copies the stored parameter list, fills in the values and hands the stored IR
@@ -488,6 +538,7 @@ await qs.select(...).get()                                      # Row | None; re
 await qs.select(...).require().get(Post.id == post_id)           # exactly one matching Row
 await Post.objects.select(Post.title, Post.author.name.label("author"))   # to-one: LEFT JOIN
 await Post.objects.select(Post.author_id).distinct()
+await Post.objects.select(func.count(Post.author_id, distinct=True)).scalar()   # also sum / avg
 await Post.objects.select(Post.title).distinct(Post.author_id).order_by(Post.author_id, Post.views.desc())
 
 # The model plus computed values (Django's annotate):
@@ -828,7 +879,7 @@ await post.refresh(Post.views)                   # some fields
   values only. Postgres gets one `UPDATE posts SET title = v.column2 FROM (VALUES ...) AS
   v WHERE posts.id = v.column1` per batch; databases without `UPDATE ... FROM` will get
   Django's `SET title = CASE WHEN id = ... THEN ... END WHERE id IN (...)`. Batches hold as
-  many rows as fit in 65535 parameters unless `batch_size` says fewer, and run in one
+  many rows as fit in the dialect's `max_params` unless `batch_size` says fewer, and run in one
   transaction. The query set's filters still apply (`alice.posts.update_many(rows)`
   leaves other authors' posts alone); ids that match nothing are skipped.
 * A write statement that is never awaited emits a `RuntimeWarning`, the same safety
@@ -859,6 +910,18 @@ The column-role extensions change these writes (see `schema-extensions.md`).
 `@timestamps.updated_at` and `@locking.version` fields are set on each update.
 On a `@soft_delete.deleted_at` model, `delete()` soft-deletes, and `hard_delete()`, `undelete()`, `all_with_deleted()` and `deleted_only()` exist.
 A stale versioned instance write raises `orm.VersionConflict`.
+
+### Connections
+
+```python
+db = await orm.connect("postgres://user:pw@host/db", max_connections=10)   # also sqlite:///path, sqlite://:memory:
+other = await orm.connect(url, default=False, registry=registry)          # not the default database
+orm.get_database()                     # the default database; NotConnected before connect()
+await db.execute("VACUUM")             # raw SQL, returns the row count; no ORM checks apply
+await db.create_tables(); await db.drop_tables()
+await db.close()
+User.objects.using(other)              # run a query set on another database
+```
 
 ### Transactions
 
@@ -954,7 +1017,7 @@ See `docs/schema.md`, "Protected writes".
 async with db.transaction():
     post = await Post.objects.lock().require().get(Post.id == 1)                      # FOR UPDATE
     await Post.objects.filter(...).lock(exclusive=False)                     # FOR SHARE
-    jobs = await Job.objects.filter(Job.state == "ready").lock(skip_locked=True).limit(10)
+    todo = await Post.objects.filter(~Post.published).lock(skip_locked=True).limit(10)
     await Post.objects.lock(nowait=True).get(...)       # raises orm.LockNotAvailable if locked
     await post.refresh(lock=True)                       # reload and lock this row
     if not await job.refresh(lock=True, skip_locked=True):  # False: another worker has it
@@ -978,6 +1041,7 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   ends, so they raise `orm.TransactionRequired` outside `db.transaction()`. `count()` / `exists()` /
   `update()` / `delete()` on a locked query set raise `QueryError` (writes lock the rows
   they change anyway).
+* SQLite has no row locks and no advisory locks: `lock()` and `db.lock()` raise `QueryError` there.
 * `db.lock(key)` is a transaction-scoped Postgres advisory lock. Postgres keys are
   64-bit integers; a `str` key is hashed to one in Python (first 8 bytes of BLAKE2b,
   signed big-endian).
@@ -1054,6 +1118,7 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
   A query that `asyncio.gather()` or `create_task()` runs reports the line that started the event loop.
 * When the block ends, a shape that ran more than `threshold` times (default 5) raises `orm.debug.NPlusOne` with `fail=True`, or gives an `orm.debug.NPlusOneWarning`.
   The exception and the `with ... as report` value carry the report: each shape, its SQL, its count, the call site of its first query and the fix.
+* The report is an `orm.debug.Report`: `.shapes` and `.repeated` hold `Shape(key, sql, count, site, fix)` values, and `.message()` gives the text above.
 * The fix is `load(...)` for a repeated instance `load(...)` and for a repeated unchanged to-many or many-to-many query (`await post.comments`, `await post.tags`).
 * The call site and the SQL text are captured only inside the scope.
   Outside it, each query pays one `ContextVar` read (about 15 ns, measured).
@@ -1168,6 +1233,23 @@ class PostFactory(factory.Factory):
 
 factory_boy has no async support, so a `SubFactory` with `create` gives a coroutine; build related rows first, or use a small async factory over `describe()` (see `tests/test_query_api.py`).
 
+### Errors
+
+`DatabaseError`, `QueryError` (a `ValueError`), `SchemaError` (a `ValueError`) and
+`WriteProtected` come from the native engine. The other errors derive from `orm.ORMError`.
+
+| Error | Raised when |
+|---|---|
+| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints) and `LockNotAvailable` (`nowait`) derive from it |
+| `orm.QueryError` | the ORM rejects a query before SQL (an unsupported feature, a bad cursor) |
+| `orm.SchemaError` | a schema fails to compile or define |
+| `Model.DoesNotExist`, `Model.MultipleObjectsReturned` | `get()` finds no row or more than one (`orm.DoesNotExist` and `orm.MultipleObjectsReturned` are the bases) |
+| `orm.NotLoaded` | a relation or field was not loaded |
+| `orm.NotConnected` | no default database |
+| `orm.TransactionRequired` | `lock()` or `db.lock()` outside a transaction |
+| `orm.WriteProtected` | a write to a `@@protected_write` model outside `allow_writes` |
+| `orm.debug.NPlusOne` | the N+1 finder with `fail=True` |
+
 ## The FFI boundary
 
 ```
@@ -1187,7 +1269,7 @@ QuerySet ──(IR json + params list)──▶ Engine.run ──▶ planner (se
   and `_db` (for `using()`) are attached in the same pass; `select()` rows are built as
   `Row` objects; `insert` / `.returning()` rows are instances too.
 
-Rough numbers (release build, localhost TCP, 1000-row reads): building a query set and its
+Rough numbers (measured 2026-10-02 on a 4-vCPU Linux VM, release build, localhost TCP, 1000-row reads): building a query set and its
 IR costs ~15 µs of Python. A 1-row read is ~0.1 ms over a bare `SELECT 1` on the same
 connection. Reading 1000 posts takes ~1.9 ms (Django async was 10.4 ms in Phase 0), and
 1000 posts + author via `load(Post.author)` ~3.1 ms (Django 18.1 ms). Building instances in
@@ -1195,17 +1277,17 @@ Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
 (`bench/engine_bench.py`, numbers in
 [`bench/RESULTS.md`](../bench/RESULTS.md#instances-built-in-rust)).
 
-## Decisions taken in this round (open to change)
+## Decisions
 
-1. **Expressions only** for filters, no `field__lookup=` strings (your call). `update()`
+1. **Expressions only** for filters, no `field__lookup=` strings. `update()`
    and `insert()` take keyword arguments, typed per model in the stub.
-2. **Awaitable query sets** (your call): `await qs`, `await qs.first()`, `async for`.
+2. **Awaitable query sets**: `await qs`, `await qs.first()`, `async for`.
 3. **`EXISTS` for every relation hop in filters**, with Django's grouping rules (see
    above). JOINs only for `load()` of to-one relations and `order_by`, and only along to-one
    relations. Ordering by a to-many column is rejected.
 4. **Explicit both sides of a relation** in the generated code (`BelongsTo` +
    `HasMany`) rather than Django's implicit `related_name`. The schema names both.
-5. **Explicit writes, read-only instances** (your call: no `save()`). Defaults live in
+5. **Explicit writes, read-only instances** (no `save()`). Defaults live in
    the database (DDL `DEFAULT`) and come back via `RETURNING`. A schema
    `@client_default` fills an omitted insert value natively. Callable defaults
    declared in Python fill an omitted value at the same step, before native
@@ -1222,20 +1304,24 @@ Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
    and `python -m orm migrate` in the migration's transaction
    (see [`schema.md`](schema.md#data-migrations)).
 9. **Async only**, no sync API (see `PLAN.md`, Decisions).
+10. **No general plan cache.** [`performance.md`](performance.md) keeps compiled-plan
+    caching out until profiling shows a benefit; `prepare()` and the driver's statement
+    cache exist.
 
 ## Drivers and dialects
 
 ```
 planner ──sea-query statement──▶ db::build(dialect) ──(SQL, [Value])──▶ Driver ──▶ database
-   └── checks orm_core::dialect::Capabilities
+   └── checks orm_contracts::dialect::Capabilities
 ```
 
-* **SQL building is per dialect** (sea-query has Postgres, MySQL and SQLite builders).
-  `orm_core::dialect` lists what each dialect can do (`RETURNING`, `ON CONFLICT`,
-  `ILIKE`, row-lock flavours, `UPDATE ... FROM (VALUES ...)`, savepoints). The planner
+* **SQL building is per dialect.** The dialects are PostgreSQL and SQLite.
+  `orm_contracts::dialect` (re-exported as `orm_core::dialect`) lists what each dialect
+  can do (`RETURNING`, `ON CONFLICT`, `ILIKE`, row-lock flavours, `DISTINCT ON`,
+  `UPDATE ... FROM (VALUES ...)`, savepoints, `max_params`). The planner
   checks it, so a query needing a missing feature raises `QueryError` naming it (or is
   emulated: `icontains` becomes `LOWER(x) LIKE ...` without `ILIKE`) instead of sending
-  SQL the database rejects. The same table is meant for build-time schema checks.
+  SQL the database rejects. Schema definition checks it too.
   `orm.connect(url, _disable=("ilike", "update_from_values"))` switches capabilities off,
   so the tests run those fallback paths on Postgres.
 * **Execution is per driver**, behind the traits in `engine/src/db/mod.rs`: `Driver`
@@ -1251,6 +1337,9 @@ planner ──sea-query statement──▶ db::build(dialect) ──(SQL, [Value
   without checking the certificate; `verify-ca` / `verify-full` check it against the
   webpki roots (both also check the host name). A transaction that is dropped without
   commit or rollback closes its connection rather than returning it to the pool.
+* **SQLite** uses rusqlite, with each connection on its own thread. URLs are
+  `sqlite://:memory:` and `sqlite:///absolute/path.db`. It has no arrays, no native
+  enums, no row locks and no advisory locks; see [`schema.md`](schema.md#sqlite).
 
 SeaORM was the engine until this point; only its sea-query and pool were in use (its
 entities, relations and loaders need Rust types compiled per schema, and its
@@ -1270,9 +1359,6 @@ inside its body still contribute to the subquery counts.
 ## Not done yet
 
 * A MySQL driver.
-* Caching of compiled plans: a decision, not open work. [`performance.md`](performance.md)
-  keeps it out until profiling shows a benefit; `prepare()` and the driver's statement
-  cache exist.
 * `SEARCH` / `CYCLE` clauses for recursive CTEs, filtering on window functions without
   a CTE.
 * Several shared windows per query, and shared windows with `ORDER BY` / `LIMIT`: needs

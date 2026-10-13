@@ -42,7 +42,7 @@ Docker Desktop was not running at 09:40; it was started for PostgreSQL, and it a
 ## Why 24 cases are inconclusive
 
 - Most inconclusive cases have a point change near 0 (−2.1% to +1.4%), but their 95% interval is 1.4 to 4.7 points wide (measured; `construct` wider), so the upper bound crosses 1%. At this load, 3 processes of 24 batches do not resolve a 1% limit.
-- `node/*/construct` (1.6 µs) has the widest intervals ([−2.3%, +8.7%], [−1.6%, +9.0%]) while all three process changes are +0.9% to +2.8%; `perf-investigation.md` documents a load-order bias of this harness on short CPU cases.
+- `node/*/construct` (1.6 µs) has the widest intervals ([−2.3%, +8.7%], [−1.6%, +9.0%]) while all three process changes are +0.9% to +2.8%; the perf investigation notes (outside this repository) document a load-order bias of this harness on short CPU cases.
 - Some cases have a consistent positive change: `python/sqlite/read-1` +1.7% [+0.3%, +1.7%] (runs +1.7, +1.8, +0.2), `node/postgres/bulk-update-50` +2.7% [−0.1%, +3.0%], `node/sqlite/projection` +3.1% [−0.6%, +2.3%], `node/postgres/construct+sql` +1.4% [−0.5%, +2.7%]. None has a lower bound at or above 1%, so none is an established regression.
 - The machine was not quiet (load 2.6 to 4.3 during timing). A rerun with Docker Desktop stopped (SQLite only), or with PostgreSQL outside the Docker VM, removes the largest known noise source.
 

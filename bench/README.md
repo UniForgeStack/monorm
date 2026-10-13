@@ -1,68 +1,70 @@
-# Phase 0 — performance feasibility benchmark (Python, Node, Bun, Go)
+# Benchmarks
 
-Can one Rust ORM core (SeaORM → Postgres), called from Python, Node, Bun and Go, compete with
-each language's own ORM? Results: [`RESULTS.md`](RESULTS.md).
+Each directory or script below runs on the current API.
+Recorded results and their dates, commits and machines are in [`RESULTS.md`](RESULTS.md).
+Run benchmarks on a quiet machine, after every build has finished, against a disposable PostgreSQL database.
+Mark each number you report as measured (and say if the machine was loaded), estimated, or vendor-reported.
 
-## Layout
+| Benchmark | Measures | Extension build |
+|---|---|---|
+| [`engine_bench.py`](engine_bench.py) | The public Python API on the blog models, end to end: reads, `select_related`, prefetch, inserts, updates, a transaction, concurrent gets | Runs on any build (core features only) |
+| [`rust-compare/`](rust-compare) | `orm-engine` (typed IR and JSON IR) against SeaORM 2.0.4 and Diesel-async, in Rust only; `diagnose` adds raw SQLx and a streaming read | Not applicable (engine only) |
+| [`shared-behavior/`](shared-behavior) | Paired A/B of `Database.lock` advisory locks: the earlier Python/TypeScript key hashing against the Rust helper, through the public API | Not applicable (core) |
+| [`build-time-extensions/`](build-time-extensions) | The cost gate of build-time extensions: handwritten built-in controls against generated extension code, Python and Node, PostgreSQL and SQLite; allocation and artifact-size probes | This is the extension benchmark |
 
-| Path | What |
-|---|---|
-| `django_bench/` | Django 5.2 project, app `blog` with `Author`, `Post`, `Comment`; `manage.py seed` |
-| `ormcore/core/` | Shared Rust core: SeaORM 2.0 entities, queries, Tokio runtime (no binding code) |
-| `ormcore/python/` | Python binding: PyO3 0.29 + `pyo3-async-runtimes` (async and sync API) |
-| `ormcore/node/` | Node / Bun binding: napi-rs 3 (async and sync API) |
-| `ormcore/cabi/` | C ABI (`ormcore.h`, static lib) for Go via cgo |
-| `ormcore/patches/` | sqlx-core with `TCP_NODELAY` fix |
-| `js/` | Node / Bun harness: Drizzle ORM (`pg`) vs the napi addon |
-| `go/` | Go harness: GORM and raw pgx vs the cgo binding |
-| `sa_models.py` | SQLAlchemy 2.0 mapping of the same tables |
-| `run_bench.py` | Benchmark harness, writes `results-python-<transport>.json` |
-| `report.py` | Renders result JSON as markdown tables |
-
-## Reproduce
+## engine_bench.py
 
 ```bash
-# Postgres 16 with user postgres/postgres; local socket auth must allow passwords
-# (pg_hba.conf: `local all all scram-sha-256`).
-sudo service postgresql start
-psql -U postgres -c "CREATE DATABASE ormbench"
-
-uv venv .venv && . .venv/bin/activate
-uv pip install "django>=5" "psycopg[binary]" "sqlalchemy[asyncio]>=2" asyncpg maturin
-
-(cd bench/django_bench && python manage.py migrate && python manage.py seed)
-(cd bench/ormcore/python && maturin develop --release)
-
-# Python
-python bench/run_bench.py --transport unix     # all drivers over the Unix socket
-python bench/run_bench.py --transport tcp      # all drivers over localhost TCP
-
-# Node / Bun (Node 22+, Bun 1.3+)
-(cd bench/js && npm install && npm run build:addon)
-(cd bench/js && node bench.mjs --transport unix && node bench.mjs --transport tcp)
-(cd bench/js && bun bench.mjs --transport unix && bun bench.mjs --transport tcp)
-
-# Go (1.24+, cgo enabled)
-(cd bench/ormcore && cargo build --release -p ormcore-cabi)
-(cd bench/go && go run . -transport unix && go run . -transport tcp)
-
-python bench/report.py bench/results-*.json
+(cd packaging/python/tooling && maturin develop --release)
+python bench/engine_bench.py --url postgres://postgres:postgres@localhost/orm_bench [--rounds 15] [--out results.json]
 ```
 
-`--quick` runs 10% of the iterations; `--only ormcore-obj,django-async` picks contenders.
+It drops and creates the blog tables in that database.
+With an extension build: `PYTHONPATH=<build>/py ORM_PROFILE=custom python bench/engine_bench.py ...`.
 
-## Methodology
+## rust-compare
 
-- Seed data: 50 authors, 1000 posts, 2000 comments. Reads use `ORDER BY id LIMIT N`.
-- Everything except `django-sync` runs inside one asyncio event loop and is timed around the
-  `await` with `perf_counter_ns`. Each contender has one pooled connection.
-- Each timed read **touches every field of every row**, including `author.*` for joins.
-- Writes: rows are prepared as plain dicts (untimed). Building ORM objects from them is
-  timed. Rows inserted are deleted after every iteration (untimed), and the table is
-  vacuumed before each operation.
-- `write_loop` = N separate inserts, each its own call and autocommit, which exercises
-  the "row-by-row across the FFI" pattern.
-- `rust-only` runs the same SeaORM queries timed inside Tokio. It builds no Python
-  objects and doesn't hop through the event loop, so it's the floor the PyO3 path
-  approaches.
-- Default Postgres durability (`synchronous_commit=on`, `fsync=on`).
+```bash
+cd bench/rust-compare
+ORM_BENCH_URL=postgres://... cargo run --release                 # writes results.json
+ORM_BENCH_URL=postgres://... cargo run --release --bin diagnose
+```
+
+A separate Cargo workspace with path dependencies on `core/` and `engine/`.
+The tables `orm_rust_compare_post` and `orm_rust_diagnose_post` must not exist before a run.
+`ORM_BENCH_OUT` sets the output file; `ORM_BENCH_SEA_FAST=1` turns off SeaORM's per-checkout health ping (a matched-setting run).
+See [`rust-compare/README.md`](rust-compare/README.md).
+
+## shared-behavior
+
+Needs the release native library (`maturin develop --release` in `packaging/python/tooling`, `node js/scripts/build-native.mjs --release`, `npm --prefix js run build`), Nushell, and an isolated `orm_test` database.
+
+```nu
+nu bench/shared-behavior/run.nu --url postgres://postgres:postgres@127.0.0.1:5432/orm_test --out bench/shared-behavior/results
+.venv/bin/python bench/shared-behavior/report.py --check      # summary of the recorded results
+```
+
+`locks.py` and `locks.mjs` take `--rounds`, `--inner`, `--connections` and `--only` for a shorter run; they read `ORM_TEST_DATABASE_URL`.
+See [`shared-behavior/README.md`](shared-behavior/README.md).
+
+## build-time-extensions
+
+From the repository root, with `CARGO_INCREMENTAL=0` and Cargo dependencies fetched (the builds are `--offline --locked`):
+
+```bash
+.venv/bin/python bench/build-time-extensions/controls.py --out /tmp/orm-controls     # release builds of both sides
+.venv/bin/python bench/build-time-extensions/run.py --native-profile \
+  --before /tmp/orm-controls --after /tmp/orm-controls --url <isolated-pg-url> --out <results-dir>
+.venv/bin/python bench/build-time-extensions/report.py --native-profile --check --directory <results-dir>
+```
+
+`run.py` takes `--repetitions`, `--batches` and `--iterations` (defaults 3, 24, 100).
+`report.py` writes `<results-dir>/summary.md`; do not point it at a recorded directory unless you mean to rewrite that summary.
+`controls.py` builds fat-LTO release libraries for both backends and both sides; it takes long.
+Other scripts: `build.py` (old-versus-new snapshot builds against baseline `3a710ca`), `size.py` (artifact size attribution), and the one-off diagnostics `audit.py`, `finalize-builds.py`, `focused.py`, `focused-report.py` and `cpu.mjs` that produced results in `results/`.
+See [`build-time-extensions/README.md`](build-time-extensions/README.md).
+
+## Removed
+
+The Phase 0 harness (the SeaORM `ormcore` prototype against Django, SQLAlchemy, Drizzle, GORM and pgx), `profile_query.py` with its probe patch, and `query-construction/` were removed after `889f1c4`: they measured code that no longer exists, or their patches no longer apply.
+Their findings stay in `RESULTS.md`; `git show 889f1c4:bench/<path>` recovers the files.

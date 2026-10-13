@@ -12,7 +12,7 @@ and `ModelMeta.addRowDecoder`. The engine proves a unique-row update.
 artifact built with the `file-storage` feature; selecting `../orm-extension/` in
 `orm-extension-build` turns it on. Installing these helpers alone does not.
 
-The selected declaration is proposed as:
+Declare a file field (see also [docs/file-storage.md](../../docs/file-storage.md)):
 
 ```prisma
 model Report {
@@ -51,9 +51,9 @@ const operation = new PreparedFileWrite(
 const report = await operation.execute(values => Report.objects.insert(values));
 ```
 
-These examples explicitly persist ordinary JSON; field-specific generated write
-types must be supplied by the selected ORM adapter before automatic Upload writes
-are available. Deferred Upload construction makes no I/O calls. All input and
+These examples persist ordinary JSON explicitly. With `install_model` /
+`installModel`, `insert` and unique-row `update` also take `Upload` directly
+(see "Selected native model integration"). Deferred Upload construction makes no I/O calls. All input and
 write-shape checks precede uploads. The trusted adapter must prove a unique-row
 update before passing `unique_update`; an arbitrary filter is insufficient.
 Bulk, multi-row update, upsert, conflict-ignore and expression shapes reject Upload
@@ -84,7 +84,7 @@ from loaded NULL, raising FileNotLoaded/MissingFile before provider access. Deco
 and Reference access make no storage requests. FileField helper errors must map to
 the selected ORM's public missing/unloaded error classes in final integration.
 
-## Selected native model integration (current milestone)
+## Selected native model integration
 
 The native `file-storage` Cargo feature includes the durable reference validator,
 resolves logical JSON field positions at definition, and validates ordinary
@@ -116,10 +116,8 @@ Python install_model installs statements when passed an ORM model class. The
 host must stage this setup on candidate models before publishing its definition.
 Selected descriptor maps use Python field names / TypeScript camelCase names.
 
-Automatic public Reference materialization still requires the plan 03-owned
-materializer to install the fixed decoder from `orm_file_storage.decoder` /
-`@orm/file-storage/decoder`. Until that integration is adopted, native reads
-return the ordinary JSON wire dictionary/object despite the generated Reference
-type declaration. This milestone is not release-ready. Plan 02's immutable
-ADAPTERS/nativeAdapters must select/import these modules once at initialization;
-this branch does not fabricate that selector or advertise finished packaging.
+Models with `install_model` / `installModel` read file fields as `Reference`
+(`storage/integration/tests/native_python.py`, `native_node.mjs`).
+Limitation: the native artifact's `adapters` list is empty, so packaging does not
+select these modules by itself; the application (or its generated module) calls
+`install_model` / `installModel` once at initialization.

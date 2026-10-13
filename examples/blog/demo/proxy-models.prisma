@@ -1,0 +1,23 @@
+// Needs the proxy-models extension (orm-proxy).
+
+enum Status {
+  ACTIVE @map("active")
+  OLD    @map("old")
+  @@storage(text)
+}
+
+model Account {
+  id     Int     @id
+  name   String?
+  status Status  @default(OLD)
+  note   String?
+  @@map("demo_accounts")
+}
+
+// A second logical model on the same table: inserts default to ACTIVE, and `note` is not part of it.
+model ActiveAccount {
+  name   String         @client_default("new")
+  status Status(ACTIVE) @client_default(ACTIVE)
+  @@proxy.of(Account)
+  @@proxy.fields(exclude: ["note"])
+}

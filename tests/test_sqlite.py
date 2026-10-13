@@ -524,3 +524,26 @@ async def test_self_many_to_many_has_both_sides():
     finally:
         await db.drop_tables()
         await db.close()
+
+
+async def test_related_sets_use_the_database_of_their_instance():
+    registry, m = models()
+    Author, Book = m["Author"], m["Book"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    await db.create_tables()
+    try:
+        alice = await Author.objects.using(db).insert(email="a@example.com", name="Alice")
+        await alice.books.insert(title="one")
+        assert [b.title for b in await alice.books] == ["one"]
+        assert await alice.books.filter(Book.pages == 0).count() == 1
+        registry, m = models(FOLLOW)
+        Person = m["Person"]
+        follow_db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+        await follow_db.create_tables()
+        ann, bob = await Person.objects.using(follow_db).insert_many([{"name": "ann"}, {"name": "bob"}]).returning()
+        await ann.following.add(bob)
+        assert [p.name for p in await ann.following] == ["bob"]
+        await follow_db.close()
+    finally:
+        await db.drop_tables()
+        await db.close()

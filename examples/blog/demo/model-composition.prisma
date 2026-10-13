@@ -1,0 +1,19 @@
+// Needs the model-composition extension (orm-model-composition).
+
+model Person {
+  id   Int    @id @default(autoincrement())
+  name String
+  @@map("demo_people")
+}
+
+model Employee {
+  salary Int
+  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+  @@map("demo_employees")
+}
+
+model Customer {
+  points Int
+  @@composition.model(parent: "Person", parentRef: "person", childRef: "customer")
+  @@map("demo_customers")
+}

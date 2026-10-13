@@ -1,0 +1,12 @@
+// Needs the query-defaults extension (orm-query-defaults).
+
+model Article {
+  id         Int      @id @default(autoincrement())
+  title      String
+  body       String   @query.selectOut
+  visible    Boolean  @default(true)
+  created_at DateTime @default(now())
+  @@query.filter("visible == true")
+  @@query.order("-created_at", "id")
+  @@map("demo_articles")
+}

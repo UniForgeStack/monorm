@@ -2381,7 +2381,7 @@ function makeRelatedSet(rel: RelationMeta, instance: object): RelatedSet<ModelSp
   const owner = (inst.constructor as unknown as { meta: ModelMeta }).meta;
   const target = owner.registry.get(rel.target);
   const filters = rel.to.map((to, i) => asCondition(target.column(target.fieldByIr.get(to)!).eq(fieldValue(inst, owner.fieldByIr.get(rel.from[i]!)!.name) as never)));
-  const qs = new (relationSetClass(RelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters });
+  const qs = new (relationSetClass(RelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters, db: inst[DB] as Database | undefined });
   Object.assign(qs, { relation: rel, instance: inst });
   return qs as never;
 }
@@ -2396,7 +2396,7 @@ function makeManyRelatedSet(rel: RelationMeta, instance: object): ManyRelatedSet
   const to = target.column(target.fieldByIr.get(rel.to[0]!)!);
   const key = fieldValue(inst, owner.fieldByIr.get(rel.from[0]!)!.name);
   const cond = exists(join.objects.filter(source.eq(key as never) as never, tcol.eq(outer(to) as never) as never) as never);
-  const qs = new (relationSetClass(ManyRelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters: [cond] });
+  const qs = new (relationSetClass(ManyRelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters: [cond], db: inst[DB] as Database | undefined });
   Object.assign(qs, { relation: rel, instance: inst });
   return qs;
 }

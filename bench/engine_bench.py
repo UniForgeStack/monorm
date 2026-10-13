@@ -1,7 +1,9 @@
 """End-to-end timings of the `orm` package on the blog models, for comparing engines.
 
-    maturin develop --release
-    python bench/engine_bench.py [--url URL] [--out results.json]
+    (cd packaging/python/tooling && maturin develop --release)
+    python bench/engine_bench.py [--url URL] [--rounds N] [--out results.json]
+
+The URL must name a disposable database: the run drops and creates the blog tables.
 
 Every case runs through the public Python API (query set -> IR -> native engine ->
 Postgres -> instances), so it measures what users get. Median of `--rounds` timed
