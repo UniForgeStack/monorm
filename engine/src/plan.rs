@@ -2858,6 +2858,24 @@ fn no_lock(q: &Select, what: &str) -> Result<()> {
     }
 }
 
+/// The predicate of the only unique index whose keys are exactly `conflict`, all plain
+/// fields. The text is copied as written: SQLite rejects `active = 1` for `WHERE active`.
+fn inferred_index_where(indexes: &[orm_core::ir::IndexIr], conflict: &[String]) -> Option<String> {
+    let mut found = indexes.iter().filter(|ix| {
+        ix.unique
+            && ix.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"))
+            && ix.columns.len() == conflict.len()
+            && ix.columns.iter().all(|c| {
+                c.expr.is_none() && c.opclass.is_none() && c.collation.is_none() && !c.desc && c.nulls.is_none()
+                    && c.field.as_ref().is_some_and(|f| conflict.contains(f))
+            })
+            && conflict.iter().all(|f| ix.columns.iter().any(|c| c.field.as_ref() == Some(f)))
+    });
+    let first = found.next()?;
+    if found.next().is_some() { return None; }
+    first.where_.clone()
+}
+
 /// What an insert does with rows that hit a unique constraint.
 ///
 /// The optional condition is `ON CONFLICT (<fields>) WHERE <condition>`: the predicate of
@@ -2960,8 +2978,9 @@ pub fn plan_insert(
         // The predicate goes in as SQL literals: the database infers a partial index only
         // from a predicate it can read, and a parameter is unknown to a generic plan
         // (Postgres, from the sixth run of a prepared statement) and to SQLite.
-        let index_where = |filter: Option<Expr>| -> Result<Option<SExpr>> {
-            let Some(filter) = filter else { return Ok(None) };
+        // Without a predicate, the one unique index with exactly these plain columns names it.
+        let index_where = |conflict: &[String], filter: Option<Expr>| -> Result<Option<SExpr>> {
+            let Some(filter) = filter else { return Ok(inferred_index_where(&m.ir.indexes, conflict).map(SExpr::cust)) };
             let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
             let mut probe = Query::select();
             probe.expr(SExpr::val(1)).and_where(planner.index_cond(&filter)?);
@@ -2972,7 +2991,7 @@ pub fn plan_insert(
         let clause = match oc {
             OnConflict::Nothing(conflict, filter) => {
                 let mut clause = sea_query::OnConflict::columns(columns(&conflict)?);
-                clause.target_and_where_option(index_where(filter)?);
+                clause.target_and_where_option(index_where(&conflict, filter)?);
                 clause.do_nothing().to_owned()
             }
             OnConflict::Update(conflict, filter, update, set) => {
@@ -2980,7 +2999,7 @@ pub fn plan_insert(
                     return Err(Error::query("on_conflict(..., update=True) has no columns to update"));
                 }
                 let mut clause = sea_query::OnConflict::columns(columns(&conflict)?);
-                clause.target_and_where_option(index_where(filter)?);
+                clause.target_and_where_option(index_where(&conflict, filter)?);
                 clause.update_columns(columns(&update)?);
                 let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
                 planner.allow_excluded = true;

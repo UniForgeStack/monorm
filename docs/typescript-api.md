@@ -401,18 +401,27 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
 * `onConflict(columns, { where: cond, update })` picks a partial unique index:
   `ON CONFLICT (...) WHERE cond`. The database uses the condition to find the index,
   so it goes into the SQL text with its values written out, not as parameters.
-  `Task.active.eq(true)` gives the bare column, the form SQLite needs.
+  `Task.active.eq(true)` gives the bare column, the form SQLite needs. Without
+  `where`, the schema decides: when exactly one `@@index([...], unique: true, where: ...)`
+  has these plain columns (no expression, no sort), its `where` text goes into the
+  conflict target. So `insert`, `insertMany` and `getOrInsert` use that partial index.
+  An explicit `where` wins. With no such index, or with several, there is no predicate.
 * `insertMany(rows, { copy: true })` loads the rows with Postgres `COPY` (binary) and
   gives the row count. A duplicate key stops the whole load. A field must be set in
   every row or in none. Values fit the column's type (`Int` on a `smallint` column).
-  `onConflict`, `batchSize` and SQLite are rejected.
+  `onConflict`, `batchSize` and SQLite are rejected. COPY fails when row-level
+  security applies to the role (a non-owner without `BYPASSRLS`, or the owner with
+  `FORCE ROW LEVEL SECURITY`); use `insertMany(rows)` without `copy: true` there.
 * `getOrInsert(lookup, { defaults })` gives `[row, created]`: the row that matches
   `lookup`, or a new row of `lookup` and `defaults`. The insert is
   `ON CONFLICT (lookup) DO NOTHING`, so concurrent calls give one row. The reads go
   to the primary and see the query set's filters, but not its limit and offset; when
   the filters hide the row that has the key, `QueryError` says so. On a related set
   the link field is part of the lookup. The lookup fields must be the fields of one
-  unique constraint; a `null` lookup value throws.
+  unique constraint or index; a `null` lookup value throws. With a partial unique
+  index, the lookup must be unique among the rows the query set sees: the reads do
+  not carry the index predicate, so a row outside the index can come back
+  (`created` false), or `MultipleObjectsReturned` throws.
 * `insertMany` splits the rows so that no statement has more parameters than the
   database accepts (65,535 on Postgres, 32,766 on SQLite). `{ batchSize: n }` sets a
   lower number of rows for each statement. All the statements run in one transaction.

@@ -144,6 +144,33 @@ async def test_on_conflict_where_with_a_boolean_column(clean):
         await clean.execute("DROP INDEX posts_published_title")
 
 
+async def test_on_conflict_infers_the_partial_unique_index():
+    registry = orm.Registry()
+    Account = orm.loads("""
+        datasource db { provider = "postgresql" }
+        model Account {
+          id     BigInt  @id @default(autoincrement())
+          email  String
+          active Boolean @default(true)
+          @@index([email], unique: true, where: raw("active"))
+        }
+    """, registry=registry)["Account"]
+    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    try:
+        await db.create_tables()
+        accounts = Account.objects.using(db)
+        for _ in range(8):
+            await accounts.insert(email="a@x.io").on_conflict(Account.email, update=False)
+        await accounts.insert_many([{"email": "a@x.io"}, {"email": "b@x.io"}]).on_conflict(Account.email, update=False)
+        assert await accounts.count() == 2
+        row, created = await accounts.get_or_insert(email="c@x.io")
+        again, created_again = await accounts.get_or_insert(email="c@x.io")
+        assert (created, created_again, again.id) == (True, False, row.id)
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 async def test_on_conflict_where_reads_own_columns_only(anon_index):
     # Postgres refuses a relation path (a subquery) in an index predicate.
     with pytest.raises(orm.DatabaseError, match="subquery in index predicate"):

@@ -195,6 +195,30 @@ test("SQLite string functions and concatenation", async () => {
   } finally { await db.close(); }
 });
 
+test("onConflict infers the partial unique index", async () => {
+  const registry = new Registry();
+  const Account = loads(`
+    datasource db { provider = "sqlite" }
+    model Account {
+      id BigInt @id @default(autoincrement())
+      email String
+      active Boolean @default(true)
+      @@index([email], unique: true, where: raw("active"))
+    }`, { registry })["Account"] as any;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    const accounts = Account.objects.using(db);
+    await accounts.insert({ email: "a" }).onConflict(Account.email, { update: false });
+    await accounts.insert({ email: "a" }).onConflict(Account.email, { update: false });
+    await accounts.insertMany([{ email: "a" }, { email: "b" }]).onConflict(Account.email, { update: false });
+    assert.equal(await accounts.count(), 2);
+    const [row, created] = await accounts.getOrInsert({ email: "c" });
+    const [again, createdAgain] = await accounts.getOrInsert({ email: "c" });
+    assert.deepEqual([created, createdAgain, again.id], [true, false, row.id]);
+  } finally { await db.close(); }
+});
+
 test("SQLite CASE", async () => {
   const registry = new Registry();
   const Note = loads(`

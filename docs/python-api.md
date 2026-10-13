@@ -840,7 +840,9 @@ await post.refresh(Post.views)                   # some fields
   `batch_size`, SQLite, composed models, models with native write behavior and fields
   that write through an SQL template (other than enums: arrays with a `@db.*` type and
   extension types do) raise. Values fit the column's type (`Int` on a `smallint`
-  column); a value out of its range raises.
+  column); a value out of its range raises. COPY fails when row-level security
+  applies to the role (a non-owner without `BYPASSRLS`, or the owner with
+  `FORCE ROW LEVEL SECURITY`); use `insert_many(rows)` without `copy=True` there.
   `bench/copy_insert.py` compares it with `insert_many(rows)`: 200,000 posts in
   about 1.2 s against 1.8 s, so about x1.5 (measured 2026-10-09 on a loaded machine,
   Postgres in Docker, best of 3; the batched insert also built the instances).
@@ -860,7 +862,11 @@ await post.refresh(Post.views)                   # some fields
   `ON CONFLICT (shop, task_type) WHERE "tasks"."deleted_at" IS NULL`. The database
   uses the condition to find the index, so the condition goes into the SQL text with
   its values written out, not as parameters. A boolean column (`where=Task.active`)
-  gives the bare column, the form SQLite needs.
+  gives the bare column, the form SQLite needs. Without `where`, the schema decides:
+  when exactly one `@@index([...], unique: true, where: ...)` has these plain
+  columns (no expression, no sort), its `where` text goes into the conflict target.
+  So `insert()`, `insert_many()` and `get_or_insert()` use that partial index. An
+  explicit `where=` wins. With no such index, or with several, there is no predicate.
 * `get_or_insert(defaults=..., **lookup)` reads the row that matches `lookup`.
   When there is none, it inserts `lookup` and `defaults` with
   `ON CONFLICT (lookup) DO NOTHING`, and reads again when a concurrent insert wins.
@@ -870,8 +876,11 @@ await post.refresh(Post.views)                   # some fields
   `QueryError` says so. On a related set (`post.post_tags.get_or_insert(tag=t)`)
   the link field is part of the lookup. Inside a `REPEATABLE READ` transaction, a
   key that another session commits after the snapshot gives a serialization error.
-  The lookup fields must be the fields of one unique constraint; Postgres raises
-  otherwise. A `None` lookup value raises, because `NULL` never conflicts.
+  The lookup fields must be the fields of one unique constraint or index; Postgres
+  raises otherwise. With a partial unique index, the lookup must be unique among the
+  rows the query set sees: the reads do not carry the index predicate, so a row
+  outside the index can come back (`created=False`), or `MultipleObjectsReturned`
+  is raised. A `None` lookup value raises, because `NULL` never conflicts.
 * `update()` and `delete()` validate when called and return a statement: awaiting it
   gives the row count (no `RETURNING` in the SQL), `.returning()` gives the rows.
 * `update_many(rows)` is Django's `bulk_update` without mutated instances: each row is a
