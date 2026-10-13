@@ -200,9 +200,28 @@ export class Database {
    * Runs `fn` in a transaction: commits when it resolves, rolls back when it throws.
    * Queries on this database inside it (in this async context, and in work it starts)
    * run in the transaction. Nested calls use savepoints. Gives what `fn` gives.
+   *
+   * A statement that fails marks its transaction (or savepoint) failed, also when `fn`
+   * catches the error: later statements and the commit throw `TransactionAborted`
+   * (`cause` is the first error), and nothing commits. Catch errors only around a
+   * savepoint, a nested `db.transaction()` call, whose rollback leaves the enclosing
+   * transaction usable.
+   *
+   * With `{ savepoint: false }` a nested call joins the enclosing transaction with no
+   * savepoint: an error that leaves it marks the enclosing transaction failed. On an
+   * outermost call the option has no effect.
    */
-  async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    const outer = this.tx() === null;
+  async transaction<T>(fn: () => Promise<T>, options: { savepoint?: boolean } = {}): Promise<T> {
+    const enclosing = this.tx();
+    if (enclosing !== null && options.savepoint === false) {
+      try {
+        return await fn();
+      } catch (e) {
+        enclosing.markFailed(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+        throw e;
+      }
+    }
+    const outer = enclosing === null;
     const tx = await wait(() => this.engine.begin(this.tx()));
     const mine: (() => unknown)[] = [];
     const scoped = new Map(callbacks.getStore() ?? []).set(this.root, mine);

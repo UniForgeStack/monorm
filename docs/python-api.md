@@ -944,6 +944,30 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback goes to the caller of `transaction()`, and the later callbacks do not run; the transaction is already committed.
+
+
+#### Failed statements
+
+A statement that fails marks its transaction (or savepoint) failed, also when your code catches the error.
+This is the same on Postgres and SQLite.
+Later statements raise `TransactionAborted`, a `DatabaseError` chained (`__cause__`) to the first error.
+A block that exits cleanly after a failure rolls back, drops the `on_commit` callbacks, and raises `TransactionAborted`.
+Catch errors only around a savepoint:
+
+```python
+async with db.transaction():
+    await Order.objects.insert(...)
+    try:
+        async with db.transaction():          # savepoint: its rollback clears the failed mark
+            await Order.objects.insert(...)   # may raise IntegrityError
+    except orm.IntegrityError:
+        pass
+    await Audit.objects.insert(...)           # the outer transaction still works
+```
+
+`db.transaction(savepoint=False)` joins the enclosing transaction with no savepoint.
+An error that leaves such a block marks the enclosing transaction failed.
+On an outermost block the parameter has no effect.
 `on_commit` is a coroutine: without `await`, the callback is not registered (Python warns "coroutine was never awaited").
 Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
 A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.

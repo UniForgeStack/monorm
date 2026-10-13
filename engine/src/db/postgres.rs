@@ -38,6 +38,8 @@ fn pg_err(e: tokio_postgres::Error) -> DbError {
                 ErrorKind::Integrity
             } else if code == "55P03" {
                 ErrorKind::LockNotAvailable
+            } else if code == "25P02" {
+                ErrorKind::TransactionAborted
             } else {
                 ErrorKind::Other
             };
@@ -52,6 +54,7 @@ fn pg_err(e: tokio_postgres::Error) -> DbError {
                 sqlstate: Some(code.to_owned()),
                 constraint: db.constraint().map(str::to_owned),
                 detail: db.detail().map(str::to_owned),
+                cause: None,
             }
         }
         None => DbError::other(e.to_string()),
@@ -638,6 +641,11 @@ impl PgTx {
         let mut session = self.session.lock().await;
         let client = session.client.as_ref().ok_or_else(closed)?;
         let result = client.batch_execute(&sql).await.map_err(pg_err);
+        if result.is_err() && self.savepoint.is_none() {
+            // A COMMIT that never ran (the probe below failed) leaves the aborted
+            // transaction open; this is a harmless warning after a COMMIT that ran.
+            let _ = client.batch_execute("ROLLBACK").await;
+        }
         if self.savepoint.is_none() {
             // COMMIT / ROLLBACK end the transaction even when they fail (a failed
             // COMMIT rolls back), so the connection can go back to the pool.
@@ -707,7 +715,10 @@ impl Transaction for PgTx {
         Box::pin(async move {
             let sql = match &self.savepoint {
                 Some(sp) => format!("RELEASE SAVEPOINT {sp}"),
-                None => "COMMIT".to_owned(),
+                // tokio-postgres hides the command tag, so `SELECT 1` stands in for the
+                // check for a `ROLLBACK` tag: in an aborted transaction it fails (25P02)
+                // and the COMMIT does not run, instead of ending as a silent ROLLBACK.
+                None => "SELECT 1; COMMIT".to_owned(),
             };
             self.finish(sql).await
         })

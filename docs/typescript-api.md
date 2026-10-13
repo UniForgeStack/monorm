@@ -464,6 +464,31 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback rejects the `transaction()` promise, and the later callbacks do not run; the transaction is already committed.
+
+
+#### Failed statements
+
+A statement that fails marks its transaction (or savepoint) failed, also when the callback catches the error.
+This is the same on Postgres and SQLite.
+Later statements throw `TransactionAborted`, a `DatabaseError` whose `cause` is the first error.
+A callback that resolves after a failure rolls back, drops the `onCommit` callbacks, and rejects with `TransactionAborted`.
+Catch errors only around a savepoint:
+
+```ts
+await db.transaction(async () => {
+  await Order.objects.insert({ ... });
+  try {
+    await db.transaction(() => Order.objects.insert({ ... }));  // savepoint: its rollback clears the failed mark
+  } catch (e) {
+    if (!(e instanceof IntegrityError)) throw e;
+  }
+  await Audit.objects.insert({ ... });  // the outer transaction still works
+});
+```
+
+`db.transaction(fn, { savepoint: false })` joins the enclosing transaction with no savepoint.
+An error that leaves such a call marks the enclosing transaction failed.
+On an outermost call the option has no effect.
 Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
 A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 

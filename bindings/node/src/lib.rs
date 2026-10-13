@@ -50,6 +50,7 @@ fn db_kind(e: &DbError) -> &'static str {
     match e.kind {
         ErrorKind::Integrity => "IntegrityError",
         ErrorKind::LockNotAvailable => "LockNotAvailable",
+        ErrorKind::TransactionAborted => "TransactionAborted",
         ErrorKind::Other => "DatabaseError",
     }
 }
@@ -58,11 +59,23 @@ fn db_kind(e: &DbError) -> &'static str {
 /// (JSON escapes newlines, so the first line is the whole object).
 fn db_tagged(e: DbError) -> napi::Error {
     let kind = db_kind(&e);
-    if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() {
+    if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() && e.cause.is_none() {
         return tagged(kind, e);
     }
-    let fields = serde_json::json!({ "sqlstate": e.sqlstate, "constraint": e.constraint, "detail": e.detail });
-    napi::Error::from_reason(format!("[orm:{kind}+] {fields}\n{}", e.message))
+    napi::Error::from_reason(format!("[orm:{kind}+] {}\n{}", db_fields(&e), e.message))
+}
+
+/// The JSON line of a database error: SQLSTATE fields, and the `cause` error (kind,
+/// message and fields) of a `TransactionAborted`.
+fn db_fields(e: &DbError) -> serde_json::Value {
+    let mut fields = serde_json::json!({ "sqlstate": e.sqlstate, "constraint": e.constraint, "detail": e.detail });
+    if let Some(cause) = &e.cause {
+        let mut c = db_fields(cause);
+        c["kind"] = db_kind(cause).into();
+        c["message"] = cause.message.clone().into();
+        fields["cause"] = c;
+    }
+    fields
 }
 
 fn engine_err(e: Error) -> napi::Error {
@@ -517,6 +530,12 @@ impl Transaction {
         let tx = self.inner.clone();
         env.spawn_future(async move { tx.rollback().await.map_err(db_tagged) })
     }
+
+    /// Marks the transaction failed, as if a statement had failed with `message`.
+    #[napi]
+    pub fn mark_failed(&self, message: String) {
+        self.inner.mark_failed(DbError::other(message));
+    }
 }
 
 // -- trace ----------------------------------------------------------------------------------------
@@ -816,7 +835,7 @@ impl Engine {
     pub fn begin<'env>(&self, env: &'env Env, tx: Option<&Transaction>) -> napi::Result<PromiseRaw<'env, Transaction>> {
         let conn = self.conn(tx);
         env.spawn_future(async move {
-            let inner = conn.begin().await.map_err(db_tagged)?;
+            let inner = db::guard(conn.begin().await.map_err(db_tagged)?);
             Ok(Transaction { inner })
         })
     }

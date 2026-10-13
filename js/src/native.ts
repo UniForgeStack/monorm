@@ -62,6 +62,7 @@ export interface NativeReturned {
 export interface NativeTransaction {
   commit(): Promise<void>;
   rollback(): Promise<void>;
+  markFailed(message: string): void;
 }
 
 export interface NativeSessionLock {
