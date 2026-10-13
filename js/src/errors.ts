@@ -145,7 +145,9 @@ export function fromNative(e: unknown): unknown {
   }
   const out = build(cls, message, fields);
   if (e.stack) {
-    out.stack = `${out.name}: ${message}\n${e.stack.split("\n").slice(1).join("\n")}`;
+    const head = `${e.name}: ${e.message}`;
+    const trace = e.stack.startsWith(head) ? e.stack.slice(head.length) : "";
+    out.stack = `${out.name}: ${message}${trace}`;
   }
   return out;
 }

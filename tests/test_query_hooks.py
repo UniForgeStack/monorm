@@ -1,5 +1,7 @@
 """`db.on_query` hooks, `orm.otel` spans, and the N+1 finder on the same events."""
+import asyncio
 import contextvars
+import subprocess
 import sys
 import types
 
@@ -97,6 +99,118 @@ async def test_a_hook_error_reaches_the_caller(shop):
         await Person.objects.using(db).count()
 
 
+async def test_an_async_hook_is_awaited_and_its_error_reaches_the_caller(shop):
+    Person, _, db = shop
+    seen: list[str] = []
+
+    async def record(e: orm.QueryEvent) -> None:
+        await asyncio.sleep(0)
+        seen.append(e.sql)
+
+    remove = db.on_query(record)
+    await Person.objects.using(db).count()
+    assert len(seen) == 1
+    remove()
+
+    async def broken(e: orm.QueryEvent) -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("async exporter down")
+
+    db.on_query(broken)
+    with pytest.raises(RuntimeError, match="async exporter down"):
+        await Person.objects.using(db).count()
+
+
+async def test_a_hook_error_does_not_replace_the_error_of_the_call(shop):
+    Person, _, db = shop
+    later: list[orm.QueryEvent] = []
+
+    def broken(e: orm.QueryEvent) -> None:
+        raise RuntimeError("exporter down")
+
+    db.on_query(broken)
+    db.on_query(later.append)
+    with pytest.raises(orm.IntegrityError) as caught:
+        await Person.objects.using(db).insert(id=9, name="p0")
+    assert [e.error is not None for e in later] == [True]
+    assert any("exporter down" in note for note in caught.value.__notes__)
+
+
+async def test_every_hook_gets_every_event_before_the_first_hook_error_is_raised(shop):
+    Person, _, db = shop
+    calls: list[str] = []
+
+    def failing(name: str):
+        def hook(e: orm.QueryEvent) -> None:
+            calls.append(name)
+            raise RuntimeError(name)
+
+        return hook
+
+    db.on_query(failing("first"))
+    db.on_query(failing("second"))
+    with pytest.raises(RuntimeError, match="first") as caught:
+        await Person.objects.using(db).load(Person.customers)  # two statements
+    assert calls == ["first", "first", "second", "second"]
+    assert len(caught.value.__notes__) == 3
+
+
+async def test_the_statements_of_a_hook_give_no_events_and_no_n_plus_one_count(shop):
+    Person, _, db = shop
+    await db.execute("CREATE TABLE audit (sql TEXT)")
+    calls: list[str] = []
+
+    async def audit(e: orm.QueryEvent) -> None:
+        calls.append(e.sql)
+        if len(calls) > 5:  # a hook that sees its own statements would never end
+            return
+        for _ in range(3):
+            await db.fetch("SELECT count(*) AS n FROM audit")
+        await db.execute("INSERT INTO audit VALUES ('x')")
+
+    remove = db.on_query(audit)
+    async with asyncio.timeout(10):
+        with debug.n_plus_one(threshold=2) as report:
+            await Person.objects.using(db).count()
+    remove()
+    assert len(calls) == 1
+    assert len(report.shapes) == 1 and not report.repeated
+    assert await db.fetch("SELECT count(*) AS n FROM audit") == [{"n": 1}]
+
+
+async def test_remove_takes_out_its_own_registration_once(shop):
+    Person, _, db = shop
+    seen: list[orm.QueryEvent] = []
+    remove_first = db.on_query(seen.append)
+    db.on_query(seen.append)
+    remove_first()
+    remove_first()
+    await Person.objects.using(db).count()
+    assert len(seen) == 1
+
+
+async def test_a_hook_that_changes_the_hooks_does_not_change_the_call_in_progress(shop):
+    Person, _, db = shop
+    seen: list[str] = []
+
+    def once(e: orm.QueryEvent) -> None:
+        seen.append("once")
+        remove_once()
+        db.on_query(lambda e: seen.append("late"))
+
+    remove_once = db.on_query(once)
+    db.on_query(lambda e: seen.append("always"))
+    await Person.objects.using(db).count()
+    assert seen == ["once", "always"]
+    await Person.objects.using(db).count()
+    assert seen == ["once", "always", "always", "late"]
+
+
+def test_orm_otel_is_a_member_of_the_package():
+    done = subprocess.run([sys.executable, "-c", "import orm; orm.otel.instrument"], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
 class FakeSpan:
     def __init__(self, name, kind, attributes, start_time):
         self.name, self.kind, self.attributes, self.start = name, kind, attributes, start_time
@@ -158,6 +272,17 @@ async def test_otel_gives_a_client_span_per_statement(shop, opentelemetry):
     assert [s.name for s in mine.spans] == ["SELECT"]
 
 
+async def test_otel_names_a_statement_that_has_no_word(shop, opentelemetry):
+    from orm import otel
+
+    _, _, db = shop
+    otel.instrument(db)
+    with pytest.raises(orm.DatabaseError):
+        await db.execute("(")
+    [span] = opentelemetry.tracer.spans
+    assert span.name == "SQL" and span.status[0] == "error"
+
+
 def test_otel_without_the_package_names_it(monkeypatch):
     from orm import otel
 
@@ -170,10 +295,11 @@ async def test_the_n_plus_one_finder_counts_the_traced_sql(shop):
     Person, Customer, db = shop
     with pytest.warns(debug.NPlusOneWarning), debug.n_plus_one(threshold=2) as report:
         for i in range(3):
+            line = sys._getframe().f_lineno + 1
             await Person.objects.using(db).insert(id=10 + i, name=f"n{i}")
     [shape] = report.repeated
     assert shape.count == 3 and shape.sql.startswith('INSERT INTO "person"') and "?" in shape.sql
-    assert shape.site.endswith("test_query_hooks.py:173")
+    assert shape.site.endswith(f"test_query_hooks.py:{line}")
 
 
 async def test_postgres_events_and_row_counts(clean):
@@ -190,3 +316,64 @@ async def test_postgres_events_and_row_counts(clean):
         remove()
     assert [e.rows for e in events] == [1, 3, 3]
     assert events[0].sql.endswith('WHERE "posts"."id" = $1')
+
+
+async def test_postgres_a_cancelled_statement_gives_an_event_with_the_error_cancelled(clean):
+    db = orm.get_database()
+    events: list[orm.QueryEvent] = []
+    remove = db.on_query(events.append)
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.5):
+                await db.fetch("SELECT pg_sleep(1.5)::text")
+    finally:
+        remove()
+    [e] = events
+    assert (e.sql, e.rows, e.error) == ("SELECT pg_sleep(1.5)::text", 0, "cancelled") and 0.3 < e.duration < 1.5
+
+
+async def test_postgres_the_error_of_an_event_has_the_first_line_only(clean):
+    db = orm.get_database()
+    await User.objects.insert(email="dup@example.com", name="A")
+    events: list[orm.QueryEvent] = []
+    remove = db.on_query(events.append)
+    try:
+        with pytest.raises(orm.IntegrityError) as caught:
+            await User.objects.insert(email="dup@example.com", name="B")
+    finally:
+        remove()
+    [e] = events
+    assert e.error is not None and "\n" not in e.error and "dup@example.com" not in e.error
+    assert "dup@example.com" in str(caught.value)
+
+
+async def test_postgres_a_failed_nowait_lock_reports_0_rows_and_a_won_lock_1(clean):
+    db = orm.get_database()
+    other = await orm.connect(db.url, default=False)
+    events: list[orm.QueryEvent] = []
+    remove = db.on_query(events.append)
+    try:
+        async with other.transaction():
+            await other.lock(4242)
+            async with db.transaction():
+                assert await db.lock(4242, nowait=True) is False
+                await other.execute("SELECT 1")  # keeps `other` busy: the lock is still held
+        async with db.transaction():
+            assert await db.lock(4242, nowait=True) is True
+    finally:
+        remove()
+        await other.close()
+    assert [e.rows for e in events if "advisory" in e.sql] == [0, 1]
+
+
+async def test_otel_cuts_a_long_statement_at_4096_characters(shop, opentelemetry):
+    _, _, db = shop
+    spans = FakeTracer()
+    stop = orm.otel.instrument(db, tracer=spans)
+    try:
+        await db.execute("SELECT 1 /* " + "x" * 5000 + " */")
+        await db.execute("SELECT 2")
+    finally:
+        stop()
+    long, short = (s.attributes["db.query.text"] for s in spans.spans)
+    assert len(long) == 4099 and long.endswith("...") and short == "SELECT 2"

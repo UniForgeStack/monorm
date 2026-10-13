@@ -213,6 +213,22 @@ impl Js {
         call!(napi_set_property(self.0, obj, key, v))
     }
 
+    /// An own writable, enumerable, configurable property `name`: unlike `set`, a name such
+    /// as `__proto__` is a key and does not change the prototype.
+    pub fn define_own(self, obj: V, name: &str, v: V) -> napi::Result<()> {
+        let desc = sys::napi_property_descriptor {
+            utf8name: ptr::null(),
+            name: self.str(name)?,
+            method: None,
+            getter: None,
+            setter: None,
+            value: v,
+            attributes: sys::PropertyAttributes::writable | sys::PropertyAttributes::enumerable | sys::PropertyAttributes::configurable,
+            data: ptr::null_mut(),
+        };
+        call!(napi_define_properties(self.0, obj, 1, &desc))
+    }
+
     /// `obj[name] = v` as a read-only property that `Object.keys`, `JSON.stringify` and
     /// `assert.deepEqual` do not see.
     pub fn define_hidden(self, obj: V, name: &str, v: V) -> napi::Result<()> {

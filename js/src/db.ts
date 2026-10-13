@@ -22,6 +22,8 @@ const callbacks = new AsyncLocalStorage<ReadonlyMap<Database, (() => unknown)[]>
 /** The callback lists of transactions that committed or rolled back: a call started in the
  * transaction can still see its list after that. */
 const ended = new WeakSet<(() => unknown)[]>();
+/** Set while a query hook runs: the statements it sends give no event. */
+const inHook = new AsyncLocalStorage<true>();
 
 export interface LockOptions {
   /** A shared lock (any number of shared holders, but no exclusive one). */
@@ -41,7 +43,8 @@ export interface QueryEvent {
   readonly duration: number;
   /** Rows returned, or rows affected by a statement that returns no rows. */
   readonly rows: number;
-  /** The database's error message when the statement failed. */
+  /** The database's error message when the statement failed, or `"cancelled"` when the call
+   * ended before the statement did. */
   readonly error: string | null;
 }
 
@@ -63,6 +66,13 @@ const MAX_TIMEOUT = 2147483.647;
 /** Statements a replica may answer (the IR starts with its `op`). */
 const READ = /^\{"op":"(select|count|exists)"/;
 
+/** Sets `errors` as the `cause` of `error`, unless there are none or it has a cause. */
+function causedBy(error: unknown, errors: readonly unknown[]): void {
+  if (errors.length && error instanceof Error && error.cause === undefined) {
+    error.cause = errors.length === 1 ? errors[0] : new AggregateError(errors);
+  }
+}
+
 /**
  * @internal Runs `fn` with `tx` as the current transaction of `db`; does not end it.
  * Gives the `onCommit` callbacks registered in `fn`, for the caller to run after it commits.
@@ -82,7 +92,7 @@ export async function inTransaction(db: Database, tx: NativeTransaction, fn: () 
 /** A connection pool. Created by {@link connect}. */
 export class Database {
   /** Hooks live on the root: `primary` views share them. */
-  readonly #hooks: ((event: QueryEvent) => unknown)[] = [];
+  readonly #hooks = new Map<object, (event: QueryEvent) => unknown>();
   private turn = 0;
   /** @internal The database a `primary` view belongs to: they share transactions and callbacks. */
   root: Database = this;
@@ -97,18 +107,24 @@ export class Database {
 
   /**
    * Calls `hook(event)` after each statement this database runs (prefetch queries and
-   * `updateMany` batches included), also when it fails. Gives a function that removes
-   * the hook.
+   * `updateMany` batches included), also when it fails or the call ends before it does.
+   * Gives a function that removes the hook.
    *
    * The hook runs in the async context that sent the query, after the ORM call ends, so
    * `AsyncLocalStorage` values (a current span, a request id) are those of the caller.
-   * An error the hook throws rejects that call.
+   * The ORM awaits a hook that returns a promise. A statement that a hook sends gives no
+   * event.
+   *
+   * Every hook gets every event. A hook error never replaces the error of the call: when
+   * the call failed, its own error rejects, and the hook errors become its `cause` (an
+   * `AggregateError` for several) unless it has one. When the call succeeded, the first
+   * hook error rejects it, and the others are its `cause`.
    */
   onQuery(hook: (event: QueryEvent) => unknown): () => void {
-    this.root.#hooks.push(hook);
+    const key = {};
+    this.root.#hooks.set(key, hook);
     return () => {
-      const i = this.root.#hooks.indexOf(hook);
-      if (i >= 0) this.root.#hooks.splice(i, 1);
+      this.root.#hooks.delete(key);
     };
   }
 
@@ -116,18 +132,44 @@ export class Database {
    * N+1 scope listens. */
   send<T>(start: (tx: NativeTransaction | null, trace: NativeTrace | null) => Promise<T>): Promise<T> {
     const tx = this.tx();
-    if (!this.root.#hooks.length && !debugging()) return wait(() => start(tx, null));
+    if (inHook.getStore() || (!this.root.#hooks.size && !debugging())) return wait(() => start(tx, null));
     const trace = new (native().Trace)();
     return this.#observe(trace, capture(), wait(() => start(tx, trace)));
   }
 
   async #observe<T>(trace: NativeTrace, origin: ReturnType<typeof capture>, pending: Promise<T>): Promise<T> {
+    let result: T;
     try {
-      return await pending;
-    } finally {
-      const events: QueryEvent[] = trace.take().map((e) => ({ ...e, error: e.error ?? null }));
-      if (origin) for (const e of events) record(e.sql, origin);
-      for (const hook of [...this.root.#hooks]) for (const e of events) hook(e);
+      result = await pending;
+    } catch (error) {
+      await this.#report(trace, origin, { error });
+      throw error;
+    }
+    await this.#report(trace, origin, null);
+    return result;
+  }
+
+  /** Gives the events of a call to the N+1 finder and to every hook. `failed` is the error of
+   * the call: it stays, and the hook errors become its `cause`. Throws the first hook error
+   * when the call did not fail. */
+  async #report(trace: NativeTrace, origin: ReturnType<typeof capture>, failed: { readonly error: unknown } | null): Promise<void> {
+    const events: QueryEvent[] = trace.take().map((e) => ({ ...e, error: e.error ?? null }));
+    if (origin) for (const e of events) record(e.sql, origin);
+    const errors: unknown[] = [];
+    for (const hook of [...this.root.#hooks.values()]) {
+      for (const e of events) {
+        try {
+          await inHook.run(true, () => hook(e));
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }
+    if (failed) return causedBy(failed.error, errors);
+    const [first, ...rest] = errors;
+    if (errors.length) {
+      causedBy(first, rest);
+      throw first;
     }
   }
 

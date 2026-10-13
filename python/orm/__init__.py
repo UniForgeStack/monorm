@@ -9,7 +9,7 @@ expressions over model attributes, Django-style managers on top::
 """
 
 from .inspection import QueryInspection, StatementInspection
-from . import debug, fields
+from . import debug, fields, otel
 from .db import Database, QueryEvent, connect, get_database, scope
 from .errors import (
     DatabaseError,
@@ -64,6 +64,7 @@ __all__ = [
     "StatementInspection",
     "debug",
     "fields",
+    "otel",
     "Registry",
     "column",
     "define",

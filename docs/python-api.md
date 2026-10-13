@@ -1009,7 +1009,8 @@ async def transfer(db, a, b, amount, attempts=3):
 ```
 
 Retry the whole transaction, never one statement in it: Postgres aborts the transaction on these errors.
-`40001` occurs only at the `REPEATABLE READ` and `SERIALIZABLE` isolation levels; the default `READ COMMITTED` gives deadlocks only.
+`40001` occurs at the `REPEATABLE READ` and `SERIALIZABLE` isolation levels; on a primary the default `READ COMMITTED` gives deadlocks only.
+A hot-standby replica can give `40001` at `READ COMMITTED` too (I recall this from the PostgreSQL hot-standby documentation; not run here).
 
 ### Protected writes
 
@@ -1135,6 +1136,7 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
 
 * The scope counts its statements by shape: the SQL with placeholders, without values.
   It reads the same events as `db.on_query`, so prefetch queries and `update_many` batches count one by one.
+  The statements that a query hook sends do not count.
   Tasks started in the scope count too, and so do the queries of an inner scope.
   An inner scope cannot raise the threshold of an outer scope; the outer scope also counts the inner queries.
   The pages of one ORM loop (`batches()`, `iterate()`, the chunks of `in_bulk()`) count as one query when they have one shape.
@@ -1164,11 +1166,15 @@ print(await Post.objects.filter(Post.author_id == 7).explain(analyze=True))  # r
   Placeholders are `$1, $2, ...` on Postgres and `?` on SQLite.
 * A parameter's type comes from its Python value: `int` is `bigint`, `str` is `text`, `dict` and `list` are JSON, and `datetime`, `date`, `Decimal`, `UUID` and `bool` have their own types.
   Cast in the SQL where a column needs another type: `WHERE id = $1::uuid` for a `str`.
+  A `list` goes as `jsonb`, so `= ANY($1)` raises `42809`; use `WHERE x IN (SELECT jsonb_array_elements_text($1))` and compare as text.
+  A naive `datetime` raises `TypeError` (use an aware one), and `bytes` raises `TypeError`.
 * Cells come back by the column type that the database reports.
   Postgres gives `bigint`, `integer`, `smallint`, `double precision`, `real`, `boolean`, text types and enums, `timestamptz`, `date`, `uuid`, `json`, `jsonb`, `numeric` and arrays of them.
   Any other type (`timestamp`, `interval`, `bytea`, ...) raises `DatabaseError`; cast it in the SQL (`::text`, `::timestamptz`).
   SQLite gives each value by its storage class (`int`, `float`, `str`, `None`); a blob raises.
 * `fetch` runs in the current transaction, and query hooks see it.
+* After a schema change (`ALTER TABLE ...`), the first call of a cached Postgres statement that now reads another result shape raises `0A000` (`cached plan must not change result type`).
+  The next call prepares the statement again and works.
 * `qs.explain(analyze=False)` gives the plan of the query set's SELECT as text, not of its prefetch queries.
   On Postgres, `analyze=True` runs the query with `EXPLAIN (ANALYZE, BUFFERS)`; a query set with `lock()` raises `QueryError` there, because the run would take the row locks.
   On SQLite, it gives `EXPLAIN QUERY PLAN`, each step indented under its parent. SQLite has no `analyze`, so `analyze=True` raises `QueryError`.
@@ -1185,20 +1191,32 @@ def log_slow(e: orm.QueryEvent) -> None:
 remove = db.on_query(log_slow)
 ```
 
-* `orm.QueryEvent` has `sql` (the SQL with placeholders, never the values), `start` (Unix seconds), `duration` (seconds), `rows` and `error`.
+* `orm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix seconds), `duration` (seconds), `rows` and `error`.
   `rows` is the rows returned, or the rows affected by a statement that returns no rows.
-  `error` is the database's message when the statement failed; the ORM call still raises.
-* Each statement gives one event: a prefetch query, each `update_many` batch, each `db.execute`.
+  `error` is the first line of the database's message when the statement failed; the ORM call still raises.
+  The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
+  `db.lock(..., nowait=True)` gives `rows` 1 when it got the lock and 0 when it did not.
+* Each call to the database gives one event: a prefetch query, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
+  A call keeps its events until it ends, so a call with many statements holds them all in memory (the review reported 200k events at about +113 MB; not measured here).
   Reads sent to a replica and the lock and unlock of `db.lock(..., session=True)` give events too.
   `COMMIT`, `ROLLBACK` and the `set_config` statements of `db.tenant()` give no event.
 * The hooks belong to the database: `db.primary` shares them.
-* The engine times the statement in Rust, from the send to the last row, without the conversion to Python objects.
+* The engine times the statement in Rust, from the send to the last row, with the wait for a connection and, under `db.tenant()`, its transaction, without the conversion to Python objects.
 * The hook runs after the ORM call ends, in the task that made the call.
   So context variables, for example the current span or a request id, are those of the caller.
-  An exception in a hook propagates to that caller.
+  A hook can be a coroutine function: the ORM awaits the result.
+* Every hook gets every event of the call, also when a hook raises.
+  When the call succeeded, the first hook exception propagates to the caller after all hooks ran; the other hook exceptions are notes on it (`add_note`).
+  The statement has already run then: an autocommit `insert` is committed when its hook raises.
+  When the call failed, the exception of the call propagates, and the hook exceptions become notes on it.
+* The statements that a hook sends give no event and no N+1 count, so a hook that writes an audit row does not call itself.
+* When the caller cancels a call (`asyncio.timeout`, a closed request), each statement still in flight gives an event with `error` set to `"cancelled"`, `rows` 0 and the time up to the cancel.
+  The event does not tell whether the database finished the statement.
+* Each call to `on_query` is one registration, also for the same function.
+  Its remove function takes out that registration, and a second call to it does nothing.
 * With no hook and no N+1 scope, a query pays one list check and one `ContextVar` read.
   With a hook, each call creates a trace and each statement records one event.
-  A prepared `get` on SQLite took 252 µs with an empty hook and 247 µs without (measured on a loaded machine, so the difference is noise-level).
+  A prepared `get`, median of 9 rounds of 2000 calls (measured, loaded machine): SQLite 163 µs with an empty hook and 152 µs without; Postgres 201 µs and 192 µs. The hook adds about 10 µs.
 
 `orm.otel.instrument(db)` gives each statement a client span, and gives a function that stops the spans.
 It needs `opentelemetry-api` (`pip install 'orm[otel]'`); configure the SDK and the exporter as usual.
@@ -1206,7 +1224,7 @@ It needs `opentelemetry-api` (`pip install 'orm[otel]'`); configure the SDK and 
 
 * The span starts and ends at the statement's times. Its parent is the current span of the caller.
 * The span name is the SQL operation (`SELECT`, `INSERT`, ...).
-  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (with placeholders) and `db.response.returned_rows`.
+  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (as in the event, cut at 4096 characters then `...`) and `db.response.returned_rows`.
 * A failed statement gets the `ERROR` status and the database's message.
 
 ### Hooks for packages: `orm.hooks`

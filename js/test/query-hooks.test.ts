@@ -97,6 +97,99 @@ test("an error a hook throws rejects the call", async () => {
   } finally { await db.close(); }
 });
 
+test("an async hook is awaited, and its rejection rejects the call", async () => {
+  const { Person, db } = await shop();
+  try {
+    const seen: string[] = [];
+    const off = db.onQuery(async (e) => { await new Promise((resolve) => setImmediate(resolve)); seen.push(e.sql); });
+    await Person.objects.using(db).count();
+    assert.equal(seen.length, 1);
+    off();
+    db.onQuery(async () => { await Promise.resolve(); throw new Error("async exporter down"); });
+    await assert.rejects(Person.objects.using(db).count(), /async exporter down/);
+  } finally { await db.close(); }
+});
+
+test("a hook error does not replace the error of the call", async () => {
+  const { Person, db } = await shop();
+  try {
+    const later: QueryEvent[] = [];
+    db.onQuery(() => { throw new Error("exporter down"); });
+    db.onQuery((e) => { later.push(e); });
+    await assert.rejects(Person.objects.using(db).insert({ id: 9, name: "p0" }), (error: Error) => {
+      assert.ok(error instanceof IntegrityError);
+      assert.match((error.cause as Error).message, /exporter down/);
+      return true;
+    });
+    assert.equal(later.length, 1);
+    assert.match(later[0]!.error!, /UNIQUE/);
+  } finally { await db.close(); }
+});
+
+test("every hook gets every event before the first hook error rejects the call", async () => {
+  const { Person, db } = await shop();
+  try {
+    const calls: string[] = [];
+    for (const name of ["first", "second"]) db.onQuery(() => { calls.push(name); throw new Error(name); });
+    await assert.rejects(Person.objects.using(db).load(Person.customers).all(), (error: Error) => { // two statements
+      assert.equal(error.message, "first");
+      assert.ok(error.cause instanceof AggregateError);
+      assert.equal(error.cause.errors.length, 3);
+      return true;
+    });
+    assert.deepEqual(calls, ["first", "first", "second", "second"]);
+  } finally { await db.close(); }
+});
+
+test("the statements of a hook give no events and no N+1 count", async () => {
+  const { Person, db } = await shop();
+  try {
+    await db.execute("CREATE TABLE audit (sql TEXT)");
+    const calls: string[] = [];
+    const off = db.onQuery(async (e) => {
+      calls.push(e.sql);
+      if (calls.length > 5) return; // a hook that sees its own statements would never end
+      for (let i = 0; i < 3; i++) await db.fetch("SELECT count(*) AS n FROM audit");
+      await db.execute("INSERT INTO audit VALUES ('x')");
+    });
+    await debug.nPlusOne(async () => { await Person.objects.using(db).count(); }, { threshold: 2, fail: true });
+    off();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(await db.fetch("SELECT count(*) AS n FROM audit"), [{ n: 1n }]);
+  } finally { await db.close(); }
+});
+
+test("remove takes out its own registration once", async () => {
+  const { Person, db } = await shop();
+  try {
+    const seen: QueryEvent[] = [];
+    const hook = (e: QueryEvent): void => { seen.push(e); };
+    const removeFirst = db.onQuery(hook);
+    db.onQuery(hook);
+    removeFirst();
+    removeFirst();
+    await Person.objects.using(db).count();
+    assert.equal(seen.length, 1);
+  } finally { await db.close(); }
+});
+
+test("a hook that changes the hooks does not change the call in progress", async () => {
+  const { Person, db } = await shop();
+  try {
+    const seen: string[] = [];
+    const removeOnce = db.onQuery(() => {
+      seen.push("once");
+      removeOnce();
+      db.onQuery(() => { seen.push("late"); });
+    });
+    db.onQuery(() => { seen.push("always"); });
+    await Person.objects.using(db).count();
+    assert.deepEqual(seen, ["once", "always"]);
+    await Person.objects.using(db).count();
+    assert.deepEqual(seen, ["once", "always", "always", "late"]);
+  } finally { await db.close(); }
+});
+
 class FakeSpan implements Span {
   status: { code: number; message?: string } | null = null;
   endTime: number | undefined;
@@ -137,6 +230,17 @@ test("otel gives a client span per statement", async () => {
   } finally { await db.close(); }
 });
 
+test("otel names a statement that has no word", async () => {
+  const { db } = await shop();
+  try {
+    const tracer = new FakeTracer();
+    await instrument(db, { tracer });
+    await assert.rejects(db.execute("("));
+    assert.equal(tracer.spans[0]!.name, "SQL");
+    assert.equal(tracer.spans[0]!.status!.code, 2);
+  } finally { await db.close(); }
+});
+
 test("the N+1 finder counts the traced SQL", async () => {
   const { Person, db } = await shop();
   try {
@@ -151,5 +255,69 @@ test("the N+1 finder counts the traced SQL", async () => {
     const [shape] = error.report.repeated;
     assert.equal(shape!.count, 3);
     assert.match(shape!.sql, /^INSERT INTO "person".*\?/);
+  } finally { await db.close(); }
+});
+
+const postgresUrl = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
+const blog = `datasource db {
+  provider = "postgresql"
+}
+model Account {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+}
+`;
+
+test("postgres: the error of an event has the first line only", async () => {
+  const registry = new Registry();
+  const { Account } = loads(blog, { registry }) as Record<string, Any>;
+  const db = await connect(postgresUrl, { registry, default: false });
+  try {
+    await db.execute("DROP TABLE IF EXISTS account");
+    await db.createTables();
+    await Account.objects.using(db).insert({ email: "dup@example.com" });
+    const events: QueryEvent[] = [];
+    db.onQuery((e) => { events.push(e); });
+    await assert.rejects(Account.objects.using(db).insert({ email: "dup@example.com" }), (error: Error) => {
+      assert.ok(error instanceof IntegrityError);
+      assert.match(error.message, /dup@example\.com/);
+      return true;
+    });
+    assert.equal(events.length, 1);
+    assert.ok(!events[0]!.error!.includes("\n") && !events[0]!.error!.includes("dup@example.com"));
+  } finally { await db.execute("DROP TABLE IF EXISTS account"); await db.close(); }
+});
+
+test("postgres: a failed nowait lock reports 0 rows and a won lock 1", async () => {
+  const db = await connect(postgresUrl, { default: false });
+  const other = await connect(postgresUrl, { default: false });
+  try {
+    const events: QueryEvent[] = [];
+    db.onQuery((e) => { events.push(e); });
+    await other.transaction(async () => {
+      await other.lock(4243);
+      await db.transaction(async () => {
+        assert.equal(await db.lock(4243, { nowait: true }), false);
+      });
+    });
+    await db.transaction(async () => {
+      assert.equal(await db.lock(4243, { nowait: true }), true);
+    });
+    assert.deepEqual(events.filter((e) => e.sql.includes("advisory")).map((e) => e.rows), [0, 1]);
+  } finally { await other.close(); await db.close(); }
+});
+
+test("otel cuts a long statement at 4096 characters", async () => {
+  const { db } = await shop();
+  try {
+    const tracer = new FakeTracer();
+    const stop = await instrument(db, { tracer });
+    await db.execute("SELECT 1 /* " + "x".repeat(5000) + " */");
+    await db.execute("SELECT 2");
+    stop();
+    const [long, short] = tracer.spans.map((s) => String(s.options!.attributes!["db.query.text"]));
+    assert.equal(long!.length, 4099);
+    assert.ok(long!.endsWith("..."));
+    assert.equal(short, "SELECT 2");
   } finally { await db.close(); }
 });

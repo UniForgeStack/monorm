@@ -8,12 +8,16 @@ provider of the process.
 from __future__ import annotations
 
 import importlib
+import re
 from collections.abc import Callable
 from typing import Any, Protocol
 
 from .db import Database, QueryEvent
 
 __all__ = ["Tracer", "instrument"]
+
+_OPERATION = re.compile(r"[\s(]*(\w+)")
+_MAX_TEXT = 4096
 
 
 class Tracer(Protocol):
@@ -28,7 +32,7 @@ def instrument(db: Database, *, tracer: Tracer | None = None) -> Callable[[], No
     The span starts and ends at the statement's own times and has the current span of
     the calling task as its parent. Its name is the SQL operation (``SELECT``), and it
     has ``db.system.name``, ``db.operation.name``, ``db.query.text`` (the SQL with
-    placeholders, never the values) and ``db.response.returned_rows``. A failed
+    placeholders for ORM-built SQL, as written for raw SQL; cut at 4096 characters then ``...``) and ``db.response.returned_rows``. A failed
     statement gets the error status and the database's message.
     """
     try:
@@ -39,7 +43,8 @@ def instrument(db: Database, *, tracer: Tracer | None = None) -> Callable[[], No
     system = "sqlite" if db.url.startswith("sqlite:") else "postgresql"
 
     def hook(e: QueryEvent) -> None:
-        operation = e.sql.lstrip("( \n").split(None, 1)[0].upper() if e.sql.strip() else "SQL"
+        found = _OPERATION.match(e.sql)
+        operation = found.group(1).upper() if found else "SQL"
         start = int(e.start * 1e9)
         span = spans.start_span(
             operation,
@@ -47,7 +52,7 @@ def instrument(db: Database, *, tracer: Tracer | None = None) -> Callable[[], No
             attributes={
                 "db.system.name": system,
                 "db.operation.name": operation,
-                "db.query.text": e.sql,
+                "db.query.text": e.sql if len(e.sql) <= _MAX_TEXT else e.sql[:_MAX_TEXT] + "...",
                 "db.response.returned_rows": e.rows,
             },
             start_time=start,

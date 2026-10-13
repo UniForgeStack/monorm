@@ -155,11 +155,22 @@ async fn prepare(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<State
     Ok(stmt)
 }
 
+/// Drops the cached statement of a call that failed with `0A000` (a changed table made the
+/// plan stale), so the next call prepares it again.
+fn forget_stale(c: &ClientWrapper, sql: &str, args: &[Value], e: tokio_postgres::Error) -> DbError {
+    if e.code().is_some_and(|code| code.code() == "0A000") {
+        if let Ok(types) = args.iter().map(pg_type).collect::<DbResult<Vec<_>>>() {
+            c.statement_cache.remove(sql, &types);
+        }
+    }
+    pg_err(e)
+}
+
 async fn query(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Box<dyn RowSet>> {
     let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-    let rows = c.query(&stmt, &refs).await.map_err(pg_err)?;
+    let rows = c.query(&stmt, &refs).await.map_err(|e| forget_stale(c, sql, args, e))?;
     Ok(Box::new(PgRows(rows)))
 }
 
@@ -169,7 +180,7 @@ async fn fetch(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Box<dyn
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
     let types = stmt.columns().iter().map(|c| raw_type(c.name(), c.type_())).collect::<DbResult<Vec<_>>>()?;
     let columns = stmt.columns().iter().map(|c| c.name().to_owned()).collect();
-    let rows = c.query(&stmt, &refs).await.map_err(pg_err)?;
+    let rows = c.query(&stmt, &refs).await.map_err(|e| forget_stale(c, sql, args, e))?;
     Ok(Box::new(PgRawRows { columns, types, rows }))
 }
 
@@ -179,6 +190,8 @@ enum RawType {
     Value(ValueType),
     SmallInt,
     Real,
+    SmallIntArray,
+    RealArray,
 }
 
 fn raw_type(name: &str, ty: &Type) -> DbResult<RawType> {
@@ -187,8 +200,8 @@ fn raw_type(name: &str, ty: &Type) -> DbResult<RawType> {
         _ => (ty, false),
     };
     let col = match *scalar {
-        Type::INT2 if !array => return Ok(RawType::SmallInt),
-        Type::FLOAT4 if !array => return Ok(RawType::Real),
+        Type::INT2 => return Ok(if array { RawType::SmallIntArray } else { RawType::SmallInt }),
+        Type::FLOAT4 => return Ok(if array { RawType::RealArray } else { RawType::Real }),
         Type::INT8 => ColType::BigInt,
         Type::INT4 => ColType::Int,
         Type::FLOAT8 => ColType::Float,
@@ -228,6 +241,8 @@ impl RawRows for PgRawRows {
             RawType::Value(ty) => cell(r, col, ty),
             RawType::SmallInt => opt(r, col, |v: i16| Cell::Int(v.into())),
             RawType::Real => opt(r, col, |v: f32| Cell::Float(v.into())),
+            RawType::SmallIntArray => list(r, col, |v: i16| Cell::Int(v.into())),
+            RawType::RealArray => list(r, col, |v: f32| Cell::Float(v.into())),
         }
     }
 }
@@ -236,7 +251,7 @@ async fn execute(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<u64> 
     let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-    c.execute(&stmt, &refs).await.map_err(pg_err)
+    c.execute(&stmt, &refs).await.map_err(|e| forget_stale(c, sql, args, e))
 }
 
 /// Simple-query protocol: several statements, no parameters, text results.

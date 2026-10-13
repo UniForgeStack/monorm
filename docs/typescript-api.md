@@ -580,6 +580,7 @@ await debug.nPlusOne(async () => {
 
 * The scope counts the statements of `fn` by shape: the SQL with placeholders, without values.
   It reads the same events as `db.onQuery`, so prefetch queries and `updateMany` batches count one by one.
+  The statements that a query hook sends do not count.
   Work that `fn` starts counts too, and so do the queries of an inner scope.
   An inner scope cannot raise the threshold of an outer scope; the outer scope also counts the inner queries.
   The pages of one ORM loop (`batches()`, `iterate()`, the chunks of `inBulk()`) count as one query when they have one shape.
@@ -604,6 +605,10 @@ console.log(await Post.objects.filter(Post.authorId.eq(7n)).explain({ analyze: t
 `db.fetch(sql, ...params)` gives an array of objects by column name, and `qs.explain({ analyze })` gives the plan as text.
 They work as in Python (`docs/python-api.md`, "Raw SQL and query plans").
 A parameter's type comes from its JS value: `bigint` and integer numbers are `bigint`, strings are `text`, plain objects and arrays are JSON, and `Date` is `timestamptz`.
+An array goes as `jsonb`, so `= ANY($1)` throws `DatabaseError` `42809`; use `WHERE x IN (SELECT jsonb_array_elements_text($1))`.
+A `Buffer` goes as JSON (`{"type":"Buffer","data":[...]}`), where Python raises `TypeError` for `bytes`.
+`fetch` returns a SQLite `INTEGER` (also `count(*)`) as `bigint`.
+After a schema change, the first call of a cached Postgres statement that now reads another result shape throws `0A000`; the next call prepares it again.
 `bigint` columns come back as `bigint`, and `timestamptz` and `date` as `Date`.
 
 ### Planner inspection for assertions
@@ -642,11 +647,20 @@ const off = db.onQuery((e: QueryEvent) => {
 });
 ```
 
-* `QueryEvent` has `sql` (the SQL with placeholders, never the values), `start` (Unix milliseconds), `duration` (milliseconds), `rows` and `error` (`null` on success).
+* `QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix milliseconds), `duration` (milliseconds), `rows` and `error` (`null` on success; the first line of the database's message, without `DETAIL`, but it can hold an input value for a type error).
 * The events, the timing and the context are the same as in Python (`docs/python-api.md`, "Query hooks and OpenTelemetry").
-  The hook runs in the async context of the caller, after the ORM call ends. An error that the hook throws rejects that call.
+  The hook runs in the async context of the caller, after the ORM call ends.
+  The ORM awaits the promise that a hook returns.
+* Every hook gets every event of the call, also when a hook throws.
+  When the call succeeded, the first hook error rejects the call after all hooks ran; the other hook errors are its `cause` (an `AggregateError` when there is more than one).
+  The statement has already run then: an autocommit `insert()` is committed when its hook throws.
+  When the call failed, its own error stays, and the hook errors become its `cause` unless it has a `cause` already.
+* The statements that a hook sends give no event and no N+1 count.
+* A prepared `get()`, median of 9 rounds of 2000 calls (measured, loaded machine): SQLite 125 µs with an empty hook and 113 µs without; Postgres 154 µs and 141 µs. The hook adds about 12 µs.
+* Each call to `onQuery` is one registration, also for the same function.
+  Its remove function takes out that registration, and a second call to it does nothing.
 
-`instrument(db, { tracer })` from `orm/otel` gives each statement a client span with the same name, attributes and status as in Python, and gives a function that stops the spans.
+`await instrument(db, { tracer })` from `orm/otel` gives each statement a client span with the same name, attributes and status as in Python, and resolves to a function that stops the spans.
 Without `tracer`, it loads `@opentelemetry/api` (an optional peer dependency) and uses `trace.getTracer("orm")`.
 
 ### Hooks for packages

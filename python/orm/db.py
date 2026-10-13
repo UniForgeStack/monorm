@@ -35,6 +35,8 @@ _tenants: ContextVar[dict[Database, tuple[_native.Engine, list[_native.Engine]]]
 _scope: ContextVar[dict[str, Any]] = ContextVar("orm_scope", default={})
 # For each database with an open transaction: the on_commit callbacks of the innermost one.
 _callbacks: ContextVar[dict[Database, _Callbacks]] = ContextVar("orm_on_commit", default={})
+# True while a query hook runs: the statements it sends give no event.
+_in_hook: ContextVar[bool] = ContextVar("orm_in_hook", default=False)
 
 
 class _Callbacks(list[Callable[[], Any]]):
@@ -56,7 +58,8 @@ class QueryEvent:
     duration: float
     #: Rows returned, or rows affected by a statement that returns no rows.
     rows: int
-    #: The database's error message when the statement failed.
+    #: The database's error message when the statement failed, or ``"cancelled"`` when the
+    #: caller stopped waiting for it.
     error: str | None
 
 
@@ -70,7 +73,7 @@ class Database:
         self.url = url
         self._registry = registry
         # Hooks live on the root: `primary` views share them.
-        self._hooks: list[Callable[[QueryEvent], object]] = []
+        self._hooks: dict[object, Callable[[QueryEvent], object]] = {}
         self._replicas = list(replicas)
         self._turn = 0
         # The database a `primary` view belongs to: they share transactions and callbacks.
@@ -127,40 +130,75 @@ class Database:
 
     def on_query(self, hook: Callable[[QueryEvent], object]) -> Callable[[], None]:
         """Call ``hook(event)`` after each statement this database runs (prefetch queries
-        and ``update_many`` batches included), also when it fails. Returns a function
-        that removes the hook.
+        and ``update_many`` batches included), also when it fails or the caller cancels it.
+        Returns a function that removes the hook.
 
         The hook runs in the task that sent the query, after the ORM call ends, so
-        context variables (a current span, a request id) are those of the caller. An
-        exception in the hook propagates to that caller.
+        context variables (a current span, a request id) are those of the caller. It can
+        be a coroutine function: the ORM awaits it. A statement that a hook sends gives
+        no event.
+
+        Every hook gets every event. A hook error never replaces the error of the call:
+        when the call failed, its own error is raised and each hook error is added to it
+        as a note. When the call succeeded, the first hook error propagates to the caller
+        and the others are notes on it.
         """
-        self._root._hooks.append(hook)
+        key = object()
+        self._root._hooks[key] = hook
 
         def remove() -> None:
-            if hook in self._root._hooks:
-                self._root._hooks.remove(hook)
+            self._root._hooks.pop(key, None)
 
         return remove
 
     def _call(self, start: Callable[[_native.Trace | None], Awaitable[T]]) -> Awaitable[T]:
         """``start(trace)`` starts an engine call. Without hooks or an N+1 scope the
         engine's awaitable comes back as is, untraced."""
-        if not self._root._hooks and debug._scope.get() is None:
+        if _in_hook.get() or (not self._root._hooks and debug._scope.get() is None):
             return start(None)
         trace = _native.Trace()
         return self._observe(trace, debug.capture(), start(trace))
 
     async def _observe(self, trace: _native.Trace, origin: tuple[str, str | None] | None, call: Awaitable[T]) -> T:
         try:
-            return await call
-        finally:
-            events = [QueryEvent(*e) for e in trace.take()]
-            if origin is not None:
-                for e in events:
-                    debug.record(e.sql, origin)
-            for hook in list(self._root._hooks):
-                for e in events:
-                    hook(e)
+            result = await call
+        except BaseException as error:
+            await self._report(trace, origin, error)
+            raise
+        await self._report(trace, origin, None)
+        return result
+
+    async def _report(
+        self, trace: _native.Trace, origin: tuple[str, str | None] | None, failed: BaseException | None
+    ) -> None:
+        """Gives the events of a call to the N+1 finder and to every hook. ``failed`` is the
+        error of the call: it stays, and the hook errors become notes on it."""
+        events = [QueryEvent(*e) for e in trace.take()]
+        if origin is not None:
+            for e in events:
+                debug.record(e.sql, origin)
+        errors: list[Exception] = []
+        for hook in list(self._root._hooks.values()):
+            for e in events:
+                token = _in_hook.set(True)
+                try:
+                    result = hook(e)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as error:
+                    errors.append(error)
+                finally:
+                    _in_hook.reset(token)
+        if failed is not None:
+            raised, notes = failed, errors
+        elif errors:
+            raised, notes = errors[0], errors[1:]
+        else:
+            return
+        for note in notes:
+            raised.add_note(f"query hook raised {note!r}")
+        if failed is None:
+            raise raised
 
     async def _run(
         self, ir: dict[str, Any], params: list[Any], row_cls: type | None = None, db: Database | None = None
