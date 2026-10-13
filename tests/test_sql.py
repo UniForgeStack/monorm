@@ -153,6 +153,11 @@ def test_lock():
         User.objects.lock(nowait=True, skip_locked=True)
 
 
+def test_lock_refuses_a_filtered_aggregate():
+    with pytest.raises(QueryError, match="aggregates"):
+        Post.objects.lock().select(func.sum(Post.views, filter=Post.author.name == "A")).sql()
+
+
 def test_lock_rejected_where_meaningless():
     with pytest.raises(QueryError):
         User.objects.lock().update(name="x")

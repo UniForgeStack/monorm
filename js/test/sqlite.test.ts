@@ -235,6 +235,23 @@ test("SQLite aggregate FILTER", async () => {
   } finally { await db.close(); }
 });
 
+test("SQLite aggregate FILTER through relations", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const alice = await Author.objects.using(db).insert({ email: "a@example.com", name: "Alice" });
+    const bob = await Author.objects.using(db).insert({ email: "b@example.com", name: "Bob" });
+    await Book.objects.using(db).insertMany([
+      { authorId: alice.id, title: "one", pages: 5 }, { authorId: alice.id, title: "two", pages: 7 }, { authorId: bob.id, title: "three", pages: 100 },
+    ]);
+    const books = Book.objects.using(db);
+    assert.equal(await books.select({ s: func.sum(Book.pages, { filter: Book.author.name.eq("Alice") }) }).scalar(), 12n);
+    assert.equal(await books.select({ c: func.count({ filter: Book.author.name.eq("Alice") }) }).scalar(), 2n);
+    const rows = await Author.objects.using(db).orderBy(Author.id).select({ n: Author.name, c: func.count(Author.books, { filter: Author.name.eq("Alice") }) }).all();
+    assert.deepEqual(rows, [{ n: "Alice", c: 2n }, { n: "Bob", c: 0n }]);
+  } finally { await db.close(); }
+});
+
 test("SQLite UUID, date, timestamp and inline trigger conversions", async () => {
   const registry = new Registry();
   const Event = loads(`

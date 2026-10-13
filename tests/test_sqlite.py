@@ -547,3 +547,23 @@ async def test_related_sets_use_the_database_of_their_instance():
     finally:
         await db.drop_tables()
         await db.close()
+
+
+async def test_aggregate_filter_through_relations(sqlite):
+    from orm import func
+    db, m, _ = sqlite
+    Author, Book = m["Author"], m["Book"]
+    a = await Author.objects.using(db).insert(email="a@example.com", name="Alice")
+    b = await Author.objects.using(db).insert(email="b@example.com", name="Bob")
+    await Book.objects.using(db).insert_many([
+        {"author_id": a.id, "title": "one", "pages": 5},
+        {"author_id": a.id, "title": "two", "pages": 7},
+        {"author_id": b.id, "title": "three", "pages": 100},
+    ])
+    books = Book.objects.using(db)
+    assert await books.select(func.sum(Book.pages, filter=Book.author.name == "Alice")).scalar() == 12
+    assert await books.select(func.count(filter=Book.author.name == "Alice")).scalar() == 2
+    rows = await Author.objects.using(db).order_by(Author.id).select(
+        Author.name, func.count(Author.books, filter=Author.name == "Alice")
+    )
+    assert [tuple(r) for r in rows] == [("Alice", 2), ("Bob", 0)]

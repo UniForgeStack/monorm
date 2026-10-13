@@ -199,6 +199,33 @@ async def test_aggregate_filter(clean):
     assert [tuple(r) for r in running] == [("b1", 1), ("a1", 1), ("a2", 2), ("a3", 2)]
 
 
+async def test_aggregate_filter_through_a_to_one_hop(clean):
+    _, _ = await seed()
+    posts = Post.objects
+    # The filter follows to-one hops only: a plain aggregate over the posts, filtered by an EXISTS.
+    assert await posts.select(func.sum(Post.views, filter=Post.author.name == "Alice")).scalar() == 75
+    assert await posts.select(func.count(filter=Post.author.name == "Alice")).scalar() == 3
+    rows = await posts.order_by(Post.author_id).select(
+        Post.author_id, func.sum(Post.views, filter=Post.author.name == "Alice")
+    ).group_by(Post.author_id)
+    assert [r[1] for r in rows] == [75, None]
+
+
+async def test_relation_count_with_an_outer_filter(clean):
+    await seed()
+    users = User.objects.order_by(User.id)
+    rows = await users.select(User.name, func.count(User.posts, filter=User.name == "Alice"))
+    assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
+    # beside a second aggregate of the same relation, which shares a LATERAL join
+    rows = await users.select(
+        User.name, func.count(User.posts, filter=User.name == "Alice"), func.max(User.posts.views)
+    )
+    assert [tuple(r) for r in rows] == [("Alice", 3, 50), ("Bob", 0, 100), ("Carol", 0, None)]
+    # a to-one hop under the relation is planned inside the subquery
+    rows = await users.select(User.name, func.count(User.posts, filter=User.posts.author.name == "Alice"))
+    assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
+
+
 async def test_array_agg(clean):
     (alice, bob, carol), _ = await seed()
     # Grouped: the elements in the order given; the empty group does not exist.
