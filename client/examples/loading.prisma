@@ -23,3 +23,19 @@ model OrderedAuthor {
  visible Boolean
  @@map("rust_load_ordered_authors")
 }
+model CompositeOwner {
+ tenant Int
+ id Int
+ name String
+ children CompositeChild[]
+ @@id([tenant, id])
+ @@map("rust_load_composite_owners")
+}
+model CompositeChild {
+ id Int @id
+ owner_tenant Int?
+ owner_id Int?
+ title String
+ owner CompositeOwner? @relation(fields: [owner_tenant, owner_id], references: [tenant, id])
+ @@map("rust_load_composite_children")
+}

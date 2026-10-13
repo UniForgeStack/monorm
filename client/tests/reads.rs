@@ -5,6 +5,9 @@ mod sqlite {
 mod postgres {
     include!(concat!(env!("OUT_DIR"), "/postgres.rs"));
 }
+mod other_sqlite {
+    include!(concat!(env!("OUT_DIR"), "/models.rs"));
+}
 use orm_client::{BatchLoad, Error, Instance, Loaded, Unloaded};
 use std::hash::{Hash, Hasher};
 fn hash<T: Hash>(v: &T) -> u64 {
@@ -21,6 +24,30 @@ macro_rules! exercise {
         fixture.batch(FIXTURE.into()).await.unwrap();
         fixture.close().await;
         let db = Database::connect($url, 1).await.unwrap();
+        assert!(matches!(User::objects.first().await, Err(Error::Compatibility(_))));
+        db.set_default();
+        assert!(matches!(other_sqlite::User::objects.first().await, Err(Error::Compatibility(_))));
+        let direct: Option<User> = User::objects.first().await.unwrap();
+        assert_eq!(direct.unwrap().email, "a@example.com");
+        assert_eq!(User::objects.last().await.unwrap().unwrap().id, 3);
+        assert!(User::objects.get(User::ID_KEY, 99).await.unwrap().is_none());
+        assert!(matches!(User::objects.get(User::EMAIL_KEY, "a@example.com".into()).await, Err(Error::MultipleRows)));
+        let lazy = User::objects.filter(User::id.eq(1));
+        let rows: Vec<User> = lazy.clone().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(lazy.await.unwrap()[0].id, 1);
+        assert!(User::objects.filter(User::ID.eq(99)).first().await.unwrap().is_none());
+        assert!(matches!(User::objects.filter(User::ID.eq(99)).require().first().await, Err(Error::NotFound)));
+        assert_eq!(User::objects.count().await.unwrap(), 3);
+        assert!(User::objects.exists().await.unwrap());
+        let empty_path = std::env::temp_dir().join(format!("orm-rust-empty-{}-{}.db", std::process::id(), stringify!($module)));
+        // Explicit binding must override the configured default, rather than silently route to it.
+        let explicit = other_sqlite::Database::connect(&format!("sqlite://{}", empty_path.display()), 1).await.unwrap();
+        assert!(matches!(other_sqlite::User::objects.using(&explicit).count().await, Err(Error::Engine(_))));
+        explicit.close().await;
+        std::fs::remove_file(empty_path).unwrap();
+        Database::clear_default();
+        assert!(matches!(User::objects.first().await, Err(Error::Compatibility(_))));
         let selected = User::objects.load(User::email).load(User::nickname).require().using(&db).get(User::ID_KEY, 1).await.unwrap();
         let _: &String = &selected.email;
         let _: &Option<String> = &selected.nickname;
@@ -78,6 +105,12 @@ macro_rules! exercise {
         assert!(user==hidden); assert_eq!(hash(&user),hash(&hidden));
         let helpers=User::<Loaded,Unloaded,Unloaded,Unloaded>::query().in_bulk(User::EMAIL_KEY,["b@example.com".to_owned()],&db).await.unwrap();
         assert_eq!(helpers["b@example.com"].id,2); let _unloaded=&helpers["b@example.com"].email;
+        fn email<S: $module::UserShape<Email=String>>(row: &S) -> &String { row.email() }
+        struct Reader<S: $module::UserShape<Email=String>> { row: S }
+        assert_eq!(email(&user), email(&partial));
+        let consumer = Reader { row: partial };
+        assert_eq!(email(&consumer.row), "a@example.com");
+        let partial = consumer.row;
         let _marker = &partial.id;
         assert!(user == partial);
         assert_eq!(hash(&user), hash(&partial));

@@ -116,13 +116,9 @@ where
             .iter()
             .find(|r| r.name == self.relation.name)
             .ok_or_else(|| Error::Compatibility("unknown view relation".into()))?;
-        let to = &relation.to;
-        Cached::<P>::read(
-            &DecodedRow { data: row.data() },
-            self.label,
-            &relation.from,
-            to,
-        )
+        let to: Vec<_> = relation.to.iter().map(String::as_str).collect();
+        let from: Vec<_> = relation.from.iter().map(String::as_str).collect();
+        Cached::<P>::read(&DecodedRow { data: row.data() }, self.label, &from, &to)
     }
 }
 

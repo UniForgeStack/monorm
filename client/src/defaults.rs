@@ -91,3 +91,13 @@ impl<M: Model> QueryRoot<M> {
         self.query().get(key, value).await
     }
 }
+
+impl<M: Model, R: Presence, L: Send + 'static, D: Send + 'static> std::future::IntoFuture
+    for Query<M, R, L, D>
+{
+    type Output = Result<Vec<M>>;
+    type IntoFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Self::Output> + Send>>;
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.all())
+    }
+}

@@ -200,9 +200,7 @@ fn instance(
     );
     let mut data = RowData {
         model: m.ir.name.clone(),
-        identity: Identity {
-            value: BindValue::Int(None),
-        },
+        identity: Identity { value: vec![] },
         values: BTreeMap::new(),
         helpers: BTreeMap::new(),
         relations: BTreeMap::new(),
@@ -212,17 +210,19 @@ fn instance(
             rows.cell(index, start + slot, types[start + slot])?,
             types[start + slot],
         )?;
-        if pos == m.pk {
-            data.identity = Identity {
-                value: value.clone(),
-            };
-        }
         if public {
             data.values.insert(m.fields()[pos].name.clone(), value);
         } else {
             data.helpers.insert(m.fields()[pos].name.clone(), value);
         }
     }
+    data.identity = Identity {
+        value: m
+            .key
+            .iter()
+            .map(|&pos| data.key(&m.fields()[pos].name).cloned())
+            .collect::<Result<_>>()?,
+    };
     Ok(data)
 }
 fn instances(
@@ -289,21 +289,27 @@ fn attach(
             fetched.rows.as_ref(),
             &fetched.children,
         )?;
-        let mut groups: std::collections::HashMap<BindValue, Vec<RowData>> =
+        let mut groups: std::collections::HashMap<Vec<BindValue>, Vec<RowData>> =
             std::collections::HashMap::new();
         for (i, row) in children.into_iter().enumerate() {
             groups
                 .entry(
-                    fetched
-                        .rows
-                        .value(i, p.child_key_pos, p.types[p.child_key_pos])?,
+                    p.child_key_pos
+                        .iter()
+                        .map(|&pos| fetched.rows.value(i, pos, p.types[pos]))
+                        .collect::<orm_engine::db::DbResult<Vec<_>>>()?,
                 )
                 .or_default()
                 .push(row);
         }
         for (i, parent) in parents.iter_mut().enumerate() {
-            let key = parent_rows.value(i, p.key_pos, p.key_type)?;
-            let rows = if key == key.as_null() {
+            let key = p
+                .key_pos
+                .iter()
+                .zip(&p.key_type)
+                .map(|(&pos, &ty)| parent_rows.value(i, pos, ty))
+                .collect::<orm_engine::db::DbResult<Vec<_>>>()?;
+            let rows = if key.iter().any(|key| key == &key.as_null()) {
                 vec![]
             } else {
                 groups.get(&key).cloned().unwrap_or_default()

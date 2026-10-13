@@ -146,7 +146,11 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
                 ));
             }
         }
-        for f in m.fields().iter().filter(|f| f.unique || f.primary_key) {
+        for f in m
+            .fields()
+            .iter()
+            .filter(|f| f.unique || (f.primary_key && m.key.len() == 1))
+        {
             let n = format!("{}_KEY", snake(&f.name).to_ascii_uppercase());
             if !tokens.insert(n.clone()) {
                 return Err(format!("{}: Rust unique token collision {n}", m.ir.name));
@@ -397,7 +401,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
                 .enumerate()
                 .map(|(i, r)| {
                     format!(
-                        "q.model_helpers.push({:?}.into()); S{}::configure(q,{:?});",
+                        "q.model_helpers.extend({:?}.iter().map(|name| (*name).into())); S{}::configure(q,{:?});",
                         r.from,
                         fs.len() + i,
                         r.name
@@ -424,7 +428,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
         for (i, r) in m.ir.relations.iter().enumerate() {
             writeln!(
                 out,
-                "{}:S{}::read(row,{:?},{:?},{:?})?,",
+                "{}:S{}::read(row,{:?},&{:?},&{:?})?,",
                 ident(&snake(&r.name))?,
                 fs.len() + i,
                 r.name,
@@ -633,7 +637,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
                 f.name
             )
             .unwrap();
-            if f.primary_key || f.unique {
+            if f.unique || (f.primary_key && m.key.len() == 1) {
                 writeln!(out,"pub const {}_KEY:orm_client::Unique<{name}Source,{}>=orm_client::Unique::generated(&[{:?}]);",snake(&f.name).to_ascii_uppercase(),ty(f),f.name).unwrap();
             }
         }
@@ -699,6 +703,16 @@ fn unique_columns(m: &crate::schema::Model) -> Vec<Vec<&str>> {
                     .collect()
             }),
     );
+    if m.key.len() > 1 {
+        keys.push(
+            m.key
+                .iter()
+                .map(|&pos| m.fields()[pos].name.as_str())
+                .collect(),
+        );
+    }
+    keys.sort();
+    keys.dedup();
     keys
 }
 fn key_token(columns: &[&str]) -> String {

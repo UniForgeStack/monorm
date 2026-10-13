@@ -582,14 +582,16 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
                 q.order = m.query_defaults.order.clone();
             }
             if q.order.is_empty() {
-                q.order.push(ir::Order {
-                    expr: Expr::Col {
-                        path: vec![],
-                        name: m.pk_field().name.clone(),
-                    },
-                    desc: false,
-                    nulls: None,
-                });
+                for &pos in &m.key {
+                    q.order.push(ir::Order {
+                        expr: Expr::Col {
+                            path: vec![],
+                            name: m.fields()[pos].name.clone(),
+                        },
+                        desc: false,
+                        nulls: None,
+                    });
+                }
             }
         }
         if last {

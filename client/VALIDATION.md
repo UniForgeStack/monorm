@@ -17,6 +17,18 @@ Standards and specification reviews found two blockers: composite unique keys we
 
 Initial generation, checking, incremental checking, release build, and binary size measurements are recorded in [bench/results.json](bench/results.json). [README.md](README.md) describes their scope and reproduction.
 
+## Ticket 01 completion (2026-10-12)
+
+The initial commit omitted three criteria from the current ticket: associated query-root access, direct shape traits, and configured-default execution. The completion branch `fix/rust-basic-read-contract` adds all three, preserving the selection/loading changes in the original worktree.
+
+`User::objects` is a normal `Query` constant, so custom query extension traits apply without a wrapper. Scalar tokens also expose snake_case associated constants. Every generic model shape implements its generated shape trait with ordinary value types and immutable accessors; relation associated types remain `Unloaded` until ticket 02. Consumer functions and structs accept minimal and fuller matching shapes and reject unloaded, incompatible, or falsely loaded-cache types.
+
+Default database registration is isolated by generated schema identity. Both PostgreSQL and SQLite tests cover optional and required direct terminals, missing configuration, default removal, explicit binding overrides, repeated execution, and runtime get cardinality. The downstream compiler suite now contains 31 cases. Both backend-only builds and example regeneration passed. Updated measurements are in `bench/results.json`.
+
+The completion standards review reported no hard violation and one optional observation about repeated forwarding in default-bound terminals. The completion specification review reported no blockers.
+
+The workspace regression suite was rerun excluding `application_rust_runs_through_both_bindings`; its successful SQLite/PostgreSQL result from the initial implementation remains recorded above. The completion changes affect the Rust client and Rust-only generation, leaving that test's binding configuration unchanged. Broader all-target Clippy completes with existing repository warnings; the Rust client itself passes with warnings denied.
+
 # Ticket 02 validation
 
 Validated on stable Rust 1.97.0 with SQLite and an isolated PostgreSQL 18 database.
@@ -35,3 +47,9 @@ Review against ticket 01's completed commit found an OR-combination panic when r
 Review found that reloading a narrowed nested target could discard previously loaded fields while advertising their union in the resulting type. Generated selection normalization now fetches the advertised target shape, with public regression coverage. Follow-up review also checked bare versus narrowed targets through default bypass, owned array storage, foreign-key/helper precedence, and default ordering; it found no blockers.
 
 Ticket 02 measurements are recorded in [bench/selection-results.json](bench/selection-results.json). They include finite nested selections over a cyclic schema. These are local observations with warm dependencies, not acceptance thresholds or isolated monomorphization timings. Rows retain owned loaded values and private helper keys to support checked conversion and transitions; this increases storage relative to the ticket 01 decode-only representation.
+
+## Contract follow-up integration
+
+Ticket 02 supersedes the earlier contract implementation described above. The follow-up default-registration isolation/lifecycle tests and compiler cases are retained, adapted to queryable unloaded relations. Custom Query extension traits start at `User::objects.query()` with the ticket 02 root.
+
+Main integration also adapts the Rust client to complete composite keys introduced on main. Identity, relation queries, prefetch grouping, parameter budgeting, and default ordering use every key component; composite primary keys expose a tuple lookup token rather than individually unique component tokens. All client tests passed on SQLite and PostgreSQL, including two new composite loading cases and 53 downstream compiler cases. Client all-target Clippy passed with warnings denied.

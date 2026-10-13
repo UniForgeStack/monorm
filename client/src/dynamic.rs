@@ -33,7 +33,7 @@ fn normal_query(schema: &Schema, model: usize) -> Result<SelectionPlan> {
     )
     .map_err(|e| Error::Compatibility(e.to_string()))?;
     for r in &schema.models[model].ir.relations {
-        q.model_helpers.push(r.from.clone());
+        q.model_helpers.extend(r.from.iter().cloned());
     }
     for path in &schema.models[model].query_defaults.related {
         add(

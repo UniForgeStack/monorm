@@ -5,15 +5,18 @@ use std::marker::PhantomData;
 
 /// Queryable does not imply a cache. No cached() method exists on this state.
 pub struct RelatedSet<T> {
-    key: BindValue,
-    to: String,
+    key: Vec<BindValue>,
+    to: Vec<String>,
     _target: PhantomData<fn() -> T>,
 }
 impl<T> RelatedSet<T> {
-    fn read(row: &DecodedRow<'_>, from: &str, to: &str) -> Result<Self> {
+    fn read(row: &DecodedRow<'_>, from: &[&str], to: &[&str]) -> Result<Self> {
         Ok(Self {
-            key: row.data.key(from)?.clone(),
-            to: to.into(),
+            key: from
+                .iter()
+                .map(|name| row.data.key(name).cloned())
+                .collect::<Result<_>>()?,
+            to: to.iter().map(|name| (*name).into()).collect(),
             _target: PhantomData,
         })
     }
@@ -21,16 +24,24 @@ impl<T> RelatedSet<T> {
 impl<T: Model> RelatedSet<T> {
     pub fn query(&self) -> Query<T> {
         let query = Query::<T>::new();
-        let tree = if self.key == self.key.as_null() {
+        let tree = if self.key.iter().any(|key| key == &key.as_null()) {
             Tree::Expr(ir::Expr::Const { value: false })
         } else {
-            crate::query::Tree::Compare(
-                ir::Expr::Col {
-                    path: vec![],
-                    name: self.to.clone(),
-                },
-                ir::CmpOp::Eq,
-                self.key.clone(),
+            Tree::And(
+                self.to
+                    .iter()
+                    .zip(&self.key)
+                    .map(|(name, key)| {
+                        Tree::Compare(
+                            ir::Expr::Col {
+                                path: vec![],
+                                name: name.clone(),
+                            },
+                            ir::CmpOp::Eq,
+                            key.clone(),
+                        )
+                    })
+                    .collect(),
             )
         };
         Query::from_parts(query.select, vec![tree])
@@ -81,7 +92,7 @@ pub trait RelationState<T, C>: crate::sealed::Sealed {
     type Value: Send + Sync;
     const DEFAULT: bool = false;
     const LOADED: bool = false;
-    fn read(row: &DecodedRow<'_>, name: &str, from: &str, to: &str) -> Result<Self::Value>;
+    fn read(row: &DecodedRow<'_>, name: &str, from: &[&str], to: &[&str]) -> Result<Self::Value>;
     fn configure(_: &mut SelectionPlan, _: &str) {}
     #[doc(hidden)]
     fn merge_shape(_: &mut SelectionPlan, _: &str) {}
@@ -93,7 +104,7 @@ where
     type Value = <Cached<P> as RelationState<T, C>>::Value;
     const DEFAULT: bool = true;
     const LOADED: bool = true;
-    fn read(row: &DecodedRow<'_>, name: &str, from: &str, to: &str) -> Result<Self::Value> {
+    fn read(row: &DecodedRow<'_>, name: &str, from: &[&str], to: &[&str]) -> Result<Self::Value> {
         Cached::<P>::read(row, name, from, to)
     }
     fn configure(q: &mut SelectionPlan, name: &str) {
@@ -106,7 +117,7 @@ where
 {
     type Value = <Cached<P> as RelationState<T, C>>::Value;
     const LOADED: bool = true;
-    fn read(row: &DecodedRow<'_>, name: &str, from: &str, to: &str) -> Result<Self::Value> {
+    fn read(row: &DecodedRow<'_>, name: &str, from: &[&str], to: &[&str]) -> Result<Self::Value> {
         Cached::<P>::read(row, name, from, to)
     }
     fn configure(q: &mut SelectionPlan, name: &str) {
@@ -142,7 +153,7 @@ where
 }
 impl<T, C> RelationState<T, C> for NotCached {
     type Value = RelatedSet<T>;
-    fn read(row: &DecodedRow<'_>, _: &str, from: &str, to: &str) -> Result<Self::Value> {
+    fn read(row: &DecodedRow<'_>, _: &str, from: &[&str], to: &[&str]) -> Result<Self::Value> {
         RelatedSet::read(row, from, to)
     }
 }
@@ -151,7 +162,7 @@ impl<T: Model, P: Model<Schema = T::Schema, Source = T::Source>> RelationState<T
 {
     type Value = LoadedMany<P>;
     const LOADED: bool = true;
-    fn read(row: &DecodedRow<'_>, name: &str, from: &str, to: &str) -> Result<Self::Value> {
+    fn read(row: &DecodedRow<'_>, name: &str, from: &[&str], to: &[&str]) -> Result<Self::Value> {
         let Some(CacheData::Many(rows)) = row.data.relations.get(name) else {
             return Err(Error::Unloaded(name.into()));
         };
@@ -175,7 +186,7 @@ impl<T: Model, P: Model<Schema = T::Schema, Source = T::Source>> RelationState<T
 {
     type Value = LoadedOne<P>;
     const LOADED: bool = true;
-    fn read(row: &DecodedRow<'_>, name: &str, from: &str, to: &str) -> Result<Self::Value> {
+    fn read(row: &DecodedRow<'_>, name: &str, from: &[&str], to: &[&str]) -> Result<Self::Value> {
         let Some(CacheData::One(target)) = row.data.relations.get(name) else {
             return Err(Error::Unloaded(name.into()));
         };

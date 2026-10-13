@@ -152,7 +152,7 @@ impl<S: SchemaSpec> Database<S> {
 #[doc(hidden)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Identity {
-    value: BindValue,
+    value: Vec<BindValue>,
 }
 
 /// Decoder witness: only the client can construct one from an executed plan.

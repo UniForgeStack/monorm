@@ -291,7 +291,7 @@ async fn fetch_upgrade<M: Model, R, L, D>(
         .max_params
         .saturating_sub(p.0.len())
         .min(1000);
-    if budget == 0 {
+    if budget < model.key.len() {
         return Err(Error::Compatibility(
             "load parameters exhaust database budget".into(),
         ));
@@ -301,24 +301,32 @@ async fn fetch_upgrade<M: Model, R, L, D>(
     q.related_fields.clear();
     q.without_defaults = true;
     q.without_related = true;
-    for chunk in rows.chunks(budget) {
+    for chunk in rows.chunks(budget / model.key.len()) {
         let mut params = p.clone();
         let mut root = q.clone();
-        let values = chunk
-            .iter()
-            .map(|row| {
-                let i = params.0.len();
-                params.0.push(row.identity.value.clone());
-                orm_core::ir::Expr::Param { i }
-            })
-            .collect();
-        root.filters.push(orm_core::ir::Expr::In {
-            item: Box::new(orm_core::ir::Expr::Col {
-                path: vec![],
-                name: model.pk_field().name.clone(),
-            }),
-            values,
-            neg: false,
+        root.filters.push(orm_core::ir::Expr::Or {
+            items: chunk
+                .iter()
+                .map(|row| orm_core::ir::Expr::And {
+                    items: model
+                        .key
+                        .iter()
+                        .zip(&row.identity.value)
+                        .map(|(&pos, value)| {
+                            let i = params.0.len();
+                            params.0.push(value.clone());
+                            orm_core::ir::Expr::Cmp {
+                                l: Box::new(orm_core::ir::Expr::Col {
+                                    path: vec![],
+                                    name: model.fields()[pos].name.clone(),
+                                }),
+                                op: orm_core::ir::CmpOp::Eq,
+                                r: Box::new(orm_core::ir::Expr::Param { i }),
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
         });
         let mut selected = crate::query::run_select(db, root, params.clone()).await?;
         let mut child = q.clone();
@@ -335,11 +343,17 @@ async fn fetch_upgrade<M: Model, R, L, D>(
         } = &selected.plan.output
         {
             for plan in &mut plans {
-                plan.key_pos = shape
-                    .fields
+                plan.key_pos = plan
+                    .key_pos
                     .iter()
-                    .position(|f| f.field.position == plan.key_pos)
-                    .ok_or_else(|| Error::Decode("missing prefetch parent key".into()))?;
+                    .map(|&pos| {
+                        shape
+                            .fields
+                            .iter()
+                            .position(|f| f.field.position == pos)
+                            .ok_or_else(|| Error::Decode("missing prefetch parent key".into()))
+                    })
+                    .collect::<Result<_>>()?;
             }
         }
         match orm_engine::exec::prefetch(

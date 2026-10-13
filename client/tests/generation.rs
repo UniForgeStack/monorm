@@ -7,6 +7,10 @@ fn generate(source: &str) -> Result<String, String> {
 fn collision_and_language_checks_are_offline() {
     let cases = [
         (
+            "model User {\n id Int @id\n}\nmodel UserShape {\n id Int @id\n}",
+            "helper normalization collision",
+        ),
+        (
             "model User {\n id Int @id\n objects String\n}",
             "helper normalization collision",
         ),

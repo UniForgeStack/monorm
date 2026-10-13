@@ -33,6 +33,17 @@ async fn readers(url: &str) -> orm_client::Result<()> {
 }
 ```
 
+Configure a default for this generated schema to use direct terminals:
+
+```rust
+db.set_default();
+let user: Option<User> = User::objects.first().await?;
+let readers = User::objects.filter(User::email.eq("reader@example.com".into())).await?;
+Database::clear_default();
+```
+
+Defaults are configured per generated schema identity and resolved when execution starts. Missing configuration returns a compatibility error. Explicit `using(&db)` bypasses the default. Clear the configured default before closing its driver. No transaction is retained as a default.
+
 Builders are lazy, owned transformations. Clone before reusing one. `using` binds a compatible live handle; awaiting the bound builder consumes it and reads a vector. Ordinary field access is synchronous and never performs I/O.
 
 A generated model has one generic definition with a state per scalar field and relation in schema order. The normal shape follows the prepared schema’s default scalar and reference selection; schemas without selection policies load all scalars and leave relation caches unloaded. For the example schema, an explicit email-only query is:
