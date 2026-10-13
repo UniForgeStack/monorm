@@ -258,22 +258,54 @@ fn is_aggregate(name: &str) -> bool {
 
 /// Whether `e` contains an aggregate computed in this query (not in a subquery or a
 /// window).
-fn has_local_aggregate(e: &Expr) -> bool {
+fn has_local_aggregate(cut: &Cut, e: &Expr) -> bool {
     match e {
         Expr::Func { name, args, rel, filter, order_by, .. } => {
             let mut paths = vec![];
             let mut has_not = false;
-            for a in args.iter().chain(filter.as_deref()).chain(order_by.iter().map(|o| &o.expr)) {
+            for a in args.iter().chain(order_by.iter().map(|o| &o.expr)) {
                 col_paths_all(a, &mut paths, &mut has_not);
             }
+            let mut filter_paths = vec![];
+            if let Some(f) = filter.as_deref() {
+                col_paths_all(f, &mut filter_paths, &mut has_not);
+            }
+            paths.extend(filter_paths.into_iter().map(|p| cut.path(p)));
             (is_aggregate(name) && rel.is_none() && paths.iter().all(|p| p.is_empty()))
-                || args.iter().any(has_local_aggregate)
+                || args.iter().any(|a| has_local_aggregate(cut, a))
         }
-        Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => has_local_aggregate(l) || has_local_aggregate(r),
-        Expr::And { items } | Expr::Or { items } => items.iter().any(has_local_aggregate),
-        Expr::Not { item } | Expr::IsNull { item, .. } => has_local_aggregate(item),
-        Expr::Case { whens, default } => case_parts(whens, default).any(has_local_aggregate),
+        Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => has_local_aggregate(cut, l) || has_local_aggregate(cut, r),
+        Expr::And { items } | Expr::Or { items } => items.iter().any(|i| has_local_aggregate(cut, i)),
+        Expr::Not { item } | Expr::IsNull { item, .. } => has_local_aggregate(cut, item),
+        Expr::Case { whens, default } => case_parts(whens, default).any(|c| has_local_aggregate(cut, c)),
         _ => false,
+    }
+}
+
+/// Where a path below the current scope stops being read per row of this query: a filter
+/// of an aggregate that follows to-one hops only is an `EXISTS` at this level, so only the
+/// path up to its last to-many hop belongs to the relation the aggregate runs over.
+struct Cut<'a> {
+    schema: &'a Schema,
+    model: usize,
+    base: &'a [String],
+}
+
+impl Cut<'_> {
+    fn path<'e>(&self, path: &'e [String]) -> &'e [String] {
+        if path.len() <= self.base.len() || !path.starts_with(self.base) {
+            return path;
+        }
+        let mut model = self.model;
+        let mut keep = self.base.len();
+        for (i, hop) in path.iter().enumerate().skip(self.base.len()) {
+            let Ok((rel, target)) = self.schema.models[model].relation(hop) else { return path };
+            if rel.kind == RelKind::Many {
+                keep = i + 1;
+            }
+            model = target;
+        }
+        &path[..keep]
     }
 }
 
@@ -312,40 +344,46 @@ fn col_paths_all<'e>(e: &'e Expr, out: &mut Vec<&'e [String]>, has_not: &mut boo
 
 /// The paths below `base` that an aggregate reads, with its `rel`.
 fn below_paths<'e>(
-    base: &[String],
+    cut: &Cut,
     rel: Option<&'e [String]>,
     args: &'e [Expr],
     filter: Option<&'e Expr>,
     order_by: &'e [Order],
 ) -> Vec<&'e [String]> {
+    let base = cut.base;
     let mut paths = vec![];
     let mut has_not = false;
-    for a in args.iter().chain(filter).chain(order_by.iter().map(|o| &o.expr)) {
+    for a in args.iter().chain(order_by.iter().map(|o| &o.expr)) {
         col_paths_all(a, &mut paths, &mut has_not);
     }
+    let mut filter_paths = vec![];
+    if let Some(f) = filter {
+        col_paths_all(f, &mut filter_paths, &mut has_not);
+    }
+    paths.extend(filter_paths.into_iter().map(|p| cut.path(p)));
     rel.into_iter().chain(paths.into_iter().filter(|p| p.len() > base.len() && p.starts_with(base))).collect()
 }
 
 /// The relation path of each aggregate in `e` that is computed per row over a relation
 /// (see `Planner::func`), outside subqueries and windows.
-fn relation_aggregates(e: &Expr, base: &[String], out: &mut Vec<Vec<String>>) {
+fn relation_aggregates(cut: &Cut, e: &Expr, out: &mut Vec<Vec<String>>) {
     match e {
         Expr::Func { name, args, rel, filter, order_by, .. } if is_aggregate(name) => {
-            let below = below_paths(base, rel.as_deref(), args, filter.as_deref(), order_by);
+            let below = below_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by);
             if let Some(first) = below.first() {
                 if below.iter().all(|p| p == first) {
                     out.push(first.to_vec());
                 }
             }
         }
-        Expr::Func { args, .. } => args.iter().for_each(|a| relation_aggregates(a, base, out)),
+        Expr::Func { args, .. } => args.iter().for_each(|a| relation_aggregates(cut, a, out)),
         Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => {
-            relation_aggregates(l, base, out);
-            relation_aggregates(r, base, out);
+            relation_aggregates(cut, l, out);
+            relation_aggregates(cut, r, out);
         }
-        Expr::And { items } | Expr::Or { items } => items.iter().for_each(|i| relation_aggregates(i, base, out)),
-        Expr::Not { item } | Expr::IsNull { item, .. } => relation_aggregates(item, base, out),
-        Expr::Case { whens, default } => case_parts(whens, default).for_each(|c| relation_aggregates(c, base, out)),
+        Expr::And { items } | Expr::Or { items } => items.iter().for_each(|i| relation_aggregates(cut, i, out)),
+        Expr::Not { item } | Expr::IsNull { item, .. } => relation_aggregates(cut, item, out),
+        Expr::Case { whens, default } => case_parts(whens, default).for_each(|c| relation_aggregates(cut, c, out)),
         _ => {}
     }
 }
@@ -470,6 +508,7 @@ pub fn derive_ctes(schema: &Schema, target: Target, ctes: &[Cte], params: &dyn P
 }
 
 /// An aggregate call: the function, its arguments and options.
+#[derive(Clone, Copy)]
 struct AggCall<'e> {
     name: &'e str,
     args: &'e [Expr],
@@ -1580,7 +1619,8 @@ impl<'s> Planner<'s> {
         }
         if is_aggregate(name) {
             let base = self.scope().path.clone();
-            let below = below_paths(&base, rel, args, filter, order_by);
+            let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
+            let below = below_paths(&cut, rel, args, filter, order_by);
             if let Some(path) = below.first().map(|p| p.to_vec()) {
                 if below.iter().any(|p| *p != path.as_slice()) {
                     return Err(Error::query(format!(
@@ -1588,8 +1628,11 @@ impl<'s> Planner<'s> {
                     )));
                 }
                 let call = AggCall { name, args, count_rows: rel.is_some(), distinct, filter, order_by };
-                if let Some(e) = self.lateral_member(&call, &path)? {
-                    return Ok(e);
+                // The outer filter goes to the subquery's WHERE, which a shared LATERAL cannot take.
+                if !self.filter_is_outer(filter) {
+                    if let Some(e) = self.lateral_member(&call, &path)? {
+                        return Ok(e);
+                    }
                 }
                 return self.aggregate_subquery(&call, &path);
             }
@@ -1818,12 +1861,32 @@ impl<'s> Planner<'s> {
 
     /// `(SELECT <agg> FROM <hop 1> a1 [JOIN <hop 2> a2 ON ...] WHERE a1.to = <scope>.from)`.
     fn aggregate_subquery(&mut self, call: &AggCall, path: &[String]) -> Result<SExpr> {
+        // A FILTER that reads no row of the subquery would make Postgres evaluate the
+        // aggregate in the outer query: it goes to the WHERE, planned at the outer level.
+        let outer = match call.filter {
+            Some(f) if self.filter_is_outer(call.filter) => Some(self.cond(f)?),
+            _ => None,
+        };
         let pushed = self.scopes.len();
         let mut sub = self.open_hops(path)?;
-        let agg = self.agg_call(call);
+        let inner = AggCall { filter: if outer.is_some() { None } else { call.filter }, ..*call };
+        let agg = self.agg_call(&inner);
         self.scopes.truncate(pushed);
         sub.expr(agg?);
+        if let Some(f) = outer {
+            sub.and_where(f);
+        }
         Ok(SExpr::SubQuery(None, Box::new(sub.into())))
+    }
+
+    /// Whether an aggregate's filter reads columns of this level only (and some column).
+    fn filter_is_outer(&self, filter: Option<&Expr>) -> bool {
+        let Some(f) = filter else { return false };
+        let base = self.scope().path.clone();
+        let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
+        let (mut paths, mut has_not) = (vec![], false);
+        col_paths_all(f, &mut paths, &mut has_not);
+        !paths.is_empty() && paths.iter().all(|p| cut.path(p).len() <= base.len())
     }
 
     /// `FROM <hop 1> a1 [JOIN <hop 2> a2 ON ...] WHERE a1.to = <scope>.from`, with a scope
@@ -1887,6 +1950,8 @@ impl<'s> Planner<'s> {
     fn plan_lateral(&mut self, q: &Select, items: &[SelectItem], cte: bool) {
         self.lateral.clear();
         self.lateral_open = false;
+        let base = self.scope().path.clone();
+        let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
         let plain = self.caps.lateral_join
             && !cte
             && q.lock.is_none()
@@ -1895,17 +1960,16 @@ impl<'s> Planner<'s> {
             && !q.distinct
             && q.distinct_on.is_empty()
             && items.iter().all(|i| match i {
-                SelectItem::Expr { expr, .. } => !has_local_aggregate(expr) && !has_window(expr),
+                SelectItem::Expr { expr, .. } => !has_local_aggregate(&cut, expr) && !has_window(expr),
                 SelectItem::Model => true,
             });
         if !plain {
             return;
         }
-        let base = self.scope().path.clone();
         let mut paths = vec![];
         for item in items {
             if let SelectItem::Expr { expr, .. } = item {
-                relation_aggregates(expr, &base, &mut paths);
+                relation_aggregates(&cut, expr, &mut paths);
             }
         }
         for path in &paths {
@@ -1964,7 +2028,8 @@ impl<'s> Planner<'s> {
                 }
                 SelectItem::Expr { expr, name } => {
                     self.join_paths(expr, "select()")?;
-                    aggregated |= has_local_aggregate(expr);
+                    let base = self.scope().path.clone();
+                    aggregated |= has_local_aggregate(&Cut { schema: self.schema, model: self.scope().model, base: &base }, expr);
                     windowed |= has_window(expr);
                     types.push(self.expr_type(expr)?);
                     self.allow_window = true;

@@ -158,6 +158,26 @@ test("aggregate FILTER", async () => {
   assert.deepEqual(users, [{ n: "Alice", c: 2n }, { n: "Bob", c: 1n }, { n: "Carol", c: 0n }]);
 });
 
+test("aggregate FILTER through a to-one hop", async () => {
+  await seed();
+  assert.equal(await Post.objects.select({ s: func.sum(Post.views, { filter: Post.author.name.eq("Alice") }) }).scalar(), 75n);
+  assert.equal(await Post.objects.select({ c: func.count({ filter: Post.author.name.eq("Alice") }) }).scalar(), 3n);
+  const rows = await Post.objects.orderBy(Post.authorId).select({ a: Post.authorId, s: func.sum(Post.views, { filter: Post.author.name.eq("Alice") }) }).groupBy(Post.authorId).all();
+  assert.deepEqual(rows.map((r) => r.s), [75n, null]);
+  assert.throws(() => Post.objects.lock().select({ s: func.sum(Post.views, { filter: Post.author.name.eq("Alice") }) }).sql(), /aggregates/);
+});
+
+test("relation count with an outer FILTER", async () => {
+  await seed();
+  const users = User.objects.orderBy(User.id);
+  assert.deepEqual(await users.select({ n: User.name, c: func.count(User.posts, { filter: User.name.eq("Alice") }) }).all(), [{ n: "Alice", c: 3n }, { n: "Bob", c: 0n }, { n: "Carol", c: 0n }]);
+  assert.deepEqual(
+    await users.select({ n: User.name, c: func.count(User.posts, { filter: User.name.eq("Alice") }), m: func.max(User.posts.views) }).all(),
+    [{ n: "Alice", c: 3n, m: 50 }, { n: "Bob", c: 0n, m: 100 }, { n: "Carol", c: 0n, m: null }],
+  );
+  assert.deepEqual(await users.select({ n: User.name, c: func.count(User.posts, { filter: User.posts.author.name.eq("Alice") }) }).all(), [{ n: "Alice", c: 3n }, { n: "Bob", c: 0n }, { n: "Carol", c: 0n }]);
+});
+
 test("outer() errors", () => {
   assert.throws(() => (User.objects.filter(exists(Post.objects.filter(Post.authorId.eq(User.id as never)))) as never as { sql(): string }).sql(), /use outer\(User.id\)/);
   assert.throws(() => (User.objects.filter(User.id.eq(outer(User.id))) as never as { sql(): string }).sql(), /not a column of an enclosing query/);
