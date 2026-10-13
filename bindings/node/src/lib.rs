@@ -916,7 +916,7 @@ impl Engine {
                 for r in 0..rows.len() {
                     let obj = js.object()?;
                     for (col, name) in rows.columns().iter().enumerate() {
-                        js.set(obj, name, c.cell(rows.cell(r, col).map_err(db_tagged)?)?)?;
+                        js.define_own(obj, name, c.cell(rows.cell(r, col).map_err(db_tagged)?)?)?;
                     }
                     js.set_element(out, r as u32, obj)?;
                 }

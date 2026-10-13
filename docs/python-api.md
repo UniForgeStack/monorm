@@ -1142,11 +1142,15 @@ print(await Post.objects.filter(Post.author_id == 7).explain(analyze=True))  # r
   Placeholders are `$1, $2, ...` on Postgres and `?` on SQLite.
 * A parameter's type comes from its Python value: `int` is `bigint`, `str` is `text`, `dict` and `list` are JSON, and `datetime`, `date`, `Decimal`, `UUID` and `bool` have their own types.
   Cast in the SQL where a column needs another type: `WHERE id = $1::uuid` for a `str`.
+  A `list` goes as `jsonb`, so `= ANY($1)` raises `42809`; use `WHERE x IN (SELECT jsonb_array_elements_text($1))` and compare as text.
+  A naive `datetime` raises `TypeError` (use an aware one), and `bytes` raises `TypeError`.
 * Cells come back by the column type that the database reports.
   Postgres gives `bigint`, `integer`, `smallint`, `double precision`, `real`, `boolean`, text types and enums, `timestamptz`, `date`, `uuid`, `json`, `jsonb`, `numeric` and arrays of them.
   Any other type (`timestamp`, `interval`, `bytea`, ...) raises `DatabaseError`; cast it in the SQL (`::text`, `::timestamptz`).
   SQLite gives each value by its storage class (`int`, `float`, `str`, `None`); a blob raises.
 * `fetch` runs in the current transaction, and query hooks see it.
+* After a schema change (`ALTER TABLE ...`), the first call of a cached Postgres statement that now reads another result shape raises `0A000` (`cached plan must not change result type`).
+  The next call prepares the statement again and works.
 * `qs.explain(analyze=False)` gives the plan of the query set's SELECT as text, not of its prefetch queries.
   On Postgres, `analyze=True` runs the query with `EXPLAIN (ANALYZE, BUFFERS)`; a query set with `lock()` raises `QueryError` there, because the run would take the row locks.
   On SQLite, it gives `EXPLAIN QUERY PLAN`, each step indented under its parent. SQLite has no `analyze`, so `analyze=True` raises `QueryError`.

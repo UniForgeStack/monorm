@@ -580,6 +580,10 @@ console.log(await Post.objects.filter(Post.authorId.eq(7n)).explain({ analyze: t
 `db.fetch(sql, ...params)` gives an array of objects by column name, and `qs.explain({ analyze })` gives the plan as text.
 They work as in Python (`docs/python-api.md`, "Raw SQL and query plans").
 A parameter's type comes from its JS value: `bigint` and integer numbers are `bigint`, strings are `text`, plain objects and arrays are JSON, and `Date` is `timestamptz`.
+An array goes as `jsonb`, so `= ANY($1)` throws `DatabaseError` `42809`; use `WHERE x IN (SELECT jsonb_array_elements_text($1))`.
+A `Buffer` goes as JSON (`{"type":"Buffer","data":[...]}`), where Python raises `TypeError` for `bytes`.
+`fetch` returns a SQLite `INTEGER` (also `count(*)`) as `bigint`.
+After a schema change, the first call of a cached Postgres statement that now reads another result shape throws `0A000`; the next call prepares it again.
 `bigint` columns come back as `bigint`, and `timestamptz` and `date` as `Date`.
 
 ### Planner inspection for assertions
