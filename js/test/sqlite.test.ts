@@ -278,3 +278,14 @@ test("SQLite UUID, date, timestamp and inline trigger conversions", async () => 
     assert.equal(loaded.name, "HELLO");
   } finally { await db.close(); }
 });
+
+test("full-text search on SQLite is an error", async () => {
+  const lite = new Registry();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Note = loads(`datasource db { provider = "sqlite" }\nmodel Note {\n  id Int @id\n  body String\n}`, { registry: lite })["Note"] as any;
+  const db = await connect("sqlite://:memory:", { registry: lite, default: false });
+  try {
+    await db.createTables();
+    await assert.rejects(Note.objects.using(db).filter(func.toTsvector(Note.body).matches("x")).count(), /sqlite does not support full-text search/);
+  } finally { await db.close(); }
+});

@@ -2,9 +2,10 @@
 CTEs, nested and filtered prefetches, instances built in Rust."""
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
-from blog.models import Comment, Post, User
+from blog.models import Comment, Post, Profile, Role, User
 
 import orm
 from conftest import DATABASE_URL
@@ -155,6 +156,32 @@ async def test_case_null_first_branch(clean):
     assert rows == [1, None, 1, None]
 
 
+async def seed_profiles():
+    seeded = await seed()
+    (alice, bob, _), _ = seeded
+    await Profile.objects.insert_many([{"user": alice, "role": "admin"}, {"user": bob}])
+    return seeded
+
+
+async def test_case_enum_branch(clean):
+    await seed_profiles()
+    roles = await Profile.objects.order_by(Profile.id).select(func.case((Profile.balance > 5, Profile.role), default="editor")).scalars()
+    assert roles == [Role.editor, Role.editor]
+    roles = await Profile.objects.order_by(Profile.id).select(func.case((Profile.balance <= 5, Profile.role), default="editor")).scalars()
+    assert roles == [Role.admin, Role.member]
+
+
+async def test_case_value_types(clean):
+    await seed_profiles()
+    # a decimal among integers makes the case a decimal
+    value = await Post.objects.filter(Post.title == "a1").select(func.case((Post.published, 1), default=Decimal("0.5"))).scalar()
+    assert value == Decimal("0.5") and isinstance(value, Decimal)
+    # the type the context expects wins over the case's own: an integer branch assigned to a decimal field
+    await Profile.objects.update(balance=func.case((Profile.role == Role.admin, 7), default=2))
+    assert sorted(await Profile.objects.select(Profile.balance).scalars()) == [Decimal("2"), Decimal("7")]
+    assert await Profile.objects.filter(Profile.balance > func.case((Profile.role == Role.admin, 1), default=9)).count() == 1
+
+
 async def test_case_expression(clean):
     (alice, bob, carol), _ = await seed()
     heat = func.case((Post.views >= 50, "hot"), (Post.views >= 20, "warm"), default="cold")
@@ -191,12 +218,19 @@ async def test_aggregate_filter(clean):
         func.max(Post.title, filter=Post.views < 50).label("last_small"),
     ).group_by(Post.author_id)
     assert [tuple(r) for r in rows] == [(alice.id, 3, 2, 25, "a3"), (bob.id, 1, 1, None, None)]
+    mins = await Post.objects.order_by(Post.author_id).select(Post.author_id, func.min(Post.views, filter=Post.views >= 20)).group_by(Post.author_id)
+    assert [tuple(r) for r in mins] == [(alice.id, 20), (bob.id, 100)]
     users = await User.objects.order_by(User.id).select(User.name, func.count(User.posts, filter=User.posts.views > 10))
     assert [tuple(u) for u in users] == [("Alice", 2), ("Bob", 1), ("Carol", 0)]
     running = await Post.objects.order_by(Post.created_at).select(
         Post.title, func.count(filter=Post.views >= 50).over(order_by=Post.created_at)
     )
     assert [tuple(r) for r in running] == [("b1", 1), ("a1", 1), ("a2", 2), ("a3", 2)]
+    # a filter that reads a to-one relation, in a window
+    by_author = await Post.objects.order_by(Post.created_at).select(
+        Post.title, func.sum(Post.views, filter=Post.author.name == "Alice").over(order_by=Post.created_at)
+    )
+    assert [tuple(r) for r in by_author] == [("b1", None), ("a1", 5), ("a2", 55), ("a3", 75)]
 
 
 async def test_aggregate_filter_through_a_to_one_hop(clean):
@@ -224,6 +258,17 @@ async def test_relation_count_with_an_outer_filter(clean):
     # a to-one hop under the relation is planned inside the subquery
     rows = await users.select(User.name, func.count(User.posts, filter=User.posts.author.name == "Alice"))
     assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
+
+
+async def test_relation_count_with_a_to_one_filter_under_another_relation(clean):
+    await seed_profiles()
+    users = User.objects.order_by(User.id)
+    # Django: Count("posts", filter=Q(profile__role="admin")) joins the profile once per user,
+    # so the filter keeps all the posts of an admin and none of the others.
+    rows = await users.select(User.name, func.count(User.posts, filter=User.profile.role == Role.admin))
+    assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
+    rows = await users.select(User.name, func.count(User.posts, filter=User.profile.role == Role.member))
+    assert [tuple(r) for r in rows] == [("Alice", 0), ("Bob", 1), ("Carol", 0)]
 
 
 async def test_array_agg(clean):
