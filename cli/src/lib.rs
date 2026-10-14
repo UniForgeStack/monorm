@@ -377,7 +377,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         "migrate" | "rollback" | "showmigrations" | "pull" | "baseline" | "drift" => {
             match command {
                 "migrate" => args.allow(command, &[], 1)?,
-                "rollback" => args.allow(command, &["--steps", "--to"], 0)?,
+                "rollback" => args.allow(command, &["--steps", "--to", "--force"], 0)?,
                 "pull" => args.allow(command, &["-o", "--out", "--force"], 0)?,
                 _ => args.allow(command, &[], 0)?,
             }
@@ -565,7 +565,7 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                         steps.map_or(Ok(1), str::parse).map_err(|_| Failure::Usage("--steps takes a number".into()))?,
                     ),
                 };
-                let done = migrate::downgrade(&*driver, dir, down).await?;
+                let done = migrate::downgrade(&*driver, dir, down, args.flag("--force")).await?;
                 for m in &done {
                     println!("Reverted {}", m.name);
                 }
@@ -578,8 +578,10 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                 let pulled = introspect::pull(&*driver).await?;
                 write(&out, &pulled.schema)?;
                 println!("wrote {}", out.display());
-                if pulled.steps.is_empty() {
+                if pulled.steps.is_empty() && pulled.gaps.is_empty() {
                     println!("The schema reproduces the database.");
+                } else if pulled.steps.is_empty() {
+                    println!("The schema matches the database, except for what is not reproduced.");
                 } else {
                     println!("The schema differs from the database; a migration from it would:");
                     print_steps(&pulled.steps);
