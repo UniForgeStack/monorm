@@ -140,6 +140,20 @@ or in `pyproject.toml`:
 Post = "blog.queries:PostQueries"
 ```
 
+The native tooling generator accepts the same mapping explicitly:
+
+```python
+from orm import _native
+
+module, stub = _native.generate_python(
+    "schema.prisma", query_sets={"Post": "blog.queries:PostQueries"}
+)
+```
+
+It returns the `models.py` and `models.pyi` source strings. Omitting `query_sets`,
+passing `None`, or passing `{}` keeps the default query-set classes. This native
+call uses only the supplied mapping; it does not read the CLI configuration.
+
 Then `Post.objects` is a `PostQueries`, and the methods chain with every builder method in both orders:
 `await Post.objects.published().filter(Post.author_id == 1).popular()`.
 `models.pyi` types `Post.objects` as the class, so mypy and pyright check the calls.
