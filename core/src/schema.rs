@@ -297,6 +297,7 @@ impl Schema {
                     return Err(format!("{}: proxy must share its root storage owner", proxy.model));
                 }
             }
+            crate::tracking::inherit_proxy_roles(&mut models, &model_index, &ir.behavior.proxy_models)?;
             models.iter().map(|m| crate::proxy::prepare(&m.ir.name, m.fields(), &enums,
                 ir.behavior.proxy_models.iter().find(|p| p.model == m.ir.name))).collect::<Result<Vec<_>>>()?
         };
