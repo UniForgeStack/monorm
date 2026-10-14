@@ -191,8 +191,31 @@ pub(crate) fn param_template(f: &FieldIr) -> Option<&str> {
     if let Some(t) = &f.write_sql {
         return Some(t);
     }
-    let char_n = f.db_type.as_deref().is_some_and(|t| t == "char" || t.starts_with("char("));
-    (char_n && !f.array).then_some("CAST({} AS bpchar)")
+    is_char_n(f).then_some("CAST({} AS bpchar)")
+}
+
+/// A scalar `char(n)` column, whose values Postgres pads with spaces.
+fn is_char_n(f: &FieldIr) -> bool {
+    f.db_type.as_deref().is_some_and(|t| t == "char" || t.starts_with("char(")) && !f.array
+}
+
+/// A text literal that reads the same under either `standard_conforming_strings`. `$` is
+/// escaped as well: the template pass reads `$<digits>` as a slot.
+fn key_literal(s: &str) -> Result<String> {
+    if s.contains('\0') {
+        return Err(Error::query("a JSON key cannot contain a NUL character"));
+    }
+    let mut out = String::from("E'");
+    for c in s.chars() {
+        match c {
+            '\'' => out.push_str("''"),
+            '\\' => out.push_str("\\\\"),
+            '$' => out.push_str("\\x24"),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    Ok(out)
 }
 
 /// Internal expression templates use numbered slots. SQLite's builder consumes
@@ -1166,7 +1189,10 @@ impl<'s> Planner<'s> {
                 }
             }
             Expr::Like { item, pattern, ci, neg } => {
+                // LIKE on bpchar keeps the padding in the compared value, except for a literal-prefix pattern; compare as text.
+                let padded = self.target.dialect == Dialect::Postgres && self.hint_of(item).field.is_some_and(is_char_n);
                 let item = self.value(item, Hint::default())?;
+                let item = if padded { template(self.target.dialect, "CAST($1 AS text)", vec![item]) } else { item };
                 let text = match pattern.as_ref() {
                     Expr::Param { i } => self.params.text(self.param(*i)?)?,
                     _ => return Err(Error::query("LIKE pattern must be a string parameter")),
@@ -1346,7 +1372,13 @@ impl<'s> Planner<'s> {
                 self.resolve(path, name)?
             },
             Expr::Param { i } => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
-            Expr::Scope { name } => bind(self.params.value(self.scope_param(name)?, hint.ty)?, hint.field),
+            Expr::Scope { name } => {
+                let value = self.params.value(self.scope_param(name)?, hint.ty)?;
+                if !value.is_some() {
+                    return Err(Error::query(format!("scope.{name} is None/null: a NULL scope value would match no rows; use a filter on the column for NULL rows")));
+                }
+                bind(value, hint.field)
+            }
             Expr::Const { value } => SExpr::val(*value),
             Expr::Int { value } => SExpr::cust(value.to_string()),
             Expr::Text { value } => bind(sea_query::Value::from(value.clone()), hint.field),
@@ -1433,8 +1465,8 @@ impl<'s> Planner<'s> {
         Ok(template(self.target.dialect, format!("{}({config}{slots})", name.to_uppercase()), planned))
     }
 
-    /// `<item> -> 'a' -> 0 ...` (`->>` for the last step with `text`): keys bind as text,
-    /// indexes are written into the SQL.
+    /// `<item> -> 'a' -> 0 ...` (`->>` for the last step with `text`): keys and indexes are written into
+    /// the SQL, so equal paths have equal text in GROUP BY and SELECT.
     fn json_path(&mut self, item: &Expr, path: &[JsonKey], text: bool) -> Result<SExpr> {
         if self.target.dialect == Dialect::Sqlite {
             return Err(Error::query("sqlite does not support JSON paths"));
@@ -1445,7 +1477,7 @@ impl<'s> Planner<'s> {
         if self.expr_type(item)? != ValueType::scalar(ColType::Json) {
             return Err(Error::query("a JSON path needs a Json column"));
         }
-        let mut exprs = vec![self.value(item, Hint::default())?];
+        let exprs = vec![self.value(item, Hint::default())?];
         let mut sql = String::from("$1");
         for (k, key) in path.iter().enumerate() {
             let op = if text && k + 1 == path.len() { "->>" } else { "->" };
@@ -1455,10 +1487,7 @@ impl<'s> Planner<'s> {
                     let i = i32::try_from(*i).map_err(|_| Error::query(format!("JSON index {i} is outside the 32-bit range")))?;
                     format!("{base} {op} {i}")
                 }
-                JsonKey::Key(s) => {
-                    exprs.push(SExpr::val(s.clone()));
-                    format!("{base} {op} ${}", exprs.len())
-                }
+                JsonKey::Key(s) => format!("{base} {op} {}", key_literal(s)?),
             };
         }
         Ok(template(self.target.dialect, format!("({sql})"), exprs))

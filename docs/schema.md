@@ -254,6 +254,13 @@ one combined module from the same compiled schema.
 Prisma's other `@db.*` types (`@db.SmallInt`, `@db.Timestamp(3)`, `@db.Char(2)`,
 `@db.Inet`, ...) set the column's SQL type; values convert as the field type's.
 
+On Postgres, `char(n)` pads its values with spaces. Equality compares as `bpchar`, which ignores the padding.
+`like`, `ilike`, `startswith`, `endswith`, `contains` (and their `i`-variants and `~` forms) compare `CAST(col AS text)`,
+so `endswith("b")` finds `'ab'` and `contains(" ")` does not match the padding.
+A pattern that contains the padding does not match it.
+A prefix search on a `char(n)` column uses an index only with an expression index: `CREATE INDEX ON t ((col::text) text_pattern_ops)`.
+SQLite does not pad.
+
 Decimals travel in Postgres' binary `numeric` format, digit for digit, so money never
 goes through a float: `SUM` of a decimal column is a `Decimal`, and so is `AVG` (other
 averages are floats).

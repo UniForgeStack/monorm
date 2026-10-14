@@ -146,6 +146,15 @@ impl ToSql for Param<'_> {
     to_sql_checked!();
 }
 
+/// The declared type and the bytes Postgres receives for `v`; equal keys cannot be told apart
+/// by the server (`Value: Eq` is looser: it ignores a numeric scale and the sign of a float zero).
+pub(super) fn wire_key(v: &Value) -> Option<(Type, Option<Vec<u8>>)> {
+    let ty = pg_type(v).ok()?;
+    let mut out = BytesMut::new();
+    let null = Param(v).to_sql(&ty, &mut out).ok()?;
+    Some((ty, matches!(null, IsNull::No).then(|| out.to_vec())))
+}
+
 async fn prepare(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Statement> {
     let types = args.iter().map(pg_type).collect::<DbResult<Vec<_>>>()?;
     let stmt = c.prepare_typed_cached(sql, &types).await.map_err(pg_err)?;
