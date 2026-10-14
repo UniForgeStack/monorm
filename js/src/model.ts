@@ -97,7 +97,8 @@ export interface Instance<M extends ModelSpec> {
    */
   delete(): Promise<void>;
   /**
-   * Reload column values from the database; `true` when it loaded the row. A trailing
+   * Reload column values from the database; `true` when it loaded the row. Arguments
+   * are model columns followed by an optional plain options object. A trailing
    * `{ lock: true }` also locks the row until the transaction ends, with the options of
    * `QuerySet.lock()`; a refresh of some fields still locks the whole row. With
    * `skipLocked`, a row locked by another transaction (or deleted) gives `false` and
@@ -512,7 +513,7 @@ function belongsToKey(owner: ModelMeta, s: PathState, r: RelationMeta): NonNulla
   });
   const read = (o: object): unknown[] => {
     const target = owner.registry.get(r.target);
-    if (metaOf(o as Row) !== target) {
+    if ((o?.constructor as { meta?: ModelMeta } | undefined)?.meta !== target) {
       throw new TypeError(`${[s.root.name, ...s.names, r.name].join(".")} compares with a ${r.target} instance`);
     }
     return r.to.map((name) => fieldValue(o, target.fieldByIr.get(name)!.name));
@@ -630,7 +631,7 @@ async function instanceLoad(this: Row, ...args: unknown[]): Promise<Row> {
 
 async function instanceRefresh(this: Row, ...args: unknown[]): Promise<boolean> {
   const last = args.at(-1);
-  const options = (last !== undefined && !(last instanceof Column) ? args.pop() : {}) as {
+  const options = (last !== null && typeof last === "object" && Object.getPrototypeOf(last) === Object.prototype ? args.pop() : {}) as {
     lock?: boolean; exclusive?: boolean; nowait?: boolean; skipLocked?: boolean;
   };
   const fields = args as Column<unknown, string>[];
