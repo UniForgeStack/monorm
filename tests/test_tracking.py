@@ -118,6 +118,55 @@ async def test_soft_delete_updates_instead_of_deleting(dialect, mode):
         await db.close()
 
 
+VERSIONED_SOFT_DELETE = """
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_soft_docs")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_soft_deleted_instance_can_be_undeleted(dialect):
+    db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        await Doc.objects.using(db).insert_many([{"id": 1}])
+        doc = await Doc.objects.using(db).get(Doc.id == 1)
+        await doc.delete()
+        assert doc.version == 1 and doc.deleted is not None
+        await doc.undelete()
+        assert doc.version == 2 and doc.deleted is None
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
+    db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        await Doc.objects.using(db).insert_many([{"id": 1}])
+        doc = await Doc.objects.using(db).get(Doc.id == 1)
+        await doc.delete()
+        await doc.delete()
+        assert doc.version == 1
+        stale = await Doc.objects.using(db).all_with_deleted().get(Doc.id == 1)
+        await stale.undelete()
+        with pytest.raises(orm.VersionConflict):
+            await doc.delete()
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 @requires("optimistic-locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_stale_instance_write_raises_version_conflict(dialect):

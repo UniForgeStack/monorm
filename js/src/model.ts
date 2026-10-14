@@ -594,7 +594,18 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
 }
 
 async function instanceDelete(this: Row): Promise<void> {
-  if (!(await versionFilter(this, rowQuery(this)).delete())) await throwIfChanged(this);
+  const meta = metaOf(this);
+  if (!meta.softDelete) {
+    if (!(await versionFilter(this, rowQuery(this)).delete())) await throwIfChanged(this);
+    return;
+  }
+  const query = versionFilter(this, loadedQuery(this, meta.versionField ? [meta.versionField.ir] : []));
+  const rows = (await query.delete({ returning: true })) as Row[];
+  if (!rows.length) {
+    await throwIfChanged(this);
+    return;
+  }
+  replaceFrom(this, rows[0]!);
 }
 
 async function instanceHardDelete(this: Row): Promise<void> {

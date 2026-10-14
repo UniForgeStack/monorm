@@ -87,6 +87,42 @@ model Book {
     });
   }
 
+  const versionedSoftDelete = `
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_node_soft_docs")
+}`;
+
+  test(`a soft-deleted instance can be undeleted (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, versionedSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }]);
+      const doc = await docs.get(Doc.id.eq(1));
+      await doc.delete();
+      assert.ok(doc.version === 1 && doc.deleted !== null);
+      await (doc as SoftDeletable).undelete();
+      assert.ok(doc.version === 2 && doc.deleted === null);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, versionedSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }]);
+      const doc = await docs.get(Doc.id.eq(1));
+      await doc.delete();
+      await doc.delete();
+      assert.equal(doc.version, 1);
+      const stale = await docs.allWithDeleted().get(Doc.id.eq(1));
+      await (stale as SoftDeletable).undelete();
+      await assert.rejects(doc.delete(), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`a stale instance write throws VersionConflict (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
