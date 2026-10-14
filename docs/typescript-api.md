@@ -542,7 +542,9 @@ See `docs/schema.md`, "Protected writes".
   with the same lock and gives `true`. A refresh of some fields locks the whole row. With
   `skipLocked`, a row locked elsewhere (or deleted) gives `false` and leaves the
   instance unchanged; otherwise a missing row throws `DoesNotExist`. Lock options
-  without `lock: true` are a type error and throw `TypeError`.
+  without `lock: true` are a type error and throw `TypeError`. `refresh()` reads the
+  primary, also on a database with replicas; `onCommit` callbacks and `load()` still read
+  replicas (use `.using("primary")`).
 * `db.lock(key, { exclusive, nowait })` takes a transaction-scoped advisory lock. String
   keys hash the way Python's do (BLAKE2b with an 8-byte digest), so both languages lock
   the same name.
@@ -575,6 +577,7 @@ There are no health checks or failover. `maxConnections` applies to each pool, a
 `await db.tenant(shop.id, async () => {...})` runs `SELECT set_config('app.tenant', '<id>', true)` (`SET LOCAL`) at the start of every transaction on `db` in the function, so RLS policies can read `current_setting('app.tenant', true)`.
 A statement outside a transaction runs in a transaction of its own (four round trips instead of one, estimated).
 A transaction that is already open keeps its setting, and the setting ends with each transaction.
+`db.tenant(x, fn)` throws `QueryError` when this async context has an open transaction on `db` that began under a different tenant (a transaction with no tenant counts as different); the same tenant is allowed. Open the transaction inside `fn`.
 A connection that had a tenant reads `''` (not `NULL`) for the setting after that, so a policy should read `NULLIF(current_setting('app.tenant', true), '')`; an empty id throws `RangeError`.
 Raw `db.execute(...)` in the function also runs in a transaction of its own, so `CREATE INDEX CONCURRENTLY` or `VACUUM` fails there.
 Each table of a composed model needs its own policy.

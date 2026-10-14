@@ -14,7 +14,9 @@ let defaultDb: Database | undefined;
 /** For each database (its root) with an open transaction in the current async context: the innermost one. */
 const current = new AsyncLocalStorage<ReadonlyMap<Database, NativeTransaction>>();
 /** For each database in a `tenant()` call: its primary and replica engines with the tenant set. */
-const tenants = new AsyncLocalStorage<ReadonlyMap<Database, { readonly primary: NativeEngine; readonly replicas: readonly NativeEngine[] }>>();
+const tenants = new AsyncLocalStorage<ReadonlyMap<Database, { readonly primary: NativeEngine; readonly replicas: readonly NativeEngine[]; readonly id: string }>>();
+/** For each database with an open transaction in this async context: the tenant id it began under. */
+const txTenants = new AsyncLocalStorage<ReadonlyMap<Database, string | undefined>>();
 /** The `scope.<name>` values of default filters. */
 const scopeValues = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
 /** For each database with an open transaction: the onCommit callbacks of the innermost one. */
@@ -224,7 +226,8 @@ export class Database {
    * `SELECT set_config('app.tenant', <id>, true)` (`SET LOCAL`), so Postgres row-level
    * security policies can read `current_setting('app.tenant')`. A statement outside a
    * transaction runs in a transaction of its own. A transaction that is already open keeps
-   * its setting. Gives what `fn` gives.
+   * its setting, so a call with another tenant while this database has a transaction open under a
+   * different tenant (or none) throws `QueryError`. Gives what `fn` gives.
    */
   tenant<T>(id: string | number | bigint, fn: () => Promise<T>): Promise<T> {
     if (this.url.startsWith("sqlite://")) {
@@ -237,7 +240,13 @@ export class Database {
       throw new RangeError("tenant id must not be empty: a pooled connection reads '' for no tenant");
     }
     const root = this.root, value = [String(id)];
+    if (current.getStore()?.has(root) && txTenants.getStore()?.get(root) !== value[0]) {
+      throw new QueryError(
+        "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; open the transaction inside the tenant block",
+      );
+    }
     const engines = {
+      id: value[0]!,
       primary: root.base.withSettings(["app.tenant"], value),
       replicas: root.replicas.map((r) => r.withSettings(["app.tenant"], value)),
     };
@@ -288,8 +297,9 @@ export class Database {
     const scoped = new Map(callbacks.getStore() ?? []).set(this.root, mine);
     let result: T;
     const txs = new Map(current.getStore() ?? []).set(this.root, tx);
+    const txTenant = new Map(txTenants.getStore() ?? []).set(this.root, tenants.getStore()?.get(this.root)?.id);
     try {
-      result = await current.run(txs, () => callbacks.run(scoped, fn));
+      result = await current.run(txs, () => txTenants.run(txTenant, () => callbacks.run(scoped, fn)));
     } catch (e) {
       ended.add(mine);
       await wait(() => tx.rollback());

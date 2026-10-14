@@ -827,6 +827,9 @@ await post.refresh()
 await post.refresh(Post.views)                   # some fields
 ```
 
+`refresh()` reads the primary, also on a database with replicas.
+`on_commit` callbacks and `load_x()` still read replicas: use `.using("primary")` there.
+
 * `insert(...)` gives the instance. `insert_many(...)` and every insert with
   `on_conflict(...)` give the number of rows inserted or updated (no `RETURNING` in
   the SQL), as `update()` does; `.returning()` gives the rows. One row with
@@ -1133,6 +1136,7 @@ with db.tenant(shop.id):                 # a sync `with`: it does no I/O
 * Every transaction on `db` in the block first runs `SELECT set_config('app.tenant', '<id>', true)`, the same as `SET LOCAL app.tenant = ...`, with the value bound as a parameter.
 * A statement outside a transaction runs in a transaction of its own: `BEGIN`, `set_config`, the statement, `COMMIT`. That is four round trips instead of one (estimated); put many statements in one `db.transaction()`.
 * A transaction that is already open keeps its setting. Savepoints use the setting of their transaction.
+  `db.tenant(x)` raises `QueryError` when this task has an open transaction on `db` that began under a different tenant (a transaction with no tenant counts as different); re-entering the same tenant is allowed. Open the transaction inside the block, or give the helper a transaction of its own in another task.
 * The setting ends with each transaction, so pooled connections keep no tenant.
   A connection that had a tenant reads `''` (not `NULL`) for the setting after that, so a policy should read `NULLIF(current_setting('app.tenant', true), '')`; `tenant("")` raises `ValueError`.
 * Raw `db.execute(...)` in the block also runs in a transaction of its own, so a statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`, `VACUUM`) fails there; run it outside the block.
@@ -1175,6 +1179,8 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
   Outside it, each query pays one `ContextVar` read (about 15 ns, measured).
 * In a test suite, add `pytest_plugins = ["orm.testing"]` to `conftest.py`.
   The `n_plus_one` fixture counts the whole test and fails it at teardown; set `n_plus_one.threshold` to change the threshold.
+
+* To mock `db.lock` in tests, use `AsyncMock` for `await db.lock(k)`, and an async context manager for `session=True`: `lock` is not a coroutine function (`create_autospec(Database)` makes a mock that cannot be awaited).
 
 ### Raw SQL and query plans
 

@@ -31,6 +31,10 @@ _default: Database | None = None
 _current_tx: ContextVar[dict[Database, _native.Transaction]] = ContextVar("orm_current_tx", default={})
 # For each database in a `tenant()` block: its primary and replica engines with the tenant set.
 _tenants: ContextVar[dict[Database, tuple[_native.Engine, list[_native.Engine]]]] = ContextVar("orm_tenants", default={})
+# For each database in a `tenant()` block: the tenant id.
+_tenant_ids: ContextVar[dict[Database, str]] = ContextVar("orm_tenant_ids", default={})
+# For each database with an open transaction in the current task: the tenant id it began under.
+_tx_tenants: ContextVar[dict[Database, str | None]] = ContextVar("orm_tx_tenants", default={})
 # The `scope.<name>` values of default filters.
 _scope: ContextVar[dict[str, Any]] = ContextVar("orm_scope", default={})
 # For each database with an open transaction: the on_commit callbacks of the innermost one.
@@ -113,7 +117,9 @@ class Database:
         runs ``SELECT set_config('app.tenant', <id>, true)`` (``SET LOCAL``), so Postgres
         row-level security policies can read ``current_setting('app.tenant')``. A
         statement outside a transaction runs in a transaction of its own. A transaction
-        that is already open keeps its setting. Tasks started in the block get it."""
+        that is already open keeps its setting, so entering the block with another tenant
+        while this database has a transaction open under a different tenant (or none)
+        raises :class:`~orm.QueryError`. Tasks started in the block get it."""
         if self.url.startswith("sqlite://"):
             raise QueryError("db.tenant() sets a Postgres setting for row-level security; sqlite has none")
         if isinstance(id, bool) or not isinstance(id, (str, int)):
@@ -121,14 +127,21 @@ class Database:
         if id == "":
             raise ValueError("tenant id must not be empty: a pooled connection reads '' for no tenant")
         root, value = self._root, [str(id)]
+        if root in _current_tx.get() and _tx_tenants.get().get(root) != value[0]:
+            raise QueryError(
+                "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; "
+                "open the transaction inside the tenant block"
+            )
         engines = (
             root._base.with_settings(["app.tenant"], value),
             [r.with_settings(["app.tenant"], value) for r in root._replicas],
         )
         token = _tenants.set({**_tenants.get(), root: engines})
+        id_token = _tenant_ids.set({**_tenant_ids.get(), root: value[0]})
         try:
             yield
         finally:
+            _tenant_ids.reset(id_token)
             _tenants.reset(token)
 
     def on_query(self, hook: Callable[[QueryEvent], object]) -> Callable[[], None]:
@@ -316,6 +329,7 @@ class Database:
         outer = enclosing is None
         tx = await self._engine.begin(enclosing)
         token = _current_tx.set({**_current_tx.get(), self._root: tx})
+        tx_tenant_token = _tx_tenants.set({**_tx_tenants.get(), self._root: _tenant_ids.get().get(self._root)})
         callbacks = _Callbacks()
         cb_token = _callbacks.set({**_callbacks.get(), self._root: callbacks})
         try:
@@ -323,11 +337,13 @@ class Database:
         except BaseException:
             callbacks.ended = True
             _callbacks.reset(cb_token)
+            _tx_tenants.reset(tx_tenant_token)
             _current_tx.reset(token)
             await tx.rollback()
             raise
         callbacks.ended = True
         _callbacks.reset(cb_token)
+        _tx_tenants.reset(tx_tenant_token)
         _current_tx.reset(token)
         await tx.commit()
         await self._after_commit(callbacks, outer)
