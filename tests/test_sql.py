@@ -297,6 +297,24 @@ def test_same_relation_aggregates_share_one_lateral_join():
     assert grouped.statements[0].correlated_count == 2
 
 
+@pytest.mark.parametrize("limit,offset", [(10, None), (None, 5), (10, 5), (0, None)])
+def test_paginated_relation_aggregates_keep_scalar_subqueries(limit, offset):
+    query = User.objects.select(User.id, func.count(User.posts), func.max(User.posts.views))
+    query = query.order_by(User.name, User.id).limit(limit).offset(offset)
+    sql = query.sql()
+    assert "LATERAL" not in sql
+    assert '(SELECT COUNT(*) FROM "posts"' in sql
+    assert '(SELECT MAX(' in sql
+    assert 'ORDER BY "users"."name" ASC, "users"."id" ASC' in sql
+    if limit is not None:
+        assert f"LIMIT {limit}" in sql
+    if offset is not None:
+        assert f"OFFSET {offset}" in sql
+    assert query.inspect().statements[0].joins_count == 0
+    assert query.inspect().statements[0].correlated_count == 2
+    assert "LATERAL" in query.limit(None).offset(None).sql()
+
+
 def test_select_to_one_columns_join_and_to_many_is_rejected():
     query = Post.objects.select(Post.title, Post.author.name.label("author"))
     assert query.inspect() == orm.QueryInspection(1, False, (

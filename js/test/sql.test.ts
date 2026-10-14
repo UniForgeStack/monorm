@@ -104,6 +104,24 @@ test("aggregates over the same relation share one LATERAL join", () => {
   assert.equal(User.objects.filter(func.count(User.posts).gt(1), func.sum(User.posts.views).gt(1)).select({ id: User.id }).inspect().statements[0]!.joinsCount, 0);
 });
 
+test("paginated relation aggregates keep scalar subqueries", () => {
+  for (const [limit, offset] of [[10, null], [null, 5], [10, 5], [0, null]] as const) {
+    const query = User.objects
+      .select({ id: User.id, posts: func.count(User.posts), top: func.max(User.posts.views) })
+      .orderBy(User.name, User.id).limit(limit).offset(offset);
+    const sql = query.sql();
+    assert.ok(!sql.includes("LATERAL"));
+    assert.ok(sql.includes('(SELECT COUNT(*) FROM "posts"'));
+    assert.ok(sql.includes('(SELECT MAX('));
+    assert.ok(sql.includes('ORDER BY "users"."name" ASC, "users"."id" ASC'));
+    if (limit !== null) assert.ok(sql.includes(`LIMIT ${limit}`));
+    if (offset !== null) assert.ok(sql.includes(`OFFSET ${offset}`));
+    assert.equal(query.inspect().statements[0]!.joinsCount, 0);
+    assert.equal(query.inspect().statements[0]!.correlatedCount, 2);
+    assert.ok(query.limit(null).offset(null).sql().includes("LATERAL"));
+  }
+});
+
 test("a to-one load() and orderBy use LEFT JOINs", () => {
   const sql = Comment.objects.load(Comment.post.author).orderBy(Comment.post.title.desc()).sql();
   assert.ok(sql.includes('LEFT JOIN "posts" AS "j1" ON "j1"."id" = "comments"."post_id"'));

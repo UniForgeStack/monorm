@@ -303,9 +303,11 @@ relation filters the parent row.
 values kept, `null` (not `[]`) over no rows; `orderBy` fixes the element order (with `distinct`
 it must use the same expression). It works over a relation, takes no array column, is not a
 window function, and is PostgreSQL only. Other aggregates take no `orderBy`.
-In a `select()` without `groupBy()`, `distinct()` or `lock()`, two or more aggregates over the
-same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
+In a `select()` without `groupBy()`, `distinct()`, `lock()`, a limit or an offset, two or
+more aggregates over the same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
 `null` empty sums, per-aggregate `filter` and `distinct`); SQLite keeps scalar subqueries.
+Queries with a limit or offset also keep scalar subqueries, so an unindexed parent sort
+can run before computing the selected aggregates.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
 compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
 `.asText()` for the last step as text (`->>`, no step can follow),

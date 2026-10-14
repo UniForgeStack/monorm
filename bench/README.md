@@ -8,6 +8,7 @@ Mark each number you report as measured (and say if the machine was loaded), est
 | Benchmark | Measures | Extension build |
 |---|---|---|
 | [`engine_bench.py`](engine_bench.py) | The public Python API on the blog models, end to end: reads, `select_related`, prefetch, inserts, updates, a transaction, concurrent gets | Runs on any build (core features only) |
+| [`aggregates_pagination.py`](aggregates_pagination.py) | Scalar versus LATERAL relation aggregates with an unindexed parent sort, LIMIT 20 and OFFSET 10; 100,000 users / 1,000,000 posts by default | Runs on any build (PostgreSQL) |
 | [`rust-compare/`](rust-compare) | `orm-engine` (typed IR and JSON IR) against SeaORM 2.0.4 and Diesel-async, in Rust only; `diagnose` adds raw SQLx and a streaming read | Not applicable (engine only) |
 | [`shared-behavior/`](shared-behavior) | Paired A/B of `Database.lock` advisory locks: the earlier Python/TypeScript key hashing against the Rust helper, through the public API | Not applicable (core) |
 | [`build-time-extensions/`](build-time-extensions) | The cost gate of build-time extensions: handwritten built-in controls against generated extension code, Python and Node, PostgreSQL and SQLite; allocation and artifact-size probes | This is the extension benchmark |
@@ -21,6 +22,14 @@ python bench/engine_bench.py --url postgres://postgres:postgres@localhost/orm_be
 
 It drops and creates the blog tables in that database.
 With an extension build: `PYTHONPATH=<build>/py ORM_PROFILE=custom python bench/engine_bench.py ...`.
+
+## aggregates_pagination.py
+
+The pagination benchmark reads `ORM_TEST_DATABASE_URL` (or `--url`) and drops and
+creates the blog tables there. It checks equal results, alternates the two forms
+after warm-up, and reports median milliseconds as measured on a loaded machine.
+`--parents`, `--posts-per-parent`, `--rounds` and `--out` control the fixture and
+JSON output; the output includes both SQL forms and `EXPLAIN (ANALYZE, BUFFERS)`.
 
 ## rust-compare
 

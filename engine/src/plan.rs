@@ -1962,6 +1962,10 @@ impl<'s> Planner<'s> {
         let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
         let plain = self.caps.lateral_join
             && !cte
+            // Scalar select subqueries can run after Sort/Limit; LATERAL would
+            // aggregate every candidate parent before pagination.
+            && q.limit.is_none()
+            && q.offset.is_none()
             && q.lock.is_none()
             && q.group_by.is_empty()
             && q.having.is_empty()

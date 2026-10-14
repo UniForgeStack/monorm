@@ -649,6 +649,9 @@ async def test_select_model_with_relation_aggregates(clean):
         ("Carol", 0, None),
     ]
     assert rows[0].user == alice and rows[0].posts == 2
+    page = query.order_by(User.name).offset(1).limit(2)
+    assert page.inspect().statements[0].correlated_count == 2
+    assert [(u.name, n, v) for u, n, v in await page] == [("Bob", 1, 100), ("Carol", 0, None)]
     # Two counts over different relations don't multiply each other (no JOIN fan-out).
     query = User.objects.select(
         User.name, func.count(User.posts), func.count(User.comments).label("c")

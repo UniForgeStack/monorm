@@ -14,6 +14,11 @@ test("SQLite has no array_agg and no LATERAL join", async () => {
     await assert.rejects(Author.objects.using(db).select({ n: func.arrayAgg(Author.name) }).scalar(), /sqlite does not support array_agg/);
     const rows = await Author.objects.using(db).select({ id: Author.id, n: func.count(Author.books), p: func.max(Author.books.pages) }).all();
     assert.deepEqual(rows, []);
+    const page = Author.objects.using(db).select({ id: Author.id, n: func.count(Author.books), p: func.max(Author.books.pages) })
+      .orderBy(Author.name).limit(10).offset(1);
+    assert.equal(page.inspect().statements[0]!.correlatedCount, 2);
+    assert.ok(!page.sql().includes("LATERAL"));
+    assert.deepEqual(await page.all(), []);
   } finally {
     await db.close();
   }
