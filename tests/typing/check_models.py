@@ -17,6 +17,7 @@ from orm import (
     Ordering,
     Page,
     Prepared,
+    QuerySet,
     RelatedSet,
     Row,
     TsVector,
@@ -55,6 +56,7 @@ async def check() -> None:
     u = users[0]
     assert_type(u.email, str)
     assert_type(u.posts, RelatedSet[Post])
+    assert_type(u.posts | Post.objects, QuerySet[Post])
     assert_type(await u.posts, list[Post])
     post = await Post.objects.load(Post.author).require().get(Post.id == 1)
     assert_type(post.author, User)

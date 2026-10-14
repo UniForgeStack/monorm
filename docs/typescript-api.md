@@ -210,7 +210,7 @@ The types check the following:
 ### Partial rows, OR of query sets, column paths
 
 * `load(Comment.body, Comment.post.title)`: partial comments (`Pick` of `body`, with `pk` and the methods) whose `post` is joined and has only `title`; see "Loading related objects".
-* `qs1.or(qs2)`: one query set with the filter `(filters of qs1) OR (filters of qs2)`. `qs2` sets nothing but filters, neither is sliced, and each side has at most one `filter()`/`exclude()` call.
+* `qs1.or(qs2)`: one query set with the filter `(filters of qs1) OR (filters of qs2)`. `qs2` sets nothing but filters, neither is sliced, and each side has at most one `filter()`/`exclude()` call. A relation set on the left gives a plain query set. A custom class takes its state from the left side.
 * `load(User.posts.objects.orderBy("-views").label("best", { one: true }))` stores the first related row, or `null`, in `user.best` (typed `Post | null`). It takes no slice.
 * `column(Bundle, "items.product.title")` is the column a dotted path of TypeScript names gives, for adapters that map request names to columns.
 

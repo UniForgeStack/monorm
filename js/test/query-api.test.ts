@@ -223,6 +223,40 @@ test("or() of query sets", async () => {
   assert.throws(() => popular.slice(0, 1).or(drafts), QueryError);
 });
 
+test("or() of a relation set ignores the loaded rows", async () => {
+  await seed();
+  const users = await User.objects.orderBy("id").load(User.posts.objects.filter(Post.published.eq(false)));
+  const qs = users[0]!.posts.or(Post.objects.filter(Post.published.eq(true)));
+  assert.ok(!(qs instanceof RelatedSet));
+  assert.deepEqual((await qs).map((p) => p.title).sort(), ["bob", "draft", "hit", "quiet"]);
+  assert.deepEqual((await Post.objects.filter(Post.published.eq(true)).or(users[0]!.posts)).map((p) => p.title).sort(), ["bob", "draft", "hit", "quiet"]);
+});
+
+test("or() of a many-to-many set ignores the loaded rows", async () => {
+  const { posts: rows } = await seed();
+  const tags = await Tag.objects.insertMany([{ name: "a" }, { name: "b" }, { name: "c" }]).returning();
+  await rows[1]!.tags.add(...tags);
+  const [post] = await Post.objects.filter(Post.id.eq(rows[1]!.id)).load(Post.tags.objects.filter(Tag.name.eq("a")));
+  const qs = post!.tags.or(Tag.objects.filter(Tag.name.eq("c")));
+  assert.ok(!(qs instanceof ManyRelatedSet));
+  assert.deepEqual((await qs).map((t) => t.name).sort(), ["a", "b", "c"]);
+});
+
+test("or() of two filtered relation sets names the relation", async () => {
+  const { alice } = await seed();
+  assert.throws(() => alice.posts.filter(Post.views.gt(1)).or(alice.posts.filter(Post.views.lt(100))), /posts.*filter\(a\.or\(b\)\)/);
+});
+
+test("or() keeps the custom query-set class", async (t) => {
+  useQuerySet(Post, () => PostQueries);
+  t.after(() => useQuerySet(Post, QuerySet));
+  await seed();
+  const users = await User.objects.orderBy("id").load(User.posts.objects.filter(Post.published.eq(false)));
+  const qs = users[0]!.posts.or(Post.objects.filter(Post.published.eq(true))) as unknown as PostQueries;
+  assert.ok(qs instanceof PostQueries && !(qs instanceof RelatedSet));
+  assert.deepEqual((await qs.popular(60)).map((p) => p.title).sort(), ["bob", "hit"]);
+});
+
 test("label one stores a row or null", async () => {
   await seed();
   await User.objects.insert({ email: "carol@example.com", name: "Carol" });

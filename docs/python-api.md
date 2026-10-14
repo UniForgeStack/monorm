@@ -454,7 +454,7 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
 * `load(...)` with columns gives partial instances (see "Loading related objects" and [`selection-and-defaults.md`](selection-and-defaults.md)).
   A column through relations trims the related instance: `Comment.objects.load(Comment.body, Comment.post.title)` joins `comment.post`, with only `title` public; `User.objects.load(User.posts.title)` loads partial posts by `IN (...)` query.
   Unlike Django's `only("post__title")`, a column of a related model leaves the model itself whole; name `Comment.id` for a key-only root.
-* `qs1 | qs2` is one query set with the filter `(filters of qs1) OR (filters of qs2)`; order, loading and `using` come from `qs1`.
+* `qs1 | qs2` is one query set with the filter `(filters of qs1) OR (filters of qs2)`; order, loading and `using` come from `qs1`. A relation set on the left gives a plain query set. A custom class takes its state from the left side.
   `qs2` must set nothing but filters, neither may be sliced, and each side has at most one `filter()`/`exclude()` call, else `QueryError`:
   conditions of one call through a to-many relation must hold for one related row, so two calls can't be joined into one.
 * `User.posts.objects.order_by(-Post.views).label("best", one=True)` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.

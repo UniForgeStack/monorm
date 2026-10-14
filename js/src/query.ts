@@ -740,20 +740,27 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `other` sets nothing but filters, neither is sliced, and each has at most one
    * `filter()`/`exclude()` call: conditions of one call through a to-many relation hold
    * for one related row, so two calls can't be joined.
+   * A relation set on the left gives a plain query set; a custom class takes its state from the left side.
    */
   or<P2, X2 extends string>(other: QuerySet<M, unknown, S, P2, X2>): PreserveRequired<this, QuerySetOf<M, R, S, P & P2, X | X2, V>> {
     if (!(other instanceof QuerySet) || other.meta !== this.meta) throw new TypeError(`or() combines query sets of ${this.meta.name}`);
-    for (const qs of [this.state, other.state]) {
+    for (const side of [this, other]) {
+      const qs = side.state;
       if (qs.limit !== undefined || qs.offset !== undefined) throw new QueryError("or() can't combine a sliced query set");
-      if (qs.filters.length > 1) throw new QueryError("or() needs one filter() call per side; put the conditions in one call");
+      if (qs.filters.length > 1) {
+        const name = (side as { relation?: RelationMeta }).relation?.name;
+        throw new QueryError(`or() needs one filter() call per side${name ? ` (${name}: write filter(a.or(b)))` : ""}; put the conditions in one call`);
+      }
     }
     for (const [key, value] of Object.entries(other.state) as [keyof QueryState, unknown][]) {
       const base = EMPTY[key];
       const empty = Array.isArray(value) && !value.length && (base === undefined || Array.isArray(base));
       if (key !== "filters" && value !== base && !empty) throw new QueryError(`or() takes filters only from the other query set, which also sets ${key}`);
     }
-    if (!this.state.filters.length || !other.state.filters.length) return this.clone({ filters: [] }) as never;
-    return this.clone({ filters: [or(this.state.filters[0] as never, other.state.filters[0] as never) as unknown as Node] }) as never;
+    const { relation: _relation, instance: _instance, ...own } = this as unknown as Record<string, unknown>;
+    const left = Object.assign(new (querySetClass(this.meta))(this.meta, this.state), own) as unknown as this;
+    if (!this.state.filters.length || !other.state.filters.length) return left.clone({ filters: [] }) as never;
+    return left.clone({ filters: [or(this.state.filters[0] as never, other.state.filters[0] as never) as unknown as Node] }) as never;
   }
 
   /** Drop rows matching all `conditions`. */

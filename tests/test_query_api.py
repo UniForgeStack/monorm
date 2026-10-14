@@ -350,6 +350,60 @@ async def test_or_of_query_sets(clean):
         popular[:1] | drafts
 
 
+async def _users_with_unpublished_posts_loaded():
+    await seed()
+    return await User.objects.order_by(User.id).load(User.posts.objects.filter(~Post.published))
+
+
+async def test_or_of_a_relation_set_ignores_the_loaded_rows(clean):
+    users = await _users_with_unpublished_posts_loaded()
+    rows = await (users[0].posts | Post.objects.filter(Post.published))
+    assert sorted(p.title for p in rows) == ["bob", "draft", "hit", "quiet"]
+
+
+async def test_or_of_a_relation_set_is_a_plain_query_set(clean):
+    users = await _users_with_unpublished_posts_loaded()
+    qs = users[0].posts | Post.objects.filter(Post.published)
+    assert type(qs) is QuerySet
+    assert not hasattr(qs, "_relation")
+
+
+async def test_or_of_a_many_to_many_set_ignores_the_loaded_rows(clean):
+    _, _, posts = await seed()
+    tags = await Tag.objects.insert_many([{"name": n} for n in "abc"]).returning()
+    await posts[1].tags.add(*tags)
+    post = (await Post.objects.filter(Post.id == posts[1].id).load(Post.tags.objects.filter(Tag.name == "a")))[0]
+    rows = await (post.tags | Tag.objects.filter(Tag.name == "c"))
+    assert sorted(t.name for t in rows) == ["a", "b", "c"]
+    assert type(post.tags | Tag.objects) is QuerySet
+
+
+async def test_or_with_a_relation_set_on_the_right_reads_the_database(clean):
+    users = await _users_with_unpublished_posts_loaded()
+    rows = await (Post.objects.filter(Post.published) | users[0].posts)
+    assert sorted(p.title for p in rows) == ["bob", "draft", "hit", "quiet"]
+
+
+async def test_or_of_two_via_query_sets_raises_query_error(clean):
+    a = User.posts.objects.filter(Post.views > 1)
+    b = User.posts.objects.filter(Post.views < 100)
+    with pytest.raises(orm.QueryError, match="via"):
+        a | b
+
+
+async def test_or_of_two_filtered_relation_sets_names_the_relation(clean):
+    alice, _, _ = await seed()
+    with pytest.raises(orm.QueryError, match=r"posts.*filter\(a \| b\)"):
+        alice.posts.filter(Post.views > 1) | alice.posts.filter(Post.views < 100)
+
+
+async def test_or_keeps_the_custom_query_set_class(clean, custom):
+    users = await _users_with_unpublished_posts_loaded()
+    qs = users[0].posts | Post.objects.filter(Post.published)
+    assert type(qs).__name__ == "PostQueries"
+    assert sorted(p.title for p in await qs.popular(60)) == ["bob", "hit"]
+
+
 async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
     await seed()
     await User.objects.insert(email="carol@example.com", name="Carol")
