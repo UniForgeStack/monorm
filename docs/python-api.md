@@ -280,6 +280,8 @@ SQL text client-side, so the limit doesn't apply to it.)
   Paths with a common prefix share its query.
 * To-one relations are joined. A path with a to-many hop is loaded with an `IN (...)` query from its first hop, and every item under that hop uses the query.
 * `User.posts.objects` is the relation query set: `Post.objects` (with its query-set class and query defaults) bound to `User.posts`.
+  Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
+  A bare path (including a deeper path through the relation) combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `ValueError`. Label the query set to request a separate result. A plain set or one that only adds `.load()` can share the path.
   It gives the related rows their own filters, ordering, slice and `.load(...)` (nested under it).
   As in Django, the rows fill the relation itself, so `user.posts.cached` and `await user.posts` then give the filtered rows; `user.posts.filter(...)` and other new queries still see every post.
   With `.label("recent")` they go to a plain list attribute (`user.recent`), and the relation stays unloaded; `.label("best", one=True)` stores the first row, or `None`.
@@ -1379,6 +1381,7 @@ Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
    A migration may hold a `data.py` with `async def run(db)`, run by `Migrator.upgrade()`
    and `python -m orm migrate` in the migration's transaction
    (see [`schema.md`](schema.md#data-migrations)).
+   `Migrator.downgrade(..., force=True)` reverts a baselined migration, which it refuses otherwise.
 9. **Async only**, no sync API (see `PLAN.md`, Decisions).
 10. **No general plan cache.** [`performance.md`](performance.md) keeps compiled-plan
     caching out until profiling shows a benefit; `prepare()` and the driver's statement

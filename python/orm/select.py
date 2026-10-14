@@ -210,6 +210,7 @@ class Select(Generic[Unpack[Ts]]):
     def _build(
         self, params: list[Any], outer: IRContext | None = None, ctes: _Ctes | None = None
     ) -> tuple[dict[str, Any], IRContext]:
+        self._qs._standalone()
         ir, ctx = self._qs._query_ir("select", params, outer, ctes)
         ir["columns"] = [
             {"t": "model"} if isinstance(item, type) else {"t": "expr", "expr": item._ir(ctx), "name": name}

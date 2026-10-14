@@ -331,8 +331,9 @@ class Migrator:
         name = await self.db._engine.migrate_baseline(self._dir)
         return Migration(name, self.migrations.directory / name)
 
-    async def downgrade(self, steps: int = 1, *, target: str | None = None) -> list[Migration]:
+    async def downgrade(self, steps: int = 1, *, target: str | None = None, force: bool = False) -> list[Migration]:
         """Revert the last ``steps`` applied migrations, or every one after ``target``
-        (``target="zero"`` reverts all)."""
-        names = await self.db._engine.migrate_down(self._dir, max(steps, 0), target)
+        (``target="zero"`` reverts all). A baselined migration (:meth:`baseline`) is
+        refused unless ``force``: its ``down.sql`` would drop the live tables."""
+        names = await self.db._engine.migrate_down(self._dir, max(steps, 0), target, force)
         return [Migration(n, self.migrations.directory / n) for n in names]
