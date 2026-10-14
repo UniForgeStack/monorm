@@ -119,6 +119,19 @@ npx orm generate --query-set Post=./queries.js#PostQueries
 
 or in `package.json`: `"orm": { "querySets": { "Post": "./queries.js#PostQueries" } }`.
 
+The tooling native addon's `generateTypescript` function also accepts the mapping
+as its optional third argument:
+
+```ts
+const source = addon.generateTypescript(
+  "schema.prisma", "orm", { Post: "./queries.js#PostQueries" }
+);
+```
+
+The second argument selects the runtime import (default `"orm"`). Omitting the
+mapping, passing `null`, or passing `{}` keeps the default query-set classes.
+This native call uses only the supplied mapping; it does not read the CLI configuration.
+
 Then `Post.objects` is a `PostQueries`, and the methods chain with every builder method in both orders:
 `await Post.objects.published().filter(Post.authorId.eq(1n)).popular()`.
 `PostSpec` gets `queries: PostQueries`, and builder methods return `QuerySetOf<PostSpec, ...>`, a query set with those methods.
