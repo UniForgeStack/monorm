@@ -338,7 +338,8 @@ class InsertOne(_Insert, Generic[M]):
         update_values: Mapping[str, Any] | None = None,
     ) -> UpsertOne[Any]:
         """Handle a row that violates the unique constraint on ``columns``; ``where`` is
-        the predicate of a partial unique index (``ON CONFLICT (...) WHERE ...``).
+        the predicate of a partial unique index (``ON CONFLICT (...) WHERE ...``). Without
+        ``where``, the one unique schema index with exactly these plain columns gives it.
 
         ``update=False`` keeps the existing row (``DO NOTHING``). ``update=True`` updates
         it: ``update_fields`` copy the new values, ``update_values`` set values or
@@ -389,7 +390,8 @@ class InsertMany(_Insert, Generic[M]):
         update_values: Mapping[str, Any] | None = None,
     ) -> InsertMany[M]:
         """Handle rows that violate the unique constraint on ``columns``; ``where`` is
-        the predicate of a partial unique index (``ON CONFLICT (...) WHERE ...``).
+        the predicate of a partial unique index (``ON CONFLICT (...) WHERE ...``). Without
+        ``where``, the one unique schema index with exactly these plain columns gives it.
 
         ``update=False`` skips conflicting rows (``DO NOTHING``). ``update=True``
         updates them: ``update_fields`` copy the new values, ``update_values`` set values
@@ -442,7 +444,8 @@ class InsertReturning(Generic[R_co]):
 
 class CopyInsert(Generic[M]):
     """``insert_many(rows, copy=True)``: a Postgres ``COPY``. ``await`` gives the number
-    of rows written; there is no ``RETURNING``, so no instances."""
+    of rows written; there is no ``RETURNING``, so no instances. Postgres fails the load when
+    row-level security applies to the role; use ``insert_many(rows)`` there."""
 
     __slots__ = ("_qs", "_fields", "_rows", "_used")
 

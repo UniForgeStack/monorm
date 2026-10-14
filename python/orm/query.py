@@ -1065,7 +1065,8 @@ class QuerySet(Generic[M]):
         Safe under concurrency: the insert is ``ON CONFLICT (lookup) DO NOTHING``, and a
         row that a concurrent insert wins is read back. The reads go to the primary, see
         the query set's filters and ignore its limit and offset; a row that the filters
-        hide raises ``QueryError``."""
+        hide raises ``QueryError``. With a partial unique index, the lookup must be unique
+        among the rows the query set sees: the reads do not carry the index predicate."""
         key = lookup_values(self._model, lookup)
         fields = self._model._meta.fields
         cols: list[ColumnRef[Any]] = [ColumnRef(self._model, (), fields[name]) for name in key]

@@ -238,7 +238,7 @@ export interface OnConflictOptions<M extends ModelSpec, U extends boolean = bool
   readonly update: U;
   readonly updateFields?: readonly OwnColumn<M>[];
   readonly updateValues?: M["update"];
-  /** The predicate of a partial unique index: `ON CONFLICT (...) WHERE ...`. */
+  /** The predicate of a partial unique index: `ON CONFLICT (...) WHERE ...`. Without it, the one unique schema index with exactly these plain columns gives it. */
   readonly where?: Expression<boolean | null, string, unknown>;
 }
 
@@ -1476,7 +1476,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * The row matching `lookup`, or a new row of `lookup` and `defaults`: `[row, created]`.
    * `lookup` names the fields of one unique constraint (the database checks this). Safe
    * under concurrency: the insert is `ON CONFLICT (lookup) DO NOTHING`, and a row that a
-   * concurrent insert wins is read back.
+   * concurrent insert wins is read back. With a partial unique index, the lookup must be
+   * unique among the rows the query set sees: the reads do not carry the index predicate.
    */
   async getOrInsert(lookup: Partial<M["insert"]>, options?: { readonly defaults?: Partial<M["insert"]> }): Promise<[M["row"], boolean]> {
     const key = lookupValues(this.meta, lookup);

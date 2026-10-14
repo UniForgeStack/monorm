@@ -567,3 +567,41 @@ async def test_aggregate_filter_through_relations(sqlite):
         Author.name, func.count(Author.books, filter=Author.name == "Alice")
     )
     assert [tuple(r) for r in rows] == [("Alice", 2), ("Bob", 0)]
+
+
+PARTIAL = """
+datasource db { provider = "sqlite" }
+model Account {
+  id     BigInt  @id @default(autoincrement())
+  email  String
+  active Boolean @default(true)
+  @@index([email], unique: true, where: raw("active"))
+}
+model Twice {
+  id    BigInt @id @default(autoincrement())
+  email String
+  @@index([email], unique: true, where: raw("id > 0"))
+  @@index([email], unique: true, where: raw("id > 1"), name: "twice_other")
+}
+"""
+
+
+async def test_on_conflict_infers_the_partial_unique_index():
+    registry, m = models(PARTIAL)
+    Account, Twice = m["Account"], m["Twice"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        accounts = Account.objects.using(db)
+        await accounts.insert(email="a@x.io").on_conflict(Account.email, update=False)
+        await accounts.insert(email="a@x.io").on_conflict(Account.email, update=False)
+        await accounts.insert_many([{"email": "a@x.io"}, {"email": "b@x.io"}]).on_conflict(Account.email, update=False)
+        assert await accounts.count() == 2
+        row, created = await accounts.get_or_insert(email="c@x.io")
+        again, created_again = await accounts.get_or_insert(email="c@x.io")
+        assert (created, created_again, again.id) == (True, False, row.id)
+        # Two indexes with the same columns: no guess, today's SQL.
+        with pytest.raises(orm.DatabaseError):
+            await Twice.objects.using(db).insert(email="a@x.io").on_conflict(Twice.email, update=False)
+    finally:
+        await db.close()
