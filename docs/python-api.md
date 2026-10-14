@@ -390,15 +390,21 @@ Doc.meta.json_contained_by(value) / Doc.meta.has_key("tags")        # <@ / ?
 await Doc.objects.filter(...).update(meta=Doc.meta.json_merge({"seen": True}))   # meta || '{...}'
 ```
 
-* A path step is a string key or a 0-based integer index. The value is `jsonb`, so a
+* A path step is a string key or a 0-based integer index (a `String[]` column indexes
+  from 1, JSON from 0). The value is `jsonb`, so a
   comparison binds the other side as JSON: `== "x"` is the JSON string `"x"`, `== 5` the
-  number. `as_text()` ends a path and reads the value as text (`->>`).
+  number. `as_text()` reads the value as text (`->>`) and ends the path: no step can follow.
+  `== None` is `IS NULL` (a JSON `null` value is not SQL `NULL`). The comparison is `jsonb`
+  ordering across types, so `> 3` also matches `true`, `{}` and `[1]`.
 * On an array column, `col[1]` stays SQL's 1-based element access; a string key on a
   column that is not `Json` is a `TypeError`.
 * `json_contains`, `json_contained_by` and `has_key` work on the column and on a path,
-  and use a GIN index on the column (`@@index([meta], type: Gin)`).
+  and a GIN index on the column (`@@index([meta], type: Gin)`) serves `json_contains`,
+  `json_contained_by` and `has_key` on the column only, not on a path. They take a
+  `param()` in a prepared query.
 * `json_merge(value)` is `||`: objects merge one level deep (the keys of `value` win);
-  arrays join.
+  arrays join, and a scalar merged with an object or array makes an array. A column that is
+  `NULL` stays `NULL` after a merge.
 * PostgreSQL only: on SQLite these are a `QueryError`.
 
 ### Full-text search
@@ -413,13 +419,16 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
 
 * The first argument `"english"` names the text search configuration; without it the
   server's `default_text_search_config` applies. It is written into the SQL as
-  `'english'::regconfig` (it must be a name), so the expression matches an expression
-  index in every plan, also a prepared statement's generic plan.
+  `'english'::regconfig` (it must be a name), so an expression index on the same expression
+  is used in every plan, also a prepared statement's generic plan. A document bound as a
+  value (`param()`) is not an expression, so no index covers it.
 * `vector.matches("text")` with a plain string uses `plainto_tsquery` with the vector's
+  configuration; a `param()` query is wrapped the same way. A vector that is not
+  `to_tsvector(config, ...)` (for example a `coalesce(...)`) uses the server default
   configuration.
 * Index the same expression with a GIN index in the schema:
   `@@index([sql("to_tsvector('english', body)")], type: Gin)`.
-* `ts_rank` is a `float`. A tsvector or tsquery itself can't be a `select()` column.
+* `ts_rank` takes no plain string: pass a tsquery. It is a `float`. A tsvector or tsquery itself can't be a `select()` column.
 * PostgreSQL only: on SQLite these are a `QueryError`.
 
 ### Partial rows, OR of query sets, column paths
@@ -594,8 +603,11 @@ when its row exists but its column is NULL.
   await User.objects.select(User, func.count(User.posts, filter=User.posts.published))
   ```
 
-  Over a relation, the filter applies inside the correlated subquery; it must read the
-  same relation path as the aggregate. With `.over(...)` the filter comes before `OVER`.
+  Over a relation, the filter follows Django's rule: a condition on the aggregate's own
+  relation applies inside the correlated subquery (`FILTER`); a condition that reads only
+  to-one hops (`User.profile.role == x`) is a join, so it is an `EXISTS` at the outer level
+  and keeps all posts of a matching user; a condition that reads no column of the relation
+  filters the user, not the posts. With `.over(...)` the filter comes before `OVER`.
   SQLite supports `FILTER` since 3.30 (the bundled SQLite is newer).
 * **`func.array_agg(expr, order_by=, distinct=, filter=)`** collects the values into a
   `list` (`ARRAY_AGG`); `NULL` values are kept as `None`. Over no rows it gives `None`,
@@ -635,8 +647,8 @@ when its row exists but its column is NULL.
   await Post.objects.update(views=func.case((Post.views > 100, 100), default=Post.views))
   ```
 
-  Plain values bind with the type the context expects (the updated field, the other side
-  of a comparison), else with the type of the first branch that is not a plain value.
+  Plain values bind with the type the context expects (the updated field, or the other side
+  of a comparison when the `CASE` is on the right of it), else with the type of the first branch that is not a plain value.
   With only plain values, a float or `Decimal` among integers makes the result a float or
   `Decimal`.
 
@@ -840,7 +852,9 @@ await post.refresh(Post.views)                   # some fields
   `batch_size`, SQLite, composed models, models with native write behavior and fields
   that write through an SQL template (other than enums: arrays with a `@db.*` type and
   extension types do) raise. Values fit the column's type (`Int` on a `smallint`
-  column); a value out of its range raises.
+  column); a value out of its range raises. COPY fails when row-level security
+  applies to the role (a non-owner without `BYPASSRLS`, or the owner with
+  `FORCE ROW LEVEL SECURITY`); use `insert_many(rows)` without `copy=True` there.
   `bench/copy_insert.py` compares it with `insert_many(rows)`: 200,000 posts in
   about 1.2 s against 1.8 s, so about x1.5 (measured 2026-10-09 on a loaded machine,
   Postgres in Docker, best of 3; the batched insert also built the instances).
@@ -860,7 +874,11 @@ await post.refresh(Post.views)                   # some fields
   `ON CONFLICT (shop, task_type) WHERE "tasks"."deleted_at" IS NULL`. The database
   uses the condition to find the index, so the condition goes into the SQL text with
   its values written out, not as parameters. A boolean column (`where=Task.active`)
-  gives the bare column, the form SQLite needs.
+  gives the bare column, the form SQLite needs. Without `where`, the schema decides:
+  when exactly one `@@index([...], unique: true, where: ...)` has these plain
+  columns (no expression, no sort), its `where` text goes into the conflict target.
+  So `insert()`, `insert_many()` and `get_or_insert()` use that partial index. An
+  explicit `where=` wins. With no such index, or with several, there is no predicate.
 * `get_or_insert(defaults=..., **lookup)` reads the row that matches `lookup`.
   When there is none, it inserts `lookup` and `defaults` with
   `ON CONFLICT (lookup) DO NOTHING`, and reads again when a concurrent insert wins.
@@ -870,8 +888,11 @@ await post.refresh(Post.views)                   # some fields
   `QueryError` says so. On a related set (`post.post_tags.get_or_insert(tag=t)`)
   the link field is part of the lookup. Inside a `REPEATABLE READ` transaction, a
   key that another session commits after the snapshot gives a serialization error.
-  The lookup fields must be the fields of one unique constraint; Postgres raises
-  otherwise. A `None` lookup value raises, because `NULL` never conflicts.
+  The lookup fields must be the fields of one unique constraint or index; Postgres
+  raises otherwise. With a partial unique index, the lookup must be unique among the
+  rows the query set sees: the reads do not carry the index predicate, so a row
+  outside the index can come back (`created=False`), or `MultipleObjectsReturned`
+  is raised. A `None` lookup value raises, because `NULL` never conflicts.
 * `update()` and `delete()` validate when called and return a statement: awaiting it
   gives the row count (no `RETURNING` in the SQL), `.returning()` gives the rows.
 * `update_many(rows)` is Django's `bulk_update` without mutated instances: each row is a
@@ -1134,8 +1155,12 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
 #   at app/views.py:42; use load(Customer.person)
 ```
 
-* The scope counts its statements by shape: the SQL with placeholders, without values.
-  It reads the same events as `db.on_query`, so prefetch queries and `update_many` batches count one by one.
+* The scope counts writes by call, reads by shape, each counted once per call.
+  A read's shape is its SQL with placeholders, without values.
+  A write (`insert`, `insert_many`, `update_many`, attach, COPY) counts under a key of the call: `insert:{model}:{fields}:{conflict}`, `update_many:{model}:{fields}:{filters}`.
+  So the batches of one `update_many`, or the chunks of one `insert_many`, are one query, and a loop of `insert_many` calls with different row counts is an N+1.
+  The same shape counts once per engine call, so the prefetch chunks of one call are one query.
+  The report prints the first real SQL of the key.
   The statements that a query hook sends do not count.
   Tasks started in the scope count too, and so do the queries of an inner scope.
   An inner scope cannot raise the threshold of an outer scope; the outer scope also counts the inner queries.
@@ -1191,7 +1216,7 @@ def log_slow(e: orm.QueryEvent) -> None:
 remove = db.on_query(log_slow)
 ```
 
-* `orm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix seconds), `duration` (seconds), `rows` and `error`.
+* `orm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL and `db.fetch(sql, *params)` have placeholders; `db.execute(sql)` goes as written, with any literal value in it), `start` (Unix seconds), `duration` (seconds), `rows`, `error` and `raw` (`True` for `db.execute(sql)`, which takes no parameters).
   `rows` is the rows returned, or the rows affected by a statement that returns no rows.
   `error` is the first line of the database's message when the statement failed; the ORM call still raises.
   The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
@@ -1224,7 +1249,7 @@ It needs `opentelemetry-api` (`pip install 'orm[otel]'`); configure the SDK and 
 
 * The span starts and ends at the statement's times. Its parent is the current span of the caller.
 * The span name is the SQL operation (`SELECT`, `INSERT`, ...).
-  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (as in the event, cut at 4096 characters then `...`) and `db.response.returned_rows`.
+  The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (as in the event, cut at 4096 characters then `...`; left out for `db.execute(sql)` unless `instrument(db, raw_sql=True)`, because its SQL can hold literal values) and `db.response.returned_rows`.
 * A failed statement gets the `ERROR` status and the database's message.
 
 ### Hooks for packages: `orm.hooks`

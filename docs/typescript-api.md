@@ -290,9 +290,15 @@ part as an empty string; `a.concat(b)` (`a || b`) is `null` when either side is 
 first true condition, else `default` (`null` without one). It works in `select()`,
 `filter()`, `orderBy()` and `update()`, for example
 `func.sum(func.case([Post.published, 1], { default: 0 }))` for a conditional count.
+Plain values take the type of the other side of a comparison only when the `CASE` is on the
+right of it, else the type of the first branch that is not a plain value.
 Aggregates take `{ filter: cond }` (`FILTER (WHERE cond)`), for example
 `func.count({ filter: Post.published })` or
-`func.count(User.posts, { filter: User.posts.published })`.
+`func.count(User.posts, { filter: User.posts.published })`. Over a relation the filter follows
+Django's rule: a condition on the aggregate's own relation is inside the subquery (`FILTER`);
+a condition that reads only to-one hops (`User.profile.role.eq(x)`) is an `EXISTS` at the
+outer level and keeps all posts of a matching user; a condition that reads no column of the
+relation filters the parent row.
 `func.arrayAgg(expr, { orderBy, distinct, filter })` is `ARRAY_AGG`: an array with the `null`
 values kept, `null` (not `[]`) over no rows; `orderBy` fixes the element order (with `distinct`
 it must use the same expression). It works over a relation, takes no array column, is not a
@@ -301,15 +307,20 @@ In a `select()` without `groupBy()`, `distinct()` or `lock()`, two or more aggre
 same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
 `null` empty sums, per-aggregate `filter` and `distinct`); SQLite keeps scalar subqueries.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
-compared as JSON), `.asText()` for the last step as text (`->>`),
+compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
+`.asText()` for the last step as text (`->>`, no step can follow),
 `Doc.meta.jsonContains({ kind: "post" })` (`@>`), `.jsonContainedBy(...)` (`<@`),
-`.hasKey("tags")` (`?`) and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`).
-Keys are strings, indexes 0-based integers. PostgreSQL only.
+`.hasKey("tags")` (`?`) and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`: a
+scalar merged with an object or array makes an array; `NULL` stays `NULL`).
+A GIN index serves containment and `hasKey` on the column, not on a path. `jsonContains`,
+`jsonContainedBy` and `matches` take a `param()`.
+Keys are strings, indexes 0-based integers (a `String[]` column indexes from 1). PostgreSQL only.
 Full-text search (PostgreSQL only): `func.toTsvector("english", Post.body).matches("running dogs")`
 (`@@`, a plain string is `plainto_tsquery` with the vector's configuration),
-`func.toTsquery`, `func.plaintoTsquery`, `func.websearchToTsquery` and `func.tsRank(vector, query)`.
-The configuration is written into the SQL as `'english'::regconfig`, so it matches a GIN
-index on the same expression: `@@index([sql("to_tsvector('english', body)")], type: Gin)`.
+`func.toTsquery`, `func.plaintoTsquery`, `func.websearchToTsquery` and `func.tsRank(vector, query)`
+(`tsRank` takes no plain string; a vector that is not `toTsvector(config, ...)` uses the server
+default configuration). The configuration is written into the SQL as `'english'::regconfig`,
+so a GIN index on the same expression is used (a bound document is not covered): `@@index([sql("to_tsvector('english', body)")], type: Gin)`.
 The result types follow the SQL: `count` is a `bigint`, `sum(Int)` is `number | null`,
 `sum(Decimal)` is `Decimal | null`, and `avg` is `number | null`. A column read through a
 nullable relation becomes nullable.
@@ -401,18 +412,27 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
 * `onConflict(columns, { where: cond, update })` picks a partial unique index:
   `ON CONFLICT (...) WHERE cond`. The database uses the condition to find the index,
   so it goes into the SQL text with its values written out, not as parameters.
-  `Task.active.eq(true)` gives the bare column, the form SQLite needs.
+  `Task.active.eq(true)` gives the bare column, the form SQLite needs. Without
+  `where`, the schema decides: when exactly one `@@index([...], unique: true, where: ...)`
+  has these plain columns (no expression, no sort), its `where` text goes into the
+  conflict target. So `insert`, `insertMany` and `getOrInsert` use that partial index.
+  An explicit `where` wins. With no such index, or with several, there is no predicate.
 * `insertMany(rows, { copy: true })` loads the rows with Postgres `COPY` (binary) and
   gives the row count. A duplicate key stops the whole load. A field must be set in
   every row or in none. Values fit the column's type (`Int` on a `smallint` column).
-  `onConflict`, `batchSize` and SQLite are rejected.
+  `onConflict`, `batchSize` and SQLite are rejected. COPY fails when row-level
+  security applies to the role (a non-owner without `BYPASSRLS`, or the owner with
+  `FORCE ROW LEVEL SECURITY`); use `insertMany(rows)` without `copy: true` there.
 * `getOrInsert(lookup, { defaults })` gives `[row, created]`: the row that matches
   `lookup`, or a new row of `lookup` and `defaults`. The insert is
   `ON CONFLICT (lookup) DO NOTHING`, so concurrent calls give one row. The reads go
   to the primary and see the query set's filters, but not its limit and offset; when
   the filters hide the row that has the key, `QueryError` says so. On a related set
   the link field is part of the lookup. The lookup fields must be the fields of one
-  unique constraint; a `null` lookup value throws.
+  unique constraint or index; a `null` lookup value throws. With a partial unique
+  index, the lookup must be unique among the rows the query set sees: the reads do
+  not carry the index predicate, so a row outside the index can come back
+  (`created` false), or `MultipleObjectsReturned` throws.
 * `insertMany` splits the rows so that no statement has more parameters than the
   database accepts (65,535 on Postgres, 32,766 on SQLite). `{ batchSize: n }` sets a
   lower number of rows for each statement. All the statements run in one transaction.
@@ -578,8 +598,12 @@ await debug.nPlusOne(async () => {
 //   at src/views.ts:42; use load(Customer.person)
 ```
 
-* The scope counts the statements of `fn` by shape: the SQL with placeholders, without values.
-  It reads the same events as `db.onQuery`, so prefetch queries and `updateMany` batches count one by one.
+* The scope counts writes by call, reads by shape, each counted once per call.
+  A read's shape is its SQL with placeholders, without values.
+  A write (`insert`, `insertMany`, `updateMany`, attach, COPY) counts under a key of the call: `insert:{model}:{fields}:{conflict}`, `update_many:{model}:{fields}:{filters}`.
+  So the batches of one `updateMany`, or the chunks of one `insertMany`, are one query, and a loop of `insertMany` calls with different row counts is an N+1.
+  The same shape counts once per engine call, so the prefetch chunks of one call are one query.
+  The report prints the first real SQL of the key.
   The statements that a query hook sends do not count.
   Work that `fn` starts counts too, and so do the queries of an inner scope.
   An inner scope cannot raise the threshold of an outer scope; the outer scope also counts the inner queries.
@@ -647,7 +671,7 @@ const off = db.onQuery((e: QueryEvent) => {
 });
 ```
 
-* `QueryEvent` has `sql` (the SQL as sent: ORM-built SQL has placeholders, and raw SQL from `db.execute` or `db.fetch` goes as written, with its values), `start` (Unix milliseconds), `duration` (milliseconds), `rows` and `error` (`null` on success; the first line of the database's message, without `DETAIL`, but it can hold an input value for a type error).
+* `QueryEvent` has `sql` (the SQL as sent: ORM-built SQL and `db.fetch(sql, ...params)` have placeholders; `db.execute(sql)` goes as written, with any literal value in it), `start` (Unix milliseconds), `duration` (milliseconds), `rows`, `raw` (`true` for `db.execute(sql)`, which takes no parameters) and `error` (`null` on success; the first line of the database's message, without `DETAIL`, but it can hold an input value for a type error).
 * The events, the timing and the context are the same as in Python (`docs/python-api.md`, "Query hooks and OpenTelemetry").
   The hook runs in the async context of the caller, after the ORM call ends.
   The ORM awaits the promise that a hook returns.
@@ -661,6 +685,7 @@ const off = db.onQuery((e: QueryEvent) => {
   Its remove function takes out that registration, and a second call to it does nothing.
 
 `await instrument(db, { tracer })` from `orm/otel` gives each statement a client span with the same name, attributes and status as in Python, and resolves to a function that stops the spans.
+`db.execute(sql)` spans have no `db.query.text`, because its SQL can hold literal values; `instrument(db, { rawSql: true })` keeps it.
 Without `tracer`, it loads `@opentelemetry/api` (an optional peer dependency) and uses `trace.getTracer("orm")`.
 
 ### Hooks for packages

@@ -311,7 +311,7 @@ test("otel cuts a long statement at 4096 characters", async () => {
   const { db } = await shop();
   try {
     const tracer = new FakeTracer();
-    const stop = await instrument(db, { tracer });
+    const stop = await instrument(db, { tracer, rawSql: true });
     await db.execute("SELECT 1 /* " + "x".repeat(5000) + " */");
     await db.execute("SELECT 2");
     stop();
@@ -319,5 +319,31 @@ test("otel cuts a long statement at 4096 characters", async () => {
     assert.equal(long!.length, 4099);
     assert.ok(long!.endsWith("..."));
     assert.equal(short, "SELECT 2");
+  } finally { await db.close(); }
+});
+
+test("raw SQL without parameters has the raw flag and no span text by default", async () => {
+  const { Person, db } = await shop();
+  try {
+    const events: QueryEvent[] = [];
+    db.onQuery((e) => { events.push(e); });
+    const tracer = new FakeTracer();
+    const stop = await instrument(db, { tracer });
+    await db.execute("UPDATE person SET name = 'secret-literal' WHERE id = 1");
+    await db.fetch("SELECT name FROM person WHERE id = ?", 1);
+    await Person.objects.using(db).filter(Person.id.eq(1)).all();
+    stop();
+    assert.deepEqual(events.map((e) => e.raw), [true, false, false]);
+    assert.ok(events[0]!.sql.includes("secret-literal"));
+    const [execute, fetch, built] = tracer.spans;
+    assert.equal("db.query.text" in execute!.options!.attributes!, false);
+    assert.equal(execute!.name, "UPDATE");
+    assert.match(String(fetch!.options!.attributes!["db.query.text"]), /^SELECT name/);
+    assert.ok(built!.options!.attributes!["db.query.text"]);
+    const opted = new FakeTracer();
+    const stopRaw = await instrument(db, { tracer: opted, rawSql: true });
+    await db.execute("UPDATE person SET name = 'secret-literal' WHERE id = 1");
+    stopRaw();
+    assert.match(String(opted.spans[0]!.options!.attributes!["db.query.text"]), /secret-literal/);
   } finally { await db.close(); }
 });

@@ -195,6 +195,30 @@ test("SQLite string functions and concatenation", async () => {
   } finally { await db.close(); }
 });
 
+test("onConflict infers the partial unique index", async () => {
+  const registry = new Registry();
+  const Account = loads(`
+    datasource db { provider = "sqlite" }
+    model Account {
+      id BigInt @id @default(autoincrement())
+      email String
+      active Boolean @default(true)
+      @@index([email], unique: true, where: raw("active"))
+    }`, { registry })["Account"] as any;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    const accounts = Account.objects.using(db);
+    await accounts.insert({ email: "a" }).onConflict(Account.email, { update: false });
+    await accounts.insert({ email: "a" }).onConflict(Account.email, { update: false });
+    await accounts.insertMany([{ email: "a" }, { email: "b" }]).onConflict(Account.email, { update: false });
+    assert.equal(await accounts.count(), 2);
+    const [row, created] = await accounts.getOrInsert({ email: "c" });
+    const [again, createdAgain] = await accounts.getOrInsert({ email: "c" });
+    assert.deepEqual([created, createdAgain, again.id], [true, false, row.id]);
+  } finally { await db.close(); }
+});
+
 test("SQLite CASE", async () => {
   const registry = new Registry();
   const Note = loads(`
@@ -276,5 +300,16 @@ test("SQLite UUID, date, timestamp and inline trigger conversions", async () => 
     assert.equal((loaded.day as Date).toISOString(), day.toISOString());
     assert.equal((loaded.at as Date).toISOString(), at.toISOString());
     assert.equal(loaded.name, "HELLO");
+  } finally { await db.close(); }
+});
+
+test("full-text search on SQLite is an error", async () => {
+  const lite = new Registry();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Note = loads(`datasource db { provider = "sqlite" }\nmodel Note {\n  id Int @id\n  body String\n}`, { registry: lite })["Note"] as any;
+  const db = await connect("sqlite://:memory:", { registry: lite, default: false });
+  try {
+    await db.createTables();
+    await assert.rejects(Note.objects.using(db).filter(func.toTsvector(Note.body).matches("x")).count(), /sqlite does not support full-text search/);
   } finally { await db.close(); }
 });

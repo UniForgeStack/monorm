@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { QueryError, Registry, connect, func, loads, type Database } from "../src/index.js";
+import { QueryError, Registry, connect, func, loads, param, type Database } from "../src/index.js";
 import { DATABASE_URL } from "./helpers.js";
 
 const SCHEMA = `
@@ -115,6 +115,72 @@ test("full-text search", async () => {
     assert.deepEqual(found, [1n, 3n]);
     const rank = await articles.filter(Article.id.eq(3)).select({ r: func.tsRank(vector, func.toTsquery("english", "dog")) }).scalar();
     assert.ok(typeof rank === "number" && rank > 0);
+  } finally {
+    await pg.dropTables();
+    await pg.close();
+  }
+});
+
+test("JSON containment takes a param()", async () => {
+  const byKind = objects().filter(Doc.meta.jsonContains(param("m"))).prepare();
+  assert.equal(await byKind.count({ m: { kind: "post" } }), 2);
+  assert.equal(await byKind.count({ m: { kind: "page" } }), 1);
+  const within = objects().filter(Doc.meta.jsonContainedBy(param("m"))).prepare();
+  assert.equal(await within.count({ m: { kind: "post", n: 10, seen: true, x: 1 } }), 1);
+  for (const call of ["jsonContains", "jsonContainedBy"]) {
+    assert.throws(() => Doc.meta[call](Doc.title), TypeError);
+  }
+});
+
+test("a JSON index outside the 32-bit range is an error", async () => {
+  assert.equal(await objects().filter(Doc.meta.get("tags", 2147483647).isNull()).count(), await objects().count());
+  for (const index of [2 ** 31, 2 ** 40, -(2 ** 31) - 1]) {
+    await assert.rejects(objects().filter(Doc.meta.get("tags", index).isNull()).count(), (e: unknown) => e instanceof QueryError && /JSON index/.test(String(e)));
+  }
+});
+
+test("full-text search: config names, a param() query and a vector without a config", async () => {
+  const fts = new Registry();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Article = loads(`model Article {
+  id   BigInt @id @default(autoincrement())
+  body String
+  @@map("expr_articles_js2")
+}`, { registry: fts })["Article"] as any;
+  const pg = await connect(DATABASE_URL, { default: false, registry: fts, maxConnections: 1 });
+  try {
+    await pg.dropTables();
+    await pg.createTables();
+    const articles = Article.objects.using(pg);
+    await articles.insertMany([{ body: "The quick brown fox jumps" }, { body: "A lazy dog sleeps" }]);
+    const ids = (q: unknown) => (q as any).select({ id: Article.id }).scalars();
+    const byQuery = articles.filter(func.toTsvector("english", Article.body).matches(param("q"))).prepare();
+    assert.equal(await byQuery.count({ q: "lazy dogs" }), 1);
+    assert.equal(await byQuery.count({ q: "fox dogs" }), 0);
+    assert.deepEqual(await ids(articles.filter(func.toTsvector(Article.body).matches("lazy"))), [2n]);
+    for (const name of ["a'b", "a b", "a.b.c", "1a", ""]) {
+      await assert.rejects(articles.filter(func.toTsvector(name, Article.body).matches("x")).count(), /text search configuration/);
+    }
+  } finally {
+    await pg.dropTables();
+    await pg.close();
+  }
+});
+
+test("CASE of plain strings takes the enum type of the column it is assigned to", async () => {
+  const lite = new Registry();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Member = loads(`enum Level {\n  basic\n  admin\n}\nmodel Member {\n  id BigInt @id @default(autoincrement())\n  n Int\n  level Level @default(basic)\n  @@map("expr_members_js")\n}`, { registry: lite })["Member"] as any;
+  const pg = await connect(DATABASE_URL, { default: false, registry: lite, maxConnections: 1 });
+  try {
+    await pg.dropTables();
+    await pg.createTables();
+    const members = Member.objects.using(pg);
+    await members.insertMany([{ n: 1 }, { n: 9 }]);
+    await members.update({ level: func.case([Member.n.gt(5), "admin"], { default: "basic" }) });
+    assert.deepEqual(await members.orderBy(Member.id).select({ l: Member.level }).scalars(), ["basic", "admin"]);
+    await members.update({ level: "basic" });
+    assert.equal(await members.filter(Member.level.eq(func.case([Member.n.gt(5), "admin"], { default: "basic" }))).count(), 1);
   } finally {
     await pg.dropTables();
     await pg.close();

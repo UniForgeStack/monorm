@@ -1113,7 +1113,7 @@ impl<'s> Planner<'s> {
         Ok(match e {
             Expr::Cmp { op, l, r } => {
                 if self.target.dialect == Dialect::Sqlite && matches!(op, CmpOp::Match) {
-                    return Err(Error::query("full-text search needs PostgreSQL"));
+                    return Err(Error::query("sqlite does not support full-text search"));
                 }
                 if self.target.dialect == Dialect::Sqlite && matches!(op, CmpOp::Contains | CmpOp::ContainedBy | CmpOp::Overlaps | CmpOp::HasKey) {
                     return Err(Error::query("sqlite does not support PostgreSQL containment, overlap or JSON key operators"));
@@ -1409,15 +1409,15 @@ impl<'s> Planner<'s> {
     /// as `'english'::regconfig`, so the call matches an expression index in every plan.
     fn search_call(&mut self, name: &str, args: &[Expr]) -> Result<SExpr> {
         if self.target.dialect == Dialect::Sqlite {
-            return Err(Error::query("full-text search needs PostgreSQL"));
+            return Err(Error::query("sqlite does not support full-text search"));
         }
         let rank = name == "ts_rank";
         let (config, rest) = match args {
             [Expr::Text { value }, rest @ ..] if !rank && rest.len() == 1 => {
-                let mut parts = value.split('.');
-                let ident = |p: &str| p.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                    && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                if !(value.split('.').count() <= 2 && parts.all(ident)) {
+                let ident = |p: &str| p.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                    && p.chars().all(|c| c.is_alphanumeric() || c == '_');
+                let parts = value.split('.').collect::<Vec<_>>();
+                if !(parts.len() <= 2 && parts.iter().all(|p| ident(p))) {
                     return Err(Error::query(format!("{value:?} is not a text search configuration name")));
                 }
                 (format!("'{value}'::regconfig, "), rest)
@@ -1451,7 +1451,10 @@ impl<'s> Planner<'s> {
             let op = if text && k + 1 == path.len() { "->>" } else { "->" };
             let base = if k == 0 { sql } else { format!("({sql})") };
             sql = match key {
-                JsonKey::Index(i) => format!("{base} {op} {i}"),
+                JsonKey::Index(i) => {
+                    let i = i32::try_from(*i).map_err(|_| Error::query(format!("JSON index {i} is outside the 32-bit range")))?;
+                    format!("{base} {op} {i}")
+                }
                 JsonKey::Key(s) => {
                     exprs.push(SExpr::val(s.clone()));
                     format!("{base} {op} ${}", exprs.len())
@@ -1467,7 +1470,11 @@ impl<'s> Planner<'s> {
         if whens.is_empty() {
             return Err(Error::query("case() needs at least one (condition, value) branch"));
         }
-        let hint = Hint { ty: hint.ty.or_else(|| self.case_type(whens, default)), field: hint.field };
+        let first = Self::case_values(whens, default).filter(|v| !matches!(v, Expr::Param { .. })).find(|v| self.expr_type(v).is_ok());
+        let hint = Hint {
+            ty: hint.ty.or_else(|| self.case_type(whens, default)),
+            field: hint.field.or_else(|| first.and_then(|v| self.hint_of(v).field)),
+        };
         let mut parts = vec![];
         let mut sql = String::from("CASE");
         for w in whens {
@@ -1483,10 +1490,14 @@ impl<'s> Planner<'s> {
         Ok(template(self.target.dialect, sql, parts))
     }
 
+    fn case_values<'a>(whens: &'a [When], default: Option<&'a Expr>) -> impl Iterator<Item = &'a Expr> {
+        whens.iter().map(|w| &w.value).chain(default)
+    }
+
     /// The type of a `CASE`: of its first value that is not a plain value, else the
     /// widest of its plain values (a float or decimal among integers wins).
     fn case_type(&self, whens: &[When], default: Option<&Expr>) -> Option<ValueType> {
-        let values = || whens.iter().map(|w| &w.value).chain(default);
+        let values = || Self::case_values(whens, default);
         if let Some(t) = values().filter(|v| !matches!(v, Expr::Param { .. })).find_map(|v| self.expr_type(v).ok()) {
             return Some(t);
         }
@@ -1761,9 +1772,6 @@ impl<'s> Planner<'s> {
             return Err(Error::query("substr() takes a start of at least 1 and a length of at least 0"));
         }
         if SEARCH_FUNCS.contains(&name) {
-            if filter.is_some() {
-                return Err(Error::query(format!("{name}() is not an aggregate: only aggregates take a filter")));
-            }
             return Ok((self.search_call(name, args)?, (name == "ts_rank").then_some("DOUBLE PRECISION")));
         }
         if name == "unnest" && !self.allow_unnest {
@@ -2858,6 +2866,24 @@ fn no_lock(q: &Select, what: &str) -> Result<()> {
     }
 }
 
+/// The predicate of the only unique index whose keys are exactly `conflict`, all plain
+/// fields. The text is copied as written: SQLite rejects `active = 1` for `WHERE active`.
+fn inferred_index_where(indexes: &[orm_core::ir::IndexIr], conflict: &[String]) -> Option<String> {
+    let mut found = indexes.iter().filter(|ix| {
+        ix.unique
+            && ix.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"))
+            && ix.columns.len() == conflict.len()
+            && ix.columns.iter().all(|c| {
+                c.expr.is_none() && c.opclass.is_none() && c.collation.is_none() && !c.desc && c.nulls.is_none()
+                    && c.field.as_ref().is_some_and(|f| conflict.contains(f))
+            })
+            && conflict.iter().all(|f| ix.columns.iter().any(|c| c.field.as_ref() == Some(f)))
+    });
+    let first = found.next()?;
+    if found.next().is_some() { return None; }
+    first.where_.clone()
+}
+
 /// What an insert does with rows that hit a unique constraint.
 ///
 /// The optional condition is `ON CONFLICT (<fields>) WHERE <condition>`: the predicate of
@@ -2960,8 +2986,9 @@ pub fn plan_insert(
         // The predicate goes in as SQL literals: the database infers a partial index only
         // from a predicate it can read, and a parameter is unknown to a generic plan
         // (Postgres, from the sixth run of a prepared statement) and to SQLite.
-        let index_where = |filter: Option<Expr>| -> Result<Option<SExpr>> {
-            let Some(filter) = filter else { return Ok(None) };
+        // Without a predicate, the one unique index with exactly these plain columns names it.
+        let index_where = |conflict: &[String], filter: Option<Expr>| -> Result<Option<SExpr>> {
+            let Some(filter) = filter else { return Ok(inferred_index_where(&m.ir.indexes, conflict).map(SExpr::cust)) };
             let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
             let mut probe = Query::select();
             probe.expr(SExpr::val(1)).and_where(planner.index_cond(&filter)?);
@@ -2972,7 +2999,7 @@ pub fn plan_insert(
         let clause = match oc {
             OnConflict::Nothing(conflict, filter) => {
                 let mut clause = sea_query::OnConflict::columns(columns(&conflict)?);
-                clause.target_and_where_option(index_where(filter)?);
+                clause.target_and_where_option(index_where(&conflict, filter)?);
                 clause.do_nothing().to_owned()
             }
             OnConflict::Update(conflict, filter, update, set) => {
@@ -2980,7 +3007,7 @@ pub fn plan_insert(
                     return Err(Error::query("on_conflict(..., update=True) has no columns to update"));
                 }
                 let mut clause = sea_query::OnConflict::columns(columns(&conflict)?);
-                clause.target_and_where_option(index_where(filter)?);
+                clause.target_and_where_option(index_where(&conflict, filter)?);
                 clause.update_columns(columns(&update)?);
                 let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
                 planner.allow_excluded = true;

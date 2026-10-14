@@ -50,6 +50,10 @@ export async function caseExpressions() {
   same<(typeof rows)[number], { h: string; t: string | null; n: number }>();
   // @ts-expect-error a branch is a [condition, value] pair
   func.case(Post.published);
+  // @ts-expect-error a condition is a boolean expression
+  func.case([Post.views, 1]);
+  // @ts-expect-error the same with a default
+  func.case([Post.views, 1], { default: 0 });
 }
 
 export async function arrayAggregates() {

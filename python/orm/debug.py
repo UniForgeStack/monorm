@@ -177,22 +177,28 @@ def capture() -> tuple[str, str | None] | None:
     return (hint[1], hint[0]) if hint else (call_site(), None)
 
 
-def record(sql: str, origin: tuple[str, str | None]) -> None:
-    """Count one query of shape ``sql`` (the SQL with placeholders), sent at ``origin``."""
+def write_key(parts: tuple[object, ...]) -> str:
+    """The key of a write call: ``insert:{model}:{fields}:{conflict}``. Lists join with commas."""
+    return ":".join(",".join(map(str, p)) if isinstance(p, (list, tuple)) else "" if p is None else str(p) for p in parts)
+
+
+def record(key: str, sql: str, origin: tuple[str, str | None]) -> None:
+    """Count one query under ``key`` (the SQL with placeholders for a read, the call key for
+    a write); ``sql`` is the first real SQL, which the report prints. Sent at ``origin``."""
     report = _scope.get()
     if report is None:
         return
     seen = _loop.get()
     if seen is not None:
-        if sql in seen:
+        if key in seen:
             return
-        seen.add(sql)
-    shape = report.shapes.get(sql)
+        seen.add(key)
+    shape = report.shapes.get(key)
     if shape is None:
-        shape = report.shapes[sql] = Shape(sql, sql, site=origin[0], fix=origin[1])
+        shape = report.shapes[key] = Shape(key, sql, site=origin[0], fix=origin[1])
     shape.count += 1
     for enclosing in _outer.get():
-        counted = enclosing.shapes.get(sql)
+        counted = enclosing.shapes.get(key)
         if counted is None:
-            counted = enclosing.shapes[sql] = Shape(sql, shape.sql, site=shape.site, fix=shape.fix)
+            counted = enclosing.shapes[key] = Shape(key, shape.sql, site=shape.site, fix=shape.fix)
         counted.count += 1

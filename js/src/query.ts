@@ -238,7 +238,7 @@ export interface OnConflictOptions<M extends ModelSpec, U extends boolean = bool
   readonly update: U;
   readonly updateFields?: readonly OwnColumn<M>[];
   readonly updateValues?: M["update"];
-  /** The predicate of a partial unique index: `ON CONFLICT (...) WHERE ...`. */
+  /** The predicate of a partial unique index: `ON CONFLICT (...) WHERE ...`. Without it, the one unique schema index with exactly these plain columns gives it. */
   readonly where?: Expression<boolean | null, string, unknown>;
 }
 
@@ -1458,6 +1458,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
     const res = await db_wait(db, (tx, allowed, trace) =>
       db.engine.updateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, returning, batchSize ?? null, tx, this.state.withoutDefaults, allowed, trace),
+      ["update_many", this.meta.name, prepared.fields, filters],
     );
     return returning ? (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][]) : (res as number);
   }
@@ -1475,7 +1476,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * The row matching `lookup`, or a new row of `lookup` and `defaults`: `[row, created]`.
    * `lookup` names the fields of one unique constraint (the database checks this). Safe
    * under concurrency: the insert is `ON CONFLICT (lookup) DO NOTHING`, and a row that a
-   * concurrent insert wins is read back.
+   * concurrent insert wins is read back. With a partial unique index, the lookup must be
+   * unique among the rows the query set sees: the reads do not carry the index predicate.
    */
   async getOrInsert(lookup: Partial<M["insert"]>, options?: { readonly defaults?: Partial<M["insert"]> }): Promise<[M["row"], boolean]> {
     const key = lookupValues(this.meta, lookup);
@@ -1511,7 +1513,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   async attach(parentId: In<M["pk"]>, values: M extends { readonly attach: infer A extends object } ? A : never): Promise<M["row"]> {
     const prepared = prepareAttach(this.meta, values);
     const db = this.db();
-    const res = await db_wait(db, (tx, allowed, trace) => db.engine.attach(this.meta.name, parentId, prepared.fields, prepared.rows, tx, allowed, trace));
+    const res = await db_wait(db, (tx, allowed, trace) => db.engine.attach(this.meta.name, parentId, prepared.fields, prepared.rows, tx, allowed, trace), ["attach", this.meta.name, prepared.fields]);
     return (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][])[0]!;
   }
 
@@ -1540,7 +1542,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       return 0;
     }
     const db = this.db();
-    return (await db_wait(db, (tx, allowed, trace) => db.engine.copyInsert(this.meta.name, prepared.fields, prepared.rows, tx, allowed, trace))) as number;
+    return (await db_wait(db, (tx, allowed, trace) => db.engine.copyInsert(this.meta.name, prepared.fields, prepared.rows, tx, allowed, trace), ["copy", this.meta.name, prepared.fields])) as number;
   }
 
   /**
@@ -1621,6 +1623,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const db = this.db();
     const res = await db_wait(db, (tx, allowed, trace) =>
       db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictWhere, trace, returning),
+      ["insert", this.meta.name, prepared.fields, conflict],
     );
     return returning ? (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][]) : (res as number);
   }
@@ -1788,9 +1791,10 @@ export class InsertMany<M extends ModelSpec> extends Statement<number> {
 function db_wait(
   db: Database,
   f: (tx: NativeTransaction | null, allowed: readonly string[], trace: NativeTrace | null) => Promise<unknown>,
+  key: readonly unknown[],
 ): Promise<unknown> {
   const allowed = allowedWrites();
-  return db.send((tx, trace) => f(tx, allowed, trace));
+  return db.send((tx, trace) => f(tx, allowed, trace), { key });
 }
 
 function toArray<T>(x: T | readonly T[]): readonly T[] {
