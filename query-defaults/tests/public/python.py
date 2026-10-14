@@ -52,6 +52,12 @@ async def run(provider: str, url: str) -> None:
             assert await Scoped.objects.using(db).without_defaults().count() == 2
         with orm.scope(shop=0):
             assert await Scoped.objects.using(db).count() == 0
+        for falsy in ("", False):
+            with orm.scope(shop=falsy):
+                try:
+                    await Scoped.objects.using(db).count()
+                except Exception as e:
+                    assert "is None" not in str(e), e  # a type error is fine; the NULL rejection is not
     finally:
         await db.drop_tables()
         await db.close()

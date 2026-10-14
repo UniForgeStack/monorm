@@ -1189,7 +1189,7 @@ impl<'s> Planner<'s> {
                 }
             }
             Expr::Like { item, pattern, ci, neg } => {
-                // LIKE on bpchar ignores the padding for no pattern but a literal prefix; compare the text.
+                // LIKE on bpchar keeps the padding in the compared value, except for a literal-prefix pattern; compare as text.
                 let padded = self.target.dialect == Dialect::Postgres && self.hint_of(item).field.is_some_and(is_char_n);
                 let item = self.value(item, Hint::default())?;
                 let item = if padded { template(self.target.dialect, "CAST($1 AS text)", vec![item]) } else { item };
@@ -1465,8 +1465,8 @@ impl<'s> Planner<'s> {
         Ok(template(self.target.dialect, format!("{}({config}{slots})", name.to_uppercase()), planned))
     }
 
-    /// `<item> -> 'a' -> 0 ...` (`->>` for the last step with `text`): keys bind as text,
-    /// indexes are written into the SQL, so equal paths have equal text in GROUP BY and SELECT.
+    /// `<item> -> 'a' -> 0 ...` (`->>` for the last step with `text`): keys and indexes are written into
+    /// the SQL, so equal paths have equal text in GROUP BY and SELECT.
     fn json_path(&mut self, item: &Expr, path: &[JsonKey], text: bool) -> Result<SExpr> {
         if self.target.dialect == Dialect::Sqlite {
             return Err(Error::query("sqlite does not support JSON paths"));

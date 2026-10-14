@@ -32,6 +32,11 @@ async function run(provider, url) {
     });
     await scope({ shop: undefined }, async () => assert.rejects(Scoped.objects.using(db).count(), /undefined is not a value/));
     await scope({ shop: 0 }, async () => assert.equal(await Scoped.objects.using(db).count(), 0));
+    for (const falsy of ['', false]) {
+      await scope({ shop: falsy }, async () => {
+        await Scoped.objects.using(db).count().catch((e) => assert.doesNotMatch(String(e), /None\/null/)); // a type error is fine
+      });
+    }
   } finally {
     await db.dropTables();
     await db.close();

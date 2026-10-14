@@ -406,24 +406,29 @@ pub fn build<S: QueryStatementWriter>(dialect: Dialect, stmt: &S) -> (String, Ve
         _ => panic!("database dialect is not compiled into this native profile"),
     };
     match dialect {
+        #[cfg(feature = "postgres")]
         Dialect::Postgres => merge_equal_params(sql, values.0),
         _ => (sql, values.0),
     }
 }
 
 /// Postgres matches a GROUP BY, HAVING, ORDER BY or DISTINCT expression to the select list by
-/// its text, and `$1` differs from `$2`. Equal values (same type, same value) share one slot,
-/// so a repeated `CASE` has equal text. Types are sent with the values, so sharing is safe.
+/// its text, and `$1` differs from `$2`. Values that reach Postgres as the same type and the same
+/// bytes share one slot, so a repeated `CASE` has equal text. Types are sent with the values.
+#[cfg(feature = "postgres")]
 fn merge_equal_params(sql: String, values: Vec<Value>) -> (String, Vec<Value>) {
     let grouped = ["GROUP BY", "HAVING", "ORDER BY", "DISTINCT"].iter().any(|k| sql.contains(k));
     if !grouped || values.len() < 2 {
         return (sql, values);
     }
-    let mut first = std::collections::HashMap::<&Value, usize>::new();
+    let mut first = std::collections::HashMap::new();
     let mut slot = Vec::with_capacity(values.len());
     let mut kept = Vec::new();
     for (i, v) in values.iter().enumerate() {
-        let n = *first.entry(v).or_insert_with(|| { kept.push(i); kept.len() });
+        let n = match postgres::wire_key(v) {
+            Some(key) => *first.entry(key).or_insert_with(|| { kept.push(i); kept.len() }),
+            None => { kept.push(i); kept.len() }
+        };
         slot.push(n);
     }
     if kept.len() == values.len() {
@@ -442,7 +447,10 @@ fn merge_equal_params(sql: String, values: Vec<Value>) -> (String, Vec<Value>) {
                     n = n * 10 + d as usize;
                     chars.next();
                 }
-                out.push_str(&format!("${}", slot[n - 1]));
+                match n.checked_sub(1).and_then(|i| slot.get(i)) {
+                    Some(m) => out.push_str(&format!("${m}")),
+                    None => return (sql, values),
+                }
             }
             (_, c) => out.push(c),
         }
