@@ -483,3 +483,18 @@ async def test_query_hooks_see_replica_reads_and_session_locks(clean):
     finally:
         remove()
         await routed.close()
+
+
+async def test_waiting_session_lock_does_not_hold_a_pool_slot(db):
+    other = await orm.connect(db.url, default=False, max_connections=1)
+    try:
+        async with db.lock(31, session=True):
+            waiter = asyncio.create_task(other.lock(31, session=True, timeout=5).__aenter__())
+            await asyncio.sleep(0.3)
+            # The waiter does not hold the only pool connection of `other`.
+            assert await asyncio.wait_for(other._fetch_text("SELECT 1"), 2) == [("1",)]
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+    finally:
+        await other.close()

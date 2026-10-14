@@ -256,7 +256,7 @@ impl Transaction for Guarded {
 
 pub trait Driver: Executor {
     fn close(&self) -> BoxFuture<'_, ()>;
-    /// A session advisory lock on a pinned pool connection, outside any transaction.
+    /// A session advisory lock on a connection of its own (not from the pool), outside any transaction.
     /// `None` when it is not taken: held with `nowait`, or still held after `timeout_ms`.
     fn session_lock(
         &self, _key: i64, _exclusive: bool, _nowait: bool, _timeout_ms: Option<u64>,

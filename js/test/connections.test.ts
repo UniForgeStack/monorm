@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { connect, define, getDatabase, loads, param, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
 import { native } from '../src/native.js';
 import { User } from './blog/models.js';
-import { useDatabase, otherDatabase } from './helpers.js';
+import { useDatabase, otherDatabase, DATABASE_URL } from './helpers.js';
 
 useDatabase();
 
@@ -401,5 +401,24 @@ test('query hooks see replica reads and session locks', async () => {
   } finally {
     off();
     await routed.close();
+  }
+});
+
+test('a waiting session lock does not hold a pool slot', async () => {
+  const db = getDatabase();
+  const other = await connect(DATABASE_URL, { maxConnections: 1, default: false });
+  try {
+    await db.lock(31, { session: true }, async () => {
+      const waiter = other.lock(31, { session: true, timeout: 1 }, async () => {});
+      await new Promise((r) => setTimeout(r, 300));
+      const rows = await Promise.race([
+        other.fetchText('SELECT 1'),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('pool slot held')), 700)),
+      ]);
+      assert.deepEqual(rows, [['1']]);
+      await assert.rejects(waiter, { name: 'LockNotAvailable' });
+    });
+  } finally {
+    await other.close();
   }
 });

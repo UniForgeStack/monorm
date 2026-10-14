@@ -449,7 +449,9 @@ impl RowSet for PgRows {
 
 pub struct PgDriver {
     pool: Pool,
-    /// The connector of the pool's connections, for a cancel request.
+    /// The connect settings and connector of the pool's connections: for the dedicated
+    /// connection of a session lock, and for a cancel request.
+    config: tokio_postgres::Config,
     tls: Option<tls::MakeRustlsConnect>,
 }
 
@@ -458,15 +460,31 @@ impl PgDriver {
         let (config, tls) = tls::parse(url)?;
         let mgr_config = ManagerConfig { recycling_method: RecyclingMethod::Fast };
         let manager = match tls.clone() {
-            Some(tls) => Manager::from_config(config, tls, mgr_config),
-            None => Manager::from_config(config, NoTls, mgr_config),
+            Some(tls) => Manager::from_config(config.clone(), tls, mgr_config),
+            None => Manager::from_config(config.clone(), NoTls, mgr_config),
         };
         let pool = Pool::builder(manager)
             .max_size(max_connections.max(1))
             .build()
             .map_err(|e| DbError::other(e.to_string()))?;
         drop(get_client(&pool).await?); // fail at connect() on a bad URL or password
-        Ok(PgDriver { pool, tls })
+        Ok(PgDriver { pool, config, tls })
+    }
+
+    /// A connection outside the pool, closed when dropped.
+    async fn dedicated(&self) -> DbResult<tokio_postgres::Client> {
+        match self.tls.clone() {
+            Some(tls) => {
+                let (client, conn) = self.config.connect(tls).await.map_err(pg_err)?;
+                tokio::spawn(async move { let _ = conn.await; });
+                Ok(client)
+            }
+            None => {
+                let (client, conn) = self.config.connect(NoTls).await.map_err(pg_err)?;
+                tokio::spawn(async move { let _ = conn.await; });
+                Ok(client)
+            }
+        }
     }
 }
 
@@ -529,34 +547,25 @@ impl Driver for PgDriver {
         Box::pin(async move {
             // `lock_timeout = 0` means no timeout in Postgres.
             let nowait = nowait || timeout_ms == Some(0);
-            let mut session = Session { client: Some(get_client(&self.pool).await?), finished: false };
-            let client = session.client.as_ref().expect("just taken");
-            // `SET LOCAL` in a transaction of its own: the lock outlives the COMMIT, the
-            // timeout does not stay on the pooled connection.
+            // A connection of its own: a lock wait never holds a pool slot.
+            let client = self.dedicated().await?;
+            // `lock_timeout` applies to the lock statement only.
             let timeout = match timeout_ms { Some(ms) if !nowait => format!("SET LOCAL lock_timeout = {ms}; "), _ => String::new() };
             let sql = format!("BEGIN; {timeout}{}; COMMIT", crate::advisory::session_sql(key, exclusive, nowait));
             let mut cancel = CancelOnDrop { token: Some(client.cancel_token()), tls: self.tls.clone() };
-            let result = simple(client, &sql).await;
+            let result = client.simple_query(&sql).await.map_err(pg_err);
             cancel.token = None;
             let taken = match result {
                 Ok(messages) => !nowait || messages.iter().any(|m| matches!(m,
                     SimpleQueryMessage::Row(r) if r.get(0) == Some("true"))),
-                Err(e) => {
-                    client.batch_execute("ROLLBACK").await.map_err(pg_err)?;
-                    if e.kind != ErrorKind::LockNotAvailable {
-                        session.finished = true;
-                        return Err(e);
-                    }
-                    false
-                }
+                Err(e) if e.kind == ErrorKind::LockNotAvailable => false,
+                Err(e) => return Err(e),
             };
-            session.finished = true;
             if !taken {
                 return Ok(None);
             }
-            session.finished = false;
             let lock: Arc<dyn SessionLock> = Arc::new(PgSessionLock {
-                session: Mutex::new(session),
+                client: Mutex::new(Some(client)),
                 unlock: crate::advisory::unlock_sql(key, exclusive),
             });
             Ok(Some(lock))
@@ -584,23 +593,18 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// The pinned connection of a session advisory lock. Unless the unlock succeeds, the
-/// connection closes instead of going back to the pool.
+/// The dedicated connection of a session advisory lock. Release unlocks, then closes it;
+/// a failed unlock still closes it, and the server drops the lock.
 struct PgSessionLock {
-    session: Mutex<Session>,
+    client: Mutex<Option<tokio_postgres::Client>>,
     unlock: String,
 }
 
 impl SessionLock for PgSessionLock {
     fn release(&self) -> BoxFuture<'_, DbResult<()>> {
         Box::pin(async move {
-            let mut session = self.session.lock().await;
-            let Some(client) = session.client.take() else { return Ok(()) };
-            session.finished = true;
-            // A failed unlock closes the connection, and the server then drops the lock, so
-            // the failure does not replace the caller's own result.
-            if client.batch_execute(&self.unlock).await.is_err() {
-                drop(Object::take(client));
+            if let Some(client) = self.client.lock().await.take() {
+                let _ = client.batch_execute(&self.unlock).await;
             }
             Ok(())
         })

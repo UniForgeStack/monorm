@@ -1093,9 +1093,11 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   signed big-endian).
 * `async with db.lock(key, session=True, timeout=5):` is a session advisory lock: it
   holds the lock for the block, with no transaction, so the block can make slow calls
-  (HTTP) without an open transaction. The lock pins one pool connection; queries in the
-  block use other connections. A lock that waits also uses its pool connection while it
-  waits. It waits at most `timeout` seconds (forever when `None` or `inf`, not at all with
+  (HTTP) without an open transaction. The lock has a connection of its own, opened from the
+  same URL with the pool's TLS and connect settings and closed on release. It is not
+  taken from the pool, so a lock that waits never holds a pool slot. Each lock costs one
+  connect (estimated 1–5 ms) and counts against the server's `max_connections`. Session
+  locks are unsafe behind PgBouncer in transaction mode. It waits at most `timeout` seconds (forever when `None` or `inf`, not at all with
   `nowait=True`; at most 2147483.647, the Postgres limit) and raises
   `orm.LockNotAvailable` when another session still holds the lock. `timeout` without
   `session=True` raises `TypeError`. The lock is released when the block ends, also on

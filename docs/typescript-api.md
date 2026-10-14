@@ -548,11 +548,13 @@ See `docs/schema.md`, "Protected writes".
   the same name.
 
 * `db.lock(key, { session: true, timeout: 5 }, async () => {...})` is a session advisory
-  lock: it holds the lock while the function runs, with no transaction, on a pool
-  connection of its own, and gives what the function gives. It waits at most `timeout`
+  lock: it holds the lock while the function runs, with no transaction, on a
+  connection of its own (opened from the same URL with the pool's TLS and connect
+  settings, closed on release, never taken from the pool), and gives what the function gives. It waits at most `timeout`
   seconds (no limit when absent or `Infinity`, not at all with `nowait`; at most
   2147483.647, the Postgres limit) and throws `LockNotAvailable` when another session
-  still holds the lock. A lock that waits also uses its pool connection while it waits.
+  still holds the lock. Each lock costs one connect (estimated 1–5 ms) and counts against the
+  server's `max_connections`. Session locks are unsafe behind PgBouncer in transaction mode.
   The lock is released when the function settles. When the unlock fails, the connection
   is closed, so the server releases the lock, and the function's own result or error
   stays. A function or a `timeout` without `session: true` throws `TypeError`.
