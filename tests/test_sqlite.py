@@ -609,3 +609,29 @@ async def test_on_conflict_infers_the_partial_unique_index():
             await Twice.objects.using(db).insert(email="a@x.io").on_conflict(Twice.email, update=False)
     finally:
         await db.close()
+
+
+async def test_bound_load_guards_and_without_related(sqlite):
+    db, m, _ = sqlite
+    Author, Book = m["Author"], m["Book"]
+    a = await Author.objects.using(db).insert(email="a", name="Alice")
+    b = await Author.objects.using(db).insert(email="b", name="Bob")
+    await Book.objects.using(db).insert_many([
+        {"author_id": a.id, "title": "one"}, {"author_id": a.id, "title": "two"},
+        {"author_id": b.id, "title": "three"},
+    ])
+    bound = Author.books.objects.using(db).filter(Book.title == "one")
+    for operation in (lambda: bound, lambda: bound.count(), lambda: bound.delete(),
+                      lambda: bound.insert_many([]), lambda: bound.insert_many([], copy=True)):
+        with pytest.raises(TypeError, match="inside load"):
+            await operation()
+    assert await Book.objects.using(db).count() == 3
+    for path in (Author.books, Author.books.author):
+        with pytest.raises(ValueError, match=r"label\(\)"):
+            Author.objects.load(path, bound)
+    authors = await Author.objects.using(db).load(Author.name, Author.books, Author.books.objects).without_related().order_by(Author.id)
+    assert [len(a.books.cached) for a in authors] == [2, 1]
+    books = await Book.objects.using(db).load(Book.title, Book.author).without_related()
+    assert sorted(b.title for b in books) == ["one", "three", "two"]
+    with pytest.raises(orm.NotLoaded):
+        _ = books[0].author
