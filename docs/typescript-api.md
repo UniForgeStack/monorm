@@ -311,6 +311,7 @@ can run before computing the selected aggregates.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
 compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
 `.asText()` for the last step as text (`->>`, no step can follow),
+a string key is an escaped `E'...'` literal in the SQL (NUL is a `QueryError`), so the same path in `groupBy`, `select`, `having` and `orderBy` has equal text,
 `Doc.meta.jsonContains({ kind: "post" })` (`@>`), `.jsonContainedBy(...)` (`<@`),
 `.hasKey("tags")` (`?`) and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`: a
 scalar merged with an object or array makes an array; `NULL` stays `NULL`).

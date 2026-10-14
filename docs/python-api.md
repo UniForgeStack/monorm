@@ -396,6 +396,8 @@ await Doc.objects.filter(...).update(meta=Doc.meta.json_merge({"seen": True}))  
   number. `as_text()` reads the value as text (`->>`) and ends the path: no step can follow.
   `== None` is `IS NULL` (a JSON `null` value is not SQL `NULL`). The comparison is `jsonb`
   ordering across types, so `> 3` also matches `true`, `{}` and `[1]`.
+* A string key is written into the SQL as an escaped `E'...'` literal, like an integer index (a key with a NUL character is a `QueryError`).
+  So `group_by(Doc.meta["kind"].as_text())` and the same path in `select`, `having` and `order_by` have equal SQL text.
 * On an array column, `col[1]` stays SQL's 1-based element access; a string key on a
   column that is not `Json` is a `TypeError`.
 * `json_contains`, `json_contained_by` and `has_key` work on the column and on a path,

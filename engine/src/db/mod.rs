@@ -395,7 +395,50 @@ pub fn build<S: QueryStatementWriter>(dialect: Dialect, stmt: &S) -> (String, Ve
         #[allow(unreachable_patterns)]
         _ => panic!("database dialect is not compiled into this native profile"),
     };
-    (sql, values.0)
+    match dialect {
+        Dialect::Postgres => merge_equal_params(sql, values.0),
+        _ => (sql, values.0),
+    }
+}
+
+/// Postgres matches a GROUP BY, HAVING, ORDER BY or DISTINCT expression to the select list by
+/// its text, and `$1` differs from `$2`. Equal values (same type, same value) share one slot,
+/// so a repeated `CASE` has equal text. Types are sent with the values, so sharing is safe.
+fn merge_equal_params(sql: String, values: Vec<Value>) -> (String, Vec<Value>) {
+    let grouped = ["GROUP BY", "HAVING", "ORDER BY", "DISTINCT"].iter().any(|k| sql.contains(k));
+    if !grouped || values.len() < 2 {
+        return (sql, values);
+    }
+    let mut first = std::collections::HashMap::<&Value, usize>::new();
+    let mut slot = Vec::with_capacity(values.len());
+    let mut kept = Vec::new();
+    for (i, v) in values.iter().enumerate() {
+        let n = *first.entry(v).or_insert_with(|| { kept.push(i); kept.len() });
+        slot.push(n);
+    }
+    if kept.len() == values.len() {
+        return (sql, values);
+    }
+    let mut out = String::with_capacity(sql.len());
+    let mut quote = None;
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => { quote = None; out.push(c); }
+            (None, '\'' | '"') => { quote = Some(c); out.push(c); }
+            (None, '$') if chars.peek().is_some_and(|d| d.is_ascii_digit()) => {
+                let mut n = 0usize;
+                while let Some(d) = chars.peek().and_then(|d| d.to_digit(10)) {
+                    n = n * 10 + d as usize;
+                    chars.next();
+                }
+                out.push_str(&format!("${}", slot[n - 1]));
+            }
+            (_, c) => out.push(c),
+        }
+    }
+    let values = kept.into_iter().map(|i| values[i].clone()).collect();
+    (out, values)
 }
 
 /// `stmt` with parameters inlined, for debugging.
