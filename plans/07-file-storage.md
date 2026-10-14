@@ -63,7 +63,7 @@ knowing a key does not establish permission to attach, read, or delete it.
 report = await Report.objects.insert(
     file=Upload(file_binary, filename="report.xlsx")
 )
-await Report.objects.where(Report.id == report.id).update(
+await Report.objects.filter(Report.id == report.id).update(
     file=Upload(new_binary, filename="report.xlsx")
 )
 
