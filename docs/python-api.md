@@ -965,7 +965,9 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback goes to the caller of `transaction()`, and the later callbacks do not run; the transaction is already committed.
-
+`on_commit` is a coroutine: without `await`, the callback is not registered (Python warns "coroutine was never awaited").
+Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
+A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.
 
 #### Failed statements
 
@@ -989,13 +991,10 @@ async with db.transaction():
 `db.transaction(savepoint=False)` joins the enclosing transaction with no savepoint.
 An error that leaves such a block marks the enclosing transaction failed.
 On an outermost block the parameter has no effect.
-`on_commit` is a coroutine: without `await`, the callback is not registered (Python warns "coroutine was never awaited").
-Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
-A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.
 
 ### Database errors
 
-An `orm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`) has three attributes:
+An `orm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`, `TransactionAborted`) has three attributes:
 
 * `sqlstate`: the five-character SQLSTATE, for example `"23505"` (unique), `"23503"` (foreign key), `"23502"` (not null), `"23514"` (check).
   SQLite constraint failures get the same Postgres codes; other SQLite errors give `None`.
@@ -1307,7 +1306,7 @@ factory_boy has no async support, so a `SubFactory` with `create` gives a corout
 
 | Error | Raised when |
 |---|---|
-| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints) and `LockNotAvailable` (`nowait`) derive from it |
+| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints), `LockNotAvailable` (`nowait`) and `TransactionAborted` (failed transaction) derive from it |
 | `orm.QueryError` | the ORM rejects a query before SQL (an unsupported feature, a bad cursor) |
 | `orm.SchemaError` | a schema fails to compile or define |
 | `Model.DoesNotExist`, `Model.MultipleObjectsReturned` | `get()` finds no row or more than one (`orm.DoesNotExist` and `orm.MultipleObjectsReturned` are the bases) |

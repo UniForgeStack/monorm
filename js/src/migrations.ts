@@ -28,7 +28,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { connect, inTransaction, type Database } from "./db.js";
+import { connect, inTransaction, restoreCause, type Database } from "./db.js";
 import { MigrationError } from "./errors.js";
 import { Registry, load, registry as defaultRegistry } from "./model.js";
 import { call, native, wait, type NativeSchema } from "./native.js";
@@ -286,7 +286,7 @@ export class Migrator {
         await wait(() => tx.rollback()).catch(() => undefined);
         throw e;
       }
-      await wait(() => this.db.engine.migrationFinish(tx, m.name, m.path));
+      await restoreCause(wait(() => this.db.engine.migrationFinish(tx, m.name, m.path)), tx);
       for (const fn of after) await fn();
       done.push(m);
     }

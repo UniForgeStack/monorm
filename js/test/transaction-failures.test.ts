@@ -1,6 +1,10 @@
 /** A failed statement marks its transaction failed, also when the block catches the error. */
 
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Migration, Migrations, Migrator } from "../src/migrations.js";
 import { test } from "node:test";
 
 import { connect, DatabaseError, getDatabase, IntegrityError, TransactionAborted, type Database } from "../src/index.js";
@@ -16,7 +20,7 @@ interface Case {
   count(): Promise<number>;
 }
 
-async function run(_name: string, body: (c: Case) => Promise<void>): Promise<void> {
+async function run(body: (c: Case) => Promise<void>): Promise<void> {
   const pg = getDatabase();
   await body({
     db: pg,
@@ -38,7 +42,7 @@ async function run(_name: string, body: (c: Case) => Promise<void>): Promise<voi
 }
 
 test("a caught error aborts the commit and drops the callbacks", () =>
-  run("caught", async (c) => {
+  run(async (c) => {
     const seen: string[] = [];
     await c.insert("dup");
     const err = await c.db
@@ -53,17 +57,19 @@ test("a caught error aborts the commit and drops the callbacks", () =>
       );
     assert.ok(err instanceof TransactionAborted && err instanceof DatabaseError);
     assert.ok(err.cause instanceof IntegrityError);
+    assert.ok(err.message.includes(err.cause.message.split("\n")[0]!));
     assert.equal(await c.count(), 1);
     assert.deepEqual(seen, []);
   }));
 
 test("a later statement raises TransactionAborted chained to the first error", () =>
-  run("later", async (c) => {
+  run(async (c) => {
     await c.insert("dup");
     await assert.rejects(
       c.db.transaction(async () => {
         const first = await c.insert("dup").catch((e: unknown) => e);
         assert.ok(first instanceof IntegrityError);
+        await assert.rejects(c.db.transaction(async () => { throw new TypeError("a later application failure"); }, { savepoint: false }), TypeError);
         const later = await c.insert("later").catch((e: unknown) => e);
         assert.ok(later instanceof TransactionAborted && later.cause instanceof IntegrityError);
         await assert.rejects(c.count(), TransactionAborted);
@@ -75,7 +81,7 @@ test("a later statement raises TransactionAborted chained to the first error", (
   }));
 
 test("a savepoint in a try keeps the other writes", () =>
-  run("savepoint", async (c) => {
+  run(async (c) => {
     const seen: string[] = [];
     await c.insert("dup");
     await c.db.transaction(async () => {
@@ -95,7 +101,7 @@ test("a savepoint in a try keeps the other writes", () =>
   }));
 
 test("a caught error in a savepoint block aborts that savepoint only", () =>
-  run("inner", async (c) => {
+  run(async (c) => {
     await c.insert("dup");
     await c.db.transaction(async () => {
       await assert.rejects(
@@ -110,7 +116,7 @@ test("a caught error in a savepoint block aborts that savepoint only", () =>
   }));
 
 test("savepoint false joins the enclosing transaction", () =>
-  run("join", async (c) => {
+  run(async (c) => {
     await c.insert("dup");
     await c.db.transaction(() => c.db.transaction(() => c.insert("joined"), { savepoint: false }));
     assert.equal(await c.count(), 2);
@@ -130,7 +136,7 @@ test("savepoint false joins the enclosing transaction", () =>
   }));
 
 test("an uncaught error rolls back and throws the original error", () =>
-  run("uncaught", async (c) => {
+  run(async (c) => {
     await c.insert("dup");
     const err = await c.db
       .transaction(async () => {
@@ -141,3 +147,84 @@ test("an uncaught error rolls back and throws the original error", () =>
     assert.ok(err instanceof IntegrityError && !(err instanceof TransactionAborted));
     assert.equal(await c.count(), 1);
   }));
+
+test("joined application failures retain the first original cause", () =>
+  run(async (c) => {
+    const original = new TypeError("application failure");
+    const commit = await c.db.transaction(async () => {
+      await c.insert("lost");
+      await assert.rejects(c.db.transaction(async () => { throw original; }, { savepoint: false }), TypeError);
+      await assert.rejects(c.db.transaction(async () => { throw new RangeError("second failure"); }, { savepoint: false }), RangeError);
+      const later = await c.count().catch((e: unknown) => e);
+      assert.ok(later instanceof TransactionAborted);
+      assert.equal(later.cause, original);
+      const begin = await c.db.transaction(async () => {}).catch((e: unknown) => e);
+      assert.ok(begin instanceof TransactionAborted);
+      assert.equal(begin.cause, original);
+    }).catch((e: unknown) => e);
+    assert.ok(commit instanceof TransactionAborted);
+    assert.equal(commit.cause, original);
+    assert.equal(await c.count(), 0);
+  }));
+
+for (const applicationError of [false, true]) {
+  test(`a joined ${applicationError ? "application" : "database"} failure in a savepoint leaves the outer usable`, () =>
+    run(async (c) => {
+      const seen: string[] = [];
+      await c.insert("dup");
+      await c.db.transaction(async () => {
+        await c.insert("before");
+        await assert.rejects(c.db.transaction(async () => {
+          await c.insert("lost");
+          await c.db.onCommit(() => void seen.push("inner"));
+          await assert.rejects(c.db.transaction(async () => {
+            if (applicationError) throw new TypeError("joined savepoint failed");
+            await c.insert("dup");
+          }, { savepoint: false }), applicationError ? TypeError : IntegrityError);
+        }), TransactionAborted);
+        await c.insert("after");
+        await c.db.onCommit(() => void seen.push("outer"));
+      });
+      assert.equal(await c.count(), 3);
+      assert.deepEqual(seen, ["outer"]);
+    }));
+}
+
+for (const applicationError of [false, true]) {
+  test(`a caught data migration failure (${applicationError ? "application" : "database"}) rolls back SQL, data, history and callbacks`, () =>
+    run(async (c) => {
+      const dir = mkdtempSync(join(tmpdir(), "orm-tx-failure-"));
+      const original = new TypeError("data migration failed");
+      const path = join(dir, "0001_failure");
+      mkdirSync(path);
+      writeFileSync(join(path, "up.sql"), "CREATE TABLE migration_probe (id INTEGER)");
+      writeFileSync(join(path, "down.sql"), "DROP TABLE migration_probe");
+      writeFileSync(join(path, "snapshot.json"), c.db.registry.prepare().snapshot());
+      const seen: string[] = [];
+      try {
+        await c.insert("dup");
+        const migrator = new Migrator(c.db, new Migrations(dir, "unused.prisma"));
+        await migrator.loadPending(null);
+        const aborted = await migrator.apply([[new Migration("0001_failure", path), async (db) => {
+          await db.execute("INSERT INTO migration_probe VALUES (1)");
+          await c.insert("lost");
+          if (applicationError) {
+            await assert.rejects(db.transaction(async () => { throw original; }, { savepoint: false }), TypeError);
+          } else {
+            await assert.rejects(c.insert("dup"), IntegrityError);
+          }
+          await db.onCommit(() => void seen.push("ran"));
+        }]]).catch((e: unknown) => e);
+        assert.ok(aborted instanceof TransactionAborted);
+        if (applicationError) assert.equal(aborted.cause, original);
+        else assert.ok(aborted.cause instanceof IntegrityError);
+        assert.equal(await c.count(), 1);
+        assert.deepEqual(seen, []);
+        await assert.rejects(c.db.fetch("SELECT * FROM migration_probe"), DatabaseError);
+        assert.deepEqual(await c.db.fetch("SELECT * FROM orm_migrations"), []);
+        await c.db.execute("DROP TABLE orm_migrations");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }));
+}
