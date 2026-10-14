@@ -225,7 +225,8 @@ A `belongsTo` relation compares with an instance of its target:
 `Post.author.eq(alice)` is `Post.authorId.eq(alice.id)` (no join), `.ne(alice)` the
 opposite, and `.eq(null)` is `IS NULL`. The types allow `eq` / `ne` only on to-one
 relations and only with the target's row type. At runtime, other relation kinds, other
-objects and an instance without a key throw `TypeError`.
+objects and an instance without a key throw `TypeError`. Other objects, including
+objects without a prototype, get a message naming the expected target model.
 
 ### Loading related objects
 
@@ -446,7 +447,9 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   `UPDATE ... FROM (VALUES ...)`, falling back to `CASE`. All its batches run in one
   transaction.
 * On an instance: `post.update({...})` (refreshed from `RETURNING`), `post.delete()` and
-  `post.refresh(...fields)`.
+  `post.refresh(...fields)`. Fields must be model columns; an optional trailing options
+  argument must be a plain object (`Object.prototype`). Strings, arrays, `null`,
+  objects without a prototype and class instances throw `TypeError`.
 * A model with a composite primary key (`@@id([shop, id])`) has an object `pk` keyed by field name, `{ shop: 1, id: 7 }`.
   Writes, `refresh()`, `updateMany()`, `batches()` and `paginate()` use the whole key.
 * With the column-role extensions (`schema-extensions.md`): `@timestamps.updated_at` and
