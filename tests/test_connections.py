@@ -382,6 +382,67 @@ async def test_tenant_sets_app_tenant_for_row_level_security(db):
         await sqlite.close()
 
 
+async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
+    registry = orm.Registry()
+    Note = orm.loads(NOTES, registry=registry)["Note"]
+    admin = await orm.connect(db.url, registry=registry, default=False, max_connections=1)
+    await admin.drop_tables()
+    await admin.create_tables()
+    await admin.execute(RLS)
+    await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
+    app = await orm.connect("postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2)
+    try:
+        async def other():
+            with app.tenant("b"):
+                async with app.transaction():
+                    return [n.body for n in await Note.objects.using(app)]
+
+        with app.tenant("a"):
+            # A task made outside the transaction does not see it: it opens its own.
+            task = asyncio.create_task(other())
+            async with app.transaction():
+                assert await task == ["2"]
+                with pytest.raises(orm.QueryError, match="another tenant"):
+                    with app.tenant("b"):
+                        pass
+                # A savepoint keeps the tenant of its transaction.
+                async with app.transaction():
+                    with pytest.raises(orm.QueryError, match="another tenant"):
+                        with app.tenant("b"):
+                            pass
+                # The same tenant is allowed.
+                with app.tenant("a"):
+                    assert [n.body for n in await Note.objects.using(app)] == ["1"]
+        # A transaction with no tenant counts as different.
+        async with app.transaction():
+            with pytest.raises(orm.QueryError, match="another tenant"):
+                with app.tenant("a"):
+                    pass
+        # Outside any transaction the tenant switches freely.
+        with app.tenant("a"):
+            with app.tenant("b"):
+                assert [n.body for n in await Note.objects.using(app)] == ["2"]
+    finally:
+        await app.close()
+        await admin.drop_tables()
+        await admin.close()
+
+
+async def test_refresh_reads_the_primary_on_a_database_with_replicas(clean):
+    db = clean
+    url = await replica_url(db)
+    routed = await orm.connect(db.url, replicas=[url], default=False, max_connections=2)
+    try:
+        user = await User.objects.using(routed).insert(email="p@example.com", name="Primary")
+        # The replica holds no such row: a replica read would raise DoesNotExist.
+        assert await user.refresh() is True
+        await User.objects.using(routed).filter(User.id == user.id).update(name="P2")
+        await user.refresh(User.name)
+        assert user.name == "P2"
+    finally:
+        await routed.close()
+
+
 async def test_tenant_ids_are_checked(db):
     for bad in (True, None, 1.5):
         with pytest.raises(TypeError, match="tenant id"):
