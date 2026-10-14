@@ -524,11 +524,10 @@ impl Executor for PgDriver {
         Box::pin(async move {
             let client = get_client(&self.pool).await?;
             client.batch_execute("BEGIN").await.map_err(pg_err)?;
-            let session = Session { client: Some(client), finished: false };
+            let session = Session { client: Some(client), finished: false, next_savepoint: 0 };
             let tx: Arc<dyn Transaction> = Arc::new(PgTx {
                 session: Arc::new(Mutex::new(session)),
                 savepoint: None,
-                depth: 0,
                 done: AtomicBool::new(false),
             });
             Ok(tx)
@@ -617,6 +616,7 @@ impl SessionLock for PgSessionLock {
 struct Session {
     client: Option<Object>,
     finished: bool,
+    next_savepoint: u64,
 }
 
 impl Drop for Session {
@@ -635,11 +635,27 @@ struct PgTx {
     session: Arc<Mutex<Session>>,
     /// `None` for the outermost transaction.
     savepoint: Option<String>,
-    depth: usize,
     done: AtomicBool,
 }
 
 impl PgTx {
+    async fn begin_savepoint(&self) -> DbResult<Self> {
+        if self.done.load(Ordering::Acquire) {
+            return Err(closed());
+        }
+        let mut session = self.session.lock().await;
+        // Sibling transactions share a session but can have the same nesting depth.
+        let name = format!("orm_sp_{}", session.next_savepoint);
+        session.next_savepoint += 1;
+        let client = session.client.as_ref().ok_or_else(closed)?;
+        client.batch_execute(&format!("SAVEPOINT {name}")).await.map_err(pg_err)?;
+        Ok(Self {
+            session: self.session.clone(),
+            savepoint: Some(name),
+            done: AtomicBool::new(false),
+        })
+    }
+
     /// Runs `f` on the transaction's connection, unless it already ended.
     async fn with<T>(
         &self,
@@ -719,16 +735,7 @@ impl Executor for PgTx {
 
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move {
-            let depth = self.depth + 1;
-            let name = format!("orm_sp_{depth}");
-            let sql = format!("SAVEPOINT {name}");
-            self.with(|c| Box::pin(async move { c.batch_execute(&sql).await.map_err(pg_err) })).await?;
-            let tx: Arc<dyn Transaction> = Arc::new(PgTx {
-                session: self.session.clone(),
-                savepoint: Some(name),
-                depth,
-                done: AtomicBool::new(false),
-            });
+            let tx: Arc<dyn Transaction> = Arc::new(self.begin_savepoint().await?);
             Ok(tx)
         })
     }
@@ -880,6 +887,48 @@ mod failure_tests {
     }
 
     #[test]
+    fn concurrent_sibling_savepoints_have_unique_names_and_keep_successful_work() {
+        runtime().block_on(async {
+            let db = driver().await;
+            let obj = get_client(&db.pool).await.unwrap();
+            obj.batch_execute("BEGIN; CREATE TEMP TABLE sibling_savepoints (id INTEGER PRIMARY KEY) ON COMMIT PRESERVE ROWS").await.unwrap();
+            let outer = Arc::new(PgTx {
+                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0 })),
+                savepoint: None,
+                done: AtomicBool::new(false),
+            });
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (rolled_back, finished) = tokio::sync::oneshot::channel();
+            let successful_outer = outer.clone();
+            let successful = tokio::spawn(async move {
+                let tx = successful_outer.begin_savepoint().await.unwrap();
+                tx.batch("INSERT INTO sibling_savepoints VALUES (1)".into()).await.unwrap();
+                started.send(()).unwrap();
+                // PostgreSQL savepoints must unwind in stack order, even in child tasks.
+                let failed_name = finished.await.unwrap();
+                assert_ne!(tx.savepoint, failed_name, "sibling savepoints must not share a name");
+                tx.commit().await.unwrap();
+            });
+            let failing_outer = outer.clone();
+            let failing = tokio::spawn(async move {
+                ready.await.unwrap();
+                let tx = failing_outer.begin_savepoint().await.unwrap();
+                tx.batch("INSERT INTO sibling_savepoints VALUES (2)".into()).await.unwrap();
+                let e = tx.batch("INSERT INTO sibling_savepoints VALUES (2)".into()).await.unwrap_err();
+                assert_eq!(e.kind, ErrorKind::Integrity);
+                tx.rollback().await.unwrap();
+                rolled_back.send(tx.savepoint.clone()).unwrap();
+            });
+            successful.await.unwrap();
+            failing.await.unwrap();
+            assert_eq!(outer.query_text("SELECT id FROM sibling_savepoints ORDER BY id".into()).await.unwrap(), vec![vec![Some("1".into())]]);
+            outer.commit().await.unwrap();
+            assert_eq!(db.query_text("SELECT id FROM sibling_savepoints ORDER BY id".into()).await.unwrap(), vec![vec![Some("1".into())]]);
+            db.batch("DROP TABLE sibling_savepoints".into()).await.unwrap();
+        });
+    }
+
+    #[test]
     fn bare_transaction_commit_detects_server_abort() {
         runtime().block_on(async {
             let db = driver().await;
@@ -906,9 +955,8 @@ mod failure_tests {
             obj.batch_execute("BEGIN").await.unwrap();
             let pid: i32 = obj.query_one("SELECT pg_backend_pid()", &[]).await.unwrap().get(0);
             let tx = PgTx {
-                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false })),
+                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0 })),
                 savepoint: None,
-                depth: 0,
                 done: AtomicBool::new(false),
             };
             let killer = driver().await;
