@@ -232,7 +232,9 @@ export interface LockOptions {
  * `update: false` keeps the existing row (`DO NOTHING`). `update: true` updates it:
  * `updateFields` copy the proposed values, `updateValues` set plain values or
  * expressions such as `{ views: Post.views.add(excluded(Post.views)) }`. With neither,
- * every field given to the insert except the conflict columns is overwritten.
+ * every field given to the insert except the conflict columns is overwritten, but not the
+ * version field. The update also sets `updated_at` and adds `version = version + 1`
+ * unless the call sets them.
  */
 export interface OnConflictOptions<M extends ModelSpec, U extends boolean = boolean> {
   readonly update: U;

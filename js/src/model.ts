@@ -91,9 +91,10 @@ export interface Instance<M extends ModelSpec> {
    */
   update(values: M["update"]): Promise<void>;
   /**
-   * `DELETE ... WHERE pk = ...`; with `@soft_delete.deleted_at`, a soft delete. The
-   * instance keeps its last values. With `@locking.version`, throws `VersionConflict`
-   * when the row has a newer version.
+   * `DELETE ... WHERE pk = ...`; with `@soft_delete.deleted_at`, a soft delete that
+   * refreshes the instance from the returned row. Otherwise the instance keeps its last
+   * values. With `@locking.version`, throws `VersionConflict` when the row has a newer
+   * version; `hardDelete()` has no version check.
    */
   delete(): Promise<void>;
   /**

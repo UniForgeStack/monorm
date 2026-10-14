@@ -344,8 +344,9 @@ class InsertOne(_Insert, Generic[M]):
         ``update=False`` keeps the existing row (``DO NOTHING``). ``update=True`` updates
         it: ``update_fields`` copy the new values, ``update_values`` set values or
         expressions such as ``{"views": Post.views + excluded(Post.views)}``. With
-        neither, every given field except the conflict columns is overwritten.
-        ``await`` gives the affected-row count; ``.returning()`` the row."""
+        neither, every given field except the conflict columns is overwritten, but not the
+        version field. The update also sets ``updated_at`` and adds ``version = version + 1``
+        unless the call sets them. ``await`` gives the affected-row count; ``.returning()`` the row."""
         return self._with_conflict(UpsertOne, columns, where, update, update_fields, update_values)  # type: ignore[no-any-return]
 
     def __await__(self) -> Generator[Any, None, M]:

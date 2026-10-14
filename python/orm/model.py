@@ -618,7 +618,7 @@ class Model:
         """``DELETE ... WHERE pk = ...``; with ``@soft_delete.deleted_at``, a soft delete
         that refreshes the instance from the returned row. Otherwise the instance keeps
         its last values. With ``@locking.version``, raises :class:`orm.VersionConflict`
-        when the row has a newer version."""
+        when the row has a newer version; :meth:`hard_delete` has no version check."""
         if self._meta.soft_delete is None:
             if not await self._version_filter(self._row_query()).delete():
                 await self._raise_if_changed()
