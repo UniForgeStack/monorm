@@ -6,6 +6,8 @@ fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
     format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
 }
 
+const SQLITE_NOW: &str = "strftime('%Y-%m-%d %H:%M:%f','now')";
+
 fn ident(s: &str) -> String { format!("\"{}\"", s.replace('"', "\"\"")) }
 
 /// The trigger that sets `column` on an update that leaves it unchanged, so a written value
@@ -17,8 +19,10 @@ fn trigger(dialect: Dialect, model: &ModelIr, column: &str) -> Result<TriggerIr,
     let value = match dialect {
         Dialect::Postgres => serde_json::json!({"timing": "before", "when": format!("NEW.{c} IS NOT DISTINCT FROM OLD.{c}"),
             "body": format!("BEGIN NEW.{c} := now(); RETURN NEW; END;")}),
-        Dialect::Sqlite => serde_json::json!({"timing": "after", "when": format!("NEW.{c} IS OLD.{c}"),
-            "body": format!("UPDATE {} SET {c} = CURRENT_TIMESTAMP WHERE {}", ident(&model.table), key.join(" AND "))}),
+        // The `WHEN` guard stops the trigger from firing itself under `recursive_triggers`: the
+        // write it makes carries the current time, so the second pass sees a changed value.
+        Dialect::Sqlite => serde_json::json!({"timing": "after", "when": format!("NEW.{c} IS OLD.{c} AND NEW.{c} IS NOT {SQLITE_NOW}"),
+            "body": format!("UPDATE {} SET {c} = {SQLITE_NOW} WHERE {}", ident(&model.table), key.join(" AND "))}),
     };
     let mut value = value;
     value["name"] = format!("updated_at_{column}").into();
@@ -96,8 +100,8 @@ mod tests {
         prepared(&mut ir).unwrap();
         let t = &ir.behavior.storage.as_ref().unwrap().models[0].triggers[0];
         assert_eq!(serde_json::to_value(t.timing).unwrap(), "after");
-        assert_eq!(t.when.as_deref(), Some("NEW.\"changed_at\" IS OLD.\"changed_at\""));
-        assert_eq!(t.body.as_deref(), Some("UPDATE \"posts\" SET \"changed_at\" = CURRENT_TIMESTAMP WHERE \"id\" = NEW.\"id\""));
+        assert_eq!(t.when.as_deref(), Some("NEW.\"changed_at\" IS OLD.\"changed_at\" AND NEW.\"changed_at\" IS NOT strftime('%Y-%m-%d %H:%M:%f','now')"));
+        assert_eq!(t.body.as_deref(), Some("UPDATE \"posts\" SET \"changed_at\" = strftime('%Y-%m-%d %H:%M:%f','now') WHERE \"id\" = NEW.\"id\""));
     }
 
     #[test]
@@ -106,7 +110,7 @@ mod tests {
         ir.models[0].fields.insert(0, serde_json::from_value(serde_json::json!({"name": "shop", "column": "shop", "type": "int", "primary_key": true})).unwrap());
         prepared(&mut ir).unwrap();
         let t = &ir.behavior.storage.as_ref().unwrap().models[0].triggers[0];
-        assert_eq!(t.body.as_deref(), Some("UPDATE \"posts\" SET \"changed_at\" = CURRENT_TIMESTAMP WHERE \"shop\" = NEW.\"shop\" AND \"id\" = NEW.\"id\""));
+        assert_eq!(t.body.as_deref(), Some("UPDATE \"posts\" SET \"changed_at\" = strftime('%Y-%m-%d %H:%M:%f','now') WHERE \"shop\" = NEW.\"shop\" AND \"id\" = NEW.\"id\""));
     }
 
     #[test]
@@ -154,5 +158,18 @@ mod tests {
         assert_ne!(changed(&db), "2000-01-01 00:00:00");
         db.execute_batch("UPDATE posts SET changed_at = '2001-01-01 00:00:00'").unwrap();
         assert_eq!(changed(&db), "2001-01-01 00:00:00");
+    }
+
+    #[test]
+    fn sqlite_trigger_survives_recursive_triggers_and_keeps_milliseconds() {
+        let mut ir = schema("sqlite", None, "date_time");
+        prepared(&mut ir).unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA recursive_triggers = ON").unwrap();
+        for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
+        db.execute_batch("INSERT INTO posts (id, changed_at) VALUES (1, '2000-01-01 00:00:00')").unwrap();
+        for i in 0..2000 { db.execute_batch("UPDATE posts SET id = 1").unwrap_or_else(|e| panic!("update {i}: {e}")); }
+        let value: String = db.query_row("SELECT changed_at FROM posts", [], |r| r.get(0)).unwrap();
+        assert!(value.len() == 23 && value.as_bytes()[19] == b'.', "{value}");
     }
 }
