@@ -313,9 +313,10 @@ export class Migrator {
   }
 
   /** Reverts the last `steps` applied migrations (default 1), or every one after
-   * `target` (`"zero"` reverts all). */
-  async downgrade(options: { readonly steps?: number; readonly target?: string } = {}): Promise<Migration[]> {
+   * `target` (`"zero"` reverts all). A baselined migration is refused unless `force`:
+   * its `down.sql` would drop the live tables. */
+  async downgrade(options: { readonly steps?: number; readonly target?: string; readonly force?: boolean } = {}): Promise<Migration[]> {
     const steps = Math.max(0, options.steps ?? 1);
-    return this.named(await wait(() => this.db.engine.migrateDown(this.dir, steps, options.target ?? null)));
+    return this.named(await wait(() => this.db.engine.migrateDown(this.dir, steps, options.target ?? null, options.force ?? false)));
   }
 }
