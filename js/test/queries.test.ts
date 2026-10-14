@@ -586,3 +586,21 @@ test("concurrent queries", async () => {
   assert.equal(counts[0], 2);
   assert.equal(counts[19], 2);
 });
+
+test("refresh rejects non-plain trailing options", async () => {
+  const { alice: row } = await seed();
+  for (const invalid of ["name", 42, null, undefined, [], new Date(), Object.create(null), new (class Options {})()]) {
+    await assert.rejects(row.refresh(invalid as never), { name: "TypeError", message: "refresh() takes columns of User" });
+    assert.equal(row.name, "Alice");
+  }
+  assert.equal(await row.refresh(), true);
+  assert.equal(await row.refresh(User.name), true);
+  assert.equal(await row.refresh(User.name, {}), true);
+  assert.equal(await row.refresh({}), true);
+});
+
+test("relation comparison rejects null-prototype objects clearly", () => {
+  for (const compare of [() => Post.author.eq(Object.create(null) as never), () => Post.author.ne(Object.create(null) as never)]) {
+    assert.throws(compare, { name: "TypeError", message: "Post.author compares with a User instance" });
+  }
+});

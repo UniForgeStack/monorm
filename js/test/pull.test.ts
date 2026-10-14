@@ -19,8 +19,6 @@ const PULL_URL = Object.assign(new URL(DATABASE_URL), { pathname: "/" + PULL_DB 
 
 // What the fixture holds that the schema language can't say (see the `gap:` lines).
 const EXPECTED = [
-  "drop default of bundles_bundle.id",
-  "make bundles_bundle.id an identity column",
   "drop column bundles_slot.during",
 ];
 
@@ -65,6 +63,41 @@ test("pull, baseline and drift of a Django-style database", async () => {
   await db.execute("ALTER TABLE account_shop ADD COLUMN extra integer");
   assert.ok((await migrator.drift()).steps.some((s) => s.summary === "drop column account_shop.extra"));
   await assert.rejects(migrator.baseline(), MigrationError);
+});
+
+test("owned serials read as identity; a shared sequence converts and reseeds", async () => {
+  const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
+  opened.push(db);
+  await db.execute(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+    CREATE TABLE s_full (id serial PRIMARY KEY); INSERT INTO s_full (id) SELECT g FROM generate_series(1, 5) g;
+    CREATE SEQUENCE shared_seq;
+    CREATE TABLE c_empty (id integer PRIMARY KEY DEFAULT nextval('shared_seq'));
+    CREATE TABLE c_full (id integer PRIMARY KEY DEFAULT nextval('shared_seq'));
+    INSERT INTO c_full (id) SELECT g FROM generate_series(1, 5) g;`);
+  const pulled = await pull(db);
+  assert.ok(pulled.gaps.some((g) => g.startsWith("column s_full.id uses a sequence")));
+  assert.deepEqual(pulled.differences.map((s) => s.summary), [
+    "drop default of c_empty.id",
+    "make c_empty.id an identity column",
+    "drop default of c_full.id",
+    "make c_full.id an identity column",
+  ]);
+  for (const step of pulled.differences) await db.execute(step.sql);
+  assert.deepEqual(await db.fetchText("INSERT INTO c_empty DEFAULT VALUES RETURNING id"), [["1"]]);
+  assert.deepEqual(await db.fetchText("INSERT INTO c_full DEFAULT VALUES RETURNING id"), [["6"]]);
+});
+
+test("rollback refuses a baselined migration unless forced", async () => {
+  const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
+  opened.push(db);
+  await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public; CREATE TABLE keep (id bigint PRIMARY KEY); INSERT INTO keep VALUES (1)");
+  const dir = mkdtempSync(join(tmpdir(), "orm-baseline-"));
+  (await pull(db)).write(join(dir, "schema.prisma"));
+  const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")));
+  await migrator.baseline();
+  await assert.rejects(migrator.downgrade(), /0001_initial was baselined/);
+  assert.deepEqual(await db.fetchText("SELECT count(*) FROM keep"), [["1"]]);
+  assert.deepEqual((await migrator.downgrade({ force: true })).map((m) => m.name), ["0001_initial"]);
 });
 
 test("SQLite pull, baseline and drift", async () => {

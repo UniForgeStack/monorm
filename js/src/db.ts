@@ -2,7 +2,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import { LockNotAvailable, NotConnected, QueryError, TransactionRequired } from "./errors.js";
+import { DatabaseError, LockNotAvailable, NotConnected, QueryError, TransactionAborted, TransactionRequired } from "./errors.js";
 import type { IR } from "./expr.js";
 import { registry as defaultRegistry, type Registry } from "./model.js";
 import { call, native, wait, type NativeEngine, type NativeTrace, type NativeTransaction } from "./native.js";
@@ -10,6 +10,23 @@ import { allowedWrites } from "./protection.js";
 import { active as debugging, capture, record, writeKey } from "./debug.js";
 
 let defaultDb: Database | undefined;
+
+// Native marks carry text; retain application exceptions without keeping ended
+// transactions alive, and replace only the matching text cause.
+const failures = new WeakMap<NativeTransaction, { message: string; cause: unknown }>();
+/** @internal Restores the original exception behind a native failed mark. */
+export async function restoreCause<T>(pending: Promise<T>, tx: NativeTransaction | null): Promise<T> {
+  try {
+    return await pending;
+  } catch (error) {
+    const failure = tx === null ? undefined : failures.get(tx);
+    if (failure && error instanceof TransactionAborted && error.cause instanceof DatabaseError
+      && error.cause.constructor === DatabaseError && error.cause.message === failure.message) {
+      error.cause = failure.cause;
+    }
+    throw error;
+  }
+}
 
 /** For each database (its root) with an open transaction in the current async context: the innermost one. */
 const current = new AsyncLocalStorage<ReadonlyMap<Database, NativeTransaction>>();
@@ -143,9 +160,9 @@ export class Database {
    * N+1 scope listens. */
   send<T>(start: (tx: NativeTransaction | null, trace: NativeTrace | null) => Promise<T>, call: CallInfo = {}): Promise<T> {
     const tx = this.tx();
-    if (inHook.getStore() || (!this.root.#hooks.size && !debugging())) return wait(() => start(tx, null));
+    if (inHook.getStore() || (!this.root.#hooks.size && !debugging())) return restoreCause(wait(() => start(tx, null)), tx);
     const trace = new (native().Trace)();
-    return this.#observe(trace, capture(), wait(() => start(tx, trace)), call);
+    return this.#observe(trace, capture(), restoreCause(wait(() => start(tx, trace)), tx), call);
   }
 
   async #observe<T>(trace: NativeTrace, origin: ReturnType<typeof capture>, pending: Promise<T>, call: CallInfo): Promise<T> {
@@ -287,12 +304,14 @@ export class Database {
       try {
         return await fn();
       } catch (e) {
-        enclosing.markFailed(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+        const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+        enclosing.markFailed(message);
+        if (!failures.has(enclosing)) failures.set(enclosing, { message, cause: e });
         throw e;
       }
     }
     const outer = enclosing === null;
-    const tx = await wait(() => this.engine.begin(this.tx()));
+    const tx = await restoreCause(wait(() => this.engine.begin(enclosing)), enclosing);
     const mine: (() => unknown)[] = [];
     const scoped = new Map(callbacks.getStore() ?? []).set(this.root, mine);
     let result: T;
@@ -306,7 +325,7 @@ export class Database {
       throw e;
     }
     ended.add(mine);
-    await wait(() => tx.commit());
+    await restoreCause(wait(() => tx.commit()), tx);
     await this.afterCommit(mine, outer);
     return result;
   }

@@ -26,8 +26,6 @@ PULL_URL = urlunsplit(_url._replace(path="/" + PULL_DB))
 
 # What the fixture holds that the schema language can't say (see the `gap:` lines).
 EXPECTED_DIFFERENCES = [
-    "drop default of bundles_bundle.id",
-    "make bundles_bundle.id an identity column",
     "drop column bundles_slot.during",
 ]
 
@@ -98,6 +96,70 @@ async def test_pull_baseline_and_drift_of_a_django_style_database(tmp_path):
 
         with pytest.raises(orm.migrations.MigrationError, match="already has applied migrations"):
             await migrator.baseline()
+    finally:
+        await db.close()
+
+
+SERIALS = """
+CREATE TABLE s_empty (id serial PRIMARY KEY);
+CREATE TABLE s_full (id serial PRIMARY KEY);
+INSERT INTO s_full (id) SELECT g FROM generate_series(1, 5) g;
+SELECT setval('s_full_id_seq', 5);
+CREATE SEQUENCE shared_seq;
+CREATE TABLE c_empty (id integer PRIMARY KEY DEFAULT nextval('shared_seq'));
+CREATE TABLE c_full (id integer PRIMARY KEY DEFAULT nextval('shared_seq'));
+INSERT INTO c_full (id) SELECT g FROM generate_series(1, 5) g;
+"""
+
+
+async def test_owned_serials_read_as_identity_and_other_sequences_convert_safely(tmp_path):
+    db = await fresh(SERIALS)
+    try:
+        pulled = await pull(db)
+        gaps = "\n".join(pulled.gaps)
+        # the owned serials are identity columns with a note; they are no difference
+        assert "column s_empty.id uses a sequence" in gaps and "column s_full.id uses a sequence" in gaps
+        assert [s.summary for s in pulled.differences] == [
+            "drop default of c_empty.id", "make c_empty.id an identity column",
+            "drop default of c_full.id", "make c_full.id an identity column",
+        ]
+        # the conversion of a shared sequence reseeds the new identity, empty table or not
+        for step in pulled.differences:
+            await db.execute(step.sql)
+        for table, first in [("c_empty", 1), ("c_full", 6)]:
+            assert (await db._fetch_text(f"INSERT INTO {table} DEFAULT VALUES RETURNING id")) == [(str(first),)]
+    finally:
+        await db.close()
+
+
+async def test_rollback_refuses_a_baselined_migration_unless_forced(tmp_path):
+    db = await fresh("CREATE TABLE keep (id bigint PRIMARY KEY); INSERT INTO keep VALUES (1)")
+    try:
+        schema = tmp_path / "schema.prisma"
+        (await pull(db)).write(schema)
+        migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
+        await migrator.baseline()
+        assert await db._fetch_text("SELECT baseline FROM orm_migrations") == [("t",)]
+        with pytest.raises(orm.migrations.MigrationError, match="0001_initial was baselined"):
+            await migrator.downgrade()
+        assert await db._fetch_text("SELECT count(*) FROM keep") == [("1",)]
+        assert [m.name for m in await migrator.downgrade(force=True)] == ["0001_initial"]
+        assert await db._fetch_text("SELECT to_regclass('keep')::text") == [(None,)]
+    finally:
+        await db.close()
+
+
+async def test_an_older_migrations_table_gets_the_baseline_column(tmp_path):
+    db = await fresh(
+        "CREATE TABLE orm_migrations (name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());"
+        "CREATE TABLE keep (id bigint PRIMARY KEY)"
+    )
+    try:
+        schema = tmp_path / "schema.prisma"
+        (await pull(db)).write(schema)
+        migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
+        await migrator.baseline()
+        assert await db._fetch_text("SELECT baseline FROM orm_migrations") == [("t",)]
     finally:
         await db.close()
 
@@ -175,6 +237,8 @@ async def test_sqlite_pull_baseline_and_drift(tmp_path):
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
         assert not await migrator.drift()
+        with pytest.raises(orm.migrations.MigrationError, match="was baselined"):
+            await migrator.downgrade()
 
         await db.execute("CREATE INDEX extra_idx ON pet (name)")
         assert [s.summary for s in (await migrator.drift()).steps] == ["drop index extra_idx"]

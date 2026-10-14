@@ -225,7 +225,8 @@ A `belongsTo` relation compares with an instance of its target:
 `Post.author.eq(alice)` is `Post.authorId.eq(alice.id)` (no join), `.ne(alice)` the
 opposite, and `.eq(null)` is `IS NULL`. The types allow `eq` / `ne` only on to-one
 relations and only with the target's row type. At runtime, other relation kinds, other
-objects and an instance without a key throw `TypeError`.
+objects and an instance without a key throw `TypeError`. Other objects, including
+objects without a prototype, get a message naming the expected target model.
 
 ### Loading related objects
 
@@ -241,6 +242,8 @@ objects and an instance without a key throw `TypeError`.
   `load(Post.author.name)` keeps whole posts and gives a partial `author`; `load(Post.author.name, Post.author)` gives a whole `author`. `load(User.posts.title)` gives partial posts in `u.posts.cached`.
   Reading an unloaded field is a type error, and past a cast it throws `NotLoaded`.
 * `User.posts.objects` is the relation query set: `Post.objects` bound to `User.posts`.
+  Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
+  A bare path (including a deeper path through the relation) combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `QueryError`. Label the query set to request a separate result. A plain set or one that only adds `.load()` can share the path.
   `load(User.posts.objects.filter(...).orderBy(...).limit(2))` gives the related rows their own query (filtered, nested with `.load()`, or sliced per parent); they fill `u.posts.cached`.
   `.label("top")` puts them in a typed plain array attribute (`u.top: Post[]`) instead; `{ one: true }` stores the first row or `null`.
   `Comment.post.objects.asPrefetch()` loads a to-one relation with an `IN` query instead of a join.
@@ -447,7 +450,9 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   `UPDATE ... FROM (VALUES ...)`, falling back to `CASE`. All its batches run in one
   transaction.
 * On an instance: `post.update({...})` (refreshed from `RETURNING`), `post.delete()` and
-  `post.refresh(...fields)`.
+  `post.refresh(...fields)`. Fields must be model columns; an optional trailing options
+  argument must be a plain object (`Object.prototype`). Strings, arrays, `null`,
+  objects without a prototype and class instances throw `TypeError`.
 * A model with a composite primary key (`@@id([shop, id])`) has an object `pk` keyed by field name, `{ shop: 1, id: 7 }`.
   Writes, `refresh()`, `updateMany()`, `batches()` and `paginate()` use the whole key.
 * With the column-role extensions (`schema-extensions.md`): `@timestamps.updated_at` and
@@ -487,7 +492,8 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback rejects the `transaction()` promise, and the later callbacks do not run; the transaction is already committed.
-
+Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
+A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 
 #### Failed statements
 
@@ -512,8 +518,6 @@ await db.transaction(async () => {
 `db.transaction(fn, { savepoint: false })` joins the enclosing transaction with no savepoint.
 An error that leaves such a call marks the enclosing transaction failed.
 On an outermost call the option has no effect.
-Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
-A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 
 ### Protected writes
 
@@ -731,7 +735,7 @@ const post = await postFactory.create();
 ## Errors
 
 Errors map to classes with Python's names: `ORMError`, plus `DatabaseError`,
-`IntegrityError`, `LockNotAvailable`, `QueryError`, `SchemaError`, `NotConnected`,
+`IntegrityError`, `LockNotAvailable`, `TransactionAborted`, `QueryError`, `SchemaError`, `NotConnected`,
 `NotLoaded`, `TransactionRequired`, `DoesNotExist`, `MultipleObjectsReturned`,
 `MigrationError`, `WriteProtected` and `VersionConflict`. Values of the wrong type throw a `TypeError` before any SQL runs.
 
@@ -783,7 +787,7 @@ may hold a `data.ts` with `export async function run(db)`, run by `migrator.upgr
 const migrations = new Migrations("migrations", registry);   // or a schema path or source
 migrations.all(); migrations.plan(); migrations.make("add_tags");   // null when nothing changed
 const migrator = new Migrator(db, migrations);
-await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ steps: 1 });
+await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ steps: 1 });   // { target, force: true } reverts a baselined migration
 ```
 
 ## Decisions

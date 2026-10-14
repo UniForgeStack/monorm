@@ -244,6 +244,10 @@ def _derive(
                     inner.append(column)
             elif rest:
                 inner.append(RelationPath(target, rest, item._target))
+        if base is not None and any(isinstance(item, RelationPath) for _, item in entries) and (
+            base._filters or base._order or base._limit is not None or base._offset is not None or base._without_defaults
+        ):
+            raise ValueError(f"{path!r} has a path and a query set that changes its rows; label() the query set")
         if plain:
             qs = base if base is not None else target.objects
             prefetch.append(_Prefetch(path, qs.load(*inner) if inner else qs))
@@ -402,6 +406,10 @@ class QuerySet(Generic[M]):
         attribute ``.label(name)`` (``one=True``: the first row or ``None``).
         ``.as_prefetch()`` loads a to-one relation by ``IN (...)`` query instead of a join.
 
+        Relation query sets run only inside ``load()``; standalone reads and writes
+        raise ``TypeError``. Label a filtered, ordered or sliced set when also loading
+        a bare path through that relation.
+
         Calls add up. ``load()`` without items gives full instances again (it bypasses a
         default selection)."""
         if not items:
@@ -547,6 +555,7 @@ class QuerySet(Generic[M]):
         ``materialized`` forces ``[NOT] MATERIALIZED``. See :mod:`orm.cte`."""
         from .cte import Cte
 
+        self._standalone()
         return Cte(name, self, recursive=recursive, distinct=distinct, materialized=materialized)
 
     def join(self, cte: Cte, on: ConditionLike, *, outer: bool = False) -> Self:
@@ -632,6 +641,7 @@ class QuerySet(Generic[M]):
         ``.scalars()`` / ``.scalar()`` one column's values."""
         from .select import Select
 
+        self._standalone()
         return Select(self, items)
 
     # -- batches --------------------------------------------------------------------------
@@ -746,19 +756,27 @@ class QuerySet(Generic[M]):
         ctx.add_windows(ir)
         return ir, ctx
 
+    def _standalone(self) -> None:
+        if self._via is not None:
+            raise TypeError(f"a relation query set can only be used inside load(); use {self._model.__name__}.objects for a standalone query")
+
     def _select_ir(self, op: str, params: list[Any]) -> dict[str, Any]:
+        self._standalone()
         ir, ctx = self._query_ir(op, params)
         return ctx.finish(ir)
 
     def _subquery_ir(self, ctx: IRContext, what: str) -> dict[str, Any]:
+        self._standalone()
         if self._lock is not None:
             raise QueryError("a subquery can't lock rows")
         return self._query_ir("select", ctx.params, ctx)[0]
 
     def _cte_ir(self, params: list[Any], ctes: _Ctes) -> dict[str, Any]:
+        self._standalone()
         return self._query_ir("select", params, ctes=ctes)[0]
 
     def _mutation_ir(self, op: str, params: list[Any], values: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        self._standalone()
         if self._limit is not None or self._offset is not None:
             raise QueryError(f"{op}() is not supported on a sliced query set")
         if self._lock is not None:
@@ -786,6 +804,7 @@ class QuerySet(Generic[M]):
 
         Each call skips building the query (the expression tree, the IR and its JSON) and
         only binds the values. Build it once, e.g. at module level, and reuse it."""
+        self._standalone()
         return Prepared(self)
 
     def sql(self) -> str:
@@ -870,6 +889,7 @@ class QuerySet(Generic[M]):
         return self._check_rows(await self._fetch())
 
     def __await__(self) -> Generator[Any, None, list[M]]:
+        self._standalone()
         return cached(self, self._read, enabled=self is not self._model.__dict__.get("objects")).__await__()
 
     async def __aiter__(self) -> AsyncIterator[M]:
@@ -955,6 +975,7 @@ class QuerySet(Generic[M]):
         field) is one of ``ids``, by that value: ``{1: <Post 1>, 3: <Post 3>}``. Missing
         ids are left out. Without ``ids``, every row. Large id lists run as several
         queries of 10 000 ids."""
+        self._standalone()
         meta = self._model._meta
         if field is None and len(meta.key) > 1:
             return await self._in_bulk_by_key(ids)
@@ -1013,6 +1034,7 @@ class QuerySet(Generic[M]):
         Rows outside this query set's filters are left alone. One statement per
         ``batch_size`` rows (by default as many as fit), all in one transaction.
         ``await`` gives the number of rows updated; ``.returning()`` gives the rows."""
+        self._standalone()
         return UpdateMany(self, rows, batch_size)
 
     def delete(self) -> Delete[M]:
@@ -1052,6 +1074,7 @@ class QuerySet(Generic[M]):
     def insert(self, **values: Any) -> InsertOne[M]:
         """``INSERT`` one row; ``await`` gives the new instance with database defaults
         (id, timestamps) filled in. Chain ``.on_conflict(...)`` for an upsert."""
+        self._standalone()
         fields, rows, provided = prepare_rows(self._model, [values])
         return InsertOne(self, fields, rows, provided)
 
@@ -1118,6 +1141,7 @@ class QuerySet(Generic[M]):
 
         ``copy=True`` loads the rows with Postgres ``COPY`` instead, for large imports:
         ``await`` gives the row count, and ``on_conflict()`` is not available."""
+        self._standalone()
         fields, aligned, provided = prepare_rows(self._model, rows)
         if copy:
             if batch_size is not None:

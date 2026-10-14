@@ -280,6 +280,8 @@ SQL text client-side, so the limit doesn't apply to it.)
   Paths with a common prefix share its query.
 * To-one relations are joined. A path with a to-many hop is loaded with an `IN (...)` query from its first hop, and every item under that hop uses the query.
 * `User.posts.objects` is the relation query set: `Post.objects` (with its query-set class and query defaults) bound to `User.posts`.
+  Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
+  A bare path (including a deeper path through the relation) combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `ValueError`. Label the query set to request a separate result. A plain set or one that only adds `.load()` can share the path.
   It gives the related rows their own filters, ordering, slice and `.load(...)` (nested under it).
   As in Django, the rows fill the relation itself, so `user.posts.cached` and `await user.posts` then give the filtered rows; `user.posts.filter(...)` and other new queries still see every post.
   With `.label("recent")` they go to a plain list attribute (`user.recent`), and the relation stays unloaded; `.label("best", one=True)` stores the first row, or `None`.
@@ -972,7 +974,9 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback goes to the caller of `transaction()`, and the later callbacks do not run; the transaction is already committed.
-
+`on_commit` is a coroutine: without `await`, the callback is not registered (Python warns "coroutine was never awaited").
+Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
+A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.
 
 #### Failed statements
 
@@ -996,13 +1000,10 @@ async with db.transaction():
 `db.transaction(savepoint=False)` joins the enclosing transaction with no savepoint.
 An error that leaves such a block marks the enclosing transaction failed.
 On an outermost block the parameter has no effect.
-`on_commit` is a coroutine: without `await`, the callback is not registered (Python warns "coroutine was never awaited").
-Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
-A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.
 
 ### Database errors
 
-An `orm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`) has three attributes:
+An `orm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`, `TransactionAborted`) has three attributes:
 
 * `sqlstate`: the five-character SQLSTATE, for example `"23505"` (unique), `"23503"` (foreign key), `"23502"` (not null), `"23514"` (check).
   SQLite constraint failures get the same Postgres codes; other SQLite errors give `None`.
@@ -1319,7 +1320,7 @@ factory_boy has no async support, so a `SubFactory` with `create` gives a corout
 
 | Error | Raised when |
 |---|---|
-| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints) and `LockNotAvailable` (`nowait`) derive from it |
+| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints), `LockNotAvailable` (`nowait`) and `TransactionAborted` (failed transaction) derive from it |
 | `orm.QueryError` | the ORM rejects a query before SQL (an unsupported feature, a bad cursor) |
 | `orm.SchemaError` | a schema fails to compile or define |
 | `Model.DoesNotExist`, `Model.MultipleObjectsReturned` | `get()` finds no row or more than one (`orm.DoesNotExist` and `orm.MultipleObjectsReturned` are the bases) |
@@ -1382,6 +1383,7 @@ Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
    A migration may hold a `data.py` with `async def run(db)`, run by `Migrator.upgrade()`
    and `python -m orm migrate` in the migration's transaction
    (see [`schema.md`](schema.md#data-migrations)).
+   `Migrator.downgrade(..., force=True)` reverts a baselined migration, which it refuses otherwise.
 9. **Async only**, no sync API (see `PLAN.md`, Decisions).
 10. **No general plan cache.** [`performance.md`](performance.md) keeps compiled-plan
     caching out until profiling shows a benefit; `prepare()` and the driver's statement

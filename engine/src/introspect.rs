@@ -87,6 +87,7 @@ struct PgColumn {
     notnull: bool,
     default: Option<String>,
     identity: String,
+    owned_serial: bool,
     generated: String,
     comment: Option<String>,
     collation: Option<String>,
@@ -206,7 +207,11 @@ const COLUMNS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', a
      'type', CASE WHEN t.typtype = 'e' THEN chr(34) || replace(t.typname, chr(34), chr(34) || chr(34)) || chr(34) \
                   WHEN et.typtype = 'e' THEN chr(34) || replace(et.typname, chr(34), chr(34) || chr(34)) || chr(34) || '[]' \
                   ELSE format_type(a.atttypid, a.atttypmod) END, 'notnull', a.attnotnull, 'default', pg_get_expr(d.adbin, d.adrelid), \
-     'identity', a.attidentity::text, 'generated', a.attgenerated::text, 'comment', col_description(a.attrelid, a.attnum), \
+     'identity', a.attidentity::text, \
+     'owned_serial', d.oid IS NOT NULL AND EXISTS (SELECT 1 FROM pg_depend own JOIN pg_class sq ON sq.oid = own.objid AND sq.relkind = 'S' \
+         JOIN pg_depend dep ON dep.refobjid = sq.oid AND dep.classid = 'pg_attrdef'::regclass AND dep.objid = d.oid \
+         WHERE own.classid = 'pg_class'::regclass AND own.refobjid = a.attrelid AND own.refobjsubid = a.attnum AND own.deptype = 'a'), \
+     'generated', a.attgenerated::text, 'comment', col_description(a.attrelid, a.attnum), \
      'collation', CASE WHEN a.attcollation <> t.typcollation THEN co.collname END) ORDER BY a.attrelid, a.attnum), '[]') \
      FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
      JOIN pg_type t ON t.oid = a.atttypid LEFT JOIN pg_type et ON et.oid = t.typelem AND t.typcategory = 'A' \
@@ -441,12 +446,21 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         if let Some(coll) = &c.collation {
             gaps.push(format!("column {}.{} has collation {coll}; column collations are not supported", t.name, c.name));
         }
+        let serial = c.owned_serial && c.default.as_deref().is_some_and(|d| d.starts_with("nextval("));
+        if serial {
+            gaps.push(format!(
+                "column {}.{} uses a sequence ({}); it is read as an identity column, and the sequence stays as it is",
+                t.name,
+                c.name,
+                c.default.as_deref().unwrap_or("")
+            ));
+        }
         t.columns.push(Column {
             name: c.name,
             ty: c.ty,
             nullable: !c.notnull,
-            default: c.default,
-            identity: !c.identity.is_empty(),
+            default: if serial { None } else { c.default },
+            identity: serial || !c.identity.is_empty(),
             comment: c.comment,
         });
     }
@@ -604,7 +618,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     for o in others {
         let n = o.named;
         gaps.push(match o.kind.as_str() {
-            "rule" => format!("rule {} on {}: rules are not supported: {}", n.name, n.table.unwrap_or_default(), orm_core::migrate::model::normalize_ws(&n.def.unwrap_or_default())),
+            "rule" => format!("rule {} on {}: rules are not supported, so a database made from this schema behaves differently (a rule can rewrite a statement, e.g. keep rows that a DELETE would remove): {}", n.name, n.table.unwrap_or_default(), orm_core::migrate::model::normalize_ws(&n.def.unwrap_or_default())),
             "policy" => format!("row-level security policy {} on {}: policies are not supported", n.name, n.table.unwrap_or_default()),
             "sequence" => format!("sequence {}: a sequence not owned by a column is not supported", n.name),
             kind => format!("{kind} {}: domains, composite and range types are not supported", n.name),

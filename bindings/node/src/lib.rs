@@ -834,8 +834,10 @@ impl Engine {
     #[napi]
     pub fn begin<'env>(&self, env: &'env Env, tx: Option<&Transaction>) -> napi::Result<PromiseRaw<'env, Transaction>> {
         let conn = self.conn(tx);
+        let outer = tx.is_none();
         env.spawn_future(async move {
-            let inner = db::guard(conn.begin().await.map_err(db_tagged)?);
+            let inner = conn.begin().await.map_err(db_tagged)?;
+            let inner = if outer { db::guard(inner) } else { inner };
             Ok(Transaction { inner })
         })
     }
@@ -1054,7 +1056,7 @@ impl Engine {
         env.spawn_future(async move {
             let m = engine_migrate::Migration { name, path: path.into() };
             let tx = engine_migrate::begin_apply(&*driver, &m).await.map_err(engine_err)?;
-            Ok(tx.map(|inner| Transaction { inner }))
+            Ok(tx.map(|inner| Transaction { inner: db::guard(inner) }))
         })
     }
 
@@ -1075,6 +1077,7 @@ impl Engine {
         dir: String,
         steps: u32,
         target: Option<String>,
+        force: bool,
     ) -> napi::Result<PromiseRaw<'env, Vec<String>>> {
         let driver = self.driver.clone();
         let down = match target {
@@ -1082,7 +1085,7 @@ impl Engine {
             None => engine_migrate::Down::Steps(steps as usize),
         };
         env.spawn_future(async move {
-            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down).await.map_err(engine_err)?;
+            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down, force).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect())
         })
     }

@@ -206,6 +206,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   // -- IR -------------------------------------------------------------------------------------
 
   private build(params: unknown[], outer?: IRContext, ctes?: Ctes): [IR, IRContext] {
+    this.qs.assertStandalone();
     const [ir, ctx] = this.qs.queryIr("select", params, outer, ctes);
     ir["columns"] = this.items.map(([name, node]) => (node === null ? { t: "model" } : { t: "expr", expr: node.ir(ctx), name }));
     if (this.state.group.length) {

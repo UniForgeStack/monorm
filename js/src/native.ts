@@ -159,7 +159,7 @@ export interface NativeEngine extends NativeInspector {
   executeScript(statements: string[], tx: NativeTransaction | null): Promise<void>;
   migrationStatus(dir: string): Promise<string>;
   migrateUp(dir: string, target: string | null): Promise<string[]>;
-  migrateDown(dir: string, steps: number, target: string | null): Promise<string[]>;
+  migrateDown(dir: string, steps: number, target: string | null, force: boolean): Promise<string[]>;
   pullSchema(): Promise<string>;
   migrationDrift(dir: string): Promise<string>;
   migrateBaseline(dir: string): Promise<string>;
