@@ -885,13 +885,14 @@ impl Engine {
     }
 
     /// Reverts the last `steps` migrations, or every one after `target`; the names reverted.
-    #[pyo3(signature = (dir, steps = 1, target = None))]
+    #[pyo3(signature = (dir, steps = 1, target = None, force = false))]
     fn migrate_down<'py>(
         &self,
         py: Python<'py>,
         dir: PathBuf,
         steps: usize,
         target: Option<String>,
+        force: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         let down = match target {
@@ -899,7 +900,7 @@ impl Engine {
             None => engine_migrate::Down::Steps(steps),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let done = engine_migrate::downgrade(&*driver, &dir, down).await.map_err(engine_err)?;
+            let done = engine_migrate::downgrade(&*driver, &dir, down, force).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect::<Vec<_>>())
         })
     }

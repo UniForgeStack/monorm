@@ -1379,6 +1379,7 @@ Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
    A migration may hold a `data.py` with `async def run(db)`, run by `Migrator.upgrade()`
    and `python -m orm migrate` in the migration's transaction
    (see [`schema.md`](schema.md#data-migrations)).
+   `Migrator.downgrade(..., force=True)` reverts a baselined migration, which it refuses otherwise.
 9. **Async only**, no sync API (see `PLAN.md`, Decisions).
 10. **No general plan cache.** [`performance.md`](performance.md) keeps compiled-plan
     caching out until profiling shows a benefit; `prepare()` and the driver's statement

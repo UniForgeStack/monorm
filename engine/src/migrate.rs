@@ -92,13 +92,33 @@ fn lit(text: &str) -> String {
 }
 
 async fn ensure_table(conn: &dyn Executor) -> Result<()> {
-    let timestamp = match conn.dialect() {
-        Dialect::Postgres => "timestamptz NOT NULL DEFAULT now()",
-        Dialect::Sqlite => "text NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    let (timestamp, flag) = match conn.dialect() {
+        Dialect::Postgres => ("timestamptz NOT NULL DEFAULT now()", "boolean NOT NULL DEFAULT false"),
+        Dialect::Sqlite => ("text NOT NULL DEFAULT CURRENT_TIMESTAMP", "integer NOT NULL DEFAULT 0"),
     };
-    conn.batch(format!("CREATE TABLE IF NOT EXISTS {TABLE} (name text PRIMARY KEY, checksum text NOT NULL, applied_at {timestamp})"))
+    conn.batch(format!(
+        "CREATE TABLE IF NOT EXISTS {TABLE} (name text PRIMARY KEY, checksum text NOT NULL, applied_at {timestamp}, baseline {flag})"
+    ))
     .await?;
+    // A table made by an older version lacks `baseline`; add it once, under the migration lock.
+    let has = match conn.dialect() {
+        Dialect::Postgres => format!(
+            "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass({}) AND attname = 'baseline' AND NOT attisdropped",
+            lit(TABLE)
+        ),
+        Dialect::Sqlite => format!("SELECT 1 FROM pragma_table_info({}) WHERE name = 'baseline'", lit(TABLE)),
+    };
+    if conn.query_text(has).await?.is_empty() {
+        let add = format!("ALTER TABLE {TABLE} ADD COLUMN {}baseline {flag}", if conn.dialect() == Dialect::Postgres { "IF NOT EXISTS " } else { "" });
+        locked(conn, |_| Some(["SELECT 1".to_owned(), add])).await?;
+    }
     Ok(())
+}
+
+/// Applied migrations that `baseline` recorded without running them.
+async fn baselined(conn: &dyn Executor) -> Result<Vec<String>> {
+    let rows = conn.query_text(format!("SELECT name FROM {TABLE} WHERE baseline ORDER BY name")).await?;
+    Ok(rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())
 }
 
 /// name → (checksum, applied_at)
@@ -289,7 +309,12 @@ pub async fn applied_names(conn: &dyn Executor) -> Result<Vec<String>> {
 pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
     let first = list(dir)?.into_iter().next().ok_or_else(|| Error::Migration(format!("no migration in {}", dir.display())))?;
     ensure_table(conn).await?;
-    let record = format!("INSERT INTO {TABLE} (name, checksum) VALUES ({}, {})", lit(&first.name), lit(&first.checksum()?));
+    let record = format!(
+        "INSERT INTO {TABLE} (name, checksum, baseline) VALUES ({}, {}, {})",
+        lit(&first.name),
+        lit(&first.checksum()?),
+        if conn.dialect() == Dialect::Postgres { "true" } else { "1" }
+    );
     let mut applied = vec![];
     let ran = locked(conn, |now| {
         applied = now.keys().cloned().collect();
@@ -302,8 +327,10 @@ pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
     Ok(first)
 }
 
-/// Reverts applied migrations, newest first; gives the ones it reverted.
-pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down) -> Result<Vec<Migration>> {
+/// Reverts applied migrations, newest first; gives the ones it reverted. A baselined
+/// migration was never run here, so its `down.sql` would drop live tables: refused
+/// unless `force`, before anything is reverted.
+pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down, force: bool) -> Result<Vec<Migration>> {
     let applied: Vec<Migration> = status(conn, dir).await?.into_iter().filter(|s| s.applied).map(|s| s.migration).collect();
     let revert: Vec<Migration> = match down {
         Down::To(t) => {
@@ -315,6 +342,15 @@ pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down) -> Result<Ve
             applied.into_iter().skip(skip).collect()
         }
     };
+    if !force {
+        let marked = baselined(conn).await?;
+        if let Some(m) = revert.iter().find(|m| marked.contains(&m.name)) {
+            return Err(Error::Migration(format!(
+                "{} was baselined: the database had its schema before, so reverting it would drop live tables; pass --force to revert it anyway",
+                m.name
+            )));
+        }
+    }
     let mut done = vec![];
     for m in revert.into_iter().rev() {
         let scripts = [m.down_sql()?, format!("DELETE FROM {TABLE} WHERE name = {}", lit(&m.name))];

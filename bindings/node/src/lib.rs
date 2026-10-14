@@ -1077,6 +1077,7 @@ impl Engine {
         dir: String,
         steps: u32,
         target: Option<String>,
+        force: bool,
     ) -> napi::Result<PromiseRaw<'env, Vec<String>>> {
         let driver = self.driver.clone();
         let down = match target {
@@ -1084,7 +1085,7 @@ impl Engine {
             None => engine_migrate::Down::Steps(steps as usize),
         };
         env.spawn_future(async move {
-            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down).await.map_err(engine_err)?;
+            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down, force).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect())
         })
     }

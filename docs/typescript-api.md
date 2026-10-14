@@ -784,7 +784,7 @@ may hold a `data.ts` with `export async function run(db)`, run by `migrator.upgr
 const migrations = new Migrations("migrations", registry);   // or a schema path or source
 migrations.all(); migrations.plan(); migrations.make("add_tags");   // null when nothing changed
 const migrator = new Migrator(db, migrations);
-await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ steps: 1 });
+await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ steps: 1 });   // { target, force: true } reverts a baselined migration
 ```
 
 ## Decisions

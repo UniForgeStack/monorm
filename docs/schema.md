@@ -585,7 +585,7 @@ python -m orm makemigrations --check         # exit 1 if the schema changed with
 python -m orm makemigrations --empty data    # an empty migration for hand-written SQL or a data step
 python -m orm sqlmigrate 2 [--down]
 python -m orm migrate [target]               # apply pending migrations
-python -m orm rollback [--steps N | --to 0002_x | --to zero]
+python -m orm rollback [--steps N | --to 0002_x | --to zero] [--force]
 python -m orm showmigrations
 python -m orm pull [-o schema.prisma] [--force]   # the schema file from a live database
 python -m orm baseline                       # mark the first migration applied (after pull)
@@ -671,9 +671,13 @@ after the migration commits. An error rolls back the SQL, the data changes and t
 and drops the callbacks. `makemigrations --empty name` gives a folder for a step without
 schema changes.
 
-The models are the current ones, not the models at the time of the migration. A later
-migration can change them, and then the step fails on a new database. Use `db.execute`
-and `db.fetch` in a data step; use model queries only in a step that you delete later.
+The models are the current ones, not the models at the time of the migration. Model
+queries in a data step also pick up today's query defaults and extensions. A later model
+change can make an old step fail on a new database (a column that the migration did not
+add yet), or silently read fewer rows (a later default filter or soft delete on an
+existing column). There are no historical models. Use `db.execute` and `db.fetch` in a
+data step; use model queries only in a step that you delete later. `data.py` and
+`data.ts` are outside the checksum, so a step can be rewritten after it ran.
 
 * Python applies `data.py`: `Migrator.upgrade()`, or `python -m orm migrate`, which then
   runs through `Migrator` instead of the Rust runner. It imports the data modules of the
@@ -712,12 +716,19 @@ it with the database. It prints `The schema reproduces the database.`, or the st
 migration from the schema would still run. What the schema language cannot say is left
 out, printed, and listed at the end of the file as `// gap:` lines:
 
-* rules (`CREATE RULE`), views, row-level security policies, domains, composite and
+* rules (`CREATE RULE`; a gap that changes behaviour: a database made from the schema
+  runs the statement that a rule rewrote, for example it deletes rows that a soft-delete
+  rule keeps), views, row-level security policies, domains, composite and
   range types, partitioned tables, generated columns, column collations;
 * tables without a primary key, columns of a type
   without a schema type (`tstzrange`, `interval`, ...);
-* a `serial` column becomes an identity column (`@default(autoincrement())`), so drift
-  reports `drop default` and `make ... an identity column` for it;
+* a `serial` column (a `nextval` default on a sequence that the column owns) is read as
+  an identity column (`@default(autoincrement())`) with a gap note, so a baselined
+  Django database has no drift for it; the sequence keeps its name and its value. A
+  default on a shared or unowned sequence stays a default: the schema makes it an
+  identity, and drift reports `drop default` and `make ... an identity column`. The
+  SQL for that conversion reseeds the new identity above the largest existing key
+  (`setval(pg_get_serial_sequence(...))`), so the next insert does not collide;
 * a primary key not named `<table>_pkey`; `GENERATED ALWAYS` identities (read as
   `BY DEFAULT`); constraint triggers and triggers that call a function of another schema;
 * row-level security, `UNLOGGED` tables, table storage options, `INCLUDE` columns of a
@@ -741,8 +752,12 @@ It records that migration in `orm_migrations` and does not run it. The next
 an applied migration. It warns when the database differs from the migration, or when it
 cannot compare them.
 
-Do not roll back the baselined migration: its `down.sql` drops the tables that were in
-the database before, with their rows.
+`baseline` sets `baseline = true` on that row of `orm_migrations`. `rollback` refuses to
+revert a baselined row, names it, and reverts nothing; `--force` (`downgrade(force=True)`,
+`downgrade({ force: true })`) reverts it, and its `down.sql` then drops the tables that
+were in the database before, with their rows. The column is added to an older
+`orm_migrations` table the first time a migration command runs. A binary from before this
+change ignores the marker and still reverts a baselined row.
 
 `orm drift` compares the database with the snapshot of the newest migration. It exits 1
 when they differ and prints the steps that bring the database to the snapshot. A
