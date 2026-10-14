@@ -19,29 +19,40 @@ fn trigger(name: &str, value: serde_json::Value) -> Result<TriggerIr, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
+/// `, "v" = "v" + 1` for a model with a version field, else nothing.
+fn bump(version: Option<&str>) -> String {
+    version.map(|v| { let v = ident(v); format!(", {v} = {v} + 1") }).unwrap_or_default()
+}
+
 /// `BEFORE DELETE` of a live row: set the field and cancel the delete. A row that is
-/// already soft-deleted is deleted.
-fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str) -> Result<TriggerIr, String> {
+/// already soft-deleted is deleted. On PostgreSQL a delete inside a trigger (a foreign-key
+/// cascade included) is a hard delete: a cancelled cascade delete runs no foreign-key check
+/// and would leave an orphan.
+fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str, version: Option<&str>) -> Result<TriggerIr, String> {
     let keys = model.key_fields();
     if keys.is_empty() { return Err(format!("{} has no primary key", model.name)); }
     let pk = keys.iter().map(|k| Ok(format!("{0} = OLD.{0}", ident(column(model, k)?)))).collect::<Result<Vec<_>, String>>()?.join(" AND ");
     let (c, t) = (ident(column(model, field)?), ident(&model.table));
-    let body = match dialect {
-        Dialect::Postgres => format!("BEGIN UPDATE {t} SET {c} = now() WHERE {pk}; RETURN NULL; END;"),
-        Dialect::Sqlite => format!("UPDATE {t} SET {c} = CURRENT_TIMESTAMP WHERE {pk}; SELECT RAISE(IGNORE)"),
+    let bump = bump(version.map(|v| column(model, v)).transpose()?);
+    let (body, when) = match dialect {
+        Dialect::Postgres => (format!("BEGIN UPDATE {t} SET {c} = now(){bump} WHERE {pk}; RETURN NULL; END;"), format!("OLD.{c} IS NULL AND pg_trigger_depth() = 0")),
+        Dialect::Sqlite => (format!("UPDATE {t} SET {c} = CURRENT_TIMESTAMP{bump} WHERE {pk}; SELECT RAISE(IGNORE)"), format!("OLD.{c} IS NULL")),
     };
-    trigger("soft_delete", serde_json::json!({"timing": "before", "events": ["delete"], "when": format!("OLD.{c} IS NULL"), "body": body}))
+    trigger("soft_delete", serde_json::json!({"timing": "before", "events": ["delete"], "when": when, "body": body}))
 }
+
+type Child = (String, String, Option<String>, Vec<(String, String)>);
 
 /// `AFTER UPDATE OF` the field, when a row becomes soft-deleted: soft-delete the live rows
 /// of each soft-delete child whose relation cascades deletes. A child is
-/// `(table, soft-delete column, [(foreign key column, referenced parent column)])`.
-fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[(String, String, Vec<(String, String)>)]) -> Result<TriggerIr, String> {
+/// `(table, soft-delete column, version column, [(foreign key column, referenced parent column)])`.
+fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[Child]) -> Result<TriggerIr, String> {
     let c = ident(column(parent, field)?);
-    let statements: Vec<String> = children.iter().map(|(table, child, keys)| {
+    let statements: Vec<String> = children.iter().map(|(table, child, version, keys)| {
+        let bump = bump(version.as_deref());
         let (table, child) = (ident(table), ident(child));
         let link: Vec<String> = keys.iter().map(|(key, to)| format!("{} = NEW.{}", ident(key), ident(to))).collect();
-        format!("UPDATE {table} SET {child} = NEW.{c} WHERE {} AND {child} IS NULL", link.join(" AND "))
+        format!("UPDATE {table} SET {child} = NEW.{c}{bump} WHERE {} AND {child} IS NULL", link.join(" AND "))
     }).collect();
     let body = match dialect {
         Dialect::Postgres => format!("BEGIN {}; RETURN NULL; END;", statements.join("; ")),
@@ -73,16 +84,19 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             let Some(child_field) = ir.behavior.soft_delete.iter().find(|c| c.model == child.name) else { continue };
             for r in child.relations.iter().filter(|r| r.foreign_key && r.target == s.model && r.on_delete == Some(OnDelete::Cascade)) {
                 let keys = r.from.iter().map(|f| Ok(column(child, f)?.to_owned())).collect::<Result<Vec<_>, String>>()?;
-                children.push((child.table.clone(), column(child, &child_field.field)?.to_owned(), keys, r.to.clone()));
+                let version = ir.behavior.declarations.iter().find(|d| d.attribute == "locking.version" && d.model == child.name).and_then(|d| d.field.as_deref())
+                    .map(|f| column(child, f).map(str::to_owned)).transpose()?;
+                children.push((child.table.clone(), column(child, &child_field.field)?.to_owned(), version, keys, r.to.clone()));
             }
         }
         let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|st| st.models.iter_mut()));
         for model in models.filter(|m| m.name == s.model) {
-            let mut triggers = vec![delete_trigger(dialect, model, &s.field)?];
+            let version = ir.behavior.declarations.iter().find(|d| d.attribute == "locking.version" && d.model == model.name).and_then(|d| d.field.clone());
+            let mut triggers = vec![delete_trigger(dialect, model, &s.field, version.as_deref())?];
             if !children.is_empty() {
-                let resolved = children.iter().map(|(t, c, keys, to)| {
+                let resolved = children.iter().map(|(t, c, v, keys, to)| {
                     let pairs = keys.iter().zip(to).map(|(k, to)| Ok((k.clone(), column(model, to)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
-                    Ok((t.clone(), c.clone(), pairs))
+                    Ok((t.clone(), c.clone(), v.clone(), pairs))
                 }).collect::<Result<Vec<_>, String>>()?;
                 triggers.push(cascade_trigger(dialect, model, &s.field, &resolved)?);
             }
@@ -100,25 +114,28 @@ mod tests {
     use super::*;
 
     fn schema(dialect: &str, mode: &str, nullable: bool) -> SchemaIr {
+        let lock = |model: &str| serde_json::json!({"attribute": "locking.version", "model": model, "field": "version", "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": 4, "column": 3}});
         let at = |model: &str, line: u32| serde_json::json!({"attribute": "soft_delete.deleted_at", "model": model, "field": "deleted", "positional": [], "arguments": {"mode": mode}, "location": {"file": "schema.prisma", "line": line, "column": 3}});
         serde_json::from_value(serde_json::json!({
             "dialect": dialect,
             "models": [
                 {"name": "Author", "table": "authors", "fields": [
                     {"name": "id", "column": "id", "type": "int", "primary_key": true},
-                    {"name": "deleted", "column": "deleted_at", "type": "date_time", "nullable": nullable}
+                    {"name": "deleted", "column": "deleted_at", "type": "date_time", "nullable": nullable},
+                    {"name": "version", "column": "rev", "type": "int"}
                 ]},
                 {"name": "Book", "table": "books", "fields": [
                     {"name": "id", "column": "id", "type": "int", "primary_key": true},
                     {"name": "author_id", "column": "writer", "type": "int"},
-                    {"name": "deleted", "column": "removed_at", "type": "date_time", "nullable": true}
+                    {"name": "deleted", "column": "removed_at", "type": "date_time", "nullable": true},
+                    {"name": "version", "column": "lock", "type": "int"}
                 ], "relations": [{"name": "author", "kind": "one", "target": "Author", "from": "author_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]},
                 {"name": "Note", "table": "notes", "fields": [
                     {"name": "id", "column": "id", "type": "int", "primary_key": true},
                     {"name": "author_id", "column": "author_id", "type": "int"}
                 ], "relations": [{"name": "author", "kind": "one", "target": "Author", "from": "author_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}
             ],
-            "behavior": {"schema_contract": 1, "declarations": [at("Author", 3), at("Book", 9)]}
+            "behavior": {"schema_contract": 1, "declarations": [at("Author", 3), at("Book", 9), lock("Author"), lock("Book")]}
         })).unwrap()
     }
 
@@ -149,14 +166,14 @@ mod tests {
         for author in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
             let names: Vec<_> = author.triggers.iter().map(|t| t.name.as_str()).collect();
             assert_eq!(names, ["soft_delete", "soft_delete_cascade"]);
-            assert_eq!(author.triggers[0].when.as_deref(), Some("OLD.\"deleted_at\" IS NULL"));
-            assert_eq!(author.triggers[0].body.as_deref(), Some("BEGIN UPDATE \"authors\" SET \"deleted_at\" = now() WHERE \"id\" = OLD.\"id\"; RETURN NULL; END;"));
+            assert_eq!(author.triggers[0].when.as_deref(), Some("OLD.\"deleted_at\" IS NULL AND pg_trigger_depth() = 0"));
+            assert_eq!(author.triggers[0].body.as_deref(), Some("BEGIN UPDATE \"authors\" SET \"deleted_at\" = now(), \"rev\" = \"rev\" + 1 WHERE \"id\" = OLD.\"id\"; RETURN NULL; END;"));
             // Note has no soft delete, so only Book is soft-deleted with its author.
-            assert_eq!(author.triggers[1].body.as_deref(), Some("BEGIN UPDATE \"books\" SET \"removed_at\" = NEW.\"deleted_at\" WHERE \"writer\" = NEW.\"id\" AND \"removed_at\" IS NULL; RETURN NULL; END;"));
+            assert_eq!(author.triggers[1].body.as_deref(), Some("BEGIN UPDATE \"books\" SET \"removed_at\" = NEW.\"deleted_at\", \"lock\" = \"lock\" + 1 WHERE \"writer\" = NEW.\"id\" AND \"removed_at\" IS NULL; RETURN NULL; END;"));
         }
         assert_eq!(ir.models[1].triggers.len(), 1);
         let up = migration(&ir);
-        assert!(up.contains(&"CREATE TRIGGER \"soft_delete\" BEFORE DELETE ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted_at\" IS NULL) EXECUTE FUNCTION \"authors_soft_delete\"()".to_owned()), "{up:?}");
+        assert!(up.contains(&"CREATE TRIGGER \"soft_delete\" BEFORE DELETE ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted_at\" IS NULL AND pg_trigger_depth() = 0) EXECUTE FUNCTION \"authors_soft_delete\"()".to_owned()), "{up:?}");
         assert!(up.contains(&"CREATE TRIGGER \"soft_delete_cascade\" AFTER UPDATE OF \"deleted_at\" ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted_at\" IS NULL AND NEW.\"deleted_at\" IS NOT NULL) EXECUTE FUNCTION \"authors_soft_delete_cascade\"()".to_owned()), "{up:?}");
     }
 
@@ -182,13 +199,16 @@ mod tests {
         prepared(&mut ir).unwrap();
         let db = rusqlite::Connection::open_in_memory().unwrap();
         for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
-        db.execute_batch("INSERT INTO authors (id) VALUES (1), (2); INSERT INTO books (id, writer) VALUES (1, 1), (2, 2); INSERT INTO notes (id, author_id) VALUES (1, 1)").unwrap();
+        db.execute_batch("INSERT INTO authors (id, rev) VALUES (1, 0), (2, 0); INSERT INTO books (id, writer, lock) VALUES (1, 1, 0), (2, 2, 0); INSERT INTO notes (id, author_id) VALUES (1, 1)").unwrap();
         let deleted = |db: &rusqlite::Connection, sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(db.execute("DELETE FROM authors WHERE id = 1", []).unwrap(), 0);
         assert_eq!(deleted(&db, "SELECT count(*) FROM authors WHERE deleted_at IS NOT NULL"), 1);
         assert_eq!(deleted(&db, "SELECT count(*) FROM books WHERE removed_at IS NOT NULL AND writer = 1"), 1);
         assert_eq!(deleted(&db, "SELECT count(*) FROM books WHERE removed_at IS NULL"), 1);
         assert_eq!(deleted(&db, "SELECT count(*) FROM notes"), 1);
+        assert_eq!(deleted(&db, "SELECT rev FROM authors WHERE id = 1"), 1);
+        assert_eq!(deleted(&db, "SELECT lock FROM books WHERE id = 1"), 1);
+        assert_eq!(deleted(&db, "SELECT lock FROM books WHERE id = 2"), 0);
         db.execute_batch("PRAGMA foreign_keys = ON").unwrap();
         assert_eq!(db.execute("DELETE FROM authors WHERE id = 1", []).unwrap(), 1);
         assert_eq!(deleted(&db, "SELECT count(*) FROM authors"), 1);

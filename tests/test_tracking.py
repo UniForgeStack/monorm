@@ -201,6 +201,74 @@ async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
         await db.close()
 
 
+CASCADE_VERSIONED = """
+model Author {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "database")
+  books   Book[]
+  @@map("tracking_authors")
+}
+model Book {
+  id        Int       @id
+  author_id Int
+  author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
+  version   Int       @default(0) @locking.version
+  removed   DateTime? @soft_delete.deleted_at(mode: "database")
+  @@map("tracking_books")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_hard_delete_of_a_soft_deleted_parent_leaves_no_orphan(dialect):
+    db, models = await connect(dialect, CASCADE_VERSIONED)
+    Author, Book = models["Author"], models["Book"]
+    try:
+        authors, books = Author.objects.using(db), Book.objects.using(db)
+        await authors.insert_many([{"id": 1}])
+        assert await authors.filter(Author.id == 1).delete() == 1
+        await books.insert_many([{"id": 1, "author_id": 1}])
+        author = await authors.all_with_deleted().get(Author.id == 1)
+        if dialect == "postgres":
+            await author.hard_delete()
+            assert await books.all_with_deleted().count() == 0
+            assert await authors.all_with_deleted().count() == 0
+        else:
+            with pytest.raises(Exception, match="FOREIGN KEY constraint failed"):
+                await author.hard_delete()
+            assert await books.all_with_deleted().count() == 1
+            assert await authors.all_with_deleted().count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_the_soft_delete_triggers_bump_the_version(dialect):
+    db, models = await connect(dialect, CASCADE_VERSIONED)
+    Author, Book = models["Author"], models["Book"]
+    try:
+        authors, books = Author.objects.using(db), Book.objects.using(db)
+        await authors.insert_many([{"id": 1}, {"id": 2}])
+        await books.insert_many([{"id": 1, "author_id": 1}, {"id": 2, "author_id": 2}])
+        cascaded = await books.get(Book.id == 1)
+        raw = await books.get(Book.id == 2)
+        assert await authors.filter(Author.id == 1).delete() == 1
+        await db.execute("DELETE FROM tracking_books WHERE id = 2")
+        stored = {b.id: b.version for b in await books.all_with_deleted()}
+        assert stored == {1: 1, 2: 1}
+        for stale in (cascaded, raw):
+            with pytest.raises(orm.VersionConflict):
+                await stale.update(removed=None)
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 @requires("soft-delete")
 @requires("optimistic-locking")
 @pytest.mark.parametrize("dialect", DATABASES)

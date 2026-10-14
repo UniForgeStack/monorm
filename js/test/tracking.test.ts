@@ -147,6 +147,59 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  const cascadeVersioned = `
+model Author {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "database")
+  books   Book[]
+  @@map("tracking_node_cascade_authors")
+}
+model Book {
+  id        Int       @id
+  author_id Int
+  author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
+  version   Int       @default(0) @locking.version
+  removed   DateTime? @soft_delete.deleted_at(mode: "database")
+  @@map("tracking_node_cascade_books")
+}`;
+  const cascadeSkip = { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") };
+
+  test(`a hard delete of a soft-deleted parent leaves no orphan (${dialect})`, cascadeSkip, async () => {
+    const [db, models] = await open(dialect, cascadeVersioned);
+    const Author = models.Author!, authors = Author.objects.using(db), books = models.Book!.objects.using(db);
+    try {
+      await authors.insertMany([{ id: 1 }]);
+      assert.equal(await authors.filter(Author.id.eq(1)).delete(), 1);
+      await books.insertMany([{ id: 1, authorId: 1 }]);
+      const author = await authors.allWithDeleted().get(Author.id.eq(1));
+      if (dialect === "postgres") {
+        await (author as SoftDeletable).hardDelete();
+        assert.equal(await books.allWithDeleted().count(), 0);
+        assert.equal(await authors.allWithDeleted().count(), 0);
+      } else {
+        await assert.rejects((author as SoftDeletable).hardDelete(), /FOREIGN KEY constraint failed/);
+        assert.equal(await books.allWithDeleted().count(), 1);
+        assert.equal(await authors.allWithDeleted().count(), 1);
+      }
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`the soft-delete triggers bump the version (${dialect})`, cascadeSkip, async () => {
+    const [db, models] = await open(dialect, cascadeVersioned);
+    const Author = models.Author!, Book = models.Book!, authors = Author.objects.using(db), books = Book.objects.using(db);
+    try {
+      await authors.insertMany([{ id: 1 }, { id: 2 }]);
+      await books.insertMany([{ id: 1, authorId: 1 }, { id: 2, authorId: 2 }]);
+      const cascaded = await books.get(Book.id.eq(1));
+      const raw = await books.get(Book.id.eq(2));
+      assert.equal(await authors.filter(Author.id.eq(1)).delete(), 1);
+      await db.execute("DELETE FROM tracking_node_cascade_books WHERE id = 2");
+      const stored = (await books.allWithDeleted().orderBy(Book.id.asc()).all()).map((b: { version: number }) => b.version);
+      assert.deepEqual(stored, [1, 1]);
+      for (const stale of [cascaded, raw]) await assert.rejects(stale.update({ removed: null }), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
