@@ -1025,13 +1025,14 @@ class QuerySet(Generic[M]):
         """``DELETE`` every matching row also for a model with
         ``@soft_delete.deleted_at``. In database mode, the trigger soft-deletes a live
         row, so this deletes only rows that are already soft-deleted."""
-        return Delete.build(self, hard=True)
+        return Delete.build(self.without_defaults(), hard=True)
 
     def undelete(self) -> Update[M]:
         """Clear the soft-delete field of the matching soft-deleted rows. ``await``
-        gives the number of rows restored; ``.returning()`` gives the rows."""
+        gives the number of rows restored; ``.returning()`` gives the rows. It drops the
+        schema defaults, like ``all_with_deleted()``."""
         field = self._soft_delete_ref()
-        return self.filter(field.is_not_null()).update(**{field._field.name: None})
+        return self.without_defaults().filter(field.is_not_null()).update(**{field._field.name: None})
 
     def all_with_deleted(self) -> Self:
         """The rows with the soft-deleted ones: the query set without the schema

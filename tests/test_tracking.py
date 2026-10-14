@@ -146,6 +146,61 @@ async def test_a_soft_deleted_instance_can_be_undeleted(dialect):
         await db.close()
 
 
+FILTERED_SOFT_DELETE = """
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted == null")
+  @@map("tracking_filtered_docs")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_undelete_and_hard_delete_ignore_the_default_filter(dialect):
+    db, models = await connect(dialect, FILTERED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1}, {"id": 2}, {"id": 3}])
+        assert await docs.filter(Doc.id == 1).delete() == 1
+        assert await docs.filter(Doc.id == 1).undelete() == 1
+        assert await docs.filter(Doc.id.in_([1, 2])).delete() == 2
+        assert await docs.undelete() == 2
+        assert await docs.count() == 3
+        await docs.filter(Doc.id.in_([1, 2])).delete()
+        assert await docs.filter(Doc.id == 1).hard_delete() == 1
+        (doc,) = await docs.all_with_deleted().filter(Doc.id == 2)
+        await doc.hard_delete()
+        assert await docs.all_with_deleted().count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
+    db, models = await connect(dialect, FILTERED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1}])
+        doc = await docs.get(Doc.id == 1)
+        assert await docs.filter(Doc.id == 1).delete() == 1
+        with pytest.raises(orm.VersionConflict):
+            await doc.update(deleted=None)
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 @requires("soft-delete")
 @requires("optimistic-locking")
 @pytest.mark.parametrize("dialect", DATABASES)

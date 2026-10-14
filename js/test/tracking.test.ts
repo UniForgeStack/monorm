@@ -108,6 +108,45 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  const filteredSoftDelete = `
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted == null")
+  @@map("tracking_node_filtered_docs")
+}`;
+  const filteredSkip = { skip: !["soft-delete", "optimistic-locking", "query-defaults"].every((c) => capabilities.includes(c)) };
+
+  test(`undelete and hardDelete ignore the default filter (${dialect})`, filteredSkip, async () => {
+    const [db, models] = await open(dialect, filteredSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      assert.equal(await docs.filter(Doc.id.eq(1)).delete(), 1);
+      assert.equal(await docs.filter(Doc.id.eq(1)).undelete(), 1);
+      assert.equal(await docs.filter(Doc.id.in([1, 2])).delete(), 2);
+      assert.equal(await docs.undelete(), 2);
+      assert.equal(await docs.count(), 3);
+      await docs.filter(Doc.id.in([1, 2])).delete();
+      assert.equal(await docs.filter(Doc.id.eq(1)).hardDelete(), 1);
+      const doc = await docs.allWithDeleted().get(Doc.id.eq(2));
+      await (doc as SoftDeletable).hardDelete();
+      assert.equal(await docs.allWithDeleted().count(), 1);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an instance update after a query-set soft delete throws VersionConflict (${dialect})`, filteredSkip, async () => {
+    const [db, models] = await open(dialect, filteredSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }]);
+      const doc = await docs.get(Doc.id.eq(1));
+      assert.equal(await docs.filter(Doc.id.eq(1)).delete(), 1);
+      await assert.rejects(doc.update({ deleted: null }), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);

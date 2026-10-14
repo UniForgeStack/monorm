@@ -1364,7 +1364,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const returning = options.returning ?? false;
     const plan = () => {
       const params: unknown[] = [];
-      const ir = { ...this.mutationIr("delete", params), hard: true, returning };
+      const ir = { ...this.withoutDefaults().mutationIr("delete", params), hard: true, returning };
       return { ir, params };
     };
     return new InspectedStatement(AsyncResource.bind(() => {
@@ -1382,7 +1382,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   undelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
     const statement = () => {
       const field = this.softDeleteField();
-      return this.filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
+      return this.withoutDefaults().filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
     };
     return new InspectedStatement(AsyncResource.bind(async () => await statement()), AsyncResource.bind(() => statement().inspect()));
   }
