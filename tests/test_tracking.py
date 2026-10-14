@@ -408,3 +408,50 @@ async def test_an_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
     finally:
         await db.drop_tables()
         await db.close()
+
+
+FILTERED_JOIN_MODEL = """
+model Post {
+  id   Int   @id
+  tags Tag[] @relation(through: PostTag, through_fields: [post, tag])
+  @@map("tracking_join_posts")
+}
+model Tag {
+  id    Int    @id
+  name  String
+  posts Post[] @relation(through: PostTag, through_fields: [tag, post])
+  @@map("tracking_join_tags")
+}
+model PostTag {
+  id      Int       @id
+  post_id Int
+  tag_id  Int
+  post    Post      @relation(fields: [post_id], references: [id])
+  tag     Tag       @relation(fields: [tag_id], references: [id])
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted == null")
+  @@map("tracking_join_post_tags")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect):
+    db, models = await connect(dialect, FILTERED_JOIN_MODEL)
+    Post, Tag, PostTag = models["Post"], models["Tag"], models["PostTag"]
+    try:
+        await Post.objects.using(db).insert_many([{"id": 1}])
+        await Tag.objects.using(db).insert_many([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}])
+        await PostTag.objects.using(db).insert_many([{"id": 1, "post_id": 1, "tag_id": 1}, {"id": 2, "post_id": 1, "tag_id": 2}])
+        assert await PostTag.objects.using(db).filter(PostTag.id == 2).delete() == 1
+        posts = Post.objects.using(db)
+        (post,) = await posts.load(Post.tags)
+        assert [t.name for t in post.tags.cached] == ["a"]
+        assert await posts.filter(Post.tags.name == "b").count() == 0
+        assert await posts.filter(Post.tags.name == "a").count() == 1
+        assert await posts.without_defaults().filter(Post.tags.name == "b").count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
