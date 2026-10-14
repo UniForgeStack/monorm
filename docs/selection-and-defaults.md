@@ -128,6 +128,8 @@ await scope({ shop: shop.id }, async () => { const orders = await Order.objects.
 * The frontend sends the scope values as parameters of each statement; the value is bound with the type of the column it is compared with.
 * Closed by default: a read, count, exists, update, delete or `update_many` on a model whose default filter reads `scope.shop` raises `QueryError` when no enclosing `scope()` sets `shop`. Relation hops, prefetches and joined targets of that model check it too.
   The error names each model whose default filter reads the value.
+* A NULL scope value (`None`, `null`, `undefined`) raises `QueryError` ("scope.shop is None/null") when a default filter reads it, because `shop_id = NULL` would match no rows.
+  `0`, `""` and `false` are valid values. To read the rows with a NULL `shop_id`, use `without_defaults()` and filter on `shop_id == None`.
 * `sql()`, prepared queries and `prepare_update()` / `prepareUpdate()` read the scope as the query does.
 * `without_defaults()` / `withoutDefaults()` skips the filter and the check.
 * Inner `scope()` values replace outer ones.

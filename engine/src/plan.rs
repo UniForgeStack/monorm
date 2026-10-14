@@ -1189,7 +1189,10 @@ impl<'s> Planner<'s> {
                 }
             }
             Expr::Like { item, pattern, ci, neg } => {
+                // LIKE on bpchar ignores the padding for no pattern but a literal prefix; compare the text.
+                let padded = self.target.dialect == Dialect::Postgres && self.hint_of(item).field.is_some_and(is_char_n);
                 let item = self.value(item, Hint::default())?;
+                let item = if padded { template(self.target.dialect, "CAST($1 AS text)", vec![item]) } else { item };
                 let text = match pattern.as_ref() {
                     Expr::Param { i } => self.params.text(self.param(*i)?)?,
                     _ => return Err(Error::query("LIKE pattern must be a string parameter")),
@@ -1369,7 +1372,13 @@ impl<'s> Planner<'s> {
                 self.resolve(path, name)?
             },
             Expr::Param { i } => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
-            Expr::Scope { name } => bind(self.params.value(self.scope_param(name)?, hint.ty)?, hint.field),
+            Expr::Scope { name } => {
+                let value = self.params.value(self.scope_param(name)?, hint.ty)?;
+                if !value.is_some() {
+                    return Err(Error::query(format!("scope.{name} is None/null: a NULL scope value would match no rows; use a filter on the column for NULL rows")));
+                }
+                bind(value, hint.field)
+            }
             Expr::Const { value } => SExpr::val(*value),
             Expr::Int { value } => SExpr::cust(value.to_string()),
             Expr::Text { value } => bind(sea_query::Value::from(value.clone()), hint.field),

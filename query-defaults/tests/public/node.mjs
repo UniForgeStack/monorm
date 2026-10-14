@@ -26,6 +26,12 @@ async function run(provider, url) {
     await Scoped.objects.using(db).insertMany([{ shopId: 1 }, { shopId: 2 }]);
     await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop/);
     await scope({ shop: 2 }, async () => assert.deepEqual((await Scoped.objects.using(db)).map((r) => r.shopId), [2]));
+    await scope({ shop: null }, async () => {
+      await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop is None\/null/);
+      assert.equal(await Scoped.objects.using(db).withoutDefaults().count(), 2);
+    });
+    await scope({ shop: undefined }, async () => assert.rejects(Scoped.objects.using(db).count(), /undefined is not a value/));
+    await scope({ shop: 0 }, async () => assert.equal(await Scoped.objects.using(db).count(), 0));
   } finally {
     await db.dropTables();
     await db.close();
