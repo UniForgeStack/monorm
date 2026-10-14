@@ -16,6 +16,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         if !matches!(field.ty, ColType::Int | ColType::BigInt) || field.array || field.nullable || field.primary_key {
             return Err(error(d, format!("{}.{name} must be a required Int or BigInt field", d.model)));
         }
+        if model.primary_key.contains(&name) { return Err(error(d, format!("{}.{name} must not be part of the @@id", d.model))); }
         if ir.behavior.versions.iter().any(|v| v.model == d.model) { return Err(error(d, format!("{} has more than one version field", d.model))); }
         ir.behavior.versions.push(VersionField { model: d.model.clone(), field: name });
     }
@@ -51,5 +52,13 @@ mod tests {
     fn a_version_field_is_an_integer() {
         let err = prepare(&mut schema("string")).unwrap_err();
         assert_eq!(err, "schema.prisma:3:3: @locking.version: Post.version must be a required Int or BigInt field");
+    }
+
+    #[test]
+    fn a_version_field_in_a_composite_id_is_rejected() {
+        let mut ir = schema("int");
+        ir.models[0].primary_key = vec!["id".into(), "version".into()];
+        let err = prepare(&mut ir).unwrap_err();
+        assert_eq!(err, "schema.prisma:3:3: @locking.version: Post.version must not be part of the @@id");
     }
 }

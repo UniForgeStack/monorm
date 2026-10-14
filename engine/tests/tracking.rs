@@ -152,3 +152,43 @@ model Employee {{
     #[cfg(feature = "optimistic-locking")]
     assert!(check("version Int @default(0) @locking.version").unwrap_err().to_string().contains("Employee: @locking.version"));
 }
+
+#[test]
+fn a_role_with_a_wrong_target_is_rejected_at_definition() {
+    let mut cases: Vec<(&str, Json, &str)> = vec![];
+    #[cfg(feature = "updated-at")]
+    {
+        cases.push(("updated_at", json!([{"model":"Post","field":"views"}]), "wrong type"));
+        cases.push(("updated_at", json!([{"model":"Post","field":"tags"}]), "wrong type"));
+        cases.push(("updated_at", json!([{"model":"Nope","field":"changed"}]), "unknown model"));
+        cases.push(("updated_at", json!([{"model":"Post","field":"nope"}]), "nope"));
+    }
+    #[cfg(feature = "soft-delete")]
+    {
+        cases.push(("soft_delete", json!([{"model":"Post","field":"changed"}]), "wrong type"));
+        cases.push(("soft_delete", json!([{"model":"Post","field":"tags"}]), "wrong type"));
+        cases.push(("soft_delete", json!([{"model":"Post","field":"deleted"},{"model":"Post","field":"deleted"}]), "one soft-delete field only"));
+        cases.push(("soft_delete", json!([{"model":"Nope","field":"deleted"}]), "unknown model"));
+        cases.push(("soft_delete", json!([{"model":"Post","field":"nope"}]), "nope"));
+    }
+    #[cfg(feature = "optimistic-locking")]
+    {
+        cases.push(("versions", json!([{"model":"Post","field":"changed"}]), "wrong type"));
+        cases.push(("versions", json!([{"model":"Post","field":"tags"}]), "wrong type"));
+        cases.push(("versions", json!([{"model":"Post","field":"version"},{"model":"Post","field":"views"}]), "one version field only"));
+        cases.push(("versions", json!([{"model":"Nope","field":"version"}]), "unknown model"));
+        cases.push(("versions", json!([{"model":"Post","field":"nope"}]), "nope"));
+    }
+    for (key, value, expected) in cases {
+        let ir = json!({"models":[{"name":"Post","table":"posts","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"views","column":"views","type":"int"},
+            {"name":"tags","column":"tags","type":"int","array":true},
+            {"name":"changed","column":"changed_at","type":"date_time"},
+            {"name":"deleted","column":"deleted_at","type":"date_time","nullable":true},
+            {"name":"version","column":"version","type":"int"}
+        ]}],"behavior":{"schema_contract":1, key: value.clone()}});
+        let error = Schema::from_ir(serde_json::from_value(ir).unwrap()).err().unwrap_or_else(|| panic!("{key} {value} was accepted"));
+        assert!(error.contains(expected), "{key} {value}: {error}");
+    }
+}
