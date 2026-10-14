@@ -347,6 +347,10 @@ test("select the model with aggregates over relations", async () => {
   const rows = await User.objects.select({ user: User, posts: func.count(User.posts), views: func.sum(User.posts.views) }).orderBy(User.id).all();
   assert.deepEqual(rows.map((r) => [r.user.name, r.posts, r.views]), [["Alice", 2n, 55n], ["Bob", 1n, 100n], ["Carol", 0n, null]]);
   assert.equal(rows[0]!.user.id, alice.id);
+  const page = User.objects.select({ user: User, posts: func.count(User.posts), views: func.sum(User.posts.views) })
+    .orderBy(User.name).offset(1).limit(2);
+  assert.equal(page.inspect().statements[0]!.correlatedCount, 2);
+  assert.deepEqual((await page.all()).map((r) => [r.user.name, r.posts, r.views]), [["Bob", 1n, 100n], ["Carol", 0n, null]]);
   // Per-aggregate filter and distinct inside one shared subquery, next to another relation.
   const shared = await User.objects
     .select({ name: User.name, popular: func.count(User.posts, { filter: User.posts.views.gt(10) }), views: func.sum(User.posts.views, { filter: User.posts.views.gt(10) }), d: func.count(User.posts.views, { distinct: true }), c: func.count(User.comments) })

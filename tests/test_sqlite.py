@@ -73,6 +73,10 @@ async def test_array_agg_is_postgres_only(sqlite):
     assert result.statements[0].joins_count == 0
     assert result.statements[0].correlated_count == 2
     assert result.statements[0].uncorrelated_count == 0
+    page = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).order_by(Author.name).limit(10).offset(1)
+    assert page.inspect().statements[0].correlated_count == 2
+    assert "LATERAL" not in page.sql()
+    assert await page == []
 
 
 async def test_bulk_writes(sqlite, observe_queries):
