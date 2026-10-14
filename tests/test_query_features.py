@@ -818,3 +818,87 @@ async def test_prefetch_beyond_the_parameter_limit(clean, observe_queries):
     assert len(events) == 3  # root + two key batches, rather than 70,000 queries
     assert len(users) == 70000
     assert sum(len(u.posts.cached) for u in users) == 7
+
+
+@pytest.mark.parametrize("operation", [
+    "await", "async_for", "iterate", "batches", "paginate", "first", "last", "get",
+    "count", "exists", "in_bulk", "in_bulk_empty", "get_or_insert", "prepare",
+    "update", "update_many", "delete", "insert", "insert_many", "copy", "select",
+    "cte", "subquery", "explain", "sql", "inspect",
+])
+async def test_bound_query_refuses_standalone(clean, operation):
+    qs = User.posts.objects.filter(Post.views >= 0)
+    with pytest.raises(TypeError, match="inside load"):
+        if operation == "await":
+            await qs
+        elif operation == "async_for":
+            _ = [row async for row in qs]
+        elif operation in ("iterate", "batches"):
+            _ = [row async for row in getattr(qs, operation)()]
+        elif operation == "paginate":
+            await qs.paginate(first=1)
+        elif operation == "get_or_insert":
+            await qs.get_or_insert(id=1)
+        elif operation == "in_bulk_empty":
+            await qs.in_bulk([])
+        elif operation == "update":
+            await qs.update(title="blocked")
+        elif operation == "update_many":
+            await qs.update_many([])
+        elif operation == "insert":
+            await qs.insert()
+        elif operation in ("insert_many", "copy"):
+            await qs.insert_many([], copy=operation == "copy")
+        elif operation == "select":
+            await qs.select(Post.id)
+        elif operation == "cte":
+            qs.cte("bound")
+        elif operation == "subquery":
+            await User.objects.filter(exists(qs))
+        elif operation in ("prepare", "sql", "inspect"):
+            getattr(qs, operation)()
+        else:
+            await getattr(qs, operation)()
+
+
+@pytest.mark.parametrize("change", ["filter", "order", "limit", "offset", "defaults"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_load_path_query_collision(change, nested, reverse):
+    qs = {
+        "filter": User.posts.objects.filter(Post.views > 10),
+        "order": User.posts.objects.order_by(Post.id),
+        "limit": User.posts.objects[:1],
+        "offset": User.posts.objects[1:],
+        "defaults": User.posts.objects.without_defaults(),
+    }[change]
+    path = User.posts.comments if nested else User.posts
+    items = (qs, path) if reverse else (path, qs)
+    with pytest.raises(ValueError, match=r"label\(\)"):
+        User.objects.load(*items)
+    with pytest.raises(ValueError, match=r"label\(\)"):
+        User.objects.load(items[0]).load(items[1])
+    # Separate labels intentionally request different sets of rows.
+    User.objects.load(path, qs.label("chosen"))
+
+
+async def test_load_plain_path_and_query_and_without_related(clean):
+    await seed()
+    for qs in (User.posts.objects, User.posts.objects.load(Post.comments)):
+        users = await User.objects.load(User.posts, qs).order_by(User.id)
+        assert [len(u.posts.cached) for u in users] == [3, 1, 0]
+    query = Post.objects.load(Post.title, Post.author, Post.comments).without_related().order_by(Post.id)
+    posts = await query
+    assert [p.title for p in posts] == ["a1", "a2", "a3", "b1"]
+    assert [len(p.comments.cached) for p in posts] == [0, 2, 0, 1]
+    with pytest.raises(orm.NotLoaded):
+        _ = posts[0].author
+    with pytest.raises(orm.NotLoaded):
+        _ = posts[0].body
+    # Both uses of the same bound set still work after a rejected standalone run.
+    bound = User.posts.objects.load(Post.comments)
+    with pytest.raises(TypeError):
+        await bound
+    users = await User.objects.order_by(User.id)
+    await orm.prefetch(users, User.posts, bound)
+    assert [len(u.posts.cached) for u in users] == [3, 1, 0]

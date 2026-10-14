@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { NotLoaded, QueryError, connect, exists, func, getDatabase, outer, window } from "../src/index.js";
+import { NotLoaded, QueryError, connect, exists, func, getDatabase, outer, prefetch, window } from "../src/index.js";
 import { DB } from "../src/model.js";
 import { Comment, Post, User } from "./blog/models.js";
 import { DATABASE_URL, useDatabase } from "./helpers.js";
@@ -537,4 +537,78 @@ test("min() and avg() take a FILTER", async () => {
     .orderBy(Post.authorId)
     .all();
   assert.deepEqual(rows.map((r) => [r.lo, Number(r.mean)]), [[20, 35], [100, 100]]);
+});
+
+for (const operation of [
+  "await", "asyncFor", "iterate", "batches", "paginate", "first", "last", "get", "count", "exists",
+  "inBulk", "inBulkEmpty", "getOrInsert", "prepare", "update", "updateMany", "delete", "insert",
+  "insertMany", "copy", "select", "cte", "subquery", "explain", "sql", "inspect",
+]) {
+  test(`bound query refuses standalone ${operation}`, async () => {
+    const qs = User.posts.objects.filter(Post.views.gte(0));
+    await assert.rejects(async () => {
+      switch (operation) {
+        // @ts-expect-error bound query sets cannot be awaited directly
+        case "await": await qs; break;
+        case "asyncFor": for await (const row of qs) void row; break;
+        case "iterate": for await (const row of qs.iterate()) void row; break;
+        case "batches": for await (const batch of qs.batches()) void batch; break;
+        case "paginate": await qs.paginate({ first: 1 }); break;
+        case "first": await qs.first(); break;
+        case "last": await qs.last(); break;
+        case "get": await qs.get(); break;
+        case "count": await qs.count(); break;
+        case "exists": await qs.exists(); break;
+        case "inBulk": await qs.inBulk(); break;
+        case "inBulkEmpty": await qs.inBulk([]); break;
+        case "getOrInsert": await qs.getOrInsert({ id: 1n }); break;
+        case "prepare": qs.prepare(); break;
+        case "update": await qs.update({ title: "blocked" }); break;
+        case "updateMany": await qs.updateMany([]); break;
+        case "delete": await qs.delete(); break;
+        case "insert": await qs.insert({} as never); break;
+        case "insertMany": await qs.insertMany([]); break;
+        case "copy": await qs.insertMany([], { copy: true }); break;
+        case "select": await qs.select({ id: Post.id }); break;
+        case "cte": qs.cte("bound"); break;
+        case "subquery": await User.objects.filter(exists(qs)); break;
+        case "explain": await qs.explain(); break;
+        case "sql": qs.sql(); break;
+        case "inspect": qs.inspect(); break;
+      }
+    }, { name: "TypeError", message: /inside load/ });
+  });
+}
+
+test("load rejects paths combined with a query that changes their rows", () => {
+  const changes = [
+    User.posts.objects.filter(Post.views.gt(10)), User.posts.objects.orderBy(Post.id),
+    User.posts.objects.limit(1), User.posts.objects.offset(1), User.posts.objects.withoutDefaults(),
+  ];
+  for (const qs of changes) for (const path of [User.posts, User.posts.comments]) {
+    assert.throws(() => User.objects.load(path, qs), /label\(\)/);
+    assert.throws(() => User.objects.load(qs, path), /label\(\)/);
+    assert.throws(() => User.objects.load(path).load(qs), /label\(\)/);
+    assert.throws(() => User.objects.load(qs).load(path), /label\(\)/);
+    User.objects.load(path, qs.label("chosen"));
+  }
+});
+
+test("load combines plain paths and sets; withoutRelated keeps IN loads and root fields", async () => {
+  await seed();
+  for (const qs of [User.posts.objects, User.posts.objects.load(Post.comments)]) {
+    const users = await User.objects.load(User.posts, qs).orderBy(User.id);
+    assert.deepEqual(users.map((u) => u.posts.cached.length), [3, 1, 0]);
+  }
+  const posts = await Post.objects.load(Post.title, Post.author, Post.comments).withoutRelated().orderBy(Post.id);
+  assert.deepEqual(posts.map((p) => p.title), ["a1", "a2", "a3", "b1"]);
+  assert.deepEqual(posts.map((p) => p.comments.cached.length), [0, 2, 0, 1]);
+  assert.throws(() => posts[0]!.author, NotLoaded);
+  // A rejected standalone run doesn't change the bound set or its nested loads.
+  const bound = User.posts.objects.load(Post.comments);
+  // @ts-expect-error bound query sets cannot be awaited directly
+  await assert.rejects(async () => { await bound; }, TypeError);
+  const users = await User.objects.orderBy(User.id);
+  await prefetch(users, User.posts, bound);
+  assert.deepEqual(await Promise.all(users.map(async (u) => (await u.posts).length)), [3, 1, 0]);
 });

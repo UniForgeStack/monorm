@@ -342,3 +342,32 @@ test("relation comparison rejects null-prototype objects clearly", () => {
     assert.throws(compare, { name: "TypeError", message: "Book.author compares with a Author instance" });
   }
 });
+
+test("SQLite bound load guards and withoutRelated", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const a = await Author.objects.using(db).insert({ email: "a", name: "Alice" });
+    const b = await Author.objects.using(db).insert({ email: "b", name: "Bob" });
+    await Book.objects.using(db).insertMany([
+      { authorId: a.id, title: "one" }, { authorId: a.id, title: "two" }, { authorId: b.id, title: "three" },
+    ]);
+    const bound = Author.books.objects.using(db).filter(Book.title.eq("one"));
+    // @ts-expect-error bound query sets cannot be awaited directly
+    for (const run of [async () => await bound, async () => await bound.count(), async () => await bound.delete(),
+      async () => await bound.insertMany([]), async () => await bound.insertMany([], { copy: true })]) {
+      await assert.rejects(run, { name: "TypeError", message: /inside load/ });
+    }
+    assert.equal(await Book.objects.using(db).count(), 3);
+    for (const path of [Author.books, Author.books.author]) {
+      assert.throws(() => Author.objects.load(path, bound), /label\(\)/);
+    }
+    const authors = await Author.objects.using(db).load(Author.name, Author.books, Author.books.objects).withoutRelated().orderBy(Author.id);
+    assert.deepEqual(authors.map((a) => a.books.cached.length), [2, 1]);
+    const books = await Book.objects.using(db).load(Book.title, Book.author).withoutRelated();
+    assert.deepEqual(books.map((b) => b.title).sort(), ["one", "three", "two"]);
+    assert.throws(() => books[0]!.author, /not loaded/i);
+  } finally {
+    await db.close();
+  }
+});
