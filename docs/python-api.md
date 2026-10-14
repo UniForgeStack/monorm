@@ -618,12 +618,14 @@ when its row exists but its column is NULL.
   PostgreSQL only: SQLite raises `QueryError`. The other aggregates take no `order_by`
   (their result does not depend on row order).
 * **Same-relation aggregates share one subquery.** In a `select()` (without `group_by()`,
-  `distinct()` or `lock()`), two or more aggregates over the same relation path become one
+  `distinct()`, `lock()`, a limit or an offset), two or more aggregates over the same
+  relation path become one
   `LEFT JOIN LATERAL (SELECT COUNT(*), SUM(...) ...)` instead of one scalar subquery each.
   The result is the same: one row per parent (no fan-out), `0` for an empty count, `None` for
   an empty sum, and each aggregate keeps its own `filter` and `distinct`. Aggregates in
   `filter()`, `order_by()` and `having()` stay scalar subqueries. SQLite has no `LATERAL`
-  and keeps the scalar subqueries.
+  and keeps the scalar subqueries. Queries with a limit or offset also keep scalar subqueries,
+  so an unindexed parent sort can run before computing the selected aggregates.
 * **String concatenation** has two forms with different `NULL` rules:
   `func.concat(a, " ", b)` is `CONCAT(...)` and reads a `NULL` part as an empty string;
   `a.concat(b)` is `a || b` and is `NULL` when either side is `NULL`.
@@ -827,6 +829,9 @@ await post.refresh()
 await post.refresh(Post.views)                   # some fields
 ```
 
+`refresh()` reads the primary, also on a database with replicas.
+`on_commit` callbacks and `load_x()` still read replicas: use `.using("primary")` there.
+
 * `insert(...)` gives the instance. `insert_many(...)` and every insert with
   `on_conflict(...)` give the number of rows inserted or updated (no `RETURNING` in
   the SQL), as `update()` does; `.returning()` gives the rows. One row with
@@ -965,7 +970,9 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback goes to the caller of `transaction()`, and the later callbacks do not run; the transaction is already committed.
-
+`on_commit` is a coroutine: without `await`, the callback is not registered (Python warns "coroutine was never awaited").
+Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
+A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.
 
 #### Failed statements
 
@@ -989,13 +996,10 @@ async with db.transaction():
 `db.transaction(savepoint=False)` joins the enclosing transaction with no savepoint.
 An error that leaves such a block marks the enclosing transaction failed.
 On an outermost block the parameter has no effect.
-`on_commit` is a coroutine: without `await`, the callback is not registered (Python warns "coroutine was never awaited").
-Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
-A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.
 
 ### Database errors
 
-An `orm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`) has three attributes:
+An `orm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`, `TransactionAborted`) has three attributes:
 
 * `sqlstate`: the five-character SQLSTATE, for example `"23505"` (unique), `"23503"` (foreign key), `"23502"` (not null), `"23514"` (check).
   SQLite constraint failures get the same Postgres codes; other SQLite errors give `None`.
@@ -1093,9 +1097,11 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   signed big-endian).
 * `async with db.lock(key, session=True, timeout=5):` is a session advisory lock: it
   holds the lock for the block, with no transaction, so the block can make slow calls
-  (HTTP) without an open transaction. The lock pins one pool connection; queries in the
-  block use other connections. A lock that waits also uses its pool connection while it
-  waits. It waits at most `timeout` seconds (forever when `None` or `inf`, not at all with
+  (HTTP) without an open transaction. The lock has a connection of its own, opened from the
+  same URL with the pool's TLS and connect settings and closed on release. It is not
+  taken from the pool, so a lock that waits never holds a pool slot. Each lock costs one
+  connect (estimated 1–5 ms) and counts against the server's `max_connections`. Session
+  locks are unsafe behind PgBouncer in transaction mode. It waits at most `timeout` seconds (forever when `None` or `inf`, not at all with
   `nowait=True`; at most 2147483.647, the Postgres limit) and raises
   `orm.LockNotAvailable` when another session still holds the lock. `timeout` without
   `session=True` raises `TypeError`. The lock is released when the block ends, also on
@@ -1133,6 +1139,7 @@ with db.tenant(shop.id):                 # a sync `with`: it does no I/O
 * Every transaction on `db` in the block first runs `SELECT set_config('app.tenant', '<id>', true)`, the same as `SET LOCAL app.tenant = ...`, with the value bound as a parameter.
 * A statement outside a transaction runs in a transaction of its own: `BEGIN`, `set_config`, the statement, `COMMIT`. That is four round trips instead of one (estimated); put many statements in one `db.transaction()`.
 * A transaction that is already open keeps its setting. Savepoints use the setting of their transaction.
+  `db.tenant(x)` raises `QueryError` when this task has an open transaction on `db` that began under a different tenant (a transaction with no tenant counts as different); re-entering the same tenant is allowed. Open the transaction inside the block, or give the helper a transaction of its own in another task.
 * The setting ends with each transaction, so pooled connections keep no tenant.
   A connection that had a tenant reads `''` (not `NULL`) for the setting after that, so a policy should read `NULLIF(current_setting('app.tenant', true), '')`; `tenant("")` raises `ValueError`.
 * Raw `db.execute(...)` in the block also runs in a transaction of its own, so a statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`, `VACUUM`) fails there; run it outside the block.
@@ -1175,6 +1182,8 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
   Outside it, each query pays one `ContextVar` read (about 15 ns, measured).
 * In a test suite, add `pytest_plugins = ["orm.testing"]` to `conftest.py`.
   The `n_plus_one` fixture counts the whole test and fails it at teardown; set `n_plus_one.threshold` to change the threshold.
+
+* To mock `db.lock` in tests, use `AsyncMock` for `await db.lock(k)`, and an async context manager for `session=True`: `lock` is not a coroutine function (`create_autospec(Database)` makes a mock that cannot be awaited).
 
 ### Raw SQL and query plans
 
@@ -1307,7 +1316,7 @@ factory_boy has no async support, so a `SubFactory` with `create` gives a corout
 
 | Error | Raised when |
 |---|---|
-| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints) and `LockNotAvailable` (`nowait`) derive from it |
+| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints), `LockNotAvailable` (`nowait`) and `TransactionAborted` (failed transaction) derive from it |
 | `orm.QueryError` | the ORM rejects a query before SQL (an unsupported feature, a bad cursor) |
 | `orm.SchemaError` | a schema fails to compile or define |
 | `Model.DoesNotExist`, `Model.MultipleObjectsReturned` | `get()` finds no row or more than one (`orm.DoesNotExist` and `orm.MultipleObjectsReturned` are the bases) |

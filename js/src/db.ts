@@ -2,7 +2,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import { LockNotAvailable, NotConnected, QueryError, TransactionRequired } from "./errors.js";
+import { DatabaseError, LockNotAvailable, NotConnected, QueryError, TransactionAborted, TransactionRequired } from "./errors.js";
 import type { IR } from "./expr.js";
 import { registry as defaultRegistry, type Registry } from "./model.js";
 import { call, native, wait, type NativeEngine, type NativeTrace, type NativeTransaction } from "./native.js";
@@ -11,10 +11,29 @@ import { active as debugging, capture, record, writeKey } from "./debug.js";
 
 let defaultDb: Database | undefined;
 
+// Native marks carry text; retain application exceptions without keeping ended
+// transactions alive, and replace only the matching text cause.
+const failures = new WeakMap<NativeTransaction, { message: string; cause: unknown }>();
+/** @internal Restores the original exception behind a native failed mark. */
+export async function restoreCause<T>(pending: Promise<T>, tx: NativeTransaction | null): Promise<T> {
+  try {
+    return await pending;
+  } catch (error) {
+    const failure = tx === null ? undefined : failures.get(tx);
+    if (failure && error instanceof TransactionAborted && error.cause instanceof DatabaseError
+      && error.cause.constructor === DatabaseError && error.cause.message === failure.message) {
+      error.cause = failure.cause;
+    }
+    throw error;
+  }
+}
+
 /** For each database (its root) with an open transaction in the current async context: the innermost one. */
 const current = new AsyncLocalStorage<ReadonlyMap<Database, NativeTransaction>>();
 /** For each database in a `tenant()` call: its primary and replica engines with the tenant set. */
-const tenants = new AsyncLocalStorage<ReadonlyMap<Database, { readonly primary: NativeEngine; readonly replicas: readonly NativeEngine[] }>>();
+const tenants = new AsyncLocalStorage<ReadonlyMap<Database, { readonly primary: NativeEngine; readonly replicas: readonly NativeEngine[]; readonly id: string }>>();
+/** For each database with an open transaction in this async context: the tenant id it began under. */
+const txTenants = new AsyncLocalStorage<ReadonlyMap<Database, string | undefined>>();
 /** The `scope.<name>` values of default filters. */
 const scopeValues = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
 /** For each database with an open transaction: the onCommit callbacks of the innermost one. */
@@ -141,9 +160,9 @@ export class Database {
    * N+1 scope listens. */
   send<T>(start: (tx: NativeTransaction | null, trace: NativeTrace | null) => Promise<T>, call: CallInfo = {}): Promise<T> {
     const tx = this.tx();
-    if (inHook.getStore() || (!this.root.#hooks.size && !debugging())) return wait(() => start(tx, null));
+    if (inHook.getStore() || (!this.root.#hooks.size && !debugging())) return restoreCause(wait(() => start(tx, null)), tx);
     const trace = new (native().Trace)();
-    return this.#observe(trace, capture(), wait(() => start(tx, trace)), call);
+    return this.#observe(trace, capture(), restoreCause(wait(() => start(tx, trace)), tx), call);
   }
 
   async #observe<T>(trace: NativeTrace, origin: ReturnType<typeof capture>, pending: Promise<T>, call: CallInfo): Promise<T> {
@@ -224,7 +243,8 @@ export class Database {
    * `SELECT set_config('app.tenant', <id>, true)` (`SET LOCAL`), so Postgres row-level
    * security policies can read `current_setting('app.tenant')`. A statement outside a
    * transaction runs in a transaction of its own. A transaction that is already open keeps
-   * its setting. Gives what `fn` gives.
+   * its setting, so a call with another tenant while this database has a transaction open under a
+   * different tenant (or none) throws `QueryError`. Gives what `fn` gives.
    */
   tenant<T>(id: string | number | bigint, fn: () => Promise<T>): Promise<T> {
     if (this.url.startsWith("sqlite://")) {
@@ -237,7 +257,13 @@ export class Database {
       throw new RangeError("tenant id must not be empty: a pooled connection reads '' for no tenant");
     }
     const root = this.root, value = [String(id)];
+    if (current.getStore()?.has(root) && txTenants.getStore()?.get(root) !== value[0]) {
+      throw new QueryError(
+        "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; open the transaction inside the tenant block",
+      );
+    }
     const engines = {
+      id: value[0]!,
       primary: root.base.withSettings(["app.tenant"], value),
       replicas: root.replicas.map((r) => r.withSettings(["app.tenant"], value)),
     };
@@ -278,25 +304,28 @@ export class Database {
       try {
         return await fn();
       } catch (e) {
-        enclosing.markFailed(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+        const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+        enclosing.markFailed(message);
+        if (!failures.has(enclosing)) failures.set(enclosing, { message, cause: e });
         throw e;
       }
     }
     const outer = enclosing === null;
-    const tx = await wait(() => this.engine.begin(this.tx()));
+    const tx = await restoreCause(wait(() => this.engine.begin(enclosing)), enclosing);
     const mine: (() => unknown)[] = [];
     const scoped = new Map(callbacks.getStore() ?? []).set(this.root, mine);
     let result: T;
     const txs = new Map(current.getStore() ?? []).set(this.root, tx);
+    const txTenant = new Map(txTenants.getStore() ?? []).set(this.root, tenants.getStore()?.get(this.root)?.id);
     try {
-      result = await current.run(txs, () => callbacks.run(scoped, fn));
+      result = await current.run(txs, () => txTenants.run(txTenant, () => callbacks.run(scoped, fn)));
     } catch (e) {
       ended.add(mine);
       await wait(() => tx.rollback());
       throw e;
     }
     ended.add(mine);
-    await wait(() => tx.commit());
+    await restoreCause(wait(() => tx.commit()), tx);
     await this.afterCommit(mine, outer);
     return result;
   }

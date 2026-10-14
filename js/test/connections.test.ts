@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { connect, define, getDatabase, loads, param, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
 import { native } from '../src/native.js';
 import { User } from './blog/models.js';
-import { useDatabase, otherDatabase } from './helpers.js';
+import { useDatabase, otherDatabase, DATABASE_URL } from './helpers.js';
 
 useDatabase();
 
@@ -259,6 +259,57 @@ test('replicas answer reads outside a transaction; writes and transactions use t
   assert.equal(await backends(url), before);
 });
 
+test('db.tenant inside a transaction of another tenant throws', async () => {
+  const registry = new Registry();
+  const Note = loads(NOTES, { registry })['Note'] as any;
+  const url = getDatabase().url;
+  const admin = await connect(url, { registry, default: false, maxConnections: 1 });
+  await admin.dropTables();
+  await admin.createTables();
+  await admin.execute(RLS);
+  await Note.objects.using(admin).insertMany([{ tenant: 'a', body: '1' }, { tenant: 'b', body: '2' }]);
+  const app = await connect(`postgres://orm_s6_app:app@${url.split('@')[1]}`, { registry, default: false, maxConnections: 2 });
+  const bodies = async () => (await Note.objects.using(app)).map((n: any) => n.body);
+  const other = () => app.tenant('b', () => app.transaction(bodies));
+  try {
+    await app.tenant('a', async () => {
+      // A call made outside the transaction does not see it: it opens its own.
+      const task = other();
+      await app.transaction(async () => {
+        assert.deepEqual(await task, ['2']);
+        assert.throws(() => app.tenant('b', async () => {}), /another tenant/);
+        // A savepoint keeps the tenant of its transaction.
+        await app.transaction(async () => assert.throws(() => app.tenant('b', async () => {}), /another tenant/));
+        // The same tenant is allowed.
+        await app.tenant('a', async () => assert.deepEqual(await bodies(), ['1']));
+      });
+    });
+    // A transaction with no tenant counts as different.
+    await app.transaction(async () => assert.throws(() => app.tenant('a', async () => {}), /another tenant/));
+    // Outside any transaction the tenant switches freely.
+    await app.tenant('a', () => app.tenant('b', async () => assert.deepEqual(await bodies(), ['2'])));
+  } finally {
+    await app.close();
+    await admin.dropTables();
+    await admin.close();
+  }
+});
+
+test('refresh reads the primary on a database with replicas', async () => {
+  const db = getDatabase(), url = await replicaUrl();
+  const routed = await connect(db.url, { replicas: [url], default: false, maxConnections: 2 });
+  try {
+    const user = await User.objects.using(routed).insert({ email: 'p@example.com', name: 'Primary' });
+    // The replica holds no such row: a replica read would throw DoesNotExist.
+    assert.equal(await user.refresh(), true);
+    await User.objects.using(routed).filter(User.id.eq(user.id)).update({ name: 'P2' });
+    await user.refresh(User.name);
+    assert.equal(user.name, 'P2');
+  } finally {
+    await routed.close();
+  }
+});
+
 test('tenant ids are checked', async () => {
   const db = getDatabase();
   for (const bad of [true, null, NaN, Infinity]) {
@@ -401,5 +452,24 @@ test('query hooks see replica reads and session locks', async () => {
   } finally {
     off();
     await routed.close();
+  }
+});
+
+test('a waiting session lock does not hold a pool slot', async () => {
+  const db = getDatabase();
+  const other = await connect(DATABASE_URL, { maxConnections: 1, default: false });
+  try {
+    await db.lock(31, { session: true }, async () => {
+      const waiter = other.lock(31, { session: true, timeout: 1 }, async () => {});
+      await new Promise((r) => setTimeout(r, 300));
+      const rows = await Promise.race([
+        other.fetchText('SELECT 1'),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('pool slot held')), 700)),
+      ]);
+      assert.deepEqual(rows, [['1']]);
+      await assert.rejects(waiter, { name: 'LockNotAvailable' });
+    });
+  } finally {
+    await other.close();
   }
 });

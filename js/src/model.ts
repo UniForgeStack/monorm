@@ -644,7 +644,7 @@ async function instanceRefresh(this: Row, ...args: unknown[]): Promise<boolean> 
   }
   const requested = fields.map((f) => f.field.ir);
   if (new Set(requested).size !== requested.length) throw new TypeError("duplicate model field");
-  let query = loadedQuery(this, requested);
+  let query = loadedQuery(this, requested).using("primary");
   if (lock) query = query.lock({ exclusive: exclusive ?? true, nowait: nowait ?? false, skipLocked: skipLocked ?? false } as never);
   let fresh: Row;
   try {

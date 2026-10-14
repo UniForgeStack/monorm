@@ -309,7 +309,7 @@ class Migrator:
                 callbacks.ended = True
                 _callbacks.reset(cb_token)
                 _current_tx.reset(token)
-            await self.db._engine.migration_finish(tx, m.name, str(m.path))
+            await self.db._restore_cause(self.db._engine.migration_finish(tx, m.name, str(m.path)), tx)
             await self.db._after_commit(callbacks, True)
             done.append(m)
         return done

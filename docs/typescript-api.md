@@ -303,9 +303,11 @@ relation filters the parent row.
 values kept, `null` (not `[]`) over no rows; `orderBy` fixes the element order (with `distinct`
 it must use the same expression). It works over a relation, takes no array column, is not a
 window function, and is PostgreSQL only. Other aggregates take no `orderBy`.
-In a `select()` without `groupBy()`, `distinct()` or `lock()`, two or more aggregates over the
-same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
+In a `select()` without `groupBy()`, `distinct()`, `lock()`, a limit or an offset, two or
+more aggregates over the same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
 `null` empty sums, per-aggregate `filter` and `distinct`); SQLite keeps scalar subqueries.
+Queries with a limit or offset also keep scalar subqueries, so an unindexed parent sort
+can run before computing the selected aggregates.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
 compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
 `.asText()` for the last step as text (`->>`, no step can follow),
@@ -484,7 +486,8 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback rejects the `transaction()` promise, and the later callbacks do not run; the transaction is already committed.
-
+Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
+A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 
 #### Failed statements
 
@@ -509,8 +512,6 @@ await db.transaction(async () => {
 `db.transaction(fn, { savepoint: false })` joins the enclosing transaction with no savepoint.
 An error that leaves such a call marks the enclosing transaction failed.
 On an outermost call the option has no effect.
-Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
-A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 
 ### Protected writes
 
@@ -542,17 +543,21 @@ See `docs/schema.md`, "Protected writes".
   with the same lock and gives `true`. A refresh of some fields locks the whole row. With
   `skipLocked`, a row locked elsewhere (or deleted) gives `false` and leaves the
   instance unchanged; otherwise a missing row throws `DoesNotExist`. Lock options
-  without `lock: true` are a type error and throw `TypeError`.
+  without `lock: true` are a type error and throw `TypeError`. `refresh()` reads the
+  primary, also on a database with replicas; `onCommit` callbacks and `load()` still read
+  replicas (use `.using("primary")`).
 * `db.lock(key, { exclusive, nowait })` takes a transaction-scoped advisory lock. String
   keys hash the way Python's do (BLAKE2b with an 8-byte digest), so both languages lock
   the same name.
 
 * `db.lock(key, { session: true, timeout: 5 }, async () => {...})` is a session advisory
-  lock: it holds the lock while the function runs, with no transaction, on a pool
-  connection of its own, and gives what the function gives. It waits at most `timeout`
+  lock: it holds the lock while the function runs, with no transaction, on a
+  connection of its own (opened from the same URL with the pool's TLS and connect
+  settings, closed on release, never taken from the pool), and gives what the function gives. It waits at most `timeout`
   seconds (no limit when absent or `Infinity`, not at all with `nowait`; at most
   2147483.647, the Postgres limit) and throws `LockNotAvailable` when another session
-  still holds the lock. A lock that waits also uses its pool connection while it waits.
+  still holds the lock. Each lock costs one connect (estimated 1–5 ms) and counts against the
+  server's `max_connections`. Session locks are unsafe behind PgBouncer in transaction mode.
   The lock is released when the function settles. When the unlock fails, the connection
   is closed, so the server releases the lock, and the function's own result or error
   stays. A function or a `timeout` without `session: true` throws `TypeError`.
@@ -575,6 +580,7 @@ There are no health checks or failover. `maxConnections` applies to each pool, a
 `await db.tenant(shop.id, async () => {...})` runs `SELECT set_config('app.tenant', '<id>', true)` (`SET LOCAL`) at the start of every transaction on `db` in the function, so RLS policies can read `current_setting('app.tenant', true)`.
 A statement outside a transaction runs in a transaction of its own (four round trips instead of one, estimated).
 A transaction that is already open keeps its setting, and the setting ends with each transaction.
+`db.tenant(x, fn)` throws `QueryError` when this async context has an open transaction on `db` that began under a different tenant (a transaction with no tenant counts as different); the same tenant is allowed. Open the transaction inside `fn`.
 A connection that had a tenant reads `''` (not `NULL`) for the setting after that, so a policy should read `NULLIF(current_setting('app.tenant', true), '')`; an empty id throws `RangeError`.
 Raw `db.execute(...)` in the function also runs in a transaction of its own, so `CREATE INDEX CONCURRENTLY` or `VACUUM` fails there.
 Each table of a composed model needs its own policy.
@@ -723,7 +729,7 @@ const post = await postFactory.create();
 ## Errors
 
 Errors map to classes with Python's names: `ORMError`, plus `DatabaseError`,
-`IntegrityError`, `LockNotAvailable`, `QueryError`, `SchemaError`, `NotConnected`,
+`IntegrityError`, `LockNotAvailable`, `TransactionAborted`, `QueryError`, `SchemaError`, `NotConnected`,
 `NotLoaded`, `TransactionRequired`, `DoesNotExist`, `MultipleObjectsReturned`,
 `MigrationError`, `WriteProtected` and `VersionConflict`. Values of the wrong type throw a `TypeError` before any SQL runs.
 

@@ -673,11 +673,14 @@ class Model:
         fields still locks the whole row. With ``skip_locked``, a row locked by another
         transaction (or deleted) gives ``False`` and leaves the instance unchanged; else
         a missing row raises ``DoesNotExist``.
+
+        The read goes to the primary, also on a database with replicas. ``on_commit``
+        callbacks and ``load_x()`` still read replicas: use ``.using("primary")``.
         """
         if not lock and (exclusive is not None or nowait is not None or skip_locked is not None):
             raise TypeError("refresh() takes exclusive, nowait and skip_locked only with lock=True")
         requested = self._refresh_fields(fields)
-        query = self._loaded_query(*requested)
+        query = self._loaded_query(*requested).using("primary")
         if lock:
             query = query.lock(
                 exclusive is not False, nowait=bool(nowait), skip_locked=bool(skip_locked)
