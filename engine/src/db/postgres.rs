@@ -663,11 +663,16 @@ impl PgTx {
         if result.is_err() && self.savepoint.is_none() {
             // A COMMIT that never ran (the probe below failed) leaves the aborted
             // transaction open; this is a harmless warning after a COMMIT that ran.
-            let _ = client.batch_execute("ROLLBACK").await;
+            if client.batch_execute("ROLLBACK").await.is_err() {
+                // A failed cleanup cannot prove this connection is safe to reuse.
+                if let Some(obj) = session.client.take() {
+                    drop(Object::take(obj));
+                }
+            }
         }
         if self.savepoint.is_none() {
-            // COMMIT / ROLLBACK end the transaction even when they fail (a failed
-            // COMMIT rolls back), so the connection can go back to the pool.
+            // Failed cleanup detached the connection above; otherwise the ended
+            // transaction's connection can return to the pool.
             session.finished = true;
             session.client = None;
         }
@@ -739,7 +744,12 @@ impl Transaction for PgTx {
                 // and the COMMIT does not run, instead of ending as a silent ROLLBACK.
                 None => "SELECT 1; COMMIT".to_owned(),
             };
-            self.finish(sql).await
+            self.finish(sql).await.map_err(|mut e| {
+                if self.savepoint.is_none() && e.kind == ErrorKind::TransactionAborted {
+                    e.message = "the database aborted the transaction before COMMIT".to_owned();
+                }
+                e
+            })
         })
     }
 
@@ -851,5 +861,63 @@ mod tls {
         fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
             self.0.signature_verification_algorithms.supported_schemes()
         }
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().unwrap()
+    }
+
+    async fn driver() -> PgDriver {
+        let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL")
+            .or_else(|_| std::env::var("ORM_TEST_DATABASE_URL"))
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
+        PgDriver::connect(&url, 1).await.unwrap()
+    }
+
+    #[test]
+    fn bare_transaction_commit_detects_server_abort() {
+        runtime().block_on(async {
+            let db = driver().await;
+            db.batch("CREATE TABLE IF NOT EXISTS tx_probe (id INTEGER PRIMARY KEY); TRUNCATE tx_probe".into()).await.unwrap();
+            // PgDriver::begin returns a bare PgTx, with no Guarded failed mark.
+            let tx = db.begin().await.unwrap();
+            tx.batch("INSERT INTO tx_probe VALUES (1)".into()).await.unwrap();
+            let first = tx.batch("INSERT INTO tx_probe VALUES (1)".into()).await.unwrap_err();
+            assert_eq!(first.kind, ErrorKind::Integrity);
+            let e = tx.commit().await.unwrap_err();
+            assert_eq!(e.kind, ErrorKind::TransactionAborted);
+            assert_eq!(e.message, "the database aborted the transaction before COMMIT");
+            assert!(e.cause.is_none());
+            assert_eq!(db.query_text("SELECT count(*) FROM tx_probe".into()).await.unwrap()[0][0].as_deref(), Some("0"));
+            db.batch("DROP TABLE tx_probe".into()).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn failed_rollback_detaches_connection_from_pool() {
+        runtime().block_on(async {
+            let db = driver().await;
+            let obj = get_client(&db.pool).await.unwrap();
+            obj.batch_execute("BEGIN").await.unwrap();
+            let pid: i32 = obj.query_one("SELECT pg_backend_pid()", &[]).await.unwrap().get(0);
+            let tx = PgTx {
+                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false })),
+                savepoint: None,
+                depth: 0,
+                done: AtomicBool::new(false),
+            };
+            let killer = driver().await;
+            killer.batch(format!("SELECT pg_terminate_backend({pid})")).await.unwrap();
+            assert!(tx.commit().await.is_err());
+            // Even a closed connection must be detached before pool recycling.
+            assert_eq!(db.pool.status().available, 0);
+            assert_eq!(db.pool.status().size, 0);
+            db.batch("SELECT 1".into()).await.unwrap();
+        });
     }
 }

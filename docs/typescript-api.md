@@ -486,7 +486,8 @@ A rollback drops the callback. A rolled-back savepoint drops only the callbacks 
 Outside a transaction, `fn()` runs at once.
 Callbacks run in registration order, outside the transaction.
 An error in a callback rejects the `transaction()` promise, and the later callbacks do not run; the transaction is already committed.
-
+Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
+A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 
 #### Failed statements
 
@@ -511,8 +512,6 @@ await db.transaction(async () => {
 `db.transaction(fn, { savepoint: false })` joins the enclosing transaction with no savepoint.
 An error that leaves such a call marks the enclosing transaction failed.
 On an outermost call the option has no effect.
-Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
-A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 
 ### Protected writes
 
@@ -730,7 +729,7 @@ const post = await postFactory.create();
 ## Errors
 
 Errors map to classes with Python's names: `ORMError`, plus `DatabaseError`,
-`IntegrityError`, `LockNotAvailable`, `QueryError`, `SchemaError`, `NotConnected`,
+`IntegrityError`, `LockNotAvailable`, `TransactionAborted`, `QueryError`, `SchemaError`, `NotConnected`,
 `NotLoaded`, `TransactionRequired`, `DoesNotExist`, `MultipleObjectsReturned`,
 `MigrationError`, `WriteProtected` and `VersionConflict`. Values of the wrong type throw a `TypeError` before any SQL runs.
 

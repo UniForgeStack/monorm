@@ -834,8 +834,10 @@ impl Engine {
     #[napi]
     pub fn begin<'env>(&self, env: &'env Env, tx: Option<&Transaction>) -> napi::Result<PromiseRaw<'env, Transaction>> {
         let conn = self.conn(tx);
+        let outer = tx.is_none();
         env.spawn_future(async move {
-            let inner = db::guard(conn.begin().await.map_err(db_tagged)?);
+            let inner = conn.begin().await.map_err(db_tagged)?;
+            let inner = if outer { db::guard(inner) } else { inner };
             Ok(Transaction { inner })
         })
     }
@@ -1054,7 +1056,7 @@ impl Engine {
         env.spawn_future(async move {
             let m = engine_migrate::Migration { name, path: path.into() };
             let tx = engine_migrate::begin_apply(&*driver, &m).await.map_err(engine_err)?;
-            Ok(tx.map(|inner| Transaction { inner }))
+            Ok(tx.map(|inner| Transaction { inner: db::guard(inner) }))
         })
     }
 

@@ -176,10 +176,23 @@ class Database:
         """``start(trace)`` starts an engine call. Without hooks or an N+1 scope the
         engine's awaitable comes back as is, untraced. ``key`` (parts of a write's key)
         makes the N+1 finder count the call once; ``raw`` marks its events as raw SQL."""
+        tx = self._tx()
         if _in_hook.get() or (not self._root._hooks and debug._scope.get() is None):
-            return start(None)
+            pending = start(None)
+            return pending if tx is None else self._restore_cause(pending, tx)
         trace = _native.Trace()
-        return self._observe(trace, debug.capture(), start(trace), key, raw)
+        pending = start(trace)
+        if tx is not None:
+            pending = self._restore_cause(pending, tx)
+        return self._observe(trace, debug.capture(), pending, key, raw)
+
+    async def _restore_cause(self, pending: Awaitable[T], tx: _native.Transaction | None) -> T:
+        try:
+            return await pending
+        except BaseException as error:
+            if tx is not None:
+                tx.restore_cause(error)
+            raise
 
     async def _observe(
         self,
@@ -323,11 +336,11 @@ class Database:
             try:
                 yield
             except BaseException as e:
-                enclosing.mark_failed(f"{type(e).__name__}: {e}")
+                enclosing.mark_failed(f"{type(e).__name__}: {e}", e)
                 raise
             return
         outer = enclosing is None
-        tx = await self._engine.begin(enclosing)
+        tx = await self._restore_cause(self._engine.begin(enclosing), enclosing)
         token = _current_tx.set({**_current_tx.get(), self._root: tx})
         tx_tenant_token = _tx_tenants.set({**_tx_tenants.get(), self._root: _tenant_ids.get().get(self._root)})
         callbacks = _Callbacks()
@@ -345,7 +358,7 @@ class Database:
         _callbacks.reset(cb_token)
         _tx_tenants.reset(tx_tenant_token)
         _current_tx.reset(token)
-        await tx.commit()
+        await self._restore_cause(tx.commit(), tx)
         await self._after_commit(callbacks, outer)
 
     async def _after_commit(self, callbacks: list[Callable[[], Any]], outer: bool) -> None:

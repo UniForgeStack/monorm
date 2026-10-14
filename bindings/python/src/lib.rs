@@ -280,6 +280,7 @@ impl PySchema {
 #[pyclass(frozen, module = "orm._native")]
 struct Transaction {
     inner: Arc<dyn db::Transaction>,
+    failure: std::sync::Mutex<Option<(String, Py<PyAny>)>>,
 }
 
 #[pymethods]
@@ -295,8 +296,45 @@ impl Transaction {
     }
 
     /// Marks the transaction failed, as if a statement had failed with `message`.
-    fn mark_failed(&self, message: String) {
-        self.inner.mark_failed(db::DbError::other(message));
+    #[pyo3(signature = (message, cause = None))]
+    fn mark_failed(&self, message: String, cause: Option<Py<PyAny>>) {
+        self.inner.mark_failed(db::DbError::other(message.clone()));
+        let mut failure = self.failure.lock().unwrap();
+        if failure.is_none() {
+            if let Some(cause) = cause {
+                *failure = Some((message, cause));
+            }
+        }
+    }
+
+    fn __traverse__(&self, visit: pyo3::class::gc::PyVisit<'_>) -> Result<(), pyo3::class::gc::PyTraverseError> {
+        if let Some((_, cause)) = &*self.failure.lock().unwrap() {
+            visit.call(cause)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&self) {
+        let failure = self.failure.lock().unwrap().take();
+        drop(failure);
+    }
+
+    /// Restores an application exception only when the engine reports its string mark,
+    /// leaving an earlier database failure's cause intact.
+    fn restore_cause(&self, error: &Bound<'_, PyAny>) -> PyResult<()> {
+        let failure = self.failure.lock().unwrap().as_ref()
+            .map(|(message, original)| (message.clone(), original.clone_ref(error.py())));
+        if let Some((message, original)) = failure {
+            if error.is_instance_of::<errors::TransactionAborted>() {
+                let cause = error.getattr("__cause__")?;
+                if cause.get_type().is(error.py().get_type::<errors::DatabaseError>())
+                    && cause.str()?.to_str()? == message
+                {
+                    error.setattr("__cause__", original)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -609,9 +647,11 @@ impl Engine {
     #[pyo3(signature = (tx = None))]
     fn begin<'py>(&self, py: Python<'py>, tx: Option<&Bound<'py, Transaction>>) -> PyResult<Bound<'py, PyAny>> {
         let conn = self.conn(tx);
+        let outer = tx.is_none();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = db::guard(conn.begin().await.map_err(db_err)?);
-            Ok(Transaction { inner })
+            let inner = conn.begin().await.map_err(db_err)?;
+            let inner = if outer { db::guard(inner) } else { inner };
+            Ok(Transaction { inner, failure: Default::default() })
         })
     }
 
@@ -832,7 +872,7 @@ impl Engine {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let m = engine_migrate::Migration { name, path };
             let tx = engine_migrate::begin_apply(&*driver, &m).await.map_err(engine_err)?;
-            Ok(tx.map(|inner| Transaction { inner }))
+            Ok(tx.map(|inner| Transaction { inner: db::guard(inner), failure: Default::default() }))
         })
     }
 

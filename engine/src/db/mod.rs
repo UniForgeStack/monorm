@@ -196,7 +196,17 @@ impl Guarded {
         if let Some(e) = self.aborted() {
             return Err(e);
         }
-        self.note(run.await)
+        let out = run.await;
+        if let Err(e) = &out {
+            // A concurrent statement may have failed while this one waited on the
+            // driver's session lock. Preserve that first error over a raw 25P02.
+            if e.kind == ErrorKind::TransactionAborted && e.cause.is_none() {
+                if let Some(first) = self.aborted() {
+                    return Err(first);
+                }
+            }
+        }
+        self.note(out)
     }
 }
 
@@ -417,4 +427,28 @@ pub fn require_dialect(dialect: Dialect) -> DbResult<()> {
         Dialect::Sqlite => cfg!(feature = "sqlite"),
     };
     if enabled { Ok(()) } else { Err(DbError::other(format!("{} is not compiled into this native profile", dialect.name()))) }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_abort_keeps_first_cause() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let inner = connect("sqlite://:memory:", 1).await.unwrap().begin().await.unwrap();
+            let guarded = Guarded { inner, failed: std::sync::Mutex::new(None) };
+            let first = DbError::new(ErrorKind::Integrity, "first constraint failure");
+            let result: DbResult<()> = guarded.guarded(async {
+                // Simulate another statement failing after this statement passed
+                // the preflight check, but before its driver returns 25P02.
+                guarded.mark_failed(first);
+                Err(DbError::new(ErrorKind::TransactionAborted, "raw 25P02"))
+            }).await;
+            let e = result.unwrap_err();
+            assert_eq!(e.cause.unwrap().message, "first constraint failure");
+            assert!(e.message.contains("first constraint failure"));
+            guarded.rollback().await.unwrap();
+        });
+    }
 }
