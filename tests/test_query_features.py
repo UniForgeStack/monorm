@@ -250,7 +250,8 @@ async def test_relation_count_with_an_outer_filter(clean):
     users = User.objects.order_by(User.id)
     rows = await users.select(User.name, func.count(User.posts, filter=User.name == "Alice"))
     assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
-    # beside a second aggregate of the same relation, which shares a LATERAL join
+    # beside a second aggregate of the same relation: the outer-only filter keeps its own subquery,
+    # so the lone MAX is no LATERAL group
     rows = await users.select(
         User.name, func.count(User.posts, filter=User.name == "Alice"), func.max(User.posts.views)
     )
@@ -258,6 +259,20 @@ async def test_relation_count_with_an_outer_filter(clean):
     # a to-one hop under the relation is planned inside the subquery
     rows = await users.select(User.name, func.count(User.posts, filter=User.posts.author.name == "Alice"))
     assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
+
+
+async def test_lateral_group_reads_a_to_one_join(clean):
+    (alice, bob, _), (_, a2, _, b1) = await seed()
+    c_a2, c_b1 = await Comment.objects.insert_many(
+        [{"post": a2, "author": alice, "body": "Alice"}, {"post": b1, "author": bob, "body": "Bob"}]
+    ).returning()
+    # The LATERAL group's filter reads the author's name: the to-one join must come first.
+    rows = await Post.objects.order_by(Post.id).select(
+        Post.author.name,
+        func.count(Post.comments, filter=Post.comments.body == Post.author.name),
+        func.max(Post.comments.id),
+    )
+    assert [tuple(r) for r in rows] == [("Alice", 0, None), ("Alice", 1, c_a2.id), ("Alice", 0, None), ("Bob", 1, c_b1.id)]
 
 
 async def test_relation_count_with_a_to_one_filter_under_another_relation(clean):
@@ -289,7 +304,7 @@ async def test_array_agg(clean):
     comments = await Comment.objects.select(func.array_agg(Comment.author_id, order_by=Comment.body)).scalar()
     assert comments == [bob.id, None, alice.id]
     assert await Post.objects.filter(Post.views > 1000).select(func.array_agg(Post.title)).scalar() is None
-    # Over a relation: one correlated subquery per user, None for a user without posts.
+    # Over a relation: the two aggregates share one LATERAL join, None for a user without posts.
     users = await User.objects.order_by(User.id).select(
         User.name,
         func.array_agg(User.posts.title, order_by=User.posts.views.desc()).label("titles"),
@@ -902,3 +917,16 @@ async def test_load_plain_path_and_query_and_without_related(clean):
     users = await User.objects.order_by(User.id)
     await orm.prefetch(users, User.posts, bound)
     assert [len(u.posts.cached) for u in users] == [3, 1, 0]
+
+
+async def test_lateral_disabled_connection_uses_scalar_subqueries(clean, observe_queries):
+    await seed()
+    db = await orm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("lateral_join",))
+    try:
+        query = User.objects.using(db).order_by(User.id).select(User.name, func.count(User.posts), func.max(User.posts.views))
+        with observe_queries(db) as events:
+            rows = await query
+        assert [tuple(r) for r in rows] == [("Alice", 3, 50), ("Bob", 1, 100), ("Carol", 0, None)]
+        assert len(events) == 1 and "LATERAL" not in events[0].sql
+    finally:
+        await db.close()

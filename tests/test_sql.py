@@ -288,13 +288,64 @@ def test_same_relation_aggregates_share_one_lateral_join():
     sql = query.sql()
     assert 'COUNT(*) FILTER (WHERE "a2"."views" > 10) AS "c1"' in sql and 'SUM(DISTINCT "a2"."views")' in sql
     assert '(SELECT COUNT(*) FROM "comments"' in sql
-    # Grouped, locked and filter-only uses keep the correlated subqueries.
+    # Filter-only and grouped uses keep the correlated subqueries.
     filtered = User.objects.filter(func.count(User.posts) > 1, func.sum(User.posts.views) > 1).select(User.id).inspect()
     assert filtered.statements[0].joins_count == 0
     assert filtered.statements[0].correlated_count == 2
     grouped = User.objects.select(User.id, func.count(User.posts), func.sum(User.posts.views), func.count().label("all")).group_by(User.id).inspect()
     assert grouped.statements[0].joins_count == 0
     assert grouped.statements[0].correlated_count == 2
+
+
+def test_lateral_join_comes_after_the_to_one_joins():
+    sql = Post.objects.select(
+        Post.author.name,
+        func.count(Post.comments, filter=Post.comments.body == Post.author.name),
+        func.max(Post.comments.id),
+    ).sql()
+    assert 'LEFT JOIN "users" AS "j' in sql and "LEFT JOIN LATERAL" in sql
+    assert sql.index('LEFT JOIN "users" AS "j') < sql.index("LEFT JOIN LATERAL")
+
+
+def test_an_aggregate_with_an_outer_only_filter_is_not_a_lateral_member():
+    query = User.objects.order_by(User.id).select(
+        User.name, func.count(User.posts, filter=User.name == "Alice"), func.max(User.posts.views)
+    )
+    assert "LATERAL" not in query.sql()
+    assert query.inspect().statements[0].joins_count == 0
+    assert query.inspect().statements[0].correlated_count == 2
+
+
+def _two_posts_aggregates(*extra):
+    return (User.id, func.count(User.posts), func.max(User.posts.views), *extra)
+
+
+def _cte_body():
+    cte = User.objects.select(*_two_posts_aggregates()).cte("c")
+    return cte.select(cte.c.id)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: User.objects.lock().select(*_two_posts_aggregates()),
+        lambda: User.objects.select(*_two_posts_aggregates()).having(func.count(User.posts) > 0),
+        lambda: User.objects.select(*_two_posts_aggregates()).distinct(),
+        lambda: User.objects.select(*_two_posts_aggregates()).distinct(User.id),
+        lambda: User.objects.select(*_two_posts_aggregates(func.row_number().over(orm.window(order_by=User.id)))),
+        lambda: User.objects.select(*_two_posts_aggregates(func.count().label("n"))),
+        _cte_body,
+    ],
+    ids=["lock", "having", "distinct", "distinct_on", "window", "local_aggregate", "cte"],
+)
+def test_lateral_guards_keep_scalar_subqueries(build):
+    sql = build().sql()
+    assert "LATERAL" not in sql
+    assert '(SELECT COUNT(*) FROM "posts"' in sql and '(SELECT MAX(' in sql
+
+
+def test_lock_guard_keeps_for_update():
+    assert User.objects.lock().select(*_two_posts_aggregates()).sql().endswith('FOR UPDATE OF "users"')
 
 
 @pytest.mark.parametrize("limit,offset", [(10, None), (None, 5), (10, 5), (0, None)])

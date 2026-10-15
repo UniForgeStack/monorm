@@ -387,11 +387,22 @@ fn below_paths<'e>(
     rel.into_iter().chain(paths.into_iter().filter(|p| p.len() > base.len() && p.starts_with(base))).collect()
 }
 
+/// Whether an aggregate's filter reads columns of the cut's level only (and some column).
+fn cut_filter_is_outer(cut: &Cut, filter: Option<&Expr>) -> bool {
+    let Some(f) = filter else { return false };
+    let (mut paths, mut has_not) = (vec![], false);
+    col_paths_all(f, &mut paths, &mut has_not);
+    !paths.is_empty() && paths.iter().all(|p| cut.path(p).len() <= cut.base.len())
+}
+
 /// The relation path of each aggregate in `e` that is computed per row over a relation
 /// (see `Planner::func`), outside subqueries and windows.
 fn relation_aggregates(cut: &Cut, e: &Expr, out: &mut Vec<Vec<String>>) {
     match e {
         Expr::Func { name, args, rel, filter, order_by, .. } if is_aggregate(name) => {
+            if cut_filter_is_outer(cut, filter.as_deref()) {
+                return;
+            }
             let below = below_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by);
             if let Some(first) = below.first() {
                 if below.iter().all(|p| p == first) {
@@ -1918,12 +1929,9 @@ impl<'s> Planner<'s> {
 
     /// Whether an aggregate's filter reads columns of this level only (and some column).
     fn filter_is_outer(&self, filter: Option<&Expr>) -> bool {
-        let Some(f) = filter else { return false };
         let base = self.scope().path.clone();
         let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
-        let (mut paths, mut has_not) = (vec![], false);
-        col_paths_all(f, &mut paths, &mut has_not);
-        !paths.is_empty() && paths.iter().all(|p| cut.path(p).len() <= base.len())
+        cut_filter_is_outer(&cut, filter)
     }
 
     /// `FROM <hop 1> a1 [JOIN <hop 2> a2 ON ...] WHERE a1.to = <scope>.from`, with a scope
@@ -2157,12 +2165,12 @@ impl<'s> Planner<'s> {
         windowed |= q.order.iter().any(|o| has_window(&o.expr));
         self.base_select(q, &mut stmt, true)?;
         self.declare_windows(q, &mut stmt)?;
+        self.apply_joins(&mut stmt);
         for group in std::mem::take(&mut self.lateral) {
             if let Some((sub, _)) = group.sub {
                 stmt.join_lateral(JoinType::LeftJoin, sub, Alias::new(&group.alias), SExpr::cust("TRUE"));
             }
         }
-        self.apply_joins(&mut stmt);
         if let Some(lock) = q.lock {
             if aggregated || windowed || q.distinct || !q.distinct_on.is_empty() {
                 return Err(query_err(

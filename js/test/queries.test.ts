@@ -342,6 +342,19 @@ test("select rows", async () => {
   assert.deepEqual(await collect(Post.objects.select({ id: Post.id }).orderBy(Post.id)), [{ id: a1.id }, { id: a2.id }, { id: b1.id }]);
 });
 
+test("a LATERAL group reads a to-one join", async () => {
+  const { alice, bob, a2, b1 } = await seed();
+  const [cA2, cB1] = (await Comment.objects.insertMany([
+    { post: a2, author: alice, body: "Alice" },
+    { post: b1, author: bob, body: "Bob" },
+  ]).returning()) as [Comment, Comment];
+  const rows = await Post.objects
+    .orderBy(Post.id)
+    .select({ name: Post.author.name, n: func.count(Post.comments, { filter: Post.comments.body.eq(Post.author.name) }), last: func.max(Post.comments.id) })
+    .all();
+  assert.deepEqual(rows, [{ name: "Alice", n: 0n, last: null }, { name: "Alice", n: 1n, last: cA2.id }, { name: "Bob", n: 1n, last: cB1.id }]);
+});
+
 test("select the model with aggregates over relations", async () => {
   const { alice } = await seed();
   const rows = await User.objects.select({ user: User, posts: func.count(User.posts), views: func.sum(User.posts.views) }).orderBy(User.id).all();

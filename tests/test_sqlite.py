@@ -64,10 +64,20 @@ async def test_crud_relations_defaults_and_upserts(sqlite):
 
 async def test_array_agg_is_postgres_only(sqlite):
     db, m, _ = sqlite
-    Author = m["Author"]
+    Author, Book = m["Author"], m["Book"]
     with pytest.raises(orm.QueryError, match="sqlite does not support array_agg"):
         await Author.objects.using(db).select(orm.func.array_agg(Author.name)).scalar()
     # Relation aggregates keep the scalar subqueries: no LATERAL join.
+    a, b, c = await Author.objects.using(db).insert_many(
+        [{"email": "a@x.io", "name": "A"}, {"email": "b@x.io", "name": "B"}, {"email": "c@x.io", "name": "C"}]
+    ).returning()
+    await Book.objects.using(db).insert_many(
+        [
+            {"author_id": a.id, "title": "one"},
+            {"author_id": a.id, "title": "two", "pages": 7},
+            {"author_id": b.id, "title": "three", "pages": 3},
+        ]
+    )
     result = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).inspect()
     assert result.statement_count == 1
     assert result.statements[0].joins_count == 0
@@ -76,7 +86,9 @@ async def test_array_agg_is_postgres_only(sqlite):
     page = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).order_by(Author.name).limit(10).offset(1)
     assert page.inspect().statements[0].correlated_count == 2
     assert "LATERAL" not in page.sql()
-    assert await page == []
+    assert [tuple(r) for r in await page] == [(b.id, 1, 3), (c.id, 0, None)]
+    rows = await Author.objects.using(db).select(Author.name, orm.func.count(Author.books), orm.func.max(Author.books.pages)).order_by(Author.name)
+    assert [tuple(r) for r in rows] == [("A", 2, 7), ("B", 1, 3), ("C", 0, None)]
 
 
 async def test_bulk_writes(sqlite, observe_queries):

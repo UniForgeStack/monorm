@@ -636,13 +636,15 @@ when its row exists but its column is NULL.
   PostgreSQL only: SQLite raises `QueryError`. The other aggregates take no `order_by`
   (their result does not depend on row order).
 * **Same-relation aggregates share one subquery.** In a `select()` (without `group_by()`,
-  `distinct()`, `lock()`, a limit or an offset), two or more aggregates over the same
+  `having()`, `distinct()`, `lock()`, a limit or an offset, and with no window function,
+  local aggregate or CTE), two or more aggregates over the same
   relation path become one
   `LEFT JOIN LATERAL (SELECT COUNT(*), SUM(...) ...)` instead of one scalar subquery each.
   The result is the same: one row per parent (no fan-out), `0` for an empty count, `None` for
   an empty sum, and each aggregate keeps its own `filter` and `distinct`. Aggregates in
   `filter()`, `order_by()` and `having()` stay scalar subqueries. SQLite has no `LATERAL`
-  and keeps the scalar subqueries. Queries with a limit or offset also keep scalar subqueries,
+  and keeps the scalar subqueries. An aggregate whose `filter` reads only the parent's own
+  columns also stays a scalar subquery. Queries with a limit or offset also keep scalar subqueries,
   so an unindexed parent sort can run before computing the selected aggregates.
 * **String concatenation** has two forms with different `NULL` rules:
   `func.concat(a, " ", b)` is `CONCAT(...)` and reads a `NULL` part as an empty string;
