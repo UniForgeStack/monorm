@@ -11,6 +11,7 @@ import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } fro
 import { Column, PATH, RelationPath, and, type Condition, type PathState, type Source } from "./expr.js";
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
+import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
@@ -461,7 +462,7 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
           const target = registry.get(r.target);
           const to = r.to.map((name) => target.fieldByIr.get(name)!.name);
           // A default-filtered target joins as absent even when the key is set.
-          if (value === null ? absent || target.defaultFilter !== undefined : to.every((name, i) => fieldValue(value, name) === key[i])) {
+          if (value === null ? absent || target.defaultFilter !== undefined : to.every((name, i) => keyOf(fieldValue(value, name)) === keyOf(key[i]))) {
             return value;
           }
         } else if (absent) {
