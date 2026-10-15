@@ -84,6 +84,7 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
         mut self,
         fields: &[&str],
     ) -> Result<Query<RuntimeRow<M::Normal>, R, L, ExplicitSelection>> {
+        self = self.initialized();
         let schema = schema::<M>()?;
         let root = schema
             .models
@@ -137,13 +138,5 @@ impl<M: Model, R, L, D> Query<RuntimeRow<M>, R, L, D> {
             nulls: None,
         }];
         Ok(self)
-    }
-}
-impl<M: Model> QueryRoot<M> {
-    pub fn runtime(
-        &self,
-        fields: &[&str],
-    ) -> Result<Query<RuntimeRow<M::Normal>, Optional, Unsliced, ExplicitSelection>> {
-        self.query().runtime(fields)
     }
 }

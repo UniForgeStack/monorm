@@ -91,8 +91,8 @@ Generated associated-type shape traits work across minimal and fuller selections
 ```rust
 use models::{PostShape, UserShape};
 fn email<S: UserShape<Email = String>>(row: &S) -> &String { row.email() }
-fn titles<S, P>(row: &S) -> Vec<&String>
-where S: UserShape<Posts = LoadedMany<P>>, P: PostShape<Title = String> {
+fn titles<'a, S, P>(row: &'a S) -> Vec<&'a String>
+where S: UserShape<Posts = LoadedMany<P>>, P: PostShape<Title = String> + 'a {
     row.posts().cached().iter().map(|post| post.title()).collect()
 }
 ```
@@ -130,7 +130,7 @@ let row = row.try_into_static::<EmailOnly>().map_err(|error| error.error)?;
 
 Generated rows and runtime rows implement serde serialization of public loaded data, preserving SQL NULL and loaded-empty caches. Private helper keys and unloaded markers are omitted. Debug output reports actual loaded data. Codec-view values and owned stored values currently coexist in static rows; this uses additional memory and makes state validation safe without unsafe casts.
 
-Custom query extensions begin at `User::objects.query()` and should implement their methods for `Query<M, R, L, D>` to preserve scalar-selection policy as well as requiredness and slicing. The configured default is a schema-branded pool, not an ambient transaction; `Database::clear_default()` removes it. Explicit `using(&db)` remains available on every query.
+`User::objects` is an allocation-free `Query` constant. Custom query extensions begin directly at this root and should implement their methods for `Query<M, R, L, D>` to preserve scalar-selection policy as well as requiredness and slicing. The configured default is a schema-branded pool, not an ambient transaction; `Database::clear_default()` removes it. Explicit `using(&db)` remains available on every query.
 
 | Operation | Contract |
 | --- | --- |

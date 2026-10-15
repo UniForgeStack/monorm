@@ -23,7 +23,7 @@ impl<T> RelatedSet<T> {
 }
 impl<T: Model> RelatedSet<T> {
     pub fn query(&self) -> Query<T> {
-        let query = Query::<T>::new();
+        let query = Query::<T>::new().initialized();
         let tree = if self.key.iter().any(|key| key == &key.as_null()) {
             Tree::Expr(ir::Expr::Const { value: false })
         } else {
@@ -225,7 +225,7 @@ fn configure<P: Model>(q: &mut SelectionPlan, name: &str) {
         relation: name.into(),
         attr: None,
         one: false,
-        query: Query::<P>::new().select,
+        query: Query::<P>::new().initialized().select,
     });
 }
 
@@ -268,6 +268,7 @@ impl<R, T: Model, C, K, B> Relation<R, T, C, K, B> {
         query: Query<P, Optional, L, D>,
     ) -> Relation<R, P, C, K, D::Target> {
         // Parameters are carried separately by the descriptor; see RelationQuery.
+        let query = query.initialized();
         Relation {
             name: self.name,
             query: Some(Box::new(query.select)),
@@ -280,7 +281,7 @@ impl<R, T: Model, C, K, B> Relation<R, T, C, K, B> {
         let mut query = self
             .query
             .map(|q| *q)
-            .unwrap_or_else(|| Query::<T>::new().select);
+            .unwrap_or_else(|| Query::<T>::new().initialized().select);
         query.model = T::NAME.into();
         filters.retain(|t| !matches!(t,Tree::Nested(name,_) if name==self.name));
         filters.push(Tree::Nested(self.name.into(), self.filters));
