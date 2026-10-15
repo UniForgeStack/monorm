@@ -2004,6 +2004,9 @@ export class Prepared<M extends ModelSpec, R, P> {
 
 // -- related sets -------------------------------------------------------------------------------------
 
+/** A copied method keeps its home object, so `super` can't reach a mixed-in class; `fetch()` and `getOrInsert()` go through this instead. */
+const SUPER: unique symbol = Symbol("orm.super");
+
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 /**
@@ -2017,11 +2020,13 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
   readonly relation!: RelationMeta;
   /** @internal */
   readonly instance!: Record<PropertyKey, unknown>;
+  /** @internal The prototype that `fetch()` and `getOrInsert()` continue on: the custom query-set class when mixed. */
+  declare readonly [SUPER]: QuerySet<ModelSpec>;
 
   /** @internal */
   pristine(): boolean {
     const s = this.state;
-    return s.filters.length === 1 && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length;
+    return s.filters.length === this.relation.to.length && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length;
   }
 
   /** @internal */
@@ -2032,9 +2037,9 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
     }
     if (debugging() && this.pristine()) {
       const owner = (this.instance.constructor as unknown as { meta: { name: string } }).meta.name;
-      return relationLoad(owner, this.relation.name, "load", () => super.fetch());
+      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this));
     }
-    return super.fetch();
+    return this[SUPER].fetch.call(this);
   }
 
   private link(): Record<string, unknown> {
@@ -2055,7 +2060,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
   /** The related row matching `lookup`, or a new one pointing at this instance; the link
    * field is part of the lookup. */
   override getOrInsert(lookup: Partial<M["insert"]>, options?: { readonly defaults?: Partial<M["insert"]> }): Promise<[M["row"], boolean]> {
-    return super.getOrInsert({ ...lookup, ...this.link() } as Partial<M["insert"]>, options);
+    return this[SUPER].getOrInsert.call(this, { ...lookup, ...this.link() } as Partial<M["insert"]>, options);
   }
 
   /** Inserts related rows pointing at this instance. */
@@ -2093,6 +2098,8 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
   readonly relation!: RelationMeta;
   /** @internal */
   readonly instance!: Record<PropertyKey, unknown>;
+  /** @internal The prototype that `fetch()` and `getOrInsert()` continue on: the custom query-set class when mixed. */
+  declare readonly [SUPER]: QuerySet<ModelSpec>;
 
   /** @internal */
   override async fetch(): Promise<M["row"][]> {
@@ -2104,9 +2111,9 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     }
     if (debugging() && pristine) {
       const owner = (this.instance.constructor as unknown as { meta: { name: string } }).meta.name;
-      return relationLoad(owner, this.relation.name, "load", () => super.fetch());
+      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this));
     }
-    return super.fetch();
+    return this[SUPER].fetch.call(this);
   }
 
   private get through(): ModelMeta {
@@ -2390,6 +2397,8 @@ function querySetClass(meta: ModelMeta): QuerySetClass {
   return found;
 }
 
+for (const cls of [RelatedSet, ManyRelatedSet]) Object.defineProperty(cls.prototype, SUPER, { value: QuerySet.prototype });
+
 /** `base` with the methods of the model's query-set class, built once per model. */
 function relationSetClass<B extends typeof RelatedSet | typeof ManyRelatedSet>(base: B, meta: ModelMeta): B {
   const custom = querySetClass(meta);
@@ -2398,9 +2407,10 @@ function relationSetClass<B extends typeof RelatedSet | typeof ManyRelatedSet>(b
   if (!cls) {
     const mixed = class extends custom {};
     for (const key of Reflect.ownKeys(base.prototype)) {
-      if (key !== "constructor") Object.defineProperty(mixed.prototype, key, Object.getOwnPropertyDescriptor(base.prototype, key)!);
+      if (key !== "constructor" && key !== SUPER) Object.defineProperty(mixed.prototype, key, Object.getOwnPropertyDescriptor(base.prototype, key)!);
     }
     Object.defineProperty(mixed.prototype, MIXED, { value: base });
+    Object.defineProperty(mixed.prototype, SUPER, { value: custom.prototype });
     Object.defineProperty(mixed, "name", { value: `${meta.name}${base.name}` });
     cls = mixed as unknown as B;
     meta.relatedSets.set(base, cls);

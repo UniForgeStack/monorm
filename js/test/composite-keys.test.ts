@@ -103,6 +103,9 @@ for (const provider of ["sqlite", "postgresql"]) {
 
       const loaded = await Item.objects.using(db).load(Item.lines).orderBy(Item.shop).all();
       assert.deepEqual(loaded.map((i: any) => i.lines.cached.map((l: any) => l.qty)), [[1, 2], [3]]);
+      const [filtered] = await Item.objects.using(db).filter(Item.shop.eq(1)).load(Item.lines.objects.filter(Line.qty.gt(1)));
+      assert.deepEqual(filtered.lines.cached.map((l: any) => l.qty), [2]);
+      assert.deepEqual((await filtered.lines).map((l: any) => l.qty), [2]);
       assert.deepEqual((await a.lines.using(db).orderBy(Line.qty).all()).map((l: any) => l.qty), [1, 2]);
       await b.lines.using(db).insert({ qty: 4 });
       assert.deepEqual((await b.lines.using(db).orderBy(Line.qty).all()).map((l: any) => l.qty), [3, 4]);

@@ -330,6 +330,41 @@ test("or() keeps the custom query-set class", async (t) => {
   assert.deepEqual((await qs.popular(60)).map((p) => p.title).sort(), ["bob", "hit"]);
 });
 
+test("a custom fetch() override runs on a relation set", async (t) => {
+  let count = 0;
+  class Hooked<M extends ModelSpec> extends QuerySet<M> {
+    override async fetch(): Promise<M["row"][]> {
+      count++;
+      return super.fetch();
+    }
+  }
+  useQuerySet(Post, Hooked as never);
+  t.after(() => useQuerySet(Post, QuerySet));
+  const { alice } = await seed();
+  await Post.objects.all();
+  assert.equal(count, 1);
+  count = 0;
+  await alice.posts.all();
+  assert.equal(count, 1);
+  await alice.posts.filter(Post.views.gt(0)).all();
+  assert.equal(count, 2);
+});
+
+test("a custom getOrInsert() override runs on a relation set", async (t) => {
+  let count = 0;
+  class Hooked<M extends ModelSpec> extends QuerySet<M> {
+    override getOrInsert(): ReturnType<QuerySet<M>["getOrInsert"]> {
+      count++;
+      return Promise.resolve([undefined as never, false]);
+    }
+  }
+  useQuerySet(Post, Hooked as never);
+  t.after(() => useQuerySet(Post, QuerySet));
+  const { alice } = await seed();
+  await alice.posts.getOrInsert({ title: "fresh", body: "..." });
+  assert.equal(count, 1);
+});
+
 test("label one stores a row or null", async () => {
   await seed();
   await User.objects.insert({ email: "carol@example.com", name: "Carol" });
