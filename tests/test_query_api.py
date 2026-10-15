@@ -3,6 +3,7 @@ to-one paths, OR of query sets, single-row labels, column paths and model metada
 
 import os
 import sys
+from decimal import Decimal
 
 import pytest
 from blog.models import Comment, Post, PostTag, Profile, Tag, User
@@ -219,6 +220,54 @@ async def test_prefetch_checks_its_input(clean):
         await orm.prefetch([alice, posts[0]], User.posts)
     with pytest.raises(ValueError, match="does not start at User"):
         await orm.prefetch([alice], Post.author)
+
+
+DECIMAL_KEYS = """datasource db { provider = "postgres" }
+model DecParent {
+  id Decimal @id @db.Decimal(10, 2)
+  kids DecKid[]
+  @@map("g6_dec_parents")
+}
+model DecKid {
+  id Int @id @default(autoincrement())
+  dec_id Decimal @db.Decimal(12, 4)
+  dec DecParent @relation(fields: [dec_id], references: [id])
+  @@map("g6_dec_kids")
+}
+"""
+
+
+@pytest.fixture
+async def decimal_keys():
+    from conftest import DATABASE_URL
+
+    registry = orm.Registry()
+    models = orm.loads(DECIMAL_KEYS, registry=registry)
+    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    try:
+        parent, kid = models["DecParent"], models["DecKid"]
+        await parent.objects.using(db).insert_many([{"id": Decimal("1.50")}, {"id": Decimal("2.00")}])
+        await kid.objects.using(db).insert_many([{"dec_id": Decimal("1.50")}, {"dec_id": Decimal("1.50")}])
+        yield parent, kid, db
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+async def test_prefetch_decimal_key_to_many(decimal_keys):
+    parent, _, db = decimal_keys
+    decs = await parent.objects.using(db).order_by(parent.id)
+    await orm.prefetch(decs, parent.kids, using=db)
+    assert [len(d.kids.cached) for d in decs] == [2, 0]  # the child column has scale 4
+
+
+async def test_prefetch_decimal_key_to_one(decimal_keys):
+    _, kid, db = decimal_keys
+    kids = await kid.objects.using(db).order_by(kid.id)
+    await orm.prefetch(kids, kid.dec, using=db)
+    assert [k.dec.id for k in kids] == [Decimal("1.50")] * 2
 
 
 @pytest.fixture

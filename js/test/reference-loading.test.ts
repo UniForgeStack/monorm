@@ -294,8 +294,6 @@ for (const name of ["byDate", "byDecimal", "byInt"]) {
       assert.throws(() => loaded[name], NotLoaded);
       await loaded.load(KChild[name]);
       assert.equal(loaded[name].id, 1);
-      // A Decimal key in prefetch() is refused by the engine (group G6).
-      if (name === "byDecimal") return;
       const rows = await KChild.objects.using(db).all();
       await prefetch(rows, KChild[name], { using: db });
       assert.equal(rows[0][name].id, 1);
