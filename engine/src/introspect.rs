@@ -71,6 +71,9 @@ struct PgTable {
     name: String,
     kind: String,
     partition: bool,
+    parent: Option<String>,
+    bound: Option<String>,
+    partition_by: Option<String>,
     comment: Option<String>,
     rls: bool,
     force_rls: bool,
@@ -195,7 +198,7 @@ const IN_SCHEMA: &str = "n.nspname = current_schema()";
 fn tables_sql() -> String {
     format!(
         "SELECT coalesce(json_agg(json_build_object('oid', c.oid::int8, 'name', c.relname, 'kind', c.relkind, \
-         'partition', c.relispartition, 'comment', obj_description(c.oid, 'pg_class'), 'rls', c.relrowsecurity, \
+         'partition', c.relispartition, 'parent', (SELECT p.relname FROM pg_inherits h JOIN pg_class p ON p.oid = h.inhparent WHERE h.inhrelid = c.oid LIMIT 1), 'bound', pg_get_expr(c.relpartbound, c.oid), 'partition_by', pg_get_partkeydef(c.oid), 'comment', obj_description(c.oid, 'pg_class'), 'rls', c.relrowsecurity, \
          'force_rls', c.relforcerowsecurity, 'unlogged', c.relpersistence = 'u', 'options', c.reloptions) ORDER BY c.relname), '[]') \
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE {IN_SCHEMA} AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname <> '{MIGRATIONS_TABLE}' AND {}",
@@ -235,7 +238,7 @@ const CONSTRAINTS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table
      ) ORDER BY con.conname), '[]') \
      FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
      LEFT JOIN pg_class rc ON rc.oid = con.confrelid LEFT JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
-     WHERE n.nspname = current_schema() AND con.contype IN ('p', 'u', 'c', 'f', 'x')";
+     WHERE n.nspname = current_schema() AND con.contype IN ('p', 'u', 'c', 'f', 'x') AND con.conislocal AND con.conparentid = 0";
 
 const INDEXES_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', i.indrelid::int8, 'oid', i.indexrelid::int8, \
      'name', ic.relname, 'unique', i.indisunique, 'method', am.amname, 'where', pg_get_expr(i.indpred, i.indrelid), \
@@ -254,7 +257,7 @@ const INDEXES_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', i
      ) ORDER BY ic.relname), '[]') \
      FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_class c ON c.oid = i.indrelid \
      JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_am am ON am.oid = ic.relam \
-     WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p')";
+     WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND NOT EXISTS (SELECT 1 FROM pg_inherits h WHERE h.inhrelid = i.indexrelid)";
 
 const TRIGGERS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', t.tgrelid::int8, 'name', t.tgname, \
      'type', t.tgtype::int, \
@@ -265,7 +268,7 @@ const TRIGGERS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', 
      'transition', t.tgoldtable IS NOT NULL OR t.tgnewtable IS NOT NULL) ORDER BY t.tgname), '[]') \
      FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
      JOIN pg_proc p ON p.oid = t.tgfoid JOIN pg_namespace pn ON pn.oid = p.pronamespace \
-     WHERE n.nspname = current_schema() AND NOT t.tgisinternal";
+     WHERE n.nspname = current_schema() AND NOT t.tgisinternal AND t.tgparentid = 0";
 
 fn functions_sql() -> String {
     format!(
@@ -414,8 +417,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     for t in tables {
         names.insert(t.oid, t.name.clone());
         match t.kind.as_str() {
-            "r" if t.partition => gaps.push(format!("table {} is a partition; partitions are not supported", t.name)),
-            "r" => {
+            "r" | "p" => {
                 if t.rls || t.force_rls {
                     let force = if t.force_rls { " (forced)" } else { "" };
                     gaps.push(format!("table {} has row-level security{force}; it is not reproduced", t.name));
@@ -426,9 +428,14 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
                 if let Some(options) = t.options.filter(|o| !o.is_empty()) {
                     gaps.push(format!("table {} has storage options ({}); they are not reproduced", t.name, options.join(", ")));
                 }
-                by_oid.insert(t.oid, Table { name: t.name, comment: t.comment, ..Default::default() });
+                let partition_of = if t.partition {
+                    match (t.parent, t.bound) {
+                        (Some(parent), Some(bound)) => Some(orm_core::migrate::model::PartitionOf { parent, bound }),
+                        _ => { gaps.push(format!("{}: missing partition parent or bound", t.name)); None }
+                    }
+                } else { None };
+                by_oid.insert(t.oid, Table { name: t.name, comment: t.comment, partition_by: t.partition_by, partition_of, ..Default::default() });
             }
-            "p" => gaps.push(format!("table {} is partitioned; partitioning is not supported", t.name)),
             "v" => gaps.push(format!("view {}: views are not supported", t.name)),
             "m" => gaps.push(format!("materialized view {}: views are not supported", t.name)),
             _ => gaps.push(format!("foreign table {}: foreign tables are not supported", t.name)),
@@ -623,6 +630,9 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
             "sequence" => format!("sequence {}: a sequence not owned by a column is not supported", n.name),
             kind => format!("{kind} {}: domains, composite and range types are not supported", n.name),
         });
+    }
+    for t in by_oid.values_mut() {
+        if t.partition_of.is_some() { t.columns.clear(); }
     }
     db.tables = by_oid.into_values().collect();
     Ok(out)

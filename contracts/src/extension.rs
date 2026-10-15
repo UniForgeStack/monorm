@@ -629,6 +629,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     append(&mut context.extensions, std::mem::take(&mut incoming.extensions))?;
     append(&mut context.functions, std::mem::take(&mut incoming.functions))?;
     append(&mut context.catalog, std::mem::take(&mut incoming.catalog))?;
+    append(&mut context.partitions, std::mem::take(&mut incoming.partitions))?;
     let prior_physical = context.behavior.storage.take();
     let new_physical = incoming.behavior.storage.take();
     if prior_physical.is_some() || new_physical.is_some() {
