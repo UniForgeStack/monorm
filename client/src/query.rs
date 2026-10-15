@@ -355,13 +355,13 @@ impl<M: Model> Default for Query<M> {
     }
 }
 impl<M: Model> Query<M> {
-    pub fn new() -> Self {
-        let mut query = Self {
+    pub const fn new() -> Self {
+        Self {
             select: ir::Select {
-                model: M::NAME.into(),
-                model_fields: Some(M::fields()),
+                model: String::new(),
+                model_fields: None,
                 model_helpers: vec![],
-                scope: Default::default(),
+                scope: std::collections::BTreeMap::new(),
                 without_defaults: false,
                 without_related: false,
                 with: vec![],
@@ -384,12 +384,24 @@ impl<M: Model> Query<M> {
             },
             filters: vec![],
             _type: PhantomData,
-        };
-        M::configure(&mut query.select);
-        query
+        }
     }
 }
 impl<M: Model, R, L, D> Query<M, R, L, D> {
+    /// Retained for callers that explicitly start a query from a model root.
+    pub fn query(self) -> Self {
+        self
+    }
+    // Shape transitions and nested plans need defaults before changing M. Ordinary
+    // roots defer model setup until erasure. An empty model marks a fresh root.
+    pub(crate) fn initialized(mut self) -> Self {
+        if self.select.model.is_empty() {
+            self.select.model = M::NAME.into();
+            self.select.model_fields = Some(M::fields());
+            M::configure(&mut self.select);
+        }
+        self
+    }
     pub fn filter(mut self, p: Predicate<M::Source>) -> Self {
         self.filters.push(p.tree);
         self
@@ -455,9 +467,10 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
         }
     }
     pub(crate) fn erase(self) -> (ir::Select, Values) {
+        let this = self.initialized();
         let mut values = Values::default();
-        let mut select = self.select;
-        erase_filters(&mut select, self.filters, &mut values);
+        let mut select = this.select;
+        erase_filters(&mut select, this.filters, &mut values);
         (select, values)
     }
 }

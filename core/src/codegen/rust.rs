@@ -619,7 +619,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             let selected = selected.join(",");
             writeln!(out,"impl<{decl},P:orm_client::Model<Schema=Schema,Source=self::{source}>,B> orm_client::Apply<{name}<{args}>> for orm_client::Relation<{name}Source,P,orm_client::{card},{name}Relation{i},B> where {send},S{index}:orm_client::MergeRequested<{target},orm_client::{card},P,B> {{type Output={name}<{selected}>;fn needs_data(&self,row:&orm_client::RowData)->bool {{!row.cache_satisfies::<P>({:?},{})}} fn apply(self,q:&mut orm_client::SelectionPlan,f:&mut std::vec::Vec<orm_client::Tree>){{self.install(q,f,!S{index}::DEFAULT); <<S{index} as orm_client::MergeRequested<{target},orm_client::{card},P,B>>::Output as orm_client::RelationState<{target},orm_client::{card}>>::merge_shape(q,{:?});}} }}",r.name,r.kind!=crate::ir::RelKind::One,r.name).unwrap();
         }
-        writeln!(out,"impl {name} {{ #[allow(non_upper_case_globals)] pub const objects:orm_client::QueryRoot<Self>=orm_client::QueryRoot::generated();").unwrap();
+        writeln!(out,"impl {name} {{ #[allow(non_upper_case_globals)] pub const objects:orm_client::Query<Self>=orm_client::Query::new();").unwrap();
         for (i, f) in fs.iter().enumerate() {
             writeln!(
                 out,
