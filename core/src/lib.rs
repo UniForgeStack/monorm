@@ -15,6 +15,7 @@ pub mod dsl;
 pub mod ext;
 pub mod ir;
 pub mod migrate;
+pub mod partition;
 pub mod schema;
 
 pub mod features;

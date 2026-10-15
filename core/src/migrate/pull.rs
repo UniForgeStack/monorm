@@ -344,6 +344,10 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     // -- models and fields -----------------------------------------------------------------
     let mut models: Vec<ModelOut<'_>> = vec![];
     for t in &db.tables {
+        if t.partition_of.is_some() {
+            models.push(ModelOut { table: t, name: t.name.clone(), fields: BTreeMap::new(), used: BTreeSet::new(), lines: vec![], attrs: vec![] });
+            continue;
+        }
         let pk = match &t.primary_key {
             Some(pk) if !pk.columns.is_empty() => pk,
             _ => {
@@ -369,8 +373,20 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     }
     let model_of: HashMap<String, usize> = models.iter().enumerate().map(|(i, m)| (m.table.name.clone(), i)).collect();
 
+    // Partitions share their root's column-to-field mapping, even through multiple levels.
+    for i in 0..models.len() {
+        let mut root = i;
+        let mut seen = BTreeSet::new();
+        while let Some(p) = &models[root].table.partition_of {
+            if !seen.insert(root) { break; }
+            let Some(&parent) = model_of.get(&p.parent) else { break };
+            root = parent;
+        }
+        if root != i { models[i].fields = models[root].fields.clone(); }
+    }
     for m in &mut models {
         let t = m.table;
+        if let Some(key) = &t.partition_by { m.attrs.push(partition_attr(m, key)); }
         let pk = t.primary_key.as_ref().filter(|p| p.columns.len() == 1).map(|p| p.columns[0].clone()).unwrap_or_default();
         let single_uniques: BTreeSet<&str> = t
             .uniques
@@ -617,6 +633,15 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
         out.push('\n');
     }
     for m in &models {
+        if let Some(p) = &m.table.partition_of {
+            let Some(&pi) = model_of.get(&p.parent) else { gaps.push(format!("partition {}: missing parent {}", m.name, p.parent)); continue };
+            let parent = &models[pi];
+            out.push_str(&format!("\npartition {} {{\nof = {}\n{}", m.name, parent.name, partition_props(&p.bound)));
+            for a in &m.attrs { out.push_str(&format!("{a}\n")); }
+            if let Some(c) = &m.table.comment { out.push_str(&format!("@@comment({})\n", quoted(c))); }
+            out.push_str("}\n");
+            continue;
+        }
         out.push_str(&format!("\nmodel {} {{\n", m.name));
         for l in &m.lines {
             out.push_str(&format!("  {l}\n"));
@@ -652,7 +677,7 @@ fn writable(f: &Function) -> bool {
 
 /// Whether `u` is written as `@unique` on its field: the one the schema would make.
 fn shorthand_unique(t: &Table, u: &Unique) -> bool {
-    u.columns.len() == 1 && u.name == object_name(&[&t.name, &u.columns[0], "key"]) && !u.nulls_not_distinct && u.deferrable.is_none()
+    t.partition_of.is_none() && u.columns.len() == 1 && u.name == object_name(&[&t.name, &u.columns[0], "key"]) && !u.nulls_not_distinct && u.deferrable.is_none()
 }
 
 /// `@@index(...)` for an index, or `None` when it uses a column that is left out.
@@ -776,4 +801,31 @@ mod tests {
         assert_eq!(ir.models[0].primary_key, ["shop", "id"]);
         assert_eq!(ir.models[0].pk_name.as_deref(), Some("item_key"));
     }
+}
+
+fn partition_attr(m: &ModelOut<'_>, key: &str) -> String {
+    let (strategy, keys) = key.split_once(" (").unwrap_or((key, ""));
+    let keys = keys.strip_suffix(')').unwrap_or(keys);
+    let keys = crate::partition::split_sql(keys).into_iter().map(|k| {
+        let column = k.strip_prefix('"').and_then(|k| k.strip_suffix('"')).map(|k| k.replace("\"\"", "\"")).unwrap_or_else(|| k.to_owned());
+        if m.fields.contains_key(&column) { m.field(&column) } else { format!("sql({})", quoted(k)) }
+    }).collect::<Vec<_>>().join(", ");
+    format!("@@partition({}: [{keys}])", strategy.to_lowercase())
+}
+
+fn partition_props(bound: &str) -> String {
+    let values = |s: &str| crate::partition::split_sql(s).into_iter().map(|v| {
+        if let Some((s, _)) = sql_string(v) { quoted(&s) }
+        else if v == "MINVALUE" || v == "MAXVALUE" || is_number(v) { v.to_owned() }
+        else { format!("sql({})", quoted(v)) }
+    }).collect::<Vec<_>>().join(", ");
+    if bound == "DEFAULT" { return "default = true\n".into(); }
+    if let Some(v) = bound.strip_prefix("FOR VALUES IN (").and_then(|v| v.strip_suffix(')')) { return format!("values = [{}]\n", values(v)); }
+    if let Some(v) = bound.strip_prefix("FOR VALUES FROM (").and_then(|v| v.strip_suffix(')')) {
+        if let Some((from, to)) = v.split_once(") TO (") { return format!("from = [{}]\nto = [{}]\n", values(from), values(to)); }
+    }
+    if let Some(v) = bound.strip_prefix("FOR VALUES WITH (").and_then(|v| v.strip_suffix(')')) {
+        if let Some((m, r)) = v.split_once(", remainder ") { return format!("modulus = {}\nremainder = {r}\n", m.trim_start_matches("modulus ")); }
+    }
+    format!("// Unsupported bound: {bound}\n")
 }

@@ -726,7 +726,7 @@ out, printed, and listed at the end of the file as `// gap:` lines:
 * rules (`CREATE RULE`; a gap that changes behaviour: a database made from the schema
   runs the statement that a rule rewrote, for example it deletes rows that a soft-delete
   rule keeps), views, row-level security policies, domains, composite and
-  range types, partitioned tables, generated columns, column collations;
+  range types, generated columns, column collations;
 * tables without a primary key, columns of a type
   without a schema type (`tstzrange`, `interval`, ...);
 * a `serial` column (a `nextval` default on a sequence that the column owns) is read as
@@ -789,10 +789,57 @@ missing tables and columns. None has triggers, exclusion constraints, extensions
 renames or snapshot diffs, and using them would tie the migration IR to one engine.
 The runner is in Rust (`engine/src/migrate.rs`), shared by every binding.
 
+## Declarative partitions (PostgreSQL)
+
+Declare a parent with `@@partition(list: [kind])`, `@@partition(range: [created_at])`,
+or `@@partition(hash: [shop_id])`. Every parent primary key and unique rule must
+include every partition key column. Put a rule that omits that key on each partition
+for uniqueness within that partition.
+
+```prisma
+model Event {
+  id Int @default(autoincrement())
+  created_at DateTime
+  @@id([id, created_at])
+  @@partition(range: [created_at])
+}
+
+partition event_2026 {
+of = Event
+from = ["2026-01-01"]
+to = ["2027-01-01"]
+}
+
+partition event_rest {
+of = Event
+default = true
+}
+```
+
+Partitioned parents with `autoincrement()` require PostgreSQL 17 or newer, which
+added identity support on partitioned tables. PostgreSQL routes inserts and moves
+rows when their partition key changes. SQLite rejects partition declarations.
+
+A partition block's name is its table name. List bounds use `values = [A, B]`
+(enum members or literals); range bounds use `from` and `to` lists, with
+`MINVALUE` and `MAXVALUE` allowed; hash bounds use `modulus` and `remainder`.
+A default partition uses `default = true` (list or range). Every partitioned
+parent needs at least one partition. List values cannot overlap; PostgreSQL checks
+range overlap. Uncovered enum members produce a warning unless a default exists.
+
+Blocks accept `@@check`, `@@unique`, `@@index`, `@@exclude`, `@@trigger`,
+`@@comment`, `@@renamed_from`, and `@@partition` for subpartitioning. A
+subpartition's `of` names its partitioned parent block. Parent rules are inherited;
+local rules apply only to the block's table. Removal detaches and drops the table
+and warns about data loss; a changed bound detaches and reattaches it, validating
+existing rows. A changed parent strategy or key rebuilds its table and descendants
+and warns about data loss. `pull` reproduces keys, bounds and local objects;
+inherited copies are excluded from drift comparisons.
+
 ## Not done yet
 
 * `CREATE INDEX CONCURRENTLY` / non-transactional migrations.
-* Generated columns, views, domains, row-level security, partitioning, multiple
+* Generated columns, views, domains, row-level security, multiple
   database schemas.
 * Renaming a native enum value in place (`ALTER TYPE ... RENAME VALUE`): a renamed
   value is a removal plus an addition today.

@@ -79,6 +79,8 @@ pub enum Op {
     /// whose target exists by then. Indexes, triggers and comments are separate ops.
     CreateTable { table: Table, foreign_keys: Vec<ForeignKey> },
     DropTable { table: String },
+    DetachPartition { table: String, parent: String },
+    AttachPartition { table: String, parent: String, bound: String },
     RenameTable { from: String, to: String },
     RenameColumn { table: String, from: String, to: String },
     AddColumn { table: String, column: Column },
@@ -107,6 +109,7 @@ impl Op {
     pub fn warning(&self) -> Option<String> {
         Some(match self {
             Op::DropTable { table } => format!("drops table {table} and all its rows"),
+            Op::AttachPartition { table, .. } => format!("fails if rows in partition {table} do not satisfy its new bound"),
             Op::DropColumn { table, column } => format!("drops column {table}.{column} and its data"),
             Op::AlterColumnType { table, column, from, to } => {
                 format!("changes {table}.{column} from {from} to {to}; existing values must convert")
@@ -201,6 +204,7 @@ fn apply_renames(t: &Table, table_map: &HashMap<&str, &str>, col_map: &HashMap<(
     let cols = |table: &str, cs: &[String]| -> Vec<String> { cs.iter().map(|c| col(table, c)).collect() };
     let mut out = t.clone();
     out.name = new_table;
+    if let Some(p) = &mut out.partition_of { p.parent = table_map.get(p.parent.as_str()).copied().unwrap_or(&p.parent).to_owned(); }
     for c in &mut out.columns {
         c.name = col(&t.name, &c.name);
     }
@@ -248,6 +252,11 @@ fn creation_order<'a>(tables: &[&'a Table]) -> (Vec<&'a Table>, Vec<(String, For
         deferred: &mut Vec<(String, ForeignKey)>,
     ) {
         state[i] = 1;
+        if let Some(p) = &tables[i].partition_of {
+            if let Some(&parent) = by_name.get(p.parent.as_str()) {
+                if state[parent] == 0 { visit(parent, tables, by_name, state, order, deferred); }
+            }
+        }
         for fk in &tables[i].foreign_keys {
             if let Some(&t) = by_name.get(fk.ref_table.as_str()) {
                 if t == i {
@@ -273,6 +282,44 @@ fn creation_order<'a>(tables: &[&'a Table]) -> (Vec<&'a Table>, Vec<(String, For
 
 /// Operations turning `old` into `new`. `renames` maps new names to old ones.
 pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
+    let mut changed = HashSet::new();
+    for n in &new.tables {
+        let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
+        let Some(o) = old.tables.iter().find(|o| o.name == n.name || &o.name == previous) else { continue };
+        let mut key = o.partition_by.clone();
+        // Renaming a partition column preserves the key and every row; it is not a rebuild.
+        if let Some(key) = &mut key {
+            let mut owner = n;
+            let mut seen = HashSet::new();
+            while let Some(p) = &owner.partition_of {
+                if !seen.insert(&owner.name) { break; }
+                let Some(parent) = new.tables.iter().find(|t| t.name == p.parent) else { break };
+                owner = parent;
+            }
+            for c in &owner.columns {
+                if let Some(from) = renames.columns.get(&(owner.name.clone(), c.name.clone())) {
+                    *key = key.replace(&super::pg::ident(from), &super::pg::ident(&c.name));
+                }
+            }
+        }
+        if key != n.partition_by { changed.insert(o.name.clone()); changed.insert(n.name.clone()); }
+    }
+    if !changed.is_empty() {
+        let mut rebuilt = changed;
+        loop {
+            let before = rebuilt.len();
+            for t in old.tables.iter().chain(&new.tables) {
+                if t.partition_of.as_ref().is_some_and(|p| rebuilt.contains(&p.parent)) { rebuilt.insert(t.name.clone()); }
+            }
+            if before == rebuilt.len() { break; }
+        }
+        let mut intermediate = old.clone();
+        intermediate.tables.retain(|t| !rebuilt.contains(&t.name));
+        for t in &mut intermediate.tables { t.foreign_keys.retain(|fk| !rebuilt.contains(&fk.ref_table)); }
+        let mut ops = diff(old, &intermediate, &Renames::default());
+        ops.extend(diff(&intermediate, new, renames));
+        return ops;
+    }
     let mut ops = vec![];
 
     // -- extensions and functions --------------------------------------------------------
@@ -519,6 +566,23 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
     ops.extend(renames_ops);
 
     // -- tables ----------------------------------------------------------------------------
+    // Detach all removed children first; their parent can then be dropped safely.
+    for t in &dropped {
+        if let Some(p) = &t.partition_of { ops.push(Op::DetachPartition { table: t.name.clone(), parent: p.parent.clone() }); }
+    }
+    for ((o, n), ro) in pairs.iter().zip(&renamed_old) {
+        if ro.partition_of != n.partition_of {
+            if let Some(p) = &o.partition_of { ops.push(Op::DetachPartition { table: n.name.clone(), parent: table_map.get(p.parent.as_str()).copied().unwrap_or(&p.parent).into() }); }
+        }
+    }
+    // Detach every changed bound before attaching any: two partitions may swap bounds.
+    // Attach after table creation because the new parent may itself be new.
+    let mut attachments = vec![];
+    for ((_, n), ro) in pairs.iter().zip(&renamed_old) {
+        if ro.partition_of != n.partition_of {
+            if let Some(p) = &n.partition_of { attachments.push(Op::AttachPartition { table: n.name.clone(), parent: p.parent.clone(), bound: p.bound.clone() }); }
+        }
+    }
     for t in &dropped {
         ops.push(Op::DropTable { table: t.name.clone() });
     }
@@ -546,6 +610,7 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
             comments.push(Op::CommentOnColumn { table: t.name.clone(), column: c.name.clone(), comment: c.comment.clone() });
         }
     }
+    ops.extend(attachments);
     add_fks.extend(deferred.into_iter().map(|(table, fk)| Op::AddConstraint { table, constraint: Constraint::ForeignKey(fk) }));
 
     // -- columns ---------------------------------------------------------------------------
