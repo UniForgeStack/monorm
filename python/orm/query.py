@@ -1335,7 +1335,7 @@ async def prefetch(
 
     The instances are of one model. They are read from the database each came from,
     unless ``using`` names another."""
-    from .db import resolve
+    from .db import _with_scope, resolve
     from .fields import BelongsTo
 
     objs = list(instances)
@@ -1362,7 +1362,8 @@ async def prefetch(
     rows = [[o._field_value(k) for k in keys] for o in objs]
     db = using if using is not None else objs[0].__dict__.get("_db")
     database = resolve(db)
-    await database._engine.prefetch(json.dumps(ir), params, keys, rows, objs, database._tx(), db)
+    op, params = _with_scope(json.dumps(ir), params)
+    await database._engine.prefetch(op, params, keys, rows, objs, database._tx(), db)
 
 
 def use_query_set(model: type[M], query_set: type[QuerySet[M]] | str) -> None:

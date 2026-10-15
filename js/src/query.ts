@@ -2331,7 +2331,8 @@ export async function prefetch(
   const names = keys.map((k) => meta.fieldByIr.get(k)!.name);
   const rows = objs.map((o) => names.map((n) => fieldValue(o, n)));
   const db = resolve(using ?? (objs[0]![DB] as Database | undefined));
-  const res = await wait(() => db.engine.prefetch(JSON.stringify(ir), params, keys, rows, db.tx()));
+  const [op, withParams] = withScope(JSON.stringify(ir), params);
+  const res = await wait(() => db.engine.prefetch(op, withParams, keys, rows, db.tx()));
   new Builder(db.registry, using ?? (objs[0]![DB] as Database | undefined)).prefetched(meta, objs, res);
 }
 

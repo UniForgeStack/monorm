@@ -2719,6 +2719,8 @@ pub fn plan_select(schema: &Schema, target: Target, q: &Select, params: &dyn Par
 /// fields in schema order.
 pub fn plan_prefetch_only(schema: &Schema, target: Target, q: &Select, params: &dyn Params) -> Result<Vec<PrefetchPlan>> {
     let root = schema.model_idx(&q.model).map_err(query_err)?;
+    let scoped = crate::params::Scoped { params, scope: &q.scope };
+    let params: &dyn Params = if q.scope.is_empty() { params } else { &scoped };
     q.prefetch.iter().map(|node| plan_prefetch(schema, target, params, root, node, q.without_defaults)).collect()
 }
 
