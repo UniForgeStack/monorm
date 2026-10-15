@@ -179,6 +179,14 @@ def _load_path(item: _LoadItem) -> tuple[str, ...]:
     return item._path
 
 
+def _full_selection(qs: QuerySet[Any]) -> bool:
+    """An unlabeled relation query set that loads the target's normal selection and nothing else of its own."""
+    if qs._label is not None:
+        return False
+    fields = qs._model._meta.field_names
+    return not qs._loads and (qs._model_fields is None or qs._model_fields == fields)
+
+
 def _derive(
     model: type[Model], loads: Iterable[_LoadItem], *, by_query: bool = False
 ) -> tuple[list[str], tuple[tuple[str, ...], ...], tuple[tuple[tuple[str, ...], tuple[str, ...]], ...], tuple[_Prefetch, ...]]:
@@ -219,8 +227,8 @@ def _derive(
             continue
         target = model._meta.relations[hop].target
         path: RelationPath[Any] = RelationPath(model, (hop,), target)
-        # a bare path to the relation asks for all its fields, so its columns add nothing
-        bare = any(len(h) == 1 and not isinstance(i, ColumnRef) and (not isinstance(i, QuerySet) or i._label is None) for h, i in entries)
+        # a bare path (or a plain query set) asks for the normal selection; named columns add to it
+        bare = any(len(h) == 1 and (isinstance(i, RelationPath) or (isinstance(i, QuerySet) and _full_selection(i))) for h, i in entries)
         base: QuerySet[Any] | None = None
         inner: list[_LoadItem] = []
         plain = False
@@ -244,10 +252,14 @@ def _derive(
                     inner.append(column)
             elif rest:
                 inner.append(RelationPath(target, rest, item._target))
-        if base is not None and any(isinstance(item, RelationPath) for _, item in entries) and (
-            base._filters or base._order or base._limit is not None or base._offset is not None or base._without_defaults
-        ):
-            raise ValueError(f"{path!r} has a path and a query set that changes its rows; label() the query set")
+        if base is not None and (base._filters or base._order or base._limit is not None or base._offset is not None or base._without_defaults):
+            if any(isinstance(item, (RelationPath, ColumnRef)) for _, item in entries):
+                raise ValueError(
+                    f"{path!r} has a column or path beside a query set that changes its rows; "
+                    "put the columns in the set's own .load() or label() the set"
+                )
+        elif bare and base is not None and not _full_selection(base):
+            base = base._clone(_loads=tuple(i for i in base._loads if not (isinstance(i, ColumnRef) and not i._path)), _model_fields=None)._derived()
         if plain:
             qs = base if base is not None else target.objects
             prefetch.append(_Prefetch(path, qs.load(*inner) if inner else qs))
@@ -408,7 +420,8 @@ class QuerySet(Generic[M]):
 
         Relation query sets run only inside ``load()``; standalone reads and writes
         raise ``TypeError``. Label a filtered, ordered or sliced set when also loading
-        a bare path through that relation.
+        a path or column through that relation, or put the columns in the set's own ``.load()``.
+        A bare path gives the normal selection united with the columns named beside it.
 
         Calls add up. ``load()`` without items gives full instances again (it bypasses a
         default selection)."""

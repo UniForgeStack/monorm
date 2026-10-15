@@ -882,6 +882,69 @@ def test_load_path_query_collision(change, nested, reverse):
     User.objects.load(path, qs.label("chosen"))
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_load_set_with_columns_keeps_sibling_columns(clean, reverse):
+    await seed()
+    for qs, column in (
+        (User.posts.objects.load(Post.title), User.posts.views),
+    ):
+        items = (column, qs) if reverse else (qs, column)
+        users = await User.objects.load(*items).order_by(User.id)
+        post = users[0].posts.cached[0]
+        assert (post.title, post.views) == ("a1", 5)
+        with pytest.raises(orm.NotLoaded):
+            _ = post.body
+    items = (Post.author.email, Post.author.objects.load(User.name))
+    posts = await Post.objects.load(*(items if reverse else items[::-1])).order_by(Post.id)
+    assert (posts[0].author.name, posts[0].author.email) == ("Alice", "alice@example.com")
+    two = (User.posts.objects.load(Post.title), User.posts.views, User.posts.body)
+    users = await User.objects.load(*(two[::-1] if reverse else two)).order_by(User.id)
+    assert (users[0].posts.cached[0].views, users[0].posts.cached[0].body) == (5, "")
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_load_bare_path_and_set_with_columns_loads_all_fields(clean, reverse):
+    await seed()
+    items = (User.posts, User.posts.objects.load(Post.title))
+    users = await User.objects.load(*(items[::-1] if reverse else items)).order_by(User.id)
+    post = users[0].posts.cached[0]
+    assert (post.title, post.views, post.body) == ("a1", 5, "")
+
+
+@pytest.mark.parametrize("change", ["filter", "order", "limit", "offset", "defaults"])
+@pytest.mark.parametrize("column", ["first", "deep"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_load_row_changing_set_refuses_columns(change, column, reverse):
+    qs = {
+        "filter": User.posts.objects.filter(Post.published),
+        "order": User.posts.objects.order_by(Post.id),
+        "limit": User.posts.objects[:1],
+        "offset": User.posts.objects[1:],
+        "defaults": User.posts.objects.without_defaults(),
+    }[change]
+    col = User.posts.title if column == "first" else User.posts.comments.body
+    items = (col, qs) if reverse else (qs, col)
+    with pytest.raises(ValueError, match=r"\.load\(\).*label\(\)"):
+        User.objects.load(*items)
+    with pytest.raises(ValueError, match=r"label\(\)"):
+        User.objects.load(items[0]).load(items[1])
+    User.objects.load(col, qs.label("chosen"))
+    User.objects.load(qs.load(Post.title))
+
+
+async def test_load_set_and_column_guards(clean):
+    await seed()
+    users = await User.objects.load(User.posts.objects, User.posts.views).order_by(User.id)
+    assert users[0].posts.cached[0].body == ""
+    users = await User.objects.load(User.posts.objects.load(), User.posts.views).order_by(User.id)
+    assert users[0].posts.cached[0].body == ""
+    users = await User.objects.load(User.posts, User.posts.views).order_by(User.id)
+    assert users[0].posts.cached[0].body == ""
+    labeled = User.posts.objects.filter(Post.views > 10).label("hot")
+    users = await User.objects.load(labeled, User.posts.views).order_by(User.id)
+    assert users[0].hot[0].views == 50
+
+
 async def test_load_plain_path_and_query_and_without_related(clean):
     await seed()
     for qs in (User.posts.objects, User.posts.objects.load(Post.comments)):

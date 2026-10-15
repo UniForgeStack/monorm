@@ -594,6 +594,56 @@ test("load rejects paths combined with a query that changes their rows", () => {
   }
 });
 
+test("load keeps a column beside a set with its own columns", async () => {
+  await seed();
+  for (const reverse of [false, true]) {
+    const a = [User.posts.objects.load(Post.title), User.posts.views] as const;
+    const users = await User.objects.load(...(reverse ? [a[1], a[0]] as const : a)).orderBy(User.id);
+    const post = users[0]!.posts.cached[0]!;
+    assert.deepEqual([post.title, post.views], ["a1", 5]);
+    assert.throws(() => (post as { body?: string }).body, NotLoaded);
+    const b = [Post.author.objects.load(User.name), Post.author.email] as const;
+    const posts = await Post.objects.load(...(reverse ? [b[1], b[0]] as const : b)).orderBy(Post.id);
+    assert.deepEqual([posts[0]!.author.name, posts[0]!.author.email], ["Alice", "alice@example.com"]);
+    const two = [User.posts.objects.load(Post.title), User.posts.views, User.posts.body] as const;
+    const both = await User.objects.load(...(reverse ? [two[2], two[1], two[0]] as const : two)).orderBy(User.id);
+    assert.deepEqual([both[0]!.posts.cached[0]!.views, both[0]!.posts.cached[0]!.body], [5, ""]);
+  }
+});
+
+test("load gives a bare path beside a set the normal selection", async () => {
+  await seed();
+  for (const items of [[User.posts, User.posts.objects.load(Post.title)], [User.posts.objects.load(Post.title), User.posts]] as const) {
+    const users = await User.objects.load(...items).orderBy(User.id);
+    const post = users[0]!.posts.cached[0]!;
+    assert.deepEqual([post.title, post.views, post.body], ["a1", 5, ""]);
+  }
+});
+
+test("load refuses columns beside a set that changes its rows", () => {
+  const changes = [
+    User.posts.objects.filter(Post.published), User.posts.objects.orderBy(Post.id),
+    User.posts.objects.limit(1), User.posts.objects.offset(1), User.posts.objects.withoutDefaults(),
+  ];
+  for (const qs of changes) for (const col of [User.posts.title, User.posts.comments.body]) {
+    assert.throws(() => User.objects.load(col, qs), /\.load\(\).*label\(\)/);
+    assert.throws(() => User.objects.load(qs, col), /label\(\)/);
+    assert.throws(() => User.objects.load(qs).load(col), /label\(\)/);
+    User.objects.load(col, qs.label("chosen"));
+    User.objects.load(qs.load(Post.title));
+  }
+});
+
+test("a plain, reset or labeled set beside a column keeps its meaning", async () => {
+  await seed();
+  for (const qs of [User.posts.objects, User.posts.objects.load()]) {
+    const users = await User.objects.load(qs, User.posts.views).orderBy(User.id);
+    assert.equal(users[0]!.posts.cached[0]!.body, "");
+  }
+  const users = await User.objects.load(User.posts.objects.filter(Post.views.gt(10)).label("hot"), User.posts.views).orderBy(User.id);
+  assert.equal((users[0] as unknown as { hot: { views: number }[] }).hot[0]!.views, 50);
+});
+
 test("load combines plain paths and sets; withoutRelated keeps IN loads and root fields", async () => {
   await seed();
   for (const qs of [User.posts.objects, User.posts.objects.load(Post.comments)]) {

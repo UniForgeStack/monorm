@@ -256,7 +256,8 @@ objects without a prototype, get a message naming the expected target model.
   Reading an unloaded field is a type error, and past a cast it throws `NotLoaded`.
 * `User.posts.objects` is the relation query set: `Post.objects` bound to `User.posts`.
   Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
-  A bare path (including a deeper path through the relation) combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `QueryError`. Label the query set to request a separate result. A plain set or one that only adds `.load()` can share the path.
+  A column or path through the relation combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `QueryError`: put the columns in the set's own `.load()`, or label the set to request a separate result. A plain set or one that only adds `.load()` can share the path.
+  A bare path or plain set gives the normal selection united with the columns named beside it. A column beside a set with its own columns is added to that set's columns.
   `load(User.posts.objects.filter(...).orderBy(...).limit(2))` gives the related rows their own query (filtered, nested with `.load()`, or sliced per parent); they fill `u.posts.cached`.
   `.label("top")` puts them in a typed plain array attribute (`u.top: Post[]`) instead; `{ one: true }` stores the first row or `null`.
   `Comment.post.objects.asPrefetch()` loads a to-one relation with an `IN` query instead of a join.

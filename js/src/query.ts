@@ -352,8 +352,8 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
     const rel = meta.relationByIr.get(hop)!;
     const target = meta.registry.get(rel.target);
     const path = (meta.model as unknown as Record<string, RelationPath<ModelSpec, string, readonly Hop[]>>)[rel.name]!;
-    // a bare path to the relation asks for all its fields, so its columns add nothing
-    const bare = entries.some((i) => loadPath(i).length === 1 && !(i instanceof Column) && !(i instanceof QuerySet && i.state.label !== undefined));
+    // a bare path (or a plain query set) asks for the normal selection; named columns add to it
+    const bare = entries.some((i) => loadPath(i).length === 1 && (i instanceof QuerySet ? i.fullSelection() : !(i instanceof Column)));
     let base: QuerySet<ModelSpec, unknown, string, unknown, never> | undefined;
     const inner: LoadEntry[] = [];
     let plain = false;
@@ -376,10 +376,14 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
         inner.push(restOf(item, target));
       }
     }
-    if (base && entries.some((item) => item instanceof RelationPath) && (
-      base.state.filters.length || base.state.order.length || base.state.limit !== undefined || base.state.offset !== undefined || base.state.withoutDefaults
-    )) {
-      throw new QueryError(`${String(path)} has a path and a query set that changes its rows; label() the query set`);
+    if (base && (base.state.filters.length || base.state.order.length || base.state.limit !== undefined || base.state.offset !== undefined || base.state.withoutDefaults)) {
+      if (entries.some((item) => item instanceof RelationPath || item instanceof Column)) {
+        throw new QueryError(
+          `${String(path)} has a column or path beside a query set that changes its rows; put the columns in the set's own .load() or label() the set`,
+        );
+      }
+    } else if (bare && base && !base.fullSelection()) {
+      base = base.withoutOwnColumns();
     }
     if (plain) {
       const qs = base ?? (target.objects as QuerySet<ModelSpec, unknown, string, unknown, never>);
@@ -641,7 +645,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    *
    * Relation query sets run only inside `load()`; standalone reads and writes
    * raise `TypeError`. Label a filtered, ordered or sliced set when also loading
-   * a bare path through that relation.
+   * a path or column through that relation, or put the columns in the set's own `.load()`.
+   * A bare path gives the normal selection united with the columns named beside it.
    *
    * Calls add up. `load()` without items gives full instances again (it bypasses a
    * default selection).
@@ -708,6 +713,20 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** @internal A relation query set (`User.posts.objects`). */
   withVia(via: RelationPath<ModelSpec, string, readonly Hop[]>): this {
     return this.clone({ via });
+  }
+
+  /** @internal The normal selection plus nested loads: drops the set's own columns. */
+  withoutOwnColumns(): this {
+    const loads = (this.state.loads ?? []).filter((i) => !(i instanceof Column && !i.path.length));
+    return this.clone({ loads, modelFields: undefined }).derived();
+  }
+
+  /** @internal An unlabeled set that loads the target's normal selection and nothing else of its own. */
+  fullSelection(): boolean {
+    const s = this.state;
+    if (s.label !== undefined || s.loads?.length) return false;
+    const all = this.meta.fieldList.map((f) => f.ir);
+    return s.modelFields === undefined || (s.modelFields.length === all.length && s.modelFields.every((f, i) => f === all[i]));
   }
 
   /** @internal */

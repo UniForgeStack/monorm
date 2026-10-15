@@ -289,13 +289,15 @@ SQL text client-side, so the limit doesn't apply to it.)
 * A column of the model makes its instances partial: they hold the named fields, and, hidden, the primary key and the relation keys. Reading another field raises `NotLoaded`.
   Without a column of the model itself, its instances keep their normal selection: `load(Post.author)` gives whole posts.
   A related model is partial in the same way when a column of it is named (`Post.author.name`) and no bare path ends at it (`load(Post.author, Post.author.name)` gives whole authors).
+  A bare path gives the normal selection united with the columns named beside it, and a set's own columns join the named ones.
   `load()` without items gives whole instances again (see [`selection-and-defaults.md`](selection-and-defaults.md)).
 * A path loads every relation along it: `User.posts.comments` fills `user.posts` and each post's `comments`.
   Paths with a common prefix share its query.
 * To-one relations are joined. A path with a to-many hop is loaded with an `IN (...)` query from its first hop, and every item under that hop uses the query.
 * `User.posts.objects` is the relation query set: `Post.objects` (with its query-set class and query defaults) bound to `User.posts`.
   Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
-  A bare path (including a deeper path through the relation) combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `ValueError`. Label the query set to request a separate result. A plain set or one that only adds `.load()` can share the path.
+  A column or path through the relation combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `ValueError`: put the columns in the set's own `.load()`, or label the set to request a separate result. A plain set or one that only adds `.load()` can share the path.
+  A bare path or plain set gives the normal selection united with the columns named beside it. A column beside a set with its own columns is added to that set's columns.
   It gives the related rows their own filters, ordering, slice and `.load(...)` (nested under it).
   As in Django, the rows fill the relation itself, so `user.posts.cached` and `await user.posts` then give the filtered rows; `user.posts.filter(...)` and other new queries still see every post.
   With `.label("recent")` they go to a plain list attribute (`user.recent`), and the relation stays unloaded; `.label("best", one=True)` stores the first row, or `None`.
