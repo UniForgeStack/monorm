@@ -1333,8 +1333,9 @@ async def prefetch(
 
         await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.filter(...))
 
-    The instances are of one model. They are read from the database each came from,
-    unless ``using`` names another."""
+    The instances are of one model and one database (an unset database means the
+    default). Mixed databases raise ``QueryError`` unless ``using`` names the
+    database to read."""
     from .db import _with_scope, resolve
     from .fields import BelongsTo
 
@@ -1344,6 +1345,10 @@ async def prefetch(
     model = type(objs[0])
     if any(type(o) is not model for o in objs):
         raise TypeError("prefetch() takes instances of one model")
+    db = using if using is not None else objs[0].__dict__.get("_db")
+    database = resolve(db)
+    if using is None and any(resolve(o.__dict__.get("_db")) is not database for o in objs):
+        raise QueryError("prefetch() takes instances from one database; pass using= to read another")
     loads = model.objects.load(*relations)._loads
     if any(isinstance(i, ColumnRef) and not i._path for i in loads):
         raise TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load")
@@ -1360,8 +1365,6 @@ async def prefetch(
             if key not in keys:
                 keys.append(key)
     rows = [[o._field_value(k) for k in keys] for o in objs]
-    db = using if using is not None else objs[0].__dict__.get("_db")
-    database = resolve(db)
     op, params = _with_scope(json.dumps(ir), params)
     await database._engine.prefetch(op, params, keys, rows, objs, database._tx(), db)
 

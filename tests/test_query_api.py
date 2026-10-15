@@ -221,6 +221,67 @@ async def test_prefetch_checks_its_input(clean):
         await orm.prefetch([alice], Post.author)
 
 
+@pytest.fixture
+async def prefetch_databases():
+    registry = orm.Registry()
+    models = orm.loads('''datasource db { provider = "sqlite" }
+model Author {
+  id Int @id @default(autoincrement())
+  name String
+  books Book[]
+}
+model Book {
+  id Int @id @default(autoincrement())
+  title String
+  author_id Int
+  author Author @relation(fields: [author_id], references: [id])
+}
+''', registry=registry)
+    Author, Book = models["Author"], models["Book"]
+    d1 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    d2 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        for db, name in ((d1, "d1"), (d2, "d2")):
+            await db.create_tables()
+            authors = await Author.objects.using(db).insert_many([{"name": name}, {"name": "empty"}]).returning()
+            await Book.objects.using(db).insert(title=f"B-{name}", author_id=authors[0].id)
+        a1 = await Author.objects.using(d1).order_by(Author.id).first()
+        x, y = await Author.objects.using(d2).order_by(Author.id)
+        yield Author, d2, [a1, y, x]
+    finally:
+        await d1.close()
+        await d2.close()
+
+
+async def test_prefetch_refuses_instances_from_two_databases(prefetch_databases):
+    Author, _, objs = prefetch_databases
+    with pytest.raises(orm.QueryError, match=r"prefetch\(\) takes instances from one database; pass using= to read another"):
+        await orm.prefetch(objs, Author.books)
+    # Rejection must leave every relation unloaded.
+    for obj in objs:
+        with pytest.raises(orm.NotLoaded):
+            obj.books.cached
+
+
+async def test_prefetch_with_using_reads_that_database(prefetch_databases):
+    Author, d2, objs = prefetch_databases
+    await orm.prefetch(objs, Author.books, using=d2)
+    assert [[b.title for b in obj.books.cached] for obj in objs] == [["B-d2"], [], ["B-d2"]]
+
+
+async def test_prefetch_accepts_instances_from_one_database(clean, prefetch_databases):
+    Author, _, objs = prefetch_databases
+    await orm.prefetch(objs[1:], Author.books)
+    assert [[b.title for b in obj.books.cached] for obj in objs[1:]] == [[], ["B-d2"]]
+    alice, bob, _ = await seed()
+    await orm.prefetch([alice, bob], User.posts)
+    assert [p.title for p in alice.posts.cached] == ["draft", "hit", "quiet"]
+    # Implicit default and explicit default resolve to the same database.
+    explicit = await User.objects.using(clean).require().get(User.id == alice.id)
+    await orm.prefetch([bob, explicit], User.posts)
+    assert [p.title for p in explicit.posts.cached] == ["draft", "hit", "quiet"]
+
+
 # -- model metadata for factories (item 12) ---------------------------------------------------
 
 

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, column, describe, prefetch, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
+import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, Registry, connect, getDatabase, loads, column, describe, prefetch, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
 import { Comment, Post, PostTag, Profile, Tag, User, type PostSpec, type TagSpec } from "./blog/models.js";
 import { useDatabase } from "./helpers.js";
 
@@ -124,6 +124,79 @@ test("prefetch checks its input", async () => {
   await prefetch([], User.posts);
   await assert.rejects(prefetch([alice, rows[0]!], User.posts), /one model/);
   await assert.rejects(prefetch([alice], Post.author as never), /does not start at User|User has no relation/);
+});
+
+async function prefetchDatabases() {
+  const registry = new Registry();
+  const models = loads(`datasource db { provider = "sqlite" }
+model Author {
+  id Int @id @default(autoincrement())
+  name String
+  books Book[]
+}
+model Book {
+  id Int @id @default(autoincrement())
+  title String
+  authorId Int
+  author Author @relation(fields: [authorId], references: [id])
+}
+`, { registry });
+  const Author = models["Author"] as any, Book = models["Book"] as any;
+  const d1 = await connect("sqlite://:memory:", { registry, default: false });
+  const d2 = await connect("sqlite://:memory:", { registry, default: false });
+  const close = async () => { await d1.close(); await d2.close(); };
+  try {
+    for (const [db, name] of [[d1, "d1"], [d2, "d2"]] as const) {
+      await db.createTables();
+      const authors = await Author.objects.using(db).insertMany([{ name }, { name: "empty" }]).returning();
+      await Book.objects.using(db).insert({ title: `B-${name}`, authorId: authors[0].id });
+    }
+    const a1 = await Author.objects.using(d1).orderBy("id").first();
+    const [x, y] = await Author.objects.using(d2).orderBy("id");
+    return { Author, d2, objs: [a1, y, x], close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+test("prefetch refuses instances from two databases", async () => {
+  const { Author, objs, close } = await prefetchDatabases();
+  try {
+    await assert.rejects(prefetch(objs, Author.books), {
+      name: "QueryError", message: "prefetch() takes instances from one database; pass using= to read another",
+    });
+    for (const obj of objs) assert.throws(() => obj.books.cached, NotLoaded);
+  } finally {
+    await close();
+  }
+});
+
+test("prefetch with using reads that database", async () => {
+  const { Author, d2, objs, close } = await prefetchDatabases();
+  try {
+    await prefetch(objs, Author.books, { using: d2 });
+    assert.deepEqual(objs.map((obj) => obj.books.cached.map((b: any) => b.title)), [["B-d2"], [], ["B-d2"]]);
+  } finally {
+    await close();
+  }
+});
+
+test("prefetch accepts instances from one database", async () => {
+  const { Author, objs, close } = await prefetchDatabases();
+  try {
+    await prefetch(objs.slice(1), Author.books);
+    assert.deepEqual(objs.slice(1).map((obj) => obj.books.cached.map((b: any) => b.title)), [[], ["B-d2"]]);
+    const { alice, bob } = await seed();
+    await prefetch([alice, bob], User.posts);
+    const titles = (obj: User) => (obj.posts as unknown as { cached: Post[] }).cached.map((p) => p.title);
+    assert.deepEqual(titles(alice), ["draft", "hit", "quiet"]);
+    const explicit = await User.objects.using(getDatabase()).require().get(User.id.eq(alice.id));
+    await prefetch([bob, explicit], User.posts);
+    assert.deepEqual(titles(explicit), ["draft", "hit", "quiet"]);
+  } finally {
+    await close();
+  }
 });
 
 // -- model metadata for factories -------------------------------------------------------------

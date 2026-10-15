@@ -268,7 +268,8 @@ objects without a prototype, get a message naming the expected target model.
   `await post.load()` fills all scalar fields. Nested paths and filtered relation querysets
   work as on querysets, and collection values remain in `.cached`.
 * `await prefetch(instances, ...items)` loads relations onto instances you already have, with the items of `load()` (no columns of the instances' model), always by `IN` query.
-  Only the prefetch queries run: the keys come from the instances. A last `{ using: db }` argument names the database.
+  Only the prefetch queries run: the keys come from the instances. The instances are of one model and one database; an unset database means the default.
+  Mixed databases throw `QueryError` unless a last `{ using: db }` argument names the database to read.
   The row type does not change; read the relations as `cached` or cast.
 
 Related sets: `await user.posts`, `.filter()`, `.count()`, and `.insert({...})`, where the

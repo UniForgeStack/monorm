@@ -2296,8 +2296,9 @@ for (const cls of [RelatedSet, ManyRelatedSet]) {
 /**
  * Loads relations onto instances you already have, as `load()` does for the
  * rows of a query, but always by `IN (...)` query: one query per relation level, and no query for the instances
- * themselves. The instances are of one model; they are read from the database each came
- * from, unless a last `{ using }` argument names another.
+ * themselves. The instances are of one model and one database (an unset database
+ * means the default). Mixed databases throw `QueryError` unless a last `{ using }`
+ * argument names the database to read.
  *
  * ```ts
  * await prefetch([bundle], Bundle.items.product, Bundle.versions.objects.orderBy(...).limit(1).label("latest"));
@@ -2316,6 +2317,10 @@ export async function prefetch(
   if (meta === undefined || objs.some((o) => (o.constructor as { meta?: ModelMeta }).meta !== meta)) {
     throw new TypeError("prefetch() takes instances of one model");
   }
+  const db = resolve(using ?? (objs[0]![DB] as Database | undefined));
+  if (using === undefined && objs.some((o) => resolve(o[DB] as Database | undefined) !== db)) {
+    throw new QueryError("prefetch() takes instances from one database; pass using= to read another");
+  }
   const loads = (meta.objects.load as (...r: unknown[]) => QuerySet<ModelSpec>)(...paths).state.loads ?? [];
   if (loads.some((i) => i instanceof Column && !i.path.length)) {
     throw new TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load");
@@ -2330,7 +2335,6 @@ export async function prefetch(
   }
   const names = keys.map((k) => meta.fieldByIr.get(k)!.name);
   const rows = objs.map((o) => names.map((n) => fieldValue(o, n)));
-  const db = resolve(using ?? (objs[0]![DB] as Database | undefined));
   const [op, withParams] = withScope(JSON.stringify(ir), params);
   const res = await wait(() => db.engine.prefetch(op, withParams, keys, rows, db.tx()));
   new Builder(db.registry, using ?? (objs[0]![DB] as Database | undefined)).prefetched(meta, objs, res);

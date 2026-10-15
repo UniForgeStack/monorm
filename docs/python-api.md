@@ -322,7 +322,8 @@ await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.order
 ```
 
 It takes the items of `load()` except columns of the instances' model, and loads every relation with an `IN (...)` query. Only those queries run: the keys come from the instances, so their own rows are not read again.
-The instances are of one model, and the queries run on the database each came from (`using=db` names another).
+The instances are of one model and one database; an unset database means the default.
+Mixed databases raise `QueryError` unless `using=db` names the database to read.
 
 ### One-to-one and many-to-many
 
