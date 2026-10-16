@@ -1388,9 +1388,9 @@ QuerySet ──(IR json + params list)──▶ Engine.run ──▶ planner (se
 
 Rough numbers (measured 2026-10-02 on a 4-vCPU Linux VM, release build, localhost TCP, 1000-row reads): building a query set and its
 IR costs ~15 µs of Python. A 1-row read is ~0.1 ms over a bare `SELECT 1` on the same
-connection. Reading 1000 posts takes ~1.9 ms (Django async was 10.4 ms in Phase 0), and
-1000 posts + author via `load(Post.author)` ~3.1 ms (Django 18.1 ms). Building instances in
-Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
+connection. Reading 1000 posts takes ~1.9 ms, and
+1000 posts + author via `load(Post.author)` ~3.1 ms. Building instances in
+Rust took these from ~2.3 / ~4.3 ms
 (`bench/engine_bench.py`, numbers in
 [`bench/RESULTS.md`](../../bench/RESULTS.md#instances-built-in-rust)).
 
@@ -1481,7 +1481,5 @@ inside its body still contribute to the subquery counts.
   a CTE.
 * Several shared windows per query, and shared windows with `ORDER BY` / `LIMIT`: needs
   a fix in sea-query (or our own SELECT writer); see Window functions.
-* Composite keys. (One-to-one, many-to-many, decimal, enum, array, UUID and JSON
-  columns are done, see [`schema.md`](../schema/schema.md).)
 * A join through a many-to-many relation (it would repeat rows; `load()` uses an
   `IN (...)` query).
