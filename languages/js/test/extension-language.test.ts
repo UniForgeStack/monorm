@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { define, QuerySet, Registry } from "../src/index.js";
+import { define, QuerySet, Registry, useQuerySet } from "../src/index.js";
+import { InstanceBase } from "../src/ext.js";
 import { call, native } from "../src/native.js";
 
 const source = `
@@ -83,6 +84,51 @@ test("two mixins chain through super in dependency order", () => {
   const { Post } = build(records, extensions, { Post: ["ext.a", "ext.b"] }) as Record<string, any>;
   assert.deepEqual(Post.objects.chain(), ["b", "a"]);
   assert.deepEqual(Post.objects.everything().chain(), ["b", "a"]);
+});
+
+test("the user query set class comes first, then the extension classes", () => {
+  const p = project();
+  const records = [...p.records, record("ext.b", p.hash, { query_set_members: ["chain"], instance_members: [], overrides: ["chain"] })];
+  const extensions = { ...code(p), "ext.b": { module: { queries: mixinB, Instance: class {} }, hash: p.hash, dir: new URL("file:///nowhere/") } };
+  class Queries extends QuerySet<never> {
+    chain(): string[] {
+      // @ts-expect-error the member comes from an extension mixin
+      return ["user", ...super.chain()];
+    }
+  }
+  const { Post } = build(records, extensions, { Post: ["ext.a", "ext.b"] }) as Record<string, any>;
+  useQuerySet(Post, Queries);
+  assert.deepEqual(Post.objects.chain(), ["user", "b", "a"]);
+  assert.equal(Post.objects.constructor, Queries);
+});
+
+test("a user query set class shared with a model that has other extensions fails", () => {
+  const p = project();
+  class Queries extends QuerySet<never> {}
+  const { Post, Tag } = build(p.records, code(p), { Post: ["ext.a"] }) as Record<string, any>;
+  useQuerySet(Post, Queries);
+  useQuerySet(Tag, Queries);
+  assert.equal(typeof Post.objects.everything, "function");
+  assert.throws(() => Tag.objects, /Tag: the query set class Queries is shared with a model that has extensions/);
+});
+
+test("an instance override calls super down the chain to the host member", () => {
+  const p = project();
+  const records = [
+    record("ext.a", p.hash, { query_set_members: [], instance_members: ["toJSON"], overrides: ["toJSON"] }),
+    record("ext.b", p.hash, { query_set_members: [], instance_members: ["toJSON"], overrides: ["toJSON"] }),
+  ];
+  const instance = (tag: string) => class extends InstanceBase<{ toJSON(): object }> {
+    override toJSON() { return { ...super.toJSON(), [tag]: true }; }
+  };
+  const none = (Base: Ctor) => class extends Base {};
+  const extensions = {
+    "ext.a": { module: { queries: none, Instance: instance("a") }, hash: p.hash, dir: p.dir },
+    "ext.b": { module: { queries: none, Instance: instance("b") }, hash: p.hash, dir: new URL("file:///nowhere/") },
+  };
+  const { Post, Tag } = build(records, extensions, { Post: ["ext.a", "ext.b"], Tag: ["ext.a"] }) as Record<string, any>;
+  assert.deepEqual(Object.create(Post._meta.Row.prototype).toJSON(), { a: true, b: true });
+  assert.deepEqual(Object.create(Tag._meta.Row.prototype).toJSON(), { a: true });
 });
 
 test("an undeclared collision fails at define", () => {

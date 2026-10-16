@@ -440,7 +440,8 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
             let out = out.unwrap_or_else(|| schema.with_file_name("models.py"));
             let ext_dir = args.opt(&["--ext-dir"]).map(PathBuf::from).unwrap_or_else(|| out.with_file_name("orm_ext"));
             if !options.extensions.is_empty() {
-                options.ext_import = Some(python_import(&ext_dir)?);
+                let name = ext_dir.file_name().unwrap().to_string_lossy().into_owned();
+                options.ext_import = Some(module_paths(&absolute(out.parent().unwrap_or(Path::new(".")))?, &absolute(&ext_dir)?, &name)?.1);
             }
             let g = codegen::python::generate_with(&ir, &compiled, &source, &options).map_err(Failure::Failed)?;
             write_extensions(&options, "python", &ext_dir)?;
@@ -460,7 +461,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                     if !outputs.insert(target_abs.clone()) {
                         return Err(Failure::Failed(format!("multiple schema modules would write {}; put each schema in its own directory", target.display())));
                     }
-                    let (relative, import) = module_paths(target_abs.parent().unwrap(), &shared_abs)?;
+                    let (relative, import) = module_paths(target_abs.parent().unwrap(), &shared_abs, "_orm_models")?;
                     let facade = codegen::python::facade(unit, &relative, &import, &compiled);
                     files.push((target.clone(), facade.module));
                     files.push((target.with_extension("pyi"), facade.stub));
@@ -510,25 +511,6 @@ fn write_extensions(options: &codegen::Options, language: &str, dir: &Path) -> R
     Ok(())
 }
 
-// The absolute dotted module of the extension directory, from the `__init__.py` files above it.
-#[cfg(feature = "generate-python")]
-fn python_import(dir: &Path) -> Result<String> {
-    let dir = absolute(dir)?;
-    let mut names = vec![dir.file_name().unwrap().to_string_lossy().into_owned()];
-    let mut parent = dir.parent().unwrap();
-    while parent.join("__init__.py").is_file() {
-        names.push(parent.file_name().unwrap().to_string_lossy().into_owned());
-        parent = parent.parent().unwrap();
-    }
-    names.reverse();
-    for name in &names {
-        if name.chars().enumerate().any(|(i, c)| !(c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))) {
-            return Err(Failure::Failed(format!("generated Python package directory must be an identifier: {name}")));
-        }
-    }
-    Ok(names.join("."))
-}
-
 #[cfg(feature = "generate-typescript")]
 fn relative_specifier(from: &Path, to: &Path) -> String {
     let (a, b): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
@@ -555,7 +537,7 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
-fn module_paths(from: &Path, shared: &Path) -> Result<(String, String)> {
+fn module_paths(from: &Path, shared: &Path, module: &str) -> Result<(String, String)> {
     let a: Vec<_> = from.components().collect();
     let b: Vec<_> = shared.parent().unwrap().components().collect();
     let common = a.iter().zip(&b).take_while(|(a, b)| a == b).count();
@@ -568,7 +550,7 @@ fn module_paths(from: &Path, shared: &Path) -> Result<(String, String)> {
         modules.push(name);
     }
     relative.push(shared.file_name().unwrap());
-    modules.push("_orm_models".into());
+    modules.push(module.into());
     let mut package = Vec::new();
     let mut package_root = shared.parent().unwrap();
     while package_root.join("__init__.py").is_file() {
@@ -577,7 +559,7 @@ fn module_paths(from: &Path, shared: &Path) -> Result<(String, String)> {
     }
     let import = if !package.is_empty() && !from.starts_with(package_root.join(package.last().unwrap())) {
         package.reverse();
-        package.push("_orm_models".into());
+        package.push(module.into());
         package.join(".")
     } else {
         format!("{}{}", ".".repeat(a.len() - common + 1), modules.join("."))

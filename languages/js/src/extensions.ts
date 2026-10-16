@@ -93,6 +93,45 @@ function check(id: string, code: ExtensionCode): LanguageRecord {
   return record;
 }
 
+type Layer = { readonly owner: object | null; readonly descriptor: PropertyDescriptor };
+
+/** Per row prototype: for each member name, the definitions from the host up to the last extension. */
+const layers = new WeakMap<object, Map<PropertyKey, Layer[]>>();
+const linked = new WeakSet<object>();
+
+// `super` in an instance member reaches the definition below it on the row prototype of the receiver.
+function linkSuper(prototype: object): void {
+  if (linked.has(prototype)) return;
+  linked.add(prototype);
+  Object.setPrototypeOf(prototype, new Proxy(Object.getPrototypeOf(prototype) as object, {
+    get(target, key, receiver) {
+      for (let p: object | null = Object.getPrototypeOf(receiver as object) as object | null; p !== null; p = Object.getPrototypeOf(p) as object | null) {
+        const stack = layers.get(p)?.get(key);
+        if (stack === undefined) continue;
+        const below = stack[stack.findIndex((l) => l.owner === prototype) - 1];
+        if (below === undefined) break;
+        return below.descriptor.get ? below.descriptor.get.call(receiver) : below.descriptor.value;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  }));
+}
+
+function installInstance(meta: ModelMeta, prototype: object): void {
+  linkSuper(prototype);
+  const target = meta.Row.prototype as object;
+  const stacks = layers.get(target) ?? new Map<PropertyKey, Layer[]>();
+  layers.set(target, stacks);
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(prototype))) {
+    if (key === "constructor") continue;
+    const existing = Object.getOwnPropertyDescriptor(target, key);
+    const stack = stacks.get(key) ?? (existing === undefined ? [] : [{ owner: null, descriptor: existing }]);
+    stack.push({ owner: prototype, descriptor });
+    stacks.set(key, stack);
+    Object.defineProperty(target, key, { ...descriptor, configurable: existing?.configurable ?? true });
+  }
+}
+
 /**
  * Gives `meta` the members of the extensions `ids` (dependencies first): the query-set
  * mixins go to `meta.extensionMixins`, the instance members onto the row prototype.
@@ -124,9 +163,7 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
     }
     for (const name of [...record.query_set_members, ...record.instance_members]) if (!given.has(name)) given.set(name, id);
     mixins.push(mixin as Mixin);
-    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors((instance as { prototype: object }).prototype))) {
-      if (key !== "constructor") Object.defineProperty(meta.Row.prototype, key, { ...descriptor, configurable: true });
-    }
+    installInstance(meta, (instance as { prototype: object }).prototype);
   }
   meta.extensionMixins = mixins;
   meta.resetQuerySet(meta.querySet);

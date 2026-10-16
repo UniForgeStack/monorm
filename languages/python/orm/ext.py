@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .expr import ColumnRef
 from .query import M as ModelT
@@ -18,8 +18,6 @@ __all__ = ["LANGUAGE_CONTRACT", "ModelLike", "ModelT", "behavior_field", "behavi
 
 class ModelLike(Protocol):
     """The ``self`` type of an instance mixin. It has no ``update``: a generated model types it by field."""
-
-    objects: ClassVar[QuerySet[Any]]
 
     @property
     def pk(self) -> Any: ...
