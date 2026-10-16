@@ -20,10 +20,10 @@ Optional features (proxy models, schema query defaults, model composition, file 
 ```bash
 uv venv .venv && . .venv/bin/activate
 uv pip install -e '.[dev]' maturin
-(cd packaging/python/tooling && maturin develop)      # the native library (tooling profile)
+(cd languages/python/packaging/tooling && maturin develop)      # the native library (tooling profile)
 python examples/blog/demo.py sqlite://:memory:
 
-cd js && npm install && npm run build:native && npm run build
+cd languages/js && npm install && npm run build:native && npm run build
 ```
 
 Released packages need one native profile: `pip install 'orm[postgres]'`, `orm[sqlite]`, `orm[combined]` or `orm[tooling]`.
@@ -33,4 +33,3 @@ Released packages need one native profile: `pip install 'orm[postgres]'`, `orm[s
 - [docs/README.md](docs/README.md): the documentation index (core, extensions, performance).
 - [examples/blog](examples/blog): a schema, its generated models and migrations, and runnable demos.
 - [CLAUDE.md](CLAUDE.md): the checks to run before a commit.
-- [PLAN.md](PLAN.md) and [ROADMAP.md](ROADMAP.md): goals and decisions.

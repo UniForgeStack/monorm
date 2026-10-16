@@ -1,7 +1,7 @@
 //! Tokens and syntax tree of the schema language (`.prisma` files).
 //!
 //! The grammar is Prisma's, with our attributes and blocks added (see
-//! `docs/prisma-syntax.md`):
+//! `docs/schema/prisma-syntax.md`):
 //!
 //! ```text
 //! file      := item*

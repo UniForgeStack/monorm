@@ -30,13 +30,13 @@ crate `orm-cli`) uses the same crate and needs no Python.
 | `crates/core/src/migrate/` | snapshot model, diff, PostgreSQL / SQLite renderers, migration folders |
 | `crates/core/src/codegen/python.rs`, `typescript.rs` | `models.py` / `models.pyi` and `models.ts` generators |
 | `crates/cli/src/` | the `orm` CLI |
-| `python/orm/model.py` | `orm.load()` / `orm.loads()` / `orm.define()`: model classes from the IR |
-| `python/orm/migrations.py`, `__main__.py` | migration runner and `python -m orm` |
+| `languages/python/orm/model.py` | `orm.load()` / `orm.loads()` / `orm.define()`: model classes from the IR |
+| `languages/python/orm/migrations.py`, `__main__.py` | migration runner and `python -m orm` |
 
 ## SQLite
 
 Set the schema target explicitly; omitting a datasource keeps PostgreSQL as the
-default. See [the SQLite example](../examples/sqlite/schema.prisma).
+default. See [the SQLite example](../../examples/sqlite/schema.prisma).
 
 ```prisma
 datasource db {
@@ -404,7 +404,7 @@ followers User[]  @relation(through: Follow, through_fields: [followee, follower
   (needed when both point at the same model, as in followers). The join model is an
   ordinary model: give it a `@@unique([post_id, tag_id])` and any extra columns, and
   query it directly too. Filters, aggregates and `load()` go through it in one
-  hop (see [`python-api.md`](python-api.md)). Prisma's implicit many-to-many (no join
+  hop (see [`python-api.md`](../api/python-api.md)). Prisma's implicit many-to-many (no join
   model) isn't supported.
 
 ### Model attributes (`@@`)
@@ -555,15 +555,15 @@ Behavior (new attributes, proxies, defaults) comes from build-time extensions, b
 ### Build-time extension attributes
 
 A namespaced attribute belongs to a build-time extension crate.
-The artifact must be built with that crate ([build-time-extensions.md](build-time-extensions.md#select-feature-extensions));
+The artifact must be built with that crate ([build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions));
 otherwise definition fails with `@<name>: not compiled into this artifact; rebuild with its extension`.
 
 | Attribute | Extension | Doc |
 |---|---|---|
-| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | proxy-models | [proxy-models.md](proxy-models.md) |
+| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | proxy-models | [proxy-models.md](../extensions/proxy-models.md) |
 | `@@query.defaults(filter:, fields:, related:, parent:, order:)`, `@@query.filter`, `@@query.fields`, `@@query.related`, `@@query.order`, `@@query.parent`, `@query.selectOut` | query-defaults | [selection-and-defaults.md](selection-and-defaults.md) |
-| `@@composition.model(parent:, parentRef:, childRef:)` | model-composition | [model-composition.md](model-composition.md) |
-| `@storage.file(storage:)` | file-storage | [file-storage.md](file-storage.md) |
+| `@@composition.model(parent:, parentRef:, childRef:)` | model-composition | [model-composition.md](../extensions/model-composition.md) |
+| `@storage.file(storage:)` | file-storage | [file-storage.md](../extensions/file-storage.md) |
 | `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic-relations | [generic-identities.md](generic-identities.md) |
 
 `@client_default`, enum subsets in proxies (`Status(ACTIVE)`) and `@@protected_write` are core syntax.
@@ -579,10 +579,10 @@ orm generate python -o app/models.py     # the standalone binary: say which lang
 `models.py` embeds the compiled IR and builds the classes with `orm.define()`, so no
 schema detail is restated in Python. `models.pyi` gives editors and type checkers the
 typed classes, relation paths (`User.posts.created_at` is `ColumnRef[datetime]`),
-insert / update `TypedDict`s and query sets (see [`python-api.md`](python-api.md)).
-`tests/test_migrations.py` and `js/test/migrations.test.ts` check that the committed blog modules are up to date.
+insert / update `TypedDict`s and query sets (see [`python-api.md`](../api/python-api.md)).
+`languages/python/tests/test_migrations.py` and `languages/js/test/migrations.test.ts` check that the committed blog modules are up to date.
 Without generation, `orm.load("schema.prisma")` returns the same classes at runtime.
-TypeScript: see [`typescript-api.md`](typescript-api.md).
+TypeScript: see [`typescript-api.md`](../api/typescript-api.md).
 
 ## Migrations
 
@@ -612,7 +612,7 @@ Settings come from flags (`--schema`, `--dir`, `--url`), else `[tool.orm]` in
 URL from `ORM_DATABASE_URL`. Exit codes: 0 success, 1 failure (including
 `makemigrations --check` finding changes and `drift` finding differences), 2 bad usage. This
 repository's `pyproject.toml` points at the blog example; its first migration is
-[`examples/blog/migrations/0001_initial`](../examples/blog/migrations/0001_initial/up.sql).
+[`examples/blog/migrations/0001_initial`](../../examples/blog/migrations/0001_initial/up.sql).
 
 From Python: `Migrations("migrations", "schema.prisma")` (or a `Registry`) has
 `.plan()`, `.make(name)` and `.all()`. `Migrator(db, migrations)` has `.upgrade()`,
@@ -846,7 +846,7 @@ inherited copies are excluded from drift comparisons.
 A proxy can own a list partition with `@@partition.values([A, B])`; `@@map` names
 its table. Its local checks and indexes belong to that table, and its permanent
 key predicate survives `without_defaults()`. A single bound value is filled on
-insert. See [proxy-models.md](proxy-models.md#owning-a-list-partition-postgresql)
+insert. See [proxy-models.md](../extensions/proxy-models.md#owning-a-list-partition-postgresql)
 for the syntax and interaction with composite identity and default filters.
 
 ## Not done yet

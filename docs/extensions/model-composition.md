@@ -5,7 +5,7 @@ The child primary key is also a foreign key to the parent.
 One parent row can have more than one child: a person can be an employee and a customer at the same time.
 
 **Enable:** select the `orm-model-composition` crate (`extensions/model-composition/`) in your build.
-See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
+See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
 
 ## Schema
 
@@ -61,4 +61,4 @@ await Manager.objects.filter(Manager.salary.eq(20)).update({ level: 4 });
 - `update_many` on a composed model is rejected.
 - Relation links, `outer()` and `distinct(on=...)` on inherited columns are not supported.
 - Ordinary (not composed) model writes reject inherited storage.
-- The executor is `orm_engine::composed`; [build-time-extensions.md](build-time-extensions.md#logical-fields-and-physical-storage) describes the storage contract.
+- The executor is `orm_engine::composed`; [build-time-extensions.md](../contracts/build-time-extensions.md#logical-fields-and-physical-storage) describes the storage contract.

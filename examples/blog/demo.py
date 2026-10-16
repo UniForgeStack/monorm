@@ -5,7 +5,7 @@
 
 The core section runs on every build. Each extension section runs when the native
 library has that extension, and prints how to get it otherwise. Build the library with
-all extensions (see docs/build-time-extensions.md, "Select feature extensions"):
+all extensions (see docs/contracts/build-time-extensions.md, "Select feature extensions"):
 
     scripts/feature-check.sh all     # or the steps in that doc; then:
     PYTHONPATH=target/feature-check/all/py ORM_PROFILE=custom python examples/blog/demo.py sqlite://:memory:

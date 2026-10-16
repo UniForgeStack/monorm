@@ -29,7 +29,7 @@ A bare relation path beside columns of that relation (`load(Book.author, Book.au
 `only()` is in the core. Schema query defaults need the `query-defaults` extension.
 
 **Enable:** select the `orm-query-defaults` crate (`extensions/query-defaults/`) in your build.
-See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
+See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
 
 The optional `query-defaults` native capability and compiler crate
 `orm-query-defaults` support schema policies:

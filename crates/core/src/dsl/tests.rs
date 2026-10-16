@@ -322,7 +322,7 @@ fn documented_schemas_parse() {
     let blog = std::fs::read_to_string(root.join("examples/blog/schema.prisma")).unwrap();
     let blog = &blog[blog.find("datasource").unwrap()..];
     let mut blog_documented = false;
-    for doc in ["docs/prisma-syntax.md", "docs/schema.md", "PLAN.md"] {
+    for doc in ["docs/schema/prisma-syntax.md", "docs/schema/schema.md"] {
         let text = std::fs::read_to_string(root.join(doc)).unwrap();
         for block in text.split("```prisma\n").skip(1) {
             let src = &block[..block.find("```").unwrap()];
@@ -337,7 +337,7 @@ fn documented_schemas_parse() {
             }
         }
     }
-    assert!(blog_documented, "docs/prisma-syntax.md: update the blog example");
+    assert!(blog_documented, "docs/schema/prisma-syntax.md: update the blog example");
 }
 
 #[test]

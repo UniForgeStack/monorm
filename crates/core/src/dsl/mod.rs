@@ -21,7 +21,7 @@
 //! ```
 //!
 //! [`compile`] turns a file into the [`SchemaIr`] every binding consumes. The full
-//! reference is `docs/schema.md`; `docs/prisma-syntax.md` has the design.
+//! reference is `docs/schema/schema.md`; `docs/schema/prisma-syntax.md` has the design.
 
 mod lower;
 mod syntax;

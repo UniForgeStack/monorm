@@ -120,7 +120,7 @@ fn build() -> Result<(), String> {
     for dir in ["core", "engine", "cli"] { copy_tree(&config.host.join("crates").join(dir), &config.output.join("crates").join(dir))?; }
     for binding in &config.bindings { copy_tree(&config.host.join(binding_dir(binding)), &config.output.join(binding_dir(binding)))?; }
     // The orm-core and orm-engine tests read these host files; copy them so the snapshot tests run.
-    for file in ["examples/blog/schema.prisma", "examples/sqlite/schema.prisma", "docs/prisma-syntax.md", "docs/schema.md", "PLAN.md"] {
+    for file in ["examples/blog/schema.prisma", "examples/sqlite/schema.prisma", "docs/schema/prisma-syntax.md", "docs/schema/schema.md"] {
         let (from, to) = (config.host.join(file), config.output.join(file));
         if !from.is_file() { continue; }
         fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;

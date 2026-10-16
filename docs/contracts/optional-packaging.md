@@ -83,7 +83,7 @@ backend by default; at least one backend must be explicitly selected. The
 features on the command line replace the `features` list of the template pyproject.
 
 ```bash
-cd packaging/python/custom
+cd languages/python/packaging/custom
 maturin build --features postgres,generate-python --out ../../../target/custom-wheels
 cd ../../..
 python -m pip install .
@@ -98,14 +98,14 @@ must specify it. Install one custom wheel per environment. For Node, an explicit
 source-built path is selected once with `ORM_NATIVE`:
 
 ```bash
-cd js
+cd languages/js
 node scripts/build-native.mjs --features postgres,generate-typescript
 export ORM_NATIVE="$PWD/orm.node"
 ```
 
-For named Node release profiles, `node packaging/build-node-profile.mjs sqlite
+For named Node release profiles, `node languages/js/packaging/build-node-profile.mjs sqlite
 --release` stages a platform distribution under `target/node-profiles/`. Python
-profile pyprojects under `packaging/python/<profile>/` select only their named Cargo
+profile pyprojects under `languages/python/packaging/<profile>/` select only their named Cargo
 profile with defaults disabled. Never enable multiple named profile features in one
 build; exact metadata validation rejects broadened named artifacts.
 
@@ -126,12 +126,12 @@ exactly their selected adapters and dependencies. No query-time plugin discovery
 
 ## Verification
 
-`packaging/check-dependencies.py` audits isolated graphs for every binding/profile,
+`languages/python/packaging/check-dependencies.py` audits isolated graphs for every binding/profile,
 including backend SQL-builder unification and absence of CLI/TLS/unused drivers.
-`packaging/check-wheel.py` checks thin/native wheel payload separation.
-`packaging/check-node-install.mjs` packs and installs one native profile offline,
+`languages/python/packaging/check-wheel.py` checks thin/native wheel payload separation.
+`languages/js/packaging/check-node-install.mjs` packs and installs one native profile offline,
 checks the dependency lock and runs installed-package smoke tests. Python
-`packaging/smoke-python.py` runs against fresh installed wheels. Set
+`languages/python/packaging/smoke-python.py` runs against fresh installed wheels. Set
 `ORM_TEST_DATABASE_URL` to an isolated PostgreSQL database for PostgreSQL checks;
 SQLite checks use in-memory databases. CI Linux jobs provide an isolated service.
 The release workflow keeps the wheels and tarballs as CI artifacts. It does not

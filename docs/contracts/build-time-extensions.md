@@ -84,11 +84,11 @@ Each is a crate that you put in `dependencies`; its manifest capability turns on
 
 | Feature | Dependency entry (`"alias": {...}`) | Doc |
 |---|---|---|
-| proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](proxy-models.md) |
-| query-defaults | `"query_defaults": {"package": "orm-query-defaults", "path": "extensions/query-defaults"}` | [selection-and-defaults.md](selection-and-defaults.md) |
-| model-composition | `"composition": {"package": "orm-model-composition", "path": "model-composition"}` | [model-composition.md](model-composition.md) |
-| file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](file-storage.md) |
-| generic-relations | `"generic": {"package": "orm-generic", "path": "extensions/generic"}` | [generic-identities.md](generic-identities.md) |
+| proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](../extensions/proxy-models.md) |
+| query-defaults | `"query_defaults": {"package": "orm-query-defaults", "path": "extensions/query-defaults"}` | [selection-and-defaults.md](../schema/selection-and-defaults.md) |
+| model-composition | `"composition": {"package": "orm-model-composition", "path": "extensions/model-composition"}` | [model-composition.md](../extensions/model-composition.md) |
+| file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](../extensions/file-storage.md) |
+| generic-relations | `"generic": {"package": "orm-generic", "path": "extensions/generic"}` | [generic-identities.md](../schema/generic-identities.md) |
 
 Paths are relative to the repository root; write them relative to your configuration file.
 This configuration selects all five and emits the workspace only (`prepare_only`):
@@ -101,9 +101,9 @@ This configuration selects all five and emits the workspace only (`prepare_only`
   "bindings": ["python", "node"],
   "dependencies": {
     "proxy": {"package": "orm-proxy", "path": "/path/to/orm/extensions/proxy"},
-    "query_defaults": {"package": "orm-query-defaults", "path": "/path/to/orm/query-defaults"},
-    "composition": {"package": "orm-model-composition", "path": "/path/to/orm/model-composition"},
-    "file_storage": {"package": "orm-file-storage-extension", "path": "/path/to/orm/storage/orm-extension"},
+    "query_defaults": {"package": "orm-query-defaults", "path": "/path/to/orm/extensions/query-defaults"},
+    "composition": {"package": "orm-model-composition", "path": "/path/to/orm/extensions/model-composition"},
+    "file_storage": {"package": "orm-file-storage-extension", "path": "/path/to/orm/extensions/file-storage"},
     "generic": {"package": "orm-generic", "path": "/path/to/orm/extensions/generic"}
   }
 }
@@ -117,7 +117,7 @@ export ORM_CORE_COMPOSITION=$DIR/build/composition.rs ORM_ENGINE_COMPOSITION=$DI
 export ORM_PYTHON_METHODS=$DIR/build/python-methods.rs ORM_NODE_METHODS=$DIR/build/node-methods.rs
 (cd "$DIR/build" && cargo build -p orm-python -p orm-node)    # add --release for production
 mkdir -p "$DIR/py/orm_native_custom"
-cp packaging/python/custom/orm_native_custom/__init__.py "$DIR/py/orm_native_custom/"
+cp languages/python/packaging/custom/orm_native_custom/__init__.py "$DIR/py/orm_native_custom/"
 cp "$DIR/build/target/debug/lib_native.dylib" "$DIR/py/orm_native_custom/_native$(python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
 cp "$DIR/build/target/debug/liborm_node.dylib" "$DIR/orm.node"     # .so on Linux
 ```
@@ -202,7 +202,7 @@ Writes across owner tables belong to `orm_engine::composed`, the executor of the
 It plans creates, attaches, filtered updates and deletes, and each runs in one transaction or savepoint.
 `update_many` on a composed model is rejected.
 Ordinary model writes reject inherited storage instead of writing nonexistent columns.
-The language APIs of these features are in [model-composition.md](model-composition.md), [proxy-models.md](proxy-models.md) and [selection-and-defaults.md](selection-and-defaults.md).
+The language APIs of these features are in [model-composition.md](../extensions/model-composition.md), [proxy-models.md](../extensions/proxy-models.md) and [selection-and-defaults.md](../schema/selection-and-defaults.md).
 
 ## Native behavior profiles
 

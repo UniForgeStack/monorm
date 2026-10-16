@@ -3,10 +3,10 @@
 The `orm-proxy` schema compiler and the optional `proxy-models` native capability
 supply proxy models. A proxy is a different logical view of one physical model.
 Default filters and default selection come from the `query-defaults` extension
-([selection-and-defaults.md](selection-and-defaults.md)).
+([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
 **Enable:** select the `orm-proxy` crate (`extensions/proxy`) in your build.
-See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
+See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
 
 ```prisma
 enum Status {
@@ -72,7 +72,7 @@ it keeps the database default, because a proxy cannot change it.
 * Enum subset: `Status(ACTIVE, OLD)` lists parent enum member names. Only a proxy
   field takes this type argument. It keeps the full parent runtime enum, so a query
   can still return a value outside the subset as its ordinary parent enum member.
-* Client default: `@client_default(...)` (see [the schema](schema.md#client-defaults))
+* Client default: `@client_default(...)` (see [the schema](../schema/schema.md#client-defaults))
   replaces the inherited client default. A child proxy inherits the client defaults
   of its source, and a child redeclaration replaces the inherited one. An enum
   default uses member names (`ACTIVE`), and it must be in the field's enum subset. Defaults fill omitted insert values before
@@ -96,7 +96,7 @@ The records contain schema metadata and counts, never raw field values. The chec
 apply to publicly loaded instance fields, also related and returning shapes. The
 checks do not inspect unloaded fields. Count and scalar projection results give no
 proxy warnings. A missing LEFT JOIN object is an absent object, not a null-shape
-violation. Partial public shapes come from `only()` ([selection-and-defaults.md](selection-and-defaults.md)).
+violation. Partial public shapes come from `only()` ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
 Generated Python and TypeScript types describe the intended non-null/subset view.
 These contracts give warnings and do not enforce the shape, thus returned values

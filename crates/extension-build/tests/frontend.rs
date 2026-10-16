@@ -128,7 +128,7 @@ fn manifest_capability_selects_the_host_feature() {
         let artifact: serde_json::Value = serde_json::from_slice(&fs::read(output.join("artifact.json")).unwrap()).unwrap();
         assert!(artifact["capabilities"].as_array().unwrap().contains(&serde_json::json!(feature)), "{feature}: {artifact}");
         // The orm-core and orm-engine tests of the snapshot read these host files.
-        for file in ["examples/blog/schema.prisma", "examples/sqlite/schema.prisma", "docs/prisma-syntax.md", "docs/schema.md", "PLAN.md"] {
+        for file in ["examples/blog/schema.prisma", "examples/sqlite/schema.prisma", "docs/schema/prisma-syntax.md", "docs/schema/schema.md"] {
             assert_eq!(fs::read(output.join(file)).unwrap(), fs::read(host.join(file)).unwrap(), "{feature}: {file}");
         }
     }

@@ -18,21 +18,21 @@ automatically: each relation hop becomes a correlated `EXISTS`.
 Samples use the blog models (`examples/blog/schema.prisma`). A sample that starts
 with `# sketch` uses other models and is not run. `examples/blog/demo.py` runs the
 main API on SQLite and PostgreSQL. Feature extensions (proxies, query defaults,
-composition, file fields, generic relations) have their own docs: see [README.md](README.md).
+composition, file fields, generic relations) have their own docs: see [README.md](../README.md).
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `python/orm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](schema.md)), `_profiles.py` (native profile selection) |
-| `crates/core/` | Rust crate `orm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `orm` CLI (see [`schema.md`](schema.md)) |
+| `languages/python/orm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](../schema/schema.md)), `_profiles.py` (native profile selection) |
+| `crates/core/` | Rust crate `orm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `orm` CLI (see [`schema.md`](../schema/schema.md)) |
 | `crates/engine/` | Rust crate `orm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
 | `crates/cli/` | Rust crate `orm-cli`: the `orm` command line, run as the `orm` binary, `python -m orm` and `npx orm` |
-| `bindings/python/` | Rust crate `orm-python` (PyO3) on top of `orm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `orm_native_<profile>._native`; `orm._native` forwards to the selected profile |
-| `packaging/python/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation), `custom` (an extension build): [`optional-packaging.md`](optional-packaging.md) |
-| `bindings/node/`, `js/` | The TypeScript package on the same engine: [`typescript-api.md`](typescript-api.md) |
+| `languages/python/native/` | Rust crate `orm-python` (PyO3) on top of `orm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `orm_native_<profile>._native`; `orm._native` forwards to the selected profile |
+| `languages/python/packaging/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation), `custom` (an extension build): [`optional-packaging.md`](../contracts/optional-packaging.md) |
+| `languages/js/`, `languages/js/native/` | The TypeScript package on the same engine: [`typescript-api.md`](typescript-api.md) |
 | `examples/blog/` | `schema.prisma`, the `models.py` / `models.pyi` generated from it, its migrations, `demo.py` |
-| `tests/` | SQL shape tests (no DB), Postgres end-to-end tests, mypy + pyright stub checks |
+| `languages/python/tests/` | SQL shape tests (no DB), Postgres end-to-end tests, mypy + pyright stub checks |
 
 Python 3.11 or newer (`select()` rows are typed with `TypeVarTuple`).
 
@@ -40,18 +40,18 @@ Python 3.11 or newer (`select()` rows are typed with `TypeVarTuple`).
 uv venv .venv && . .venv/bin/activate
 uv pip install maturin pytest pytest-asyncio mypy pyright
 uv pip install -e .        # the thin orm package
-(cd packaging/python/tooling && maturin develop)   # native tooling profile; --release for benchmarks
+(cd languages/python/packaging/tooling && maturin develop)   # native tooling profile; --release for benchmarks
 python -m pytest           # needs Postgres; ORM_TEST_DATABASE_URL overrides the default URL
 python examples/blog/demo.py sqlite://:memory:
 ```
 
 `orm` needs exactly one native profile: install `orm[postgres]`, `orm[sqlite]`,
 `orm[combined]` or `orm[tooling]`. Set `ORM_PROFILE` when more than one is installed;
-`ORM_PROFILE=custom` selects an extension build ([`build-time-extensions.md`](build-time-extensions.md)).
+`ORM_PROFILE=custom` selects an extension build ([`build-time-extensions.md`](../contracts/build-time-extensions.md)).
 
 ## Models: the generated module
 
-`python -m orm generate` turns `schema.prisma` into two files (see [`schema.md`](schema.md)):
+`python -m orm generate` turns `schema.prisma` into two files (see [`schema.md`](../schema/schema.md)):
 
 * **`models.py` (runtime).** The compiled schema IR plus `orm.define()`, which builds
   the model classes (field and relation descriptors) from it. `orm.load("schema.prisma")`
@@ -63,7 +63,7 @@ python examples/blog/demo.py sqlite://:memory:
     relations as other path classes. This is what makes `User.posts.<TAB>` complete;
   * `PostInsert` / `PostUpdate` / `PostUpdateRow` **TypedDicts**: the row shapes `insert`,
     `update` and `update_many` accept (required vs optional fields come from the schema);
-    a composed model also gets `<Model>Attach` ([`model-composition.md`](model-composition.md));
+    a composed model also gets `<Model>Attach` ([`model-composition.md`](../extensions/model-composition.md));
   * a **query set class** `PostQuerySet` with `insert()`, `insert_many()`, `update()` and
     `update_many()` typed by those TypedDicts, since `objects`, `filter()` and the other
     builders return `Self`;
@@ -290,7 +290,7 @@ SQL text client-side, so the limit doesn't apply to it.)
   Without a column of the model itself, its instances keep their normal selection: `load(Post.author)` gives whole posts.
   A related model is partial in the same way when a column of it is named (`Post.author.name`) and no bare path ends at it (`load(Post.author, Post.author.name)` gives the normal selection of the authors, which is all public fields or the schema's default selection, united with `name`).
   A bare path gives the normal selection united with the columns named beside it, and a set's own columns join the named ones.
-  `load()` without items gives whole instances again (see [`selection-and-defaults.md`](selection-and-defaults.md)).
+  `load()` without items gives whole instances again (see [`selection-and-defaults.md`](../schema/selection-and-defaults.md)).
 * A path loads every relation along it: `User.posts.comments` fills `user.posts` and each post's `comments`.
   Paths with a common prefix share its query.
 * To-one relations are joined. A path with a to-many hop is loaded with an `IN (...)` query from its first hop, and every item under that hop uses the query.
@@ -455,7 +455,7 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
 
 ### Partial rows, OR of query sets, column paths
 
-* `load(...)` with columns gives partial instances (see "Loading related objects" and [`selection-and-defaults.md`](selection-and-defaults.md)).
+* `load(...)` with columns gives partial instances (see "Loading related objects" and [`selection-and-defaults.md`](../schema/selection-and-defaults.md)).
   A column through relations trims the related instance: `Comment.objects.load(Comment.body, Comment.post.title)` joins `comment.post`, with only `title` public; `User.objects.load(User.posts.title)` loads partial posts by `IN (...)` query.
   Unlike Django's `only("post__title")`, a column of a related model leaves the model itself whole; name `Comment.id` for a key-only root.
 * `qs1 | qs2` is one query set with the filter `(filters of qs1) OR (filters of qs2)`; order, loading and `using` come from `qs1`. A relation set on the left gives a plain query set. A custom class takes its state from the left side.
@@ -1098,7 +1098,7 @@ A query set is lazy, so the scope applies where the write is awaited, not where 
 `u = qs.update(...)` inside the scope and `await u` outside it raises `WriteProtected`.
 Do not `yield` inside `allow_writes` in an async generator: when the consumer stops early, the scope stays open in the consumer task.
 `orm.hooks.prepare_insert` and `prepare_update` also check protection, so a file field uploads nothing for a rejected write.
-See `docs/schema.md`, "Protected writes".
+See `docs/schema/schema.md`, "Protected writes".
 
 ### Locks
 
@@ -1186,7 +1186,7 @@ with db.tenant(shop.id):                 # a sync `with`: it does no I/O
 * Replicas get the same setting. Session locks (`session=True`) do not.
 * The policy must read the setting, for example `USING (shop_id::text = current_setting('app.tenant', true))`. The ORM does not create policies. A superuser and the table owner bypass RLS unless the table has `FORCE ROW LEVEL SECURITY`.
 * SQLite raises `QueryError`.
-* `orm.scope(shop=...)` is the application-side filter (see `docs/selection-and-defaults.md`, "Scope values").
+* `orm.scope(shop=...)` is the application-side filter (see `docs/schema/selection-and-defaults.md`, "Scope values").
 
 ### Finding N+1 queries: `orm.debug`
 
@@ -1376,10 +1376,10 @@ QuerySet ──(IR json + params list)──▶ Engine.run ──▶ planner (se
 
 * The schema IR is sent once, at `connect()`. Query IR is JSON with literals (and
   `LIMIT` / `OFFSET`) in a separate positional `params` list, converted to SQL values by the column type they're
-  compared with (`bindings/python/src/convert.rs`).
+  compared with (`languages/python/native/src/convert.rs`).
 * The IR talks about models, fields and relation paths only. Joins, `EXISTS` and
   aliases stay in `plan.rs`; SQL text and driver types stay in `db/`.
-* Rust builds the result objects (`bindings/python/src/build.rs`). `Schema` holds each model's
+* Rust builds the result objects (`languages/python/native/src/build.rs`). `Schema` holds each model's
   class (passed by `Registry.native()`), and an instance is made as `cls.__new__(cls)`
   would make it, its fields written straight into its `__dict__`: no Python code runs per
   row. joined objects, prefetched lists, the reverse to-one (`post.author`)
@@ -1392,7 +1392,7 @@ connection. Reading 1000 posts takes ~1.9 ms (Django async was 10.4 ms in Phase 
 1000 posts + author via `load(Post.author)` ~3.1 ms (Django 18.1 ms). Building instances in
 Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
 (`bench/engine_bench.py`, numbers in
-[`bench/RESULTS.md`](../bench/RESULTS.md#instances-built-in-rust)).
+[`bench/RESULTS.md`](../../bench/RESULTS.md#instances-built-in-rust)).
 
 ## Decisions
 
@@ -1413,16 +1413,16 @@ Rust took these from ~2.3 / ~4.3 ms, below the Phase 0 prototype's 2.5 / 4.7 ms
 7. **One default database** set by `connect()`, `.using(db)` to override, like Django's
    `using()`.
 8. `db.create_tables()` / `drop_tables()` stay as a development helper (idempotent
-   `IF NOT EXISTS` DDL). Evolving databases use migrations: see [`schema.md`](schema.md).
+   `IF NOT EXISTS` DDL). Evolving databases use migrations: see [`schema.md`](../schema/schema.md).
    An existing database is adopted with `await orm.migrations.pull(db)` (its schema file),
    `Migrator.baseline()` and `Migrator.drift()`
-   (see [`schema.md`](schema.md#pull-baseline-and-drift-a-live-database-under-migrations)).
+   (see [`schema.md`](../schema/schema.md#pull-baseline-and-drift-a-live-database-under-migrations)).
    A migration may hold a `data.py` with `async def run(db)`, run by `Migrator.upgrade()`
    and `python -m orm migrate` in the migration's transaction
-   (see [`schema.md`](schema.md#data-migrations)).
+   (see [`schema.md`](../schema/schema.md#data-migrations)).
    `Migrator.downgrade(..., force=True)` reverts a baselined migration, which it refuses otherwise.
-9. **Async only**, no sync API (see `PLAN.md`, Decisions).
-10. **No general plan cache.** [`performance.md`](performance.md) keeps compiled-plan
+9. **Async only**, no sync API.
+10. **No general plan cache.** [`performance.md`](../performance.md) keeps compiled-plan
     caching out until profiling shows a benefit; `prepare()` and the driver's statement
     cache exist.
 
@@ -1457,14 +1457,14 @@ planner ──sea-query statement──▶ db::build(dialect) ──(SQL, [Value
   commit or rollback closes its connection rather than returning it to the pool.
 * **SQLite** uses rusqlite, with each connection on its own thread. URLs are
   `sqlite://:memory:` and `sqlite:///absolute/path.db`. It has no arrays, no native
-  enums, no row locks and no advisory locks; see [`schema.md`](schema.md#sqlite).
+  enums, no row locks and no advisory locks; see [`schema.md`](../schema/schema.md#sqlite).
 
 SeaORM was the engine until this point; only its sea-query and pool were in use (its
 entities, relations and loaders need Rust types compiled per schema, and its
 `find_also_related` / `load_many` are what `load()` already
 do). Replacing it with tokio-postgres made most operations 5–33% faster with TLS off (with
 TLS on, the TLS cost hides the difference)
-(`bench/engine_bench.py`, numbers in [`bench/RESULTS.md`](../bench/RESULTS.md#engine-seaorm-vs-tokio-postgres)).
+(`bench/engine_bench.py`, numbers in [`bench/RESULTS.md`](../../bench/RESULTS.md#engine-seaorm-vs-tokio-postgres)).
 
 ## Query inspection counters
 
@@ -1482,6 +1482,6 @@ inside its body still contribute to the subquery counts.
 * Several shared windows per query, and shared windows with `ORDER BY` / `LIMIT`: needs
   a fix in sea-query (or our own SELECT writer); see Window functions.
 * Composite keys. (One-to-one, many-to-many, decimal, enum, array, UUID and JSON
-  columns are done, see [`schema.md`](schema.md).)
+  columns are done, see [`schema.md`](../schema/schema.md).)
 * A join through a many-to-many relation (it would repeat rows; `load()` uses an
   `IN (...)` query).

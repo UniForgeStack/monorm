@@ -12,7 +12,7 @@ and `ModelMeta.addRowDecoder`. The engine proves a unique-row update.
 artifact built with the `file-storage` feature; selecting `../orm-extension/` in
 `orm-extension-build` turns it on. Installing these helpers alone does not.
 
-Declare a file field (see also [docs/file-storage.md](../../../docs/file-storage.md)):
+Declare a file field (see also [docs/extensions/file-storage.md](../../../docs/extensions/file-storage.md)):
 
 ```prisma
 model Report {

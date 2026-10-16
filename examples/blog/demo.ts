@@ -9,7 +9,7 @@
  *
  * The core section runs on every build. Each extension section runs when the native addon
  * has that extension, and prints how to get it otherwise. With the addon of an extension
- * build (docs/build-time-extensions.md, "Select feature extensions"):
+ * build (docs/contracts/build-time-extensions.md, "Select feature extensions"):
  *
  *     ORM_NATIVE=$PWD/../../target/feature-check/all/orm.node node demo.ts sqlite://:memory:    (an absolute path)
  *

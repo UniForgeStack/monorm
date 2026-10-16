@@ -131,7 +131,7 @@ already does.
 
 ## The blog example
 
-[`examples/blog/schema.prisma`](../examples/blog/schema.prisma), as the formatter
+[`examples/blog/schema.prisma`](../../examples/blog/schema.prisma), as the formatter
 leaves it. The IDE errors are the `@@check` line, the `through:` arguments of the
 many-to-many relations (with Prisma's complaint that they have no opposite side), and
 the `@value` / `@@storage` lines of the `Priority` enum. It doesn't list

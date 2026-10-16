@@ -100,7 +100,7 @@ metadata. It contributes no conventional multi-target foreign key. Database chec
 preserve pair validity for external scalar writes without promising target existence.
 
 **Enable:** select the `orm-generic` crate (`extensions/generic`) in your build.
-See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
+See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
 Its manifest declares the `generic-relations` capability; native artifacts without it reject generic setup metadata at definition.
 Frozen identities and `ContentType` work in every build.
 

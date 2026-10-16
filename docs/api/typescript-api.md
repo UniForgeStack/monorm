@@ -1,7 +1,7 @@
 # TypeScript API
 
-The `orm` package in `js/` is the TypeScript counterpart of the Python package. It uses the
-same schema file, the same Rust engine (`crates/engine/`, via the N-API addon in `bindings/node`),
+The `orm` package in `languages/js/` is the TypeScript counterpart of the Python package. It uses the
+same schema file, the same Rust engine (`crates/engine/`, via the N-API addon in `languages/js/native`),
 the same SQL and the same migrations. Its types are meant to catch as much as possible at
 compile time: a column of the wrong model, a value of the wrong type, a relation that
 wasn't loaded, a missing `param()` value, or an `outer()` reference with no enclosing
@@ -20,34 +20,34 @@ const rows = await User.objects
 // { name: string; posts: bigint; popular: boolean }[]
 ```
 
-[`examples/blog/demo.ts`](../examples/blog/demo.ts) is a runnable tour, and it mirrors `demo.py`.
+[`examples/blog/demo.ts`](../../examples/blog/demo.ts) is a runnable tour, and it mirrors `demo.py`.
 Samples use the blog models (`examples/blog/schema.prisma`); a sample that starts with
 `// sketch` uses other models and is not run. Feature extensions (proxies, query
 defaults, composition, file fields, generic relations) have their own docs: see
-[README.md](README.md). They add no TypeScript exports: their models come from the
+[README.md](../../README.md). They add no TypeScript exports: their models come from the
 schema, and `attach()` is a query set method.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `js/src/` | The package: `expr.ts` (expressions, `func`, `outer` / `exists`, windows), `model.ts` (`define()`, `loads()`, `Registry`, instances), `query.ts` (`QuerySet`, related sets, `load()`, `Prepared`), `select.ts` (`select()`), `cte.ts`, `write.ts`, `build.ts` (rows → instances), `pagination.ts`, `references.ts` (reference loaders), `protection.ts` (`allowWrites`), `debug.ts` (N+1 finder), `db.ts` (pools, transactions, locks), `errors.ts`, `meta.ts`, `decimal.ts`, `native.ts` (addon loading), `migrations.ts`, `cli.ts` |
-| `bindings/node/` | Rust crate `orm-node` (napi-rs) on top of `orm-engine`: `convert.rs` (JS ↔ values, strict), `js.rs`, `lib.rs` |
+| `languages/js/src/` | The package: `expr.ts` (expressions, `func`, `outer` / `exists`, windows), `model.ts` (`define()`, `loads()`, `Registry`, instances), `query.ts` (`QuerySet`, related sets, `load()`, `Prepared`), `select.ts` (`select()`), `cte.ts`, `write.ts`, `build.ts` (rows → instances), `pagination.ts`, `references.ts` (reference loaders), `protection.ts` (`allowWrites`), `debug.ts` (N+1 finder), `db.ts` (pools, transactions, locks), `errors.ts`, `meta.ts`, `decimal.ts`, `native.ts` (addon loading), `migrations.ts`, `cli.ts` |
+| `languages/js/native/` | Rust crate `orm-node` (napi-rs) on top of `orm-engine`: `convert.rs` (JS ↔ values, strict), `js.rs`, `lib.rs` |
 | `crates/core/src/codegen/typescript.rs` | `orm generate typescript`: `models.ts` from the schema |
-| `js/test/` | End-to-end tests (Node and Bun), SQL shape tests, `typing/check.ts` (compile-time checks) |
+| `languages/js/test/` | End-to-end tests (Node and Bun), SQL shape tests, `typing/check.ts` (compile-time checks) |
 
 Node 20+ or Bun. Build and test:
 
 ```bash
-cd js && npm install
-npm run build:native        # cargo build of bindings/node → js/orm.node (--release, --profile, --features)
+cd languages/js && npm install
+npm run build:native        # cargo build of languages/js/native → languages/js/orm.node (--release, --profile, --features)
 npm test                    # Node (node:test), against ORM_TEST_DATABASE_URL
 npm run test:bun            # the same suites under Bun
 npm run typecheck           # tsc over the package, the typing checks and the example
 ```
 
 `ORM_NATIVE=/path/orm.node` loads another addon, for example an extension build
-([`build-time-extensions.md`](build-time-extensions.md#select-feature-extensions)).
+([`build-time-extensions.md`](../contracts/build-time-extensions.md#select-feature-extensions)).
 
 ## Models: the generated module
 
@@ -61,7 +61,7 @@ writes one module with the compiled schema and a type for everything:
   `User._meta`, `User.DoesNotExist` and `User.MultipleObjectsReturned`.
 * `UserInsert`, `UserUpdate`, `UserUpdateRow`: the shapes `insert()`, `update()` and
   `updateMany()` take. A composed model also gets `UserAttach`
-  ([`model-composition.md`](model-composition.md)). `UserData`, `UserFields`, `UserPath`,
+  ([`model-composition.md`](../extensions/model-composition.md)). `UserData`, `UserFields`, `UserPath`,
   `UserSpec` and `UserModel` are the building blocks of these types.
 * `loadAuthor()` on an instance for each to-one relation `author` (with the default
   `reference-loading` feature): `await post.loadAuthor({ reload })` reads and caches it
@@ -490,7 +490,7 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   `deletedOnly()` exist (instances: the `SoftDeletable` type). A stale versioned
   instance write throws `VersionConflict`.
 * `Composed.objects.attach(parentId, values)` adds a composed child to an existing parent
-  ([`model-composition.md`](model-composition.md)).
+  ([`model-composition.md`](../extensions/model-composition.md)).
 
 Values in `update()` can be expressions over the same model (`Post.views.add(1)`).
 `excluded(col)` reads the proposed row in an upsert. A related row can stand in for its
@@ -571,7 +571,7 @@ A nested call adds its models to the outer ones. `allowWrites` starts no transac
 A lazy write reads the scope when it is first awaited, as Python does; instance writes start when called.
 `prepareInsert` and `prepareUpdate` also check protection, so a file field uploads nothing for a rejected write.
 Wrong arguments give a rejected promise with a `TypeError`.
-See `docs/schema.md`, "Protected writes".
+See `docs/schema/schema.md`, "Protected writes".
 
 ### Locks
 
@@ -623,7 +623,7 @@ A connection that had a tenant reads `''` (not `NULL`) for the setting after tha
 Raw `db.execute(...)` in the function also runs in a transaction of its own, so `CREATE INDEX CONCURRENTLY` or `VACUUM` fails there.
 Each table of a composed model needs its own policy.
 Replicas get the same setting. SQLite throws `QueryError`.
-`scope({ shop }, fn)` is the application-side filter (see `docs/selection-and-defaults.md`, "Scope values").
+`scope({ shop }, fn)` is the application-side filter (see `docs/schema/selection-and-defaults.md`, "Scope values").
 
 SQLite has no row or advisory locks; they throw `QueryError` there.
 
@@ -671,7 +671,7 @@ console.log(await Post.objects.filter(Post.authorId.eq(7n)).explain({ analyze: t
 ```
 
 `db.fetch(sql, ...params)` gives an array of objects by column name, and `qs.explain({ analyze })` gives the plan as text.
-They work as in Python (`docs/python-api.md`, "Raw SQL and query plans").
+They work as in Python (`docs/api/python-api.md`, "Raw SQL and query plans").
 A parameter's type comes from its JS value: `bigint` and integer numbers are `bigint`, strings are `text`, plain objects and arrays are JSON, and `Date` is `timestamptz`.
 An array goes as `jsonb`, so `= ANY($1)` throws `DatabaseError` `42809`; use `WHERE x IN (SELECT jsonb_array_elements_text($1))`.
 A `Buffer` goes as JSON (`{"type":"Buffer","data":[...]}`), where Python raises `TypeError` for `bytes`.
@@ -716,7 +716,7 @@ const off = db.onQuery((e: QueryEvent) => {
 ```
 
 * `QueryEvent` has `sql` (the SQL as sent: ORM-built SQL and `db.fetch(sql, ...params)` have placeholders; `db.execute(sql)` goes as written, with any literal value in it), `start` (Unix milliseconds), `duration` (milliseconds), `rows`, `raw` (`true` for `db.execute(sql)`, which takes no parameters) and `error` (`null` on success; the first line of the database's message, without `DETAIL`, but it can hold an input value for a type error).
-* The events, the timing and the context are the same as in Python (`docs/python-api.md`, "Query hooks and OpenTelemetry").
+* The events, the timing and the context are the same as in Python (`docs/api/python-api.md`, "Query hooks and OpenTelemetry").
   The hook runs in the async context of the caller, after the ORM call ends.
   The ORM awaits the promise that a hook returns.
 * Every hook gets every event of the call, also when a hook throws.
@@ -773,7 +773,7 @@ Errors map to classes with Python's names: `ORMError`, plus `DatabaseError`,
 `MigrationError`, `WriteProtected` and `VersionConflict`. Values of the wrong type throw a `TypeError` before any SQL runs.
 
 A `DatabaseError` (and its subclasses) has `sqlstate`, `constraint` and `detail`, each `null` when the database did not give it.
-They are the same as in Python (see `docs/python-api.md`, "Database errors"): SQLite constraint failures get the Postgres SQLSTATE, and only Postgres gives `constraint` and `detail`.
+They are the same as in Python (see `docs/api/python-api.md`, "Database errors"): SQLite constraint failures get the Postgres SQLSTATE, and only Postgres gives `constraint` and `detail`.
 
 ```ts
 try {
@@ -806,16 +806,16 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
 `npx orm` is the one `orm` command line (Rust, `crates/cli/`), run through the addon: the same
 program as `python -m orm` and the standalone `orm` binary, with the same commands
 (`check`, `generate`, `makemigrations [--check]`, `sqlmigrate`, `migrate`, `rollback`,
-`showmigrations`, `pull`, `baseline`, `drift`; see [`schema.md`](schema.md#migrations)).
+`showmigrations`, `pull`, `baseline`, `drift`; see [`schema.md`](../schema/schema.md#migrations)).
 Under `npx`, `generate` writes TypeScript and `package.json`'s `"orm"` key is read first.
 `Migrations` and `Migrator` are the programmatic API; they call the same Rust migrator
 (`crates/engine/src/migrate.rs`). `await pull(db)` reads a live database into a `Pulled`
 (`schema`, `gaps`, `differences`, `write(path)`), `migrator.baseline()` marks the first
 migration applied and does not run it, and `migrator.drift()` gives the `Drift`
 (`migration`, `steps`, `gaps`) between the database and the newest snapshot
-(see [`schema.md`](schema.md#pull-baseline-and-drift-a-live-database-under-migrations)). A migration
+(see [`schema.md`](../schema/schema.md#pull-baseline-and-drift-a-live-database-under-migrations)). A migration
 may hold a `data.ts` with `export async function run(db)`, run by `migrator.upgrade()` and
-`npx orm migrate` in the migration's transaction (see [`schema.md`](schema.md#data-migrations)).
+`npx orm migrate` in the migration's transaction (see [`schema.md`](../schema/schema.md#data-migrations)).
 ```ts
 const migrations = new Migrations("migrations", registry);   // or a schema path or source
 migrations.all(); migrations.plan(); migrations.make("add_tags");   // null when nothing changed
@@ -833,6 +833,6 @@ await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ st
   runtimes ship it.
 * **`_meta`** rather than `meta` holds a model's metadata, because `meta` is a common
   column name.
-* **Strict conversions** in the addon (`bindings/node/src/convert.rs`). A `number` for a
+* **Strict conversions** in the addon (`languages/js/native/src/convert.rs`). A `number` for a
   `BigInt` column must be a safe integer, an `Int` must fit in 32 bits, and a `Decimal`
   must be finite. Anything else is a `TypeError`, never a silent coercion.
