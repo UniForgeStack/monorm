@@ -100,7 +100,7 @@ fn manifest_capability_selects_the_host_feature() {
     fs::create_dir_all(&root).unwrap();
     for (feature, alias, package, path) in [
         ("file-storage", "file_storage", "orm-file-storage-extension", "storage/orm-extension"),
-        ("query-defaults", "query_defaults", "orm-query-defaults", "query-defaults"),
+        ("query-defaults", "query_defaults", "orm-query-defaults", "extensions/query-defaults"),
         ("model-composition", "composition", "orm-model-composition", "model-composition"),
         ("proxy-models", "proxy", "orm-proxy", "extensions/proxy"),
         ("generic-relations", "generic", "orm-generic", "extensions/generic"),

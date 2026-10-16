@@ -836,6 +836,12 @@ existing rows. A changed parent strategy or key rebuilds its table and descendan
 and warns about data loss. `pull` reproduces keys, bounds and local objects;
 inherited copies are excluded from drift comparisons.
 
+A proxy can own a list partition with `@@partition.values([A, B])`; `@@map` names
+its table. Its local checks and indexes belong to that table, and its permanent
+key predicate survives `without_defaults()`. A single bound value is filled on
+insert. See [proxy-models.md](proxy-models.md#owning-a-list-partition-postgresql)
+for the syntax and interaction with composite identity and default filters.
+
 ## Not done yet
 
 * `CREATE INDEX CONCURRENTLY` / non-transactional migrations.

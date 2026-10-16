@@ -55,3 +55,27 @@ test("partition routes inserts and validates row moves", { skip: !url }, async (
     await db.close();
   }
 });
+
+import { readFileSync } from "node:fs";
+import { native } from "../src/native.js";
+const proxyEnabled = (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("proxy-models");
+test("proxy partition fills its key and keeps its predicate without defaults", { skip: !url || !proxyEnabled }, async () => {
+  const registry = new Registry();
+  const models = loads(readFileSync("../tests/fixtures/partition-proxy.prisma", "utf8").replaceAll("partition_proxy_", "partition_proxy_js_"), { registry });
+  const Reward = models.Reward as any, Percent = models.PercentageReward as any, Fixed = models.FixedReward as any;
+  const db = await connect(url!, { registry, default: false });
+  try {
+    await db.dropTables(); await db.createTables();
+    const row = await Percent.objects.using(db).insert({ shop: 1, percent: 10 });
+    assert.deepEqual(row.pk, { id: row.id, kind: "percent" });
+    await Fixed.objects.using(db).insert({ shop: 1, amount: 20 });
+    assert.equal(await Reward.objects.using(db).count(), 2);
+    assert.equal(await Percent.objects.using(db).withoutDefaults().count(), 1);
+    assert.match(Percent.objects.using(db).withoutDefaults().sql(), / IN \('percent'\)/);
+    await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: null }));
+    await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: 10, kind: "fixed" }));
+    assert.equal(await Percent.objects.using(db).withoutDefaults().update({ percent: 15 }), 1);
+    assert.equal(await Percent.objects.using(db).withoutDefaults().delete(), 1);
+    assert.equal(await Reward.objects.using(db).count(), 1);
+  } finally { await db.dropTables(); await db.close(); }
+});

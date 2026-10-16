@@ -958,7 +958,16 @@ impl<'s> Planner<'s> {
         if !_without_defaults {
             if let Some(filter) = &self.model(self.root).query_defaults.filter { out.push(self.cond(filter)?); }
         }
+        #[cfg(feature = "proxy-models")]
+        if let Some(filter) = self.partition_filter(self.root, self.root_alias()) { out.push(filter); }
         Ok(out)
+    }
+
+    #[cfg(feature = "proxy-models")]
+    fn partition_filter(&self, model: usize, alias: &str) -> Option<SExpr> {
+        self.schema.proxy_models.get(model).and_then(|p| p.partition.as_ref()).map(|p| {
+            sea_query::Expr::cust_with_expr(format!("$1 IN ({})", p.values), col(alias, &p.column))
+        })
     }
 
     /// The relation every column in `e` goes through next, if they all agree and `e`
@@ -1049,6 +1058,8 @@ impl<'s> Planner<'s> {
         }
         #[cfg(feature = "query-defaults")]
         if !self.policy_bypass { if let Some(filter) = &tm.query_defaults.filter { stmt.and_where(self.target_default(target, &alias, filter)?); } }
+        #[cfg(feature = "proxy-models")]
+        if let Some(filter) = self.partition_filter(target, &alias) { stmt.and_where(filter); }
         Ok(alias)
     }
 
@@ -2243,6 +2254,8 @@ impl<'s> Planner<'s> {
             let on = match self.model(target).query_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
                 Some(filter) => on.and(self.target_default(target, &new_alias, filter)?), None => on,
             };
+            #[cfg(feature = "proxy-models")]
+            let on = match self.partition_filter(target, &new_alias) { Some(filter) => on.and(filter), None => on };
             self.joins.push((Scope { path: prefix.to_vec(), model: target, alias: new_alias.clone() }, on));
             (alias, model) = (new_alias, target);
         }
@@ -2968,7 +2981,11 @@ pub fn plan_insert(
     };
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;
     let mut stmt = Query::insert();
-    stmt.into_table(Alias::new(m.table()));
+    #[cfg(feature = "proxy-models")]
+    let table = schema.proxy_models[idx].partition.as_ref().map(|p| p.table.as_str()).unwrap_or_else(|| m.table());
+    #[cfg(not(feature = "proxy-models"))]
+    let table = m.table();
+    stmt.into_table(Alias::new(table));
     if cols.is_empty() {
         if rows.len() != 1 {
             return Err(Error::query("rows without explicit values must be inserted one at a time"));

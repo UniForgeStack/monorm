@@ -39,3 +39,15 @@ model CompositeChild {
  owner CompositeOwner? @relation(fields: [owner_tenant, owner_id], references: [tenant, id])
  @@map("rust_load_composite_children")
 }
+model ProjectionPerson {
+ id Int @id
+ account ProjectionAccount?
+ @@map("rust_projection_people")
+}
+model ProjectionAccount {
+ id Int @id
+ person_id Int @unique
+ code String
+ person ProjectionPerson @relation(fields: [person_id], references: [id])
+ @@map("rust_projection_accounts")
+}

@@ -179,7 +179,7 @@ fn json_cell(c: Cell<'_>) -> serde_json::Value {
     }
 }
 
-fn instance(
+pub(crate) fn instance(
     schema: &orm_core::schema::Schema,
     model: usize,
     shape: Option<&ResultShape>,

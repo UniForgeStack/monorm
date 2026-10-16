@@ -510,7 +510,8 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
     if crate::composed::is_composed(schema, model)? {
         return Err(Error::query("insert_many(copy=True) does not support composed models"));
     }
-    let m = schema.model(schema.model_idx(model).map_err(query_err)?);
+    let idx = schema.model_idx(model).map_err(query_err)?;
+    let m = schema.model(idx);
     #[cfg(feature = "composition")]
     {
         crate::ownership::require_local_write(m)?;
@@ -548,7 +549,11 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
         .into_iter()
         .map(|mut r| keep.iter().map(|&i| r[i].take().expect("checked above")).collect())
         .collect();
-    Ok(BulkCopy { table: m.table().to_owned(), columns, rows })
+    #[cfg(feature = "proxy-models")]
+    let table = schema.proxy_models[idx].partition.as_ref().map(|p| p.table.as_str()).unwrap_or_else(|| m.table());
+    #[cfg(not(feature = "proxy-models"))]
+    let table = m.table();
+    Ok(BulkCopy { table: table.to_owned(), columns, rows })
 }
 
 /// Runs a [`plan_copy`] load on `conn` (the pool or a transaction): the rows written.
@@ -683,4 +688,35 @@ pub async fn run_schema_script(conn: Arc<dyn Executor>, statements: Vec<String>)
         }
     }
     Ok(tx.commit().await?)
+}
+
+#[cfg(all(test, feature = "proxy-models", feature = "postgres"))]
+mod proxy_partition_copy_tests {
+    use super::*;
+    use orm_core::{dialect::{Dialect, Target}, dsl};
+
+    #[test]
+    fn copy_targets_owned_partition_and_fills_its_key() {
+        let source = r#"model Item {
+ id Int
+ kind String @map("_kind")
+ @@id([id, kind])
+ @@partition(list: [kind])
+}
+model Selected {
+ @@proxy.of(Item)
+ @@partition.values(["a"])
+ @@map("copy_selected")
+}
+partition copy_other { of = Item default = true }
+"#;
+        let schema = dsl::check(dsl::compile(source, None).unwrap()).unwrap().1;
+        let target = Target::new(Dialect::Postgres);
+        let copy = plan_copy(&schema, target, "Selected", &["id".into()], vec![vec![Some(1.into())]]).unwrap();
+        assert_eq!(copy.table, "copy_selected");
+        assert_eq!(copy.columns, ["id", "_kind"]);
+        assert_eq!(copy.rows[0][1], Value::String(Some("a".into())));
+        let outside = plan_copy(&schema, target, "Selected", &["id".into(), "kind".into()], vec![vec![Some(2.into()), Some("other".into())]]).unwrap();
+        assert_eq!(outside.table, "copy_selected"); // PostgreSQL enforces the bound on COPY too.
+    }
 }

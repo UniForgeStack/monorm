@@ -363,7 +363,6 @@ impl Lowering<'_> {
         }
         ir.models = lowered;
         lower_partitions(&items, &mut ir)?;
-        crate::partition::validate(&ir).map_err(|msg| super::syntax::Error { pos: Pos::default(), msg })?;
         Ok(ir)
     }
 }
