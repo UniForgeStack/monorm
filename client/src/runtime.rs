@@ -263,7 +263,7 @@ impl<M: Model> BatchLoad<M> for Vec<M> {
 }
 
 fn upgrade_query<M: Model>() -> Query<M> {
-    let mut query = Query::<M>::new();
+    let mut query = Query::<M>::new().initialized();
     query.select.model_fields = Some(vec![]);
     query.select.prefetch.clear();
     query

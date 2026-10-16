@@ -133,6 +133,8 @@ pub struct SchemaIr {
     #[serde(default, skip_serializing_if = "crate::dialect::Dialect::is_postgres")]
     pub dialect: crate::dialect::Dialect,
     pub models: Vec<ModelIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partitions: Vec<PartitionIr>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub enums: Vec<EnumIr>,
     /// Database extensions the schema needs (`CREATE EXTENSION`), on top of the ones
@@ -171,6 +173,8 @@ mod schema_json {
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct ModelIr {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<PartitionKeyIr>,
     pub name: String,
     pub table: String,
     pub fields: Vec<FieldIr>,
@@ -414,7 +418,7 @@ pub enum Nulls {
 }
 
 /// One key of an index: a field of the model or a raw SQL expression.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 pub struct IndexColumnIr {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub field: Option<String>,
@@ -1004,4 +1008,19 @@ impl Provides {
     pub fn is_empty(&self) -> bool {
         self.types.is_empty() && self.index_methods.is_empty() && self.opclasses.is_empty() && self.functions.is_empty()
     }
+}
+
+/// Declarative PostgreSQL partitioning. Keys use the same field/expression form as indexes.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct PartitionKeyIr {
+    pub strategy: String,
+    pub keys: Vec<IndexColumnIr>,
+}
+
+/// A physical partition shares its root model's fields; `objects` contains only local rules.
+#[derive(Deserialize, Serialize, Debug)]
+pub struct PartitionIr {
+    pub of: String,
+    pub bound: String,
+    pub objects: ModelIr,
 }

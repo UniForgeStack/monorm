@@ -20,7 +20,7 @@ use crate::ir::{
 };
 use crate::schema::{Model, Result, Schema};
 
-pub const SNAPSHOT_VERSION: u32 = 3;
+pub const SNAPSHOT_VERSION: u32 = 4;
 /// Postgres truncates identifiers longer than this (NAMEDATALEN - 1).
 const MAX_IDENT: usize = 63;
 
@@ -96,6 +96,11 @@ impl Function {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Table {
     pub name: String,
+    /// PostgreSQL's PARTITION BY clause, without the leading keywords.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition_of: Option<PartitionOf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     pub columns: Vec<Column>,
@@ -113,6 +118,12 @@ pub struct Table {
     pub indexes: Vec<Index>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PartitionOf {
+    pub parent: String,
+    pub bound: String,
 }
 
 impl Table {
@@ -470,6 +481,14 @@ impl Builder<'_> {
         let schema = self.schema;
         let t = m.table().to_owned();
         let mut table = Table { name: t.clone(), comment: m.ir.comment.clone(), ..Default::default() };
+        if let Some(p) = &m.ir.partition {
+            let keys = p.keys.iter().map(|k| match (&k.field, &k.expr) {
+                (Some(f), _) => self.column_of(m, f).map(|c| super::pg::ident(&c)),
+                (_, Some(e)) => Ok(format!("({e})")),
+                _ => Err(format!("{}: invalid partition key", m.ir.name)),
+            }).collect::<Result<Vec<_>>>()?;
+            table.partition_by = Some(format!("{} ({})", p.strategy.to_uppercase(), keys.join(", ")));
+        }
 
         for (position, f) in m.fields().iter().enumerate() {
             #[cfg(feature = "composition")]
@@ -728,7 +747,7 @@ pub fn build(schema: &Schema) -> Result<(DbSchema, Renames)> {
         local_names: BTreeSet::new(),
         trigger_functions: vec![],
     };
-    let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if schema.identities.is_some() { SNAPSHOT_VERSION } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
+    let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if !schema.partitions.is_empty() { SNAPSHOT_VERSION } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
     let mut renames = Renames::default();
     let mut tables = BTreeSet::new();
     for m in &schema.models {
@@ -751,6 +770,23 @@ pub fn build(schema: &Schema) -> Result<(DbSchema, Renames)> {
                 renames.columns.insert((table.name.clone(), f.column.clone()), old.clone());
             }
         }
+        db.tables.push(table);
+    }
+
+    for p in &schema.partitions {
+        let objects: crate::ir::ModelIr = serde_json::from_value(serde_json::to_value(&p.objects).unwrap()).unwrap();
+        let mut model = Model::derived(&objects.name, objects.fields.clone())?;
+        model.ir = objects;
+        let mut table = b.table(&model)?;
+        // PostgreSQL inherits columns and ancestor rules. Only local objects belong in snapshots.
+        table.columns.clear();
+        table.primary_key = None;
+        let parent = schema.models.iter().find(|m| m.ir.name == p.of).map(|m| m.table())
+            .or_else(|| schema.partitions.iter().find(|q| q.objects.name == p.of).map(|q| q.objects.table.as_str()))
+            .ok_or_else(|| format!("partition {}: unknown parent {}", p.objects.name, p.of))?;
+        table.partition_of = Some(PartitionOf { parent: parent.into(), bound: p.bound.clone() });
+        if !tables.insert(table.name.clone()) { return Err(format!("duplicate partition table {}", table.name)); }
+        if let Some(old) = &p.objects.renamed_from { renames.tables.insert(table.name.clone(), old.clone()); }
         db.tables.push(table);
     }
 

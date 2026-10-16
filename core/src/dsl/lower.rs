@@ -8,7 +8,7 @@ use crate::ext::{ExtensionDef, TypeDef};
 use crate::ir::{
     ClientCall, ClientDefaultIr, ColType, ConstraintIr, Deferrable, EnumIr, EnumStorage, EnumValueIr, ExcludeElementIr, ExtensionIr, FieldIr,
     ForEach, FunctionIr, IndexColumnIr, IndexIr, ModelIr, Nulls, OnDelete, RelKind, RelationIr, SchemaIr,
-    ThroughIr, TriggerEvent, TriggerIr, TriggerTiming,
+    ThroughIr, TriggerEvent, TriggerIr, TriggerTiming, PartitionIr, PartitionKeyIr,
 };
 use crate::migrate::pg::ident;
 
@@ -336,7 +336,7 @@ impl Lowering<'_> {
                     datasource_block(&mut ir, *pos, props)?;
                 }
                 Item::Function { pos, name, props } => ir.functions.push(function(*pos, name, props)?),
-                Item::Model(_) | Item::Enum(_) | Item::Import { .. } => {}
+                Item::Model(_) | Item::Enum(_) | Item::Import { .. } | Item::Partition { .. } => {}
             }
         }
 
@@ -362,6 +362,8 @@ impl Lowering<'_> {
             }
         }
         ir.models = lowered;
+        lower_partitions(&items, &mut ir)?;
+        crate::partition::validate(&ir).map_err(|msg| super::syntax::Error { pos: Pos::default(), msg })?;
         Ok(ir)
     }
 }
@@ -512,6 +514,7 @@ fn function(pos: Pos, name: &str, props: &Props) -> Result<FunctionIr> {
 
 fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>) -> Result<ModelIr> {
     let mut ir = ModelIr {
+        partition: None,
         name: m.name.clone(),
         table: m.name.to_lowercase(),
         fields: vec![],
@@ -1240,6 +1243,21 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
         }
     };
     match b.name.as_str() {
+        "partition" => {
+            if m.partition.is_some() { return err(b.pos, format!("{what}: declared twice")); }
+            let mut n = Named::new(what.clone(), &b.args);
+            n.no_positional()?;
+            let mut partition = None;
+            for strategy in ["list", "range", "hash"] {
+                if let Some((p, v)) = n.get(strategy) {
+                    if partition.is_some() { return err(p, format!("{what}: give one strategy")); }
+                    let keys = keys(p, Some(v), &what, false)?.into_iter().map(|(k, _)| k).collect();
+                    partition = Some(PartitionKeyIr { strategy: strategy.into(), keys });
+                }
+            }
+            n.finish()?;
+            m.partition = Some(partition.ok_or_else(|| super::syntax::Error { pos: b.pos, msg: format!("{what}: give list:, range: or hash:") })?);
+        }
         "map" | "comment" | "renamed_from" | "protected_write" => {}
         "index" => {
             extra_positional(1)?;
@@ -1503,4 +1521,90 @@ pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &
 fn declared<'m>(manifests: &'m [crate::behavior::Manifest], name: &str, field: bool) -> Option<&'m crate::behavior::Attribute> {
     let named = || manifests.iter().flat_map(|m| &m.attributes).filter(|d| d.name == name);
     named().find(|d| (d.target == crate::behavior::AttributeTarget::Field) == field).or_else(|| named().next())
+}
+
+fn lower_partitions(items: &[Item], ir: &mut SchemaIr) -> Result<()> {
+    let mut pending: Vec<_> = items.iter().filter_map(|i| match i {
+        Item::Partition { pos, name, props, blocks } => Some((*pos, name, props, blocks)), _ => None,
+    }).collect();
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut rest = vec![];
+        for (pos, name, props, blocks) in pending {
+            let of = props.iter().find(|(k, _, _)| k == "of")
+                .ok_or_else(|| super::syntax::Error { pos, msg: format!("partition {name}: missing of") })?;
+            let of = name_of(of.1, &of.2, "partition of")?;
+            let parent = ir.models.iter().find(|m| m.name == of)
+                .or_else(|| ir.partitions.iter().find(|p| p.objects.name == of).map(|p| &p.objects));
+            let Some(parent) = parent else { rest.push((pos, name, props, blocks)); continue };
+            let Some(key) = &parent.partition else { return err(pos, format!("partition {name}: {of} has no @@partition")); };
+            let get = |key: &str| props.iter().find(|(k, _, _)| k == key).map(|(_, _, v)| v);
+            let value = |v: &Value, field: Option<&FieldIr>| -> Result<String> {
+                Ok(match v {
+                    Value::Str(s) => crate::migrate::model::quote_literal(s),
+                    Value::Num(s) => s.clone(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Path(p, None) if p.len() == 1 && (p[0] == "MINVALUE" || p[0] == "MAXVALUE") => p[0].clone(),
+                    Value::Path(p, None) if p.len() == 1 => {
+                        let s = &p[0];
+                        let member = field.and_then(|f| f.enum_name.as_ref()).and_then(|n| ir.enums.iter().find(|e| &e.name == n))
+                            .and_then(|e| e.values.iter().find(|v| &v.name == s));
+                        match member {
+                            Some(m) => match &m.value { serde_json::Value::String(s) => crate::migrate::model::quote_literal(s), v => v.to_string() },
+                            None => return err(pos, format!("partition {name}: {s} is not a member of the partition key enum")),
+                        }
+                    }
+                    Value::Path(_, Some(_)) => match call_str(v, "sql").or_else(|| call_str(v, "raw")) {
+                        Some(Ok(s)) => s.to_owned(),
+                        _ => return err(pos, format!("partition {name}: expected sql(\"...\")")),
+                    },
+                    _ => return err(pos, format!("partition {name}: expected a bound literal")),
+                })
+            };
+            let tuple = |v: Option<&Value>, list: bool| -> Result<String> {
+                let Some(Value::List(vs)) = v else { return err(pos, format!("partition {name}: expected a bound list")); };
+                if vs.is_empty() || (!list && vs.len() != key.keys.len()) { return err(pos, format!("partition {name}: bound arity does not match {} keys", key.keys.len())); }
+                vs.iter().enumerate().map(|(i, (_, v))| {
+                    let field = key.keys.get(if list { 0 } else { i }).and_then(|k| k.field.as_ref()).and_then(|n| parent.fields.iter().find(|f| &f.name == n));
+                    value(v, field)
+                }).collect::<Result<Vec<_>>>().map(|v| v.join(", "))
+            };
+            let allowed: &[&str] = if matches!(get("default"), Some(Value::Bool(true))) { &["of", "default"] }
+                else { match key.strategy.as_str() { "list" => &["of", "values"], "range" => &["of", "from", "to"], _ => &["of", "modulus", "remainder"] } };
+            for (k, _, _) in props { if !allowed.contains(&k.as_str()) { return err(pos, format!("partition {name}: {k} does not match {} strategy", key.strategy)); } }
+            let bound = if allowed.contains(&"default") {
+                if key.strategy == "hash" { return err(pos, "hash partition cannot be default"); }
+                "DEFAULT".into()
+            } else { match key.strategy.as_str() {
+                "list" => format!("FOR VALUES IN ({})", tuple(get("values"), true)?),
+                "range" => format!("FOR VALUES FROM ({}) TO ({})", tuple(get("from"), false)?, tuple(get("to"), false)?),
+                _ => {
+                    let integer = |k: &str| -> Result<u32> { match get(k) {
+                        Some(Value::Num(s)) => s.parse().map_err(|_| super::syntax::Error { pos, msg: format!("partition {name}: {k} must be a nonnegative integer") }),
+                        _ => err(pos, format!("partition {name}: missing integer {k}")),
+                    }};
+                    let (m, r) = (integer("modulus")?, integer("remainder")?);
+                    if m == 0 || r >= m { return err(pos, format!("partition {name}: require modulus > remainder >= 0")); }
+                    format!("FOR VALUES WITH (modulus {m}, remainder {r})")
+                }
+            }};
+            let mut fields = parent.fields.clone();
+            for f in &mut fields { f.primary_key = false; f.unique = false; f.index = false; f.check = None; }
+            let mut objects: ModelIr = serde_json::from_value(serde_json::json!({"name": name, "table": name, "fields": fields})).unwrap();
+            for block in blocks {
+                if !["partition", "check", "index", "unique", "exclude", "trigger", "comment", "renamed_from"].contains(&block.name.as_str()) {
+                    return err(block.pos, format!("partition {name}: unsupported @@{}", block.name));
+                }
+                if block.name == "comment" || block.name == "renamed_from" {
+                    let [(_, Value::Str(s))] = block.args.positional.as_slice() else { return err(block.pos, "expected one string"); };
+                    if !block.args.named.is_empty() { return err(block.pos, "expected one string"); }
+                    if block.name == "comment" { objects.comment = Some(s.clone()); } else { objects.renamed_from = Some(s.clone()); }
+                } else { model_block(&mut objects, block)?; }
+            }
+            ir.partitions.push(PartitionIr { of, bound, objects });
+        }
+        if rest.len() == before { return err(rest[0].0, format!("partition {}: unknown or cyclic parent", rest[0].1)); }
+        pending = rest;
+    }
+    Ok(())
 }

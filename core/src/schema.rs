@@ -49,6 +49,7 @@ impl Model {
             }
         }
         let ir = ModelIr {
+            partition: None,
             name: name.to_owned(),
             table: name.to_owned(),
             fields,
@@ -131,6 +132,7 @@ pub struct Schema {
     pub identities: Option<crate::identity::IdentityManifest>,
     pub extensions: Vec<ExtensionIr>,
     pub functions: Vec<FunctionIr>,
+    pub partitions: Vec<crate::ir::PartitionIr>,
     pub catalog: Vec<ExtensionIr>,
     model_index: HashMap<String, usize>,
     #[cfg(feature = "composition")]
@@ -146,6 +148,7 @@ impl Schema {
 
     fn from_ir_impl(mut ir: SchemaIr, behavioral: bool) -> Result<Self> {
         crate::identity::validate(&ir)?;
+        crate::partition::validate(&ir)?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         #[cfg(not(feature = "model-composition"))]
         if ir.behavior.extensions.contains_key("composition") {
@@ -158,7 +161,7 @@ impl Schema {
             Some(storage) => {
                 let physical = serde_json::from_value(serde_json::json!({
                     "models": storage.models, "enums": ir.enums, "dialect": ir.dialect,
-                    "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities,
+                    "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities, "partitions": ir.partitions,
                 })).map_err(|e| e.to_string())?;
                 Some(Box::new(Self::from_ir_impl(physical, false)?))
             }
@@ -296,6 +299,7 @@ impl Schema {
             identities: ir.identities,
             extensions: ir.extensions,
             functions: ir.functions,
+            partitions: ir.partitions,
             catalog: ir.catalog,
             model_index,
             #[cfg(feature = "composition")] native_models,
