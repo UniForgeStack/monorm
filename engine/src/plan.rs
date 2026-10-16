@@ -41,6 +41,9 @@ pub struct JoinShape {
     pub start: usize,
     pub pk_pos: usize,
     pub shape: Option<orm_core::behavior::ResultShape>,
+    /// A default filter was ANDed into this join's ON and no bypass removed it: a NULL
+    /// object means "hidden by the filter", not a dangling key.
+    pub filtered: bool,
 }
 
 /// How a statement's rows become objects.
@@ -63,6 +66,8 @@ pub struct PrefetchPlan {
     pub key_type: Vec<ValueType>,
     /// Positions of the relation's `to` fields in the related rows.
     pub child_key_pos: Vec<usize>,
+    /// A default filter was ANDed into the fetch's WHERE and no bypass removed it.
+    pub filtered: bool,
     /// The related model's to-one relation back to the parent, filled in too.
     pub back: Option<String>,
     stmt: SelectStatement,
@@ -106,6 +111,8 @@ pub struct SelectPlan {
     pub stmt: SelectStatement,
     pub types: Vec<ValueType>,
     pub output: Output,
+    /// A default filter was ANDed into the root WHERE and no bypass removed it.
+    pub filtered: bool,
     #[cfg(feature = "composition")]
     pub computations: Vec<crate::behavior::Computation>,
     pub prefetch: Vec<PrefetchPlan>,
@@ -588,6 +595,9 @@ pub struct Planner<'s> {
     caps: Capabilities,
     #[cfg(feature = "query-defaults")]
     policy_bypass: bool,
+    /// Paths of the joins whose ON carries a default filter.
+    filtered_joins: Vec<Vec<String>>,
+    root_filtered: bool,
 }
 
 impl<'s> Planner<'s> {
@@ -624,6 +634,8 @@ impl<'s> Planner<'s> {
             target,
             caps: target.caps,
             #[cfg(feature = "query-defaults")] policy_bypass: false,
+            filtered_joins: vec![],
+            root_filtered: false,
         };
         p.root = p.model_idx(model)?;
         p.source = match from {
@@ -956,7 +968,7 @@ impl<'s> Planner<'s> {
         let mut out: Vec<SExpr> = filters.iter().map(|f| self.cond(f)).collect::<Result<_>>()?;
         #[cfg(feature = "query-defaults")]
         if !_without_defaults {
-            if let Some(filter) = &self.model(self.root).query_defaults.filter { out.push(self.cond(filter)?); }
+            if let Some(filter) = &self.model(self.root).query_defaults.filter { out.push(self.cond(filter)?); self.root_filtered = true; }
         }
         #[cfg(feature = "proxy-models")]
         if let Some(filter) = self.partition_filter(self.root, self.root_alias()) { out.push(filter); }
@@ -2182,7 +2194,7 @@ impl<'s> Planner<'s> {
             }
             self.apply_lock(&mut stmt, lock)?;
         }
-        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, prefetch: vec![],
+        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, filtered: self.root_filtered, prefetch: vec![],
             #[cfg(feature = "composition")] computations })
     }
 
@@ -2252,7 +2264,8 @@ impl<'s> Planner<'s> {
             let on = self.link((&alias, model), rel, (&new_alias, target))?;
             #[cfg(feature = "query-defaults")]
             let on = match self.model(target).query_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
-                Some(filter) => on.and(self.target_default(target, &new_alias, filter)?), None => on,
+                Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(target, &new_alias, filter)?) }
+                None => on,
             };
             #[cfg(feature = "proxy-models")]
             let on = match self.partition_filter(target, &new_alias) { Some(filter) => on.and(filter), None => on };
@@ -2486,6 +2499,7 @@ impl<'s> Planner<'s> {
                 start: types.len(),
                 pk_pos: joined_positions.iter().position(|f| f == m.pk).expect("identity selected"),
                 shape: joined_shape,
+                filtered: self.filtered_joins.contains(path),
             });
             for position in joined_positions.iter() {
                 let f = &m.fields()[position];
@@ -2516,7 +2530,7 @@ impl<'s> Planner<'s> {
             for j in &joins { out.extend(crate::behavior::shape_computations(self.model(j.model).native, j.start, &shape_positions(self.model(j.model), j.shape.as_ref()).to_vec())); }
             out
         };
-        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins }, prefetch,
+        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins }, filtered: self.root_filtered, prefetch,
             #[cfg(feature = "composition")] computations })
     }
 
@@ -2729,21 +2743,28 @@ fn order_sql(o: &Order) -> &'static str {
     }
 }
 
-/// The schema default order of a model read that gives no `order_by()`.
-#[cfg(feature = "query-defaults")]
-fn with_default_order(schema: &Schema, q: &Select) -> Result<Option<Select>> {
-    if !q.order.is_empty() || q.without_defaults || q.columns.is_some() || q.from.is_some() {
-        return Ok(None);
+/// The order the engine uses for `q`: its own `order_by()`, else the schema default order
+/// of a model read that no bypass removed. Keyset pagination, `first()` and `last()` ask this.
+pub fn effective_order(schema: &Schema, q: &Select) -> Result<Vec<Order>> {
+    if !q.order.is_empty() { return Ok(q.order.clone()); }
+    #[cfg(feature = "query-defaults")]
+    if !q.without_defaults && q.columns.is_none() && q.from.is_none() {
+        return Ok(schema.model(schema.model_idx(&q.model).map_err(query_err)?).query_defaults.order.clone());
     }
-    let order = &schema.model(schema.model_idx(&q.model).map_err(query_err)?).query_defaults.order;
-    Ok((!order.is_empty()).then(|| Select { order: order.clone(), ..q.clone() }))
+    let _ = schema;
+    Ok(vec![])
+}
+
+/// `q` with its default order made explicit; None when it has none to add.
+fn with_default_order(schema: &Schema, q: &Select) -> Result<Option<Select>> {
+    if !q.order.is_empty() { return Ok(None); }
+    let order = effective_order(schema, q)?;
+    Ok((!order.is_empty()).then(|| Select { order, ..q.clone() }))
 }
 
 /// A top-level SELECT with its `WITH` clause.
 pub fn plan_select(schema: &Schema, target: Target, q: &Select, params: &dyn Params) -> Result<SelectPlan> {
-    #[cfg(feature = "query-defaults")]
     let defaulted = with_default_order(schema, q)?;
-    #[cfg(feature = "query-defaults")]
     let q = defaulted.as_ref().unwrap_or(q);
     let virt = derive_ctes(schema, target, &q.with, params)?;
     let mut p = Planner::new(schema, &virt, target, &q.model, q.from.as_deref(), params, vec![], 0)?;
@@ -2798,10 +2819,7 @@ fn plan_prefetch(
     }
     q.without_defaults |= without_defaults;
     let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone() }, desc: false, nulls: None }).collect();
-    #[cfg(feature = "query-defaults")]
-    if q.order.is_empty() && !q.without_defaults {
-        q.order = cm.query_defaults.order.clone();
-    }
+    q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
     let slice = match sliced {
         false => None,
@@ -2893,6 +2911,7 @@ fn plan_prefetch(
         key_pos: rel.from.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
         key_type: rel.from.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
+        filtered: plan.filtered,
         back,
         stmt: plan.stmt,
         dialect: target.dialect,

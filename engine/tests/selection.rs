@@ -80,3 +80,65 @@ fn generated_types_distinguish_default_missing_fields_and_filtered_targets() {
     // Select-out never changes insert requirements.
     assert!(ts.contains("  active: In<boolean>;"));
 }
+
+#[cfg(feature = "query-defaults")]
+mod read_flags {
+    use super::*;
+    use orm_core::ir::Select;
+
+    fn schema() -> Schema {
+        let raw = json!({"models":[
+            {"name":"Owner","table":"owner","fields":[
+                {"name":"id","column":"id","type":"int","primary_key":true},
+                {"name":"active","column":"active","type":"bool"}]},
+            {"name":"Plain","table":"plain","fields":[{"name":"id","column":"id","type":"int","primary_key":true}]},
+            {"name":"Child","table":"child","fields":[
+                {"name":"id","column":"id","type":"int","primary_key":true},
+                {"name":"owner_id","column":"owner_id","type":"int"},
+                {"name":"plain_id","column":"plain_id","type":"int"}],
+             "relations":[
+                {"name":"owner","kind":"one","target":"Owner","from":"owner_id","to":"id","foreign_key":true},
+                {"name":"plain","kind":"one","target":"Plain","from":"plain_id","to":"id","foreign_key":true}]}],
+            "behavior":{"schema_contract":1,"query_defaults":[
+                {"model":"Owner","filter":{"t":"col","path":[],"name":"active"}},
+                {"model":"Child","order":[{"field":"id","desc":true}]}]}});
+        Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
+    }
+
+    fn select(op: serde_json::Value) -> Select {
+        let Operation::Select(q) = serde_json::from_value(op).unwrap() else { panic!("select") };
+        q
+    }
+
+    fn plan(schema: &Schema, op: serde_json::Value) -> orm_engine::plan::SelectPlan {
+        let operation = serde_json::from_value(op).unwrap();
+        let Plan::Select(plan) = Planner::plan(schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() else { panic!("select") };
+        plan
+    }
+
+    #[test]
+    fn join_and_root_flags_follow_filter_and_bypass() {
+        let schema = schema();
+        let joined = |bypass: bool| plan(&schema, json!({"op":"select","model":"Child","select_related":[["owner"],["plain"]],"without_defaults":bypass}));
+        let Output::Instances { joins, .. } = joined(false).output else { panic!("instances") };
+        assert_eq!(joins.iter().map(|j| (j.attr.as_str(), j.filtered)).collect::<Vec<_>>(), [("owner", true), ("plain", false)]);
+        let Output::Instances { joins, .. } = joined(true).output else { panic!("instances") };
+        assert!(joins.iter().all(|j| !j.filtered));
+        assert!(!joined(false).filtered, "Child has an order but no filter");
+        assert!(plan(&schema, json!({"op":"select","model":"Owner"})).filtered);
+        assert!(!plan(&schema, json!({"op":"select","model":"Owner","without_defaults":true})).filtered);
+    }
+
+    #[test]
+    fn prepared_flags_and_effective_order() {
+        let schema = schema();
+        let flags = |name: &str| schema.models.iter().find(|m| m.ir.name == name).unwrap().read_flags.clone();
+        assert!(flags("Owner").filtered && !flags("Child").filtered && !flags("Plain").filtered);
+        let order = |op| orm_engine::plan::effective_order(&schema, &select(op)).unwrap();
+        assert_eq!(order(json!({"op":"select","model":"Child"})).len(), 1);
+        assert!(order(json!({"op":"select","model":"Child","without_defaults":true})).is_empty());
+        let explicit = json!({"op":"select","model":"Child","order":[{"expr":{"t":"col","path":[],"name":"owner_id"},"desc":false}]});
+        assert_eq!(order(explicit.clone()).len(), 1);
+        assert!(!order(explicit)[0].desc);
+    }
+}

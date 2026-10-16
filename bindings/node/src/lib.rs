@@ -190,6 +190,7 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
                 js.set(o, "start", js.number(j.start as f64)?)?;
                 js.set(o, "pk", js.number(j.pk_pos as f64)?)?;
                 js.set(o, "shape", shape_js(js, j.shape.as_ref())?)?;
+                js.set(o, "filtered", js.boolean(j.filtered)?)?;
                 Ok(o)
             }))?;
             js.set(obj, "joins", arr)?;
