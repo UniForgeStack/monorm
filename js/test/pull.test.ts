@@ -65,7 +65,7 @@ test("pull, baseline and drift of a Django-style database", async () => {
   await assert.rejects(migrator.baseline(), MigrationError);
 });
 
-test("owned serials read as identity; a shared sequence converts and reseeds", async () => {
+test("owned serials read as identity; a shared sequence stays a raw default", async () => {
   const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
   opened.push(db);
   await db.execute(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
@@ -76,15 +76,9 @@ test("owned serials read as identity; a shared sequence converts and reseeds", a
     INSERT INTO c_full (id) SELECT g FROM generate_series(1, 5) g;`);
   const pulled = await pull(db);
   assert.ok(pulled.gaps.some((g) => g.startsWith("column s_full.id uses a sequence")));
-  assert.deepEqual(pulled.differences.map((s) => s.summary), [
-    "drop default of c_empty.id",
-    "make c_empty.id an identity column",
-    "drop default of c_full.id",
-    "make c_full.id an identity column",
-  ]);
-  for (const step of pulled.differences) await db.execute(step.sql);
-  assert.deepEqual(await db.fetchText("INSERT INTO c_empty DEFAULT VALUES RETURNING id"), [["1"]]);
-  assert.deepEqual(await db.fetchText("INSERT INTO c_full DEFAULT VALUES RETURNING id"), [["6"]]);
+  assert.ok(pulled.gaps.some((g) => g.startsWith("column c_empty.id defaults to nextval('shared_seq'::regclass), a sequence the column does not own")));
+  assert.ok(pulled.schema.includes(`@default(dbgenerated("nextval('shared_seq'::regclass)"))`));
+  assert.deepEqual(pulled.differences, []);
 });
 
 test("rollback refuses a baselined migration unless forced", async () => {
