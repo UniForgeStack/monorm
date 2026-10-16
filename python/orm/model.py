@@ -613,11 +613,21 @@ class Model:
         self._replace_from(rows[0])
 
     async def delete(self) -> None:
-        """``DELETE ... WHERE pk = ...``; with ``@soft_delete.deleted_at``, a soft delete.
-        The instance keeps its last values. With ``@locking.version``, raises
-        :class:`orm.VersionConflict` when the row has a newer version."""
-        if not await self._version_filter(self._row_query()).delete():
+        """``DELETE ... WHERE pk = ...``; with ``@soft_delete.deleted_at``, a soft delete
+        that refreshes the instance from the returned row. Otherwise the instance keeps
+        its last values. With ``@locking.version``, raises :class:`orm.VersionConflict`
+        when the row has a newer version; :meth:`hard_delete` has no version check."""
+        if self._meta.soft_delete is None:
+            if not await self._version_filter(self._row_query()).delete():
+                await self._raise_if_changed()
+            return
+        version = self._meta.version_field
+        query = self._version_filter(self._loaded_query(*(() if version is None else (version,))))
+        rows = await query.delete().returning()
+        if not rows:
             await self._raise_if_changed()
+            return
+        self._replace_from(rows[0])
 
     async def hard_delete(self) -> None:
         """``DELETE ... WHERE pk = ...`` also for a soft-delete model. In database mode,

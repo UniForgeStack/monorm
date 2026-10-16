@@ -87,6 +87,134 @@ model Book {
     });
   }
 
+  const versionedSoftDelete = `
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_node_soft_docs")
+}`;
+
+  test(`a soft-deleted instance can be undeleted (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, versionedSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }]);
+      const doc = await docs.get(Doc.id.eq(1));
+      await doc.delete();
+      assert.ok(doc.version === 1 && doc.deleted !== null);
+      await (doc as SoftDeletable).undelete();
+      assert.ok(doc.version === 2 && doc.deleted === null);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  const filteredSoftDelete = `
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted == null")
+  @@map("tracking_node_filtered_docs")
+}`;
+  const filteredSkip = { skip: !["soft-delete", "optimistic-locking", "query-defaults"].every((c) => capabilities.includes(c)) };
+
+  test(`undelete and hardDelete ignore the default filter (${dialect})`, filteredSkip, async () => {
+    const [db, models] = await open(dialect, filteredSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      assert.equal(await docs.filter(Doc.id.eq(1)).delete(), 1);
+      assert.equal(await docs.filter(Doc.id.eq(1)).undelete(), 1);
+      assert.equal(await docs.filter(Doc.id.in([1, 2])).delete(), 2);
+      assert.equal(await docs.undelete(), 2);
+      assert.equal(await docs.count(), 3);
+      await docs.filter(Doc.id.in([1, 2])).delete();
+      assert.equal(await docs.filter(Doc.id.eq(1)).hardDelete(), 1);
+      const doc = await docs.allWithDeleted().get(Doc.id.eq(2));
+      await (doc as SoftDeletable).hardDelete();
+      assert.equal(await docs.allWithDeleted().count(), 1);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an instance update after a query-set soft delete throws VersionConflict (${dialect})`, filteredSkip, async () => {
+    const [db, models] = await open(dialect, filteredSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }]);
+      const doc = await docs.get(Doc.id.eq(1));
+      assert.equal(await docs.filter(Doc.id.eq(1)).delete(), 1);
+      await assert.rejects(doc.update({ deleted: null }), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  const cascadeVersioned = `
+model Author {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "database")
+  books   Book[]
+  @@map("tracking_node_cascade_authors")
+}
+model Book {
+  id        Int       @id
+  author_id Int
+  author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
+  version   Int       @default(0) @locking.version
+  removed   DateTime? @soft_delete.deleted_at(mode: "database")
+  @@map("tracking_node_cascade_books")
+}`;
+  const cascadeSkip = { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") };
+
+  test(`a hard delete of a soft-deleted parent leaves no orphan (${dialect})`, cascadeSkip, async () => {
+    const [db, models] = await open(dialect, cascadeVersioned);
+    const Author = models.Author!, authors = Author.objects.using(db), books = models.Book!.objects.using(db);
+    try {
+      await authors.insertMany([{ id: 1 }]);
+      assert.equal(await authors.filter(Author.id.eq(1)).delete(), 1);
+      await books.insertMany([{ id: 1, authorId: 1 }]);
+      const author = await authors.allWithDeleted().get(Author.id.eq(1));
+      if (dialect === "postgres") {
+        await (author as SoftDeletable).hardDelete();
+        assert.equal(await books.allWithDeleted().count(), 0);
+        assert.equal(await authors.allWithDeleted().count(), 0);
+      } else {
+        await assert.rejects((author as SoftDeletable).hardDelete(), /FOREIGN KEY constraint failed/);
+        assert.equal(await books.allWithDeleted().count(), 1);
+        assert.equal(await authors.allWithDeleted().count(), 1);
+      }
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`the soft-delete triggers bump the version (${dialect})`, cascadeSkip, async () => {
+    const [db, models] = await open(dialect, cascadeVersioned);
+    const Author = models.Author!, Book = models.Book!, authors = Author.objects.using(db), books = Book.objects.using(db);
+    try {
+      await authors.insertMany([{ id: 1 }, { id: 2 }]);
+      await books.insertMany([{ id: 1, authorId: 1 }, { id: 2, authorId: 2 }]);
+      const cascaded = await books.get(Book.id.eq(1));
+      const raw = await books.get(Book.id.eq(2));
+      assert.equal(await authors.filter(Author.id.eq(1)).delete(), 1);
+      await db.execute("DELETE FROM tracking_node_cascade_books WHERE id = 2");
+      const stored = (await books.allWithDeleted().orderBy(Book.id.asc()).all()).map((b: { version: number }) => b.version);
+      assert.deepEqual(stored, [1, 1]);
+      for (const stale of [cascaded, raw]) await assert.rejects(stale.update({ removed: null }), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, versionedSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }]);
+      const doc = await docs.get(Doc.id.eq(1));
+      await doc.delete();
+      await doc.delete();
+      assert.equal(doc.version, 1);
+      const stale = await docs.allWithDeleted().get(Doc.id.eq(1));
+      await (stale as SoftDeletable).undelete();
+      await assert.rejects(doc.delete(), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`a stale instance write throws VersionConflict (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
@@ -111,6 +239,64 @@ model Doc {
       await second.delete();
       await assert.rejects(first.update({ title: "f" }), Doc.DoesNotExist);
       assert.throws(() => docs.deletedOnly(), /no @soft_delete/);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  const upsertDoc = (mode: string) => `
+model Doc {
+  id      Int      @id
+  title   String
+  changed DateTime @default(now()) @timestamps.updated_at(mode: "${mode}")
+  version Int      @default(0) @locking.version
+  @@map("tracking_node_upsert_docs")
+}`;
+
+  test(`an upsert bumps the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") || !capabilities.includes("updated-at") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("application"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a" });
+      const stale = await docs.get(Doc.id.eq(1));
+      await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      assert.equal((await docs.get(Doc.id.eq(1))).version, 1);
+      await docs.insert({ id: 1, title: "c" }).onConflict(Doc.id, { update: true, updateFields: [Doc.title] });
+      await docs.insert({ id: 1, title: "d" }).onConflict(Doc.id, { update: true, updateValues: { title: "e" } });
+      assert.equal((await docs.get(Doc.id.eq(1))).version, 3);
+      await assert.rejects(stale.update({ title: "x" }), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an upsert sets updated_at in application mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("application"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a", changed: OLD });
+      await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      assert.ok((await docs.get(Doc.id.eq(1))).changed > OLD);
+      await docs.update({ changed: OLD });
+      await docs.insert({ id: 1, title: "c", changed: OLD }).onConflict(Doc.id, { update: true, updateFields: [Doc.title, Doc.changed] });
+      assert.equal((await docs.get(Doc.id.eq(1))).changed.getTime(), OLD.getTime());
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an update: true upsert does not reset the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("application"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a" });
+      await docs.filter(Doc.id.eq(1)).update({ title: "a2" });
+      await docs.insert({ id: 1, title: "b", version: 0 }).onConflict(Doc.id, { update: true });
+      assert.equal((await docs.get(Doc.id.eq(1))).version, 2);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc("database"));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a", changed: OLD });
+      await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      assert.ok((await docs.get(Doc.id.eq(1))).changed > OLD);
     } finally { await db.dropTables(); await db.close(); }
   });
 }

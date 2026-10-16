@@ -1246,6 +1246,8 @@ impl<'s> Planner<'s> {
                     stmt.join_as(JoinType::InnerJoin, jtable, Alias::new(&jalias), to_source)
                         .join_as(JoinType::InnerJoin, table, Alias::new(&alias), to_target);
                 }
+                #[cfg(feature = "query-defaults")]
+                if !self.policy_bypass { if let Some(filter) = &jm.query_defaults.filter { stmt.and_where(self.target_default(self.model_idx(&th.model)?, &jalias, filter)?); } }
             }
         }
         #[cfg(feature = "query-defaults")]
@@ -3096,7 +3098,12 @@ fn plan_prefetch(
             let jm = schema.model(schema.model_idx(&th.model).map_err(query_err)?);
             let (src, dst) = (jm.field(&th.source).map_err(query_err)?, jm.field(&th.target).map_err(query_err)?);
             let jalias = p.alias("m");
-            let on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to[0]).map_err(query_err)?.column));
+            #[cfg_attr(not(feature = "query-defaults"), allow(unused_mut))]
+            let mut on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to[0]).map_err(query_err)?.column));
+            #[cfg(feature = "query-defaults")]
+            if !p.policy_bypass {
+                if let Some(filter) = &jm.query_defaults.filter { on = on.and(p.target_default(schema.model_idx(&th.model).map_err(query_err)?, &jalias, filter)?); }
+            }
             plan.stmt.join_as(JoinType::InnerJoin, Alias::new(jm.table()), Alias::new(&jalias), on);
             let k = col(&jalias, &src.column);
             plan.stmt.expr_as(k.clone(), Alias::new("_key"));
@@ -3367,6 +3374,10 @@ pub fn plan_insert(
                     let f = m.field(&a.field).map_err(query_err)?;
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
                     clause.value(Alias::new(&f.column), v);
+                }
+                #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
+                for (column, expr) in maintained(m, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name)) {
+                    clause.value(Alias::new(column), expr);
                 }
                 clause.to_owned()
             }

@@ -172,3 +172,52 @@ def test_proxy_field_rules_fail_at_definition():
             orm.loads(source, registry=orm.Registry())
     with pytest.raises(orm.SchemaError, match=re.escape("an enum subset Status(...) is only allowed on a field of a proxy model")):
         orm.loads("enum Status {\n  A\n  @@storage(text)\n}\nmodel M {\n  id Int @id\n  s Status(A)\n}", registry=orm.Registry())
+
+
+ROLES_SOURCE = """
+model Doc {
+  id      Int       @id
+  title   String
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("proxy_role_docs")
+}
+model Draft {
+  @@proxy.of(Doc)
+}
+"""
+
+
+def _has(*names):
+    caps = json.loads(_native.native_artifact())["capabilities"]
+    return all(n in caps for n in names)
+
+
+@pytest.mark.skipif(not _has("proxy-models", "soft-delete", "optimistic-locking"), reason="requires proxy-models, soft-delete and optimistic-locking")
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_a_proxy_takes_the_roles_of_its_root(dialect):
+    source = ROLES_SOURCE if dialect == "postgres" else 'datasource db { provider = "sqlite" }\n' + ROLES_SOURCE
+    registry = orm.Registry()
+    models = orm.loads(source, registry=registry)
+    Doc, Draft = models["Doc"], models["Draft"]
+    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    db = await orm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    try:
+        await Doc.objects.using(db).insert_many([{"id": 1, "title": "a"}, {"id": 2, "title": "b"}])
+        assert await Draft.objects.using(db).filter(Draft.id == 1).update(title="x") == 1
+        assert (await Doc.objects.using(db).get(Doc.id == 1)).version == 1
+        assert await Draft.objects.using(db).filter(Draft.id == 2).delete() == 1
+        row = await Doc.objects.using(db).get(Doc.id == 2)
+        assert row.deleted is not None
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.skipif(not _has("proxy-models", "soft-delete"), reason="requires proxy-models and soft-delete")
+def test_a_proxy_must_keep_the_soft_delete_field():
+    source = ROLES_SOURCE.replace("@@proxy.of(Doc)", '@@proxy.of(Doc)\n  @@proxy.fields(exclude: ["deleted"])')
+    with pytest.raises(Exception, match="proxy must keep the soft-delete field deleted"):
+        orm.loads(source, registry=orm.Registry())

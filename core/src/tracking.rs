@@ -41,3 +41,34 @@ pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Require
     }
     Ok(())
 }
+
+/// A proxy shares its root's table, so it takes the root's column roles by field name.
+#[cfg(feature = "proxy-models")]
+#[cfg_attr(not(any(feature = "updated-at", feature = "soft-delete", feature = "optimistic-locking")), allow(unused_variables, unused_mut))]
+pub fn inherit_proxy_roles(models: &mut [Model], index: &HashMap<String, usize>, proxies: &[orm_contracts::extension::ProxyModel]) -> Result<()> {
+    for proxy in proxies {
+        let mut root = proxy.parent.as_str();
+        while let Some(next) = proxies.iter().find(|p| p.model == root) { root = &next.parent; }
+        let (p, r) = (index[&proxy.model], index[root]);
+        #[cfg(feature = "updated-at")]
+        {
+            let names: Vec<String> = models[r].updated_at.iter().map(|&i| models[r].fields()[i].name.clone()).collect();
+            // An excluded updated_at field stays with the database trigger.
+            let kept = names.iter().filter_map(|n| models[p].field_pos(n).ok()).collect();
+            models[p].updated_at = kept;
+        }
+        #[cfg(feature = "soft-delete")]
+        if let Some(i) = models[r].soft_delete {
+            let name = models[r].fields()[i].name.clone();
+            let pos = models[p].field_pos(&name).map_err(|_| format!("{}: proxy must keep the soft-delete field {name}", proxy.model))?;
+            models[p].soft_delete = Some(pos);
+        }
+        #[cfg(feature = "optimistic-locking")]
+        if let Some(i) = models[r].version {
+            let name = models[r].fields()[i].name.clone();
+            let pos = models[p].field_pos(&name).map_err(|_| format!("{}: proxy must keep the version field {name}", proxy.model))?;
+            models[p].version = Some(pos);
+        }
+    }
+    Ok(())
+}

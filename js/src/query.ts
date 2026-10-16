@@ -231,7 +231,9 @@ export interface LockOptions {
  * `update: false` keeps the existing row (`DO NOTHING`). `update: true` updates it:
  * `updateFields` copy the proposed values, `updateValues` set plain values or
  * expressions such as `{ views: Post.views.add(excluded(Post.views)) }`. With neither,
- * every field given to the insert except the conflict columns is overwritten.
+ * every field given to the insert except the conflict columns is overwritten, but not the
+ * version field. The update also sets `updated_at` and adds `version = version + 1`
+ * unless the call sets them.
  */
 export interface OnConflictOptions<M extends ModelSpec, U extends boolean = boolean> {
   readonly update: U;
@@ -1415,7 +1417,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const returning = options.returning ?? false;
     const plan = () => {
       const params: unknown[] = [];
-      const ir = { ...this.mutationIr("delete", params), hard: true, returning };
+      const ir = { ...this.withoutDefaults().mutationIr("delete", params), hard: true, returning };
       return { ir, params };
     };
     return new InspectedStatement(() => {
@@ -1433,7 +1435,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   undelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
     const statement = () => {
       const field = this.softDeleteField();
-      return this.filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
+      return this.withoutDefaults().filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
     };
     return new InspectedStatement(async () => await statement(), () => statement().inspect());
   }
@@ -1647,7 +1649,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
           o.updateFields !== undefined
             ? ownFields(this.meta, o.updateFields, "updateFields")
             : o.updateValues === undefined
-              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f))
+              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f) && f !== this.meta.versionField?.ir)
               : [];
         if (o.updateValues !== undefined) {
           const items = assignments(this.meta, o.updateValues, new IRContext(this.meta, params));

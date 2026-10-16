@@ -91,9 +91,10 @@ export interface Instance<M extends ModelSpec> {
    */
   update(values: M["update"]): Promise<void>;
   /**
-   * `DELETE ... WHERE pk = ...`; with `@soft_delete.deleted_at`, a soft delete. The
-   * instance keeps its last values. With `@locking.version`, throws `VersionConflict`
-   * when the row has a newer version.
+   * `DELETE ... WHERE pk = ...`; with `@soft_delete.deleted_at`, a soft delete that
+   * refreshes the instance from the returned row. Otherwise the instance keeps its last
+   * values. With `@locking.version`, throws `VersionConflict` when the row has a newer
+   * version; `hardDelete()` has no version check.
    */
   delete(): Promise<void>;
   /**
@@ -594,7 +595,18 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
 }
 
 async function instanceDelete(this: Row): Promise<void> {
-  if (!(await versionFilter(this, rowQuery(this)).delete())) await throwIfChanged(this);
+  const meta = metaOf(this);
+  if (!meta.softDelete) {
+    if (!(await versionFilter(this, rowQuery(this)).delete())) await throwIfChanged(this);
+    return;
+  }
+  const query = versionFilter(this, loadedQuery(this, meta.versionField ? [meta.versionField.ir] : []));
+  const rows = (await query.delete({ returning: true })) as Row[];
+  if (!rows.length) {
+    await throwIfChanged(this);
+    return;
+  }
+  replaceFrom(this, rows[0]!);
 }
 
 async function instanceHardDelete(this: Row): Promise<void> {

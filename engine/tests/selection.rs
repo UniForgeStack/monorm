@@ -82,6 +82,35 @@ fn generated_types_distinguish_default_missing_fields_and_filtered_targets() {
 }
 
 #[cfg(feature = "query-defaults")]
+#[test]
+fn a_many_to_many_path_applies_the_default_filter_of_the_join_model() {
+    use orm_engine::{db, plan::plan_prefetch_only};
+    let id = json!({"name":"id","column":"id","type":"big_int","primary_key":true});
+    let raw = json!({"models":[
+        {"name":"Post","table":"posts","fields":[id],
+         "relations":[{"name":"tags","kind":"many","target":"Tag","from":"id","to":"id","through":{"model":"PostTag","source":"post_id","target":"tag_id"}}]},
+        {"name":"Tag","table":"tags","fields":[id, {"name":"name","column":"name","type":"text"}]},
+        {"name":"PostTag","table":"post_tags","fields":[id,
+            {"name":"post_id","column":"post_id","type":"big_int"}, {"name":"tag_id","column":"tag_id","type":"big_int"},
+            {"name":"live","column":"live","type":"bool"}]}
+    ],"behavior":{"schema_contract":1,"query_defaults":[{"model":"PostTag","filter":{"t":"col","path":[],"name":"live"}}]}});
+    let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
+    let target = Target::new(Dialect::Postgres);
+    let filter = json!({"t":"cmp","op":"eq","l":{"t":"col","path":["tags"],"name":"name"},"r":{"t":"text","value":"b"}});
+    for (without_defaults, expected) in [(false, true), (true, false)] {
+        let op: Operation = serde_json::from_value(json!({"op":"select","model":"Post","filters":[filter],"without_defaults":without_defaults,
+            "prefetch":[{"relation":"tags","model":"Tag"}]})).unwrap();
+        let Operation::Select(q) = &op else { panic!("select") };
+        let Plan::Select(plan) = Planner::plan(&schema, target, &op, &NoParams).unwrap() else { panic!("select") };
+        let filtered = db::build(Dialect::Postgres, &plan.stmt).0;
+        assert_eq!(filtered.contains(r#""live""#), expected, "{filtered}");
+        let prefetch = plan_prefetch_only(&schema, target, q, &NoParams).unwrap();
+        let sql = db::build(Dialect::Postgres, &prefetch[0].statement(vec![vec![1.into()]])).0;
+        assert_eq!(sql.contains(r#""live""#), expected, "{sql}");
+    }
+}
+
+#[cfg(feature = "query-defaults")]
 mod read_flags {
     use super::*;
     use orm_core::ir::Select;

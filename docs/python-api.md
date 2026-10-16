@@ -338,7 +338,7 @@ await User.objects.filter(User.profile.role == Role.admin)  # EXISTS, like any r
 await post.tags                                     # list[Tag]
 await post.tags.add(news, rust)                     # inserts PostTag rows (existing links are kept)
 await post.tags.add(news, through_defaults={"position": 1})  # other fields of the new PostTag rows
-await post.tags.remove(news)                        # deletes them; returns how many
+await post.tags.remove(news)                        # deletes them (a join model with `@soft_delete` soft-deletes them); returns how many
 await post.tags.set([news, py])                     # exactly these
 await post.tags.clear()
 tag = await post.tags.insert(name="go")             # insert a Tag and link it, in one transaction

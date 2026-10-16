@@ -20,8 +20,11 @@ A build without the extension has no engine code for the role, and a schema with
 * Database mode adds row triggers to the migration, so every writer gets the behavior, also raw SQL.
 * Application mode adds no DDL. Only ORM writes get the behavior.
 
-ORM writes are the same in both modes.
-The ORM sets the column in the statement, so `RETURNING` gives the new value on Postgres and SQLite.
+ORM writes set the column in the statement in both modes, so `RETURNING` gives the new value on Postgres and SQLite.
+The modes differ in two cases.
+A write that names the stored value of `updated_at` again is a same-value write.
+In database mode, the trigger replaces it with the current time; in application mode, the stored value stays.
+An upsert sets `updated_at` and the version in its `DO UPDATE` clause in both modes (see "Behavior change").
 
 ## `updated_at`
 
@@ -36,9 +39,11 @@ model Note {
 * Each ORM update (query set `update()`, instance `update()`, `update_many()`) sets the field to the current time, unless the update sets the field.
 * An insert uses the field default; give `@default(now())`.
 * Database mode, Postgres: a `BEFORE UPDATE ... FOR EACH ROW WHEN (NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at)` trigger sets `NEW.updated_at := now()`.
-  An update that writes the field keeps its value.
+  An update that writes a value that differs from the stored value keeps its value.
+  An update that writes the stored value again (a same-value write) gets the current time.
 * Database mode, SQLite: SQLite cannot assign `NEW` in a trigger.
-  An `AFTER UPDATE ... WHEN NEW.updated_at IS OLD.updated_at` trigger updates the row to `CURRENT_TIMESTAMP`.
+  An `AFTER UPDATE ... WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_at IS NOT strftime(...)` trigger updates the row to `strftime('%Y-%m-%d %H:%M:%f','now')` (milliseconds).
+  The second condition stops the trigger from firing itself when `recursive_triggers` is on.
   SQLite `RETURNING` does not show a change made by an `AFTER` trigger; ORM updates set the field themselves, so the trigger does not run for them.
 
 ## Soft delete
@@ -65,7 +70,10 @@ model Book {
   The count and `RETURNING` are the rows that the call soft-deleted; rows that are already soft-deleted do not count.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
+  On a query set, it drops every default filter, like `all_with_deleted()`.
+  An instance `hard_delete()` does not check the version, also with `@locking.version`.
 * `undelete()` on a query set clears the field of the matching soft-deleted rows; on an instance, it clears the field of its row.
+  On a query set, it drops every default filter, like `all_with_deleted()`.
 * `all_with_deleted()` (`allWithDeleted()`) is `without_defaults()`: it removes the schema default filter that hides deleted rows.
   `deleted_only()` (`deletedOnly()`) gives only the soft-deleted rows.
 * Reads show soft-deleted rows unless the model has a default filter.
@@ -73,13 +81,31 @@ model Book {
   `without_defaults()` removes every schema default, not only this filter.
 * Database mode adds a `BEFORE DELETE ... FOR EACH ROW WHEN (OLD.deleted_at IS NULL)` trigger.
   It sets the field and cancels the delete (Postgres `RETURN NULL`, SQLite `RAISE(IGNORE)`).
-  A raw `DELETE` of a live row affects 0 rows; a second `DELETE` deletes the soft-deleted row.
+  A raw `DELETE` of a live row soft-deletes it.
+  On Postgres, the statement reports 0 rows.
+  On SQLite, a `batch` counts the write of the trigger, so a raw `DELETE` of 3 live rows reports 3.
+  A second `DELETE` deletes the soft-deleted row.
+  With `@locking.version`, the trigger also adds `version = version + 1`.
 * Cascade, database mode: a cancelled delete does not fire `ON DELETE CASCADE`.
   For each soft-delete child with `onDelete: Cascade`, the parent gets an `AFTER UPDATE OF deleted_at` trigger.
   When the parent row becomes soft-deleted, the trigger sets the same time on the live child rows.
   A child without soft delete keeps its rows.
+  The Postgres delete trigger runs only at trigger depth 0 (`pg_trigger_depth() = 0`), so a hard delete of a soft-deleted parent leaves no orphan: the database cascade hard-deletes its children.
+  The cost: a `DELETE` that runs inside another trigger is always a hard delete, and each row that the trigger tests calls `pg_trigger_depth()`.
+* SQLite: a hard delete of a soft-deleted parent whose child rows still exist fails with `FOREIGN KEY constraint failed`, and no row is deleted.
+  Delete or hard-delete the children first.
+* Migration: a changed trigger body (the depth guard, the version bump) shows in the next migration diff; apply that migration to an existing database.
 * Application mode has no cascade.
-* A composed model (`model-composition`) keeps its own delete plan.
+* A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
+  A role on a composed model is rejected at definition.
+  The parent side has a gap: a write to a composed child does not maintain the roles of its parent.
+
+## Behavior change: upsert
+
+An upsert (`on_conflict(update=True)`) now sets `updated_at` and adds `version = version + 1` in its `DO UPDATE` clause, unless the call sets the field.
+Before, an upsert kept both values in application mode and in the SQLite `RETURNING` row.
+`update=True` without `update_fields` or `update_values` no longer overwrites the version field with the given value.
+No changelog file exists, so this note is the record.
 
 ## Optimistic locking
 
@@ -92,12 +118,14 @@ model Doc {
 ```
 
 * The field is a required `Int` or `BigInt`. One field for each model.
-* Each ORM update (query set `update()`, instance `update()`, `update_many()`, a soft delete) adds `version = version + 1`, unless the update sets the field.
+* Each ORM write that updates a row (query set `update()`, instance `update()`, `update_many()`, a soft delete, `undelete()`, and the `DO UPDATE` branch of an upsert) adds `version = version + 1`, unless the write sets the field.
+* An insert stores the version that it names (`insert(version=7)`, `insert_many(version=5)`); the default is 0.
 * An instance `update()` or `delete()` also matches the loaded version: `WHERE pk = ... AND version = <loaded>`.
   When no row matches and the row has another version, it raises `orm.VersionConflict` (`VersionConflict` in TypeScript).
   When the row is gone, `update()` raises `DoesNotExist`.
 * The instance must have the version field loaded.
 * A query set `update()` does not check the version, as Rails `update_all`.
+* An instance `hard_delete()` has no version check.
 * No DDL.
 
 ```python
