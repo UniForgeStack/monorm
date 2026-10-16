@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DatabaseError, Decimal, IntegrityError, QueryError, connect, excluded, getDatabase, type QueryEvent } from "../src/index.js";
+import { DatabaseError, Decimal, IntegrityError, QueryError, connect, excluded, func, getDatabase, type QueryEvent } from "../src/index.js";
 import { Comment, Post, PostTag, Priority, Profile, Tag, User, type TagInsert } from "./blog/models.js";
 import { DATABASE_URL, replicaUrl, useDatabase } from "./helpers.js";
 
@@ -346,6 +346,20 @@ test("insertMany copy fits narrow columns", async () => {
     assert.equal(await Post.objects.insertMany([{ author: alice, title: "t", body: "b", views: 7 }], { copy: true }), 1);
     assert.equal(await Post.objects.filter(Post.views.eq(7)).count(), 1);
     await assert.rejects(Post.objects.insertMany([{ author: alice, title: "u", body: "b", views: 70_000 }], { copy: true }), /out of range/);
+  } finally {
+    await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer");
+  }
+});
+
+test("typed read of a smallint column", async () => {
+  const db = getDatabase();
+  await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint");
+  try {
+    const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
+    await Post.objects.insertMany([{ author: alice, title: "t", body: "b", views: 7 }, { author: alice, title: "u", body: "b", views: 9 }]);
+    assert.deepEqual((await Post.objects.all()).map((p: any) => p.views).sort(), [7, 9]);
+    assert.deepEqual((await Post.objects.select({ v: Post.views }).orderBy(Post.views)).map((r: any) => r.v), [7, 9]);
+    assert.deepEqual(await User.objects.select({ v: func.arrayAgg(User.posts.views, { orderBy: User.posts.views }) }).scalar(), [7, 9]);
   } finally {
     await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer");
   }

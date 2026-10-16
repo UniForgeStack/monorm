@@ -9,6 +9,7 @@ import pytest
 from blog.models import Comment, Post, PostTag, Priority, Profile, Role, Tag, User
 
 import orm
+from orm import func
 from conftest import DATABASE_URL
 
 # -- insert_many batches ----------------------------------------------------------------------
@@ -430,6 +431,21 @@ async def test_copy_fits_narrow_columns(clean):
         assert await Post.objects.filter(Post.views == 7).count() == 1
         with pytest.raises(orm.DatabaseError, match="out of range"):
             await Post.objects.insert_many([{"author": alice, "title": "u", "body": "b", "views": 70_000}], copy=True)
+    finally:
+        await clean.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer")
+
+
+async def test_typed_read_of_a_smallint_column(clean):
+    await clean.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint")
+    try:
+        alice = await User.objects.insert(email="a@x.io", name="A")
+        await Post.objects.insert_many(
+            [{"author": alice, "title": "t", "body": "b", "views": 7}, {"author": alice, "title": "u", "body": "b", "views": 9}]
+        )
+        assert sorted(p.views for p in await Post.objects.all()) == [7, 9]
+        assert sorted(await Post.objects.select(Post.views).scalars()) == [7, 9]
+        agg = await User.objects.select(func.array_agg(User.posts.views, order_by=User.posts.views)).scalars()
+        assert agg == [[7, 9]]
     finally:
         await clean.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer")
 

@@ -333,6 +333,10 @@ An aggregate whose arguments, `orderBy` keys and `filter` follow to-one hops onl
 (`func.sum(Post.author.id)`) reads a `LEFT JOIN` of the query instead of a subquery: one value per group,
 not one per row, and a `NULL` foreign key keeps its row. This holds at the query root of a read, not in an `update()`.
 The `filter` stays an `EXISTS`.
+A nested scope (a subquery) keeps the scalar subquery.
+Like the same aggregate over a local column, `select({ t: Post.title, s: func.sum(Post.author.id) })`
+without `groupBy` and `orderBy(func.max(Post.author.name))` give Postgres error 42803;
+write a per-row value without the aggregate.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
 compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
 `.asText()` for the last step as text (`->>`, no step can follow),
