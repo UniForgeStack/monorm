@@ -655,6 +655,10 @@ when its row exists but its column is NULL.
   `func.array_agg(Post.title, order_by=Post.author.name)`) reads a `LEFT JOIN` of the query
   instead of a subquery, so it gives one value per group, not one per row; a `NULL` foreign key
   keeps its row. This holds at the query root of a read, not in an `update()`. The `filter` stays an `EXISTS`.
+  A nested scope (a subquery) and the values of `update()` keep the scalar subquery.
+  Like the same aggregate over a local column, `select(Post.title, func.sum(Post.author.id))`
+  without `group_by` and `order_by(func.max(Post.author.name))` give Postgres error 42803;
+  write a per-row value without the aggregate.
 * **String concatenation** has two forms with different `NULL` rules:
   `func.concat(a, " ", b)` is `CONCAT(...)` and reads a `NULL` part as an empty string;
   `a.concat(b)` is `a || b` and is `NULL` when either side is `NULL`.
