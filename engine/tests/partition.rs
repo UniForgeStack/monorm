@@ -111,3 +111,63 @@ partition event_rest { of = Event default = true }
         conn.close().await;
     });
 }
+
+#[cfg(feature = "proxy-models")]
+#[test]
+fn proxy_partition_plans_keep_storage_predicate_and_insert_into_owned_table() {
+    use orm_core::{dialect::{Dialect, Target}, ir::Operation};
+    use orm_engine::{params::NoParams, plan::{self, Plan}};
+    use serde_json::json;
+    let source = r#"
+model Reward {
+ id Int @default(autoincrement())
+ kind String
+ shop Int
+ percent Int?
+ @@id([id, kind])
+ @@partition(list: [kind])
+}
+model PercentageReward {
+ @@proxy.of(Reward)
+ @@partition.values(["percent"])
+ @@map("partition_proxy_percent")
+}
+model Child {
+ @@proxy.of(PercentageReward)
+}
+"#;
+    let s = schema(source);
+    let target = Target::new(Dialect::Postgres);
+    for model in ["PercentageReward", "Child"] {
+        for op in ["select", "count", "delete"] {
+            let q: Operation = serde_json::from_value(json!({"op":op,"model":model,"without_defaults":true})).unwrap();
+            let sql = match plan::Planner::plan(&s, target, &q, &NoParams).unwrap() {
+                Plan::Select(p) => p.stmt.to_string(sea_query::PostgresQueryBuilder),
+                Plan::Count(p) => p.to_string(sea_query::PostgresQueryBuilder),
+                Plan::Delete(p, _) => p.to_string(sea_query::PostgresQueryBuilder),
+                _ => panic!("unexpected plan"),
+            };
+            assert!(sql.contains(" IN ('percent')"), "{sql}");
+        }
+        let (insert, _) = plan::plan_insert(&s, target, model, &["shop".into(), "percent".into()],
+            vec![vec![Some(1.into()), Some(10.into())]], None, &NoParams, true).unwrap();
+        let sql = insert.to_string(sea_query::PostgresQueryBuilder);
+        assert!(sql.starts_with("INSERT INTO \"partition_proxy_percent\""), "{sql}");
+        assert!(sql.contains("'percent'"), "{sql}");
+    }
+}
+
+#[cfg(feature = "proxy-models")]
+#[test]
+fn proxy_storage_predicates_skip_virtual_cte_models() {
+    use orm_core::{dialect::{Dialect, Target}, ir::Operation};
+    use orm_engine::{params::NoParams, plan::Planner};
+    use serde_json::json;
+    let s = schema("model Item {\n id Int @id\n}");
+    let q: Operation = serde_json::from_value(json!({
+        "op":"select","model":"Item",
+        "with":[{"name":"ids","query":{"model":"Item","columns":[{"t":"expr","expr":{"t":"col","path":[],"name":"id"},"name":"id"}]}}],
+        "filters":[{"t":"in_select","item":{"t":"col","path":[],"name":"id"},"select":{"model":"ids","columns":[{"t":"expr","expr":{"t":"cte_col","cte":"ids","name":"id"},"name":"id"}]}}]
+    })).unwrap();
+    Planner::plan(&s, Target::new(Dialect::Postgres), &q, &NoParams).unwrap();
+}
