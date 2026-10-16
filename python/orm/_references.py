@@ -73,7 +73,7 @@ def install(model: Any) -> None:
             relation = specialized
             model._meta.relations[name] = relation
             setattr(model, name, relation)
-        filtered = any(policy.get("model") == relation.target_name and policy.get("filter") is not None for policy in model._meta.registry._behavior.get("query_defaults", ()))
+        filtered = model._meta.registry.get(relation.target_name)._meta.filtered
         if isinstance(relation, ReferenceBelongsTo):
             relation.filtered = filtered
             relation.optional = any(model._meta.fields[n].nullable for n in relation.via_fields)

@@ -35,7 +35,7 @@ fn normal_query(schema: &Schema, model: usize) -> Result<SelectionPlan> {
     for r in &schema.models[model].ir.relations {
         q.model_helpers.extend(r.from.iter().cloned());
     }
-    for path in &schema.models[model].query_defaults.related {
+    for path in &schema.models[model].read_flags.related {
         add(
             schema,
             model,

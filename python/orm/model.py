@@ -94,9 +94,8 @@ class ModelMeta:
         # Row tuples from the engine follow this order.
         self.field_names: tuple[str, ...] = tuple(self.fields)
         self.input_fields: dict[str, Field[Any]] = self.fields
-        self.default_filter: dict[str, Any] | None = None
-        # The schema default order: `{"field", "desc"?, "nulls"?}` per column.
-        self.default_order: list[dict[str, Any]] = []
+        # The engine says a default read of this model can hide rows.
+        self.filtered: bool = False
         # The `@soft_delete.deleted_at` field name: `delete()` sets it.
         self.soft_delete: str | None = None
         # The `@locking.version` field name: instance writes check it.
@@ -275,6 +274,7 @@ class Registry:
             methods_by_model.setdefault(method["model"], {})[name] = getattr(_native, method["native_function"])
         native = _native.Schema(prepared_json, classes)
         snapshot._native = native
+        read_flags: dict[str, dict[str, Any]] = json.loads(native.read_flags())
         snapshot._behavior = prepared.get("behavior", {})
         # Associations are published only after all native validation succeeds.
         for model, ir, fields, relations in associations:
@@ -294,9 +294,7 @@ class Registry:
             meta.table = ir["table"]
             meta.key = _key_fields(meta.name, fields, ir.get("primary_key"))
             meta.schema_ir = ir
-            policy: dict[str, Any] = next((d for d in prepared.get("behavior", {}).get("query_defaults", ()) if d["model"] == meta.name), {})
-            meta.default_filter = policy.get("filter")
-            meta.default_order = policy.get("order", [])
+            meta.filtered = read_flags[meta.name]["filtered"]
             behavior = prepared.get("behavior", {})
             meta.soft_delete = next((d["field"] for d in behavior.get("soft_delete", ()) if d["model"] == meta.name), None)
             meta.version_field = next((d["field"] for d in behavior.get("versions", ()) if d["model"] == meta.name), None)

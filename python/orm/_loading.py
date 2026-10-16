@@ -115,7 +115,7 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
                     cached = None
                 # A partial cached target needs to be filled rather than treated as complete.
                 if reload or cached is None:
-                    await _reference_adapter.load_reference(owner, name, reload=reload, filtered=any(p.get("model") == rel.target_name and p.get("filter") is not None for p in owner._meta.registry._behavior.get("query_defaults", ())))
+                    await _reference_adapter.load_reference(owner, name, reload=reload, filtered=rel.target._meta.filtered)
                     continue
         relations.append(item)
     if relations:

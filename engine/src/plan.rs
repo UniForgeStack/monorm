@@ -44,6 +44,9 @@ pub struct JoinShape {
     /// A default filter was ANDed into this join's ON and no bypass removed it: a NULL
     /// object means "hidden by the filter", not a dangling key.
     pub filtered: bool,
+    /// A missing object is a dangling key: the parent holds the key and no filter hid the row.
+    /// Bindings leave such a reference unloaded instead of setting it to none.
+    pub dangling: bool,
 }
 
 /// How a statement's rows become objects.
@@ -2698,6 +2701,9 @@ impl<'s> Planner<'s> {
             let named = named.or(if q.without_defaults || entry.is_some_and(|r| r.with_default_fields) { None } else { m.query_defaults.fields.as_deref() });
             let joined_shape = self.instance_shape(model, named, &[])?;
             let joined_positions = shape_positions(m, joined_shape.as_ref());
+            let filtered = self.filtered_joins.contains(path);
+            let owner = parent.map_or(self.root, |p| joins[p].model);
+            let holds_key = self.model(owner).ir.relations.iter().any(|r| r.name == path[path.len() - 1] && r.foreign_key);
             joins.push(JoinShape {
                 parent,
                 attr: path[path.len() - 1].clone(),
@@ -2705,7 +2711,8 @@ impl<'s> Planner<'s> {
                 start: types.len(),
                 pk_pos: joined_positions.iter().position(|f| f == m.pk).expect("identity selected"),
                 shape: joined_shape,
-                filtered: self.filtered_joins.contains(path),
+                filtered,
+                dangling: holds_key && !filtered,
             });
             for position in joined_positions.iter() {
                 let f = &m.fields()[position];
@@ -2961,6 +2968,29 @@ pub fn effective_order(schema: &Schema, q: &Select) -> Result<Vec<Order>> {
     }
     let _ = schema;
     Ok(vec![])
+}
+
+/// `effective_order` of a select IR document, as `[{field, desc, nulls}]` for bindings.
+/// Default orders are root columns (checked when the schema is prepared).
+pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_json::Value> {
+    let q: Select = serde_json::from_str(select_json).map_err(|e| Error::query(e.to_string()))?;
+    let keys = effective_order(schema, &q)?
+        .into_iter()
+        .map(|o| match o.expr {
+            Expr::Col { path, name } if path.is_empty() => Ok(serde_json::json!({"field": name, "desc": o.desc, "nulls": o.nulls})),
+            _ => Err(Error::query("a default order is a root column")),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(serde_json::Value::Array(keys))
+}
+
+/// The static read flags of each model, `{model: {filtered, fields, related}}`, for bindings.
+pub fn read_flags_json(schema: &Schema) -> serde_json::Value {
+    schema.models.iter().map(|m| (m.ir.name.clone(), serde_json::json!({
+        "filtered": m.read_flags.filtered,
+        "fields": m.read_flags.fields,
+        "related": m.read_flags.related,
+    }))).collect::<serde_json::Map<_, _>>().into()
 }
 
 /// `q` with its default order made explicit; None when it has none to add.

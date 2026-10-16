@@ -223,10 +223,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                 }
                 RelKind::One => {
                     let nullable = r.from.iter().map(|f| m.field(f).map(|f| f.nullable)).collect::<Result<Vec<_>, _>>()?.contains(&true);
-                    #[cfg(feature = "reference-loading")]
-                    let nullable = nullable || super::reference_target_filtered(ir, &r.target);
-                    #[cfg(feature = "query-defaults")]
-                    let nullable = nullable || schema.model(schema.model_idx(&r.target)?).query_defaults.filter.is_some();
+                    let nullable = nullable || super::reference_target_filtered(schema, &r.target);
                     let t = if nullable { format!("{} | None", r.target) } else { r.target.clone() };
                     writeln!(body, "    {}: f.BelongsTo[{t}, _{}Path]", r.name, r.target).unwrap();
                 }

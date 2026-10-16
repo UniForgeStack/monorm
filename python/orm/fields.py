@@ -352,8 +352,8 @@ class BelongsTo(Relation[M, P]):
         key = key_value(cast("Model", obj), self.via_fields)
         if self.name in d:
             related = d[self.name]
-            # A default-filtered target joins as absent even when the key is set.
-            if related is None and (key is None or cast("type[Model]", self.target)._meta.default_filter is not None):
+            # The engine stores None only for a reference its filter hid or whose key is None.
+            if related is None:
                 return None
             if related is not None and key_value(related, self.to_fields) == key:
                 return related
