@@ -400,6 +400,21 @@ test("array_agg: order, filter, distinct, NULL and empty results", async () => {
   assert.deepEqual(await Comment.objects.select({ a: func.arrayAgg(Comment.authorId, { orderBy: Comment.body }) }).scalar(), [null, alice.id, bob.id]);
 });
 
+test("array_agg over a to-one tail keeps the NULL elements", async () => {
+  await seed();
+  const names = func.arrayAgg(Post.comments.author.name, { orderBy: Post.comments.author.name });
+  const byId = func.arrayAgg(Post.comments.author.name, { orderBy: Post.comments.id });
+  const rows = await Post.objects.select({ title: Post.title, names, byId }).orderBy(Post.title).all();
+  assert.deepEqual(rows, [
+    { title: "bob's old", names: ["Alice"], byId: ["Alice"] },
+    { title: "new post", names: ["Bob", null], byId: ["Bob", null] },
+    { title: "old draft", names: null, byId: null },
+  ]);
+  // In a LATERAL group the count of the to-one path counts its rows, not the missing author.
+  const grouped = await Post.objects.select({ title: Post.title, names, n: func.count(Post.comments.author) }).orderBy(Post.title).all();
+  assert.deepEqual(grouped.map((r) => r.n), [1n, 1n, 0n]);
+});
+
 test("subqueries with in()", async () => {
   await seed();
   const authors = User.objects.filter(User.name.in(["Alice", "Carol"])).select({ id: User.id });

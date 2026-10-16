@@ -318,6 +318,25 @@ async def test_array_agg(clean):
     assert filtered == [["a1", "a3"], None, None]
 
 
+async def test_array_agg_over_a_to_one_tail_keeps_null_elements(clean):
+    await seed()
+    posts = Post.objects.order_by(Post.title)
+    names = func.array_agg(Post.comments.author.name, order_by=Post.comments.author.name)
+    # The comment without an author stays an element (NULL sorts last); a post without comments gives None.
+    assert [tuple(r) for r in await posts.select(Post.title, names)] == [
+        ("a1", None), ("a2", ["Bob", None]), ("a3", None), ("b1", ["Alice"]),
+    ]
+    # The key may sit on the relation itself: the tail is opened below it.
+    by_id = func.array_agg(Post.comments.author.name, order_by=Post.comments.id)
+    assert [r[1] for r in await posts.select(Post.title, by_id)] == [None, ["Bob", None], None, ["Alice"]]
+    # In a LATERAL group: the count of the to-one path counts its rows, not the missing author.
+    rows = await posts.select(Post.title, names, func.count(Post.comments.author))
+    assert [tuple(r) for r in rows] == [("a1", None, 0), ("a2", ["Bob", None], 1), ("a3", None, 0), ("b1", ["Alice"], 1)]
+    # The count of a plain to-one tail beside it, with a filter on the tail.
+    rows = await posts.select(Post.title, func.count(Post.comments.author, filter=Post.comments.author.name == "Bob"))
+    assert [r[1] for r in rows] == [0, 1, 0, 0]
+
+
 async def test_array_agg_errors(clean):
     await seed()
     with pytest.raises(QueryError, match="takes no order_by"):

@@ -330,6 +330,19 @@ impl Cut<'_> {
         }
         &path[..keep]
     }
+
+    /// Whether the hops of `path` from index `from` on are all to-one (and not through a join model).
+    fn is_to_one_from(&self, path: &[String], from: usize) -> bool {
+        let mut model = self.model;
+        for (i, hop) in path.iter().enumerate().skip(self.base.len()) {
+            let Ok((rel, target)) = self.schema.models[model].relation(hop) else { return false };
+            if i >= from && (rel.kind != RelKind::One || rel.through.is_some()) {
+                return false;
+            }
+            model = target;
+        }
+        true
+    }
 }
 
 /// The conditions, values and default of a `CASE`.
@@ -365,7 +378,8 @@ fn col_paths_all<'e>(e: &'e Expr, out: &mut Vec<&'e [String]>, has_not: &mut boo
     }
 }
 
-/// The paths below `base` that an aggregate reads, with its `rel`.
+/// The paths below `base` that an aggregate reads, with its `rel`; a path that is a prefix of
+/// another and is followed by to-one hops only counts as the longer one.
 fn below_paths<'e>(
     cut: &Cut,
     rel: Option<&'e [String]>,
@@ -384,7 +398,15 @@ fn below_paths<'e>(
         col_paths_all(f, &mut filter_paths, &mut has_not);
     }
     paths.extend(filter_paths.into_iter().map(|p| cut.path(p)));
-    rel.into_iter().chain(paths.into_iter().filter(|p| p.len() > base.len() && p.starts_with(base))).collect()
+    let below: Vec<&[String]> =
+        rel.into_iter().chain(paths.into_iter().filter(|p| p.len() > base.len() && p.starts_with(base))).collect();
+    // Paths that differ only by a to-one tail read one relation: the longest is the one to open.
+    match below.iter().max_by_key(|p| p.len()) {
+        Some(longest) if below.iter().all(|p| longest.starts_with(p) && cut.is_to_one_from(longest, p.len())) => {
+            below.iter().map(|_| *longest).collect()
+        }
+        _ => below,
+    }
 }
 
 /// Whether an aggregate's filter reads columns of the cut's level only (and some column).
@@ -1017,12 +1039,15 @@ impl<'s> Planner<'s> {
     }
 
     /// Adds the target rows of `rel`, linked to the source rows `src` (alias, model), to
-    /// `stmt`: as its `FROM` (linked in `WHERE`) when `first`, otherwise as inner joins.
+    /// `stmt`: as its `FROM` (linked in `WHERE`) when `first`, otherwise as inner joins
+    /// (a LEFT JOIN when `left`, which only a to-one hop without a join model may use).
     /// A many-to-many relation goes through its join model. Returns the target's alias.
+    #[allow(clippy::too_many_arguments)]
     fn add_hop(
         &mut self,
         stmt: &mut SelectStatement,
         first: bool,
+        left: bool,
         src: (&str, usize),
         rel: &RelationIr,
         target: usize,
@@ -1036,6 +1061,15 @@ impl<'s> Planner<'s> {
                 let link = self.link(src, rel, (&alias, target))?;
                 if first {
                     stmt.from_as(table, Alias::new(&alias)).and_where(link);
+                } else if left {
+                    // A default in the WHERE would drop the rows that the LEFT JOIN keeps.
+                    #[cfg(feature = "query-defaults")]
+                    let link = match tm.query_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
+                        Some(filter) => link.and(self.target_default(target, &alias, filter)?),
+                        None => link,
+                    };
+                    stmt.join_as(JoinType::LeftJoin, table, Alias::new(&alias), link);
+                    return Ok(alias);
                 } else {
                     stmt.join_as(JoinType::InnerJoin, table, Alias::new(&alias), link);
                 }
@@ -1081,7 +1115,7 @@ impl<'s> Planner<'s> {
 
         let mut sub = Query::select();
         sub.expr(SExpr::val(1));
-        let alias = self.add_hop(&mut sub, true, (&outer_alias, cur_model_idx), rel, target, "t")?;
+        let alias = self.add_hop(&mut sub, true, false, (&outer_alias, cur_model_idx), rel, target, "t")?;
         self.scopes.push(Scope { path, model: target, alias });
         let body = body(self);
         self.scopes.pop();
@@ -1294,7 +1328,7 @@ impl<'s> Planner<'s> {
         let mut at = (alias, root);
         for (k, hop) in path.iter().enumerate() {
             let (rel, target) = self.model(at.1).relation(hop).map_err(query_err)?;
-            let next = self.add_hop(&mut sub, k == 0, (&at.0, at.1), rel, target, "o")?;
+            let next = self.add_hop(&mut sub, k == 0, false, (&at.0, at.1), rel, target, "o")?;
             at = (next, target);
         }
         sub.expr(col(&at.0, &field.column));
@@ -1918,7 +1952,7 @@ impl<'s> Planner<'s> {
         let pushed = self.scopes.len();
         let mut sub = self.open_hops(path)?;
         let inner = AggCall { filter: if outer.is_some() { None } else { call.filter }, ..*call };
-        let agg = self.agg_call(&inner);
+        let agg = self.agg_call(&inner, pushed);
         self.scopes.truncate(pushed);
         sub.expr(agg?);
         if let Some(f) = outer {
@@ -1943,15 +1977,29 @@ impl<'s> Planner<'s> {
         let mut outer = (self.scope().alias.clone(), self.scope().model);
         for (k, hop) in hops.iter().enumerate() {
             let (rel, target) = self.model(outer.1).relation(hop).map_err(query_err)?;
-            let alias = self.add_hop(&mut sub, k == 0, (&outer.0, outer.1), rel, target, "a")?;
+            let left = k > 0 && rel.kind == RelKind::One && rel.through.is_none();
+            let alias = self.add_hop(&mut sub, k == 0, left, (&outer.0, outer.1), rel, target, "a")?;
             self.scopes.push(Scope { path: path[..base.len() + k + 1].to_vec(), model: target, alias: alias.clone() });
             outer = (alias, target);
         }
         Ok(sub)
     }
 
-    fn agg_call(&mut self, c: &AggCall) -> Result<SExpr> {
+    /// `pushed` is the scope depth before `open_hops`: the hops after it are the aggregate's rows.
+    fn agg_call(&mut self, c: &AggCall, pushed: usize) -> Result<SExpr> {
         if c.count_rows && c.args.is_empty() {
+            // A LEFT-joined to-one tail has no row for a NULL key: count its primary key.
+            let tail = match &self.scopes[pushed..] {
+                [.., prev, last] => Some((prev.model, last.model, last.path.clone())),
+                _ => None,
+            };
+            if let Some((prev, target, path)) = tail {
+                let (rel, _) = self.model(prev).relation(path.last().map_or("", |s| s)).map_err(query_err)?;
+                if rel.kind == RelKind::One && rel.through.is_none() {
+                    let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone() };
+                    return self.call("count", &[pk], false, c.filter, &[]);
+                }
+            }
             self.call("count", &[], false, c.filter, &[])
         } else {
             self.call(c.name, c.args, c.distinct, c.filter, c.order_by)
@@ -1974,7 +2022,7 @@ impl<'s> Planner<'s> {
             }
             None => opened = Some(self.open_hops(path)?),
         }
-        let agg = self.agg_call(call);
+        let agg = self.agg_call(call, pushed);
         let hops = self.scopes[pushed..].to_vec();
         self.scopes.truncate(pushed);
         let agg = agg?;
