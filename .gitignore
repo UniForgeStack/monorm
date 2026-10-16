@@ -5,7 +5,7 @@ __pycache__/
 bench/log-*.txt
 node_modules/
 *.node
-js/dist/
+languages/js/dist/
 
 extensions/file-storage/typescript/dist/
 extensions/file-storage/python/build/

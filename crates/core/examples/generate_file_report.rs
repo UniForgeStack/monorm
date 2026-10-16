@@ -9,7 +9,7 @@ fn main() {
     ir.behavior.file_fields.push(FileField { model: "Report".into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
     let schema = Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
     let python = orm_core::codegen::python::generate(&ir, &schema, "report.prisma").unwrap();
-    let typescript = orm_core::codegen::typescript::generate(&ir, &schema, "report.prisma", "../../js/src/index.js").unwrap();
+    let typescript = orm_core::codegen::typescript::generate(&ir, &schema, "report.prisma", "../../languages/js/src/index.js").unwrap();
     std::fs::create_dir_all(&destination).unwrap();
     for (name, source) in [("models.py", python.module), ("models.pyi", python.stub), ("models.ts", typescript)] {
         std::fs::write(std::path::Path::new(&destination).join(name), source).unwrap();

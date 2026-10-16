@@ -31,7 +31,7 @@ for backend, provider in [('sqlite','sqlite'),('postgres','postgresql')]:
     if args.resume and all((out/backend/side/'allocation-probe').exists() for side in ('extension','builtin')):
         for side in ('extension','builtin'):
             workspace = out/backend/side
-            metadata['builds'][f'{backend}/{side}'] = {'incremental_build_seconds':None,'binaries':{name:{'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for name,path in [('python',workspace/'python/orm/_native.so'),('node',workspace/'js/orm.node')]},'execution_sha256':hashlib.sha256((workspace/'engine-composition.rs').read_bytes()).hexdigest()}
+            metadata['builds'][f'{backend}/{side}'] = {'incremental_build_seconds':None,'binaries':{name:{'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for name,path in [('python',workspace/'languages/python/orm/_native.so'),('node',workspace/'languages/js/orm.node')]},'execution_sha256':hashlib.sha256((workspace/'engine-composition.rs').read_bytes()).hexdigest()}
         (out/'build.json').write_text(json.dumps(metadata,indent=2))
         continue
     schema = out / f'{backend}.prisma'
@@ -53,7 +53,7 @@ for backend, provider in [('sqlite','sqlite'),('postgres','postgresql')]:
         # An interrupted frontend can leave its workspace before the native
         # libraries were packaged. Rebuild that profile rather than treating
         # directory existence as a completed build.
-        if not (extension/'python/orm/_native.so').exists() or not (extension/'js/orm.node').exists():
+        if not (extension/'languages/python/orm/_native.so').exists() or not (extension/'languages/js/orm.node').exists():
             buildenv = dict(env, ORM_CORE_COMPOSITION=str(extension/'composition.rs'),
                 ORM_ENGINE_COMPOSITION=str(extension/'engine-composition.rs'),
                 ORM_PYTHON_METHODS=str(extension/'python-methods.rs'),
@@ -61,23 +61,24 @@ for backend, provider in [('sqlite','sqlite'),('postgres','postgresql')]:
             subprocess.run(['cargo','build','--release','--offline','--locked','--manifest-path',str(extension/'Cargo.toml'),'-p','orm-python','-p','orm-node'],env=buildenv,check=True)
             elapsed = time.perf_counter() - start
     def package(workspace, elapsed):
-        (workspace/'python').mkdir(exist_ok=True)
-        shutil.copytree(root/'python/orm',workspace/'python/orm',ignore=shutil.ignore_patterns('*.so','__pycache__'),dirs_exist_ok=True)
+        (workspace/'languages/python').mkdir(parents=True, exist_ok=True)
+        (workspace/'languages/js').mkdir(parents=True, exist_ok=True)
+        shutil.copytree(root/'languages/python/orm',workspace/'languages/python/orm',ignore=shutil.ignore_patterns('*.so','__pycache__'),dirs_exist_ok=True)
         suffix = 'dylib' if sys.platform == 'darwin' else 'so'
-        py = workspace/'python/orm/_native.so'
+        py = workspace/'languages/python/orm/_native.so'
         if elapsed is not None:
             shutil.copy2(target/f'release/lib_native.{suffix}',py)
-        shutil.copytree(root/'js/dist',workspace/'js/dist',dirs_exist_ok=True)
-        (workspace/'js/package.json').write_bytes((root/'js/package.json').read_bytes())
-        if not (workspace/'js/node_modules').exists():
-            (workspace/'js/node_modules').symlink_to(root/'js/node_modules',target_is_directory=True)
-        node = workspace/'js/orm.node'
+        shutil.copytree(root/'languages/js/dist',workspace/'languages/js/dist',dirs_exist_ok=True)
+        (workspace/'languages/js/package.json').write_bytes((root/'languages/js/package.json').read_bytes())
+        if not (workspace/'languages/js/node_modules').exists():
+            (workspace/'languages/js/node_modules').symlink_to(root/'languages/js/node_modules',target_is_directory=True)
+        node = workspace/'languages/js/orm.node'
         if elapsed is not None:
             shutil.copy2(target/f'release/liborm_node.{suffix}',node)
         return {'incremental_build_seconds':elapsed,'binaries':{name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for name,p in [('python',py),('node',node)]}}
     metadata['builds'][f'{backend}/extension'] = package(extension,elapsed)
     builtin = out/backend/'builtin'
-    shutil.copytree(extension,builtin,dirs_exist_ok=True,ignore=lambda directory,names: [name for name in names if name == 'node_modules' or (Path(directory) == extension and name in ('python','js'))])
+    shutil.copytree(extension,builtin,dirs_exist_ok=True,ignore=lambda directory,names: [name for name in names if name == 'node_modules' or (Path(directory) == extension/'languages/python' and name == 'orm') or (Path(directory) == extension/'languages/js' and name != 'native')])
     handwritten = (root/'bench/build-time-extensions/builtin.rs').read_bytes()
     if not (builtin/'engine-composition.rs').exists() or (builtin/'engine-composition.rs').read_bytes() != handwritten:
         (builtin/'engine-composition.rs').write_bytes(handwritten)

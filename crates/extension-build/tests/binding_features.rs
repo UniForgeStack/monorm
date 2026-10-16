@@ -15,12 +15,12 @@ fn frontend_preserves_defaults_and_accepts_exact_binding_features() {
     let original = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
     let base = original.join("target/extension-proof-tests").join(format!("binding-features-{}", std::process::id()));
     let host = base.join("host");
-    for component in ["crates/core", "crates/engine", "crates/cli", "crates/contracts", "bindings", "extensions/file-storage/reference", "extensions/proxy/runtime", "crates/extension-build/tests/fixtures/rename"] {
+    for component in ["crates/core", "crates/engine", "crates/cli", "crates/contracts", "languages/python/native", "languages/js/native", "extensions/file-storage/reference", "extensions/proxy/runtime", "crates/extension-build/tests/fixtures/rename"] {
         copy(&original.join(component), &host.join(component));
     }
     for file in ["Cargo.toml", "Cargo.lock"] { fs::copy(original.join(file), host.join(file)).unwrap(); }
     for binding in ["python", "node"] {
-        let path = host.join(format!("bindings/{binding}/Cargo.toml"));
+        let path = host.join(format!("languages/{}/native/Cargo.toml", if binding == "node" { "js" } else { binding }));
         let mut manifest: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let features = manifest["features"].as_table_mut().unwrap();
         features.insert("default".into(), toml::Value::try_from(vec!["sqlite", "generate-python"]).unwrap());
@@ -44,7 +44,7 @@ fn frontend_preserves_defaults_and_accepts_exact_binding_features() {
         }
         assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
         for binding in ["python", "node"] {
-            let manifest: toml::Value = toml::from_str(&fs::read_to_string(output.join(format!("bindings/{binding}/Cargo.toml"))).unwrap()).unwrap();
+            let manifest: toml::Value = toml::from_str(&fs::read_to_string(output.join(format!("languages/{}/native/Cargo.toml", if binding == "node" { "js" } else { binding }))).unwrap()).unwrap();
             let actual = manifest["features"]["default"].as_array().unwrap();
             let expected = if case == "preserve" { vec!["sqlite", "generate-python", "composition"] }
                 else if binding == "python" { vec!["sqlite", "composition"] } else { vec!["composition"] };

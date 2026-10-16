@@ -82,7 +82,7 @@ fn core_only_build_adds_no_composition() {
     for generated in ["engine-composition.rs", "python-methods.rs", "crates/core/build.rs", "crates/core/composition-inputs.json"] {
         assert!(!output.join(generated).exists(), "{generated}");
     }
-    for manifest in ["crates/core/Cargo.toml", "crates/engine/Cargo.toml", "bindings/python/Cargo.toml"] {
+    for manifest in ["crates/core/Cargo.toml", "crates/engine/Cargo.toml", "languages/python/native/Cargo.toml"] {
         // The build rewrites relative paths, so compare only the dependency names and features.
         let table = |path: PathBuf| fs::read_to_string(path).unwrap().parse::<toml::Table>().unwrap();
         let (built, source) = (table(output.join(manifest)), table(host.join(manifest)));
@@ -118,7 +118,7 @@ fn manifest_capability_selects_the_host_feature() {
         assert!(result.status.success(), "{feature}: {}", String::from_utf8_lossy(&result.stderr));
         let selected = toml::Value::String(feature.into());
         for binding in ["python", "node"] {
-            let manifest: toml::Value = toml::from_str(&fs::read_to_string(output.join("bindings").join(binding).join("Cargo.toml")).unwrap()).unwrap();
+            let manifest: toml::Value = toml::from_str(&fs::read_to_string(output.join(format!("languages/{}/native/Cargo.toml", if binding == "node" { "js" } else { binding }))).unwrap()).unwrap();
             let defaults = manifest["features"]["default"].as_array().unwrap();
             assert!(defaults.contains(&selected), "{feature}: {binding} default features");
             // Extension artifacts keep the binding defaults, reference loading included.

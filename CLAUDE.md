@@ -17,12 +17,12 @@
 
 ```bash
 service postgresql start          # the test database (postgres:postgres@localhost/orm_test)
-. .venv/bin/activate && uv pip install -e .   # the thin `orm` package (python/)
-(cd packaging/python/tooling && maturin develop)   # the tooling native profile
+. .venv/bin/activate && uv pip install -e .   # the thin `orm` package (languages/python/)
+(cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
 cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-build
-mypy --strict python/orm && pyright python/orm
-cd js && npm install && npm run build:native   # the TypeScript package (js/), Node addon
+mypy --strict languages/python/orm && pyright languages/python/orm
+cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
 ```
 
@@ -43,10 +43,10 @@ PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/o
 ```
 
 It needs `uv`, `node`, `npm` and `bun`, and writes `target/feature-check/matrix.txt` and `logs/`.
-It does not touch the default `.venv` profile or `js/orm.node`.
+It does not touch the default `.venv` profile or `languages/js/orm.node`.
 
 Regenerate the example models after changing code generation:
 `cd examples/blog && python -m orm generate`, and for TypeScript
 `cargo run -q -p orm-cli -- --schema examples/blog/schema.prisma generate typescript`
-and the same with `-o js/test/blog/models.ts --import ../../src/index.js`
+and the same with `-o languages/js/test/blog/models.ts --import ../../src/index.js`
 (a test checks both are current).

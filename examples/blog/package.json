@@ -6,7 +6,7 @@
     "demo": "tsx demo.ts"
   },
   "dependencies": {
-    "orm": "file:../../js"
+    "orm": "file:../../languages/js"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

@@ -21,7 +21,7 @@ suffix='dylib' if sys.platform=='darwin' else 'so'
 def refresh_sources(workspace):
     changed=[]
     # Manifests and generated composition belong to the resolved artifact.
-    for component in ['crates/core','crates/engine','crates/cli','bindings/python','bindings/node']:
+    for component in ['crates/core','crates/engine','crates/cli','languages/python/native','languages/js/native']:
         for path in (root/component/'src').rglob('*'):
             if path.is_file():
                 dest=workspace/path.relative_to(root)
@@ -33,7 +33,7 @@ def refresh_sources(workspace):
 
 def metadata(workspace,target,seconds):
     binaries={}
-    for name,path,library in [('python',workspace/'python/orm/_native.so','lib_native'),('node',workspace/'js/orm.node','liborm_node')]:
+    for name,path,library in [('python',workspace/'languages/python/orm/_native.so','lib_native'),('node',workspace/'languages/js/orm.node','liborm_node')]:
         shutil.copy2(target/f'release/{library}.{suffix}',path)
         binaries[name]={'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
     return {'review_refresh_build_seconds':seconds,'binaries':binaries}
@@ -73,5 +73,5 @@ for group in ([args.only] if args.only else ['disabled','controls']):
             for instrumented in (False,True):
                 subprocess.run(['cargo','build','--release','--offline','--manifest-path',str(manifest),*(['--features','allocation-probe'] if instrumented else [])],env=env,check=True)
                 shutil.copy2(root/'target/release/orm-extension-allocation-probe',workspace/('allocation-probe' if instrumented else 'native-probe'))
-    report['host_sources_sha256']={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for component in ['crates/core','crates/engine','bindings/python','bindings/node'] for p in (root/component/'src').rglob('*') if p.is_file()}
+    report['host_sources_sha256']={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for component in ['crates/core','crates/engine','languages/python/native','languages/js/native'] for p in (root/component/'src').rglob('*') if p.is_file()}
     (base/'build.json').write_text(json.dumps(report,indent=2))

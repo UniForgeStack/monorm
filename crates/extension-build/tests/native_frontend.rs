@@ -25,7 +25,7 @@ fn application_rust_runs_through_both_bindings() {
     let manifest = &fixture["package"]["metadata"]["orm-extension"];
     let mut backends = vec![("sqlite", "sqlite://:memory:".to_owned())];
     if let Ok(url) = std::env::var("ORM_TEST_DATABASE_URL") { backends.push(("postgres", url)); }
-    run(Command::new(host.join("js/node_modules/.bin/tsc")).arg("-p").arg(host.join("js/tsconfig.json")));
+    run(Command::new(host.join("languages/js/node_modules/.bin/tsc")).arg("-p").arg(host.join("languages/js/tsconfig.json")));
     for (dialect, url) in backends {
         let schema = serde_json::json!({"dialect":dialect,"models":[{"name":"NativeUser","table":"native_users","fields":[
             {"name":"id","column":"id","type":"int","primary_key":true,"auto_increment":true},
@@ -79,14 +79,14 @@ fn main() -> Result<(), String> {
 "#).unwrap();
         run(Command::new("cargo").args(["run", "--quiet", "--release", "--offline", "--locked", "--manifest-path"])
             .arg(output.join("Cargo.toml")).args(["-p", "orm-core", "--features", "composition", "--example", "generate_models", "--"])
-            .arg(&output).arg(host.join("js/dist/src/index.js"))
+            .arg(&output).arg(host.join("languages/js/dist/src/index.js"))
             .env("CARGO_TARGET_DIR", &target).env("ORM_CORE_COMPOSITION", output.join("composition.rs")));
         fs::write(output.join("package.json"), r#"{"type":"module"}"#).unwrap();
-        run(Command::new(host.join("js/node_modules/.bin/tsc")).arg(output.join("generated.ts"))
+        run(Command::new(host.join("languages/js/node_modules/.bin/tsc")).arg(output.join("generated.ts"))
             .args(["--module", "nodenext", "--target", "es2022", "--skipLibCheck"]));
         let lib = if cfg!(target_os="macos") { "dylib" } else { "so" };
         let package = output.join("public/python/orm");
-        copy_python(&host.join("python/orm"), &package);
+        copy_python(&host.join("languages/python/orm"), &package);
         fs::copy(target.join(format!("release/lib_native.{lib}")), package.join("_native.so")).unwrap();
         let addon = output.join("orm.node");
         fs::copy(target.join(format!("release/liborm_node.{lib}")), &addon).unwrap();
@@ -94,7 +94,7 @@ fn main() -> Result<(), String> {
             .env("PYTHONPATH", format!("{}:{}", output.join("public/python").display(), output.display()))
             .env("ORM_EXTENSION_TEST_SCHEMA", &schema_path).env("ORM_EXTENSION_TEST_URL", &url).env("ORM_EXTENSION_GENERATED", output.join("generated.js")));
         run(Command::new("node").arg(host.join("crates/extension-build/tests/public/node.mjs"))
-            .env("ORM_NATIVE", &addon).env("ORM_EXTENSION_TEST_JS", host.join("js/dist/src/index.js"))
+            .env("ORM_NATIVE", &addon).env("ORM_EXTENSION_TEST_JS", host.join("languages/js/dist/src/index.js"))
             .env("ORM_EXTENSION_TEST_SCHEMA", &schema_path).env("ORM_EXTENSION_TEST_URL", &url).env("ORM_EXTENSION_GENERATED", output.join("generated.js")));
     }
     fs::remove_dir_all(temporary).unwrap();

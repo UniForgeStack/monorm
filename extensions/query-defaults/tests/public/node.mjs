@@ -1,8 +1,8 @@
 // `@@query.defaults` from the schema language to a query; needs a query-defaults artifact.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { connect, loads, NotLoaded, Registry, scope } from '../../../../js/dist/src/index.js';
-import { native } from '../../../../js/dist/src/native.js';
+import { connect, loads, NotLoaded, Registry, scope } from '../../../../languages/js/dist/src/index.js';
+import { native } from '../../../../languages/js/dist/src/native.js';
 
 const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.url), 'utf8');
 assert.ok(JSON.parse(native().nativeArtifact()).capabilities.includes('query-defaults'), 'select orm-query-defaults in the build');

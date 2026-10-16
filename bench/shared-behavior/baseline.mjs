@@ -1,6 +1,6 @@
 // Original public lock implementation retained as the benchmark control.
-import { blake2b } from "../../js/dist/src/blake2b.js";
-import { QueryError, TransactionRequired } from "../../js/dist/src/errors.js";
+import { blake2b } from "../../languages/js/dist/src/blake2b.js";
+import { QueryError, TransactionRequired } from "../../languages/js/dist/src/errors.js";
 export async function lock(key, options = {}) {
     if (this.url.startsWith("sqlite://")) {
         throw new QueryError("sqlite does not support advisory locks");

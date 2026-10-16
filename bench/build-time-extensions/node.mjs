@@ -19,8 +19,8 @@ const writeLabel = side => `write${separator}${side}`;
 const modules = [], natives = [], registries = [], models = [], dbs = [], seeds = [];
 const require = createRequire(import.meta.url);
 for (const root of [args.before, args.after]) {
-  process.env.ORM_NATIVE = `${root}/js/orm.node`;
-  const mod = await import(pathToFileURL(`${root}/js/dist/src/index.js`).href);
+  process.env.ORM_NATIVE = `${root}/languages/js/orm.node`;
+  const mod = await import(pathToFileURL(`${root}/languages/js/dist/src/index.js`).href);
   const reg = new mod.Registry();
   const model = mod.loads(source, { registry: reg }).BenchItem;
   const addon = require(process.env.ORM_NATIVE);

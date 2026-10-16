@@ -43,6 +43,7 @@ struct Config {
     inputs: Vec<PathBuf>,
 }
 fn bindings() -> Vec<String> { vec!["python".into(), "node".into()] }
+fn binding_dir(binding: &str) -> String { format!("languages/{}/native", if binding == "node" { "js" } else { binding }) }
 
 fn add_feature(manifest: &mut toml::Value, path: &[&str], feature: &str) -> Result<(), String> {
     let mut table = manifest;
@@ -93,7 +94,7 @@ fn build() -> Result<(), String> {
     }
     fs::create_dir_all(&config.output).map_err(|e| e.to_string())?;
     config.output = config.output.canonicalize().map_err(|e| e.to_string())?;
-    if ["crates/contracts", "crates/core", "crates/engine", "crates/cli", "bindings"].iter().any(|dir| config.output.starts_with(config.host.join(dir))) {
+    if ["crates/contracts", "crates/core", "crates/engine", "crates/cli", "languages/python/native", "languages/js/native"].iter().any(|dir| config.output.starts_with(config.host.join(dir))) {
         return Err("output must be outside the host source directories".into());
     }
     for module in &config.modules {
@@ -117,7 +118,7 @@ fn build() -> Result<(), String> {
         config.dependencies.insert(module.alias.clone(), toml::Value::try_from(serde_json::json!({"path":folder, "package":format!("orm-app-{}",module.alias.replace('_', "-"))})).map_err(|e| e.to_string())?);
     }
     for dir in ["core", "engine", "cli"] { copy_tree(&config.host.join("crates").join(dir), &config.output.join("crates").join(dir))?; }
-    for binding in &config.bindings { copy_tree(&config.host.join("bindings").join(binding), &config.output.join("bindings").join(binding))?; }
+    for binding in &config.bindings { copy_tree(&config.host.join(binding_dir(binding)), &config.output.join(binding_dir(binding)))?; }
     // The orm-core and orm-engine tests read these host files; copy them so the snapshot tests run.
     for file in ["examples/blog/schema.prisma", "examples/sqlite/schema.prisma", "docs/prisma-syntax.md", "docs/schema.md", "PLAN.md"] {
         let (from, to) = (config.host.join(file), config.output.join(file));
@@ -127,7 +128,7 @@ fn build() -> Result<(), String> {
     }
     for (binding, selected) in &config.binding_features {
         if !config.bindings.contains(binding) { return Err(format!("binding_features names unselected binding {binding}")); }
-        let path = config.output.join("bindings").join(binding).join("Cargo.toml");
+        let path = config.output.join(binding_dir(binding)).join("Cargo.toml");
         let mut manifest: toml::Value = toml::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         for feature in selected {
             if feature == "default" || manifest["features"].get(feature).is_none() {
@@ -138,7 +139,7 @@ fn build() -> Result<(), String> {
         fs::write(path, toml::to_string(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     }
     let mut root: toml::Value = toml::from_str(&fs::read_to_string(config.host.join("Cargo.toml")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    root["workspace"]["members"] = toml::Value::Array(["crates/core", "crates/engine", "crates/cli"].into_iter().map(|x| toml::Value::String(x.into())).chain(config.bindings.iter().map(|x| toml::Value::String(format!("bindings/{x}")))).collect());
+    root["workspace"]["members"] = toml::Value::Array(["crates/core", "crates/engine", "crates/cli"].into_iter().map(|x| toml::Value::String(x.into())).chain(config.bindings.iter().map(|x| toml::Value::String(binding_dir(x)))).collect());
     fs::write(config.output.join("Cargo.toml"), toml::to_string(&root).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     fs::copy(config.host.join("Cargo.lock"), config.output.join("Cargo.lock")).map_err(|e| e.to_string())?;
     let core_path = config.output.join("crates/core/Cargo.toml");
@@ -260,7 +261,7 @@ fn main() -> Result<(), String> {
         // Features are selected through manifests, never through build-script cfg tricks.
         let selected = composition.host_features();
         for binding in &config.bindings {
-            let path = config.output.join("bindings").join(binding).join("Cargo.toml");
+            let path = config.output.join(binding_dir(binding)).join("Cargo.toml");
             let mut manifest: toml::Value = toml::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             if native.is_some() {
                 for (alias, dependency) in &config.dependencies { manifest["dependencies"].as_table_mut().unwrap().insert(alias.clone(), dependency.clone()); }

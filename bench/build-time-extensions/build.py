@@ -42,17 +42,18 @@ for raw in paths:
 metadata = {'baseline_commit': reference, 'profile': {'release': True, 'lto': 'fat', 'codegen_units': 1}, 'builds': {}}
 for side in ['before', 'after']:
     dest = output / side
-    (dest / 'js/node_modules').symlink_to(root / 'js/node_modules', target_is_directory=True)
+    (dest / 'languages/js').mkdir(parents=True, exist_ok=True)
+    (dest / 'languages/js/node_modules').symlink_to(root / 'languages/js/node_modules', target_is_directory=True)
     env = dict(os.environ, CARGO_TARGET_DIR=str(root / 'target'), PYO3_PYTHON=sys.executable)
     start = time.perf_counter()
     subprocess.run(['cargo', 'build', '--offline', '--locked', '--release', '--manifest-path', str(dest / 'Cargo.toml'), '-p', 'orm-python', '-p', 'orm-node'], env=env, check=True)
     elapsed = time.perf_counter() - start
     suffix = '.dylib' if os.uname().sysname == 'Darwin' else '.so'
-    py = dest / 'python/orm/_native.so'
-    node = dest / 'js/orm.node'
+    py = dest / 'languages/python/orm/_native.so'
+    node = dest / 'languages/js/orm.node'
     shutil.copy2(root / f'target/release/lib_native{suffix}', py)
     shutil.copy2(root / f'target/release/liborm_node{suffix}', node)
-    subprocess.run([str(root / 'js/node_modules/.bin/tsc'), '-p', str(dest / 'js/tsconfig.json')], check=True)
+    subprocess.run([str(root / 'languages/js/node_modules/.bin/tsc'), '-p', str(dest / 'languages/js/tsconfig.json')], check=True)
     metadata['builds'][side] = {'incremental_build_seconds': elapsed, 'binaries': {}}
     for runtime, path in [('python', py), ('node', node)]:
         metadata['builds'][side]['binaries'][runtime] = {'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}

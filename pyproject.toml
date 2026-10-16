@@ -17,7 +17,7 @@ otel = ["opentelemetry-api>=1.20"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.11", "pyright"]
 
 [tool.setuptools.packages.find]
-where = ["python"]
+where = ["languages/python"]
 
 [tool.setuptools.package-data]
 orm = ["py.typed", "*.pyi"]
@@ -26,18 +26,18 @@ orm = ["py.typed", "*.pyi"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-testpaths = ["tests"]
+testpaths = ["languages/python/tests"]
 pythonpath = ["examples"]
 
 [tool.mypy]
 strict = true
-mypy_path = "python:examples"
+mypy_path = "languages/python:examples"
 
 [tool.pyright]
-extraPaths = ["python", "examples"]
+extraPaths = ["languages/python", "examples"]
 
 [tool.ty.environment]
-extra-paths = ["python", "examples"]
+extra-paths = ["languages/python", "examples"]
 
 # `python -m orm ...` from the repo root works on the blog example.
 [tool.orm]

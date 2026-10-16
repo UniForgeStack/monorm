@@ -21,7 +21,7 @@ in each binding.
   names, which use 40 to bound runtime.
 - `baseline.py` and `baseline.mjs` retain the original public lock implementations
   from the starting checkout. The TypeScript control uses the original unchanged
-  `js/src/blake2b.ts`. Both contenders run in the **same release binary**, with the
+  `languages/js/src/blake2b.ts`. Both contenders run in the **same release binary**, with the
   original text-query path intact. The only switch is `Database.lock`; no mock
   database, disabled conversion, cached hash, or CPU-only timer is used.
 - Timers cover the whole awaited public operation: validation, UTF-8 encoding,
@@ -60,9 +60,9 @@ on port 55439. Substitute your URL when invoking the runner.
 ```nu
 $env.UV_CACHE_DIR = '/tmp/orm-uv-cache'
 ^uv pip install --python .venv/bin/python -e .
-with-env {VIRTUAL_ENV: ($env.PWD | path join .venv)} { cd packaging/python/tooling; ^../../../.venv/bin/maturin develop --release }
-^node js/scripts/build-native.mjs --release
-^npm --prefix js run build
+with-env {VIRTUAL_ENV: ($env.PWD | path join .venv)} { cd languages/python/packaging/tooling; ^../../../../../.venv/bin/maturin develop --release }
+^node languages/js/scripts/build-native.mjs --release
+^npm --prefix languages/js run build
 ^nu bench/shared-behavior/run.nu --url 'postgres://postgres:postgres@127.0.0.1:55439/orm_test' --out /tmp/orm-lock-results
 ```
 
@@ -82,8 +82,8 @@ $env.ORM_TEST_DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:55439/orm_t
 ^.venv/bin/python -m pytest -q
 ^cargo test -q
 ^cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node
-^.venv/bin/mypy --strict python/orm
-^.venv/bin/pyright python/orm
+^.venv/bin/mypy --strict languages/python/orm
+^.venv/bin/pyright languages/python/orm
 ^npm --prefix js test
 ^npm --prefix js run test:bun
 ^npm --prefix js run typecheck

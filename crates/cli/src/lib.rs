@@ -1,8 +1,8 @@
 //! The `orm` command line. There is one implementation, this crate, and it runs as:
 //!
 //! * the `orm` binary (`src/main.rs`),
-//! * `python -m orm`, through the Python extension (`bindings/python`),
-//! * `npx orm` / `bunx orm`, through the Node addon (`bindings/node`).
+//! * `python -m orm`, through the Python extension (`languages/python/native`),
+//! * `npx orm` / `bunx orm`, through the Node addon (`languages/js/native`).
 //!
 //! ```text
 //! orm [--schema FILE] [--dir DIR] [--url URL] <command>

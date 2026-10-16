@@ -62,7 +62,7 @@ PY=$VENV/bin/python
 uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/python" -e "$ROOT/extensions/file-storage/integration/python" || exit 1
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
-(cd "$ROOT/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
+(cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
 
 # Suites that do not depend on an artifact.
 step storage rust-reference sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/extensions/file-storage/reference/Cargo.toml'"
@@ -80,7 +80,7 @@ build() {
   (cd "$WORK" && cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-build -- "$dir/config.json") || return 1
   # The documented rebuild of an emitted workspace: composition paths, no feature flags.
   (cd "$dir/build" && cargo build -q -p orm-python -p orm-node) || return 1
-  cp "$ROOT/packaging/python/custom/orm_native_custom/__init__.py" "$dir/py/orm_native_custom/"
+  cp "$ROOT/languages/python/packaging/custom/orm_native_custom/__init__.py" "$dir/py/orm_native_custom/"
   cp "$TARGET/debug/lib_native.$DYLIB" "$dir/py/orm_native_custom/_native$EXT_SUFFIX"
   cp "$TARGET/debug/liborm_node.$DYLIB" "$dir/orm.node"
 }
@@ -107,8 +107,8 @@ for artifact in $ARTIFACTS; do
   step "$artifact" capabilities capabilities "$artifact"
   step "$artifact" cargo sh -c "cd '$dir/build' && cargo test -q --workspace"
   step "$artifact" pytest env PYTHONPATH="$dir/py" ORM_PROFILE=custom sh -c "cd '$ROOT' && '$PY' -m pytest -q -p no:cacheprovider"
-  step "$artifact" npm env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/js' && npm test"
-  step "$artifact" bun env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/js' && npm run -s test:bun"
+  step "$artifact" npm env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/languages/js' && npm test"
+  step "$artifact" bun env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/languages/js' && npm run -s test:bun"
   if has "$artifact" query-defaults; then
     step "$artifact" query-defaults-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/query-defaults/tests/public/python.py"
     step "$artifact" query-defaults-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/query-defaults/tests/public/node.mjs"

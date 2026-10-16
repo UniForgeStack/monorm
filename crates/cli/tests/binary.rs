@@ -1,5 +1,5 @@
 //! The standalone `orm` binary. The commands themselves are tested through
-//! `python -m orm` (tests/test_migrations.py) and `npx orm` (js/test/migrations.test.ts),
+//! `python -m orm` (languages/python/tests/test_migrations.py) and `npx orm` (languages/js/test/migrations.test.ts),
 //! which run the same code; this checks what is specific to the binary.
 
 use std::path::Path;

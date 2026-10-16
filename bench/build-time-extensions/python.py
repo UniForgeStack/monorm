@@ -21,7 +21,7 @@ model BenchItem {
 
 
 def package(root, name):
-    path = Path(root) / 'python/orm'
+    path = Path(root) / 'languages/python/orm'
     spec = importlib.util.spec_from_file_location(name, path / '__init__.py', submodule_search_locations=[str(path)])
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module

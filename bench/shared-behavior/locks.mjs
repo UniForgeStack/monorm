@@ -1,8 +1,8 @@
 import { writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import os from 'node:os';
-import { connect, Database } from '../../js/dist/src/index.js';
-import { User } from '../../js/dist/test/blog/models.js';
+import { connect, Database } from '../../languages/js/dist/src/index.js';
+import { User } from '../../languages/js/dist/test/blog/models.js';
 import { lock as baseline } from './baseline.mjs';
 
 const args = process.argv.slice(2);
