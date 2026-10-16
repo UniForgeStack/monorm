@@ -182,7 +182,7 @@ pub fn validate_field_adapters(ir: &SchemaIr) -> Result<(), String> {
 }
 
 /// Intended shape only. Physical encoding, enum representation and constraints
-/// remain on the storage owner. These contracts never imply SQL predicates.
+/// remain on the storage owner. Only explicit partition ownership implies a predicate.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyModel {
@@ -192,6 +192,9 @@ pub struct ProxyModel {
     /// manifests exclude `model` and refer to this concrete storage identity.
     #[serde(default)]
     pub storage_owner: String,
+    /// Resolved list-partition ownership; values use the physical enum encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<ProxyPartition>,
     #[serde(default)]
     pub fields: Vec<ProxyField>,
     /// `@@proxy.fields(include:|exclude:)`: which source fields and relations the view keeps.
@@ -200,6 +203,14 @@ pub struct ProxyModel {
     /// Source fields and relations that are not part of the view, filled by lowering.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyPartition {
+    pub table: String,
+    pub field: String,
+    pub values: Vec<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

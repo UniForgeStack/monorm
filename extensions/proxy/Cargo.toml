@@ -43,3 +43,10 @@ target = "model"
 kind = "list"
 [package.metadata.orm-extension.attributes.arguments.exclude]
 kind = "list"
+
+[[package.metadata.orm-extension.attributes]]
+name = "partition.values"
+target = "model"
+[[package.metadata.orm-extension.attributes.positional]]
+kind = "value"
+required = true

@@ -148,8 +148,8 @@ impl Schema {
 
     fn from_ir_impl(mut ir: SchemaIr, behavioral: bool) -> Result<Self> {
         crate::identity::validate(&ir)?;
-        crate::partition::validate(&ir)?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
+        crate::partition::validate(&ir)?;
         #[cfg(not(feature = "model-composition"))]
         if ir.behavior.extensions.contains_key("composition") {
             return Err("model-composition is absent from this native artifact; rebuild with model-composition enabled".into());
