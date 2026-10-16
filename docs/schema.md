@@ -816,9 +816,16 @@ default = true
 }
 ```
 
-Partitioned parents with `autoincrement()` require PostgreSQL 17 or newer, which
-added identity support on partitioned tables. PostgreSQL routes inserts and moves
-rows when their partition key changes. SQLite rejects partition declarations.
+PostgreSQL routes inserts and moves rows when their partition key changes.
+SQLite rejects partition declarations.
+
+A partitioned parent with `autoincrement()` works on PostgreSQL 16: the migration
+creates it, and inserts through the parent model fill the key. A direct insert
+into a partition table needs PostgreSQL 17 or newer, because PostgreSQL 16 does not
+give a partition the identity of its parent. Writes through a proxy that owns a
+partition are direct inserts (see the proxy models guide), so on PostgreSQL 16
+they fail with `null value in column "id" ... violates not-null constraint`.
+The ORM tests run on PostgreSQL 18.
 
 A partition block's name is its table name. List bounds use `values = [A, B]`
 (enum members or literals); range bounds use `from` and `to` lists, with
