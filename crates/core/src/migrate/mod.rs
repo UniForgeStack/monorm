@@ -37,9 +37,24 @@ pub struct MigrationPlan {
     pub snapshot: DbSchema,
 }
 
-fn steps(ops: &[Op]) -> Vec<Step> {
+fn steps(ops: &[Op], target: &DbSchema) -> Vec<Step> {
     ops.iter()
-        .map(|op| Step { summary: pg::summary(op), sql: pg::render(op, false), warning: op.warning() })
+        .map(|op| {
+            let mut warning = op.warning();
+            let parent = match op {
+                Op::CreateTable { table, .. } => table.partition_of.as_ref()
+                    .filter(|p| p.bound != "DEFAULT").map(|p| p.parent.as_str()),
+                Op::AttachPartition { parent, bound, .. } if bound != "DEFAULT" => Some(parent.as_str()),
+                _ => None,
+            };
+            if let Some(parent) = parent {
+                if target.tables.iter().any(|t| t.partition_of.as_ref().is_some_and(|p| p.parent == parent && p.bound == "DEFAULT")) {
+                    let message = format!("fails if the default partition of {parent} holds rows matching this bound; move those rows first, or detach the default partition, move the rows, and reattach it");
+                    warning = Some(match warning { Some(w) => format!("{w}; {message}"), None => message });
+                }
+            }
+            Step { summary: pg::summary(op), sql: pg::render(op, false), warning }
+        })
         .collect()
 }
 
@@ -81,8 +96,8 @@ pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
     }
     let up = diff::diff(previous, &current, &renames);
     let down = diff::diff(&current, previous, &renames.reversed());
-    let mut up = steps(&up);
-    let mut down = steps(&down);
+    let mut up = steps(&up, &current);
+    let mut down = steps(&down, previous);
     if identity_changed { identity_step(&mut up); identity_step(&mut down); }
     Ok(MigrationPlan { up, down, snapshot: current })
 }

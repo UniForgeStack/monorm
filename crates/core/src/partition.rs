@@ -27,7 +27,10 @@ pub fn validate(ir: &SchemaIr) -> Result<(), String> {
             }
         }
         let check = |fields: Vec<&str>| -> Result<(), String> {
-            if key.keys.iter().any(|k| k.expr.is_some()) || columns.iter().any(|c| !fields.contains(c)) {
+            if key.keys.iter().any(|k| k.expr.is_some()) {
+                return Err(format!("{}: an expression partition key allows no primary key or unique rule on the parent; declare the rule on each partition, where it is unique only inside that partition", m.name));
+            }
+            if columns.iter().any(|c| !fields.contains(c)) {
                 return Err(format!("{}.{}: primary/unique rule must contain every partition key column; declare the rule on each partition, where it is unique only inside that partition", m.name, fields.join(",")));
             }
             Ok(())
@@ -206,6 +209,83 @@ default = true
             let error = dsl::compile(&source, None).unwrap_err();
             assert!(error.contains(message), "wanted {message}: {error}");
         }
+    }
+    #[test]
+    fn partition_default_overlap_warnings() {
+        let only_default = LIST.split("partition reward_a").next().unwrap().to_owned()
+            + "partition reward_other { of = Reward default = true }";
+        let old = migrate::snapshot(&schema(&only_default)).unwrap();
+        let added = migrate::plan(&schema(LIST), &old).unwrap();
+        let create = added.up.iter().find(|s| s.sql.starts_with("CREATE TABLE \"reward_a\"")).unwrap();
+        let warning = create.warning.as_deref().unwrap_or("");
+        assert!(warning.contains("default partition") && warning.contains("move"), "{warning}");
+        let old = migrate::snapshot(&schema(LIST)).unwrap();
+        let rebound = migrate::plan(&schema(&LIST.replace("[\"a\"]", "[\"b\"]")), &old).unwrap();
+        let attach = rebound.up.iter().find(|s| s.sql.contains("ATTACH PARTITION")).unwrap();
+        let warning = attach.warning.as_deref().unwrap_or("");
+        assert!(warning.contains("default partition") && warning.contains("new bound"), "{warning}");
+        let no_default = LIST.replace("default = true", "values = [\"c\"]");
+        let plan = migrate::plan(&schema(&no_default), &Default::default()).unwrap();
+        assert!(plan.up.iter().all(|s| s.warning.as_deref().is_none_or(|w| !w.contains("default partition"))));
+    }
+    #[test]
+    fn partition_expression_unique_diagnostic() {
+        for rule in 0..4 {
+            let mut ir = dsl::compile(LIST, None).unwrap();
+            let model = &mut ir.models[0];
+            let key = &mut model.partition.as_mut().unwrap().keys[0];
+            key.field = None;
+            key.expr = Some("lower(kind)".into());
+            if rule != 0 {
+                for field in &mut model.fields { field.primary_key = false; }
+                match rule {
+                    1 => model.fields[0].unique = true,
+                    2 => model.constraints.push(crate::ir::ConstraintIr::Unique {
+                        fields: vec!["id".into()], name: None, deferrable: None, nulls_not_distinct: false,
+                    }),
+                    _ => model.indexes.push(serde_json::from_value(serde_json::json!({
+                        "columns": [{"field": "id"}], "unique": true,
+                    })).unwrap()),
+                }
+            }
+            let error = super::validate(&ir).unwrap_err();
+            assert!(error.contains("an expression partition key allows no primary key or unique rule on the parent"), "{error}");
+        }
+    }
+    #[test]
+    fn partition_false_default_diagnostic() {
+        let error = dsl::compile(&LIST.replace("default = true", "default = false"), None).unwrap_err();
+        assert!(error.contains("use `default = true` or remove it"), "{error}");
+    }
+    #[test]
+    fn partition_expression_column_rename_preserves_table() {
+        // Introspection can supply expression keys even though checked ORM models
+        // require a primary key, which PostgreSQL forbids on expression parents.
+        let mut old = migrate::snapshot(&schema(LIST)).unwrap();
+        old.tables[0].partition_by = Some("LIST (lower(kind) || 'kind' || $$kind$$ || kind_suffix /* kind */)".into());
+        let mut new = old.clone();
+        new.tables[0].partition_by = Some("LIST (lower(category) || 'kind' || $$kind$$ || kind_suffix /* kind */)".into());
+        let mut renames = migrate::model::Renames::default();
+        for table in &mut new.tables {
+            for column in &mut table.columns {
+                if column.name == "kind" {
+                    column.name = "category".into();
+                    renames.columns.insert((table.name.clone(), "category".into()), "kind".into());
+                }
+            }
+            if let Some(pk) = &mut table.primary_key {
+                for column in &mut pk.columns { if column == "kind" { *column = "category".into(); } }
+            }
+        }
+        let ops = migrate::diff::diff(&old, &new, &renames);
+        assert!(ops.iter().any(|op| matches!(op, migrate::Op::RenameColumn { .. })), "{ops:?}");
+        assert!(ops.iter().all(|op| !matches!(op, migrate::Op::DropTable { .. } | migrate::Op::CreateTable { .. })), "{ops:?}");
+        let reverse = migrate::diff::diff(&new, &old, &renames.reversed());
+        assert!(reverse.iter().all(|op| !matches!(op, migrate::Op::DropTable { .. })), "{reverse:?}");
+        // A real expression change must still rebuild, even with a rename hint.
+        new.tables[0].partition_by = Some("LIST (lower(category) || 'category' || $$kind$$ || kind_suffix /* kind */)".into());
+        let ops = migrate::diff::diff(&old, &new, &renames);
+        assert!(ops.iter().any(|op| matches!(op, migrate::Op::DropTable { .. })));
     }
     #[test]
     fn enum_members_and_coverage() {

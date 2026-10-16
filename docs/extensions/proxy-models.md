@@ -151,7 +151,11 @@ PostgreSQL can prune the other partitions. Related loads and ordinary child
 proxies keep the storage predicate too. Source-model queries return source
 instances from every partition. Proxies that retain the source soft-delete field
 inherit its ORM delete behavior without declaring duplicate database triggers.
-Updates through the source can move rows between partitions when the destination checks allow them.
+Updates through the source can move rows between partitions when the destination
+checks allow them. An update through a proxy with several bound values can also
+change its exposed key to a value outside those bounds. The update succeeds when
+the destination partition accepts the row, and the row is no longer visible
+through that proxy.
 
 The source must have exactly one list key field. Partition ownership on a proxy
 of a proxy, overlapping block/proxy values, invalid enum members and SQLite
