@@ -328,14 +328,17 @@ model Doc {
         await db.close()
 
 
-UPSERT_DOC = """
-model Doc {
+def upsert_doc(mode: str | None = None, *, version: bool = False) -> str:
+    changed = f'changed DateTime @default(now()) @timestamps.updated_at(mode: "{mode}")' if mode is not None else ""
+    version_field = "version Int @default(0) @locking.version" if version else ""
+    return f"""
+model Doc {{
   id      Int      @id
   title   String
-  changed DateTime @default(now()) @timestamps.updated_at(mode: "%s")
-  version Int      @default(0) @locking.version
+  {changed}
+  {version_field}
   @@map("tracking_upsert_docs")
-}
+}}
 """
 
 
@@ -343,7 +346,7 @@ model Doc {
 @requires("updated-at")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_bumps_the_version(dialect):
-    db, models = await connect(dialect, UPSERT_DOC % "application")
+    db, models = await connect(dialect, upsert_doc("application", version=True))
     Doc = models["Doc"]
     try:
         docs = Doc.objects.using(db)
@@ -364,7 +367,7 @@ async def test_an_upsert_bumps_the_version(dialect):
 @requires("updated-at")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
-    db, models = await connect(dialect, UPSERT_DOC % "application")
+    db, models = await connect(dialect, upsert_doc("application"))
     Doc = models["Doc"]
     try:
         docs = Doc.objects.using(db)
@@ -382,7 +385,7 @@ async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
 @requires("optimistic-locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
-    db, models = await connect(dialect, UPSERT_DOC % "application")
+    db, models = await connect(dialect, upsert_doc(version=True))
     Doc = models["Doc"]
     try:
         docs = Doc.objects.using(db)
@@ -398,7 +401,7 @@ async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
 @requires("updated-at")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
-    db, models = await connect(dialect, UPSERT_DOC % "database")
+    db, models = await connect(dialect, upsert_doc("database"))
     Doc = models["Doc"]
     try:
         docs = Doc.objects.using(db)

@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { connect, define, getDatabase, loads, param, prefetch, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
 import { native } from '../src/native.js';
 import { User } from './blog/models.js';
@@ -224,6 +225,17 @@ async function backends(url: string): Promise<number> {
   return Number(rows[0]![0]);
 }
 
+async function assertBackends(url: string, expected: number): Promise<void> {
+  // Pool closure drops clients locally; PostgreSQL observes their disconnect later.
+  const deadline = Date.now() + 5_000;
+  let actual = await backends(url);
+  while (actual !== expected && Date.now() < deadline) {
+    await delay(25);
+    actual = await backends(url);
+  }
+  assert.equal(actual, expected, 'PostgreSQL replica sessions after pool closure');
+}
+
 test('replicas answer reads outside a transaction; writes and transactions use the primary', async () => {
   const db = getDatabase(), url = await replicaUrl(), url2 = await replicaUrl(2);
   const routed = await connect(db.url, { replicas: [url, url2], default: false, maxConnections: 2 });
@@ -252,11 +264,12 @@ test('replicas answer reads outside a transaction; writes and transactions use t
     // Closing a primary view closes the whole database: the primary and each replica.
     await routed.primary.close();
   }
-  assert.deepEqual([await backends(url), await backends(url2)], [0, 0]);
+  await assertBackends(url, 0);
+  await assertBackends(url2, 0);
   // A replica that fails to open closes the pools opened before it.
   const before = await backends(url);
   await assert.rejects(connect(db.url, { replicas: [url, url.replace(/\/[^/]*$/, '/orm_s6_missing')], default: false }));
-  assert.equal(await backends(url), before);
+  await assertBackends(url, before);
 });
 
 test('db.tenant inside a transaction of another tenant throws', async () => {
