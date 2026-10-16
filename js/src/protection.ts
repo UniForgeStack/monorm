@@ -25,7 +25,7 @@ export function allowWrites<T>(models: readonly { readonly _meta: ModelMeta }[],
     if (!meta) return Promise.reject(new TypeError(`allowWrites() takes models, got ${String(m)}`));
     names.push(meta.name);
   }
-  return scope.run([...allowedWrites(), ...names], fn);
+  return scope.run([...allowedWrites(), ...names], async () => await fn());
 }
 
 /** @internal The model names the current scope allows to write. */

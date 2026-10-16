@@ -3,7 +3,6 @@
  * `all()`, `first()`, `get()`, `count()`, ... (or `for await`); writes run when awaited.
  */
 
-import { AsyncResource } from "node:async_hooks";
 import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
 import { resolve, withScope, type Database } from "./db.js";
@@ -305,7 +304,7 @@ function restOf(p: RelationPath<ModelSpec, string, readonly Hop[]>, root: ModelM
 interface Derived {
   readonly own: string[];
   readonly related: (readonly string[])[];
-  readonly relatedFields: { readonly path: readonly string[]; readonly fields: readonly string[] }[];
+  readonly relatedFields: { readonly path: readonly string[]; readonly fields: readonly string[]; readonly with_default_fields?: true }[];
   readonly prefetch: PrefetchItem[];
 }
 
@@ -352,8 +351,8 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
     const rel = meta.relationByIr.get(hop)!;
     const target = meta.registry.get(rel.target);
     const path = (meta.model as unknown as Record<string, RelationPath<ModelSpec, string, readonly Hop[]>>)[rel.name]!;
-    // a bare path to the relation asks for all its fields, so its columns add nothing
-    const bare = entries.some((i) => loadPath(i).length === 1 && !(i instanceof Column) && !(i instanceof QuerySet && i.state.label !== undefined));
+    // a bare path (or a plain query set) asks for the normal selection; named columns add to it
+    const bare = entries.some((i) => loadPath(i).length === 1 && (i instanceof QuerySet ? i.fullSelection() : !(i instanceof Column)));
     let base: QuerySet<ModelSpec, unknown, string, unknown, never> | undefined;
     const inner: LoadEntry[] = [];
     let plain = false;
@@ -366,27 +365,38 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
       plain = true;
       if (item instanceof QuerySet) {
         if (rest.length) inner.push(item.withVia(restOf(item.state.via!, target)));
-        else if (base && base !== item) throw new QueryError(`${String(path)} is loaded twice with different query sets; label() one of them`);
+        else if (base && base !== item && !(base.plainRelation() && item.plainRelation())) throw new QueryError(`${String(path)} is loaded twice with different query sets; label() one of them`);
         else base = item;
       } else if (item instanceof Column) {
-        if ((rest.length || !bare) && !inner.some((c) => c instanceof Column && c.field === item.field && c.path.join(".") === rest.join("."))) {
+        if (!inner.some((c) => c instanceof Column && c.field === item.field && c.path.join(".") === rest.join("."))) {
           inner.push(new Column(target, rest, item.field, item.label));
         }
       } else if (rest.length) {
         inner.push(restOf(item, target));
       }
     }
-    if (base && entries.some((item) => item instanceof RelationPath) && (
-      base.state.filters.length || base.state.order.length || base.state.limit !== undefined || base.state.offset !== undefined || base.state.withoutDefaults
-    )) {
-      throw new QueryError(`${String(path)} has a path and a query set that changes its rows; label() the query set`);
+    if (base && (base.state.filters.length || base.state.order.length || base.state.limit !== undefined || base.state.offset !== undefined || base.state.withoutDefaults)) {
+      if (entries.some((item) => item instanceof RelationPath || item instanceof Column)) {
+        throw new QueryError(
+          `${String(path)} has a column or path beside a query set that changes its rows; put the columns in the set's own .load() or label() the set`,
+        );
+      }
     }
     if (plain) {
-      const qs = base ?? (target.objects as QuerySet<ModelSpec, unknown, string, unknown, never>);
-      prefetch.push({ path, queryset: inner.length ? (qs.load as (...i: unknown[]) => typeof qs)(...inner) : qs, toAttr: undefined, one: false });
+      let qs = base ?? (target.objects as QuerySet<ModelSpec, unknown, string, unknown, never>);
+      if (base) {
+        const owned = (base.state.loads ?? []).filter((i) => i instanceof Column && !i.path.length).map((i) => (i as Column<unknown, string>).field.ir);
+        for (let i = inner.length - 1; i >= 0; i--) {
+          const c = inner[i]!;
+          if (c instanceof Column && !c.path.length && owned.includes(c.field.ir)) inner.splice(i, 1);
+        }
+      }
+      if (inner.length) qs = (qs.load as (...i: unknown[]) => typeof qs)(...inner);
+      if (bare && qs.state.modelFields !== undefined) qs = qs.withDefaultFields();
+      prefetch.push({ path, queryset: qs, toAttr: undefined, one: false });
     }
   }
-  const relatedFields = [...fields.entries()].filter(([k]) => !whole.has(k)).map(([, v]) => v);
+  const relatedFields = [...fields.entries()].map(([k, v]) => (whole.has(k) ? { ...v, with_default_fields: true as const } : v));
   return { own, related, relatedFields, prefetch };
 }
 
@@ -428,7 +438,7 @@ function prefetchTree(
     if (hops.length === 1) {
       node.one ||= p.one;
       if (p.queryset) {
-        if (node.qs && node.qs !== p.queryset) {
+        if (node.qs && node.qs !== p.queryset && !(node.qs.plainRelation() && p.queryset.plainRelation())) {
           throw new QueryError(`${String(p.path)} is loaded twice with different query sets; label() one of them`);
         }
         node.qs = p.queryset;
@@ -493,8 +503,10 @@ export interface QueryState {
   readonly withoutDefaults: boolean;
   readonly withoutRelated: boolean;
   readonly modelFields: readonly string[] | undefined;
+  /** `modelFields` adds to the model's default selection (a bare path beside columns). */
+  readonly withDefaultFields?: boolean;
   /** `load()` through to-one paths: the fields of each partial joined model, IR names. */
-  readonly relatedFields?: readonly { readonly path: readonly string[]; readonly fields: readonly string[] }[];
+  readonly relatedFields?: readonly { readonly path: readonly string[]; readonly fields: readonly string[]; readonly with_default_fields?: true }[];
   readonly filters: readonly Node[];
   readonly order: readonly Ordering<string, unknown>[];
   readonly limit: number | ParamRef<string> | undefined;
@@ -605,7 +617,6 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** Bypass schema filter, selection and loading defaults; keep caller filters. */
   withoutDefaults(): this { return this.clone({ withoutDefaults: true }); }
 
-  /** Clear default and explicitly requested eager reference loading. */
   /** Clears the default joins and the joins `load()` asked for; relations loaded by
    * `IN (...)` query stay. */
   withoutRelated(): this {
@@ -641,7 +652,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    *
    * Relation query sets run only inside `load()`; standalone reads and writes
    * raise `TypeError`. Label a filtered, ordered or sliced set when also loading
-   * a bare path through that relation.
+   * a path or column through that relation, or put the columns in the set's own `.load()`.
+   * A bare path gives the normal selection united with the columns named beside it.
    *
    * Calls add up. `load()` without items gives full instances again (it bypasses a
    * default selection).
@@ -708,6 +720,17 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** @internal A relation query set (`User.posts.objects`). */
   withVia(via: RelationPath<ModelSpec, string, readonly Hop[]>): this {
     return this.clone({ via });
+  }
+
+  /** @internal The normal selection plus nested loads: drops the set's own columns. */
+  withDefaultFields(): this { return this.clone({ withDefaultFields: true }); }
+
+  /** @internal An unlabeled set that loads the target's normal selection and nothing else of its own. */
+  fullSelection(): boolean {
+    const s = this.state;
+    if (s.label !== undefined || s.loads?.length) return false;
+    const all = this.meta.fieldList.map((f) => f.ir);
+    return s.modelFields === undefined || (s.modelFields.length === all.length && s.modelFields.every((f, i) => f === all[i]));
   }
 
   /** @internal */
@@ -977,7 +1000,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const ir: IR = { op, model: this.rootName() };
     if (s.withoutDefaults) ir["without_defaults"] = true;
     if (s.withoutRelated) ir["without_related"] = true;
-    if (s.modelFields !== undefined) ir["model_fields"] = s.modelFields;
+    if (s.modelFields !== undefined) {
+      ir["model_fields"] = s.modelFields;
+      if (s.withDefaultFields) ir["with_default_fields"] = true;
+    }
     if (s.relatedFields?.length && op === "select" && outer === undefined && ctes === undefined) ir["related_fields"] = s.relatedFields;
     if (s.modelHelpers?.length) ir["model_helpers"] = s.modelHelpers;
     if (s.from) {
@@ -1323,13 +1349,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   update(values: M["update"], options?: { readonly returning?: boolean }): InspectedStatement<number | M["row"][]>;
   update(values: M["update"], options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
     const returning = options.returning ?? false;
-    return new InspectedStatement(AsyncResource.bind(() => this.updateValues(values, returning)), AsyncResource.bind(() => {
+    return new InspectedStatement(() => this.updateValues(values, returning), () => {
       const params: unknown[] = [];
       const ir = this.mutationIr("update", params, values);
       if (!(ir["set"] as unknown[]).length) return emptyInspection();
       if (returning) ir["returning"] = true;
       return this.inspectIr(ir, params);
-    }));
+    });
   }
 
   private async updateValues(values: M["update"], returning: boolean): Promise<number | M["row"][]> {
@@ -1369,13 +1395,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const ir = { ...this.mutationIr("delete", params), returning };
       return { ir, params };
     };
-    return new InspectedStatement(AsyncResource.bind(() => {
+    return new InspectedStatement(() => {
       const { ir, params } = plan();
       return this.write(ir, params, returning);
-    }), AsyncResource.bind(() => {
+    }, () => {
       const { ir, params } = plan();
       return this.inspectIr(ir, params);
-    }));
+    });
   }
 
   /**
@@ -1392,13 +1418,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const ir = { ...this.mutationIr("delete", params), hard: true, returning };
       return { ir, params };
     };
-    return new InspectedStatement(AsyncResource.bind(() => {
+    return new InspectedStatement(() => {
       const { ir, params } = plan();
       return this.write(ir, params, returning);
-    }), AsyncResource.bind(() => {
+    }, () => {
       const { ir, params } = plan();
       return this.inspectIr(ir, params);
-    }));
+    });
   }
 
   /** Clear the soft-delete field of the matching soft-deleted rows. */
@@ -1409,7 +1435,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const field = this.softDeleteField();
       return this.filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
     };
-    return new InspectedStatement(AsyncResource.bind(async () => await statement()), AsyncResource.bind(() => statement().inspect()));
+    return new InspectedStatement(async () => await statement(), () => statement().inspect());
   }
 
   /** The rows with the soft-deleted ones: the query set without the schema defaults
@@ -1447,12 +1473,12 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   updateMany(rows: readonly M["updateRow"][], options?: { readonly batchSize?: number; readonly returning?: false }): InspectedStatement<number>;
   updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning: true }): InspectedStatement<M["row"][]>;
   updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
-    return new InspectedStatement(AsyncResource.bind(() => this.executeUpdateMany(rows, options)), AsyncResource.bind(() => {
+    return new InspectedStatement(() => this.executeUpdateMany(rows, options), () => {
       const { prepared, batchSize, returning, params, ir } = this.updateManyPlan(rows, options);
       if (ir === null) return emptyInspection();
       const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
       return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, this.state.withoutDefaults)));
-    }));
+    });
   }
 
   private updateManyPlan(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean }) {
@@ -1495,7 +1521,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    */
   insert(values: M["insert"]): InsertOne<M> {
     this.assertStandalone();
-    return new InsertOne(bound((conflict, returning) => this.insertRows([values], conflict, returning, null)), AsyncResource.bind((conflict, returning) => this.inspectInsert([values], conflict, returning, null)));
+    return new InsertOne((conflict, returning) => this.insertRows([values], conflict, returning, null), (conflict, returning) => this.inspectInsert([values], conflict, returning, null));
   }
 
   /**
@@ -1556,7 +1582,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       return this.copyRows(rows, options);
     }
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
-    return new InsertMany(bound((conflict, returning) => this.insertRows(rows, conflict, returning, batchSize)), AsyncResource.bind((conflict, returning) => this.inspectInsert(rows, conflict, returning, batchSize)));
+    return new InsertMany((conflict, returning) => this.insertRows(rows, conflict, returning, batchSize), (conflict, returning) => this.inspectInsert(rows, conflict, returning, batchSize));
   }
 
   /** @internal */
@@ -1670,12 +1696,6 @@ interface Conflict {
 type InspectInsert = (conflict: Conflict | undefined, returning: boolean) => QueryInspection;
 
 type RunInsert = (conflict: Conflict | undefined, returning: boolean) => Promise<unknown[] | number>;
-
-/** `run` in the async context of the caller (its transaction, `allowWrites` and
- * `scope`), however late the statement is awaited. */
-function bound(run: RunInsert): RunInsert {
-  return AsyncResource.bind(run);
-}
 
 /** A statement that runs once, when first awaited (or given `then` / `catch` /
  * `finally`). */
@@ -2043,7 +2063,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
 
   /** Inserts a related row pointing at this instance. */
   override insert(values: DistributiveOmit<M["insert"], L>): InsertOne<M> {
-    return new InsertOne(bound((conflict, returning) => this.insertRows([{ ...values, ...this.link() }], conflict, returning, null)), AsyncResource.bind((conflict, returning) => this.inspectInsert([{ ...values, ...this.link() }], conflict, returning, null)));
+    return new InsertOne((conflict, returning) => this.insertRows([{ ...values, ...this.link() }], conflict, returning, null), (conflict, returning) => this.inspectInsert([{ ...values, ...this.link() }], conflict, returning, null));
   }
 
   /** The related row matching `lookup`, or a new one pointing at this instance; the link
@@ -2062,7 +2082,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
       return this.copyRows(linked, options);
     }
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
-    return new InsertMany(bound((conflict, returning) => this.insertRows(linked, conflict, returning, batchSize)), AsyncResource.bind((conflict, returning) => this.inspectInsert(linked, conflict, returning, batchSize)));
+    return new InsertMany((conflict, returning) => this.insertRows(linked, conflict, returning, batchSize), (conflict, returning) => this.inspectInsert(linked, conflict, returning, batchSize));
   }
 
 }
@@ -2243,7 +2263,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
   /** Inserts a related row and links it, in one transaction. No `onConflict`: upsert
    * on the model's query set, then `add()`. */
   override insert(values: M["insert"]): InsertOne<M> {
-    return new InsertOne(bound(async (conflict) => {
+    return new InsertOne(async (conflict) => {
       if (conflict) {
         throw new TypeError(`${this.relation.name}.insert(...).onConflict() isn't supported; upsert with ${this.meta.name}.objects, then add()`);
       }
@@ -2253,7 +2273,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
         await this.add(obj as never);
         return [obj];
       });
-    }), () => { throw new QueryError("inspect() cannot plan a many-to-many insert before its generated key is known; inspect the model insert and link operations separately"); });
+    }, () => { throw new QueryError("inspect() cannot plan a many-to-many insert before its generated key is known; inspect the model insert and link operations separately"); });
   }
 
   /** Not supported: `getOrInsert()` on the model's query set, then `add()`. */

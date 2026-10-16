@@ -104,6 +104,27 @@ test("aggregates over the same relation share one LATERAL join", () => {
   assert.equal(User.objects.filter(func.count(User.posts).gt(1), func.sum(User.posts.views).gt(1)).select({ id: User.id }).inspect().statements[0]!.joinsCount, 0);
 });
 
+test("the LATERAL join comes after the to-one joins", () => {
+  const sql = Post.objects
+    .select({ name: Post.author.name, n: func.count(Post.comments, { filter: Post.comments.body.eq(Post.author.name) }), last: func.max(Post.comments.id) })
+    .sql();
+  assert.ok(sql.includes('LEFT JOIN "users" AS "j') && sql.includes("LEFT JOIN LATERAL"));
+  assert.ok(sql.indexOf('LEFT JOIN "users" AS "j') < sql.indexOf("LEFT JOIN LATERAL"));
+});
+
+test("an aggregate over a to-one key is a join at the root", () => {
+  const sql = Post.objects.select({ titles: func.arrayAgg(Post.title, { orderBy: [Post.author.name, Post.id] }) }).sql();
+  assert.equal(sql.split('LEFT JOIN "users" AS "j1"').length, 2);
+  assert.ok(!sql.includes("LATERAL") && !sql.includes("(SELECT"));
+});
+
+test("an aggregate with an outer-only filter is not a LATERAL member", () => {
+  const query = User.objects.select({ name: User.name, n: func.count(User.posts, { filter: User.name.eq("Alice") }), top: func.max(User.posts.views) });
+  assert.ok(!query.sql().includes("LATERAL"));
+  assert.equal(query.inspect().statements[0]!.joinsCount, 0);
+  assert.equal(query.inspect().statements[0]!.correlatedCount, 2);
+});
+
 test("paginated relation aggregates keep scalar subqueries", () => {
   for (const [limit, offset] of [[10, null], [null, 5], [10, 5], [0, null]] as const) {
     const query = User.objects

@@ -98,7 +98,7 @@ export interface Instance<M extends ModelSpec> {
   delete(): Promise<void>;
   /**
    * Reload column values from the database; `true` when it loaded the row. Arguments
-   * are model columns followed by an optional plain options object. A trailing
+   * are columns of the model (a column of a related model throws `TypeError`) followed by an optional plain options object. A trailing
    * `{ lock: true }` also locks the row until the transaction ends, with the options of
    * `QuerySet.lock()`; a refresh of some fields still locks the whole row. With
    * `skipLocked`, a row locked by another transaction (or deleted) gives `false` and
@@ -465,7 +465,8 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
         } else if (absent) {
           return null;
         }
-        throw new NotLoaded(`${meta.name}.${r.name} is not loaded; ${loadHint}`);
+        const dangling = loaded && r.name in loaded && loaded[r.name] === null;
+        throw new NotLoaded(`${meta.name}.${r.name} is not loaded${dangling ? ": the key is set and no row of the target has it" : ""}; ${loadHint}`);
       };
     }
     case "hasOne":
