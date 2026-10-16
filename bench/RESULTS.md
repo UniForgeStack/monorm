@@ -1,5 +1,34 @@
 # Benchmark results
 
+## What to cite
+
+All entries are measured results on the recorded machines, not new measurements.
+“Current” identifies the retained engine or implementation, not a fresh run of HEAD.
+No current benchmark here compares the Python or TypeScript API with Django,
+SQLAlchemy, Prisma or Drizzle.
+
+| Section | Status | Engine / implementation measured | Comparison it supports |
+|---|---|---|---|
+| [Build-time extension gate](#build-time-extension-gate--2026-10-08) | Current | Build-time extensions on the Rust engine | Extension cost versus handwritten controls; gate has not passed |
+| [Advisory locks](#advisory-locks-in-rust--2026-10-04) | Current | Rust lock helper through Python / TypeScript | Paired change in lock-key hashing and locking |
+| [Query construction](#query-construction-in-rust--2026-10-04) | Historical, rejected | Removed direct operation decoder | Experiment only; no current API claim |
+| [Phase 0](#phase-0-performance-feasibility-2026-10-02) | Historical | Removed SeaORM `ormcore` prototype | No current-engine comparison; do not cite its cross-language ratios |
+| [Summary](#summary) | Historical | Removed SeaORM prototype | Prototype feasibility decisions only |
+| [Cross-language](#cross-language-median-ms-per-call-unix-socket) | Historical | Removed SeaORM prototype | No current Python / TypeScript comparison |
+| [Language notes](#what-each-language-teaches) | Historical | Removed SeaORM prototype | Interpretation of prototype results only |
+| [Transport](#transport-unix-socket-vs-tcp) | Historical | Removed SeaORM prototype and vendored SQLx patch | Old transport experiment only |
+| [Async versus sync](#async-vs-sync) | Historical | Removed SeaORM prototype | No current sync API claim |
+| [Notes and caveats](#notes-and-caveats) | Historical | Removed SeaORM prototype | Limits of the prototype measurements |
+| [Full results](#full-results) | Historical | Removed SeaORM prototype | Archived prototype data only |
+| [Engine swap](#engine-seaorm-vs-tokio-postgres) | Historical | SeaORM prototype versus initial tokio-postgres engine | Engine-swap experiment only |
+| [Instances built in Rust](#instances-built-in-rust) | Historical | Early tokio-postgres engine commits | Object-construction change at the named commits |
+| [Query profile](#where-a-querys-time-goes), including hand-off, plan cache and schema JSON | Historical | Early tokio-postgres engine | Profiling and experiments at the named commits |
+| [Prepared queries](#prepared-queries) | Historical | Early tokio-postgres engine | Prepared-query experiment only |
+| [Rust versus SeaORM](#current-rust-engine-versus-seaorm--2026-10-03), including Completed verification | Superseded | Current Rust engine versus SeaORM with an extra checkout ping | Replaced by matched settings below |
+| [Diesel added](#diesel-added--2026-10-03) | Superseded | Current Rust engine, Diesel async and unmatched SeaORM | Replaced by matched settings below |
+| [Pool-setting correction](#diesel-investigation-and-pool-setting-correction--2026-10-03) and [matched ORM table](#full-orm-comparison-with-matched-health-check-settings) | Current comparison to cite | Rust engine, SeaORM / SQLx and Diesel async, matched checkout settings | Five equal Rust-only workloads; no Python / TypeScript overhead |
+| [Read-path diagnosis](#read-path-diagnosis-including-raw-sqlx) and [Diesel lessons](#what-we-can-learn-from-diesel) | Current diagnosis to cite | Same engine plus raw SQLx and tokio-postgres variants | Driver, checkout and decoding costs on equal Rust read results |
+
 All numbers here are measured. Each section names its date, commit (where recorded) and machine.
 How to run each benchmark: [`README.md`](README.md).
 
@@ -35,6 +64,8 @@ Timings changed by less than about 2% either way (measured), and the decoder cha
 `git show 889f1c4:bench/query-construction/results/summary.md` has the table.
 
 ## Phase 0: performance feasibility (2026-10-02)
+
+**Historical: removed SeaORM prototype, not the current engine. Do not cite.**
 
 **Question:** Is one Rust ORM core (SeaORM on Postgres), called natively from Python,
 Node, Bun and Go, fast enough compared with each language's own ORM?
@@ -127,7 +158,7 @@ Unix socket took ~12 ms. The cause: sqlx 0.9 never calls `set_nodelay(true)`, so
 multi-packet requests stall on Nagle's algorithm combined with delayed ACKs, adding
 about 40 ms. libpq, asyncpg, `pg` and pgx all set `TCP_NODELAY`.
 
-**Fix:** `bench/ormcore/patches/sqlx-core` holds sqlx-core 0.9.0 plus a one-line
+**Historical fix (path no longer exists):** `bench/ormcore/patches/sqlx-core` held sqlx-core 0.9.0 plus a one-line
 `stream.set_nodelay(true)` change, wired in through `[patch.crates-io]`. It applies to all
 four bindings. We should send this fix upstream and drop the patch once sqlx ships it.
 

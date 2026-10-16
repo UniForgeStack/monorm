@@ -1,0 +1,8 @@
+{
+  "name": "orm-quickstart-example",
+  "private": true,
+  "type": "module",
+  "scripts": { "demo": "tsx quickstart.ts" },
+  "dependencies": { "orm": "file:../../languages/js" },
+  "devDependencies": { "tsx": "^4.19.0" }
+}

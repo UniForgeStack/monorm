@@ -320,8 +320,8 @@ Where the mapping above leaves something open:
   Prisma's implicit many-to-many (`Tag[]` on both sides, no join model) isn't
   supported: name the join model.
 * Prisma's other `@db.*` types set the column's SQL type, like `@db_type` did.
-* A to-many relation finds its key through the to-one relation on the other model;
-  composite keys aren't supported.
+* A to-many relation finds its key through the to-one relation on the other model,
+  including composite foreign keys that reference a composite `@@id`.
 * `datasource` is optional and its `url` is ignored (the URL comes from
   `ORM_DATABASE_URL`). `generator` blocks are read and ignored, so a file can also
   drive Prisma Client.

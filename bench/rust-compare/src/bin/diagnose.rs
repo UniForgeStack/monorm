@@ -1,4 +1,7 @@
 //! Isolate planning, runtime cell decoding, and streaming on the same read workload.
+#[path = "../environment.rs"]
+mod environment;
+
 use futures_util::TryStreamExt;
 use orm_core::{
     dialect::Target,
@@ -224,6 +227,7 @@ fn stats(mut values: Vec<f64>) -> serde_json::Value {
 async fn main() {
     let url = std::env::var("ORM_BENCH_URL").expect("use a disposable PostgreSQL database");
     let ours = orm_engine::db::connect(&url, 1).await.unwrap();
+    let environment = environment::collect(ours.as_ref()).await;
     let config = url.parse::<tokio_postgres::Config>().unwrap();
     let manager = deadpool_postgres::Manager::from_config(
         config,
@@ -365,13 +369,8 @@ async fn main() {
         .batch("DROP TABLE orm_rust_diagnose_post".into())
         .await
         .unwrap();
-    let version = harness
-        .ours
-        .query_text("SELECT version()".into())
-        .await
-        .unwrap();
     let output = std::env::var("ORM_BENCH_OUT").unwrap_or_else(|_| "results-diagnose.json".into());
-    let report = serde_json::json!({"database":version,"rounds":ROUNDS,"pool_size":1,"cases":results,"cpu_decode_1000":{"dynamic_cells":dynamic,"typed_get":typed}});
+    let report = serde_json::json!({"database":[[environment["postgres_version"]]],"commit":environment["commit"],"rustc":environment["rustc"],"postgres_version":environment["postgres_version"],"os":environment["os"],"cpu":environment["cpu"],"rounds":ROUNDS,"pool_size":1,"cases":results,"cpu_decode_1000":{"dynamic_cells":dynamic,"typed_get":typed}});
     std::fs::write(
         output,
         serde_json::to_string_pretty(&report).unwrap() + "\n",

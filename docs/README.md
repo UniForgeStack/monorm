@@ -5,6 +5,8 @@ The core is in every build.
 An extension is a Rust crate that you select when you build the native library ([build-time-extensions.md](contracts/build-time-extensions.md)).
 A schema that uses an extension attribute needs a build with that extension.
 
+Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScript, in-memory SQLite).
+
 ## Core
 
 | Doc | What |
@@ -25,6 +27,9 @@ A schema that uses an extension attribute needs a build with that extension.
 | model-composition | `extensions/model-composition/` (`orm-model-composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
 | file-storage | `extensions/file-storage` (`orm-file-storage-extension`) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
 | generic-relations | `extensions/generic` (`orm-generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
+| updated-at | `extensions/timestamps` (`orm-timestamps`) | `@timestamps.updated_at(mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| soft-delete | `extensions/soft-delete` (`orm-soft-delete`) | `@soft_delete.deleted_at(mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| optimistic-locking | `extensions/locking` (`orm-locking`) | `@locking.version` | [schema-extensions.md](extensions/schema-extensions.md) |
 
 [build-time-extensions.md](contracts/build-time-extensions.md#select-feature-extensions) shows how to select them, build, and package the result.
 The same doc describes the extension contract: manifests, passes, native behavior profiles.

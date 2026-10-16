@@ -1,4 +1,6 @@
 //! Run only against a disposable database: this creates and drops its own table.
+mod environment;
+
 use orm_core::{
     dialect::Target,
     ir::{Operation, ValueType},
@@ -89,6 +91,7 @@ async fn ours(db: &dyn Driver, schema: &Schema, c: &Case, json: bool) -> ResultV
             Operation::Select(q) => Operation::Select(q.clone()),
             Operation::Count(q) => Operation::Count(q.clone()),
             Operation::Update(q) => Operation::Update(orm_core::ir::Update {
+                scope: q.scope.clone(),
                 model_fields: q.model_fields.clone(),
                 without_defaults: q.without_defaults,
                 model: q.model.clone(),
@@ -225,6 +228,7 @@ async fn main() {
     let url = std::env::var("ORM_BENCH_URL")
         .expect("set ORM_BENCH_URL to a disposable PostgreSQL database");
     let db = orm_engine::db::connect(&url, 1).await.unwrap();
+    let environment = environment::collect(db.as_ref()).await;
     let mut config = diesel_async::pooled_connection::ManagerConfig::default();
     config.recycling_method = diesel_async::pooled_connection::RecyclingMethod::Fast;
     let manager = diesel_async::pooled_connection::AsyncDieselConnectionManager::<
@@ -379,9 +383,8 @@ async fn main() {
     db.batch("DROP TABLE orm_rust_compare_post".into())
         .await
         .unwrap();
-    let version = db.query_text("SELECT version()".into()).await.unwrap();
     let output = std::env::var("ORM_BENCH_OUT").unwrap_or_else(|_| "results-diesel.json".into());
-    std::fs::write(output, serde_json::to_string_pretty(&serde_json::json!({"database":version,"seaorm_version":"2.0.4","diesel_version":"2.3.13","diesel_async_version":"0.9.2","seaorm_test_before_acquire":!sea_fast,"rounds":ROUNDS,"pool_size":1,"cases":results})).unwrap() + "\n").unwrap();
+    std::fs::write(output, serde_json::to_string_pretty(&serde_json::json!({"database":[[environment["postgres_version"]]],"commit":environment["commit"],"rustc":environment["rustc"],"postgres_version":environment["postgres_version"],"os":environment["os"],"cpu":environment["cpu"],"seaorm_version":"2.0.4","diesel_version":"2.3.13","diesel_async_version":"0.9.2","seaorm_test_before_acquire":!sea_fast,"rounds":ROUNDS,"pool_size":1,"cases":results})).unwrap() + "\n").unwrap();
     diesel_pool.close();
     sea_db.close().await.unwrap();
     db.close().await;

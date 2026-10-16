@@ -8,10 +8,23 @@ Mark each number you report as measured (and say if the machine was loaded), est
 | Benchmark | Measures | Extension build |
 |---|---|---|
 | [`engine_bench.py`](engine_bench.py) | The public Python API on the blog models, end to end: reads, `select_related`, prefetch, inserts, updates, a transaction, concurrent gets | Runs on any build (core features only) |
+| [`copy_insert.py`](copy_insert.py) | PostgreSQL COPY versus batched `insert_many()` through Python on the blog models | Runs on any PostgreSQL build |
 | [`aggregates_pagination.py`](aggregates_pagination.py) | Scalar versus LATERAL relation aggregates with an unindexed parent sort, LIMIT 20 and OFFSET 10; 100,000 users / 1,000,000 posts by default | Runs on any build (PostgreSQL) |
 | [`rust-compare/`](rust-compare) | `orm-engine` (typed IR and JSON IR) against SeaORM 2.0.4 and Diesel-async, in Rust only; `diagnose` adds raw SQLx and a streaming read | Not applicable (engine only) |
 | [`shared-behavior/`](shared-behavior) | Paired A/B of `Database.lock` advisory locks: the earlier Python/TypeScript key hashing against the Rust helper, through the public API | Not applicable (core) |
 | [`build-time-extensions/`](build-time-extensions) | The cost gate of build-time extensions: handwritten built-in controls against generated extension code, Python and Node, PostgreSQL and SQLite; allocation and artifact-size probes | This is the extension benchmark |
+
+## Disposable database
+
+From the repository root, in Bash (Docker must be running):
+
+```bash
+docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orm_bench postgres:18
+```
+
+Wait until PostgreSQL accepts connections. This needs a free host port 55432;
+choose another port if it is already occupied. The database is disposable and
+removed when the container stops. See [the exact Rust run steps](rust-compare/README.md#reproduce).
 
 ## engine_bench.py
 
@@ -35,7 +48,7 @@ JSON output; the output includes both SQL forms and `EXPLAIN (ANALYZE, BUFFERS)`
 
 ```bash
 cd bench/rust-compare
-ORM_BENCH_URL=postgres://... cargo run --release                 # writes results.json
+ORM_BENCH_URL=postgres://... cargo run --release --bin orm-rust-compare # writes results-diesel.json
 ORM_BENCH_URL=postgres://... cargo run --release --bin diagnose
 ```
 
@@ -75,5 +88,6 @@ See [`build-time-extensions/README.md`](build-time-extensions/README.md).
 
 ## Removed
 
-The Phase 0 harness (the SeaORM `ormcore` prototype against Django, SQLAlchemy, Drizzle, GORM and pgx), `profile_query.py` with its probe patch, and `query-construction/` were removed after `889f1c4`: they measured code that no longer exists, or their patches no longer apply.
-Their findings stay in `RESULTS.md`; `git show 889f1c4:bench/<path>` recovers the files.
+The Phase 0 harness (the SeaORM `ormcore` prototype against Django, SQLAlchemy, Drizzle, GORM and pgx) and `query-construction/` were removed after `889f1c4`: they measured code that no longer exists. Their findings stay in `RESULTS.md`; `git show 889f1c4:bench/<path>` recovers those files.
+
+`profile_query.py` has also been removed: its required `profile_probes.patch` was deleted in `bdec377`, so the script could no longer run.
