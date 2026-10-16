@@ -190,6 +190,8 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
                 js.set(o, "start", js.number(j.start as f64)?)?;
                 js.set(o, "pk", js.number(j.pk_pos as f64)?)?;
                 js.set(o, "shape", shape_js(js, j.shape.as_ref())?)?;
+                js.set(o, "filtered", js.boolean(j.filtered)?)?;
+                js.set(o, "dangling", js.boolean(j.dangling)?)?;
                 Ok(o)
             }))?;
             js.set(obj, "joins", arr)?;
@@ -375,6 +377,18 @@ pub struct JsSchema {
 
 #[napi]
 impl JsSchema {
+    /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
+    #[napi]
+    pub fn read_flags(&self) -> String {
+        plan::read_flags_json(&self.inner).to_string()
+    }
+
+    /// The order the engine uses for a select IR document (JSON `[{field, desc, nulls}]`).
+    #[napi]
+    pub fn effective_order(&self, select_json: String) -> napi::Result<String> {
+        plan::effective_order_json(&self.inner, &select_json).map(|v| v.to_string()).map_err(engine_err)
+    }
+
     /// Inspect planned templates without executing or collecting statement events.
     #[napi]
     pub fn inspect(&self, env: &Env, op_json: String, params_: Unknown<'_>) -> napi::Result<String> {
@@ -671,10 +685,11 @@ impl Engine {
         }
         let target = self.target;
         let plan = Planner::plan(&self.schema, target, &op, &params(env, params_)?).map_err(engine_err)?;
+        let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let schema = self.schema.clone();
         env.spawn_future_with_callback(
-            async move { exec::run(conn.as_ref(), target, plan).await.map_err(engine_err) },
+            async move { exec::run_in(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
             move |env, out| outcome_js(env, &schema, out),
         )
     }
@@ -1135,10 +1150,11 @@ impl Engine {
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
         let plan = orm_engine::composed::prepare_attach(&self.schema, self.target, &model, identity, &fields, values).map_err(engine_err)?;
         let target = self.target;
+        let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let schema = self.schema.clone();
         env.spawn_future_with_callback(
-            async move { orm_engine::composed::run_insert(conn.as_ref(), target, plan).await.map_err(engine_err) },
+            async move { orm_engine::composed::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
             move |env, out| outcome_js(env, &schema, out),
         )
     }

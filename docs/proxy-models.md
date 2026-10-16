@@ -156,4 +156,11 @@ Updates through the source can move rows between partitions when the destination
 The source must have exactly one list key field. Partition ownership on a proxy
 of a proxy, overlapping block/proxy values, invalid enum members and SQLite
 partition declarations fail during definition. Uncovered enum members warn unless
-a default block exists. Identity columns on partitioned tables require PostgreSQL 17+.
+a default block exists.
+
+On a source with `autoincrement()`, an insert, `copy` insert or upsert through a
+proxy that owns a partition needs PostgreSQL 17 or newer. These writes go directly
+to the partition table, and PostgreSQL 16 does not give a partition the identity
+of its parent: the insert fails with a not-null error on the key. Reads, updates
+and deletes through the proxy, and all writes through the source model, work on
+PostgreSQL 16.

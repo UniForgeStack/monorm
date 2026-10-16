@@ -177,7 +177,10 @@ impl<'a, 'py> Builder<'a, 'py> {
                     Some(p) => related[p].as_ref(),
                 };
                 if let Some(parent) = parent {
-                    parent.dict.set_item(&j.attr, child.as_ref().map(|c| &c.obj))?;
+                    // A reference with no row and no filter to explain it stays unloaded.
+                    if child.is_some() || !j.dangling {
+                        parent.dict.set_item(&j.attr, child.as_ref().map(|c| &c.obj))?;
+                    }
                 }
                 related.push(child);
             }

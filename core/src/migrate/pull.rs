@@ -406,13 +406,14 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
             if c.name == pk {
                 attrs.push("@id".to_owned());
             }
-            let serial = c.default.as_deref().is_some_and(|d| d.starts_with("nextval(") && d.ends_with("::regclass)"));
-            if c.identity || serial {
+            // An owned serial arrives as an identity column; a `nextval` default left here is a shared or unowned sequence.
+            let shared = !c.identity && c.default.as_deref().is_some_and(|d| d.starts_with("nextval("));
+            if c.identity {
                 attrs.push("@default(autoincrement())".into());
-                if serial {
-                    gaps.push(format!("column {}.{} uses a sequence ({}); the schema makes it an identity column", t.name, c.name, c.default.as_deref().unwrap_or("")));
-                }
             } else if let Some(d) = &c.default {
+                if shared {
+                    gaps.push(format!("column {}.{} defaults to {d}, a sequence the column does not own; the schema keeps it as a raw default", t.name, c.name));
+                }
                 let kind = FieldKind { ty: &ty, array, enum_values: enum_values.get(&ty).map(Vec::as_slice) };
                 attrs.push(default_attr(d, &kind));
             }

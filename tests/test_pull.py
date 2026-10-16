@@ -112,22 +112,50 @@ INSERT INTO c_full (id) SELECT g FROM generate_series(1, 5) g;
 """
 
 
-async def test_owned_serials_read_as_identity_and_other_sequences_convert_safely(tmp_path):
+async def test_owned_serials_pull_as_identity_and_shared_sequences_stay_defaults(tmp_path):
     db = await fresh(SERIALS)
     try:
         pulled = await pull(db)
         gaps = "\n".join(pulled.gaps)
-        # the owned serials are identity columns with a note; they are no difference
+        text = pulled.schema
+        # an owned serial is an identity column, with a note
         assert "column s_empty.id uses a sequence" in gaps and "column s_full.id uses a sequence" in gaps
-        assert [s.summary for s in pulled.differences] == [
-            "drop default of c_empty.id", "make c_empty.id an identity column",
-            "drop default of c_full.id", "make c_full.id an identity column",
-        ]
-        # the conversion of a shared sequence reseeds the new identity, empty table or not
-        for step in pulled.differences:
-            await db.execute(step.sql)
-        for table, first in [("c_empty", 1), ("c_full", 6)]:
-            assert (await db._fetch_text(f"INSERT INTO {table} DEFAULT VALUES RETURNING id")) == [(str(first),)]
+        assert text.count("@default(autoincrement())") == 2
+        # a shared sequence stays a raw default, with a note
+        assert "column c_empty.id defaults to nextval('shared_seq'::regclass), a sequence the column does not own" in gaps
+        assert '@default(dbgenerated("nextval(\'shared_seq\'::regclass)"))' in text
+        # the next migration leaves the column on the shared sequence
+        schema = tmp_path / "schema.prisma"
+        pulled.write(schema)
+        migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
+        await migrator.baseline()
+        assert not migrator.migrations.plan()
+        rows = await db._fetch_text(
+            "SELECT attrelid::regclass::text, attidentity::text, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a "
+            "JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+            "WHERE attrelid IN ('c_empty'::regclass, 'c_full'::regclass) ORDER BY 1"
+        )
+        assert rows == [("c_empty", "", "nextval('shared_seq'::regclass)"), ("c_full", "", "nextval('shared_seq'::regclass)")]
+    finally:
+        await db.close()
+
+
+async def test_add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_to_another(tmp_path):
+    db = await fresh(
+        "CREATE SEQUENCE other_seq; CREATE TABLE t_owns (id serial PRIMARY KEY); "
+        "ALTER TABLE t_owns ALTER COLUMN id SET DEFAULT nextval('other_seq')"
+    )
+    try:
+        pulled = await pull(db)
+        assert '@default(dbgenerated("nextval(\'other_seq\'::regclass)"))' in pulled.schema
+        schema = tmp_path / "schema.prisma"
+        schema.write_text(pulled.schema.replace('@default(dbgenerated("nextval(\'other_seq\'::regclass)"))', "@default(autoincrement())"))
+        migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
+        await migrator.baseline()
+        add = next(s for s in (await migrator.drift()).steps if s.summary == "make t_owns.id an identity column")
+        with pytest.raises(orm.DatabaseError, match="cannot make t_owns.id an identity column: it still owns the sequence"):
+            await db.execute(add.sql)
+        assert await db._fetch_text("SELECT attidentity::text FROM pg_attribute WHERE attrelid = 't_owns'::regclass AND attname = 'id'") == [("",)]
     finally:
         await db.close()
 

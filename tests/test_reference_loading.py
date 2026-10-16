@@ -152,6 +152,18 @@ async def test_required_integrity_optional_missing_and_retry(references):
     assert (await load_relation(row, "owner")).id == 1
 
 
+async def test_dangling_key_message_says_why(references):
+    db, m = references
+    row = await seed(db, m)
+    with pytest.raises(orm.NotLoaded) as plain:
+        _ = row.owner
+    assert "no row of the target" not in str(plain.value)
+    # Emulate corrupt data: the join found no target for a required key.
+    row.__dict__["owner"] = None
+    with pytest.raises(orm.NotLoaded, match=r"is not loaded: the key is set and no row of the target has it; use await obj\.load\(Required\.owner\)"):
+        _ = row.owner
+
+
 async def test_transaction_and_separate_database_context(references):
     db, m = references
     await seed(db, m)

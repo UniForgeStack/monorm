@@ -91,3 +91,41 @@ test("proxy field rules fail at definition", { skip: !enabled }, () => {
     assert.throws(() => loads(fieldsSource.replace('@@proxy.fields(exclude: ["legacy", "status"])', attribute), { registry: new Registry() }), message);
   }
 });
+
+const rolesSource = `
+model Doc {
+  id      Int       @id
+  title   String
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("proxy_role_docs")
+}
+model Draft {
+  @@proxy.of(Doc)
+}
+`;
+const caps = JSON.parse(native().nativeArtifact()).capabilities as string[];
+const rolesEnabled = ["proxy-models", "soft-delete", "optimistic-locking"].every((c) => caps.includes(c));
+for (const dialect of ["sqlite", "postgres"]) {
+  test(`a proxy takes the roles of its root (${dialect})`, { skip: !rolesEnabled }, async () => {
+    const registry = new Registry();
+    const models = loads((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + rolesSource, { registry });
+    const Doc = models.Doc! as any, Draft = models.Draft! as any;
+    const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
+    const db = await connect(url, { registry, default: false });
+    await db.dropTables();
+    await db.createTables();
+    try {
+      await Doc.objects.using(db).insertMany([{ id: 1, title: "a" }, { id: 2, title: "b" }]);
+      assert.equal(await Draft.objects.using(db).filter(Draft.id.eq(1)).update({ title: "x" }), 1);
+      assert.equal(((await Doc.objects.using(db).get(Doc.id.eq(1))) as { version: number }).version, 1);
+      assert.equal(await Draft.objects.using(db).filter(Draft.id.eq(2)).delete(), 1);
+      assert.notEqual(((await Doc.objects.using(db).get(Doc.id.eq(2))) as { deleted: unknown }).deleted, null);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+test("a proxy must keep the soft-delete field", { skip: !(caps.includes("proxy-models") && caps.includes("soft-delete")) }, () => {
+  const bad = rolesSource.replace("@@proxy.of(Doc)", '@@proxy.of(Doc)\n  @@proxy.fields(exclude: ["deleted"])');
+  assert.throws(() => loads(bad, { registry: new Registry() }), /proxy must keep the soft-delete field deleted/);
+});

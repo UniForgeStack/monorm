@@ -102,3 +102,93 @@ fn an_update_increments_the_version_unless_it_sets_it() {
     let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Sqlite), "Post", &["id".into(), "views".into()], rows, &[], &Ints(vec![]), false, None, false).unwrap();
     assert!(plan.statements[0].0.contains("\"version\" = \"posts\".\"version\" + "), "{}", plan.statements[0].0);
 }
+
+#[cfg(all(feature = "updated-at", feature = "optimistic-locking"))]
+#[test]
+fn an_upsert_maintains_the_version_and_updated_at() {
+    let schema = schema(json!({"updated_at":[{"model":"Post","field":"changed"}],"versions":[{"model":"Post","field":"version"}]})).unwrap();
+    let set = |field: &str| vec![serde_json::from_value(json!({"field":field,"value":{"t":"param","i":0}})).unwrap()];
+    let upsert = |dialect, update: &[&str], set| {
+        let target = Target::new(dialect);
+        let conflict = exec::Conflict::Update { target: vec!["id".into()], filter: None, update: update.iter().map(|f| f.to_string()).collect(), set };
+        let fields: Vec<String> = ["id", "views"].iter().map(|f| f.to_string()).collect();
+        let rows = vec![vec![Some(Value::Int(Some(1))), Some(Value::Int(Some(2)))]];
+        exec::statement(target, &exec::plan_insert(&schema, target, "Post", &fields, rows, Some(conflict), &Ints(vec![7])).unwrap())
+    };
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        for statement in [upsert(dialect, &["views"], vec![]), upsert(dialect, &[], set("views"))] {
+            assert!(statement.contains("\"version\" = \"posts\".\"version\" + "), "{statement}");
+            assert!(statement.contains("\"changed_at\" = "), "{statement}");
+        }
+        let statement = upsert(dialect, &["views", "changed", "version"], vec![]);
+        assert_eq!(statement.matches("\"version\" = ").count(), 1, "{statement}");
+        assert_eq!(statement.matches("\"changed_at\" = ").count(), 1, "{statement}");
+        let statement = upsert(dialect, &[], set("version"));
+        assert_eq!(statement.matches("\"version\" = ").count(), 1, "{statement}");
+        assert!(!statement.contains("\"posts\".\"version\" + "), "{statement}");
+    }
+}
+
+#[cfg(feature = "model-composition")]
+#[test]
+fn a_role_on_a_composed_model_is_rejected_at_definition() {
+    let source = |field: &str| format!(r#"
+model Person {{
+ id Int @id
+ @@map("tracking_people")
+}}
+model Employee {{
+ {field}
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+ @@map("tracking_employees")
+}}
+"#);
+    let check = |field: &str| orm_core::dsl::compile(&source(field), None).and_then(orm_core::dsl::check).map(|_| ());
+    assert!(check("salary Int").is_ok());
+    #[cfg(feature = "updated-at")]
+    assert!(check("changed DateTime @default(now()) @timestamps.updated_at").unwrap_err().to_string().contains("Employee: @timestamps.updated_at"));
+    #[cfg(feature = "soft-delete")]
+    assert!(check("deleted DateTime? @soft_delete.deleted_at").unwrap_err().to_string().contains("Employee: @soft_delete.deleted_at"));
+    #[cfg(feature = "optimistic-locking")]
+    assert!(check("version Int @default(0) @locking.version").unwrap_err().to_string().contains("Employee: @locking.version"));
+}
+
+#[test]
+fn a_role_with_a_wrong_target_is_rejected_at_definition() {
+    let mut cases: Vec<(&str, Json, &str)> = vec![];
+    #[cfg(feature = "updated-at")]
+    {
+        cases.push(("updated_at", json!([{"model":"Post","field":"views"}]), "wrong type"));
+        cases.push(("updated_at", json!([{"model":"Post","field":"tags"}]), "wrong type"));
+        cases.push(("updated_at", json!([{"model":"Nope","field":"changed"}]), "unknown model"));
+        cases.push(("updated_at", json!([{"model":"Post","field":"nope"}]), "nope"));
+    }
+    #[cfg(feature = "soft-delete")]
+    {
+        cases.push(("soft_delete", json!([{"model":"Post","field":"changed"}]), "wrong type"));
+        cases.push(("soft_delete", json!([{"model":"Post","field":"tags"}]), "wrong type"));
+        cases.push(("soft_delete", json!([{"model":"Post","field":"deleted"},{"model":"Post","field":"deleted"}]), "one soft-delete field only"));
+        cases.push(("soft_delete", json!([{"model":"Nope","field":"deleted"}]), "unknown model"));
+        cases.push(("soft_delete", json!([{"model":"Post","field":"nope"}]), "nope"));
+    }
+    #[cfg(feature = "optimistic-locking")]
+    {
+        cases.push(("versions", json!([{"model":"Post","field":"changed"}]), "wrong type"));
+        cases.push(("versions", json!([{"model":"Post","field":"tags"}]), "wrong type"));
+        cases.push(("versions", json!([{"model":"Post","field":"version"},{"model":"Post","field":"views"}]), "one version field only"));
+        cases.push(("versions", json!([{"model":"Nope","field":"version"}]), "unknown model"));
+        cases.push(("versions", json!([{"model":"Post","field":"nope"}]), "nope"));
+    }
+    for (key, value, expected) in cases {
+        let ir = json!({"models":[{"name":"Post","table":"posts","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"views","column":"views","type":"int"},
+            {"name":"tags","column":"tags","type":"int","array":true},
+            {"name":"changed","column":"changed_at","type":"date_time"},
+            {"name":"deleted","column":"deleted_at","type":"date_time","nullable":true},
+            {"name":"version","column":"version","type":"int"}
+        ]}],"behavior":{"schema_contract":1, key: value.clone()}});
+        let error = Schema::from_ir(serde_json::from_value(ir).unwrap()).err().unwrap_or_else(|| panic!("{key} {value} was accepted"));
+        assert!(error.contains(expected), "{key} {value}: {error}");
+    }
+}

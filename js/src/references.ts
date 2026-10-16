@@ -7,8 +7,7 @@ import type { ModelMeta, Row } from "./model.js";
 import type { RelationMeta } from "./meta.js";
 
 function targetFiltered(meta: ModelMeta, target: string): boolean {
-  const behavior = meta.registry.ir()["behavior"] as { query_defaults?: { model: string; filter?: unknown }[] } | undefined;
-  return behavior?.query_defaults?.some((policy) => policy.model === target && policy.filter != null) ?? false;
+  return meta.registry.get(target).filtered;
 }
 
 type Host = {
@@ -112,20 +111,20 @@ export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) =
   const from = fieldNames(meta, r.from);
   const to = fieldNames(meta.registry.get(r.target), r.to);
   const nullable = r.from.some((ir) => meta.fieldByIr.get(ir)!.nullable);
-  const filtered = targetFiltered(meta, r.target);
   return function (this: Row): unknown {
     const key = keyValue(this, from, internal);
     const loaded = this[related] as Record<string, unknown> | undefined;
     if (loaded && Object.hasOwn(loaded, r.name)) {
       const value = loaded[r.name] as Row | null;
       const state = (this as ReferenceRow)[REFERENCE_STATE];
-      if (value === null && (key === null || filtered || (nullable && !state?.keys.has(r.name)) || (state?.keys.has(r.name) && sameKey(state.keys.get(r.name), key)))) return null;
+      if (value === null && (key === null || targetFiltered(meta, r.target) || (nullable && !state?.keys.has(r.name)) || (state?.keys.has(r.name) && sameKey(state.keys.get(r.name), key)))) return null;
       if (value !== null) {
         const targetKey = peekKey(value, to, internal);
         if (sameKey(targetKey, key) || (targetKey === MISSING && state?.keys.has(r.name) && sameKey(state.keys.get(r.name), key))) return value;
       }
     } else if (key === null) return null;
-    throw new NotLoaded(`${meta.name}.${r.name} is not loaded; use await obj.load(${meta.name}.${r.name})`);
+    const dangling = loaded && Object.hasOwn(loaded, r.name) && loaded[r.name] === null;
+    throw new NotLoaded(`${meta.name}.${r.name} is not loaded${dangling ? ": the key is set and no row of the target has it" : ""}; use await obj.load(${meta.name}.${r.name})`);
   };
 }
 

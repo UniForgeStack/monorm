@@ -118,6 +118,178 @@ async def test_soft_delete_updates_instead_of_deleting(dialect, mode):
         await db.close()
 
 
+VERSIONED_SOFT_DELETE = """
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_soft_docs")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_soft_deleted_instance_can_be_undeleted(dialect):
+    db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        await Doc.objects.using(db).insert_many([{"id": 1}])
+        doc = await Doc.objects.using(db).get(Doc.id == 1)
+        await doc.delete()
+        assert doc.version == 1 and doc.deleted is not None
+        await doc.undelete()
+        assert doc.version == 2 and doc.deleted is None
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+FILTERED_SOFT_DELETE = """
+model Doc {
+  id      Int       @id
+  version Int       @default(0) @locking.version
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted == null")
+  @@map("tracking_filtered_docs")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_undelete_and_hard_delete_ignore_the_default_filter(dialect):
+    db, models = await connect(dialect, FILTERED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1}, {"id": 2}, {"id": 3}])
+        assert await docs.filter(Doc.id == 1).delete() == 1
+        assert await docs.filter(Doc.id == 1).undelete() == 1
+        assert await docs.filter(Doc.id.in_([1, 2])).delete() == 2
+        assert await docs.undelete() == 2
+        assert await docs.count() == 3
+        await docs.filter(Doc.id.in_([1, 2])).delete()
+        assert await docs.filter(Doc.id == 1).hard_delete() == 1
+        (doc,) = await docs.all_with_deleted().filter(Doc.id == 2)
+        await doc.hard_delete()
+        assert await docs.all_with_deleted().count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
+    db, models = await connect(dialect, FILTERED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1}])
+        doc = await docs.get(Doc.id == 1)
+        assert await docs.filter(Doc.id == 1).delete() == 1
+        with pytest.raises(orm.VersionConflict):
+            await doc.update(deleted=None)
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+CASCADE_VERSIONED = """
+model Author {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "database")
+  books   Book[]
+  @@map("tracking_authors")
+}
+model Book {
+  id        Int       @id
+  author_id Int
+  author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
+  version   Int       @default(0) @locking.version
+  removed   DateTime? @soft_delete.deleted_at(mode: "database")
+  @@map("tracking_books")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_hard_delete_of_a_soft_deleted_parent_leaves_no_orphan(dialect):
+    db, models = await connect(dialect, CASCADE_VERSIONED)
+    Author, Book = models["Author"], models["Book"]
+    try:
+        authors, books = Author.objects.using(db), Book.objects.using(db)
+        await authors.insert_many([{"id": 1}])
+        assert await authors.filter(Author.id == 1).delete() == 1
+        await books.insert_many([{"id": 1, "author_id": 1}])
+        author = await authors.all_with_deleted().get(Author.id == 1)
+        if dialect == "postgres":
+            await author.hard_delete()
+            assert await books.all_with_deleted().count() == 0
+            assert await authors.all_with_deleted().count() == 0
+        else:
+            with pytest.raises(Exception, match="FOREIGN KEY constraint failed"):
+                await author.hard_delete()
+            assert await books.all_with_deleted().count() == 1
+            assert await authors.all_with_deleted().count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_the_soft_delete_triggers_bump_the_version(dialect):
+    db, models = await connect(dialect, CASCADE_VERSIONED)
+    Author, Book = models["Author"], models["Book"]
+    try:
+        authors, books = Author.objects.using(db), Book.objects.using(db)
+        await authors.insert_many([{"id": 1}, {"id": 2}])
+        await books.insert_many([{"id": 1, "author_id": 1}, {"id": 2, "author_id": 2}])
+        cascaded = await books.get(Book.id == 1)
+        raw = await books.get(Book.id == 2)
+        assert await authors.filter(Author.id == 1).delete() == 1
+        await db.execute("DELETE FROM tracking_books WHERE id = 2")
+        stored = {b.id: b.version for b in await books.all_with_deleted()}
+        assert stored == {1: 1, 2: 1}
+        for stale in (cascaded, raw):
+            with pytest.raises(orm.VersionConflict):
+                await stale.update(removed=None)
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("soft-delete")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
+    db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        await Doc.objects.using(db).insert_many([{"id": 1}])
+        doc = await Doc.objects.using(db).get(Doc.id == 1)
+        await doc.delete()
+        await doc.delete()
+        assert doc.version == 1
+        stale = await Doc.objects.using(db).all_with_deleted().get(Doc.id == 1)
+        await stale.undelete()
+        with pytest.raises(orm.VersionConflict):
+            await doc.delete()
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 @requires("optimistic-locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_stale_instance_write_raises_version_conflict(dialect):
@@ -151,6 +323,135 @@ model Doc {
             await first.update(title="f")
         with pytest.raises(TypeError, match="no @soft_delete"):
             docs.deleted_only()
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+UPSERT_DOC = """
+model Doc {
+  id      Int      @id
+  title   String
+  changed DateTime @default(now()) @timestamps.updated_at(mode: "%s")
+  version Int      @default(0) @locking.version
+  @@map("tracking_upsert_docs")
+}
+"""
+
+
+@requires("optimistic-locking")
+@requires("updated-at")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_upsert_bumps_the_version(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "application")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a")
+        stale = await docs.get(Doc.id == 1)
+        await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        assert (await docs.get(Doc.id == 1)).version == 1
+        await docs.insert(id=1, title="c").on_conflict(Doc.id, update=True, update_fields=[Doc.title])
+        await docs.insert(id=1, title="d").on_conflict(Doc.id, update=True, update_values={"title": "e"})
+        assert (await docs.get(Doc.id == 1)).version == 3
+        with pytest.raises(orm.VersionConflict):
+            await stale.update(title="x")
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("updated-at")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "application")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", changed=OLD)
+        await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        assert as_utc((await docs.get(Doc.id == 1)).changed) > OLD
+        await docs.update(changed=OLD)
+        await docs.insert(id=1, title="c", changed=OLD).on_conflict(Doc.id, update=True, update_fields=[Doc.title, Doc.changed])
+        assert as_utc((await docs.get(Doc.id == 1)).changed) == OLD
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "application")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a")
+        await docs.filter(Doc.id == 1).update(title="a2")
+        await docs.insert(id=1, title="b", version=0).on_conflict(Doc.id, update=True)
+        assert (await docs.get(Doc.id == 1)).version == 2
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("updated-at")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
+    db, models = await connect(dialect, UPSERT_DOC % "database")
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", changed=OLD)
+        await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        assert as_utc((await docs.get(Doc.id == 1)).changed) > OLD
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+FILTERED_JOIN_MODEL = """
+model Post {
+  id   Int   @id
+  tags Tag[] @relation(through: PostTag, through_fields: [post, tag])
+  @@map("tracking_join_posts")
+}
+model Tag {
+  id    Int    @id
+  name  String
+  posts Post[] @relation(through: PostTag, through_fields: [tag, post])
+  @@map("tracking_join_tags")
+}
+model PostTag {
+  id      Int       @id
+  post_id Int
+  tag_id  Int
+  post    Post      @relation(fields: [post_id], references: [id])
+  tag     Tag       @relation(fields: [tag_id], references: [id])
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted == null")
+  @@map("tracking_join_post_tags")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect):
+    db, models = await connect(dialect, FILTERED_JOIN_MODEL)
+    Post, Tag, PostTag = models["Post"], models["Tag"], models["PostTag"]
+    try:
+        await Post.objects.using(db).insert_many([{"id": 1}])
+        await Tag.objects.using(db).insert_many([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}])
+        await PostTag.objects.using(db).insert_many([{"id": 1, "post_id": 1, "tag_id": 1}, {"id": 2, "post_id": 1, "tag_id": 2}])
+        assert await PostTag.objects.using(db).filter(PostTag.id == 2).delete() == 1
+        posts = Post.objects.using(db)
+        (post,) = await posts.load(Post.tags)
+        assert [t.name for t in post.tags.cached] == ["a"]
+        assert await posts.filter(Post.tags.name == "b").count() == 0
+        assert await posts.filter(Post.tags.name == "a").count() == 1
+        assert await posts.without_defaults().filter(Post.tags.name == "b").count() == 1
     finally:
         await db.drop_tables()
         await db.close()

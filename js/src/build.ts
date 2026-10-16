@@ -67,7 +67,8 @@ export class Builder {
         const parent = j.parent < 0 ? root : joined[j.parent];
         if (parent) {
           const pmeta = j.parent < 0 ? meta : joins[j.parent]!.meta;
-          related(parent)[pmeta.relationByIr.get(j.attr)!.name] = child;
+          // A dangling key (no match, no filter) stays unset so the getter raises NotLoaded.
+          if (child !== null || !j.dangling) related(parent)[pmeta.relationByIr.get(j.attr)!.name] = child;
         }
       }
       objs[r] = root;

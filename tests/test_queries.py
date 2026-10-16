@@ -977,3 +977,15 @@ async def test_concurrent_queries(clean):
         *(User.objects.filter(User.posts.views > i).count() for i in range(20))
     )
     assert counts[0] == 2 and counts[-1] == 2
+
+
+async def test_refresh_takes_only_own_columns(clean):
+    alice, *_ = await seed()
+    for bad in (Post.title, User.posts, "name", User.name + "x"):
+        with pytest.raises(TypeError, match="refresh\\(\\) takes columns of User"):
+            await alice.refresh(bad)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="refresh\\(\\) takes columns of User"):
+        await alice.refresh(User.posts.views)
+    with pytest.raises(TypeError, match="duplicate model field"):
+        await alice.refresh(User.name, User.name)
+    assert await alice.refresh(User.name) is True

@@ -385,6 +385,7 @@ impl<M: Model> Query<M> {
             select: ir::Select {
                 model: String::new(),
                 model_fields: None,
+                with_default_fields: false,
                 model_helpers: vec![],
                 scope: std::collections::BTreeMap::new(),
                 without_defaults: false,
@@ -616,9 +617,7 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
                 .iter()
                 .find(|m| m.ir.name == M::NAME)
                 .ok_or_else(|| Error::Compatibility("unknown model".into()))?;
-            if !q.without_defaults {
-                q.order = m.query_defaults.order.clone();
-            }
+            q.order = orm_engine::plan::effective_order(&self.db.schema, &q)?;
             if q.order.is_empty() {
                 for &pos in &m.key {
                     q.order.push(ir::Order {

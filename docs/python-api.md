@@ -288,14 +288,16 @@ SQL text client-side, so the limit doesn't apply to it.)
 
 * A column of the model makes its instances partial: they hold the named fields, and, hidden, the primary key and the relation keys. Reading another field raises `NotLoaded`.
   Without a column of the model itself, its instances keep their normal selection: `load(Post.author)` gives whole posts.
-  A related model is partial in the same way when a column of it is named (`Post.author.name`) and no bare path ends at it (`load(Post.author, Post.author.name)` gives whole authors).
+  A related model is partial in the same way when a column of it is named (`Post.author.name`) and no bare path ends at it (`load(Post.author, Post.author.name)` gives the normal selection of the authors, which is all public fields or the schema's default selection, united with `name`).
+  A bare path gives the normal selection united with the columns named beside it, and a set's own columns join the named ones.
   `load()` without items gives whole instances again (see [`selection-and-defaults.md`](selection-and-defaults.md)).
 * A path loads every relation along it: `User.posts.comments` fills `user.posts` and each post's `comments`.
   Paths with a common prefix share its query.
 * To-one relations are joined. A path with a to-many hop is loaded with an `IN (...)` query from its first hop, and every item under that hop uses the query.
 * `User.posts.objects` is the relation query set: `Post.objects` (with its query-set class and query defaults) bound to `User.posts`.
   Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
-  A bare path (including a deeper path through the relation) combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `ValueError`. Label the query set to request a separate result. A plain set or one that only adds `.load()` can share the path.
+  A column or path through the relation combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `ValueError`: put the columns in the set's own `.load()`, or label the set to request a separate result. A plain set or one that only adds `.load()` can share the path.
+  A bare path or plain set gives the normal selection united with the columns named beside it. A column beside a set with its own columns is added to that set's columns.
   It gives the related rows their own filters, ordering, slice and `.load(...)` (nested under it).
   As in Django, the rows fill the relation itself, so `user.posts.cached` and `await user.posts` then give the filtered rows; `user.posts.filter(...)` and other new queries still see every post.
   With `.label("recent")` they go to a plain list attribute (`user.recent`), and the relation stays unloaded; `.label("best", one=True)` stores the first row, or `None`.
@@ -338,7 +340,7 @@ await User.objects.filter(User.profile.role == Role.admin)  # EXISTS, like any r
 await post.tags                                     # list[Tag]
 await post.tags.add(news, rust)                     # inserts PostTag rows (existing links are kept)
 await post.tags.add(news, through_defaults={"position": 1})  # other fields of the new PostTag rows
-await post.tags.remove(news)                        # deletes them; returns how many
+await post.tags.remove(news)                        # deletes them (a join model with `@soft_delete` soft-deletes them); returns how many
 await post.tags.set([news, py])                     # exactly these
 await post.tags.clear()
 tag = await post.tags.insert(name="go")             # insert a Tag and link it, in one transaction
@@ -460,7 +462,7 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
   `qs2` must set nothing but filters, neither may be sliced, and each side has at most one `filter()`/`exclude()` call, else `QueryError`:
   conditions of one call through a to-many relation must hold for one related row, so two calls can't be joined into one.
 * `User.posts.objects.order_by(-Post.views).label("best", one=True)` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.
-  It needs a to-many relation and takes no slice (it is a limit of one per parent); a slice raises `ValueError`.
+  It needs a to-many relation and a label, and takes no slice (it is a limit of one per parent); a slice raises `ValueError`.
 * `orm.column(Bundle, "items.product.title")` is the column a dotted path names, the same as `Bundle.items.product.title`.
   Each name before the last is a relation, the last a field; an unknown name raises `LookupError`.
   It is for adapters that map request names to columns (search and ordering filters). It is a function, not `Model.column`, so it can't collide with a field named `column`.
@@ -634,18 +636,31 @@ when its row exists but its column is NULL.
   not `[]` (like `sum`). `order_by=Post.views.desc()` (or a list) fixes the element order;
   with `distinct=True` it must use the same expression. It works over a relation
   (`func.array_agg(User.posts.title, order_by=User.posts.title)`, `None` for a user without
-  posts). It does not take an array column, and it can't be a window function.
+  posts). The columns of `order_by` must be on the relation path of the argument: a key
+  that is constant there, a window function, or an aggregate on that path raises `QueryError`.
+  It does not take an array column, and it can't be a window function.
   PostgreSQL only: SQLite raises `QueryError`. The other aggregates take no `order_by`
   (their result does not depend on row order).
 * **Same-relation aggregates share one subquery.** In a `select()` (without `group_by()`,
-  `distinct()`, `lock()`, a limit or an offset), two or more aggregates over the same
+  `having()`, `distinct()`, `lock()`, a limit or an offset, and with no window function,
+  local aggregate or CTE), two or more aggregates over the same
   relation path become one
   `LEFT JOIN LATERAL (SELECT COUNT(*), SUM(...) ...)` instead of one scalar subquery each.
   The result is the same: one row per parent (no fan-out), `0` for an empty count, `None` for
   an empty sum, and each aggregate keeps its own `filter` and `distinct`. Aggregates in
   `filter()`, `order_by()` and `having()` stay scalar subqueries. SQLite has no `LATERAL`
-  and keeps the scalar subqueries. Queries with a limit or offset also keep scalar subqueries,
+  and keeps the scalar subqueries. An aggregate whose `filter` reads only the parent's own
+  columns also stays a scalar subquery. Queries with a limit or offset also keep scalar subqueries,
   so an unindexed parent sort can run before computing the selected aggregates.
+* **Aggregates over to-one paths only join.** An aggregate whose arguments, `order_by` keys and
+  `filter` follow to-one hops only (`func.sum(Post.author.id)`,
+  `func.array_agg(Post.title, order_by=Post.author.name)`) reads a `LEFT JOIN` of the query
+  instead of a subquery, so it gives one value per group, not one per row; a `NULL` foreign key
+  keeps its row. This holds at the query root of a read, not in an `update()`. The `filter` stays an `EXISTS`.
+  A nested scope (a subquery) and the values of `update()` keep the scalar subquery.
+  Like the same aggregate over a local column, `select(Post.title, func.sum(Post.author.id))`
+  without `group_by` and `order_by(func.max(Post.author.name))` give Postgres error 42803;
+  write a per-row value without the aggregate.
 * **String concatenation** has two forms with different `NULL` rules:
   `func.concat(a, " ", b)` is `CONCAT(...)` and reads a `NULL` part as an empty string;
   `a.concat(b)` is `a || b` and is `NULL` when either side is `NULL`.
@@ -849,6 +864,7 @@ await post.refresh()
 await post.refresh(Post.views)                   # some fields
 ```
 
+`refresh()` takes columns of the model only (`Post.views`, not `Post.author.name`), else `TypeError`.
 `refresh()` reads the primary, also on a database with replicas.
 `on_commit` callbacks and `load_x()` still read replicas: use `.using("primary")` there.
 
@@ -1016,6 +1032,9 @@ async with db.transaction():
 `db.transaction(savepoint=False)` joins the enclosing transaction with no savepoint.
 An error that leaves such a block marks the enclosing transaction failed.
 On an outermost block the parameter has no effect.
+A multi-statement call of the ORM itself (a composed insert, a related `set()` or `insert()`) opens no savepoint in an open transaction: its failure marks the transaction.
+Wrap the call in a nested transaction to recover.
+Outside a transaction it runs in a transaction of its own.
 
 ### Database errors
 
@@ -1102,7 +1121,7 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
 * `lock(exclusive=True, *, nowait=False, skip_locked=False)`: `exclusive` is
   `FOR UPDATE`, otherwise `FOR SHARE`. Only the model's own rows are locked
   (`FOR ... OF <table>`), never rows joined by `load()`.
-* `instance.refresh(*fields, lock=False, exclusive=True, nowait=False, skip_locked=False)`
+* `instance.refresh(*fields, lock=False, exclusive=True, nowait=False, skip_locked=False)`: `fields` are columns of the model, else `TypeError`.
   reloads the row with the query set's `lock()` options and returns `True`. A refresh of
   some fields locks the whole row. With `skip_locked`, a row locked elsewhere (or
   deleted) gives `False` and leaves the instance unchanged; otherwise a missing row

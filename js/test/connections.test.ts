@@ -409,6 +409,16 @@ for (const dialect of ['postgres', 'sqlite']) {
         await assert.rejects(read(), /default filter of Order reads scope\.shop/);
       }
       assert.equal(await orders.withoutDefaults().count(), 3);
+      // A lazy mutation and its inspection use the scope of execution, not construction.
+      let deferred!: ReturnType<typeof orders.update>;
+      await scope({ shop: s1.id }, async () => { deferred = orders.update({ total: 31 }); });
+      assert.throws(() => deferred.inspect(), /default filter of Order reads scope\.shop/);
+      await scope({ shop: s2.id }, async () => {
+        deferred.inspect();
+        assert.equal(await deferred, 1);
+        assert.deepEqual((await orders.all()).map((o: any) => o.total), [31]);
+        await orders.update({ total: 30 });
+      });
       await scope({ shop: s1.id }, async () => {
         assert.deepEqual((await orders.all()).map((o: any) => o.total).sort(), [10, 20]);
         assert.equal(await orders.count(), 2);

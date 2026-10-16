@@ -2,6 +2,7 @@
 links with extra fields, COPY."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -9,6 +10,7 @@ import pytest
 from blog.models import Comment, Post, PostTag, Priority, Profile, Role, Tag, User
 
 import orm
+from orm import func
 from conftest import DATABASE_URL
 
 # -- insert_many batches ----------------------------------------------------------------------
@@ -421,17 +423,40 @@ async def test_copy_is_seen_by_query_hooks(clean):
     assert [(e.sql.split(" ", 1)[0], e.rows) for e in events] == [("COPY", 2)]
 
 
+@asynccontextmanager
+async def narrow_views():
+    # A fresh pool has no cached statements on posts, so the type change cannot hit a stale plan.
+    narrow = await orm.connect(DATABASE_URL, max_connections=1, default=False)
+    await narrow.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint")
+    try:
+        yield narrow
+    finally:
+        await narrow.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer")
+        await narrow.close()
+
+
 async def test_copy_fits_narrow_columns(clean):
     # Binary COPY has no parameter types: an Int field must go to smallint as 2 bytes.
-    await clean.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint")
-    try:
-        alice = await User.objects.insert(email="a@x.io", name="A")
-        assert await Post.objects.insert_many([{"author": alice, "title": "t", "body": "b", "views": 7}], copy=True) == 1
-        assert await Post.objects.filter(Post.views == 7).count() == 1
+    async with narrow_views() as narrow:
+        alice = await User.objects.using(narrow).insert(email="a@x.io", name="A")
+        posts = Post.objects.using(narrow)
+        assert await posts.insert_many([{"author": alice, "title": "t", "body": "b", "views": 7}], copy=True) == 1
+        assert await posts.filter(Post.views == 7).count() == 1
         with pytest.raises(orm.DatabaseError, match="out of range"):
-            await Post.objects.insert_many([{"author": alice, "title": "u", "body": "b", "views": 70_000}], copy=True)
-    finally:
-        await clean.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer")
+            await posts.insert_many([{"author": alice, "title": "u", "body": "b", "views": 70_000}], copy=True)
+
+
+async def test_typed_read_of_a_smallint_column(clean):
+    async with narrow_views() as narrow:
+        alice = await User.objects.using(narrow).insert(email="a@x.io", name="A")
+        posts = Post.objects.using(narrow)
+        await posts.insert_many(
+            [{"author": alice, "title": "t", "body": "b", "views": 7}, {"author": alice, "title": "u", "body": "b", "views": 9}]
+        )
+        assert sorted(p.views for p in await posts.all()) == [7, 9]
+        assert sorted(await posts.select(Post.views).scalars()) == [7, 9]
+        agg = await User.objects.using(narrow).select(func.array_agg(User.posts.views, order_by=User.posts.views)).scalars()
+        assert agg == [[7, 9]]
 
 
 async def test_copy_rejections(clean):

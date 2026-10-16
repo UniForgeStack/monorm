@@ -1,5 +1,5 @@
-"""Query-set API: custom query-set classes, prefetch on loaded instances, only() through
-to-one paths, OR of query sets, single-row labels, column paths and model metadata."""
+"""Query-set API: custom query-set classes, prefetch on loaded instances, columns through
+to-one `load()` paths, OR of query sets, single-row labels, column paths and model metadata."""
 
 import os
 import sys
@@ -405,7 +405,7 @@ async def test_a_factory_needs_only_describe_and_insert(clean):
     assert tag_link.post_id == post.id
 
 
-# -- only() through to-one paths (F11) ------------------------------------------------------
+# -- columns through to-one load() paths (F11) ------------------------------------------------------
 
 
 async def test_only_through_a_to_one_path(clean):
@@ -548,8 +548,9 @@ async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
     assert [u.best.title if u.best else None for u in users] == ["hit", "bob", None]
     with pytest.raises(ValueError, match="slice"):
         User.objects.load(User.posts.objects[:2].label("x", one=True))
-    with pytest.raises(orm.QueryError, match="to-many"):
+    with pytest.raises(orm.QueryError, match="to-many") as one_error:
         await Post.objects.load(Post.author.objects.label("writer", one=True))
+    assert "to_attr" not in str(one_error.value)
     with pytest.raises(ValueError, match="field, relation or member"):
         User.objects.load(User.posts.objects.label("name"))
     with pytest.raises(ValueError, match="identifier"):

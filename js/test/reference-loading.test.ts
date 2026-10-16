@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, prefetch, Decimal, Registry, IntegrityError, NotLoaded, type Database } from "../src/index.js";
-import { INTERNAL } from "../src/model.js";
+import { INTERNAL, RELATED } from "../src/model.js";
 import { QuerySet } from "../src/query.js";
 import { DATABASE_URL } from "./helpers.js";
 
@@ -173,6 +173,23 @@ for (const dialect of ["sqlite", "postgres"]) {
     }
   });
 }
+
+test("a set key with no target row gives a NotLoaded that says why", async () => {
+  const registry = new Registry();
+  const m = loads(`datasource db {\n provider = "sqlite"\n}\n${source}`, { registry }) as Dynamic;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    await m["Owner"].objects.using(db).insert({ id: 1, name: "one" });
+    const row = await m["Required"].objects.using(db).insert({ id: 1, ownerId: 1 });
+    assert.throws(() => row.owner, (e: Error) => e instanceof NotLoaded && !/no row of the target/.test(e.message));
+    // Emulate corrupt data: the join found no target for a required key.
+    row[RELATED] = { owner: null };
+    assert.throws(() => row.owner, (e: Error) => e instanceof NotLoaded && /is not loaded: the key is set and no row of the target has it; .*load\(Required\.owner\)/.test(e.message));
+  } finally {
+    await db.close();
+  }
+});
 
 test("load member collision fails atomically", () => {
   const registry = new Registry();

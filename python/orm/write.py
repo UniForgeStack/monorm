@@ -254,7 +254,7 @@ class _Insert:
             raise TypeError("on_conflict(update_values={}) updates nothing; use update=False to skip conflicting rows")
         if fields is None and update_values is None:
             key = model._meta.key_names
-            fields = [f for f in self._fields if f in self._provided and f not in target and f not in key]
+            fields = [f for f in self._fields if f in self._provided and f not in target and f not in key and f != model._meta.version_field]
         if update_values is not None:
             set_ = (assignments(model, update_values, IRContext(model, params)), params)
             overlap = set(fields or ()) & {a["field"] for a in set_[0]}
@@ -344,8 +344,9 @@ class InsertOne(_Insert, Generic[M]):
         ``update=False`` keeps the existing row (``DO NOTHING``). ``update=True`` updates
         it: ``update_fields`` copy the new values, ``update_values`` set values or
         expressions such as ``{"views": Post.views + excluded(Post.views)}``. With
-        neither, every given field except the conflict columns is overwritten.
-        ``await`` gives the affected-row count; ``.returning()`` the row."""
+        neither, every given field except the conflict columns is overwritten, but not the
+        version field. The update also sets ``updated_at`` and adds ``version = version + 1``
+        unless the call sets them. ``await`` gives the affected-row count; ``.returning()`` the row."""
         return self._with_conflict(UpsertOne, columns, where, update, update_fields, update_values)  # type: ignore[no-any-return]
 
     def __await__(self) -> Generator[Any, None, M]:

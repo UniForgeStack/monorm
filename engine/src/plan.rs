@@ -41,6 +41,12 @@ pub struct JoinShape {
     pub start: usize,
     pub pk_pos: usize,
     pub shape: Option<orm_core::behavior::ResultShape>,
+    /// A default filter was ANDed into this join's ON and no bypass removed it: a NULL
+    /// object means "hidden by the filter", not a dangling key.
+    pub filtered: bool,
+    /// A missing object is a dangling key: the parent holds the key and no filter hid the row.
+    /// Bindings leave such a reference unloaded instead of setting it to none.
+    pub dangling: bool,
 }
 
 /// How a statement's rows become objects.
@@ -63,6 +69,8 @@ pub struct PrefetchPlan {
     pub key_type: Vec<ValueType>,
     /// Positions of the relation's `to` fields in the related rows.
     pub child_key_pos: Vec<usize>,
+    /// A default filter was ANDed into the fetch's WHERE and no bypass removed it.
+    pub filtered: bool,
     /// The related model's to-one relation back to the parent, filled in too.
     pub back: Option<String>,
     stmt: SelectStatement,
@@ -106,6 +114,8 @@ pub struct SelectPlan {
     pub stmt: SelectStatement,
     pub types: Vec<ValueType>,
     pub output: Output,
+    /// A default filter was ANDed into the root WHERE and no bypass removed it.
+    pub filtered: bool,
     #[cfg(feature = "composition")]
     pub computations: Vec<crate::behavior::Computation>,
     pub prefetch: Vec<PrefetchPlan>,
@@ -294,7 +304,9 @@ fn has_local_aggregate(cut: &Cut, e: &Expr) -> bool {
                 col_paths_all(f, &mut filter_paths, &mut has_not);
             }
             paths.extend(filter_paths.into_iter().map(|p| cut.path(p)));
-            (is_aggregate(name) && rel.is_none() && paths.iter().all(|p| p.is_empty()))
+            (is_aggregate(name)
+                && ((rel.is_none() && paths.iter().all(|p| p.is_empty()))
+                    || joined_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by).is_some()))
                 || args.iter().any(|a| has_local_aggregate(cut, a))
         }
         Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => has_local_aggregate(cut, l) || has_local_aggregate(cut, r),
@@ -329,6 +341,31 @@ impl Cut<'_> {
             model = target;
         }
         &path[..keep]
+    }
+
+    /// The cut at `level`, a path below `base`.
+    fn at<'l>(&self, level: &'l [String]) -> Option<Cut<'l>>
+    where
+        Self: 'l,
+    {
+        let mut model = self.model;
+        for hop in level.iter().skip(self.base.len()) {
+            model = self.schema.models[model].relation(hop).ok()?.1;
+        }
+        Some(Cut { schema: self.schema, model, base: level })
+    }
+
+    /// Whether the hops of `path` from index `from` on are all to-one (and not through a join model).
+    fn is_to_one_from(&self, path: &[String], from: usize) -> bool {
+        let mut model = self.model;
+        for (i, hop) in path.iter().enumerate().skip(self.base.len()) {
+            let Ok((rel, target)) = self.schema.models[model].relation(hop) else { return false };
+            if i >= from && (rel.kind != RelKind::One || rel.through.is_some()) {
+                return false;
+            }
+            model = target;
+        }
+        true
     }
 }
 
@@ -365,7 +402,8 @@ fn col_paths_all<'e>(e: &'e Expr, out: &mut Vec<&'e [String]>, has_not: &mut boo
     }
 }
 
-/// The paths below `base` that an aggregate reads, with its `rel`.
+/// The paths below `base` that an aggregate reads, with its `rel`; a path that is a prefix of
+/// another and is followed by to-one hops only counts as the longer one.
 fn below_paths<'e>(
     cut: &Cut,
     rel: Option<&'e [String]>,
@@ -384,7 +422,136 @@ fn below_paths<'e>(
         col_paths_all(f, &mut filter_paths, &mut has_not);
     }
     paths.extend(filter_paths.into_iter().map(|p| cut.path(p)));
-    rel.into_iter().chain(paths.into_iter().filter(|p| p.len() > base.len() && p.starts_with(base))).collect()
+    let below: Vec<&[String]> =
+        rel.into_iter().chain(paths.into_iter().filter(|p| p.len() > base.len() && p.starts_with(base))).collect();
+    // Paths that differ only by a to-one tail read one relation: the longest is the one to open.
+    match below.iter().max_by_key(|p| p.len()) {
+        Some(longest) if below.iter().all(|p| longest.starts_with(p) && cut.is_to_one_from(longest, p.len())) => {
+            below.iter().map(|_| *longest).collect()
+        }
+        _ => below,
+    }
+}
+
+/// The to-one paths an aggregate reads at the query root, to join there instead of opening a
+/// subquery: `None` unless it has no `rel`, no path (argument, key or filter) with a to-many
+/// hop, and an argument or key with a non-empty path. The filter's paths are not joined.
+fn joined_paths<'e>(
+    cut: &Cut,
+    rel: Option<&[String]>,
+    args: &'e [Expr],
+    filter: Option<&'e Expr>,
+    order_by: &'e [Order],
+) -> Option<Vec<&'e [String]>> {
+    if rel.is_some() || !cut.base.is_empty() {
+        return None;
+    }
+    let (mut paths, mut has_not) = (vec![], false);
+    for a in args.iter().chain(order_by.iter().map(|o| &o.expr)) {
+        col_paths_all(a, &mut paths, &mut has_not);
+    }
+    let mut filter_paths = vec![];
+    if let Some(f) = filter {
+        col_paths_all(f, &mut filter_paths, &mut has_not);
+    }
+    if !paths.iter().chain(&filter_paths).all(|p| cut.is_to_one_from(p, 0)) {
+        return None;
+    }
+    paths.retain(|p| !p.is_empty());
+    paths.dedup();
+    (!paths.is_empty()).then_some(paths)
+}
+
+/// The aggregates in `e`, not looking inside them, windows or subqueries.
+fn nested_aggregates<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+    match e {
+        Expr::Func { name, .. } if is_aggregate(name) => out.push(e),
+        Expr::Func { args, .. } => args.iter().for_each(|a| nested_aggregates(a, out)),
+        Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => {
+            nested_aggregates(l, out);
+            nested_aggregates(r, out);
+        }
+        Expr::And { items } | Expr::Or { items } => items.iter().for_each(|i| nested_aggregates(i, out)),
+        Expr::In { item, values, .. } => {
+            nested_aggregates(item, out);
+            values.iter().for_each(|v| nested_aggregates(v, out));
+        }
+        Expr::Not { item } | Expr::IsNull { item, .. } | Expr::Like { item, .. } => nested_aggregates(item, out),
+        Expr::Case { whens, default } => case_parts(whens, default).for_each(|c| nested_aggregates(c, out)),
+        _ => {}
+    }
+}
+
+/// Rejects the inputs of an aggregate whose result would be wrong or a raw database error:
+/// an aggregate inside an aggregate that has no deeper relation path (it is constant per group),
+/// and the `order_by` keys of `array_agg` that do not belong to the argument's relation path.
+fn check_aggregate_inputs(
+    cut: &Cut,
+    name: &str,
+    rel: Option<&[String]>,
+    args: &[Expr],
+    order_by: &[Order],
+) -> Result<()> {
+    let base = cut.base;
+    let below = |p: &[String]| p.len() > base.len() && p.starts_with(base);
+    let (mut own, mut has_not) = (vec![], false);
+    for a in args {
+        col_paths(a, &mut own, &mut has_not);
+    }
+    let level = own.iter().copied().chain(rel).filter(|p| below(p)).max_by_key(|p| p.len()).unwrap_or(base);
+    let Some(inner) = cut.at(level) else { return Ok(()) };
+    let mut nested = vec![];
+    for e in args.iter().chain(order_by.iter().map(|o| &o.expr)) {
+        nested_aggregates(e, &mut nested);
+    }
+    for n in nested {
+        let Expr::Func { name: inner_name, args, rel, filter, order_by, .. } = n else { continue };
+        let paths = below_paths(&inner, rel.as_deref(), args, filter.as_deref(), order_by);
+        let Some(longest) = paths.iter().filter(|p| p.len() > level.len()).max_by_key(|p| p.len()) else {
+            return Err(Error::query(format!(
+                "{inner_name}() inside {name}() needs a relation path below the one of {name}(): \
+                 on the same path it is constant for each group"
+            )));
+        };
+        if inner.is_to_one_from(longest, level.len()) {
+            return Err(Error::query(format!(
+                "{inner_name}() inside {name}() reads a to-one path, so it is a plain column per row: \
+                 drop the {inner_name}() and use the column"
+            )));
+        }
+    }
+    if name != "array_agg" || order_by.is_empty() {
+        return Ok(());
+    }
+    for o in order_by {
+        if has_window(&o.expr) {
+            return Err(Error::query("array_agg() order_by can't hold a window function"));
+        }
+        let (mut keys, mut has_not) = (vec![], false);
+        col_paths(&o.expr, &mut keys, &mut has_not);
+        if level.len() > base.len() && !cut.is_to_one_from(level, base.len()) {
+            if !keys.is_empty() && !keys.iter().any(|p| below(p)) {
+                return Err(Error::query(
+                    "array_agg() order_by reads no column of the relation path of its argument: \
+                     the order would be arbitrary",
+                ));
+            }
+        } else if keys.iter().any(|p| below(p) && !cut.is_to_one_from(p, base.len())) {
+            return Err(Error::query(
+                "array_agg() order_by reads a relation path that its argument does not: \
+                 the columns of order_by must be on the path of the argument",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether an aggregate's filter reads columns of the cut's level only (and some column).
+fn cut_filter_is_outer(cut: &Cut, filter: Option<&Expr>) -> bool {
+    let Some(f) = filter else { return false };
+    let (mut paths, mut has_not) = (vec![], false);
+    col_paths_all(f, &mut paths, &mut has_not);
+    !paths.is_empty() && paths.iter().all(|p| cut.path(p).len() <= cut.base.len())
 }
 
 /// The relation path of each aggregate in `e` that is computed per row over a relation
@@ -392,6 +559,11 @@ fn below_paths<'e>(
 fn relation_aggregates(cut: &Cut, e: &Expr, out: &mut Vec<Vec<String>>) {
     match e {
         Expr::Func { name, args, rel, filter, order_by, .. } if is_aggregate(name) => {
+            if cut_filter_is_outer(cut, filter.as_deref())
+                || joined_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by).is_some()
+            {
+                return;
+            }
             let below = below_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by);
             if let Some(first) = below.first() {
                 if below.iter().all(|p| p == first) {
@@ -565,6 +737,8 @@ pub struct Planner<'s> {
     scopes: Vec<Scope>,
     /// Top-level to-one LEFT JOINs (select_related / order_by), keyed by path.
     joins: Vec<(Scope, SExpr)>,
+    /// Whether the statement being planned applies `joins`; an UPDATE or a DELETE does not.
+    applies_joins: bool,
     /// The roots of enclosing queries (alias, model), innermost last: `outer()`.
     outer: Vec<(String, usize)>,
     /// In the recursive part of a CTE: its name, and whether the query read its columns
@@ -588,6 +762,9 @@ pub struct Planner<'s> {
     caps: Capabilities,
     #[cfg(feature = "query-defaults")]
     policy_bypass: bool,
+    /// Paths of the joins whose ON carries a default filter.
+    filtered_joins: Vec<Vec<String>>,
+    root_filtered: bool,
 }
 
 impl<'s> Planner<'s> {
@@ -611,6 +788,7 @@ impl<'s> Planner<'s> {
             source: String::new(),
             scopes: vec![],
             joins: vec![],
+            applies_joins: false,
             outer,
             recursive: None,
             joined: vec![],
@@ -624,6 +802,8 @@ impl<'s> Planner<'s> {
             target,
             caps: target.caps,
             #[cfg(feature = "query-defaults")] policy_bypass: false,
+            filtered_joins: vec![],
+            root_filtered: false,
         };
         p.root = p.model_idx(model)?;
         p.source = match from {
@@ -956,7 +1136,7 @@ impl<'s> Planner<'s> {
         let mut out: Vec<SExpr> = filters.iter().map(|f| self.cond(f)).collect::<Result<_>>()?;
         #[cfg(feature = "query-defaults")]
         if !_without_defaults {
-            if let Some(filter) = &self.model(self.root).query_defaults.filter { out.push(self.cond(filter)?); }
+            if let Some(filter) = &self.model(self.root).query_defaults.filter { out.push(self.cond(filter)?); self.root_filtered = true; }
         }
         #[cfg(feature = "proxy-models")]
         if let Some(filter) = self.partition_filter(self.root, self.root_alias()) { out.push(filter); }
@@ -1015,12 +1195,15 @@ impl<'s> Planner<'s> {
     }
 
     /// Adds the target rows of `rel`, linked to the source rows `src` (alias, model), to
-    /// `stmt`: as its `FROM` (linked in `WHERE`) when `first`, otherwise as inner joins.
+    /// `stmt`: as its `FROM` (linked in `WHERE`) when `first`, otherwise as inner joins
+    /// (a LEFT JOIN when `left`, which only a to-one hop without a join model may use).
     /// A many-to-many relation goes through its join model. Returns the target's alias.
+    #[allow(clippy::too_many_arguments)]
     fn add_hop(
         &mut self,
         stmt: &mut SelectStatement,
         first: bool,
+        left: bool,
         src: (&str, usize),
         rel: &RelationIr,
         target: usize,
@@ -1034,6 +1217,15 @@ impl<'s> Planner<'s> {
                 let link = self.link(src, rel, (&alias, target))?;
                 if first {
                     stmt.from_as(table, Alias::new(&alias)).and_where(link);
+                } else if left {
+                    // A default in the WHERE would drop the rows that the LEFT JOIN keeps.
+                    #[cfg(feature = "query-defaults")]
+                    let link = match tm.query_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
+                        Some(filter) => link.and(self.target_default(target, &alias, filter)?),
+                        None => link,
+                    };
+                    stmt.join_as(JoinType::LeftJoin, table, Alias::new(&alias), link);
+                    return Ok(alias);
                 } else {
                     stmt.join_as(JoinType::InnerJoin, table, Alias::new(&alias), link);
                 }
@@ -1054,6 +1246,8 @@ impl<'s> Planner<'s> {
                     stmt.join_as(JoinType::InnerJoin, jtable, Alias::new(&jalias), to_source)
                         .join_as(JoinType::InnerJoin, table, Alias::new(&alias), to_target);
                 }
+                #[cfg(feature = "query-defaults")]
+                if !self.policy_bypass { if let Some(filter) = &jm.query_defaults.filter { stmt.and_where(self.target_default(self.model_idx(&th.model)?, &jalias, filter)?); } }
             }
         }
         #[cfg(feature = "query-defaults")]
@@ -1081,7 +1275,7 @@ impl<'s> Planner<'s> {
 
         let mut sub = Query::select();
         sub.expr(SExpr::val(1));
-        let alias = self.add_hop(&mut sub, true, (&outer_alias, cur_model_idx), rel, target, "t")?;
+        let alias = self.add_hop(&mut sub, true, false, (&outer_alias, cur_model_idx), rel, target, "t")?;
         self.scopes.push(Scope { path, model: target, alias });
         let body = body(self);
         self.scopes.pop();
@@ -1294,7 +1488,7 @@ impl<'s> Planner<'s> {
         let mut at = (alias, root);
         for (k, hop) in path.iter().enumerate() {
             let (rel, target) = self.model(at.1).relation(hop).map_err(query_err)?;
-            let next = self.add_hop(&mut sub, k == 0, (&at.0, at.1), rel, target, "o")?;
+            let next = self.add_hop(&mut sub, k == 0, false, (&at.0, at.1), rel, target, "o")?;
             at = (next, target);
         }
         sub.expr(col(&at.0, &field.column));
@@ -1652,7 +1846,9 @@ impl<'s> Planner<'s> {
     /// `name(args)`. An aggregate whose arguments (or `rel`) go through relations below
     /// the current scope is computed per row, in a correlated subquery over those
     /// relations: `func.count(User.posts)` is `(SELECT COUNT(*) FROM posts WHERE
-    /// posts.author_id = users.id)`, never a JOIN that would multiply rows.
+    /// posts.author_id = users.id)`, never a JOIN that would multiply rows. The exception
+    /// is an aggregate over to-one paths only at the query root, in a statement that applies
+    /// its joins: it reads the to-one LEFT JOINs of the statement (see `joined_paths`).
     fn func(
         &mut self,
         name: &str,
@@ -1671,6 +1867,15 @@ impl<'s> Planner<'s> {
         if is_aggregate(name) {
             let base = self.scope().path.clone();
             let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
+            check_aggregate_inputs(&cut, name, rel, args, order_by)?;
+            if self.applies_joins {
+                for path in joined_paths(&cut, rel, args, filter, order_by).unwrap_or_default() {
+                    self.ensure_join(path, "an aggregate")?;
+                }
+                if joined_paths(&cut, rel, args, filter, order_by).is_some() {
+                    return self.call(name, args, distinct, filter, order_by);
+                }
+            }
             let below = below_paths(&cut, rel, args, filter, order_by);
             if let Some(path) = below.first().map(|p| p.to_vec()) {
                 if below.iter().any(|p| *p != path.as_slice()) {
@@ -1861,7 +2066,12 @@ impl<'s> Planner<'s> {
                 let mut exprs = vec![arg];
                 let mut slots = vec![];
                 for o in order_by {
-                    exprs.push(self.value(&o.expr, Hint::default())?);
+                    let key = self.value(&o.expr, Hint::default())?;
+                    // Compared as planned: PostgreSQL accepts the same expression written twice, binds included.
+                    if distinct && format!("{key:?}") != format!("{:?}", exprs[0]) {
+                        return Err(Error::query("array_agg(distinct=True) can only order by its argument"));
+                    }
+                    exprs.push(key);
                     slots.push(format!("${}{}", exprs.len(), order_sql(o)));
                 }
                 let order = if slots.is_empty() { String::new() } else { format!(" ORDER BY {}", slots.join(", ")) };
@@ -1918,7 +2128,7 @@ impl<'s> Planner<'s> {
         let pushed = self.scopes.len();
         let mut sub = self.open_hops(path)?;
         let inner = AggCall { filter: if outer.is_some() { None } else { call.filter }, ..*call };
-        let agg = self.agg_call(&inner);
+        let agg = self.agg_call(&inner, pushed);
         self.scopes.truncate(pushed);
         sub.expr(agg?);
         if let Some(f) = outer {
@@ -1929,12 +2139,9 @@ impl<'s> Planner<'s> {
 
     /// Whether an aggregate's filter reads columns of this level only (and some column).
     fn filter_is_outer(&self, filter: Option<&Expr>) -> bool {
-        let Some(f) = filter else { return false };
         let base = self.scope().path.clone();
         let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
-        let (mut paths, mut has_not) = (vec![], false);
-        col_paths_all(f, &mut paths, &mut has_not);
-        !paths.is_empty() && paths.iter().all(|p| cut.path(p).len() <= base.len())
+        cut_filter_is_outer(&cut, filter)
     }
 
     /// `FROM <hop 1> a1 [JOIN <hop 2> a2 ON ...] WHERE a1.to = <scope>.from`, with a scope
@@ -1946,15 +2153,29 @@ impl<'s> Planner<'s> {
         let mut outer = (self.scope().alias.clone(), self.scope().model);
         for (k, hop) in hops.iter().enumerate() {
             let (rel, target) = self.model(outer.1).relation(hop).map_err(query_err)?;
-            let alias = self.add_hop(&mut sub, k == 0, (&outer.0, outer.1), rel, target, "a")?;
+            let left = k > 0 && rel.kind == RelKind::One && rel.through.is_none();
+            let alias = self.add_hop(&mut sub, k == 0, left, (&outer.0, outer.1), rel, target, "a")?;
             self.scopes.push(Scope { path: path[..base.len() + k + 1].to_vec(), model: target, alias: alias.clone() });
             outer = (alias, target);
         }
         Ok(sub)
     }
 
-    fn agg_call(&mut self, c: &AggCall) -> Result<SExpr> {
+    /// `pushed` is the scope depth before `open_hops`: the hops after it are the aggregate's rows.
+    fn agg_call(&mut self, c: &AggCall, pushed: usize) -> Result<SExpr> {
         if c.count_rows && c.args.is_empty() {
+            // A LEFT-joined to-one tail has no row for a NULL key: count its primary key.
+            let tail = match &self.scopes[pushed..] {
+                [.., prev, last] => Some((prev.model, last.model, last.path.clone())),
+                _ => None,
+            };
+            if let Some((prev, target, path)) = tail {
+                let (rel, _) = self.model(prev).relation(path.last().map_or("", |s| s)).map_err(query_err)?;
+                if rel.kind == RelKind::One && rel.through.is_none() {
+                    let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone() };
+                    return self.call("count", &[pk], false, c.filter, &[]);
+                }
+            }
             self.call("count", &[], false, c.filter, &[])
         } else {
             self.call(c.name, c.args, c.distinct, c.filter, c.order_by)
@@ -1977,7 +2198,7 @@ impl<'s> Planner<'s> {
             }
             None => opened = Some(self.open_hops(path)?),
         }
-        let agg = self.agg_call(call);
+        let agg = self.agg_call(call, pushed);
         let hops = self.scopes[pushed..].to_vec();
         self.scopes.truncate(pushed);
         let agg = agg?;
@@ -2038,6 +2259,7 @@ impl<'s> Planner<'s> {
     /// and the model's are stored as they are (`read_sql` applies when they are read).
     fn select_columns(&mut self, q: &Select, items: &[SelectItem], cte: bool) -> Result<SelectPlan> {
         self.enter(q)?;
+        self.applies_joins = true;
         if !q.select_related.is_empty() || !q.prefetch.is_empty() {
             return Err(Error::query("select() can't be combined with load() of relations"));
         }
@@ -2168,12 +2390,12 @@ impl<'s> Planner<'s> {
         windowed |= q.order.iter().any(|o| has_window(&o.expr));
         self.base_select(q, &mut stmt, true)?;
         self.declare_windows(q, &mut stmt)?;
+        self.apply_joins(&mut stmt);
         for group in std::mem::take(&mut self.lateral) {
             if let Some((sub, _)) = group.sub {
                 stmt.join_lateral(JoinType::LeftJoin, sub, Alias::new(&group.alias), SExpr::cust("TRUE"));
             }
         }
-        self.apply_joins(&mut stmt);
         if let Some(lock) = q.lock {
             if aggregated || windowed || q.distinct || !q.distinct_on.is_empty() {
                 return Err(query_err(
@@ -2182,7 +2404,7 @@ impl<'s> Planner<'s> {
             }
             self.apply_lock(&mut stmt, lock)?;
         }
-        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, prefetch: vec![],
+        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, filtered: self.root_filtered, prefetch: vec![],
             #[cfg(feature = "composition")] computations })
     }
 
@@ -2252,7 +2474,8 @@ impl<'s> Planner<'s> {
             let on = self.link((&alias, model), rel, (&new_alias, target))?;
             #[cfg(feature = "query-defaults")]
             let on = match self.model(target).query_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
-                Some(filter) => on.and(self.target_default(target, &new_alias, filter)?), None => on,
+                Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(target, &new_alias, filter)?) }
+                None => on,
             };
             #[cfg(feature = "proxy-models")]
             let on = match self.partition_filter(target, &new_alias) { Some(filter) => on.and(filter), None => on };
@@ -2400,9 +2623,31 @@ impl<'s> Planner<'s> {
         Ok(q)
     }
 
+    /// The default selection of `model` united with `named`; `None` selects the whole model
+    /// (the model has no default selection, or `without_defaults` is set).
+    fn united_fields(&self, model: usize, named: &[String], without_defaults: bool) -> Option<Vec<String>> {
+        #[cfg(feature = "query-defaults")]
+        let defaults = if without_defaults { None } else { self.model(model).query_defaults.fields.as_deref() };
+        #[cfg(not(feature = "query-defaults"))]
+        let defaults: Option<&[String]> = { let _ = (model, without_defaults); None };
+        let mut fields = defaults?.to_vec();
+        for name in named {
+            if !fields.iter().any(|f| f == name) { fields.push(name.clone()); }
+        }
+        Some(fields)
+    }
+
     /// A SELECT of instances (with `select_related` and `prefetch`) or of `select(...)`
     /// columns.
     fn build_select(&mut self, q: &Select) -> Result<SelectPlan> {
+        let united;
+        let q = match &q.model_fields {
+            Some(named) if q.with_default_fields && self.root < self.schema.models.len() => {
+                united = Select { model_fields: self.united_fields(self.root, named, q.without_defaults), with_default_fields: false, ..q.clone() };
+                &united
+            }
+            _ => q,
+        };
         #[cfg(feature = "query-defaults")]
         let defaulted = self.with_query_defaults(q)?;
         #[cfg(feature = "query-defaults")]
@@ -2417,6 +2662,7 @@ impl<'s> Planner<'s> {
             return Err(Error::query("a CTE without a model is read with select(...)"));
         }
         self.enter(q)?;
+        self.applies_joins = true;
         let root = self.model(self.root);
         let alias = self.root_alias().to_owned();
         let mut stmt = Query::select();
@@ -2447,11 +2693,19 @@ impl<'s> Planner<'s> {
                         .ok_or_else(|| Error::query("joined load() paths must list their prefixes first"))?,
                 ),
             };
-            let named = q.related_fields.iter().find(|r| r.path == *path).map(|r| r.fields.as_slice());
+            let entry = q.related_fields.iter().find(|r| r.path == *path);
+            let united = entry.filter(|r| r.with_default_fields).and_then(|r| self.united_fields(model, &r.fields, q.without_defaults));
+            let named = match entry {
+                Some(r) if r.with_default_fields => united.as_deref(),
+                other => other.map(|r| r.fields.as_slice()),
+            };
             #[cfg(feature = "query-defaults")]
-            let named = named.or(if q.without_defaults { None } else { m.query_defaults.fields.as_deref() });
+            let named = named.or(if q.without_defaults || entry.is_some_and(|r| r.with_default_fields) { None } else { m.query_defaults.fields.as_deref() });
             let joined_shape = self.instance_shape(model, named, &[])?;
             let joined_positions = shape_positions(m, joined_shape.as_ref());
+            let filtered = self.filtered_joins.contains(path);
+            let owner = parent.map_or(self.root, |p| joins[p].model);
+            let holds_key = self.model(owner).ir.relations.iter().any(|r| r.name == path[path.len() - 1] && r.foreign_key);
             joins.push(JoinShape {
                 parent,
                 attr: path[path.len() - 1].clone(),
@@ -2459,6 +2713,8 @@ impl<'s> Planner<'s> {
                 start: types.len(),
                 pk_pos: joined_positions.iter().position(|f| f == m.pk).expect("identity selected"),
                 shape: joined_shape,
+                filtered,
+                dangling: holds_key && !filtered,
             });
             for position in joined_positions.iter() {
                 let f = &m.fields()[position];
@@ -2489,12 +2745,13 @@ impl<'s> Planner<'s> {
             for j in &joins { out.extend(crate::behavior::shape_computations(self.model(j.model).native, j.start, &shape_positions(self.model(j.model), j.shape.as_ref()).to_vec())); }
             out
         };
-        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins }, prefetch,
+        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins }, filtered: self.root_filtered, prefetch,
             #[cfg(feature = "composition")] computations })
     }
 
     fn sliced_inner(&mut self, q: &Select) -> Result<SelectStatement> {
         self.enter(q)?;
+        self.applies_joins = true;
         let mut inner = Query::select();
         inner.expr(SExpr::val(1));
         self.base_select(q, &mut inner, true)?;
@@ -2510,6 +2767,7 @@ impl<'s> Planner<'s> {
             stmt.expr(SExpr::cust("COUNT(*)")).from_subquery(inner, Alias::new("sliced"));
         } else {
             self.enter(q)?;
+            self.applies_joins = true;
             stmt.expr(SExpr::cust("COUNT(*)"));
             self.base_select(q, &mut stmt, false)?;
             self.apply_joins(&mut stmt);
@@ -2702,21 +2960,51 @@ fn order_sql(o: &Order) -> &'static str {
     }
 }
 
-/// The schema default order of a model read that gives no `order_by()`.
-#[cfg(feature = "query-defaults")]
-fn with_default_order(schema: &Schema, q: &Select) -> Result<Option<Select>> {
-    if !q.order.is_empty() || q.without_defaults || q.columns.is_some() || q.from.is_some() {
-        return Ok(None);
+/// The order the engine uses for `q`: its own `order_by()`, else the schema default order
+/// of a model read that no bypass removed. Keyset pagination, `first()` and `last()` ask this.
+pub fn effective_order(schema: &Schema, q: &Select) -> Result<Vec<Order>> {
+    if !q.order.is_empty() { return Ok(q.order.clone()); }
+    #[cfg(feature = "query-defaults")]
+    if !q.without_defaults && q.columns.is_none() && q.from.is_none() {
+        return Ok(schema.model(schema.model_idx(&q.model).map_err(query_err)?).query_defaults.order.clone());
     }
-    let order = &schema.model(schema.model_idx(&q.model).map_err(query_err)?).query_defaults.order;
-    Ok((!order.is_empty()).then(|| Select { order: order.clone(), ..q.clone() }))
+    let _ = schema;
+    Ok(vec![])
+}
+
+/// `effective_order` of a select IR document, as `[{field, desc, nulls}]` for bindings.
+/// Default orders are root columns (checked when the schema is prepared).
+pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_json::Value> {
+    let q: Select = serde_json::from_str(select_json).map_err(|e| Error::query(e.to_string()))?;
+    let keys = effective_order(schema, &q)?
+        .into_iter()
+        .map(|o| match o.expr {
+            Expr::Col { path, name } if path.is_empty() => Ok(serde_json::json!({"field": name, "desc": o.desc, "nulls": o.nulls})),
+            _ => Err(Error::query("a default order is a root column")),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(serde_json::Value::Array(keys))
+}
+
+/// The static read flags of each model, `{model: {filtered, fields, related}}`, for bindings.
+pub fn read_flags_json(schema: &Schema) -> serde_json::Value {
+    schema.models.iter().map(|m| (m.ir.name.clone(), serde_json::json!({
+        "filtered": m.read_flags.filtered,
+        "fields": m.read_flags.fields,
+        "related": m.read_flags.related,
+    }))).collect::<serde_json::Map<_, _>>().into()
+}
+
+/// `q` with its default order made explicit; None when it has none to add.
+fn with_default_order(schema: &Schema, q: &Select) -> Result<Option<Select>> {
+    if !q.order.is_empty() { return Ok(None); }
+    let order = effective_order(schema, q)?;
+    Ok((!order.is_empty()).then(|| Select { order, ..q.clone() }))
 }
 
 /// A top-level SELECT with its `WITH` clause.
 pub fn plan_select(schema: &Schema, target: Target, q: &Select, params: &dyn Params) -> Result<SelectPlan> {
-    #[cfg(feature = "query-defaults")]
     let defaulted = with_default_order(schema, q)?;
-    #[cfg(feature = "query-defaults")]
     let q = defaulted.as_ref().unwrap_or(q);
     let virt = derive_ctes(schema, target, &q.with, params)?;
     let mut p = Planner::new(schema, &virt, target, &q.model, q.from.as_deref(), params, vec![], 0)?;
@@ -2761,22 +3049,19 @@ fn plan_prefetch(
         return Err(Error::query("a prefetch query can't select columns or lock rows"));
     }
     if node.one && (rel.kind != RelKind::Many || node.attr.is_none()) {
-        return Err(Error::query(format!("label(name, one=True) needs a to-many relation ({}.{})", pm.ir.name, node.relation)));
+        return Err(Error::query(format!("one=True needs a to-many relation and a label ({}.{})", pm.ir.name, node.relation)));
     }
     let many = rel.kind == RelKind::Many && !node.one;
     let mut q = node.query.clone();
     if node.one {
         if q.limit.is_some() || q.offset.is_some() {
-            return Err(Error::query("one=True takes the first row by the query's order; drop the slice"));
+            return Err(Error::query("one=True takes the first row by the query's order and no slice"));
         }
         q.limit = Some(Count::Value(1));
     }
     q.without_defaults |= without_defaults;
     let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone() }, desc: false, nulls: None }).collect();
-    #[cfg(feature = "query-defaults")]
-    if q.order.is_empty() && !q.without_defaults {
-        q.order = cm.query_defaults.order.clone();
-    }
+    q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
     let slice = match sliced {
         false => None,
@@ -2815,7 +3100,12 @@ fn plan_prefetch(
             let jm = schema.model(schema.model_idx(&th.model).map_err(query_err)?);
             let (src, dst) = (jm.field(&th.source).map_err(query_err)?, jm.field(&th.target).map_err(query_err)?);
             let jalias = p.alias("m");
-            let on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to[0]).map_err(query_err)?.column));
+            #[cfg_attr(not(feature = "query-defaults"), allow(unused_mut))]
+            let mut on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to[0]).map_err(query_err)?.column));
+            #[cfg(feature = "query-defaults")]
+            if !p.policy_bypass {
+                if let Some(filter) = &jm.query_defaults.filter { on = on.and(p.target_default(schema.model_idx(&th.model).map_err(query_err)?, &jalias, filter)?); }
+            }
             plan.stmt.join_as(JoinType::InnerJoin, Alias::new(jm.table()), Alias::new(&jalias), on);
             let k = col(&jalias, &src.column);
             plan.stmt.expr_as(k.clone(), Alias::new("_key"));
@@ -2868,6 +3158,7 @@ fn plan_prefetch(
         key_pos: rel.from.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
         key_type: rel.from.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
+        filtered: plan.filtered,
         back,
         stmt: plan.stmt,
         dialect: target.dialect,
@@ -3085,6 +3376,10 @@ pub fn plan_insert(
                     let f = m.field(&a.field).map_err(query_err)?;
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
                     clause.value(Alias::new(&f.column), v);
+                }
+                #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
+                for (column, expr) in maintained(m, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name)) {
+                    clause.value(Alias::new(column), expr);
                 }
                 clause.to_owned()
             }

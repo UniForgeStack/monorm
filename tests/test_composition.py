@@ -98,6 +98,42 @@ async def test_composed_create_attach_update_delete(provider):
         await db.close()
 
 
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_a_failed_composed_insert_marks_the_enclosing_transaction(provider):
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
+    registry = orm.Registry()
+    models = orm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    Person, Manager = models["Person"], models["Manager"]
+    db = await orm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    try:
+        bad = {"name": "Bob", "salary": 10, "level": 0}
+        # Outside a transaction the insert is atomic: its root row rolls back.
+        with pytest.raises(orm.IntegrityError):
+            await Manager.objects.using(db).insert(**bad)
+        assert await Person.objects.using(db).count() == 0
+        # Inside one it opens no savepoint: the failure marks the transaction.
+        with pytest.raises(orm.TransactionAborted) as e:
+            async with db.transaction():
+                with pytest.raises(orm.IntegrityError):
+                    await Manager.objects.using(db).insert(**bad)
+        assert isinstance(e.value.__cause__, orm.IntegrityError)
+        assert await Person.objects.using(db).count() == 0
+        # A nested transaction() recovers.
+        async with db.transaction():
+            with pytest.raises(orm.IntegrityError):
+                async with db.transaction():
+                    await Manager.objects.using(db).insert(**bad)
+            await Manager.objects.using(db).insert(name="Ok", salary=1, level=1)
+        assert await Person.objects.using(db).count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 SCOPED = '''
 model Person {
  id Int @id @default(autoincrement())
@@ -143,3 +179,27 @@ async def test_composed_writes_read_the_scope(provider):
     finally:
         await db.drop_tables()
         await db.close()
+
+
+@pytest.mark.parametrize("field,capability", [
+    ("version Int @default(0) @locking.version", "optimistic-locking"),
+    ("deleted DateTime? @soft_delete.deleted_at", "soft-delete"),
+    ("changed DateTime @default(now()) @timestamps.updated_at", "updated-at"),
+])
+def test_a_role_on_a_composed_model_is_rejected(field, capability):
+    if capability not in json.loads(_native.native_artifact())["capabilities"]:
+        pytest.skip(f"requires a {capability} native artifact")
+    source = f'''
+model Person {{
+ id Int @id
+ @@map("composition06_role_people")
+}}
+model Employee {{
+ salary Int
+ {field}
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+ @@map("composition06_role_employees")
+}}
+'''
+    with pytest.raises(Exception, match="not supported on a composed model"):
+        orm.loads('datasource db {\n provider = "sqlite"\n}\n' + source, registry=orm.Registry())

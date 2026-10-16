@@ -44,6 +44,14 @@ pub enum Outcome {
 
 /// Runs `plan` on `conn` (the pool or a transaction).
 pub async fn run(conn: &dyn Executor, target: Target, plan: Plan) -> Result<Outcome> {
+    run_in(conn, target, plan, true).await
+}
+
+/// [`run`]; `own_tx` is false when `conn` is already a transaction, so a multi-statement
+/// plan opens no savepoint in it.
+pub async fn run_in(conn: &dyn Executor, target: Target, plan: Plan, own_tx: bool) -> Result<Outcome> {
+    #[cfg(not(feature = "model-composition"))]
+    let _ = own_tx;
     let d = target.dialect;
     Ok(match plan {
         Plan::Select(p) => Outcome::Select(Box::new(run_select(conn, target, p).await?)),
@@ -73,9 +81,9 @@ pub async fn run(conn: &dyn Executor, target: Target, plan: Plan) -> Result<Outc
             }
         }
         #[cfg(feature = "model-composition")]
-        Plan::ComposedInsert(insert) => return crate::composed::run_insert(conn, target, *insert).await,
+        Plan::ComposedInsert(insert) => return crate::composed::run_insert(conn, target, *insert, own_tx).await,
         #[cfg(feature = "model-composition")]
-        Plan::ComposedMutation(plan) => return crate::composed::run_mutation(conn, target, *plan).await,
+        Plan::ComposedMutation(plan) => return crate::composed::run_mutation(conn, target, *plan, own_tx).await,
     })
 }
 
@@ -442,7 +450,7 @@ pub fn plan_inserts(
 /// without `returning` the affected-row count.
 pub async fn run_inserts(conn: &dyn Executor, target: Target, mut plans: Vec<Plan>, own_tx: bool, returning: bool) -> Result<Outcome> {
     if plans.len() == 1 {
-        return Ok(match run(conn, target, plans.pop().expect("one plan")).await? {
+        return Ok(match run_in(conn, target, plans.pop().expect("one plan"), own_tx).await? {
             Outcome::Rows { rows, .. } if !returning => Outcome::Affected(rows.len() as u64),
             out => out,
         });
@@ -457,7 +465,7 @@ pub async fn run_inserts(conn: &dyn Executor, target: Target, mut plans: Vec<Pla
     let mut affected = 0;
     let mut failed = None;
     for plan in plans {
-        match run(exec, target, plan).await {
+        match run_in(exec, target, plan, false).await {
             Ok(Outcome::Rows { model, rows, types, .. }) => {
                 affected += rows.len() as u64;
                 returned = Some((model, types));

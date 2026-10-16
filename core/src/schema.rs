@@ -6,6 +6,17 @@ use crate::ir::{ColType, EnumIr, EnumStorage, ExtensionIr, FieldIr, FunctionIr, 
 
 pub type Result<T> = std::result::Result<T, String>;
 
+/// Static facts about a model's read defaults, set when the schema is prepared.
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct ReadFlags {
+    /// Some default carries a filter, so a to-one reference to the model can be absent.
+    pub filtered: bool,
+    /// The default field list of the model, if one is set.
+    pub fields: Option<Vec<String>>,
+    /// The relation paths a default read loads with it.
+    pub related: Vec<Vec<String>>,
+}
+
 pub struct Model {
     pub ir: ModelIr,
     /// The first primary key field's position.
@@ -18,6 +29,8 @@ pub struct Model {
     pub file_fields: Vec<crate::file_storage::PreparedFileField>,
     #[cfg(feature = "query-defaults")]
     pub query_defaults: crate::selection::PreparedDefaults,
+    /// What read defaults mean for this model, for codegen and bindings; empty without any default.
+    pub read_flags: ReadFlags,
     /// `@timestamps.updated_at` field positions; ORM updates set them.
     #[cfg(feature = "updated-at")]
     pub updated_at: Vec<usize>,
@@ -67,6 +80,7 @@ impl Model {
             #[cfg(feature = "file-storage")] file_fields: vec![],
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             #[cfg(feature = "query-defaults")] query_defaults: Default::default(),
+            read_flags: ReadFlags::default(),
             #[cfg(feature = "updated-at")] updated_at: vec![],
             #[cfg(feature = "soft-delete")] soft_delete: None,
             #[cfg(feature = "optimistic-locking")] version: None,
@@ -236,6 +250,7 @@ impl Schema {
                 #[cfg(feature = "file-storage")] file_fields: file_fields.next().expect("prepared file model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 #[cfg(feature = "query-defaults")] query_defaults: Default::default(),
+                read_flags: ReadFlags::default(),
                 #[cfg(feature = "updated-at")] updated_at: vec![],
                 #[cfg(feature = "soft-delete")] soft_delete: None,
                 #[cfg(feature = "optimistic-locking")] version: None,
@@ -268,6 +283,18 @@ impl Schema {
         crate::tracking::prepare(&mut models, &model_index, &ir.behavior)?;
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
+        // Composed writes run no column role, so a role there would be silently skipped.
+        #[cfg(feature = "composition")]
+        for m in models.iter().filter(|m| owner_links.iter().any(|l| l.child == m.owner)) {
+            let roles: &[(&str, bool)] = &[
+                #[cfg(feature = "updated-at")] ("@timestamps.updated_at", !m.updated_at.is_empty()),
+                #[cfg(feature = "soft-delete")] ("@soft_delete.deleted_at", m.soft_delete.is_some()),
+                #[cfg(feature = "optimistic-locking")] ("@locking.version", m.version.is_some()),
+            ];
+            if let Some((role, _)) = roles.iter().find(|(_, declared)| *declared) {
+                return Err(format!("model {}: {role} is not supported on a composed model", m.ir.name));
+            }
+        }
         #[cfg(feature = "proxy-models")]
         let proxy_models = {
             let mut seen = std::collections::BTreeSet::new();
@@ -288,6 +315,7 @@ impl Schema {
                     return Err(format!("{}: proxy must share its root storage owner", proxy.model));
                 }
             }
+            crate::tracking::inherit_proxy_roles(&mut models, &model_index, &ir.behavior.proxy_models)?;
             models.iter().map(|m| crate::proxy::prepare(&m.ir.name, m.fields(), &enums,
                 ir.behavior.proxy_models.iter().find(|p| p.model == m.ir.name))).collect::<Result<Vec<_>>>()?
         };

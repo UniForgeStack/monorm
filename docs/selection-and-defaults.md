@@ -24,6 +24,7 @@ value, and omitted field access raises `NotLoaded` rather than returning `None`.
 Columns of later `load()` calls add to the selection. `load()` without items resets to every public scalar field. It does not change
 filters or reference loading. Column expressions and writes remain usable for
 excluded fields. Insert requirements remain unchanged.
+A bare relation path beside columns of that relation (`load(Book.author, Book.author.bio)`) loads the related model's default selection united with those columns.
 
 `only()` is in the core. Schema query defaults need the `query-defaults` extension.
 

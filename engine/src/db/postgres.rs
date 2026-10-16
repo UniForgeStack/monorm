@@ -416,13 +416,28 @@ impl RowSet for PgRows {
     }
 
     fn cell(&self, row: usize, col: usize, ty: ValueType) -> DbResult<Cell<'_>> {
-        cell(&self.0[row], col, ty)
+        let r = &self.0[row];
+        // The IR type has no int2 or float4; read the wire type, as fetch() does.
+        match raw_type("", r.columns()[col].type_()) {
+            Ok(RawType::SmallInt) => opt(r, col, |v: i16| Cell::Int(v.into())),
+            Ok(RawType::Real) => opt(r, col, |v: f32| Cell::Float(v.into())),
+            Ok(RawType::SmallIntArray) => list(r, col, |v: i16| Cell::Int(v.into())),
+            Ok(RawType::RealArray) => list(r, col, |v: f32| Cell::Float(v.into())),
+            _ => cell(r, col, ty),
+        }
     }
 
     fn value(&self, row: usize, col: usize, ty: ValueType) -> DbResult<Value> {
         let r = &self.0[row];
         if ty.array {
             return Err(DbError::other("an array can't be a relation key"));
+        }
+        let wire = r.columns()[col].type_();
+        if *wire == Type::INT2 {
+            return Ok(Value::Int(get::<i16>(r, col)?.map(i32::from)));
+        }
+        if *wire == Type::FLOAT4 {
+            return Ok(Value::Double(get::<f32>(r, col)?.map(f64::from)));
         }
         Ok(match ty.ty {
             ColType::BigInt => Value::BigInt(get(r, col)?),

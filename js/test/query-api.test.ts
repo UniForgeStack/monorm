@@ -1,5 +1,5 @@
-/** Query-set API: query-set classes, prefetch on loaded instances, only() through to-one
- * paths, OR of query sets, single-row labels, column paths and model metadata. */
+/** Query-set API: query-set classes, prefetch on loaded instances, columns through to-one
+ * `load()` paths, OR of query sets, single-row labels, column paths and model metadata. */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -254,7 +254,7 @@ test("a factory needs only describe and insert", async () => {
   assert.equal(link["postId"], post["id"]);
 });
 
-// -- only() through to-one paths --------------------------------------------------------------
+// -- columns through to-one load() paths --------------------------------------------------------------
 
 test("load() through a to-one path", async () => {
   const { posts: rows } = await seed();
@@ -372,6 +372,7 @@ test("label one stores a row or null", async () => {
   const users = await User.objects.orderBy("id").load(User.posts.objects.orderBy("-views").label("best", { one: true }));
   assert.deepEqual(users.map((u) => u.best?.title ?? null), ["hit", "bob", null]);
   assert.throws(() => User.objects.load(User.posts.objects.slice(0, 2).label("x", { one: true })), /slice/);
+  await assert.rejects(async () => { await Post.objects.load(Post.author.objects.label("writer", { one: true })); }, (e: Error) => /to-many/.test(e.message) && !/to_attr/.test(e.message));
 });
 
 test("column() from a dotted path", async () => {
