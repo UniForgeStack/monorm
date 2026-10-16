@@ -98,6 +98,42 @@ async def test_composed_create_attach_update_delete(provider):
         await db.close()
 
 
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_a_failed_composed_insert_marks_the_enclosing_transaction(provider):
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
+    registry = orm.Registry()
+    models = orm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    Person, Manager = models["Person"], models["Manager"]
+    db = await orm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    try:
+        bad = {"name": "Bob", "salary": 10, "level": 0}
+        # Outside a transaction the insert is atomic: its root row rolls back.
+        with pytest.raises(orm.IntegrityError):
+            await Manager.objects.using(db).insert(**bad)
+        assert await Person.objects.using(db).count() == 0
+        # Inside one it opens no savepoint: the failure marks the transaction.
+        with pytest.raises(orm.TransactionAborted) as e:
+            async with db.transaction():
+                with pytest.raises(orm.IntegrityError):
+                    await Manager.objects.using(db).insert(**bad)
+        assert isinstance(e.value.__cause__, orm.IntegrityError)
+        assert await Person.objects.using(db).count() == 0
+        # A nested transaction() recovers.
+        async with db.transaction():
+            with pytest.raises(orm.IntegrityError):
+                async with db.transaction():
+                    await Manager.objects.using(db).insert(**bad)
+            await Manager.objects.using(db).insert(name="Ok", salary=1, level=1)
+        assert await Person.objects.using(db).count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 SCOPED = '''
 model Person {
  id Int @id @default(autoincrement())

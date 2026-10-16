@@ -545,6 +545,9 @@ await db.transaction(async () => {
 `db.transaction(fn, { savepoint: false })` joins the enclosing transaction with no savepoint.
 An error that leaves such a call marks the enclosing transaction failed.
 On an outermost call the option has no effect.
+A multi-statement call of the ORM itself (a composed insert, a related `set()` or `insert()`) opens no savepoint in an open transaction: its failure marks the transaction.
+Wrap the call in a nested transaction to recover.
+Outside a transaction it runs in a transaction of its own.
 
 ### Protected writes
 

@@ -75,7 +75,7 @@ async fn check(url: &str) {
         vec![vec![Some(10i32.into())]],
     )
     .unwrap();
-    let Outcome::Rows { rows, types, .. } = composed::run_insert(db.as_ref(), target, customer)
+    let Outcome::Rows { rows, types, .. } = composed::run_insert(db.as_ref(), target, customer, true)
         .await
         .unwrap()
     else {
@@ -101,7 +101,7 @@ async fn check(url: &str) {
         vec![vec![Some(99i32.into())]],
     )
     .unwrap();
-    assert!(composed::run_insert(db.as_ref(), target, attach)
+    assert!(composed::run_insert(db.as_ref(), target, attach, true)
         .await
         .is_err());
     assert!(composed::prepare_attach(
@@ -124,7 +124,7 @@ async fn check(url: &str) {
             vec![vec![Some(5i32.into())]],
         )
         .unwrap();
-        assert!(composed::run_insert(db.as_ref(), target, again)
+        assert!(composed::run_insert(db.as_ref(), target, again, true)
             .await
             .is_err());
     }

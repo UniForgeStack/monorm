@@ -2257,7 +2257,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     await resolve(this.state.db ?? (this.instance[DB] as Database | undefined)).transaction(async () => {
       await this.links().filter(this.targetColumn().notIn(keys as never) as never).delete();
       await this.add(...(keys as never[]), { throughDefaults: options?.throughDefaults ?? {} });
-    });
+    }, { savepoint: false });
   }
 
   /** Inserts a related row and links it, in one transaction. No `onConflict`: upsert
@@ -2272,7 +2272,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
         const obj = await new QuerySet<M>(this.meta).using(this.state.db ?? (this.instance[DB] as Database | undefined)).insert(values);
         await this.add(obj as never);
         return [obj];
-      });
+      }, { savepoint: false });
     }, () => { throw new QueryError("inspect() cannot plan a many-to-many insert before its generated key is known; inspect the model insert and link operations separately"); });
   }
 

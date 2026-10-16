@@ -1,7 +1,7 @@
 /** Model composition through the public API; needs an artifact with orm-model-composition selected. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, IntegrityError, loads, Registry, type InspectedStatement } from "../src/index.js";
+import { connect, IntegrityError, TransactionAborted, loads, Registry, type InspectedStatement } from "../src/index.js";
 import { native } from "../src/native.js";
 
 const enabled = (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("model-composition");
@@ -92,6 +92,38 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.equal(deletion.inspect().hasBatching, true);
       await deletion;
       assert.deepEqual(await counts(Person, Employee, Manager, Customer), [1, 1, 0, 1]);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+  test(`a failed composed insert marks the enclosing transaction (${provider})`, { skip: !enabled || !url }, async () => {
+    const registry = new Registry();
+    const models = loads(`datasource db {\n provider = "${provider}"\n}\n${source}`, { registry });
+    const [Person, Manager] = ["Person", "Manager"].map((name) => models[name]!);
+    const db = await connect(url!, { registry, default: false });
+    const objects = (model: unknown) => (model as { objects: { using(db: unknown): Objects } }).objects.using(db);
+    await db.dropTables();
+    await db.createTables();
+    try {
+      const bad = { name: "Bob", salary: 10, level: 0 };
+      // Outside a transaction the insert is atomic: its root row rolls back.
+      await assert.rejects(objects(Manager).insert(bad), IntegrityError);
+      assert.equal(await objects(Person).count(), 0);
+      // Inside one it opens no savepoint: the failure marks the transaction.
+      await assert.rejects(
+        db.transaction(async () => {
+          await assert.rejects(objects(Manager).insert(bad), IntegrityError);
+        }),
+        (e: unknown) => e instanceof TransactionAborted && e.cause instanceof IntegrityError,
+      );
+      assert.equal(await objects(Person).count(), 0);
+      // A nested transaction() recovers.
+      await db.transaction(async () => {
+        await assert.rejects(db.transaction(async () => { await objects(Manager).insert(bad); }), IntegrityError);
+        await objects(Manager).insert({ name: "Ok", salary: 1, level: 1 });
+      });
+      assert.equal(await objects(Person).count(), 1);
     } finally {
       await db.dropTables();
       await db.close();

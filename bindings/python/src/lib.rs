@@ -476,12 +476,13 @@ impl Engine {
         }
         let target = self.target;
         let plan = Planner::plan(&self.schema, target, &op, &PyParams(&params)).map_err(engine_err)?;
+        let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let classes = self.classes.clone();
         let row_cls = row_cls.map(Bound::unbind);
         let db = db.map(Bound::unbind);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let out = exec::run(conn.as_ref(), target, plan).await.map_err(engine_err)?;
+            let out = exec::run_in(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err)?;
             Python::attach(|py| outcome_to_py(py, out, &classes, db, row_cls))
         })
     }
@@ -608,11 +609,12 @@ impl Engine {
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
         let plan = orm_engine::composed::prepare_attach(&self.schema, self.target, model, identity, &fields, values).map_err(engine_err)?;
         let target = self.target;
+        let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let classes = self.classes.clone();
         let db = db.map(Bound::unbind);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let out = orm_engine::composed::run_insert(conn.as_ref(), target, plan).await.map_err(engine_err)?;
+            let out = orm_engine::composed::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err)?;
             Python::attach(|py| outcome_to_py(py, out, &classes, db, None))
         })
     }

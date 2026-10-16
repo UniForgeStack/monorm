@@ -685,10 +685,11 @@ impl Engine {
         }
         let target = self.target;
         let plan = Planner::plan(&self.schema, target, &op, &params(env, params_)?).map_err(engine_err)?;
+        let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let schema = self.schema.clone();
         env.spawn_future_with_callback(
-            async move { exec::run(conn.as_ref(), target, plan).await.map_err(engine_err) },
+            async move { exec::run_in(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
             move |env, out| outcome_js(env, &schema, out),
         )
     }
@@ -1149,10 +1150,11 @@ impl Engine {
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
         let plan = orm_engine::composed::prepare_attach(&self.schema, self.target, &model, identity, &fields, values).map_err(engine_err)?;
         let target = self.target;
+        let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let schema = self.schema.clone();
         env.spawn_future_with_callback(
-            async move { orm_engine::composed::run_insert(conn.as_ref(), target, plan).await.map_err(engine_err) },
+            async move { orm_engine::composed::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
             move |env, out| outcome_js(env, &schema, out),
         )
     }
