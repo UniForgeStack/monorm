@@ -1,0 +1,44 @@
+{
+  "measurement": "measured on a loaded machine; warm dependencies; incremental compilation disabled",
+  "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+  "generated_model_bytes": 305564,
+  "records": [
+    {
+      "variant": "model_baseline",
+      "consumer_source_bytes": 350,
+      "warm_dependency_check_seconds": [
+        2.159275208003237,
+        2.455632417011657,
+        1.6440684589906596
+      ]
+    },
+    {
+      "variant": "tuple",
+      "consumer_source_bytes": 406,
+      "warm_dependency_check_seconds": [
+        2.35269945798791,
+        1.0713102919980884,
+        1.0021052920055808
+      ]
+    },
+    {
+      "variant": "local_named",
+      "consumer_source_bytes": 446,
+      "warm_dependency_check_seconds": [
+        1.1253299999953015,
+        1.110734792004223,
+        1.3781902089976938
+      ]
+    },
+    {
+      "variant": "exported_model_shape",
+      "consumer_source_bytes": 472,
+      "warm_dependency_check_seconds": [
+        1.703311791003216,
+        1.7874762080027722,
+        0.9536891669995384
+      ]
+    }
+  ],
+  "limitations": "Includes generated model type checking and cargo overhead; does not isolate macro expansion, runtime, release monomorphization or binary size. Three local observations per variant, not acceptance thresholds."
+}
