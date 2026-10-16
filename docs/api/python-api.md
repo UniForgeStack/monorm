@@ -990,6 +990,7 @@ User.objects.using(other)              # run a query set on another database
 ```python
 async with db.transaction():          # commit on success, rollback on exception
     async with db.transaction(): ...  # nested: savepoint
+    async with db.transaction(savepoint=False): ...  # nested: joins the outer transaction, no savepoint
 ```
 
 The current transaction lives in a `ContextVar`, so queries inside the block use it
