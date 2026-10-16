@@ -324,6 +324,7 @@ await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.order
 It takes the items of `load()` except columns of the instances' model, and loads every relation with an `IN (...)` query. Only those queries run: the keys come from the instances, so their own rows are not read again.
 The instances are of one model and one database; an unset database means the default.
 Mixed databases raise `QueryError` unless `using=db` names the database to read.
+Hooks, trace, `restore_cause` and replica selection (`_reader()`) skip `orm.prefetch()`.
 
 ### One-to-one and many-to-many
 
@@ -459,7 +460,7 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
   `qs2` must set nothing but filters, neither may be sliced, and each side has at most one `filter()`/`exclude()` call, else `QueryError`:
   conditions of one call through a to-many relation must hold for one related row, so two calls can't be joined into one.
 * `User.posts.objects.order_by(-Post.views).label("best", one=True)` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.
-  It needs a to-many relation and takes no slice (it is a limit of one per parent).
+  It needs a to-many relation and takes no slice (it is a limit of one per parent); a slice raises `ValueError`.
 * `orm.column(Bundle, "items.product.title")` is the column a dotted path names, the same as `Bundle.items.product.title`.
   Each name before the last is a relation, the last a field; an unknown name raises `LookupError`.
   It is for adapters that map request names to columns (search and ordering filters). It is a function, not `Model.column`, so it can't collide with a field named `column`.
@@ -1249,7 +1250,8 @@ remove = db.on_query(log_slow)
   `error` is the first line of the database's message when the statement failed; the ORM call still raises.
   The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
   `db.lock(..., nowait=True)` gives `rows` 1 when it got the lock and 0 when it did not.
-* Each call to the database gives one event: a prefetch query, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
+* Each call to the database gives one event per statement: the prefetch queries that `load()` runs, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
+  `orm.prefetch()` gives no events.
   A call keeps its events until it ends, so a call with many statements holds them all in memory (the review reported 200k events at about +113 MB; not measured here).
   Reads sent to a replica and the lock and unlock of `db.lock(..., session=True)` give events too.
   `COMMIT`, `ROLLBACK` and the `set_config` statements of `db.tenant()` give no event.

@@ -2761,7 +2761,7 @@ fn plan_prefetch(
         return Err(Error::query("a prefetch query can't select columns or lock rows"));
     }
     if node.one && (rel.kind != RelKind::Many || node.attr.is_none()) {
-        return Err(Error::query(format!("one=True needs a to-many relation and to_attr ({}.{})", pm.ir.name, node.relation)));
+        return Err(Error::query(format!("label(name, one=True) needs a to-many relation ({}.{})", pm.ir.name, node.relation)));
     }
     let many = rel.kind == RelKind::Many && !node.one;
     let mut q = node.query.clone();

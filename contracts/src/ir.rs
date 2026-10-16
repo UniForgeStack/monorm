@@ -882,7 +882,7 @@ pub struct Select {
     /// To-one relation paths loaded with LEFT JOINs in the same statement.
     #[serde(default)]
     pub select_related: Vec<Vec<String>>,
-    /// The fields of joined models that `only()` names, by `select_related` path.
+    /// The fields of joined models that `load()` names, by joined relation path.
     #[serde(default)]
     pub related_fields: Vec<RelatedFields>,
     /// Relations of the root model loaded with one extra `IN (...)` query each, inside
