@@ -383,3 +383,95 @@ test("column() from a dotted path", async () => {
   assert.throws(() => column(Post, "nope.title"), /Post has no relation "nope"/);
   assert.throws(() => column(Post, "author.nope"), /User has no field "nope"/);
 });
+
+// -- mutation regressions --------------------------------------------------------------------
+
+for (const key of ["db", "loads", "withoutDefaults"] as const) {
+  test(`or() rejects right-side ${key}`, () => {
+    const left = Post.objects.filter(Post.published.eq(true));
+    // Isolate loads: public load() also sets derived state with independent guards.
+    class LoadOnlyQueries extends QuerySet<PostSpec> {
+      withLoads(): this { return this.clone({ loads: [Post.comments] }); }
+    }
+    const right = key === "db" ? Post.objects.using(getDatabase())
+      : key === "loads" ? new LoadOnlyQueries(Post._meta).withLoads()
+      : Post.objects.withoutDefaults();
+    assert.throws(() => left.or(right), { name: "QueryError", message: new RegExp(`sets ${key}`) });
+  });
+}
+
+for (const side of ["left", "right"] as const) {
+  test(`or() rejects an offset without a limit on the ${side}`, () => {
+    const plain = Post.objects.filter(Post.published.eq(true));
+    const sliced = plain.slice(1);
+    assert.throws(() => side === "left" ? sliced.or(plain) : plain.or(sliced), {
+      name: "QueryError", message: /sliced query set/,
+    });
+  });
+}
+
+test("or() rejects a different model", () => {
+  assert.throws(() => Post.objects.or(User.objects as never), {
+    name: "TypeError", message: /combines query sets of Post/,
+  });
+});
+
+test("or() with an unfiltered left returns all rows", async () => {
+  await seed();
+  const qs = Post.objects.orderBy("title").or(Post.objects.filter(Post.published.eq(false)));
+  assert.deepEqual((await qs).map((p) => p.title), ["bob", "draft", "hit", "quiet"]);
+});
+
+class InvalidRelatedQueries extends RelatedSet<PostSpec> {}
+class InvalidManyRelatedQueries extends ManyRelatedSet<PostSpec> {}
+for (const Invalid of [InvalidRelatedQueries, InvalidManyRelatedQueries]) {
+  test(`query-set classes reject ${Invalid.name}`, (t) => {
+    t.after(() => useQuerySet(Post, QuerySet));
+    assert.throws(() => useQuerySet(Post, Invalid), { name: "TypeError", message: /extends QuerySet/ });
+  });
+}
+
+test("prefetch rejects a column of the instances' own model", async () => {
+  const { alice } = await seed();
+  await assert.rejects(prefetch([alice], User.name), {
+    name: "TypeError", message: /own model has nothing to load/,
+  });
+});
+
+test("column() rejects an unknown own field", () => {
+  assert.throws(() => column(Post, "nope"), { name: "TypeError", message: /Post has no field "nope"/ });
+});
+
+test("describe marks a single primary key unique", () => {
+  assert.equal(describe(Post).fields.find((f) => f.name === "id")!.unique, true);
+  assert.equal(describe(Post).fields.find((f) => f.name === "body")!.unique, false);
+});
+
+test("describe reports a client default", () => {
+  const registry = new Registry();
+  const Item = loads(`model Item {
+  id Int @id
+  token String @client_default(uuid())
+}`, { registry })["Item"]!;
+  const token = describe(Item).fields.find((f) => f.name === "token")!;
+  assert.equal(token.default, "client");
+  assert.equal(token.insert, true);
+});
+
+test("describe keeps an autoincrement field insertable", () => {
+  const id = describe(Post).fields.find((f) => f.name === "id")!;
+  assert.equal(id.default, "database");
+  assert.equal(id.insert, true);
+});
+
+test("describe marks has-many relations nullable", () => {
+  const posts = describe(User).relations.find((r) => r.name === "posts")!;
+  assert.equal(posts.kind, "hasMany");
+  assert.equal(posts.nullable, true);
+  assert.equal(describe(Post).relations.find((r) => r.name === "author")!.nullable, false);
+});
+
+test("describe marks an optional belongs-to nullable", () => {
+  assert.equal(describe(Comment).relations.find((r) => r.name === "author")!.nullable, true);
+  assert.equal(describe(Comment).relations.find((r) => r.name === "post")!.nullable, false);
+});
