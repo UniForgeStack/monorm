@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DatabaseError, Decimal, IntegrityError, QueryError, TransactionAborted, connect, excluded, func, getDatabase, type QueryEvent } from "../src/index.js";
+import { DatabaseError, Decimal, IntegrityError, QueryError, TransactionAborted, connect, excluded, func, getDatabase, type Database, type QueryEvent } from "../src/index.js";
 import { Comment, Post, PostTag, Priority, Profile, Tag, User, type TagInsert } from "./blog/models.js";
-import { DATABASE_URL, replicaUrl, useDatabase } from "./helpers.js";
+import { DATABASE_URL, otherDatabase, replicaUrl, useDatabase } from "./helpers.js";
 
 useDatabase();
 
@@ -361,32 +361,36 @@ test("insertMany copy column types", async () => {
   assert.deepEqual(p.links, ["x", "y"]);
 });
 
-test("insertMany copy fits narrow columns", async () => {
-  const db = getDatabase();
-  await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint");
+// A fresh pool has no cached statements on posts, so the type change cannot hit a stale plan.
+async function withNarrowViews(run: (narrow: Database) => Promise<void>): Promise<void> {
+  const narrow = await otherDatabase();
+  await narrow.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint");
   try {
-    const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-    assert.equal(await Post.objects.insertMany([{ author: alice, title: "t", body: "b", views: 7 }], { copy: true }), 1);
-    assert.equal(await Post.objects.filter(Post.views.eq(7)).count(), 1);
-    await assert.rejects(Post.objects.insertMany([{ author: alice, title: "u", body: "b", views: 70_000 }], { copy: true }), /out of range/);
+    await run(narrow);
   } finally {
-    await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer");
+    await narrow.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer");
+    await narrow.close();
   }
-});
+}
 
-test("typed read of a smallint column", async () => {
-  const db = getDatabase();
-  await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint");
-  try {
-    const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-    await Post.objects.insertMany([{ author: alice, title: "t", body: "b", views: 7 }, { author: alice, title: "u", body: "b", views: 9 }]);
-    assert.deepEqual((await Post.objects.all()).map((p: any) => p.views).sort(), [7, 9]);
-    assert.deepEqual((await Post.objects.select({ v: Post.views }).orderBy(Post.views)).map((r: any) => r.v), [7, 9]);
-    assert.deepEqual(await User.objects.select({ v: func.arrayAgg(User.posts.views, { orderBy: User.posts.views }) }).scalar(), [7, 9]);
-  } finally {
-    await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer");
-  }
-});
+test("insertMany copy fits narrow columns", () =>
+  withNarrowViews(async (narrow) => {
+    const alice = await User.objects.using(narrow).insert({ email: "a@x.io", name: "A" });
+    const posts = Post.objects.using(narrow);
+    assert.equal(await posts.insertMany([{ author: alice, title: "t", body: "b", views: 7 }], { copy: true }), 1);
+    assert.equal(await posts.filter(Post.views.eq(7)).count(), 1);
+    await assert.rejects(posts.insertMany([{ author: alice, title: "u", body: "b", views: 70_000 }], { copy: true }), /out of range/);
+  }));
+
+test("typed read of a smallint column", () =>
+  withNarrowViews(async (narrow) => {
+    const alice = await User.objects.using(narrow).insert({ email: "a@x.io", name: "A" });
+    const posts = Post.objects.using(narrow);
+    await posts.insertMany([{ author: alice, title: "t", body: "b", views: 7 }, { author: alice, title: "u", body: "b", views: 9 }]);
+    assert.deepEqual((await posts.all()).map((p: any) => p.views).sort(), [7, 9]);
+    assert.deepEqual((await posts.select({ v: Post.views }).orderBy(Post.views)).map((r: any) => r.v), [7, 9]);
+    assert.deepEqual(await User.objects.using(narrow).select({ v: func.arrayAgg(User.posts.views, { orderBy: User.posts.views }) }).scalar(), [7, 9]);
+  }));
 
 test("insertMany copy stops at a duplicate key", async () => {
   await Tag.objects.insert({ name: "taken" });
