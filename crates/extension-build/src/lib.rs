@@ -1,12 +1,14 @@
 //! Build frontend for fixed native composition. Cargo owns package resolution.
 pub use orm_contracts::extension::QUERY_DEFAULTS;
-use orm_contracts::extension::{AttributeTarget, Manifest, Pass, HOST_CONTRACT, SCHEMA_CONTRACT};
+use orm_contracts::extension::{AttributeTarget, Manifest, Pass, HOST_CONTRACT, LANGUAGE_CONTRACT, SCHEMA_CONTRACT};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub struct Composition {
     pub manifests: Vec<Manifest>,
     pub passes: Vec<Pass>,
+    /// Language sources of the manifests; the build fills it after `resolve`.
+    pub languages: Vec<language::Embedded>,
 }
 
 impl Composition {
@@ -32,6 +34,11 @@ impl Composition {
             if m.host_contract != HOST_CONTRACT || m.schema_contract != SCHEMA_CONTRACT {
                 return Err(format!("{}: incompatible host/schema contracts; rebuild", m.id));
             }
+            let sections: Vec<_> = m.language_sections().collect();
+            if !sections.is_empty() && m.language_contract != Some(LANGUAGE_CONTRACT) {
+                return Err(format!("{}: incompatible language contract; rebuild", m.id));
+            }
+            for (language, section) in sections { language::validate_section(m, language, section)?; }
             for capability in &m.capabilities {
                 if !orm_contracts::extension::HOST_CAPABILITIES.contains(&capability.as_str()) {
                     return Err(format!("{} requires unavailable host capability {capability}; rebuild with a compatible host contract", m.id));
@@ -86,7 +93,7 @@ impl Composition {
             complete.insert(next.clone());
             ordered.push(passes.remove(&next).unwrap());
         }
-        Ok(Self { manifests, passes: ordered })
+        Ok(Self { manifests, passes: ordered, languages: vec![] })
     }
 
     pub fn pass_ids(&self) -> Vec<&str> { self.passes.iter().map(|p| p.id.as_str()).collect() }
@@ -106,6 +113,7 @@ impl Composition {
             ..Default::default()
         };
         let mut artifact = artifact;
+        artifact.language_members = self.languages.iter().map(|l| l.members.clone()).collect();
         artifact.capabilities.extend(self.host_features());
         if let Some(native) = native {
             artifact.specializations = native.specializations.clone();
@@ -121,6 +129,7 @@ impl Composition {
         let artifact = self.artifact(native);
         let artifact = serde_json::to_string(&artifact).map_err(|e| e.to_string())?;
         let binding = if native.is_some() { "bind(ir)?;" } else { "" };
+        let language = language::source(&self.languages)?;
         let mut source = format!(r#"
 use crate::ir::SchemaIr;
 use crate::behavior::{{Artifact, Manifest, SCHEMA_CONTRACT, validate_declarations, validate_requirements, capture_storage}};
@@ -161,6 +170,7 @@ pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> 
     Ok(())
 }}
 "#, serde_json::to_string(&versions).map_err(|e| e.to_string())?));
+        source.push_str(&language);
         if let Some(native) = native {
             source.push_str(&native.core);
         } else {
@@ -177,6 +187,8 @@ pub fn rust_path(path: &str) -> Result<(), String> {
     }) { return Err(format!("invalid Rust export path {path:?}")); }
     Ok(())
 }
+
+pub mod language;
 
 pub mod native;
 

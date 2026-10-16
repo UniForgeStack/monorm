@@ -747,6 +747,12 @@ export class Registry {
   /** @internal: normalized context is owned by this candidate. */
   setBehavior(value: unknown): void { this.behavior = detached((value ?? {}) as Record<string, unknown>); }
 
+  /** The prepared behavior records of `kind` for one model. */
+  behaviorRecords(kind: string, model: string): readonly Readonly<Record<string, unknown>>[] {
+    const records = this.behavior[kind];
+    return Array.isArray(records) ? (records as Record<string, unknown>[]).filter((r) => r["model"] === model) : [];
+  }
+
   /** The schema IR of every registered model. */
   ir(): SchemaIR {
     const out: SchemaIR = { models: [...this.models.values()].map((m) => m.ir) };

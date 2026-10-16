@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 fn manifest(id: &str, pass: &str, after: &[&str], effects: &[&str]) -> Manifest {
     Manifest {
         id: id.into(), version: "1.0.0".into(), host_contract: HOST_CONTRACT,
-        schema_contract: SCHEMA_CONTRACT, dependencies: BTreeMap::new(),
+        schema_contract: SCHEMA_CONTRACT, language_contract: None, python: None, typescript: None, dependencies: BTreeMap::new(),
         capabilities: vec![], languages: vec!["python".into(), "typescript".into()],
         databases: vec!["postgres".into(), "sqlite".into()], attributes: vec![], exports: vec![],
         passes: vec![Pass { id: pass.into(), phase: Phase::Logical, rust: "extension::lower".into(),
@@ -86,4 +86,16 @@ fn python_keyword_methods_fail_before_artifact_generation() {
         let error = orm_extension_build::native::generate(&mut schema, &specs, &[]).err().unwrap();
         assert!(error.contains("Python keyword"), "{error}");
     }
+}
+
+#[test]
+fn a_language_section_needs_the_contract_and_its_language() {
+    let section = || Some(orm_contracts::extension::LanguageSection { source: "python/x".into(), query_set: "Q".into(), instance: "I".into(), overrides: vec![] });
+    let mut m = manifest("a", "a.lower", &[], &[]);
+    m.python = section();
+    assert!(Composition::resolve(vec![m.clone()]).unwrap_err().contains("language contract"));
+    m.language_contract = Some(orm_contracts::extension::LANGUAGE_CONTRACT);
+    assert!(Composition::resolve(vec![m.clone()]).is_ok());
+    m.languages = vec!["typescript".into()];
+    assert!(Composition::resolve(vec![m]).unwrap_err().contains("requires python in languages"));
 }
