@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["client", "contracts", "extension-build", "model-composition", "query-defaults", "extensions/generic", "extensions/timestamps", "extensions/soft-delete", "extensions/locking", "extensions/proxy", "extensions/proxy-runtime", "core", "engine", "cli", "bindings/python", "bindings/node"]
+members = ["client", "contracts", "extension-build", "model-composition", "extensions/query-defaults", "extensions/generic", "extensions/timestamps", "extensions/soft-delete", "extensions/locking", "extensions/proxy", "extensions/proxy-runtime", "core", "engine", "cli", "bindings/python", "bindings/node"]
 # bench/rust-compare is a separate workspace.
 exclude = ["bench", "storage/reference", "storage/orm-extension"]
 

@@ -27,7 +27,7 @@ esac
 dependency() {
   case $1 in
     proxy-models) echo '"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}' ;;
-    query-defaults) echo '"query_defaults":{"package":"orm-query-defaults","path":"'"$ROOT"'/query-defaults"}' ;;
+    query-defaults) echo '"query_defaults":{"package":"orm-query-defaults","path":"'"$ROOT"'/extensions/query-defaults"}' ;;
     model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/model-composition"}' ;;
     file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/storage/orm-extension"}' ;;
     generic-relations) echo '"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}' ;;
@@ -107,11 +107,11 @@ for artifact in $ARTIFACTS; do
   step "$artifact" npm env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/js' && npm test"
   step "$artifact" bun env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/js' && npm run -s test:bun"
   if has "$artifact" query-defaults; then
-    step "$artifact" query-defaults-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/query-defaults/tests/public/python.py"
-    step "$artifact" query-defaults-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/query-defaults/tests/public/node.mjs"
+    step "$artifact" query-defaults-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/query-defaults/tests/public/python.py"
+    step "$artifact" query-defaults-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/query-defaults/tests/public/node.mjs"
   else
-    step "$artifact" query-defaults-disabled-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/query-defaults/tests/public/disabled.py"
-    step "$artifact" query-defaults-disabled-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/query-defaults/tests/public/disabled.mjs"
+    step "$artifact" query-defaults-disabled-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/query-defaults/tests/public/disabled.py"
+    step "$artifact" query-defaults-disabled-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs"
   fi
   if has "$artifact" file-storage; then
     for url in "sqlite://:memory:" "$ORM_TEST_DATABASE_URL"; do

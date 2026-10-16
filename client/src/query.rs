@@ -6,6 +6,8 @@ use std::{
 };
 
 pub enum One {}
+/// A to-one path whose join can be absent. Filter operands keep their field type.
+pub enum OptionalOne {}
 pub enum Many {}
 pub trait Combine<C> {
     type Output;
@@ -20,6 +22,21 @@ impl Combine<One> for Many {
     type Output = Many;
 }
 impl Combine<Many> for Many {
+    type Output = Many;
+}
+impl Combine<One> for OptionalOne {
+    type Output = OptionalOne;
+}
+impl Combine<OptionalOne> for One {
+    type Output = OptionalOne;
+}
+impl Combine<OptionalOne> for OptionalOne {
+    type Output = OptionalOne;
+}
+impl Combine<Many> for OptionalOne {
+    type Output = Many;
+}
+impl Combine<OptionalOne> for Many {
     type Output = Many;
 }
 /// Field/path tokens have a root source, a value type, and relation cardinality.
@@ -62,7 +79,7 @@ impl<M, T, C> Column<M, T, C> {
             _type: PhantomData,
         }
     }
-    fn expr(&self) -> Expr {
+    pub(crate) fn expr(&self) -> Expr {
         Expr::Col {
             path: self.path.clone(),
             name: self.name.into(),
@@ -122,7 +139,7 @@ impl<M, T, C> Column<M, T, C> {
             _model: PhantomData,
         }
     }
-    pub fn eq_field(self, other: Column<M, T, C>) -> Predicate<M> {
+    pub fn eq_field<C2>(self, other: Column<M, T, C2>) -> Predicate<M> {
         Predicate {
             tree: Tree::Expr(Expr::Cmp {
                 op: ir::CmpOp::Eq,
@@ -164,6 +181,14 @@ impl<M, T> Column<M, T, One> {
             },
             _model: PhantomData,
         }
+    }
+}
+impl<M, T> Column<M, T, OptionalOne> {
+    pub fn asc(self) -> Ordering<M> {
+        Column::<M, T, One>::path(self.name, self.path).asc()
+    }
+    pub fn desc(self) -> Ordering<M> {
+        Column::<M, T, One>::path(self.name, self.path).desc()
     }
 }
 #[derive(Clone)]
