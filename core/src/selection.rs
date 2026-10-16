@@ -48,6 +48,7 @@ pub fn prepare(models: &mut [Model], defaults: &[QueryDefaults]) -> Result<(), S
     for (d, filter) in defaults.iter().zip(filters) {
         let model = models.iter_mut().find(|m| m.ir.name == d.model).expect("validated model");
         let order = d.order.iter().map(|k| Order { expr: Expr::Col { path: vec![], name: k.field.clone() }, desc: k.desc, nulls: k.nulls }).collect();
+        model.read_flags = crate::schema::ReadFlags { filtered: filter.is_some(), fields: d.fields.clone() };
         model.query_defaults = PreparedDefaults { filter, fields: d.fields.clone(), related: d.related.clone(), order };
     }
     Ok(())
