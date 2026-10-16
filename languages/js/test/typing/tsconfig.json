@@ -7,6 +7,9 @@
     "paths": {
       "orm": [
         "../../src/index.ts"
+      ],
+      "orm/ext": [
+        "../../src/ext.ts"
       ]
     }
   },

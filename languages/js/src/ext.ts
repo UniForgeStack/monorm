@@ -1,0 +1,24 @@
+/** The host surface for extension language code, next to the public `orm` API. */
+import type { ModelMeta } from "./model.js";
+import type { ModelSpec } from "./meta.js";
+import { QuerySet } from "./query.js";
+
+export { hardDeleteStatement } from "./query.js";
+
+export const LANGUAGE_CONTRACT = 1;
+
+/** The base of a query-set mixin: a constructor with one rest parameter, as TypeScript requires. */
+export type QuerySetCtor<Q extends QuerySet<ModelSpec> = QuerySet<ModelSpec>> = new (...args: any[]) => Q;
+
+/** The prepared behavior records of `kind` for the model of `qs`. */
+export function behaviorRecords(qs: QuerySet<ModelSpec>, kind: string): readonly Readonly<Record<string, unknown>>[] {
+  const meta = qs.meta;
+  return meta.registry.behaviorRecords(kind, meta.name);
+}
+
+/** The column that a behavior record names in its `field` key. */
+export function behaviorField(meta: ModelMeta, record: Readonly<Record<string, unknown>>): ReturnType<ModelMeta["column"]> {
+  const field = meta.fields.get(String(record["field"]));
+  if (field === undefined) throw new TypeError(`${meta.name} has no field ${String(record["field"])}`);
+  return meta.column(field);
+}

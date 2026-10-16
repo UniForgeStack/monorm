@@ -173,6 +173,7 @@ fn build() -> Result<(), String> {
     let nodes = metadata["resolve"]["nodes"].as_array().ok_or("Cargo metadata missing resolution")?;
     let node = nodes.iter().find(|n| n["id"] == core_package["id"]).ok_or("Cargo metadata missing host resolution")?;
     let mut manifests = vec![];
+    let mut embedded = vec![];
     let mut roots = vec![];
     let mut inputs = orm_extension_build::inputs::Inputs::default();
     inputs.file(&config_path)?;
@@ -201,10 +202,15 @@ fn build() -> Result<(), String> {
             }
             *path = format!("{rust_alias}::{suffix}");
         }
+        let package_dir = Path::new(package["manifest_path"].as_str().unwrap()).parent().unwrap().canonicalize().map_err(|e| e.to_string())?;
+        embedded.extend(orm_extension_build::language::collect(&manifest, &package_dir)?);
         manifests.push(manifest);
     }
     inputs.resolution(&metadata, &roots)?;
-    let composition = Composition::resolve(manifests)?;
+    let mut composition = Composition::resolve(manifests)?;
+    orm_extension_build::language::check(&embedded, &config.host, &config.output)?;
+    embedded.sort_by(|a, b| (&a.members.extension, &a.members.language).cmp(&(&b.members.extension, &b.members.language)));
+    composition.languages = embedded;
     let native = if let Some(selected) = &config.specialization {
         inputs.file(&base.join(&selected.schema))?;
         fs::write(config.output.join("composition.rs"), composition.source()?).map_err(|e| e.to_string())?;

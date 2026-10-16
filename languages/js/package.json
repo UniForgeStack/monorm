@@ -12,6 +12,10 @@
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
     },
+    "./ext": {
+      "types": "./dist/src/ext.d.ts",
+      "default": "./dist/src/ext.js"
+    },
     "./otel": {
       "types": "./dist/src/otel.d.ts",
       "default": "./dist/src/otel.js"

@@ -5,6 +5,10 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 
 pub const HOST_CONTRACT: u32 = 1;
 pub const SCHEMA_CONTRACT: u32 = 1;
+/// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
+pub const LANGUAGE_CONTRACT: u32 = 1;
+/// The languages that an extension can ship code for, as the manifest names them.
+pub const LANGUAGES: [&str; 2] = ["python", "typescript"];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -303,6 +307,55 @@ pub struct Manifest {
     pub passes: Vec<Pass>,
     #[serde(default)]
     pub exports: Vec<Export>,
+    /// The `orm.ext` version that the language code needs; required when a language section exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_contract: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<LanguageSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typescript: Option<LanguageSection>,
+}
+impl Manifest {
+    /// The language section of `language` (`python` or `typescript`).
+    pub fn language_section(&self, language: &str) -> Option<&LanguageSection> {
+        match language { "python" => self.python.as_ref(), "typescript" => self.typescript.as_ref(), _ => None }
+    }
+    /// The languages with a section, in manifest order.
+    pub fn language_sections(&self) -> impl Iterator<Item = (&'static str, &LanguageSection)> {
+        LANGUAGES.into_iter().filter_map(|l| self.language_section(l).map(|s| (l, s)))
+    }
+}
+
+/// The code that an extension ships for one language.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LanguageSection {
+    /// The source directory, relative to the extension crate.
+    pub source: String,
+    /// The export that adds query-set members: a `QuerySet` subclass in Python, a mixin function in TypeScript.
+    pub query_set: String,
+    /// The export that adds instance members.
+    pub instance: String,
+    /// The host members that the extension replaces; every other name collision is an error.
+    #[serde(default)]
+    pub overrides: Vec<String>,
+}
+
+/// What the artifact records about the language code of one extension and language.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LanguageMembers {
+    pub extension: String,
+    pub version: String,
+    pub language: String,
+    pub query_set: String,
+    pub instance: String,
+    /// Member names that the query-set class and the instance class add, sorted.
+    pub query_set_members: Vec<String>,
+    pub instance_members: Vec<String>,
+    pub overrides: Vec<String>,
+    /// SHA-256 of the embedded source files (name, length and content of each, in name order).
+    pub hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -379,11 +432,13 @@ pub struct Artifact {
     pub extensions: BTreeMap<String, String>,
     pub exports: Vec<String>,
     pub specializations: Vec<Specialization>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub language_members: Vec<LanguageMembers>,
 }
 impl Default for Artifact {
     fn default() -> Self {
         Self { host_contract: HOST_CONTRACT, schema_contract: SCHEMA_CONTRACT,
-            passes: vec![], capabilities: vec![], extensions: BTreeMap::new(), exports: vec![], specializations: vec![] }
+            passes: vec![], capabilities: vec![], extensions: BTreeMap::new(), exports: vec![], specializations: vec![], language_members: vec![] }
     }
 }
 

@@ -1421,19 +1421,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   hardDelete(): InspectedStatement<number>;
   hardDelete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
   hardDelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
-    const returning = options.returning ?? false;
-    const plan = () => {
-      const params: unknown[] = [];
-      const ir = { ...this.withoutDefaults().mutationIr("delete", params), hard: true, returning };
-      return { ir, params };
-    };
-    return new InspectedStatement(() => {
-      const { ir, params } = plan();
-      return this.write(ir, params, returning);
-    }, () => {
-      const { ir, params } = plan();
-      return this.inspectIr(ir, params);
-    });
+    return hardDeleteStatement(this, options);
   }
 
   /** Clear the soft-delete field of the matching soft-deleted rows. */
@@ -2378,6 +2366,23 @@ Object.defineProperty(RelationPath.prototype, "objects", {
   },
   configurable: true,
 });
+
+/** The `DELETE` of `qs` with the schema defaults dropped and the soft-delete rewrite off. */
+export function hardDeleteStatement<M extends ModelSpec>(qs: QuerySet<M, any, any, any, any, any>, options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
+  const returning = options.returning ?? false;
+  const plan = () => {
+    const params: unknown[] = [];
+    const ir = { ...qs.withoutDefaults().mutationIr("delete", params), hard: true, returning };
+    return { ir, params };
+  };
+  return new InspectedStatement(() => {
+    const { ir, params } = plan();
+    return qs["write"](ir, params, returning);
+  }, () => {
+    const { ir, params } = plan();
+    return qs["inspectIr"](ir, params);
+  });
+}
 
 type QuerySetClass = new (meta: ModelMeta, state?: QueryState) => QuerySet<ModelSpec>;
 /** On a relation-set class mixed with a query-set class: the relation-set base. */
