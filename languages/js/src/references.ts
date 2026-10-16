@@ -6,6 +6,7 @@ import type { Database } from "./db.js";
 import type { ModelMeta, Row } from "./model.js";
 import type { RelationMeta } from "./meta.js";
 
+// Read at call time: define() sets ModelMeta.filtered after the getters exist, so do not hoist it.
 function targetFiltered(meta: ModelMeta, target: string): boolean {
   return meta.registry.get(target).filtered;
 }

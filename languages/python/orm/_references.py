@@ -36,7 +36,6 @@ def _sources(relation: Any) -> tuple[str, ...]:
 
 
 class ReferenceBelongsTo(BelongsTo[Any, Any]):
-    filtered: bool = False
     optional: bool = False
 
     def __get__(self, obj: Any, owner: Any) -> Any:
@@ -47,7 +46,7 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
         if self.name in data:
             value = data[self.name]
             keys = data.get("_reference_keys", {})
-            absent_is_valid = key is None or self.filtered or (self.optional and self.name not in keys) or keys.get(self.name, _MISSING) == key
+            absent_is_valid = key is None or (self.optional and self.name not in keys) or keys.get(self.name, _MISSING) == key or owner._meta.registry.get(self.target_name)._meta.filtered
             if value is None and absent_is_valid:
                 return None
             if value is not None:
@@ -73,9 +72,7 @@ def install(model: Any) -> None:
             relation = specialized
             model._meta.relations[name] = relation
             setattr(model, name, relation)
-        filtered = model._meta.registry.get(relation.target_name)._meta.filtered
         if isinstance(relation, ReferenceBelongsTo):
-            relation.filtered = filtered
             relation.optional = any(model._meta.fields[n].nullable for n in relation.via_fields)
         references.append((name, relation))
     if not references:

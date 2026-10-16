@@ -290,6 +290,35 @@ async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_joi
         await db.close()
 
 
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
+async def test_the_target_flag_does_not_depend_on_model_order():
+    def field(name, kind="string", **flags):
+        return {"name": name, "column": name, "type": kind, **flags}
+    # The book model is declared before the filtered author model it points at.
+    ir = {"dialect": "sqlite", "models": [
+        {"name": "OBook", "table": "o_books", "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
+         "relations": [{"name": "author", "kind": "one", "target": "OAuthor", "from": "author_id", "to": "id", "foreign_key": True}]},
+        {"name": "OAuthor", "table": "o_authors", "fields": [field("id", "int", primary_key=True), field("visible", "bool")]},
+    ], "behavior": {"schema_contract": 1, "query_defaults": [{"model": "OAuthor", "filter": {"t": "col", "path": [], "name": "visible"}}]}}
+    registry = orm.Registry()
+    classes = orm.define(ir, registry=registry)
+    Author, Book = classes["OAuthor"], classes["OBook"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        await db.execute("PRAGMA foreign_keys = OFF")
+        await Author.objects.using(db).insert_many([{"id": 1, "visible": False}])
+        await Book.objects.using(db).insert_many([{"id": 1, "author_id": 1}, {"id": 2, "author_id": 99}])
+        books = Book.objects.using(db).order_by(Book.id)
+        # The target hides author 1 and has no author 99: the default filter ran, so both are None.
+        assert [b.author for b in await books.load(Book.author).all()] == [None, None]
+        prefetch = Book.author.objects.as_prefetch()
+        assert [b.author for b in await books.load(prefetch).all()] == [None, None]
+    finally:
+        await db.close()
+
+
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_load_path_with_columns_unites_the_default_selection(dialect):
