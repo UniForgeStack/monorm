@@ -566,3 +566,117 @@ async def test_column_from_a_dotted_path(clean):
         orm.column(Post, "nope.title")
     with pytest.raises(LookupError, match="User has no field 'nope'"):
         orm.column(Post, "author.nope")
+
+
+# -- mutation regressions (G10) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("slot", ["db", "loads", "without_defaults"])
+def test_or_rejects_right_side_state(slot):
+    if slot == "db":
+        right = Post.objects.using(object())
+    elif slot == "loads":
+        # Isolate the slot: load() also derives state checked by separate guards.
+        right = Post.objects._clone(_loads=(Post.author,))
+    else:
+        right = Post.objects.without_defaults()
+    with pytest.raises(orm.QueryError, match=f"sets {slot}"):
+        Post.objects | right
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_or_rejects_offset_without_limit(side):
+    plain = Post.objects.filter(Post.published)
+    sliced = Post.objects[1:]
+    with pytest.raises(orm.QueryError, match="sliced"):
+        (sliced | plain) if side == "left" else (plain | sliced)
+
+
+def test_or_rejects_a_different_model():
+    with pytest.raises(TypeError, match="query sets of Post"):
+        Post.objects | User.objects
+
+
+@pytest.mark.parametrize("model, relation", [(Post, "posts"), (Tag, "tags")])
+async def test_changing_query_set_class_discards_cached_relation_class(clean, model, relation):
+    class Before(QuerySet):
+        def marker(self):
+            return "before"
+
+    class After(QuerySet):
+        def marker(self):
+            return "after"
+
+    alice, _, posts = await seed()
+    owner = alice if relation == "posts" else posts[0]
+    try:
+        use_query_set(model, Before)
+        assert getattr(owner, relation).marker() == "before"
+        use_query_set(model, After)
+        assert getattr(owner, relation).marker() == "after"
+    finally:
+        use_query_set(model, QuerySet)
+
+
+@pytest.mark.parametrize("base", [orm.RelatedSet, orm.ManyRelatedSet])
+def test_query_set_class_rejects_relation_subclasses(base):
+    class RelationQueries(base):
+        __slots__ = ()
+
+    with pytest.raises(TypeError, match="subclass of orm.QuerySet"):
+        use_query_set(Post, RelationQueries)
+
+
+async def test_prefetch_rejects_a_model_subclass(clean):
+    alice, _, _ = await seed()
+
+    class SpecialUser(User, registry=orm.Registry()):
+        pass
+
+    special = object.__new__(SpecialUser)
+    special.__dict__.update(alice.__dict__)
+    with pytest.raises(TypeError, match="one model"):
+        await orm.prefetch([alice, special], User.posts)
+
+
+def test_column_rejects_unknown_own_field():
+    with pytest.raises(LookupError, match="Post has no field 'nope'"):
+        orm.column(Post, "nope")
+
+
+def test_describe_primary_key_is_unique():
+    fields = {f["name"]: f for f in orm.describe(Post)["fields"]}
+    assert fields["id"]["unique"] is True
+
+
+def test_describe_reports_client_default():
+    models = orm.loads('model ClientItem {\n id Int @id\n n Int @client_default(3)\n}', registry=orm.Registry())
+    fields = {f["name"]: f for f in orm.describe(models["ClientItem"])["fields"]}
+    assert fields["n"]["default"] == "client"
+
+
+def test_describe_autoincrement_remains_insertable():
+    fields = {f["name"]: f for f in orm.describe(Post)["fields"]}
+    assert fields["id"]["insert"] is True
+
+
+def test_describe_array_python_type_is_list():
+    fields = {f["name"]: f for f in orm.describe(Profile)["fields"]}
+    assert fields["links"]["python_type"] is list
+
+
+async def test_or_with_unfiltered_left_returns_all_rows(clean):
+    await seed()
+    rows = await (Post.objects | Post.objects.filter(Post.title == "missing"))
+    assert {p.title for p in rows} == {"draft", "hit", "quiet", "bob"}
+
+
+def test_describe_optional_belongs_to_is_nullable():
+    relations = {r["name"]: r for r in orm.describe(Comment)["relations"]}
+    assert relations["author"]["nullable"] is True
+
+
+async def test_prefetch_rejects_own_column(clean):
+    alice, _, _ = await seed()
+    with pytest.raises(TypeError, match="own model"):
+        await orm.prefetch([alice], User.name)
