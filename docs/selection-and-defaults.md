@@ -27,7 +27,7 @@ excluded fields. Insert requirements remain unchanged.
 
 `only()` is in the core. Schema query defaults need the `query-defaults` extension.
 
-**Enable:** select the `orm-query-defaults` crate (`query-defaults/`) in your build.
+**Enable:** select the `orm-query-defaults` crate (`extensions/query-defaults/`) in your build.
 See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
 
 The optional `query-defaults` native capability and compiler crate
@@ -128,6 +128,10 @@ await scope({ shop: shop.id }, async () => { const orders = await Order.objects.
 * The frontend sends the scope values as parameters of each statement; the value is bound with the type of the column it is compared with.
 * Closed by default: a read, count, exists, update, delete or `update_many` on a model whose default filter reads `scope.shop` raises `QueryError` when no enclosing `scope()` sets `shop`. Relation hops, prefetches and joined targets of that model check it too.
   The error names each model whose default filter reads the value.
+* A NULL scope value (`None`, `null`) raises `QueryError` ("scope.shop is None/null") when a default filter reads it, because `shop_id = NULL` would match no rows.
+  In TypeScript, the binding rejects `undefined` before any filter reads it ("undefined is not a value").
+  `0`, `""` and `false` are valid values.
+  To read the rows with a NULL `shop_id`, use `without_defaults()` and filter on `shop_id == None`.
 * `sql()`, prepared queries and `prepare_update()` / `prepareUpdate()` read the scope as the query does.
 * `without_defaults()` / `withoutDefaults()` skips the filter and the check.
 * Inner `scope()` values replace outer ones.

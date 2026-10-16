@@ -42,6 +42,22 @@ async def run(provider: str, url: str) -> None:
             raise AssertionError("a read with no scope ran")
         with orm.scope(shop=2):
             assert [r.shop_id for r in await Scoped.objects.using(db)] == [2]
+        with orm.scope(shop=None):
+            try:
+                await Scoped.objects.using(db).count()
+            except orm.QueryError as e:
+                assert "scope.shop is None" in str(e), e
+            else:
+                raise AssertionError("a read with a None scope ran")
+            assert await Scoped.objects.using(db).without_defaults().count() == 2
+        with orm.scope(shop=0):
+            assert await Scoped.objects.using(db).count() == 0
+        for falsy in ("", False):
+            with orm.scope(shop=falsy):
+                try:
+                    await Scoped.objects.using(db).count()
+                except Exception as e:
+                    assert "is None" not in str(e), e  # a type error is fine; the NULL rejection is not
     finally:
         await db.drop_tables()
         await db.close()

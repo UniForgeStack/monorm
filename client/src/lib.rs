@@ -2,6 +2,8 @@
 mod defaults;
 mod dynamic;
 mod named;
+mod prepared;
+mod projection;
 mod query;
 mod relation;
 mod row;
@@ -18,6 +20,8 @@ pub mod value;
 pub use orm_core::dialect::Dialect;
 use orm_core::{ir::SchemaIr, schema::Schema};
 pub use orm_engine::db::Cell;
+pub use prepared::*;
+pub use projection::*;
 pub use query::*;
 #[doc(hidden)]
 pub use sea_query::Value as BindValue;

@@ -375,6 +375,11 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
         inner.push(restOf(item, target));
       }
     }
+    if (base && entries.some((item) => item instanceof RelationPath) && (
+      base.state.filters.length || base.state.order.length || base.state.limit !== undefined || base.state.offset !== undefined || base.state.withoutDefaults
+    )) {
+      throw new QueryError(`${String(path)} has a path and a query set that changes its rows; label() the query set`);
+    }
     if (plain) {
       const qs = base ?? (target.objects as QuerySet<ModelSpec, unknown, string, unknown, never>);
       prefetch.push({ path, queryset: inner.length ? (qs.load as (...i: unknown[]) => typeof qs)(...inner) : qs, toAttr: undefined, one: false });
@@ -633,6 +638,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * (`{ one: true }`: the first row or `null`). `.asPrefetch()` loads a to-one relation
    * by `IN (...)` query instead of a join.
    *
+   * Relation query sets run only inside `load()`; standalone reads and writes
+   * raise `TypeError`. Label a filtered, ordered or sliced set when also loading
+   * a bare path through that relation.
+   *
    * Calls add up. `load()` without items gives full instances again (it bypasses a
    * default selection).
    */
@@ -842,6 +851,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     name: N,
     options: CteOptions<N, M["data"], P, X> = {},
   ): Cte<N, M["data"], M> {
+    this.assertStandalone();
     return makeCte(name, this as never, options as never) as never;
   }
 
@@ -890,6 +900,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   select<const I extends SelectItems<M, S>>(
     items: I,
   ): PreserveRequired<this, Select<M, Simplify<SelectRow<I>>, S, P & ItemsParams<I>, X | ItemsOuter<I, S>, CteColumnsOf<I>>> {
+    this.assertStandalone();
     return makeSelect(this as never, items) as never;
   }
 
@@ -1007,13 +1018,20 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** @internal */
+  assertStandalone(): void {
+    if (this.state.via) throw new TypeError(`a relation query set can only be used inside load(); use ${this.meta.name}.objects for a standalone query`);
+  }
+
+  /** @internal */
   selectIr(op: string, params: unknown[]): IR {
+    this.assertStandalone();
     const [ir, ctx] = this.queryIr(op, params);
     return ctx.finish(ir);
   }
 
   /** @internal */
   subqueryIr(ctx: IRContext, what: string): IR {
+    this.assertStandalone();
     if (this.state.lock) {
       throw new QueryError("a subquery can't lock rows");
     }
@@ -1023,11 +1041,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   /** @internal */
   cteIr(params: unknown[], ctes: Ctes): IR {
+    this.assertStandalone();
     return this.queryIr("select", params, undefined, ctes)[0];
   }
 
   /** @internal */
   mutationIr(op: string, params: unknown[], values?: object): IR {
+    this.assertStandalone();
     const s = this.state;
     if (s.limit !== undefined || s.offset !== undefined) {
       throw new QueryError(`${op}() is not supported on a sliced query set`);
@@ -1059,6 +1079,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    */
   prepare(...check: [X] extends [never] ? [] : [error: "a prepared query can't read outer() columns"]): PreserveRequired<this, Prepared<M, R, P>> {
     void check;
+    this.assertStandalone();
     return new Prepared(this as never) as never;
   }
 
@@ -1133,11 +1154,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     onfulfilled?: ((rows: R[]) => A | PromiseLike<A>) | null,
     onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
   ): Promise<A | B> {
+    this.assertStandalone();
     return this.fromCache().then(onfulfilled, onrejected);
   }
 
   /** @internal */
   fromCache(): Promise<R[]> {
+    this.assertStandalone();
     return cachedRows(this, () => this.fetch().then((rows) => this.checkRows(rows)), this !== (this.meta.objects as unknown));
   }
 
@@ -1254,6 +1277,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     ids?: readonly In<T>[] | null,
     options: { readonly field?: Column<T, M["name"]> } = {},
   ): Promise<Map<T, R>> {
+    this.assertStandalone();
     if (options.field === undefined && this.meta.key.length > 1) {
       throw new QueryError(`inBulk() maps one key field; ${this.meta.name} has a key of several fields, so pass { field } or use filter()`);
     }
@@ -1468,6 +1492,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * or the row with `.returning()`.
    */
   insert(values: M["insert"]): InsertOne<M> {
+    this.assertStandalone();
     return new InsertOne((conflict, returning) => this.insertRows([values], conflict, returning, null), (conflict, returning) => this.inspectInsert([values], conflict, returning, null));
   }
 
@@ -1524,6 +1549,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * row count. No `onConflict`, no instances. */
   insertMany(rows: readonly M["insert"][], options: CopyOptions): Promise<number>;
   insertMany(rows: readonly M["insert"][], options?: BatchOptions | CopyOptions): InsertMany<M> | Promise<number> {
+    this.assertStandalone();
     if (options && "copy" in options && options.copy) {
       return this.copyRows(rows, options);
     }

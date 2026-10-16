@@ -1,0 +1,69 @@
+enum RewardType {
+ PERCENTAGE_DISCOUNT
+ FIXED_DISCOUNT
+ SET_PRICE
+ @@storage(text)
+}
+enum RewardTarget {
+ PRODUCT
+ ORDER
+ @@storage(text)
+}
+enum PriceMode {
+ TOTAL
+ EACH
+ @@storage(text)
+}
+model Tier {
+ id Int @id
+ rewards Reward[]
+ @@map("partition_example_tier")
+}
+model Reward {
+ id Int @default(autoincrement())
+ type RewardType
+ shop_id Int
+ tier_id Int
+ tier Tier @relation(fields: [tier_id], references: [id], onDelete: Cascade)
+ target RewardTarget @default(PRODUCT)
+ mode PriceMode @default(TOTAL)
+ content_hash String @default("")
+ deleted_at DateTime? @soft_delete.deleted_at @map("_deleted_at")
+ percent Decimal? @db.Decimal(5, 2)
+ amount Decimal? @db.Decimal(10, 2)
+ price Decimal? @db.Decimal(10, 2)
+ @@id([id, type])
+ @@map("partition_example_reward")
+ @@index([shop_id])
+ @@check("mode = 'TOTAL' OR target = 'PRODUCT'", name: "reward_mode_total_unless_product")
+ @@partition(list: [type])
+ @@query.filter("shop_id == scope.shop and deleted_at == null")
+}
+model PercentageDiscountReward {
+ percent Decimal @db.Decimal(5, 2)
+ @@proxy.of(Reward)
+ @@proxy.fields(exclude: ["type", "mode", "amount", "price"])
+ @@partition.values([PERCENTAGE_DISCOUNT])
+ @@map("partition_example_percentage")
+ @@check("percent IS NOT NULL AND percent BETWEEN 0 AND 100 AND amount IS NULL AND price IS NULL")
+ @@check("mode = 'TOTAL'")
+ @@index([tier_id, content_hash], unique: true, where: raw("_deleted_at IS NULL AND content_hash <> ''"))
+}
+model FixedDiscountReward {
+ amount Decimal @db.Decimal(10, 2)
+ @@proxy.of(Reward)
+ @@proxy.fields(exclude: ["type", "percent", "price"])
+ @@partition.values([FIXED_DISCOUNT])
+ @@map("partition_example_fixed")
+ @@check("amount IS NOT NULL AND amount >= 0 AND percent IS NULL AND price IS NULL")
+ @@index([tier_id, content_hash], unique: true, where: raw("_deleted_at IS NULL AND content_hash <> ''"))
+}
+model SetPriceReward {
+ price Decimal @db.Decimal(10, 2)
+ @@proxy.of(Reward)
+ @@proxy.fields(exclude: ["type", "percent", "amount"])
+ @@partition.values([SET_PRICE])
+ @@map("partition_example_price")
+ @@check("price IS NOT NULL AND price >= 0 AND percent IS NULL AND amount IS NULL")
+ @@index([tier_id, content_hash], unique: true, where: raw("_deleted_at IS NULL AND content_hash <> ''"))
+}

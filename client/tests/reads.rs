@@ -65,8 +65,25 @@ macro_rules! exercise {
         assert_eq!(runtime.get::<String>("email").unwrap(), "a@example.com");
         assert!(matches!(runtime.get::<i32>("id"), Err(Error::Unloaded(_))));
         type Requested=User<Unloaded,Loaded,Unloaded,Unloaded,orm_client::Cached<Post<Unloaded,Unloaded,Loaded,Unloaded>>>;
+        fn titles<'a,S,P>(row:&'a S)->Vec<&'a str>
+        where S:$module::UserShape<Email=String,Posts=orm_client::LoadedMany<P>>,
+              P:$module::PostShape<Title=String>+'a {
+            row.posts().cached().iter().map(|post|post.title().as_str()).collect()
+        }
+        assert_eq!(titles(&nested),vec!["alpha","beta"]);
+        let full=User::objects.load(User::posts).require().using(&db).get(User::ID_KEY,1).await.unwrap();
+        assert_eq!(titles(&full),vec!["alpha","beta"]);
+        // A loaded cache with the wrong target fields cannot satisfy the same consumer.
+        let wrong_target=User::objects.runtime(&["email","posts.views"]).unwrap()
+            .require().using(&db).get(User::ID_KEY,1).await.unwrap();
+        assert!(wrong_target.is_loaded("posts"));
+        assert!(wrong_target.try_into_static::<Requested>().is_err());
+        let unloaded_cache=User::objects.runtime(&["email"]).unwrap()
+            .require().using(&db).get(User::ID_KEY,1).await.unwrap();
+        assert!(unloaded_cache.try_into_static::<Requested>().is_err());
         let restored:Requested=runtime.try_into_static().unwrap();
         assert_eq!(restored.posts.cached()[0].title, "alpha");
+        assert_eq!(titles(&restored),vec!["alpha","beta"]);
         let empty=Vec::<User>::new().prefetch(User::posts,&db).await.unwrap();
         assert!(empty.is_empty());
         let batch=User::objects.load(User::email).order_by(User::ID.asc()).using(&db).await.unwrap().prefetch(User::posts.load(Post::title),&db).await.unwrap();
@@ -79,6 +96,7 @@ macro_rules! exercise {
         runtime.load_runtime(&["email","posts.title"],&db,false).await.unwrap();
         let accepted:Requested=runtime.try_into_static().unwrap();
         assert_eq!(accepted.posts.cached().len(),2);
+        assert_eq!(titles(&accepted),vec!["alpha","beta"]);
         assert_eq!(accepted.public_json().unwrap(),orm_client::serde_json::json!({"email":"a@example.com","nickname":null,"posts":[{"title":"alpha"},{"title":"beta"}]}));
         let all = User::objects.using(&db).await.unwrap();
         assert_eq!(all.len(), 3);

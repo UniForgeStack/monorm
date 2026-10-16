@@ -204,13 +204,15 @@ tuple!(A, B, C);
 
 impl<M: Model, R, L, D> Query<M, R, L, D> {
     #[doc(hidden)]
-    pub fn explicit_shape(self) -> Query<M, R, L, ExplicitSelection> {
+    pub fn explicit_shape(mut self) -> Query<M, R, L, ExplicitSelection> {
+        self = self.initialized();
         Query::from_parts(self.select, self.filters)
     }
     pub fn without_related(mut self) -> Query<M::WithoutRelated, R, L, D>
     where
         M: ResetRelated,
     {
+        self = self.initialized();
         let defaults = M::default_relations();
         self.select
             .prefetch
@@ -227,6 +229,7 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
         D: BypassDefaults<M>,
         M: ResetRelated,
     {
+        self = self.initialized();
         let defaults = M::default_relations();
         self.select
             .prefetch
@@ -247,6 +250,7 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
             <A as Apply<<D as SelectionBase<M, <A as Descriptor>::Kind>>::Base>>::Output,
         >,
     {
+        self = self.initialized();
         self.select.model_fields =
             Some(<D as SelectionBase<M, <A as Descriptor>::Kind>>::Base::fields());
         descriptor.apply(&mut self.select, &mut self.filters);
@@ -258,6 +262,7 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
         M: ResetScalars,
         D: NextSelection<Scalars>,
     {
+        self = self.initialized();
         self.select.model_fields = Some(M::Full::fields());
         Query::from_parts(self.select, self.filters)
     }
@@ -267,91 +272,6 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
             filters,
             _type: PhantomData,
         }
-    }
-}
-
-/// A generated associated root infers the normal shape without caller generics.
-pub struct QueryRoot<M>(PhantomData<fn() -> M>);
-impl<M: Model> QueryRoot<M> {
-    pub fn without_related(&self) -> Query<M::WithoutRelated>
-    where
-        M: ResetRelated,
-    {
-        self.query().without_related()
-    }
-    pub fn without_defaults(
-        &self,
-    ) -> Query<
-        <DefaultSelection as BypassDefaults<M>>::Output,
-        Optional,
-        Unsliced,
-        <DefaultSelection as BypassDefaults<M>>::Mode,
-    >
-    where
-        DefaultSelection: BypassDefaults<M>,
-        M: ResetRelated,
-    {
-        self.query().without_defaults()
-    }
-    #[doc(hidden)]
-    pub const fn generated() -> Self {
-        Self(PhantomData)
-    }
-    pub fn query(&self) -> Query<M> {
-        Query::new()
-    }
-    pub fn load<A>(&self, a: A) -> RequestedQuery<M, A>
-    where
-        A: Descriptor,
-        DefaultSelection:
-            SelectionBase<M, <A as Descriptor>::Kind> + NextSelection<<A as Descriptor>::Kind>,
-        A: Apply<<DefaultSelection as SelectionBase<M, <A as Descriptor>::Kind>>::Base>,
-    {
-        self.query().load(a)
-    }
-    pub fn all_scalars(&self) -> Query<M::Full, Optional, Unsliced, ExplicitSelection>
-    where
-        M: ResetScalars,
-    {
-        self.query().all_scalars()
-    }
-    pub fn filter(&self, p: Predicate<M::Source>) -> Query<M> {
-        self.query().filter(p)
-    }
-    pub fn exclude(&self, p: Predicate<M::Source>) -> Query<M> {
-        self.query().exclude(p)
-    }
-    pub fn order_by(&self, o: Ordering<M::Source>) -> Query<M> {
-        self.query().order_by(o)
-    }
-    pub fn require(&self) -> Query<M, Required> {
-        self.query().require()
-    }
-    pub fn using<'a>(&self, db: &'a Database<M::Schema>) -> Bound<'a, M> {
-        self.query().using(db)
-    }
-    pub fn offset(&self, n: u64) -> Query<M, Optional, Sliced> {
-        self.query().offset(n)
-    }
-    pub async fn in_bulk<V: Codec + Eq + std::hash::Hash + Clone>(
-        &self,
-        key: Unique<M::Source, V>,
-        ids: impl IntoIterator<Item = V>,
-        db: &Database<M::Schema>,
-    ) -> Result<std::collections::HashMap<V, M>> {
-        self.query().in_bulk(key, ids, db).await
-    }
-    pub fn limit(&self, n: u64) -> Query<M, Optional, Sliced> {
-        self.query().limit(n)
-    }
-    pub fn slice(&self, a: u64, b: u64) -> Result<Query<M, Optional, Sliced>> {
-        self.query().slice(a, b)
-    }
-}
-
-impl<M: Model> From<QueryRoot<M>> for Query<M> {
-    fn from(root: QueryRoot<M>) -> Self {
-        root.query()
     }
 }
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { define, Registry, SchemaError } from '../../../js/dist/src/index.js';
+import { define, Registry, SchemaError } from '../../../../js/dist/src/index.js';
 const registry = new Registry();
 const field = { name: 'id', column: 'id', type: 'int', primary_key: true };
 define({ models: [{ name: 'Plain', table: 'plain', fields: [field] }] }, { registry });

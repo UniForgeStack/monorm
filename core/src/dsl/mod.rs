@@ -218,6 +218,7 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
     }
     if update.is_none() {
         crate::behavior::prepare(&mut ir, None)?;
+        crate::partition::validate(&ir)?;
         for model in &ir.models {
             if !model.fields.iter().any(|field| field.primary_key) {
                 return Err(at(&model.name, None, format!("model {} has no @id field after extension lowering", model.name)));
@@ -255,6 +256,7 @@ pub fn check(ir: SchemaIr) -> Result<(SchemaIr, Schema), String> {
     let json = serde_json::to_string(&ir).map_err(|e| e.to_string())?;
     let schema = Schema::from_ir(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
     crate::migrate::snapshot(&schema)?;
+    for warning in crate::partition::warnings(&ir) { eprintln!("warning: {warning}"); }
     Ok((ir, schema))
 }
 

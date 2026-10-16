@@ -119,6 +119,19 @@ npx orm generate --query-set Post=./queries.js#PostQueries
 
 or in `package.json`: `"orm": { "querySets": { "Post": "./queries.js#PostQueries" } }`.
 
+The tooling native addon's `generateTypescript` function also accepts the mapping
+as its optional third argument:
+
+```ts
+const source = addon.generateTypescript(
+  "schema.prisma", "orm", { Post: "./queries.js#PostQueries" }
+);
+```
+
+The second argument selects the runtime import (default `"orm"`). Omitting the
+mapping, passing `null`, or passing `{}` keeps the default query-set classes.
+This native call uses only the supplied mapping; it does not read the CLI configuration.
+
 Then `Post.objects` is a `PostQueries`, and the methods chain with every builder method in both orders:
 `await Post.objects.published().filter(Post.authorId.eq(1n)).popular()`.
 `PostSpec` gets `queries: PostQueries`, and builder methods return `QuerySetOf<PostSpec, ...>`, a query set with those methods.
@@ -242,6 +255,8 @@ objects without a prototype, get a message naming the expected target model.
   `load(Post.author.name)` keeps whole posts and gives a partial `author`; `load(Post.author.name, Post.author)` gives a whole `author`. `load(User.posts.title)` gives partial posts in `u.posts.cached`.
   Reading an unloaded field is a type error, and past a cast it throws `NotLoaded`.
 * `User.posts.objects` is the relation query set: `Post.objects` bound to `User.posts`.
+  Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
+  A bare path (including a deeper path through the relation) combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `QueryError`. Label the query set to request a separate result. A plain set or one that only adds `.load()` can share the path.
   `load(User.posts.objects.filter(...).orderBy(...).limit(2))` gives the related rows their own query (filtered, nested with `.load()`, or sliced per parent); they fill `u.posts.cached`.
   `.label("top")` puts them in a typed plain array attribute (`u.top: Post[]`) instead; `{ one: true }` stores the first row or `null`.
   `Comment.post.objects.asPrefetch()` loads a to-one relation with an `IN` query instead of a join.
@@ -312,6 +327,7 @@ can run before computing the selected aggregates.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
 compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
 `.asText()` for the last step as text (`->>`, no step can follow),
+a string key is an escaped `E'...'` literal in the SQL (NUL is a `QueryError`), so the same path in `groupBy`, `select`, `having` and `orderBy` has equal text,
 `Doc.meta.jsonContains({ kind: "post" })` (`@>`), `.jsonContainedBy(...)` (`<@`),
 `.hasKey("tags")` (`?`) and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`: a
 scalar merged with an object or array makes an array; `NULL` stays `NULL`).

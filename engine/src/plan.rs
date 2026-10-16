@@ -41,6 +41,9 @@ pub struct JoinShape {
     pub start: usize,
     pub pk_pos: usize,
     pub shape: Option<orm_core::behavior::ResultShape>,
+    /// A default filter was ANDed into this join's ON and no bypass removed it: a NULL
+    /// object means "hidden by the filter", not a dangling key.
+    pub filtered: bool,
 }
 
 /// How a statement's rows become objects.
@@ -63,6 +66,8 @@ pub struct PrefetchPlan {
     pub key_type: Vec<ValueType>,
     /// Positions of the relation's `to` fields in the related rows.
     pub child_key_pos: Vec<usize>,
+    /// A default filter was ANDed into the fetch's WHERE and no bypass removed it.
+    pub filtered: bool,
     /// The related model's to-one relation back to the parent, filled in too.
     pub back: Option<String>,
     stmt: SelectStatement,
@@ -106,6 +111,8 @@ pub struct SelectPlan {
     pub stmt: SelectStatement,
     pub types: Vec<ValueType>,
     pub output: Output,
+    /// A default filter was ANDed into the root WHERE and no bypass removed it.
+    pub filtered: bool,
     #[cfg(feature = "composition")]
     pub computations: Vec<crate::behavior::Computation>,
     pub prefetch: Vec<PrefetchPlan>,
@@ -191,8 +198,31 @@ pub(crate) fn param_template(f: &FieldIr) -> Option<&str> {
     if let Some(t) = &f.write_sql {
         return Some(t);
     }
-    let char_n = f.db_type.as_deref().is_some_and(|t| t == "char" || t.starts_with("char("));
-    (char_n && !f.array).then_some("CAST({} AS bpchar)")
+    is_char_n(f).then_some("CAST({} AS bpchar)")
+}
+
+/// A scalar `char(n)` column, whose values Postgres pads with spaces.
+fn is_char_n(f: &FieldIr) -> bool {
+    f.db_type.as_deref().is_some_and(|t| t == "char" || t.starts_with("char(")) && !f.array
+}
+
+/// A text literal that reads the same under either `standard_conforming_strings`. `$` is
+/// escaped as well: the template pass reads `$<digits>` as a slot.
+fn key_literal(s: &str) -> Result<String> {
+    if s.contains('\0') {
+        return Err(Error::query("a JSON key cannot contain a NUL character"));
+    }
+    let mut out = String::from("E'");
+    for c in s.chars() {
+        match c {
+            '\'' => out.push_str("''"),
+            '\\' => out.push_str("\\\\"),
+            '$' => out.push_str("\\x24"),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    Ok(out)
 }
 
 /// Internal expression templates use numbered slots. SQLite's builder consumes
@@ -565,6 +595,9 @@ pub struct Planner<'s> {
     caps: Capabilities,
     #[cfg(feature = "query-defaults")]
     policy_bypass: bool,
+    /// Paths of the joins whose ON carries a default filter.
+    filtered_joins: Vec<Vec<String>>,
+    root_filtered: bool,
 }
 
 impl<'s> Planner<'s> {
@@ -601,6 +634,8 @@ impl<'s> Planner<'s> {
             target,
             caps: target.caps,
             #[cfg(feature = "query-defaults")] policy_bypass: false,
+            filtered_joins: vec![],
+            root_filtered: false,
         };
         p.root = p.model_idx(model)?;
         p.source = match from {
@@ -933,9 +968,18 @@ impl<'s> Planner<'s> {
         let mut out: Vec<SExpr> = filters.iter().map(|f| self.cond(f)).collect::<Result<_>>()?;
         #[cfg(feature = "query-defaults")]
         if !_without_defaults {
-            if let Some(filter) = &self.model(self.root).query_defaults.filter { out.push(self.cond(filter)?); }
+            if let Some(filter) = &self.model(self.root).query_defaults.filter { out.push(self.cond(filter)?); self.root_filtered = true; }
         }
+        #[cfg(feature = "proxy-models")]
+        if let Some(filter) = self.partition_filter(self.root, self.root_alias()) { out.push(filter); }
         Ok(out)
+    }
+
+    #[cfg(feature = "proxy-models")]
+    fn partition_filter(&self, model: usize, alias: &str) -> Option<SExpr> {
+        self.schema.proxy_models.get(model).and_then(|p| p.partition.as_ref()).map(|p| {
+            sea_query::Expr::cust_with_expr(format!("$1 IN ({})", p.values), col(alias, &p.column))
+        })
     }
 
     /// The relation every column in `e` goes through next, if they all agree and `e`
@@ -1026,6 +1070,8 @@ impl<'s> Planner<'s> {
         }
         #[cfg(feature = "query-defaults")]
         if !self.policy_bypass { if let Some(filter) = &tm.query_defaults.filter { stmt.and_where(self.target_default(target, &alias, filter)?); } }
+        #[cfg(feature = "proxy-models")]
+        if let Some(filter) = self.partition_filter(target, &alias) { stmt.and_where(filter); }
         Ok(alias)
     }
 
@@ -1166,7 +1212,10 @@ impl<'s> Planner<'s> {
                 }
             }
             Expr::Like { item, pattern, ci, neg } => {
+                // LIKE on bpchar keeps the padding in the compared value, except for a literal-prefix pattern; compare as text.
+                let padded = self.target.dialect == Dialect::Postgres && self.hint_of(item).field.is_some_and(is_char_n);
                 let item = self.value(item, Hint::default())?;
+                let item = if padded { template(self.target.dialect, "CAST($1 AS text)", vec![item]) } else { item };
                 let text = match pattern.as_ref() {
                     Expr::Param { i } => self.params.text(self.param(*i)?)?,
                     _ => return Err(Error::query("LIKE pattern must be a string parameter")),
@@ -1346,7 +1395,13 @@ impl<'s> Planner<'s> {
                 self.resolve(path, name)?
             },
             Expr::Param { i } => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
-            Expr::Scope { name } => bind(self.params.value(self.scope_param(name)?, hint.ty)?, hint.field),
+            Expr::Scope { name } => {
+                let value = self.params.value(self.scope_param(name)?, hint.ty)?;
+                if !value.is_some() {
+                    return Err(Error::query(format!("scope.{name} is None/null: a NULL scope value would match no rows; use a filter on the column for NULL rows")));
+                }
+                bind(value, hint.field)
+            }
             Expr::Const { value } => SExpr::val(*value),
             Expr::Int { value } => SExpr::cust(value.to_string()),
             Expr::Text { value } => bind(sea_query::Value::from(value.clone()), hint.field),
@@ -1433,8 +1488,8 @@ impl<'s> Planner<'s> {
         Ok(template(self.target.dialect, format!("{}({config}{slots})", name.to_uppercase()), planned))
     }
 
-    /// `<item> -> 'a' -> 0 ...` (`->>` for the last step with `text`): keys bind as text,
-    /// indexes are written into the SQL.
+    /// `<item> -> 'a' -> 0 ...` (`->>` for the last step with `text`): keys and indexes are written into
+    /// the SQL, so equal paths have equal text in GROUP BY and SELECT.
     fn json_path(&mut self, item: &Expr, path: &[JsonKey], text: bool) -> Result<SExpr> {
         if self.target.dialect == Dialect::Sqlite {
             return Err(Error::query("sqlite does not support JSON paths"));
@@ -1445,7 +1500,7 @@ impl<'s> Planner<'s> {
         if self.expr_type(item)? != ValueType::scalar(ColType::Json) {
             return Err(Error::query("a JSON path needs a Json column"));
         }
-        let mut exprs = vec![self.value(item, Hint::default())?];
+        let exprs = vec![self.value(item, Hint::default())?];
         let mut sql = String::from("$1");
         for (k, key) in path.iter().enumerate() {
             let op = if text && k + 1 == path.len() { "->>" } else { "->" };
@@ -1455,10 +1510,7 @@ impl<'s> Planner<'s> {
                     let i = i32::try_from(*i).map_err(|_| Error::query(format!("JSON index {i} is outside the 32-bit range")))?;
                     format!("{base} {op} {i}")
                 }
-                JsonKey::Key(s) => {
-                    exprs.push(SExpr::val(s.clone()));
-                    format!("{base} {op} ${}", exprs.len())
-                }
+                JsonKey::Key(s) => format!("{base} {op} {}", key_literal(s)?),
             };
         }
         Ok(template(self.target.dialect, format!("({sql})"), exprs))
@@ -2142,7 +2194,7 @@ impl<'s> Planner<'s> {
             }
             self.apply_lock(&mut stmt, lock)?;
         }
-        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, prefetch: vec![],
+        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, filtered: self.root_filtered, prefetch: vec![],
             #[cfg(feature = "composition")] computations })
     }
 
@@ -2212,8 +2264,11 @@ impl<'s> Planner<'s> {
             let on = self.link((&alias, model), rel, (&new_alias, target))?;
             #[cfg(feature = "query-defaults")]
             let on = match self.model(target).query_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
-                Some(filter) => on.and(self.target_default(target, &new_alias, filter)?), None => on,
+                Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(target, &new_alias, filter)?) }
+                None => on,
             };
+            #[cfg(feature = "proxy-models")]
+            let on = match self.partition_filter(target, &new_alias) { Some(filter) => on.and(filter), None => on };
             self.joins.push((Scope { path: prefix.to_vec(), model: target, alias: new_alias.clone() }, on));
             (alias, model) = (new_alias, target);
         }
@@ -2417,6 +2472,7 @@ impl<'s> Planner<'s> {
                 start: types.len(),
                 pk_pos: joined_positions.iter().position(|f| f == m.pk).expect("identity selected"),
                 shape: joined_shape,
+                filtered: self.filtered_joins.contains(path),
             });
             for position in joined_positions.iter() {
                 let f = &m.fields()[position];
@@ -2447,7 +2503,7 @@ impl<'s> Planner<'s> {
             for j in &joins { out.extend(crate::behavior::shape_computations(self.model(j.model).native, j.start, &shape_positions(self.model(j.model), j.shape.as_ref()).to_vec())); }
             out
         };
-        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins }, prefetch,
+        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins }, filtered: self.root_filtered, prefetch,
             #[cfg(feature = "composition")] computations })
     }
 
@@ -2660,21 +2716,28 @@ fn order_sql(o: &Order) -> &'static str {
     }
 }
 
-/// The schema default order of a model read that gives no `order_by()`.
-#[cfg(feature = "query-defaults")]
-fn with_default_order(schema: &Schema, q: &Select) -> Result<Option<Select>> {
-    if !q.order.is_empty() || q.without_defaults || q.columns.is_some() || q.from.is_some() {
-        return Ok(None);
+/// The order the engine uses for `q`: its own `order_by()`, else the schema default order
+/// of a model read that no bypass removed. Keyset pagination, `first()` and `last()` ask this.
+pub fn effective_order(schema: &Schema, q: &Select) -> Result<Vec<Order>> {
+    if !q.order.is_empty() { return Ok(q.order.clone()); }
+    #[cfg(feature = "query-defaults")]
+    if !q.without_defaults && q.columns.is_none() && q.from.is_none() {
+        return Ok(schema.model(schema.model_idx(&q.model).map_err(query_err)?).query_defaults.order.clone());
     }
-    let order = &schema.model(schema.model_idx(&q.model).map_err(query_err)?).query_defaults.order;
-    Ok((!order.is_empty()).then(|| Select { order: order.clone(), ..q.clone() }))
+    let _ = schema;
+    Ok(vec![])
+}
+
+/// `q` with its default order made explicit; None when it has none to add.
+fn with_default_order(schema: &Schema, q: &Select) -> Result<Option<Select>> {
+    if !q.order.is_empty() { return Ok(None); }
+    let order = effective_order(schema, q)?;
+    Ok((!order.is_empty()).then(|| Select { order, ..q.clone() }))
 }
 
 /// A top-level SELECT with its `WITH` clause.
 pub fn plan_select(schema: &Schema, target: Target, q: &Select, params: &dyn Params) -> Result<SelectPlan> {
-    #[cfg(feature = "query-defaults")]
     let defaulted = with_default_order(schema, q)?;
-    #[cfg(feature = "query-defaults")]
     let q = defaulted.as_ref().unwrap_or(q);
     let virt = derive_ctes(schema, target, &q.with, params)?;
     let mut p = Planner::new(schema, &virt, target, &q.model, q.from.as_deref(), params, vec![], 0)?;
@@ -2729,10 +2792,7 @@ fn plan_prefetch(
     }
     q.without_defaults |= without_defaults;
     let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone() }, desc: false, nulls: None }).collect();
-    #[cfg(feature = "query-defaults")]
-    if q.order.is_empty() && !q.without_defaults {
-        q.order = cm.query_defaults.order.clone();
-    }
+    q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
     let slice = match sliced {
         false => None,
@@ -2824,6 +2884,7 @@ fn plan_prefetch(
         key_pos: rel.from.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
         key_type: rel.from.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
+        filtered: plan.filtered,
         back,
         stmt: plan.stmt,
         dialect: target.dialect,
@@ -2937,7 +2998,11 @@ pub fn plan_insert(
     };
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;
     let mut stmt = Query::insert();
-    stmt.into_table(Alias::new(m.table()));
+    #[cfg(feature = "proxy-models")]
+    let table = schema.proxy_models[idx].partition.as_ref().map(|p| p.table.as_str()).unwrap_or_else(|| m.table());
+    #[cfg(not(feature = "proxy-models"))]
+    let table = m.table();
+    stmt.into_table(Alias::new(table));
     if cols.is_empty() {
         if rows.len() != 1 {
             return Err(Error::query("rows without explicit values must be inserted one at a time"));
