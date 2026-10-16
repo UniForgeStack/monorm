@@ -2417,11 +2417,51 @@ function checkQuerySet(meta: ModelMeta, cls: unknown): QuerySetClass {
 }
 
 function querySetClass(meta: ModelMeta): QuerySetClass {
-  if (!meta.extensionMixins.length) return userQuerySetClass(meta);
-  return (meta.composedSet ??= meta.extensionMixins.reduce<QuerySetClass>(
-    (base, mixin) => checkQuerySet(meta, mixin(base as never)),
-    userQuerySetClass(meta),
-  )) as QuerySetClass;
+  const user = userQuerySetClass(meta);
+  if (!meta.extensionMixins.length) {
+    const bottom = baseOfUserClass(user);
+    if (bottom === (QuerySet as unknown)) return user;
+    for (let c: object = user; c !== (QuerySet as unknown); c = Object.getPrototypeOf(c) as object) {
+      if (grafted.has(c)) throw new TypeError(`${meta.name}: the query set class ${user.name} is shared with a model that has extensions`);
+    }
+    plain.add(bottom);
+    return user;
+  }
+  return (meta.composedSet ??= composeQuerySet(meta, user)) as QuerySetClass;
+}
+
+const grafted = new WeakMap<object, readonly unknown[]>();
+const plain = new WeakSet<object>();
+
+// The class of the chain of `user` whose base is `QuerySet`.
+function baseOfUserClass(user: QuerySetClass): object {
+  let bottom: object = user;
+  while (bottom !== (QuerySet as unknown) && Object.getPrototypeOf(bottom) !== QuerySet) bottom = Object.getPrototypeOf(bottom) as object;
+  return bottom;
+}
+
+/**
+ * The user class comes first, then the extension mixins, then `QuerySet`: the extension
+ * classes become the base of the user class, which keeps its identity and can call `super`.
+ * A user class has one base, so the models that share it need the same extensions.
+ */
+function composeQuerySet(meta: ModelMeta, user: QuerySetClass): QuerySetClass {
+  const mixins = meta.extensionMixins;
+  const bottom = baseOfUserClass(user);
+  if (bottom === (QuerySet as unknown)) return mixins.reduce<QuerySetClass>((base, mixin) => checkQuerySet(meta, mixin(base as never)), QuerySet as unknown as QuerySetClass);
+  const done = grafted.get(bottom);
+  if (done !== undefined) {
+    if (done.length !== mixins.length || done.some((m, i) => m !== mixins[i])) {
+      throw new TypeError(`${meta.name}: the query set class ${user.name} is shared with a model that has other extensions`);
+    }
+    return user;
+  }
+  if (plain.has(bottom)) throw new TypeError(`${meta.name}: the query set class ${user.name} is shared with a model that has no extensions`);
+  const composed = mixins.reduce<QuerySetClass>((base, mixin) => checkQuerySet(meta, mixin(base as never)), QuerySet as unknown as QuerySetClass);
+  Object.setPrototypeOf(bottom, composed);
+  Object.setPrototypeOf((bottom as { prototype: object }).prototype, (composed as unknown as { prototype: object }).prototype);
+  grafted.set(bottom, mixins);
+  return user;
 }
 
 function userQuerySetClass(meta: ModelMeta): QuerySetClass {

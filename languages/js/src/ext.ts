@@ -10,6 +10,12 @@ export const LANGUAGE_CONTRACT = 1;
 /** The base of a query-set mixin: a constructor with one rest parameter, as TypeScript requires. */
 export type QuerySetCtor<Q extends QuerySet<ModelSpec> = QuerySet<ModelSpec>> = new (...args: any[]) => Q;
 
+/**
+ * The base of an instance class that overrides a host member: `H` types the host members,
+ * and `super` reaches the definition below the extension on the model.
+ */
+export const InstanceBase = class {} as unknown as new <H extends object = {}>() => H;
+
 /** The prepared behavior records of `kind` for the model of `qs`. */
 export function behaviorRecords(qs: QuerySet<ModelSpec>, kind: string): readonly Readonly<Record<string, unknown>>[] {
   const meta = qs.meta;
