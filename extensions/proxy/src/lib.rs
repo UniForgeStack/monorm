@@ -1,10 +1,11 @@
 //! Same-table views are lowered once, before policy/result preparation.
 //! The compiler preserves parent enum identities and server defaults. Neither
 //! narrowing nor client defaults change physical storage or imply predicates.
+//! Explicit partition ownership projects local objects and a permanent storage bound.
 use std::collections::{BTreeMap, BTreeSet};
-use orm_contracts::{extension::{capture_storage, ProxyField, ProxyModel, ProxySelection}, ir::{ClientDefaultIr, FieldIr, ModelIr, SchemaIr}};
+use orm_contracts::{extension::{capture_storage, ProxyField, ProxyModel, ProxyPartition, ProxySelection}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
 
-/// Namespaced declarations contribute logical metadata only. Required argument
+/// Declarations contribute logical views and explicit partition ownership. Required argument
 /// kinds/targets are checked by the composition manifest before this pass runs.
 pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
     let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| d.attribute.starts_with("proxy.") && !d.lowered).cloned().collect();
@@ -27,6 +28,15 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
             (None, Some(exclude)) => ProxySelection::Exclude(exclude),
             (None, None) => return Err(error("requires include: or exclude:")),
         });
+    }
+    for d in ir.behavior.declarations.iter().filter(|d| d.attribute == "partition.values" && !d.lowered) {
+        let spec = specs.get_mut(&d.model).ok_or_else(|| format!("{}: @@partition.values requires @@proxy.of", d.model))?;
+        if spec.partition.is_some() { return Err(format!("{}: duplicate @@partition.values", d.model)); }
+        let values = match d.positional.as_slice() {
+            [serde_json::Value::Array(values)] if !values.is_empty() && d.arguments.is_empty() => values.clone(),
+            _ => return Err(format!("{}: @@partition.values requires one nonempty literal list", d.model)),
+        };
+        spec.partition = Some(ProxyPartition { table: String::new(), field: String::new(), values });
     }
     lower_specs(ir, &specs.into_values().collect::<Vec<_>>())
 }
@@ -70,14 +80,34 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
         if !placeholder.relations.is_empty() {
             return Err(format!("{}: proxy relation overrides are unsupported; inherited relations retain their logical targets", spec.model));
         }
-        if !placeholder.indexes.is_empty() || !placeholder.constraints.is_empty()
-            || !placeholder.triggers.is_empty() || placeholder.renamed_from.is_some() {
+        if spec.partition.is_none() && (!placeholder.indexes.is_empty() || !placeholder.constraints.is_empty()
+            || !placeholder.triggers.is_empty() || placeholder.renamed_from.is_some()) {
             return Err(format!("{}: proxies cannot declare physical objects", spec.model));
         }
+        if placeholder.partition.is_some() { return Err(format!("{}: declare the partition strategy on the source; use @@partition.values on the proxy", spec.model)); }
         if placeholder.protected_write {
             return Err(format!("{}: a proxy cannot declare @@protected_write; protect the root model {}", spec.model, spec.parent));
         }
         let inherited = ir.behavior.proxy_models.iter().find(|p| p.model == spec.parent);
+        let partition = if let Some(declared) = &spec.partition {
+            if inherited.is_some() { return Err(format!("{}: @@partition.values cannot own a partition of a proxy", spec.model)); }
+            if !ir.dialect.is_postgres() { return Err(format!("{}: @@partition.values requires PostgreSQL", spec.model)); }
+            let key = source.partition.as_ref().filter(|k| k.strategy == "list" && k.keys.len() == 1)
+                .and_then(|k| k.keys[0].field.as_ref()).ok_or_else(|| format!("{}: @@partition.values requires a source with one list key field", spec.model))?;
+            let field = source.fields.iter().find(|f| f.name == *key).ok_or("unknown partition key field")?;
+            if declared.values.is_empty() { return Err(format!("{}.{key}: partition values cannot be empty", spec.model)); }
+            let values = declared.values.iter().map(|value| {
+                let value = if let Some(e) = field.enum_name.as_ref().and_then(|n| ir.enums.iter().find(|e| e.name == *n)) {
+                    e.values.iter().find(|m| value.as_str() == Some(m.name.as_str())).map(|m| m.value.clone())
+                        .ok_or_else(|| format!("{}.{key}: {value} is not a member of enum {}", spec.model, e.name))?
+                } else { value.clone() };
+                if value.is_null() || value.is_array() || value.is_object() { return Err(format!("{}.{key}: partition values must be non-null scalars", spec.model)); }
+                validate_default(field, &value).map_err(|e| format!("{}.{key}: {e}", spec.model))?;
+                Ok(value)
+            }).collect::<Result<Vec<_>, String>>()?;
+            Some(ProxyPartition { table: placeholder.table.clone(), field: key.clone(), values })
+        } else { inherited.and_then(|p| p.partition.clone()) };
+
         let storage_owner = inherited.map(|p| p.storage_owner.clone()).unwrap_or_else(|| source.name.clone());
         let physical = ir.behavior.storage.as_ref().expect("captured storage").models.iter().find(|m| m.name == storage_owner)
             .ok_or_else(|| format!("{}: unknown storage owner {storage_owner}", spec.model))?;
@@ -92,11 +122,16 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
             }
             if !seen.insert(name) { return Err(format!("{}: @@proxy.fields names {name} twice", spec.model)); }
         }
-        let omitted: BTreeSet<String> = match &spec.selection {
+        let mut omitted: BTreeSet<String> = match &spec.selection {
             Some(ProxySelection::Include(list)) => names.iter().filter(|n| !list.iter().any(|l| l == *n)).map(|n| n.to_string()).collect(),
             Some(ProxySelection::Exclude(list)) => list.iter().cloned().collect(),
             None => BTreeSet::new(),
         };
+        // A fixed key remains available internally for composite identity and read-back.
+        // It needs no caller input even when excluded from the proxy declaration.
+        if let Some(p) = &partition {
+            if p.values.len() == 1 { omitted.remove(&p.field); }
+        }
         for f in source.fields.iter().filter(|f| omitted.contains(&f.name)) {
             if f.primary_key { return Err(format!("{}.{}: the primary key cannot be omitted", spec.model, f.name)); }
             if stored(f).is_some_and(|p| !p.nullable && p.default.is_none() && !p.default_now && p.default_sql.is_none() && !p.auto_increment) {
@@ -115,7 +150,7 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
         model.relations.retain(|r| !omitted.contains(&r.name));
         let mut prepared = ProxyModel { model: spec.model.clone(), parent: spec.parent.clone(), storage_owner,
             fields: inherited.map(|p| p.fields.clone()).unwrap_or_default(),
-            selection: spec.selection.clone(), omitted: omitted.iter().cloned().collect() };
+            selection: spec.selection.clone(), omitted: omitted.iter().cloned().collect(), partition: partition.clone() };
         prepared.fields.retain(|c| !omitted.contains(&c.field));
         // Redeclared fields change only the logical view: nullability, enum subset and client default.
         for declared in &placeholder.fields {
@@ -185,6 +220,27 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
                     }
                 }
             }
+        }
+        if spec.partition.is_some() {
+            let p = partition.as_ref().expect("resolved owned partition");
+            let mut fields = source.fields.clone();
+            for f in &mut fields { f.primary_key = false; f.unique = false; f.index = false; f.check = None; }
+            let mut objects: ModelIr = copy(placeholder)?;
+            objects.name = p.table.clone();
+            objects.fields = fields;
+            objects.primary_key.clear();
+            objects.pk_name = None;
+            objects.relations.clear();
+            objects.partition = None;
+            let values = p.values.iter().map(|v| match v {
+                serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")), v => v.to_string(),
+            }).collect::<Vec<_>>().join(", ");
+            ir.partitions.push(PartitionIr { of: spec.parent.clone(), bound: format!("FOR VALUES IN ({values})"), objects });
+        }
+        if let Some(p) = &partition {
+            let field = model.fields.iter_mut().find(|f| f.name == p.field).ok_or_else(|| format!("{}: a multi-value partition must expose {}", spec.model, p.field))?;
+            // A bound owns insert filling, overriding any inherited client default.
+            field.client_default = if p.values.len() == 1 { Some(ClientDefaultIr::Value(p.values[0].clone())) } else { None };
         }
         model.name = spec.model.clone();
         model.comment = placeholder.comment.clone();

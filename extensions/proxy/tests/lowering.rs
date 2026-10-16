@@ -291,3 +291,107 @@ fn any_database_default_lets_a_not_null_field_be_omitted() {
     ])).unwrap();
     assert_eq!(orm_proxy::lower(&mut ir).unwrap_err(), "s.prisma:3:3: @@proxy.fields: duplicate @@proxy.fields");
 }
+
+fn partition_schema() -> SchemaIr {
+    serde_json::from_value(json!({
+        "models":[
+            {"name":"Reward","table":"reward","primary_key":["id","kind"],"fields":[
+                {"name":"id","column":"id","type":"int","primary_key":true},
+                {"name":"kind","column":"kind","type":"string","primary_key":true},
+                {"name":"amount","column":"amount","type":"int","nullable":true}],
+             "partition":{"strategy":"list","keys":[{"field":"kind"}]}},
+            {"name":"Positive","table":"positive","fields":[],
+             "constraints":[{"kind":"check","expr":"amount IS NOT NULL AND amount > 0"}]}
+        ]
+    })).unwrap()
+}
+fn partition_spec(values: serde_json::Value) -> ProxyModel {
+    let mut p = spec("Positive", "Reward");
+    p.partition = Some(orm_contracts::extension::ProxyPartition {
+        table: String::new(), field: String::new(), values: values.as_array().unwrap().clone(),
+    });
+    p
+}
+
+#[test]
+fn partition_ownership_projects_local_objects_and_keeps_composite_identity() {
+    let mut ir = partition_schema();
+    let mut spec = partition_spec(json!(["positive"]));
+    spec.selection = Some(ProxySelection::Exclude(names(&["kind"])));
+    lower_specs(&mut ir, &[spec]).unwrap();
+    orm_core::partition::validate(&ir).unwrap();
+    assert_eq!(ir.partitions.len(), 1);
+    assert_eq!(ir.partitions[0].objects.table, "positive");
+    assert_eq!(ir.partitions[0].objects.constraints.len(), 1);
+    assert_eq!(ir.partitions[0].bound, "FOR VALUES IN ('positive')");
+    assert_eq!(ir.models[1].primary_key, ["id", "kind"]);
+    assert_eq!(field(&ir, "Positive", "kind").client_default, Some(ClientDefaultIr::Value(json!("positive"))));
+    assert_eq!(ir.behavior.storage.as_ref().unwrap().models.len(), 1);
+    let physical = orm_core::schema::Schema::from_ir(serde_json::from_value(json!({
+        "models": ir.behavior.storage.unwrap().models, "partitions":ir.partitions
+    })).unwrap()).unwrap();
+    let block = orm_core::dsl::compile(r#"model Reward {
+ id Int
+ kind String
+ amount Int?
+ @@id([id, kind])
+ @@partition(list: [kind])
+}
+partition positive { of = Reward values = ["positive"] @@check("amount IS NOT NULL AND amount > 0") }
+"#, None).unwrap();
+    let block = orm_core::schema::Schema::from_ir(block).unwrap();
+    let snapshot = orm_core::migrate::snapshot(&block).unwrap();
+    assert!(orm_core::migrate::plan(&physical, &snapshot).unwrap().up.is_empty());
+    assert!(orm_core::migrate::plan(&block, &orm_core::migrate::snapshot(&physical).unwrap()).unwrap().up.is_empty());
+}
+
+#[test]
+fn proxy_partitions_share_bound_validation_with_blocks() {
+    let mut ir = partition_schema();
+    lower_specs(&mut ir, &[partition_spec(json!(["positive", "positive"]))]).unwrap();
+    assert!(orm_core::partition::validate(&ir).unwrap_err().contains("overlapping list value"));
+    let mut ir = partition_schema();
+    lower_specs(&mut ir, &[partition_spec(json!(["positive"]))]).unwrap();
+    let duplicate = serde_json::from_value(json!({"of":"Reward","bound":"FOR VALUES IN ('positive')","objects":{"name":"another","table":"another","fields":[]}})).unwrap();
+    ir.partitions.push(duplicate);
+    assert!(orm_core::partition::validate(&ir).unwrap_err().contains("overlapping list value"));
+    for strategy in [None, Some("range"), Some("hash")] {
+        let mut ir = partition_schema();
+        ir.models[0].partition = strategy.map(|s| serde_json::from_value(json!({"strategy":s,"keys":[{"field":"kind"}]})).unwrap());
+        assert!(lower_specs(&mut ir, &[partition_spec(json!(["positive"]))]).unwrap_err().contains("one list key field"));
+    }
+    let mut ir = partition_schema();
+    let mut spec = partition_spec(json!(["a", "b"]));
+    spec.selection = Some(ProxySelection::Exclude(names(&["kind"])));
+    assert!(lower_specs(&mut ir, &[spec]).unwrap_err().contains("primary key cannot be omitted"));
+}
+
+#[test]
+fn partition_ownership_rejects_proxy_sources_but_plain_children_keep_the_bound() {
+    let mut ir = partition_schema();
+    ir.models.push(serde_json::from_value(json!({"name":"Child","table":"child","fields":[]})).unwrap());
+    let mut child = spec("Child", "Positive");
+    child.partition = partition_spec(json!(["child"])).partition;
+    assert!(lower_specs(&mut ir, &[partition_spec(json!(["positive"])), child]).unwrap_err().contains("cannot own a partition of a proxy"));
+    let mut ir = partition_schema();
+    ir.models.push(serde_json::from_value(json!({"name":"Child","table":"child","fields":[]})).unwrap());
+    lower_specs(&mut ir, &[partition_spec(json!(["positive"])), spec("Child", "Positive")]).unwrap();
+    assert_eq!(ir.partitions.len(), 1);
+    assert_eq!(ir.behavior.proxy_models[0].partition, ir.behavior.proxy_models[1].partition);
+}
+
+#[test]
+fn partition_values_validate_enum_members_and_sqlite() {
+    let mut ir = partition_schema();
+    ir.dialect = orm_core::dialect::Dialect::Sqlite;
+    assert!(lower_specs(&mut ir, &[partition_spec(json!(["positive"]))]).unwrap_err().contains("requires PostgreSQL"));
+    let mut ir = partition_schema();
+    ir.enums = serde_json::from_value(json!([{"name":"Kind","db_name":"kind","storage":"text","values":[{"name":"POSITIVE","value":"positive"}]}])).unwrap();
+    ir.models[0].fields[1].enum_name = Some("Kind".into());
+    assert!(lower_specs(&mut ir, &[partition_spec(json!(["UNKNOWN"]))]).unwrap_err().contains("Positive.kind: \"UNKNOWN\" is not a member of enum Kind"));
+    let mut ir = partition_schema();
+    ir.enums = serde_json::from_value(json!([{"name":"Kind","db_name":"kind","storage":"text","values":[{"name":"POSITIVE","value":"positive"}]}])).unwrap();
+    ir.models[0].fields[1].enum_name = Some("Kind".into());
+    lower_specs(&mut ir, &[partition_spec(json!(["POSITIVE"]))]).unwrap();
+    assert_eq!(ir.partitions[0].bound, "FOR VALUES IN ('positive')");
+}
