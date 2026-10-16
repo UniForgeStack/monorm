@@ -1,3 +1,7 @@
+line-length = 120
+# First-party roots, so import sorting keeps `orm` and `orm_file_storage` in the project group.
+src = ["languages/python", "extensions/file-storage/python/src"]
+
 [lint]
 # ORM None and boolean comparisons build query expressions.
 extend-ignore = ["E711", "E712"]
