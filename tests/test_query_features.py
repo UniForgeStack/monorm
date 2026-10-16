@@ -803,7 +803,7 @@ async def test_relation_query_set_with_joins_and_nested_query_set(clean, observe
 
 async def test_prefetch_errors(clean):
     with pytest.raises(ValueError, match="different query sets"):
-        User.objects.load(User.posts.objects.all(), User.posts.objects.all())
+        User.objects.load(User.posts.objects.filter(Post.views > 1), User.posts.objects.filter(Post.views > 2))
     with pytest.raises(TypeError, match="relation query set"):
         User.objects.load(Post.objects.all())
     with pytest.raises(TypeError, match="relation query set"):
@@ -1003,6 +1003,88 @@ def test_load_path_query_collision(change, nested, reverse):
     User.objects.load(path, qs.label("chosen"))
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_load_set_with_columns_keeps_sibling_columns(clean, reverse):
+    await seed()
+    for qs, column in (
+        (User.posts.objects.load(Post.title), User.posts.views),
+    ):
+        items = (column, qs) if reverse else (qs, column)
+        users = await User.objects.load(*items).order_by(User.id)
+        post = users[0].posts.cached[0]
+        assert (post.title, post.views) == ("a1", 5)
+        with pytest.raises(orm.NotLoaded):
+            _ = post.body
+    items = (Post.author.email, Post.author.objects.load(User.name))
+    posts = await Post.objects.load(*(items if reverse else items[::-1])).order_by(Post.id)
+    assert (posts[0].author.name, posts[0].author.email) == ("Alice", "alice@example.com")
+    two = (User.posts.objects.load(Post.title), User.posts.views, User.posts.body)
+    users = await User.objects.load(*(two[::-1] if reverse else two)).order_by(User.id)
+    assert (users[0].posts.cached[0].views, users[0].posts.cached[0].body) == (5, "")
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_load_bare_path_and_set_with_columns_loads_all_fields(clean, reverse):
+    await seed()
+    items = (User.posts, User.posts.objects.load(Post.title))
+    users = await User.objects.load(*(items[::-1] if reverse else items)).order_by(User.id)
+    post = users[0].posts.cached[0]
+    assert (post.title, post.views, post.body) == ("a1", 5, "")
+
+
+@pytest.mark.parametrize("change", ["filter", "order", "limit", "offset", "defaults"])
+@pytest.mark.parametrize("column", ["first", "deep"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_load_row_changing_set_refuses_columns(change, column, reverse):
+    qs = {
+        "filter": User.posts.objects.filter(Post.published),
+        "order": User.posts.objects.order_by(Post.id),
+        "limit": User.posts.objects[:1],
+        "offset": User.posts.objects[1:],
+        "defaults": User.posts.objects.without_defaults(),
+    }[change]
+    col = User.posts.title if column == "first" else User.posts.comments.body
+    items = (col, qs) if reverse else (qs, col)
+    with pytest.raises(ValueError, match=r"\.load\(\).*label\(\)"):
+        User.objects.load(*items)
+    with pytest.raises(ValueError, match=r"label\(\)"):
+        User.objects.load(items[0]).load(items[1])
+    User.objects.load(col, qs.label("chosen"))
+    User.objects.load(qs.load(Post.title))
+
+
+async def test_load_set_and_column_guards(clean):
+    await seed()
+    users = await User.objects.load(User.posts.objects, User.posts.views).order_by(User.id)
+    assert users[0].posts.cached[0].body == ""
+    users = await User.objects.load(User.posts.objects.load(), User.posts.views).order_by(User.id)
+    assert users[0].posts.cached[0].body == ""
+    users = await User.objects.load(User.posts, User.posts.views).order_by(User.id)
+    assert users[0].posts.cached[0].body == ""
+    labeled = User.posts.objects.filter(Post.views > 10).label("hot")
+    users = await User.objects.load(labeled, User.posts.views).order_by(User.id)
+    assert users[0].hot[0].views == 50
+
+
+async def test_load_the_same_plain_set_twice(clean):
+    await seed()
+    for load in (
+        lambda: User.objects.load(User.posts.objects, User.posts.objects),
+        lambda: User.objects.load(User.posts.objects).load(User.posts.objects),
+    ):
+        users = await load().order_by(User.id)
+        assert [len(u.posts.cached) for u in users] == [3, 1, 0]
+    with pytest.raises(ValueError, match="loaded twice"):
+        User.objects.load(User.posts.objects.load(Post.comments), User.posts.objects.load(Post.comments))
+    with pytest.raises(ValueError, match="loaded twice"):
+        User.objects.load(User.posts.objects, User.posts.objects.filter(Post.views > 10))
+    with pytest.raises(ValueError, match="loaded twice"):
+        User.objects.load(User.posts.objects).load(User.posts.objects.filter(Post.views > 10))
+    same = User.posts.objects.filter(Post.views > 10)
+    users = await User.objects.load(same, same).order_by(User.id)
+    assert [len(u.posts.cached) for u in users] == [2, 1, 0]
+
+
 async def test_load_plain_path_and_query_and_without_related(clean):
     await seed()
     for qs in (User.posts.objects, User.posts.objects.load(Post.comments)):
@@ -1023,6 +1105,45 @@ async def test_load_plain_path_and_query_and_without_related(clean):
     users = await User.objects.order_by(User.id)
     await orm.prefetch(users, User.posts, bound)
     assert [len(u.posts.cached) for u in users] == [3, 1, 0]
+
+
+async def test_load_without_items_resets_the_columns(clean):
+    await seed()
+    posts = await Post.objects.load(Post.title).load().order_by(Post.id)
+    assert posts[0].body == ""
+    posts = await Post.objects.load(Post.title).load(Post.views).order_by(Post.id)
+    assert (posts[0].title, posts[0].views) == ("a1", 5)
+    with pytest.raises(orm.NotLoaded):
+        _ = posts[0].body
+    posts = await Post.objects.load(Post.author, Post.title).load().order_by(Post.id)
+    assert posts[0].author.name == "Alice"
+    assert posts[0].body == ""
+
+
+async def test_load_to_one_query_sets(clean, observe_queries):
+    await seed()
+    filtered = Comment.post.objects.filter(Post.views > 60).as_prefetch()
+    with observe_queries(clean) as events:
+        comments = await Comment.objects.load(filtered).order_by(Comment.id)
+        assert len(events) == 2
+    assert comments[2].post.title == "b1"
+    partial = await Comment.objects.load(Comment.post.objects.load(Post.title)).order_by(Comment.id)
+    assert partial[0].post.title == "a2"
+    with pytest.raises(orm.NotLoaded):
+        _ = partial[0].post.body
+    joined = Comment.objects.load(Comment.post.objects).order_by(Comment.id)
+    assert joined.inspect().statement_count == 1
+    with observe_queries(clean) as events:
+        comments = await joined
+        assert len(events) == 1
+    assert comments[0].post.title == "a2"
+
+
+async def test_load_set_of_another_model_raises(clean):
+    with pytest.raises(TypeError):
+        User.objects.load(Comment.objects.all())
+    with pytest.raises(ValueError, match="Post.comments does not start at User"):
+        User.objects.load(Post.comments.objects)
 
 
 async def test_lateral_disabled_connection_uses_scalar_subqueries(clean, observe_queries):

@@ -658,6 +658,7 @@ class Model:
     ) -> bool:
         """Reload column values from the database; ``True`` when it loaded the row.
 
+        ``fields`` are columns of the model; a column of a related model raises ``TypeError``.
         ``lock=True`` also locks the row until the transaction ends, with the options of
         :meth:`QuerySet.lock` (``exclusive`` defaults to ``True``). A refresh of some
         fields still locks the whole row. With ``skip_locked``, a row locked by another

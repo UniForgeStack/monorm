@@ -2618,9 +2618,31 @@ impl<'s> Planner<'s> {
         Ok(q)
     }
 
+    /// The default selection of `model` united with `named`; `None` selects the whole model
+    /// (the model has no default selection, or `without_defaults` is set).
+    fn united_fields(&self, model: usize, named: &[String], without_defaults: bool) -> Option<Vec<String>> {
+        #[cfg(feature = "query-defaults")]
+        let defaults = if without_defaults { None } else { self.model(model).query_defaults.fields.as_deref() };
+        #[cfg(not(feature = "query-defaults"))]
+        let defaults: Option<&[String]> = { let _ = (model, without_defaults); None };
+        let mut fields = defaults?.to_vec();
+        for name in named {
+            if !fields.iter().any(|f| f == name) { fields.push(name.clone()); }
+        }
+        Some(fields)
+    }
+
     /// A SELECT of instances (with `select_related` and `prefetch`) or of `select(...)`
     /// columns.
     fn build_select(&mut self, q: &Select) -> Result<SelectPlan> {
+        let united;
+        let q = match &q.model_fields {
+            Some(named) if q.with_default_fields && self.root < self.schema.models.len() => {
+                united = Select { model_fields: self.united_fields(self.root, named, q.without_defaults), with_default_fields: false, ..q.clone() };
+                &united
+            }
+            _ => q,
+        };
         #[cfg(feature = "query-defaults")]
         let defaulted = self.with_query_defaults(q)?;
         #[cfg(feature = "query-defaults")]
@@ -2666,9 +2688,14 @@ impl<'s> Planner<'s> {
                         .ok_or_else(|| Error::query("joined load() paths must list their prefixes first"))?,
                 ),
             };
-            let named = q.related_fields.iter().find(|r| r.path == *path).map(|r| r.fields.as_slice());
+            let entry = q.related_fields.iter().find(|r| r.path == *path);
+            let united = entry.filter(|r| r.with_default_fields).and_then(|r| self.united_fields(model, &r.fields, q.without_defaults));
+            let named = match entry {
+                Some(r) if r.with_default_fields => united.as_deref(),
+                other => other.map(|r| r.fields.as_slice()),
+            };
             #[cfg(feature = "query-defaults")]
-            let named = named.or(if q.without_defaults { None } else { m.query_defaults.fields.as_deref() });
+            let named = named.or(if q.without_defaults || entry.is_some_and(|r| r.with_default_fields) { None } else { m.query_defaults.fields.as_deref() });
             let joined_shape = self.instance_shape(model, named, &[])?;
             let joined_positions = shape_positions(m, joined_shape.as_ref());
             joins.push(JoinShape {
@@ -2988,13 +3015,13 @@ fn plan_prefetch(
         return Err(Error::query("a prefetch query can't select columns or lock rows"));
     }
     if node.one && (rel.kind != RelKind::Many || node.attr.is_none()) {
-        return Err(Error::query(format!("one=True needs a to-many relation and to_attr ({}.{})", pm.ir.name, node.relation)));
+        return Err(Error::query(format!("one=True needs a to-many relation and a label ({}.{})", pm.ir.name, node.relation)));
     }
     let many = rel.kind == RelKind::Many && !node.one;
     let mut q = node.query.clone();
     if node.one {
         if q.limit.is_some() || q.offset.is_some() {
-            return Err(Error::query("one=True takes the first row by the query's order; drop the slice"));
+            return Err(Error::query("one=True takes the first row by the query's order and no slice"));
         }
         q.limit = Some(Count::Value(1));
     }

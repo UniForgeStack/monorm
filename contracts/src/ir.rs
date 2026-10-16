@@ -831,11 +831,14 @@ pub struct Order {
     pub nulls: Option<Nulls>,
 }
 
-/// The public fields of the model a `select_related` path joins (`only()` through it).
+/// The public fields of the model a `select_related` path joins (columns named beside a `load()` path).
 #[derive(Deserialize, Debug, Clone)]
 pub struct RelatedFields {
     pub path: Vec<String>,
     pub fields: Vec<String>,
+    /// Load the model's default selection too (all public fields without one).
+    #[serde(default)]
+    pub with_default_fields: bool,
 }
 
 /// One entry per `filter()` call. Entries are AND-ed, but each is planned on its own:
@@ -846,6 +849,9 @@ pub struct Select {
     /// Public model fields; helpers are selected separately by the planner.
     #[serde(default)]
     pub model_fields: Option<Vec<String>>,
+    /// `model_fields` adds to the model's default selection (all public fields without one).
+    #[serde(default)]
+    pub with_default_fields: bool,
     /// The parameter index of each `scope.<name>` value (statement level only).
     #[serde(default)]
     pub scope: BTreeMap<String, usize>,
@@ -882,7 +888,7 @@ pub struct Select {
     /// To-one relation paths loaded with LEFT JOINs in the same statement.
     #[serde(default)]
     pub select_related: Vec<Vec<String>>,
-    /// The fields of joined models that `only()` names, by `select_related` path.
+    /// The fields of joined models that columns beside a `load()` path name, by `select_related` path.
     #[serde(default)]
     pub related_fields: Vec<RelatedFields>,
     /// Relations of the root model loaded with one extra `IN (...)` query each, inside

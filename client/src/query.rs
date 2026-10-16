@@ -385,6 +385,7 @@ impl<M: Model> Query<M> {
             select: ir::Select {
                 model: String::new(),
                 model_fields: None,
+                with_default_fields: false,
                 model_helpers: vec![],
                 scope: std::collections::BTreeMap::new(),
                 without_defaults: false,

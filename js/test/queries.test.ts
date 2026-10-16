@@ -654,6 +654,15 @@ test("refresh rejects non-plain trailing options", async () => {
   assert.equal(await row.refresh({}), true);
 });
 
+test("refresh takes only own columns", async () => {
+  const { alice: row } = await seed();
+  for (const bad of [Post.title, User.posts.views, User.posts, "name"]) {
+    await assert.rejects(row.refresh(bad as never), { name: "TypeError", message: "refresh() takes columns of User" });
+  }
+  await assert.rejects(row.refresh(User.name, User.name), { name: "TypeError", message: "duplicate model field" });
+  assert.equal(await row.refresh(User.name), true);
+});
+
 test("relation comparison rejects null-prototype objects clearly", () => {
   for (const compare of [() => Post.author.eq(Object.create(null) as never), () => Post.author.ne(Object.create(null) as never)]) {
     assert.throws(compare, { name: "TypeError", message: "Post.author compares with a User instance" });

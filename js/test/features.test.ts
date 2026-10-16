@@ -594,6 +594,98 @@ test("load rejects paths combined with a query that changes their rows", () => {
   }
 });
 
+test("load without items resets the columns", async () => {
+  await seed();
+  const full = await Post.objects.load(Post.title).load().orderBy(Post.id).all();
+  assert.equal(full[0]!.body, "");
+  const two = await Post.objects.load(Post.title).load(Post.views).orderBy(Post.id).all();
+  assert.deepEqual([two[0]!.title, two[0]!.views], ["a1", 5]);
+  assert.throws(() => (two[0] as unknown as Post).body, NotLoaded);
+  const kept = await Post.objects.load(Post.author, Post.title).load().orderBy(Post.id).all();
+  assert.equal(kept[0]!.author.name, "Alice");
+  assert.equal(kept[0]!.body, "");
+});
+
+test("load to-one query sets", async () => {
+  await seed();
+  const filtered = Comment.post.objects.filter(Post.views.gt(60)).asPrefetch();
+  const comments = await Comment.objects.load(filtered).orderBy(Comment.id).all();
+  assert.equal(comments[2]!.post.title, "b1");
+  const partial = await Comment.objects.load(Comment.post.objects.load(Post.title)).orderBy(Comment.id).all();
+  assert.equal(partial[0]!.post.title, "a2");
+  assert.throws(() => (partial[0]!.post as unknown as Post).body, NotLoaded);
+  const joined = Comment.objects.load(Comment.post.objects).orderBy(Comment.id);
+  assert.equal(joined.inspect().statementCount, 1);
+  assert.equal((await joined.all())[0]!.post.title, "a2");
+});
+
+test("load keeps a column beside a set with its own columns", async () => {
+  await seed();
+  for (const reverse of [false, true]) {
+    const a = [User.posts.objects.load(Post.title), User.posts.views] as const;
+    const users = await User.objects.load(...(reverse ? [a[1], a[0]] as const : a)).orderBy(User.id);
+    const post = users[0]!.posts.cached[0]!;
+    assert.deepEqual([post.title, post.views], ["a1", 5]);
+    assert.throws(() => (post as { body?: string }).body, NotLoaded);
+    const b = [Post.author.objects.load(User.name), Post.author.email] as const;
+    const posts = await Post.objects.load(...(reverse ? [b[1], b[0]] as const : b)).orderBy(Post.id);
+    assert.deepEqual([posts[0]!.author.name, posts[0]!.author.email], ["Alice", "alice@example.com"]);
+    const two = [User.posts.objects.load(Post.title), User.posts.views, User.posts.body] as const;
+    const both = await User.objects.load(...(reverse ? [two[2], two[1], two[0]] as const : two)).orderBy(User.id);
+    assert.deepEqual([both[0]!.posts.cached[0]!.views, both[0]!.posts.cached[0]!.body], [5, ""]);
+  }
+});
+
+test("load gives a bare path beside a set the normal selection", async () => {
+  await seed();
+  for (const items of [[User.posts, User.posts.objects.load(Post.title)], [User.posts.objects.load(Post.title), User.posts]] as const) {
+    const users = await User.objects.load(...items).orderBy(User.id);
+    const post = users[0]!.posts.cached[0]!;
+    assert.deepEqual([post.title, post.views, post.body], ["a1", 5, ""]);
+  }
+});
+
+test("load refuses columns beside a set that changes its rows", () => {
+  const changes = [
+    User.posts.objects.filter(Post.published), User.posts.objects.orderBy(Post.id),
+    User.posts.objects.limit(1), User.posts.objects.offset(1), User.posts.objects.withoutDefaults(),
+  ];
+  for (const qs of changes) for (const col of [User.posts.title, User.posts.comments.body]) {
+    assert.throws(() => User.objects.load(col, qs), /\.load\(\).*label\(\)/);
+    assert.throws(() => User.objects.load(qs, col), /label\(\)/);
+    assert.throws(() => User.objects.load(qs).load(col), /label\(\)/);
+    User.objects.load(col, qs.label("chosen"));
+    User.objects.load(qs.load(Post.title));
+  }
+});
+
+test("a plain, reset or labeled set beside a column keeps its meaning", async () => {
+  await seed();
+  for (const qs of [User.posts.objects, User.posts.objects.load()]) {
+    const users = await User.objects.load(qs, User.posts.views).orderBy(User.id);
+    assert.equal(users[0]!.posts.cached[0]!.body, "");
+  }
+  const users = await User.objects.load(User.posts.objects.filter(Post.views.gt(10)).label("hot"), User.posts.views).orderBy(User.id);
+  assert.equal((users[0] as unknown as { hot: { views: number }[] }).hot[0]!.views, 50);
+});
+
+test("load the same plain set twice", async () => {
+  await seed();
+  for (const q of [
+    User.objects.load(User.posts.objects, User.posts.objects),
+    User.objects.load(User.posts.objects).load(User.posts.objects),
+  ]) {
+    const users = await q.orderBy(User.id);
+    assert.deepEqual(users.map((u) => u.posts.cached.length), [3, 1, 0]);
+  }
+  assert.throws(() => User.objects.load(User.posts.objects.load(Post.comments), User.posts.objects.load(Post.comments)), /loaded twice/);
+  assert.throws(() => User.objects.load(User.posts.objects, User.posts.objects.filter(Post.views.gt(10))), /loaded twice/);
+  assert.throws(() => User.objects.load(User.posts.objects).load(User.posts.objects.filter(Post.views.gt(10))), /loaded twice/);
+  const same = User.posts.objects.filter(Post.views.gt(10));
+  const users = await User.objects.load(same, same).orderBy(User.id);
+  assert.deepEqual(users.map((u) => u.posts.cached.length), [2, 1, 0]);
+});
+
 test("load combines plain paths and sets; withoutRelated keeps IN loads and root fields", async () => {
   await seed();
   for (const qs of [User.posts.objects, User.posts.objects.load(Post.comments)]) {
