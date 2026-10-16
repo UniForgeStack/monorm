@@ -13,6 +13,7 @@ import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind,
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
+import { applyExtensions, type ExtensionCode, type Mixin } from "./extensions.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
 /** Where an instance keeps its loaded relations. */
@@ -154,6 +155,10 @@ export class ModelMeta implements Source {
   /** @internal The class of `objects` and of the relation sets (`useQuerySet`), or a
    * function that gives it on first use. */
   querySet: unknown;
+  /** @internal The query-set mixins of extensions, dependencies first, applied over `querySet`. */
+  extensionMixins: readonly Mixin[] = [];
+  /** @internal The class made from `querySet` and `extensionMixins`, built on first use. */
+  composedSet: unknown;
   /** @internal Relation-set classes with the `querySet` methods, by base class. */
   readonly relatedSets = new Map<unknown, unknown>();
   private rootQuerySet: QuerySet<ModelSpec> | undefined;
@@ -235,6 +240,7 @@ export class ModelMeta implements Source {
   /** @internal Forget the root query set and relation-set classes (`useQuerySet`). */
   resetQuerySet(querySet: unknown): void {
     this.querySet = querySet;
+    this.composedSet = undefined;
     this.rootQuerySet = undefined;
     this.relatedSets.clear();
   }
@@ -494,13 +500,16 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
 let relatedSet: (r: RelationMeta, instance: object) => RelatedSet<ModelSpec, never>;
 let manyRelatedSet: (r: RelationMeta, instance: object) => ManyRelatedSet<ModelSpec>;
 let makeQuerySet: (meta: ModelMeta) => QuerySet<ModelSpec>;
+let hostQuerySetMember: (name: string) => boolean;
 
 /** @internal */
 export function registerQueries(
   qs: typeof makeQuerySet,
   rs: typeof relatedSet,
   ms: typeof manyRelatedSet,
+  has: typeof hostQuerySetMember,
 ): void {
+  hostQuerySetMember = has;
   makeQuerySet = qs;
   relatedSet = rs;
   manyRelatedSet = ms;
@@ -827,7 +836,14 @@ export const registry = new Registry();
  */
 export function define(
   schema: string | SchemaIR,
-  options: { readonly registry?: Registry; readonly requiredCapabilities?: readonly string[] } = {},
+  options: {
+    readonly registry?: Registry;
+    readonly requiredCapabilities?: readonly string[];
+    /** The generated code of each extension, by extension id. */
+    readonly extensions?: Readonly<Record<string, ExtensionCode>>;
+    /** The extension ids of each model, dependencies first. */
+    readonly members?: Readonly<Record<string, readonly string[]>>;
+  } = {},
 ): Record<string, ModelClass<ModelSpec> & Record<string, unknown>> {
   for (const capability of options.requiredCapabilities ?? []) {
     if (!capabilities.includes(capability)) throw new TypeError(`generated models require ${capability}; rebuild/select a compatible native artifact`);
@@ -883,6 +899,8 @@ export function define(
         Object.defineProperty(meta.model, name, { value: (value: string) => call(() => fn(value)), enumerable: true });
       }
     }
+    const ids = options.members?.[m.name];
+    if (ids?.length) applyExtensions(meta, ids, options.extensions ?? {}, hostQuerySetMember);
     Object.defineProperty(meta.Row, "meta", { value: meta });
     reg.add(meta);
     out[m.name] = meta.model;

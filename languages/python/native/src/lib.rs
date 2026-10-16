@@ -1035,7 +1035,7 @@ fn generate_python(path: &str, query_sets: Option<std::collections::BTreeMap<Str
     let (ir, schema) =
         orm_core::dsl::check(orm_core::dsl::compile_file(p).map_err(schema_err)?).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default() };
+    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default(), ..Default::default() };
     let g = orm_core::codegen::python::generate_with(&ir, &schema, &source, &options).map_err(schema_err)?;
     Ok((g.module, g.stub))
 }

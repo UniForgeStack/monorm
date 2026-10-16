@@ -135,6 +135,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     // one namespace import per module, read lazily so an import cycle with it is safe
     let modules: Vec<&str> = query_sets.values().map(|(module, _)| *module).collect::<BTreeSet<_>>().into_iter().collect();
     let query_set = |model: &str| query_sets.get(model).map(|(module, class)| format!("_q{}.{class}", modules.iter().position(|m| m == module).unwrap()));
+    let has_queries = |model: &str| query_set(model).is_some() || options.extensions.iter().any(|e| e.applies(ir, model));
+    let ext_base = options.ext_import.as_deref().unwrap_or("./orm-ext");
     // names: camelCase must stay unique and clear of the runtime's own
     for m in &schema.models {
         let mut seen = BTreeSet::new();
@@ -195,7 +197,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             "/** A {name} row. To-one relations are typed on rows of queries that load them. */"
         )
         .unwrap();
-        writeln!(body, "export interface {name} extends {name}Data, Instance<{name}Spec> {{").unwrap();
+        let exts = options.model_extensions(ir, name);
+        let instances: String = exts.iter().rev().map(|(i, e)| format!(", _e{i}.{}", e.members.instance)).collect();
+        writeln!(body, "export interface {name} extends {name}Data, Instance<{name}Spec>{instances} {{").unwrap();
         #[cfg(feature = "file-storage")]
         for file in &m.file_fields {
             let field = camel(&m.fields()[file.position].name);
@@ -204,7 +208,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         for r in &m.ir.relations {
             match r.kind {
                 RelKind::Many if r.through.is_some() => {
-                    let queries = if query_set(&r.target).is_some() { format!(" & QueriesOf<{}Spec>", r.target) } else { String::new() };
+                    let queries = if has_queries(&r.target) { format!(" & QueriesOf<{}Spec>", r.target) } else { String::new() };
                     writeln!(body, "  readonly {}: ManyRelatedSet<{}Spec>{queries};", camel(&r.name), r.target).unwrap()
                 }
                 RelKind::Many => {
@@ -219,7 +223,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                     {
                         link.push(quote(&camel(&back.name)));
                     }
-                    let queries = if query_set(&r.target).is_some() { format!(" & QueriesOf<{}Spec>", r.target) } else { String::new() };
+                    let queries = if has_queries(&r.target) { format!(" & QueriesOf<{}Spec>", r.target) } else { String::new() };
                     writeln!(body, "  readonly {}: RelatedSet<{}Spec, {}>{queries};", camel(&r.name), r.target, link.join(" | ")).unwrap()
                 }
                 RelKind::One => {}
@@ -313,7 +317,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             }
             writeln!(body, "}}\n").unwrap();
         }
-        writeln!(body, "export interface {name}Spec {{").unwrap();
+        let spec_name = if exts.is_empty() { format!("{name}Spec") } else { format!("{name}BaseSpec") };
+        writeln!(body, "export interface {spec_name} {{").unwrap();
         writeln!(body, "  readonly name: {};", quote(name)).unwrap();
         writeln!(body, "  readonly row: {name};").unwrap();
         writeln!(body, "  readonly data: {name}Data;").unwrap();
@@ -328,8 +333,18 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 writeln!(body, "  readonly pk: {{ {} }};", keys.join("; ")).unwrap()
             }
         }
-        if let Some(class) = query_set(name) { writeln!(body, "  readonly queries: {class};").unwrap(); }
-        writeln!(body, "}}\n").unwrap();
+        if exts.is_empty() {
+            if let Some(class) = query_set(name) { writeln!(body, "  readonly queries: {class};").unwrap(); }
+            writeln!(body, "}}\n").unwrap();
+        } else {
+            // `queries` cannot name its own spec, so the extension mixins apply to the base spec
+            writeln!(body, "}}\n").unwrap();
+            let mut ctor = format!("new (...args: any[]) => QuerySet<{name}BaseSpec>");
+            for (i, e) in &exts { ctor = format!("ReturnType<typeof _e{i}.{}<{ctor}>>", e.members.query_set); }
+            let ext_type = format!("InstanceType<{ctor}>");
+            let queries = query_set(name).map_or(ext_type.clone(), |class| format!("{class} & {ext_type}"));
+            writeln!(body, "export interface {name}Spec extends {name}BaseSpec {{\n  readonly queries: {queries};\n}}\n").unwrap();
+        }
 
         // columns and relation paths: `S` the scopes a column reads (the root model, plus
         // `*many` through a to-many hop), `H` the hops so far, `O` whether a hop may be null
@@ -396,8 +411,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         "QuerySetOf", "RelationPath", "SchemaIR", "Via",
     ];
     types.extend(used.iter().copied());
-    if !query_sets.is_empty() {
+    let used_exts: BTreeSet<usize> = schema.models.iter().flat_map(|m| options.model_extensions(ir, &m.ir.name).into_iter().map(|(i, _)| i)).collect();
+    if !query_sets.is_empty() || !used_exts.is_empty() {
         types.push("QueriesOf");
+    }
+    if !used_exts.is_empty() {
+        types.push("QuerySet");
     }
     types.sort_unstable();
     let imports = types.iter().map(|t| format!("type {t}")).collect::<Vec<_>>().join(", ");
@@ -406,12 +425,27 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     for (i, module) in modules.iter().enumerate() {
         writeln!(out, "import * as _q{i} from {};", quote(module)).unwrap();
     }
+    for i in &used_exts {
+        writeln!(out, "import * as _e{i} from {};", quote(&format!("{ext_base}/{}/index.js", options.extensions[*i].typescript_dir()))).unwrap();
+    }
+    let mut ext_options = String::new();
+    if !used_exts.is_empty() {
+        let modules: Vec<String> = used_exts.iter().map(|i| {
+            let e = &options.extensions[*i];
+            format!("{}: {{ module: _e{i}, hash: {}, dir: new URL({}, import.meta.url) }}", quote(&e.members.extension), quote(&e.members.hash), quote(&format!("{ext_base}/{}/", e.typescript_dir())))
+        }).collect();
+        let members: Vec<String> = schema.models.iter().filter_map(|m| {
+            let e = options.model_extensions(ir, &m.ir.name);
+            (!e.is_empty()).then(|| format!("{}: [{}]", quote(&m.ir.name), e.iter().map(|(_, x)| quote(&x.members.extension)).collect::<Vec<_>>().join(", ")))
+        }).collect();
+        write!(ext_options, "extensions: {{ {} }}, members: {{ {} }}", modules.join(", "), members.join(", ")).unwrap();
+    }
     out.push('\n');
     writeln!(out, "const SCHEMA: SchemaIR = {ir_json};\n").unwrap();
     #[cfg(feature = "reference-loading")]
-    writeln!(out, "const models = define(SCHEMA, {{ requiredCapabilities: [\"reference-loading\"] }});\n").unwrap();
+    writeln!(out, "const models = define(SCHEMA, {{ requiredCapabilities: [\"reference-loading\"]{} }});\n", if ext_options.is_empty() { String::new() } else { format!(", {ext_options}") }).unwrap();
     #[cfg(not(feature = "reference-loading"))]
-    writeln!(out, "const models = define(SCHEMA);\n").unwrap();
+    if ext_options.is_empty() { writeln!(out, "const models = define(SCHEMA);\n").unwrap(); } else { writeln!(out, "const models = define(SCHEMA, {{ {ext_options} }});\n").unwrap(); }
     #[cfg(feature = "file-storage")]
     if !ir.behavior.file_fields.is_empty() {
         out.push_str("import { type Reference, type Registry as StorageRegistry } from \"@orm/storage\";\nimport { FileField, type Upload } from \"@orm/file-storage\";\nimport { installModel } from \"@orm/file-storage/model\";\n");

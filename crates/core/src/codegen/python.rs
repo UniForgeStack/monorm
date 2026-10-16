@@ -132,11 +132,25 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          # inserts / updates and query sets) for editors and type checkers.\n\n",
     );
     writeln!(py, "from orm import QuerySet, define{}\n", if query_sets.is_empty() { "" } else { ", use_query_set" }).unwrap();
+    // the extensions some model uses, with the models that use each, in chain order
+    let model_exts: Vec<(&str, Vec<(usize, &super::ExtensionCode)>)> = names.iter().map(|n| (*n, options.model_extensions(ir, n))).filter(|(_, e)| !e.is_empty()).collect();
+    let used_exts: BTreeSet<usize> = model_exts.iter().flat_map(|(_, e)| e.iter().map(|(i, _)| *i)).collect();
+    let ext_base = options.ext_import.as_deref().unwrap_or("orm_ext");
+    let mut ext_kwargs = String::new();
+    if !used_exts.is_empty() {
+        for i in &used_exts {
+            writeln!(py, "from {ext_base} import {} as _ext{i}", options.extensions[*i].python_package()).unwrap();
+        }
+        py.push('\n');
+        let modules: Vec<String> = used_exts.iter().map(|i| format!("{:?}: _ext{i}", options.extensions[*i].members.extension)).collect();
+        let members: Vec<String> = model_exts.iter().map(|(m, e)| format!("{m:?}: ({},)", e.iter().map(|(_, x)| format!("{:?}", x.members.extension)).collect::<Vec<_>>().join(", "))).collect();
+        write!(ext_kwargs, ", extensions={{{}}}, members={{{}}}", modules.join(", "), members.join(", ")).unwrap();
+    }
     writeln!(py, "_SCHEMA = r\"\"\"\n{ir_json}\n\"\"\"\n").unwrap();
     #[cfg(feature = "reference-loading")]
-    writeln!(py, "_models = define(_SCHEMA, module=__name__, required_capabilities=(\"reference-loading\",))").unwrap();
+    writeln!(py, "_models = define(_SCHEMA, module=__name__, required_capabilities=(\"reference-loading\",){ext_kwargs})").unwrap();
     #[cfg(not(feature = "reference-loading"))]
-    writeln!(py, "_models = define(_SCHEMA, module=__name__)").unwrap();
+    writeln!(py, "_models = define(_SCHEMA, module=__name__{ext_kwargs})").unwrap();
     #[cfg(feature = "file-storage")]
     if !ir.behavior.file_fields.is_empty() {
         py.push_str("from orm_file_storage import FileField as _FileField\nfrom orm_file_storage.model import install_model as _install_file_model\n\n_FILE_ADAPTERS = []\n");
@@ -196,7 +210,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     for m in &schema.models {
         let name = &m.ir.name;
         writeln!(body, "{}\n", section(name)).unwrap();
-        writeln!(body, "class {name}(Model):").unwrap();
+        let exts = options.model_extensions(ir, name);
+        let instances: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}Instance, ")).collect();
+        writeln!(body, "class {name}({instances}Model):").unwrap();
         for method in ir.behavior.methods.iter().filter(|method| method.model == *name) {
             let output = if method.output.is_some() { "str" } else { "None" };
             writeln!(body, "    @staticmethod\n    def {}(value: str) -> {output}: ...", method.name).unwrap();
@@ -229,7 +245,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                 }
             }
         }
-        let objects = if query_sets.contains_key(name.as_str()) { format!("_{name}Objects") } else { format!("{name}QuerySet") };
+        let objects = if !exts.is_empty() || query_sets.contains_key(name.as_str()) { format!("_{name}Objects") } else { format!("{name}QuerySet") };
         writeln!(body, "\n    objects: ClassVar[{objects}]\n").unwrap();
         if let keys @ [_, _, ..] = m.key_fields().as_slice() {
             let parts: Vec<String> = keys.iter().map(|f| value_type(f)).collect();
@@ -372,6 +388,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
              -> UpdateMany[{name}]: ...  # type: ignore[override]\n"
         )
         .unwrap();
+        if !exts.is_empty() {
+            // the user's class first, then the extensions, last in the chain first, as at runtime
+            let user = if query_sets.contains_key(name.as_str()) { format!("_{name}UserObjects, ") } else { String::new() };
+            let mixins: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}QuerySet[{name}], ")).collect();
+            writeln!(body, "class _{name}Objects({user}{mixins}{name}QuerySet): ...\n").unwrap();
+        }
     }
 
     let mut pyi = String::new();
@@ -416,9 +438,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          from orm import fields as f\n\n",
     );
     for (model, (module, class)) in &query_sets {
-        writeln!(pyi, "from {module} import {class} as _{model}Objects").unwrap();
+        let alias = if used_exts.is_empty() || options.model_extensions(ir, model).is_empty() { "Objects" } else { "UserObjects" };
+        writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();
     }
-    if !query_sets.is_empty() {
+    for i in &used_exts {
+        let e = &options.extensions[*i];
+        writeln!(pyi, "from {ext_base}.{} import {} as _ext{i}QuerySet, {} as _ext{i}Instance", e.python_package(), e.members.query_set, e.members.instance).unwrap();
+    }
+    if !query_sets.is_empty() || !used_exts.is_empty() {
         pyi.push('\n');
     }
     #[cfg(feature = "file-storage")]

@@ -53,7 +53,7 @@ T4 = TypeVar("T4")
 T5 = TypeVar("T5")
 T6 = TypeVar("T6")
 
-__all__ = ["QuerySet", "RelatedSet", "ManyRelatedSet", "Prepared", "prefetch", "use_query_set"]
+__all__ = ["QuerySet", "RelatedSet", "ManyRelatedSet", "Prepared", "prefetch", "use_query_set", "use_extensions"]
 
 # Ids per query in in_bulk(), well below Postgres' 65535 parameters.
 IN_BULK_CHUNK = 10_000
@@ -1404,6 +1404,20 @@ def use_query_set(model: type[M], query_set: type[QuerySet[M]] | str) -> None:
         _check_query_set(model, query_set)
     meta = model._meta
     meta.query_set = query_set
+    meta.composed_set = None
+    meta.related_sets = {}
+    setattr(model, "objects", _Objects())
+
+
+def use_extensions(model: type[M], query_sets: tuple[type[QuerySet[M]], ...]) -> None:
+    """Mix the query-set classes of extensions into ``model.objects`` and its relation sets,
+    after a ``use_query_set`` class and before ``QuerySet``. ``query_sets`` are in MRO order
+    (the last extension of the chain first). ``define()`` calls this for the generated models."""
+    for cls in query_sets:
+        _check_query_set(model, cls)
+    meta = model._meta
+    meta.extension_sets = query_sets
+    meta.composed_set = None
     meta.related_sets = {}
     setattr(model, "objects", _Objects())
 
@@ -1421,8 +1435,18 @@ class _Objects:
 def _query_set_class(model: type[Model]) -> type[QuerySet[Any]]:
     meta = model._meta
     cls = meta.query_set
+    if meta.extension_sets:
+        if meta.composed_set is None:
+            user = [_resolve_query_set(model, cls)] if cls is not None else []
+            meta.composed_set = cast("type[QuerySet[Any]]", type(f"{model.__name__}QuerySet", (*user, *meta.extension_sets, QuerySet), {}))
+        return meta.composed_set
     if cls is None:
         return QuerySet
+    return _resolve_query_set(model, cls)
+
+
+def _resolve_query_set(model: type[Model], cls: type[QuerySet[Any]] | str) -> type[QuerySet[Any]]:
+    meta = model._meta
     if isinstance(cls, str):
         import importlib
 
