@@ -1235,7 +1235,7 @@ pub fn generate_typescript(path: String, runtime: Option<String>, query_sets: Op
     let (ir, schema) =
         orm_core::dsl::check(orm_core::dsl::compile_file(p).map_err(schema_err)?).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default().into_iter().collect() };
+    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default().into_iter().collect(), ..Default::default() };
     orm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("orm"), &options).map_err(schema_err)
 }
 

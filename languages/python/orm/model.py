@@ -12,7 +12,7 @@ import uuid
 from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from . import _native
+from . import _extensions, _native
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
 from collections.abc import Sequence
 
@@ -106,6 +106,10 @@ class ModelMeta:
         # path until first use; and the relation sets mixed with it, by base class.
         self.query_set: type[QuerySet[Any]] | str | None = None
         self.related_sets: dict[type, type] = {}
+        # The query-set classes of extensions in MRO order, and the class composed from them
+        # with `query_set` (built on first use).
+        self.extension_sets: tuple[type[QuerySet[Any]], ...] = ()
+        self.composed_set: type[QuerySet[Any]] | None = None
 
     @property
     def key_names(self) -> tuple[str, ...]:
@@ -392,14 +396,23 @@ def _enum(ir: dict[str, Any], module: str | None) -> type[enum.Enum]:
 
 
 def define(
-    schema: str | dict[str, Any], *, registry: Registry | None = None, module: str | None = None, required_capabilities: tuple[str, ...] = ()
+    schema: str | dict[str, Any], *, registry: Registry | None = None, module: str | None = None, required_capabilities: tuple[str, ...] = (),
+    extensions: dict[str, types.ModuleType] | None = None, members: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """Build model classes from a compiled schema (the JSON IR ``orm compile`` and
     :func:`load` produce). Generated ``models.py`` modules call this.
 
     Returns the model classes and the schema's enum classes, by name. They join
     ``registry`` (the default one unless given); ``module`` sets their ``__module__``.
+
+    ``extensions`` maps an extension id to its generated package, and ``members`` maps a model to the
+    ids whose query-set and instance classes it gets, dependencies first. Generated modules pass both.
     """
+    from .query import QuerySet, use_extensions
+
+    chains: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for model_name, ids in (members or {}).items():
+        chains[model_name] = [(i, _extensions.check(i, (extensions or {})[i])) for i in ids]
     for capability in required_capabilities:
         if capability not in _CAPABILITIES:
             raise TypeError(f"generated models require {capability}; rebuild/select a compatible native artifact")
@@ -434,9 +447,18 @@ def define(
         ns.update({r["name"]: _relation(r) for r in m.get("relations", ())})
         if module is not None:
             ns["__module__"] = module
+        chain = chains.get(m["name"], [])
+        classes = [(getattr(extensions[i], r["query_set"]), getattr(extensions[i], r["instance"])) for i, r in chain] if chain else []  # type: ignore[index]
+        if chain:
+            _extensions.members(
+                m["name"], set(ns), chain, lambda n: hasattr(QuerySet, n), lambda n: hasattr(Model, n) or n in _RESERVED
+            )
         cls: type[Model] = types.new_class(
-            m["name"], (Model,), {"table": m["table"], "registry": reg, "key": m.get("primary_key")}, lambda body: body.update(ns)
+            m["name"], (*(c[1] for c in reversed(classes)), Model),
+            {"table": m["table"], "registry": reg, "key": m.get("primary_key")}, lambda body: body.update(ns)
         )
+        if classes:
+            use_extensions(cls, tuple(c[0] for c in reversed(classes)))
         for method in ir.get("behavior", {}).get("methods", ()):
             if method["model"] == m["name"]:
                 if method["name"] in ns or method["name"] in _RESERVED:

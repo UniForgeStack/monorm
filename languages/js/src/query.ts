@@ -2417,6 +2417,14 @@ function checkQuerySet(meta: ModelMeta, cls: unknown): QuerySetClass {
 }
 
 function querySetClass(meta: ModelMeta): QuerySetClass {
+  if (!meta.extensionMixins.length) return userQuerySetClass(meta);
+  return (meta.composedSet ??= meta.extensionMixins.reduce<QuerySetClass>(
+    (base, mixin) => checkQuerySet(meta, mixin(base as never)),
+    userQuerySetClass(meta),
+  )) as QuerySetClass;
+}
+
+function userQuerySetClass(meta: ModelMeta): QuerySetClass {
   const cls = meta.querySet;
   if (cls === undefined) return QuerySet as unknown as QuerySetClass;
   if (isQuerySetClass(cls)) return cls as QuerySetClass;
@@ -2481,7 +2489,7 @@ function makeManyRelatedSet(rel: RelationMeta, instance: object): ManyRelatedSet
   return qs;
 }
 
-registerQueries((meta) => new (querySetClass(meta))(meta), makeRelatedSet, makeManyRelatedSet);
+registerQueries((meta) => new (querySetClass(meta))(meta), makeRelatedSet, makeManyRelatedSet, (name) => name in QuerySet.prototype);
 
 // -- CTE / select hooks (cte.ts and select.ts register themselves) ---------------------------------
 
