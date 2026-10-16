@@ -124,7 +124,8 @@ export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) =
         if (sameKey(targetKey, key) || (targetKey === MISSING && state?.keys.has(r.name) && sameKey(state.keys.get(r.name), key))) return value;
       }
     } else if (key === null) return null;
-    throw new NotLoaded(`${meta.name}.${r.name} is not loaded; use await obj.load(${meta.name}.${r.name})`);
+    const dangling = loaded && Object.hasOwn(loaded, r.name) && loaded[r.name] === null;
+    throw new NotLoaded(`${meta.name}.${r.name} is not loaded${dangling ? ": the key is set and no row of the target has it" : ""}; use await obj.load(${meta.name}.${r.name})`);
   };
 }
 

@@ -460,7 +460,7 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
   `qs2` must set nothing but filters, neither may be sliced, and each side has at most one `filter()`/`exclude()` call, else `QueryError`:
   conditions of one call through a to-many relation must hold for one related row, so two calls can't be joined into one.
 * `User.posts.objects.order_by(-Post.views).label("best", one=True)` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.
-  It needs a to-many relation and takes no slice (it is a limit of one per parent).
+  It needs a to-many relation and a label, and takes no slice (it is a limit of one per parent).
 * `orm.column(Bundle, "items.product.title")` is the column a dotted path names, the same as `Bundle.items.product.title`.
   Each name before the last is a relation, the last a field; an unknown name raises `LookupError`.
   It is for adapters that map request names to columns (search and ordering filters). It is a function, not `Model.column`, so it can't collide with a field named `column`.
@@ -849,6 +849,7 @@ await post.refresh()
 await post.refresh(Post.views)                   # some fields
 ```
 
+`refresh()` takes columns of the model only (`Post.views`, not `Post.author.name`), else `TypeError`.
 `refresh()` reads the primary, also on a database with replicas.
 `on_commit` callbacks and `load_x()` still read replicas: use `.using("primary")` there.
 
@@ -1102,7 +1103,7 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
 * `lock(exclusive=True, *, nowait=False, skip_locked=False)`: `exclusive` is
   `FOR UPDATE`, otherwise `FOR SHARE`. Only the model's own rows are locked
   (`FOR ... OF <table>`), never rows joined by `load()`.
-* `instance.refresh(*fields, lock=False, exclusive=True, nowait=False, skip_locked=False)`
+* `instance.refresh(*fields, lock=False, exclusive=True, nowait=False, skip_locked=False)`: `fields` are columns of the model, else `TypeError`.
   reloads the row with the query set's `lock()` options and returns `True`. A refresh of
   some fields locks the whole row. With `skip_locked`, a row locked elsewhere (or
   deleted) gives `False` and leaves the instance unchanged; otherwise a missing row

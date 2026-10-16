@@ -618,7 +618,6 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** Bypass schema filter, selection and loading defaults; keep caller filters. */
   withoutDefaults(): this { return this.clone({ withoutDefaults: true }); }
 
-  /** Clear default and explicitly requested eager reference loading. */
   /** Clears the default joins and the joins `load()` asked for; relations loaded by
    * `IN (...)` query stay. */
   withoutRelated(): this {

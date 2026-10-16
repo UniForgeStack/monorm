@@ -56,7 +56,10 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
                     return value
         elif key is None:
             return None
-        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; use await obj.load({owner.__name__}.{self.name})")
+        hint = f"use await obj.load({owner.__name__}.{self.name})"
+        if self.name in data and data[self.name] is None and key is not None:
+            raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded: the key is set and no row of the target has it; {hint}")
+        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; {hint}")
 
 
 def install(model: Any) -> None:

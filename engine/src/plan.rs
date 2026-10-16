@@ -2807,13 +2807,13 @@ fn plan_prefetch(
         return Err(Error::query("a prefetch query can't select columns or lock rows"));
     }
     if node.one && (rel.kind != RelKind::Many || node.attr.is_none()) {
-        return Err(Error::query(format!("one=True needs a to-many relation and to_attr ({}.{})", pm.ir.name, node.relation)));
+        return Err(Error::query(format!("one=True needs a to-many relation and a label ({}.{})", pm.ir.name, node.relation)));
     }
     let many = rel.kind == RelKind::Many && !node.one;
     let mut q = node.query.clone();
     if node.one {
         if q.limit.is_some() || q.offset.is_some() {
-            return Err(Error::query("one=True takes the first row by the query's order; drop the slice"));
+            return Err(Error::query("one=True takes the first row by the query's order and no slice"));
         }
         q.limit = Some(Count::Value(1));
     }

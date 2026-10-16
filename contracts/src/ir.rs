@@ -831,7 +831,7 @@ pub struct Order {
     pub nulls: Option<Nulls>,
 }
 
-/// The public fields of the model a `select_related` path joins (`only()` through it).
+/// The public fields of the model a `select_related` path joins (columns named beside a `load()` path).
 #[derive(Deserialize, Debug, Clone)]
 pub struct RelatedFields {
     pub path: Vec<String>,
@@ -888,7 +888,7 @@ pub struct Select {
     /// To-one relation paths loaded with LEFT JOINs in the same statement.
     #[serde(default)]
     pub select_related: Vec<Vec<String>>,
-    /// The fields of joined models that `only()` names, by `select_related` path.
+    /// The fields of joined models that columns beside a `load()` path name, by `select_related` path.
     #[serde(default)]
     pub related_fields: Vec<RelatedFields>,
     /// Relations of the root model loaded with one extra `IN (...)` query each, inside
