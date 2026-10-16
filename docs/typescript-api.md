@@ -317,7 +317,9 @@ outer level and keeps all posts of a matching user; a condition that reads no co
 relation filters the parent row.
 `func.arrayAgg(expr, { orderBy, distinct, filter })` is `ARRAY_AGG`: an array with the `null`
 values kept, `null` (not `[]`) over no rows; `orderBy` fixes the element order (with `distinct`
-it must use the same expression). It works over a relation, takes no array column, is not a
+it must use the same expression). The columns of `orderBy` must be on the relation path of
+the argument; a key that is constant there, a window function, or an aggregate on that path
+throws `QueryError`. It works over a relation, takes no array column, is not a
 window function, and is PostgreSQL only. Other aggregates take no `orderBy`.
 In a `select()` without `groupBy()`, `having()`, `distinct()`, `lock()`, a limit or an offset,
 and with no window function, local aggregate or CTE, two or

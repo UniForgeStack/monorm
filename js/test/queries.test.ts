@@ -400,6 +400,23 @@ test("array_agg: order, filter, distinct, NULL and empty results", async () => {
   assert.deepEqual(await Comment.objects.select({ a: func.arrayAgg(Comment.authorId, { orderBy: Comment.body }) }).scalar(), [null, alice.id, bob.id]);
 });
 
+test("array_agg rejects order keys that do not belong to its argument", async () => {
+  await seed();
+  const bad: Array<() => PromiseLike<unknown>> = [
+    () => User.objects.select({ v: func.arrayAgg(User.posts.title, { orderBy: User.name }) }),
+    () => Post.objects.select({ v: func.arrayAgg(Post.title, { distinct: true, orderBy: Post.views }) }),
+    () => Post.objects.select({ v: func.arrayAgg(Post.title, { orderBy: func.count(Post.id) }) }),
+    () => User.objects.select({ v: func.arrayAgg(User.posts.title, { orderBy: func.count(User.posts) }) }),
+    () => User.objects.select({ v: func.arrayAgg(User.name, { orderBy: User.posts.title }) }),
+    () => Post.objects.select({ v: func.sum(func.max(Post.author.id)) }),
+  ];
+  for (const run of bad) await assert.rejects(Promise.resolve(run()), QueryError);
+  assert.deepEqual(
+    await User.objects.select({ v: func.arrayAgg(User.name, { orderBy: func.count(User.posts) }) }).scalar(),
+    ["Carol", "Bob", "Alice"],
+  );
+});
+
 test("array_agg over a to-one tail keeps the NULL elements", async () => {
   await seed();
   const names = func.arrayAgg(Post.comments.author.name, { orderBy: Post.comments.author.name });

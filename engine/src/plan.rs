@@ -333,6 +333,18 @@ impl Cut<'_> {
         &path[..keep]
     }
 
+    /// The cut at `level`, a path below `base`.
+    fn at<'l>(&self, level: &'l [String]) -> Option<Cut<'l>>
+    where
+        Self: 'l,
+    {
+        let mut model = self.model;
+        for hop in level.iter().skip(self.base.len()) {
+            model = self.schema.models[model].relation(hop).ok()?.1;
+        }
+        Some(Cut { schema: self.schema, model, base: level })
+    }
+
     /// Whether the hops of `path` from index `from` on are all to-one (and not through a join model).
     fn is_to_one_from(&self, path: &[String], from: usize) -> bool {
         let mut model = self.model;
@@ -438,6 +450,90 @@ fn joined_paths<'e>(
     paths.retain(|p| !p.is_empty());
     paths.dedup();
     (!paths.is_empty()).then_some(paths)
+}
+
+/// The aggregates in `e`, not looking inside them, windows or subqueries.
+fn nested_aggregates<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+    match e {
+        Expr::Func { name, .. } if is_aggregate(name) => out.push(e),
+        Expr::Func { args, .. } => args.iter().for_each(|a| nested_aggregates(a, out)),
+        Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => {
+            nested_aggregates(l, out);
+            nested_aggregates(r, out);
+        }
+        Expr::And { items } | Expr::Or { items } => items.iter().for_each(|i| nested_aggregates(i, out)),
+        Expr::In { item, values, .. } => {
+            nested_aggregates(item, out);
+            values.iter().for_each(|v| nested_aggregates(v, out));
+        }
+        Expr::Not { item } | Expr::IsNull { item, .. } | Expr::Like { item, .. } => nested_aggregates(item, out),
+        Expr::Case { whens, default } => case_parts(whens, default).for_each(|c| nested_aggregates(c, out)),
+        _ => {}
+    }
+}
+
+/// Rejects the inputs of an aggregate whose result would be wrong or a raw database error:
+/// an aggregate inside an aggregate that has no deeper relation path (it is constant per group),
+/// and the `order_by` keys of `array_agg` that do not belong to the argument's relation path.
+fn check_aggregate_inputs(
+    cut: &Cut,
+    name: &str,
+    rel: Option<&[String]>,
+    args: &[Expr],
+    order_by: &[Order],
+) -> Result<()> {
+    let base = cut.base;
+    let below = |p: &[String]| p.len() > base.len() && p.starts_with(base);
+    let (mut own, mut has_not) = (vec![], false);
+    for a in args {
+        col_paths(a, &mut own, &mut has_not);
+    }
+    let level = own.iter().copied().chain(rel).filter(|p| below(p)).max_by_key(|p| p.len()).unwrap_or(base);
+    let Some(inner) = cut.at(level) else { return Ok(()) };
+    let mut nested = vec![];
+    for e in args.iter().chain(order_by.iter().map(|o| &o.expr)) {
+        nested_aggregates(e, &mut nested);
+    }
+    for n in nested {
+        let Expr::Func { name: inner_name, args, rel, filter, order_by, .. } = n else { continue };
+        let paths = below_paths(&inner, rel.as_deref(), args, filter.as_deref(), order_by);
+        let Some(longest) = paths.iter().filter(|p| p.len() > level.len()).max_by_key(|p| p.len()) else {
+            return Err(Error::query(format!(
+                "{inner_name}() inside {name}() needs a relation path below the one of {name}(): \
+                 on the same path it is constant for each group"
+            )));
+        };
+        if inner.is_to_one_from(longest, level.len()) {
+            return Err(Error::query(format!(
+                "{inner_name}() inside {name}() reads a to-one path, so it is a plain column per row: \
+                 drop the {inner_name}() and use the column"
+            )));
+        }
+    }
+    if name != "array_agg" || order_by.is_empty() {
+        return Ok(());
+    }
+    for o in order_by {
+        if has_window(&o.expr) {
+            return Err(Error::query("array_agg() order_by can't hold a window function"));
+        }
+        let (mut keys, mut has_not) = (vec![], false);
+        col_paths(&o.expr, &mut keys, &mut has_not);
+        if level.len() > base.len() && !cut.is_to_one_from(level, base.len()) {
+            if !keys.is_empty() && !keys.iter().any(|p| below(p)) {
+                return Err(Error::query(
+                    "array_agg() order_by reads no column of the relation path of its argument: \
+                     the order would be arbitrary",
+                ));
+            }
+        } else if keys.iter().any(|p| below(p) && !cut.is_to_one_from(p, base.len())) {
+            return Err(Error::query(
+                "array_agg() order_by reads a relation path that its argument does not: \
+                 the columns of order_by must be on the path of the argument",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether an aggregate's filter reads columns of the cut's level only (and some column).
@@ -1754,6 +1850,7 @@ impl<'s> Planner<'s> {
         if is_aggregate(name) {
             let base = self.scope().path.clone();
             let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
+            check_aggregate_inputs(&cut, name, rel, args, order_by)?;
             if self.applies_joins {
                 for path in joined_paths(&cut, rel, args, filter, order_by).unwrap_or_default() {
                     self.ensure_join(path, "an aggregate")?;
@@ -1952,7 +2049,12 @@ impl<'s> Planner<'s> {
                 let mut exprs = vec![arg];
                 let mut slots = vec![];
                 for o in order_by {
-                    exprs.push(self.value(&o.expr, Hint::default())?);
+                    let key = self.value(&o.expr, Hint::default())?;
+                    // Compared as planned: PostgreSQL accepts the same expression written twice, binds included.
+                    if distinct && format!("{key:?}") != format!("{:?}", exprs[0]) {
+                        return Err(Error::query("array_agg(distinct=True) can only order by its argument"));
+                    }
+                    exprs.push(key);
                     slots.push(format!("${}{}", exprs.len(), order_sql(o)));
                 }
                 let order = if slots.is_empty() { String::new() } else { format!(" ORDER BY {}", slots.join(", ")) };

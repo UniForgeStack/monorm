@@ -387,6 +387,53 @@ async def test_array_agg_errors(clean):
         await User.objects.select(func.array_agg(User.posts.title, order_by=User.comments.body))
 
 
+async def test_array_agg_rejects_invalid_order_keys(clean):
+    await seed()
+    # An outer-only key is constant inside the subquery.
+    with pytest.raises(QueryError, match="reads no column of the relation path"):
+        await User.objects.select(func.array_agg(User.posts.title, order_by=User.name))
+    with pytest.raises(QueryError, match="can only order by its argument"):
+        await Post.objects.select(func.array_agg(Post.title, distinct=True, order_by=Post.views))
+    with pytest.raises(QueryError, match="window function"):
+        await Post.objects.select(func.array_agg(Post.title, order_by=func.row_number().over()))
+    with pytest.raises(QueryError, match="constant for each group"):
+        await Post.objects.select(func.array_agg(Post.title, order_by=func.count(Post.id)))
+    with pytest.raises(QueryError, match="constant for each group"):
+        await User.objects.select(func.array_agg(User.posts.title, order_by=func.count(User.posts)))
+    # A local argument with a to-many key.
+    with pytest.raises(QueryError, match="does not"):
+        await User.objects.select(func.array_agg(User.name, order_by=User.posts.title))
+    # Valid shapes stay valid.
+    views = await Post.objects.select(func.array_agg(Post.views + 1, distinct=True, order_by=Post.views + 1)).scalar()
+    assert views == [6, 21, 51, 101]
+    titles = await Post.objects.select(func.array_agg(Post.title, order_by=orm.expr.Literal(1))).scalar()
+    assert sorted(titles) == ["a1", "a2", "a3", "b1"]
+    cased = await Post.objects.select(
+        func.array_agg(Post.title, order_by=func.case((Post.views > 30, 0), default=1)),
+    ).scalar()
+    assert sorted(cased) == ["a1", "a2", "a3", "b1"]
+    # An aggregate key on a deeper relation path, and a key with a column on and a column off the path.
+    deeper = await User.objects.select(func.array_agg(User.name, order_by=func.count(User.posts))).scalar()
+    assert deeper == ["Carol", "Bob", "Alice"]
+    mixed = await User.objects.order_by(User.id).select(
+        User.name, func.array_agg(User.posts.title, order_by=User.posts.views + func.length(User.name)).label("t")
+    )
+    assert mixed[0].t == ["a1", "a3", "a2"]
+
+
+async def test_nested_aggregate_needs_a_deeper_path(clean):
+    await seed()
+    with pytest.raises(QueryError, match="constant for each group"):
+        await User.objects.select(func.sum(User.posts.views + func.count(User.posts)))
+    with pytest.raises(QueryError, match="constant for each group"):
+        await Post.objects.select(func.array_agg(func.sum(Post.views)))
+    with pytest.raises(QueryError, match="plain column per row"):
+        await Post.objects.select(func.sum(func.max(Post.author.id)))
+    # An inner aggregate over a deeper relation path stays valid.
+    total = await User.objects.select(func.sum(func.count(User.posts))).scalar()
+    assert total == 4
+
+
 async def test_outer_through_relation_paths(clean):
     await seed()
     others = (

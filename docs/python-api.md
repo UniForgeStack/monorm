@@ -632,7 +632,9 @@ when its row exists but its column is NULL.
   not `[]` (like `sum`). `order_by=Post.views.desc()` (or a list) fixes the element order;
   with `distinct=True` it must use the same expression. It works over a relation
   (`func.array_agg(User.posts.title, order_by=User.posts.title)`, `None` for a user without
-  posts). It does not take an array column, and it can't be a window function.
+  posts). The columns of `order_by` must be on the relation path of the argument: a key
+  that is constant there, a window function, or an aggregate on that path raises `QueryError`.
+  It does not take an array column, and it can't be a window function.
   PostgreSQL only: SQLite raises `QueryError`. The other aggregates take no `order_by`
   (their result does not depend on row order).
 * **Same-relation aggregates share one subquery.** In a `select()` (without `group_by()`,
