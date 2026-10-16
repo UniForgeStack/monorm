@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DatabaseError, Decimal, IntegrityError, QueryError, connect, excluded, getDatabase, type QueryEvent } from "../src/index.js";
+import { DatabaseError, Decimal, IntegrityError, QueryError, TransactionAborted, connect, excluded, getDatabase, type QueryEvent } from "../src/index.js";
 import { Comment, Post, PostTag, Priority, Profile, Tag, User, type TagInsert } from "./blog/models.js";
 import { DATABASE_URL, replicaUrl, useDatabase } from "./helpers.js";
 
@@ -315,6 +315,29 @@ test("set keeps the links when it fails", async () => {
     await assert.rejects(post.tags.set([t2], { throughDefaults: bad }));
   }
   assert.deepEqual((await PostTag.objects.all()).map((l) => l.tagId), [t1.id]);
+});
+
+test("a failed set() marks the enclosing transaction, stays atomic outside one, and a nested transaction recovers", async () => {
+  const db = getDatabase();
+  const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
+  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
+  const [t1, t2] = (await Tag.objects.insertMany([{ name: "a" }, { name: "b" }]).returning()) as [Tag, Tag];
+  await post.tags.add(t1);
+  const missing = t2.id + 10_000n;
+  const kept = async () => (await PostTag.objects.all()).map((l) => l.tagId);
+  await assert.rejects(post.tags.set([missing as never]));
+  assert.deepEqual(await kept(), [t1.id]);
+  await assert.rejects(
+    db.transaction(async () => {
+      await assert.rejects(post.tags.set([missing as never]));
+    }),
+    (e: unknown) => e instanceof TransactionAborted,
+  );
+  await db.transaction(async () => {
+    await assert.rejects(db.transaction(() => post.tags.set([missing as never])));
+    assert.deepEqual(await kept(), [t1.id]);
+  });
+  assert.deepEqual(await kept(), [t1.id]);
 });
 
 // -- COPY -----------------------------------------------------------------------------------------

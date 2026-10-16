@@ -89,8 +89,10 @@ fn model_select(model: &str, without_defaults: bool) -> Result<Select> {
         .map_err(|e| query_err(e.to_string()))
 }
 
-/// Ends `tx` by the result; a nested `tx` is a savepoint, so the outer scope stays open.
-async fn finish<T>(tx: std::sync::Arc<dyn Transaction>, result: Result<T>) -> Result<T> {
+/// Ends the own transaction `tx` by the result. Without one (`conn` is a transaction of
+/// the caller) nothing opens a savepoint: a failed statement marks the caller's transaction.
+async fn finish<T>(tx: Option<std::sync::Arc<dyn Transaction>>, result: Result<T>) -> Result<T> {
+    let Some(tx) = tx else { return result };
     match result {
         Ok(out) => {
             tx.commit().await?;
@@ -180,8 +182,12 @@ pub fn prepare_insert(
     })
 }
 
-pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert) -> Result<Outcome> {
-    let tx = conn.begin().await?;
+pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own_tx: bool) -> Result<Outcome> {
+    let tx = if own_tx { Some(conn.begin().await?) } else { None };
+    let exec: &dyn Executor = match &tx {
+        Some(t) => t.as_ref(),
+        None => conn,
+    };
     let result = async {
         let mut fetched = vec![];
         for row in insert.rows {
@@ -212,7 +218,7 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert) -> 
                 }
                 statement.returning(Query::returning().expr(plan::returning_col(&step.key)));
                 let (sql, args) = db::build(target.dialect, &statement);
-                let returned = tx.query(sql, args).await?;
+                let returned = exec.query(sql, args).await?;
                 if returned.len() != 1 {
                     return Err(Error::query("composed insert must return one identity"));
                 }
@@ -224,7 +230,7 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert) -> 
                     .eq(plan::bind(identity.unwrap(), Some(&insert.key))),
             );
             let (sql, args) = db::build(target.dialect, &read);
-            let returned = tx.query(sql, args).await?;
+            let returned = exec.query(sql, args).await?;
             if returned.len() != 1 {
                 return Err(Error::query(
                     "composed insert could not read its stored row",
@@ -425,11 +431,15 @@ pub fn prepare_update(
     Ok(plan)
 }
 
-pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation) -> Result<Outcome> {
-    let tx = conn.begin().await?;
+pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, own_tx: bool) -> Result<Outcome> {
+    let tx = if own_tx { Some(conn.begin().await?) } else { None };
+    let exec: &dyn Executor = match &tx {
+        Some(t) => t.as_ref(),
+        None => conn,
+    };
     let result = async {
         let (sql, args) = db::build(target.dialect, &plan.matched);
-        let matched = tx.query(sql, args).await?;
+        let matched = exec.query(sql, args).await?;
         let mut keys = vec![];
         for row in 0..matched.len() {
             keys.push(matched.value(row, plan.key_position, plan.key.value_type())?);
@@ -442,7 +452,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation) -
                         .eq(plan::bind(key.clone(), Some(&plan.key))),
                 );
                 let (sql, args) = db::build(target.dialect, &delete);
-                if tx.execute(sql, args).await? != 1 {
+                if exec.execute(sql, args).await? != 1 {
                     return Err(Error::query("captured composed identity disappeared"));
                 }
             } else {
@@ -465,7 +475,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation) -
                 }
                 for statement in writes.into_values() {
                     let (sql, args) = db::build(target.dialect, &statement);
-                    if tx.execute(sql, args).await? != 1 {
+                    if exec.execute(sql, args).await? != 1 {
                         return Err(Error::query("captured composed owner disappeared"));
                     }
                 }
@@ -490,7 +500,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation) -
                     .eq(plan::bind(key, Some(&plan.key))),
             );
             let (sql, args) = db::build(target.dialect, &read);
-            let row = tx.query(sql, args).await?;
+            let row = exec.query(sql, args).await?;
             if row.len() != 1 {
                 return Err(Error::query("updated composed identity disappeared"));
             }

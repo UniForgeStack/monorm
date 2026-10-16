@@ -1652,22 +1652,23 @@ class ManyRelatedSet(QuerySet[M]):
 
     async def set(self, objs: Iterable[Any], *, through_defaults: Mapping[str, Any] | None = None) -> None:
         """Make the given instances (or keys) exactly the linked ones;
-        ``through_defaults`` sets other fields of the new join rows. One transaction."""
+        ``through_defaults`` sets other fields of the new join rows. One transaction; inside
+        one, a failure marks it (no savepoint), so wrap the call in a nested ``transaction()`` to recover."""
         from .db import resolve
 
         self._through_defaults(through_defaults)
         keys = self._target_keys(objs)
         col = self._target_col()
-        async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction():
+        async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(savepoint=False):
             await self._links().filter(col.not_in(keys)).delete()
             await self.add(*keys, through_defaults=through_defaults)
 
     async def insert(self, **values: Any) -> M:  # type: ignore[override]
-        """Insert a related row and link it, in one transaction."""
+        """Insert a related row and link it, in one transaction (see ``set()`` inside one)."""
         from .db import resolve
 
         db = self._db if self._db is not None else self._instance.__dict__.get("_db")
-        async with resolve(db).transaction():
+        async with resolve(db).transaction(savepoint=False):
             obj: M = await QuerySet(self._model).using(db).insert(**values)
             await self.add(obj)
         return obj

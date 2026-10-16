@@ -1026,6 +1026,9 @@ async with db.transaction():
 `db.transaction(savepoint=False)` joins the enclosing transaction with no savepoint.
 An error that leaves such a block marks the enclosing transaction failed.
 On an outermost block the parameter has no effect.
+A multi-statement call of the ORM itself (a composed insert, a related `set()` or `insert()`) opens no savepoint in an open transaction: its failure marks the transaction.
+Wrap the call in a nested transaction to recover.
+Outside a transaction it runs in a transaction of its own.
 
 ### Database errors
 

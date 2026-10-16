@@ -212,3 +212,92 @@ async def test_caught_data_migration_failure_rolls_back(case, tmp_path, applicat
         await c.db.fetch("SELECT * FROM migration_probe")
     assert not await c.db.fetch("SELECT * FROM orm_migrations")
     await c.db.execute("DROP TABLE orm_migrations")
+
+
+# -- a failure in an ORM-internal multi-statement call marks the enclosing transaction -------------
+
+FOLLOW = """
+datasource db {
+  provider = "sqlite"
+}
+
+model Person {
+  id        BigInt   @id @default(autoincrement())
+  name      String
+  following Person[] @relation(through: Follow, through_fields: [follower, followee])
+}
+
+model Follow {
+  id          BigInt @id @default(autoincrement())
+  follower_id BigInt
+  followee_id BigInt
+  follower    Person @relation("follower", fields: [follower_id], references: [id])
+  followee    Person @relation("followee", fields: [followee_id], references: [id])
+
+  @@unique([follower_id, followee_id])
+}
+"""
+
+
+@pytest.fixture(params=["postgres", "sqlite"])
+async def linked(request, clean):
+    """`link(db)` gives (a person that follows one, a key that fails to link, the follow count)."""
+    if request.param == "postgres":
+        from blog.models import Post, PostTag, Tag
+
+        async def link():
+            alice = await User.objects.insert(email="a@x.io", name="A")
+            post = await Post.objects.insert(author=alice, title="t", body="b")
+            t1, t2 = await Tag.objects.insert_many([{"name": "a"}, {"name": "b"}]).returning()
+            await post.tags.add(t1)
+            return SimpleNamespace(rel=post.tags, bad=t2.id + 10_000, kept=t1.id, count=PostTag.objects.count,
+                                   links=lambda: PostTag.objects.all(), key="tag_id", db=clean,
+                                   fail={})
+
+        yield link
+        return
+    from test_sqlite import models as sqlite_models
+
+    registry, m = sqlite_models(FOLLOW)
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    await db.create_tables()
+    Person, Follow = m["Person"], m["Follow"]
+
+    async def link():
+        ann, bob, cat = await Person.objects.using(db).insert_many([{"name": "a"}, {"name": "b"}, {"name": "c"}]).returning()
+        await ann.following.using(db).add(bob)
+        return SimpleNamespace(rel=ann.following.using(db), bad=cat.id + 1000, kept=bob.id,
+                               count=Follow.objects.using(db).count, links=lambda: Follow.objects.using(db).all(),
+                               key="followee_id", db=db, fail={})
+
+    yield link
+    await db.drop_tables()
+    await db.close()
+
+
+async def test_a_failed_related_set_marks_the_enclosing_transaction(linked):
+    c = await linked()
+    with pytest.raises(orm.TransactionAborted) as e:
+        async with c.db.transaction():
+            with pytest.raises(orm.DatabaseError):
+                await c.rel.set([c.bad], **c.fail)
+            await c.db.on_commit(lambda: None)
+    assert isinstance(e.value.__cause__, orm.DatabaseError)
+    assert await c.count() == 1
+
+
+async def test_a_failed_related_set_outside_a_transaction_stays_atomic(linked):
+    c = await linked()
+    with pytest.raises(orm.DatabaseError):
+        await c.rel.set([c.bad], **c.fail)
+    assert [getattr(link, c.key) for link in await c.links()] == [c.kept]
+
+
+async def test_a_nested_transaction_recovers_a_failed_related_set(linked):
+    c = await linked()
+    async with c.db.transaction():
+        with pytest.raises(orm.DatabaseError):
+            async with c.db.transaction():
+                await c.rel.set([c.bad], **c.fail)
+        assert await c.count() == 1
+    assert [getattr(link, c.key) for link in await c.links()] == [c.kept]
