@@ -31,8 +31,8 @@ model ActiveUser {
 
 A proxy inherits its source fields and relations, also through proxy chains.
 It retains the root table, physical primary key, column types, enum representation,
-constraints and database defaults. It creates no table or index. Physical foreign
-keys that target a proxy refer to its root storage owner; logical relation loads
+constraints and database defaults. Without `@@partition.values`, it creates no
+table or index. Physical foreign keys that target a proxy refer to its root storage owner; logical relation loads
 still return the proxy model. Cycles, unknown sources, stored-field additions,
 encoding changes, key changes and physical object overrides fail during definition.
 A proxy cannot override a relation; inherited relations keep their targets.
@@ -108,3 +108,52 @@ compiled capability and asks for a rebuild. The `orm-proxy` manifest declares th
 `proxy-models` capability, so selecting it in `orm-extension-build` selects both the
 compiler and the `proxy-models` host feature; the runtime code alone does not install
 the source declarations.
+
+## Owning a list partition (PostgreSQL)
+
+A proxy of a list-partitioned model can own one partition:
+
+```prisma
+model Reward {
+  id     Int @default(autoincrement())
+  kind   String
+  amount Int?
+  @@id([id, kind])
+  @@partition(list: [kind])
+}
+model FixedReward {
+  amount Int
+  @@proxy.of(Reward)
+  @@proxy.fields(exclude: ["kind"])
+  @@partition.values(["fixed"])
+  @@map("reward_fixed")
+  @@check("amount IS NOT NULL AND amount >= 0")
+  @@unique([amount])
+}
+```
+
+`@@map` names the physical partition; its default is the proxy name in lower case.
+The proxy's checks, indexes, unique rules, exclusion rules, triggers and comment
+belong to that partition. Parent rules remain inherited. A matching partition
+block produces the same migration objects: transferring ownership between a block
+and a proxy produces no migration.
+
+With one bound value, inserts fill the key automatically, including when it is
+excluded in `@@proxy.fields`. The fixed key remains available for composite
+identity and read-back. With several values, expose the key and supply it on
+insert. Enum bounds name members and use their mapped database values. Inserts
+write directly to the owned partition, so PostgreSQL rejects a key outside its
+bound and enforces its local checks, including explicit `IS NOT NULL` checks.
+
+Reads, counts, updates and deletes use the parent with a permanent key predicate.
+`without_defaults()` removes inherited query defaults but keeps that predicate;
+PostgreSQL can prune the other partitions. Related loads and ordinary child
+proxies keep the storage predicate too. Source-model queries return source
+instances from every partition. Proxies that retain the source soft-delete field
+inherit its ORM delete behavior without declaring duplicate database triggers.
+Updates through the source can move rows between partitions when the destination checks allow them.
+
+The source must have exactly one list key field. Partition ownership on a proxy
+of a proxy, overlapping block/proxy values, invalid enum members and SQLite
+partition declarations fail during definition. Uncovered enum members warn unless
+a default block exists. Identity columns on partitioned tables require PostgreSQL 17+.

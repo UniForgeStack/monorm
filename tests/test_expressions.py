@@ -49,10 +49,10 @@ async def docs():
 def test_json_path_sql():
     _, Doc = load()
     assert Doc.objects.filter(Doc.meta["author"]["name"] == "Ann").sql().endswith(
-        """WHERE ((("expr_docs"."meta" -> 'author') -> 'name')) = '"Ann"'"""
+        """WHERE ((("expr_docs"."meta" -> E'author') -> E'name')) = '"Ann"'"""
     )
     assert Doc.objects.filter(Doc.meta["tags"][0].as_text() == "x").sql().endswith(
-        """WHERE ((("expr_docs"."meta" -> 'tags') ->> 0)) = 'x'"""
+        """WHERE ((("expr_docs"."meta" -> E'tags') ->> 0)) = 'x'"""
     )
     assert Doc.objects.filter(Doc.meta.json_contains({"kind": "post"})).sql().endswith(
         """WHERE "expr_docs"."meta" @> '{"kind":"post"}'"""

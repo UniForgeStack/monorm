@@ -56,6 +56,26 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
             .name,
         "empty"
     );
+    // Query extensions must work directly at the generated root in either order.
+    trait AuthorQueries: Sized {
+        fn named_ann(self) -> Self;
+    }
+    impl<M, R, L, D> AuthorQueries for orm_client::Query<M, R, L, D>
+    where M: orm_client::Model<Source = $module::PolicyAuthorSource> {
+        fn named_ann(self) -> Self {
+            self.filter(Author::name.eq("ann".to_owned()))
+        }
+    }
+    let extended = Author::objects.named_ann()
+        .load((Author::bio, Author::books.load(Book::title)))
+        .require().using(&db).first().await.unwrap();
+    let _: &Unloaded = &extended.name;
+    assert_eq!(extended.bio, "large");
+    assert_eq!(extended.books.cached()[0].title, "one");
+    let extended_after = Author::objects
+        .load((Author::bio, Author::books.load(Book::title)))
+        .named_ann().require().using(&db).first().await.unwrap();
+    assert_eq!(extended.public_json().unwrap(), extended_after.public_json().unwrap());
     let normal = Author::objects.require().using(&db).first().await.unwrap();
     assert_eq!(
         orm_client::serde_json::to_value(&normal).unwrap(),
@@ -210,6 +230,13 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
         .unwrap();
     let _: &String = &selected.books.cached()[0].title;
     let _: i32 = selected.books.cached()[0].id;
+    // A bare target query must initialize its normal selection and default caches.
+    let bare_prefetch = Author::objects
+        .load(Author::books.as_prefetch(Book::objects))
+        .require().using(&db).get(Author::ID_KEY, 1).await.unwrap();
+    assert_eq!(bare_prefetch.books.cached()[0].title, "one");
+    assert_eq!(bare_prefetch.books.cached()[0].author.cached().unwrap().name, "ann");
+    let _: &Unloaded = &bare_prefetch.books.cached()[0].author_id;
     let limited = Author::objects
         .load(
             Author::books.as_prefetch(

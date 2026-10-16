@@ -1,8 +1,8 @@
 // `@@query.defaults` from the schema language to a query; needs a query-defaults artifact.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { connect, loads, NotLoaded, Registry, scope } from '../../../js/dist/src/index.js';
-import { native } from '../../../js/dist/src/native.js';
+import { connect, loads, NotLoaded, Registry, scope } from '../../../../js/dist/src/index.js';
+import { native } from '../../../../js/dist/src/native.js';
 
 const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.url), 'utf8');
 assert.ok(JSON.parse(native().nativeArtifact()).capabilities.includes('query-defaults'), 'select orm-query-defaults in the build');
@@ -26,6 +26,17 @@ async function run(provider, url) {
     await Scoped.objects.using(db).insertMany([{ shopId: 1 }, { shopId: 2 }]);
     await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop/);
     await scope({ shop: 2 }, async () => assert.deepEqual((await Scoped.objects.using(db)).map((r) => r.shopId), [2]));
+    await scope({ shop: null }, async () => {
+      await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop is None\/null/);
+      assert.equal(await Scoped.objects.using(db).withoutDefaults().count(), 2);
+    });
+    await scope({ shop: undefined }, async () => assert.rejects(Scoped.objects.using(db).count(), /undefined is not a value/));
+    await scope({ shop: 0 }, async () => assert.equal(await Scoped.objects.using(db).count(), 0));
+    for (const falsy of ['', false]) {
+      await scope({ shop: falsy }, async () => {
+        await Scoped.objects.using(db).count().catch((e) => assert.doesNotMatch(String(e), /None\/null/)); // a type error is fine
+      });
+    }
   } finally {
     await db.dropTables();
     await db.close();

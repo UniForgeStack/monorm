@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DatabaseError, Decimal, IntegrityError, QueryError, connect, excluded, getDatabase, type QueryEvent } from "../src/index.js";
+import { DatabaseError, Decimal, IntegrityError, QueryError, connect, excluded, func, getDatabase, type QueryEvent } from "../src/index.js";
 import { Comment, Post, PostTag, Priority, Profile, Tag, User, type TagInsert } from "./blog/models.js";
 import { DATABASE_URL, replicaUrl, useDatabase } from "./helpers.js";
 
@@ -223,7 +223,9 @@ test("getOrInsert checks the lookup", async () => {
 
 test("getOrInsert reads the primary", async () => {
   // The replica lags: it has none of the primary's rows.
-  const routed = await connect(DATABASE_URL, { replicas: [await replicaUrl("orm_s3_replica_js")], default: false, maxConnections: 2 });
+  const replica = await replicaUrl("orm_s3_replica_js");
+  assert.equal(new URL(replica).pathname, `${new URL(DATABASE_URL).pathname}_orm_s3_replica_js`);
+  const routed = await connect(DATABASE_URL, { replicas: [replica], default: false, maxConnections: 2 });
   try {
     const users = User.objects.using(routed);
     const [user, created] = await users.getOrInsert({ email: "a@x.io" }, { defaults: { name: "A" } });
@@ -349,6 +351,20 @@ test("insertMany copy fits narrow columns", async () => {
   }
 });
 
+test("typed read of a smallint column", async () => {
+  const db = getDatabase();
+  await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint");
+  try {
+    const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
+    await Post.objects.insertMany([{ author: alice, title: "t", body: "b", views: 7 }, { author: alice, title: "u", body: "b", views: 9 }]);
+    assert.deepEqual((await Post.objects.all()).map((p: any) => p.views).sort(), [7, 9]);
+    assert.deepEqual((await Post.objects.select({ v: Post.views }).orderBy(Post.views)).map((r: any) => r.v), [7, 9]);
+    assert.deepEqual(await User.objects.select({ v: func.arrayAgg(User.posts.views, { orderBy: User.posts.views }) }).scalar(), [7, 9]);
+  } finally {
+    await db.execute("ALTER TABLE posts ALTER COLUMN views TYPE integer");
+  }
+});
+
 test("insertMany copy stops at a duplicate key", async () => {
   await Tag.objects.insert({ name: "taken" });
   const rows = [...Array.from({ length: 1000 }, (_, i) => ({ name: `n${i}` })), { name: "taken" }];
@@ -384,4 +400,33 @@ test("insertMany copy rejections", async () => {
   await assert.rejects(Tag.objects.insertMany([{ name: "a" }], { copy: true, batchSize: 2 } as never), /batchSize/);
   await assert.rejects(Tag.objects.insertMany([{ name: "a" }, { name: "b", priority: 1 }], { copy: true }), /some rows only/);
   assert.equal(await Tag.objects.insertMany([], { copy: true }), 0);
+});
+
+test("replica database names are relative to the current worker database", async () => {
+  // Keep the old implementation's probe inside this worker's namespace too.
+  const worker = new URL(DATABASE_URL).pathname.slice(1);
+  const name = `${worker}_isolation_probe`;
+  const url = await replicaUrl(name);
+  assert.equal(new URL(url).pathname, `/${worker}_${name}`);
+});
+
+test("related lazy inserts join the transaction at await", async () => {
+  const db = getDatabase();
+  const author = await User.objects.insert({ email: "lazy@x.io", name: "Lazy" });
+  const post = await Post.objects.insert({ author, title: "existing", body: "b" });
+  const statements = [
+    author.posts.insert({ title: "one", body: "b" }),
+    author.posts.insertMany([{ title: "many", body: "b" }]).returning(),
+    post.tags.insert({ name: "lazy tag" }),
+  ];
+  const rollback = new Error("rollback related insert");
+  for (const statement of statements) {
+    await assert.rejects(db.transaction(async () => {
+      await statement;
+      throw rollback;
+    }), (e) => e === rollback);
+  }
+  assert.equal(await Post.objects.count(), 1);
+  assert.equal(await Tag.objects.count(), 0);
+  assert.equal(await PostTag.objects.count(), 0);
 });

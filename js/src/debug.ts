@@ -76,7 +76,7 @@ export async function nPlusOne<T>(fn: () => Promise<T>, options: NPlusOneOptions
   if (!(report.threshold >= 1)) throw new RangeError("threshold must be at least 1");
   const current = scope.getStore();
   const enclosing = current ? [...(outers.getStore() ?? []), current] : (outers.getStore() ?? []);
-  const result = await outers.run(enclosing, () => scope.run(report, fn));
+  const result = await outers.run(enclosing, async () => await scope.run(report, async () => await fn()));
   if (report.repeated.length) {
     if (options.fail) throw new NPlusOne(report);
     process.emitWarning(report.message(), { type: "NPlusOneWarning" });
@@ -108,12 +108,12 @@ export function callSite(): string {
 
 /** @internal Counts each shape of `fn` once for the ORM loop that owns `seen`: its pages are one query to the user. */
 export function internalLoop<T>(seen: Set<string>, fn: () => Promise<T>): Promise<T> {
-  return loop.run(seen, fn);
+  return loop.run(seen, async () => await fn());
 }
 
 /** @internal Marks the queries of a relation load, so the report names the fix. */
 export function relationLoad<T>(model: string, relation: string, fix: string, fn: () => Promise<T>): Promise<T> {
-  return hint.run({ fix: `${fix}(${model}.${relation})`, site: callSite() }, fn);
+  return hint.run({ fix: `${fix}(${model}.${relation})`, site: callSite() }, async () => await fn());
 }
 
 /** @internal Where user code sends the next queries and the fix to name; `undefined`

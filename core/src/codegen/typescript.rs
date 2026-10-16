@@ -104,9 +104,8 @@ fn last_key(r: &RelationIr, field: &str) -> bool {
 }
 
 /// The hop kind of a relation, for loaded-relation types.
-fn hop_kind(_schema: &Schema, m: &Model, r: &RelationIr) -> Result<&'static str, String> {
-    #[cfg(feature = "query-defaults")]
-    if r.kind == RelKind::One && _schema.model(_schema.model_idx(&r.target)?).query_defaults.filter.is_some() { return Ok("opt"); }
+fn hop_kind(schema: &Schema, m: &Model, r: &RelationIr) -> Result<&'static str, String> {
+    if r.kind == RelKind::One && super::reference_target_filtered(schema, &r.target) { return Ok("opt"); }
     Ok(match r.kind {
         RelKind::Many if r.through.is_some() => "m2m",
         RelKind::Many => "many",
@@ -185,10 +184,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "/** The column values of a {name} row. */").unwrap();
         writeln!(body, "export interface {name}Data {{").unwrap();
         for f in m.fields() {
-            #[cfg(feature = "query-defaults")]
-            let optional = m.query_defaults.fields.as_ref().is_some_and(|fields| !fields.contains(&f.name));
-            #[cfg(not(feature = "query-defaults"))]
-            let optional = false;
+            let optional = m.read_flags.fields.as_ref().is_some_and(|fields| !fields.contains(&f.name));
             writeln!(body, "  readonly {}{}: {};", camel(&f.name), if optional { "?" } else { "" }, file_value_type(m, f)).unwrap();
         }
         writeln!(body, "}}\n").unwrap();
@@ -348,8 +344,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         }
         for r in &m.ir.relations {
             let kind = hop_kind(schema, m, r)?;
-            #[cfg(feature = "reference-loading")]
-            let kind = if kind == "one" && super::reference_target_filtered(ir, &r.target) { "opt" } else { kind };
             let scope = if matches!(kind, "many" | "m2m") { "S | Many" } else { "S" };
             let opt = if kind == "opt" { "true" } else { "O" };
             writeln!(

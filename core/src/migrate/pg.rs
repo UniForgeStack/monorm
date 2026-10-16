@@ -281,20 +281,27 @@ pub fn render(op: &Op, idempotent: bool) -> String {
         Op::CommentOnType { name, comment: c } => format!("COMMENT ON TYPE {} IS {}", ident(name), comment(c)),
         Op::DropFunction(f) => format!("DROP FUNCTION {}", function_sig(f)),
         Op::CreateTable { table, foreign_keys } => {
-            let mut lines: Vec<String> = table.columns.iter().map(column_def).collect();
+            let mut lines: Vec<String> = if table.partition_of.is_some() { vec![] } else { table.columns.iter().map(column_def).collect() };
             lines.extend(table.primary_key.iter().map(pk_def));
             lines.extend(table.uniques.iter().map(unique_def));
             lines.extend(table.checks.iter().map(|c| format!("CONSTRAINT {} CHECK ({})", ident(&c.name), c.expr)));
             lines.extend(table.exclusions.iter().map(exclusion_def));
             lines.extend(foreign_keys.iter().map(fk_def));
+            let partition_by = table.partition_by.as_ref().map(|p| format!(" PARTITION BY {p}")).unwrap_or_default();
+            if let Some(p) = &table.partition_of {
+                let objects = if lines.is_empty() { String::new() } else { format!(" (\n    {}\n)", lines.join(",\n    ")) };
+                return format!("CREATE TABLE {}{} PARTITION OF {}{objects} {}{partition_by}", if idempotent { "IF NOT EXISTS " } else { "" }, ident(&table.name), ident(&p.parent), p.bound);
+            }
             format!(
-                "CREATE TABLE {}{} (\n    {}\n)",
+                "CREATE TABLE {}{} (\n    {}\n){partition_by}",
                 if idempotent { "IF NOT EXISTS " } else { "" },
                 ident(&table.name),
                 lines.join(",\n    ")
             )
         }
         Op::DropTable { table } => format!("DROP TABLE {}", ident(table)),
+        Op::DetachPartition { table, parent } => format!("ALTER TABLE {} DETACH PARTITION {}", ident(parent), ident(table)),
+        Op::AttachPartition { table, parent, bound } => format!("ALTER TABLE {} ATTACH PARTITION {} {bound}", ident(parent), ident(table)),
         Op::RenameTable { from, to } => format!("{} RENAME TO {}", alter(from), ident(to)),
         Op::RenameColumn { table, from, to } => {
             format!("{} RENAME COLUMN {} TO {}", alter(table), ident(from), ident(to))
@@ -355,6 +362,8 @@ pub fn summary(op: &Op) -> String {
         Op::CommentOnType { name, .. } => format!("comment on type {name}"),
         Op::CreateTable { table, .. } => format!("create table {}", table.name),
         Op::DropTable { table } => format!("drop table {table}"),
+        Op::DetachPartition { table, parent } => format!("detach partition {table} from {parent}"),
+        Op::AttachPartition { table, parent, .. } => format!("attach partition {table} to {parent}"),
         Op::RenameTable { from, to } => format!("rename table {from} to {to}"),
         Op::RenameColumn { table, from, to } => format!("rename column {table}.{from} to {to}"),
         Op::AddColumn { table, column } => format!("add column {table}.{}", column.name),

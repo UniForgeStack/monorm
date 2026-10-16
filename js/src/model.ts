@@ -99,7 +99,7 @@ export interface Instance<M extends ModelSpec> {
   delete(): Promise<void>;
   /**
    * Reload column values from the database; `true` when it loaded the row. Arguments
-   * are model columns followed by an optional plain options object. A trailing
+   * are columns of the model (a column of a related model throws `TypeError`) followed by an optional plain options object. A trailing
    * `{ lock: true }` also locks the row until the transaction ends, with the options of
    * `QuerySet.lock()`; a refresh of some fields still locks the whole row. With
    * `skipLocked`, a row locked by another transaction (or deleted) gives `false` and
@@ -127,10 +127,8 @@ export type Row = Record<PropertyKey, unknown> & { [RELATED]?: Record<string, un
 /** Schema information about one model (`User._meta`). */
 export class ModelMeta implements Source {
   declare attachInputFields?: readonly FieldMeta[];
-  /** The schema default filter IR, if any; set once by `define()`. */
-  defaultFilter: unknown;
-  /** The schema default order, one key per column; set once by `define()`. */
-  defaultOrder: readonly { field: string; desc?: boolean; nulls?: "first" | "last" }[] = [];
+  /** The engine's read flag: reads of this model are filtered by default; set once by `define()`. */
+  filtered = false;
   /** The `@soft_delete.deleted_at` field: `delete()` sets it; set once by `define()`. */
   softDelete: FieldMeta | undefined;
   /** The `@locking.version` field: instance writes check it; set once by `define()`. */
@@ -462,13 +460,14 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
           const target = registry.get(r.target);
           const to = r.to.map((name) => target.fieldByIr.get(name)!.name);
           // A default-filtered target joins as absent even when the key is set.
-          if (value === null ? absent || target.defaultFilter !== undefined : to.every((name, i) => fieldValue(value, name) === key[i])) {
+          if (value === null ? absent || target.filtered : to.every((name, i) => fieldValue(value, name) === key[i])) {
             return value;
           }
         } else if (absent) {
           return null;
         }
-        throw new NotLoaded(`${meta.name}.${r.name} is not loaded; ${loadHint}`);
+        const dangling = loaded && r.name in loaded && loaded[r.name] === null;
+        throw new NotLoaded(`${meta.name}.${r.name} is not loaded${dangling ? ": the key is set and no row of the target has it" : ""}; ${loadHint}`);
       };
     }
     case "hasOne":
@@ -726,7 +725,7 @@ export class Registry {
       throw new TypeError("schemas in one registry must target the same database");
     }
     this.dialect = dialect;
-    for (const key of ["extensions", "functions", "catalog"]) {
+    for (const key of ["extensions", "functions", "catalog", "partitions"]) {
       const items = (ir[key] as unknown[] | undefined) ?? [];
       const known = (this.extra[key] ??= []);
       for (const x of items) {
@@ -850,9 +849,6 @@ export function define(
       continue;
     }
     const meta = new ModelMeta(m, reg);
-    const policy = ((ir.behavior as { query_defaults?: { model: string; filter?: unknown; order?: ModelMeta["defaultOrder"] }[] } | undefined)?.query_defaults ?? []).find((d) => d.model === m.name);
-    meta.defaultFilter = policy?.filter;
-    meta.defaultOrder = policy?.order ?? [];
     const role = (key: string) => ((ir.behavior as Record<string, { model: string; field: string }[] | undefined> | undefined)?.[key] ?? []).find((d) => d.model === m.name)?.field;
     meta.versionField = meta.fieldByIr.get(role("versions") ?? "");
     meta.softDelete = meta.fieldByIr.get(role("soft_delete") ?? "");
@@ -884,7 +880,8 @@ export function define(
     reg.add(meta);
     out[m.name] = meta.model;
   }
-  reg.prepareFrom(prepared);
+  const flags = JSON.parse(reg.prepareFrom(prepared).readFlags()) as Record<string, { filtered: boolean }>;
+  for (const name of Object.keys(out)) reg.get(name).filtered = flags[name]?.filtered ?? false;
   destination.publish(reg);
   return out;
 }

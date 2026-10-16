@@ -26,7 +26,7 @@ export type NativeShape = readonly { field: number; slot: number; public: boolea
 export interface NativeInstances {
   readonly shape?: NativeShape;
   readonly model: string;
-  readonly joins: readonly { parent: number; attr: string; model: string; start: number; pk: number; shape?: NativeShape }[];
+  readonly joins: readonly { parent: number; attr: string; model: string; start: number; pk: number; filtered: boolean; dangling: boolean; shape?: NativeShape }[];
 }
 
 /** `select()` rows: per item, the width of a model instance or -1 for one value. */
@@ -76,6 +76,10 @@ export interface NativeInspector {
 }
 
 export interface NativeSchema extends NativeInspector {
+  /** The static read flags of each model, JSON `{model: {filtered, fields, related}}`. */
+  readFlags(): string;
+  /** The engine's default order of a read, JSON `[{field, desc, nulls}]`. */
+  effectiveOrder(selectJson: string): string;
   validateInsert(model: string, fields: string[], rows: unknown[][], allowed: readonly string[]): void;
   uniqueRowUpdate(opJson: string, params: unknown[], allowed: readonly string[]): boolean;
   sql(opJson: string, params: unknown[]): string;
@@ -180,7 +184,7 @@ interface Addon {
   profileMetadata(): string;
   compileSchema(source: string, path?: string | null): string;
   compileSchemaFile(path: string): string;
-  generateTypescript(path: string, runtime?: string | null): string;
+  generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null): string;
   setDecimalClass(ctor: unknown): void;
   cli(argv: string[]): Promise<number>;
   cliMigrateArgs(argv: string[]): (string | null)[] | null;

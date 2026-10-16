@@ -129,7 +129,7 @@ def _prefetch_tree(model: type[Model], items: Iterable[tuple[tuple[str, ...], _P
         if len(hops) == 1:
             node.one = node.one or p.one
             if p.queryset is not None:
-                if node.qs is not None and node.qs is not p.queryset:
+                if node.qs is not None and node.qs is not p.queryset and not (node.qs._plain_relation() and p.queryset._plain_relation()):
                     raise ValueError(f"{p.path!r} is loaded twice with different query sets; label() one of them")
                 node.qs = p.queryset
         else:
@@ -179,9 +179,17 @@ def _load_path(item: _LoadItem) -> tuple[str, ...]:
     return item._path
 
 
+def _full_selection(qs: QuerySet[Any]) -> bool:
+    """An unlabeled relation query set that loads the target's normal selection and nothing else of its own."""
+    if qs._label is not None:
+        return False
+    fields = qs._model._meta.field_names
+    return not qs._loads and (qs._model_fields is None or qs._model_fields == fields)
+
+
 def _derive(
     model: type[Model], loads: Iterable[_LoadItem], *, by_query: bool = False
-) -> tuple[list[str], tuple[tuple[str, ...], ...], tuple[tuple[tuple[str, ...], tuple[str, ...]], ...], tuple[_Prefetch, ...]]:
+) -> tuple[list[str], tuple[tuple[str, ...], ...], tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...], tuple[_Prefetch, ...]]:
     """The model's own fields, joined paths, fields of partial joined models and
     ``IN (...)`` loads for ``load(*loads)``. Items under one first hop share a strategy:
     a join, unless one of them needs a query (a to-many hop, a relation query set that
@@ -219,8 +227,8 @@ def _derive(
             continue
         target = model._meta.relations[hop].target
         path: RelationPath[Any] = RelationPath(model, (hop,), target)
-        # a bare path to the relation asks for all its fields, so its columns add nothing
-        bare = any(len(h) == 1 and not isinstance(i, ColumnRef) and (not isinstance(i, QuerySet) or i._label is None) for h, i in entries)
+        # a bare path (or a plain query set) asks for the normal selection; named columns add to it (the engine unites them)
+        bare = any(len(h) == 1 and (isinstance(i, RelationPath) or (isinstance(i, QuerySet) and _full_selection(i))) for h, i in entries)
         base: QuerySet[Any] | None = None
         inner: list[_LoadItem] = []
         plain = False
@@ -234,24 +242,33 @@ def _derive(
                 if rest:
                     assert item._via is not None
                     inner.append(item._clone(_via=RelationPath(target, rest, item._via._target)))
-                elif base is not None and base is not item:
+                elif base is not None and base is not item and not (base._plain_relation() and item._plain_relation()):
                     raise ValueError(f"{path!r} is loaded twice with different query sets; label() one of them")
                 else:
                     base = item
             elif isinstance(item, ColumnRef):
                 column: ColumnRef[Any] = ColumnRef(target, rest, item._field)
-                if (rest or not bare) and not any(c._path == rest and c._field is item._field for c in inner if isinstance(c, ColumnRef)):
+                if not any(c._path == rest and c._field is item._field for c in inner if isinstance(c, ColumnRef)):
                     inner.append(column)
             elif rest:
                 inner.append(RelationPath(target, rest, item._target))
-        if base is not None and any(isinstance(item, RelationPath) for _, item in entries) and (
-            base._filters or base._order or base._limit is not None or base._offset is not None or base._without_defaults
-        ):
-            raise ValueError(f"{path!r} has a path and a query set that changes its rows; label() the query set")
+        if base is not None and (base._filters or base._order or base._limit is not None or base._offset is not None or base._without_defaults):
+            if any(isinstance(item, (RelationPath, ColumnRef)) for _, item in entries):
+                raise ValueError(
+                    f"{path!r} has a column or path beside a query set that changes its rows; "
+                    "put the columns in the set's own .load() or label() the set"
+                )
         if plain:
             qs = base if base is not None else target.objects
-            prefetch.append(_Prefetch(path, qs.load(*inner) if inner else qs))
-    related_fields = tuple((p, tuple(f)) for p, f in fields.items() if p not in whole)
+            if base is not None:
+                owned = {i._field.name for i in base._loads if isinstance(i, ColumnRef) and not i._path}
+                inner = [i for i in inner if not (isinstance(i, ColumnRef) and not i._path and i._field.name in owned)]
+            if inner:
+                qs = qs.load(*inner)
+            if bare and qs._model_fields is not None:
+                qs = qs._clone(_with_default_fields=True)
+            prefetch.append(_Prefetch(path, qs))
+    related_fields = tuple((p, tuple(f), p in whole) for p, f in fields.items())
     return own, tuple(related), related_fields, tuple(prefetch)
 
 
@@ -296,7 +313,7 @@ class QuerySet(Generic[M]):
     ``exclude(User.posts.published == False)`` keeps users with no unpublished post.
     """
 
-    __slots__ = ("_required", "_model_helpers", "_without_defaults", "_without_related", "_model_fields", "_related_fields", "_model", "_filters", "_order", "_limit", "_offset", "_related", "_prefetch", "_loads", "_via", "_label", "_one", "_as_prefetch", "_lock", "_db", "_from", "_joins", "_result")
+    __slots__ = ("_required", "_model_helpers", "_without_defaults", "_without_related", "_model_fields", "_with_default_fields", "_related_fields", "_model", "_filters", "_order", "_limit", "_offset", "_related", "_prefetch", "_loads", "_via", "_label", "_one", "_as_prefetch", "_lock", "_db", "_from", "_joins", "_result")
 
     def __init__(self, model: type[M]) -> None:
         self._required = False
@@ -304,8 +321,10 @@ class QuerySet(Generic[M]):
         self._without_defaults = False
         self._without_related = False
         self._model_fields: tuple[str, ...] | None = None
-        # load() through to-one paths: the fields of each partial joined model, by path.
-        self._related_fields: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
+        # _model_fields adds to the model's default selection (a bare path beside columns)
+        self._with_default_fields = False
+        # load() through to-one paths: the fields of each partial joined model, by path, and whether they add to its default selection.
+        self._related_fields: tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...] = ()
         self._model = model
         self._filters: tuple[Condition, ...] = ()
         self._order: tuple[Ordering, ...] = ()
@@ -339,6 +358,7 @@ class QuerySet(Generic[M]):
         new._without_defaults = self._without_defaults
         new._without_related = self._without_related
         new._model_fields = self._model_fields
+        new._with_default_fields = self._with_default_fields
         new._related_fields = self._related_fields
         new._model = self._model
         new._filters = self._filters
@@ -408,7 +428,8 @@ class QuerySet(Generic[M]):
 
         Relation query sets run only inside ``load()``; standalone reads and writes
         raise ``TypeError``. Label a filtered, ordered or sliced set when also loading
-        a bare path through that relation.
+        a path or column through that relation, or put the columns in the set's own ``.load()``.
+        A bare path gives the normal selection united with the columns named beside it.
 
         Calls add up. ``load()`` without items gives full instances again (it bypasses a
         default selection)."""
@@ -724,8 +745,12 @@ class QuerySet(Generic[M]):
             ir["without_related"] = True
         if self._model_fields is not None:
             ir["model_fields"] = list(self._model_fields)
+            if self._with_default_fields:
+                ir["with_default_fields"] = True
         if self._related_fields and op == "select" and outer is None and ctes is None:
-            ir["related_fields"] = [{"path": list(p), "fields": list(f)} for p, f in self._related_fields]
+            ir["related_fields"] = [
+                {"path": list(p), "fields": list(f), **({"with_default_fields": True} if union else {})} for p, f, union in self._related_fields
+            ]
         if self._model_helpers:
             ir["model_helpers"] = list(self._model_helpers)
         if self._from is not None:
@@ -856,11 +881,10 @@ class QuerySet(Generic[M]):
         if self._order:
             return self._order
         meta = self._model._meta
-        if meta.default_order and not self._without_defaults and self._from is None:
-            return tuple(
-                Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k.get("desc", False), k.get("nulls"))
-                for k in meta.default_order
-            )
+        select = {"model": meta.name, "without_defaults": self._without_defaults, "from": None if self._from is None else "cte"}
+        keys = json.loads(self._native().effective_order(json.dumps(select)))
+        if keys:
+            return tuple(Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k["desc"], k["nulls"]) for k in keys)
         return tuple(Ordering(ref, desc=False) for ref in meta.key_refs())
 
     async def _fetch(self) -> list[M]:

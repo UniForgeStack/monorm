@@ -212,6 +212,12 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
                 .join(",")
         )
         .unwrap();
+        writeln!(
+            out,
+            "impl orm_client::NullableCodec for {} {{type Nullable=std::option::Option<Self>;}}",
+            ident(&e.name)?
+        )
+        .unwrap();
         writeln!(out,"impl orm_client::Codec for {} {{ fn decode(cell:orm_client::Cell<'_>)->orm_client::Result<Self> {{ match cell {{",ident(&e.name)?).unwrap();
         for v in &e.values {
             match e.storage {
@@ -292,7 +298,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
                 format!(
                     "S{i}:orm_client::State<{}>={}",
                     ty(f),
-                    if default_fields(ir, &m.ir.name)
+                    if default_fields(schema, &m.ir.name)
                         .is_none_or(|fields| fields.iter().any(|n| n == &f.name))
                     {
                         "Loaded"
@@ -307,7 +313,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             .chain(relation_decls.iter().enumerate().map(|(i, d)| {
                 format!(
                     "{d}={}",
-                    normal_relation(ir, schema, &m.ir.name, i, &[])
+                    normal_relation(schema, &m.ir.name, i, &[])
                         .expect("validated finite defaults")
                 )
             }))
@@ -588,6 +594,12 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
         }
         for (i, f) in fs.iter().enumerate() {
             let ty = ty(f);
+            writeln!(
+                out,
+                "orm_client::impl_projection_column!({name}Select{i},{name}Source,{ty},{:?});",
+                f.name
+            )
+            .unwrap();
             writeln!(out,"impl From<{name}Select{i}> for orm_client::Column<{name}Source,{ty}> {{fn from(_:{name}Select{i})->Self {{Self::field({:?})}}}} impl {name}Select{i} {{",f.name).unwrap();
             for method in ["eq", "ne", "lt", "le", "gt", "ge"] {
                 writeln!(out,"pub fn {method}(self,value:{ty})->orm_client::Predicate<{name}Source> {{orm_client::Column::<{name}Source,{ty}>::from(self).{method}(value)}}").unwrap();
@@ -603,7 +615,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
         }
         for (i, r) in m.ir.relations.iter().enumerate() {
             writeln!(out, "pub enum {name}Relation{i} {{}}").unwrap();
-            writeln!(out,"impl orm_client::PathDescriptor for {name}Relation{i} {{type Path={}Path<{name}Source,orm_client::{}>;fn path()->Self::Path {{{}Path {{path:vec![{:?}.into()],_type:std::marker::PhantomData}}}}}}",ident(&r.target)?,if r.kind==crate::ir::RelKind::One {"One"}else{"Many"},ident(&r.target)?,r.name).unwrap();
+            writeln!(out,"impl orm_client::PathDescriptor for {name}Relation{i} {{type Path={}Path<{name}Source,orm_client::{}>;fn path()->Self::Path {{{}Path {{path:vec![{:?}.into()],_type:std::marker::PhantomData}}}}}}",ident(&r.target)?,path_cardinality(schema,m,r),ident(&r.target)?,r.name).unwrap();
             let target = format!("self::{}", ident(&r.target)?);
             let card = if r.kind == crate::ir::RelKind::One {
                 "One"
@@ -619,7 +631,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             let selected = selected.join(",");
             writeln!(out,"impl<{decl},P:orm_client::Model<Schema=Schema,Source=self::{source}>,B> orm_client::Apply<{name}<{args}>> for orm_client::Relation<{name}Source,P,orm_client::{card},{name}Relation{i},B> where {send},S{index}:orm_client::MergeRequested<{target},orm_client::{card},P,B> {{type Output={name}<{selected}>;fn needs_data(&self,row:&orm_client::RowData)->bool {{!row.cache_satisfies::<P>({:?},{})}} fn apply(self,q:&mut orm_client::SelectionPlan,f:&mut std::vec::Vec<orm_client::Tree>){{self.install(q,f,!S{index}::DEFAULT); <<S{index} as orm_client::MergeRequested<{target},orm_client::{card},P,B>>::Output as orm_client::RelationState<{target},orm_client::{card}>>::merge_shape(q,{:?});}} }}",r.name,r.kind!=crate::ir::RelKind::One,r.name).unwrap();
         }
-        writeln!(out,"impl {name} {{ #[allow(non_upper_case_globals)] pub const objects:orm_client::QueryRoot<Self>=orm_client::QueryRoot::generated();").unwrap();
+        writeln!(out,"impl {name} {{ #[allow(non_upper_case_globals)] pub const objects:orm_client::Query<Self>=orm_client::Query::new();").unwrap();
         for (i, f) in fs.iter().enumerate() {
             writeln!(
                 out,
@@ -660,7 +672,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
         out.push_str("] };\n");
         for (i, r) in m.ir.relations.iter().enumerate() {
             writeln!(out,"#[allow(non_upper_case_globals)] pub const {}:orm_client::Relation<{name}Source,{},orm_client::{},{name}Relation{i}>=orm_client::Relation::generated({:?});",ident(&snake(&r.name))?,ident(&r.target)?,if r.kind==crate::ir::RelKind::One {"One"}else{"Many"},r.name).unwrap();
-            writeln!(out,"pub fn {}_path()->{}Path<{name}Source,orm_client::{}> {{ {}Path {{ path:vec![{:?}.into()],_type:std::marker::PhantomData }} }}",snake(&r.name),ident(&r.target)?,if r.kind==crate::ir::RelKind::One {"One"}else{"Many"},ident(&r.target)?,r.name).unwrap();
+            writeln!(out,"pub fn {}_path()->{}Path<{name}Source,orm_client::{}> {{ {}Path {{ path:vec![{:?}.into()],_type:std::marker::PhantomData }} }}",snake(&r.name),ident(&r.target)?,path_cardinality(schema,m,r),ident(&r.target)?,r.name).unwrap();
         }
         out.push_str("}\n");
         writeln!(out,"pub struct {name}Path<R,C> {{ path:std::vec::Vec<std::string::String>,_type:std::marker::PhantomData<(R,C)> }}\nimpl<R,C> {name}Path<R,C> {{").unwrap();
@@ -668,11 +680,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             writeln!(out,"pub fn {}(&self)->orm_client::Column<R,{},C> {{ orm_client::Column::path({:?},self.path.clone()) }}",ident(&snake(&f.name))?,ty(f),f.name).unwrap();
         }
         for r in &m.ir.relations {
-            let c = if r.kind == crate::ir::RelKind::One {
-                "One"
-            } else {
-                "Many"
-            };
+            let c = path_cardinality(schema, m, r);
             writeln!(out,"pub fn {}(&self)->{}Path<R,<C as orm_client::Combine<orm_client::{c}>>::Output> where C:orm_client::Combine<orm_client::{c}> {{ let mut path=self.path.clone(); path.push({:?}.into()); {}Path {{path,_type:std::marker::PhantomData}} }}",ident(&snake(&r.name))?,ident(&r.target)?,r.name,ident(&r.target)?).unwrap();
         }
         out.push_str("}\n");
@@ -814,15 +822,10 @@ fn key_type(model: &str, columns: &[&str]) -> String {
     )
 }
 
-fn default_fields<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a Vec<String>> {
-    ir.behavior
-        .query_defaults
-        .iter()
-        .find(|d| d.model == name)
-        .and_then(|d| d.fields.as_ref())
+fn default_fields<'a>(schema: &'a Schema, name: &str) -> Option<&'a Vec<String>> {
+    schema.models.iter().find(|m| m.ir.name == name).and_then(|m| m.read_flags.fields.as_ref())
 }
 fn normal_relation(
-    ir: &SchemaIr,
     schema: &Schema,
     name: &str,
     index: usize,
@@ -835,9 +838,7 @@ fn normal_relation(
         .ok_or("unknown default model")?;
     let r = &m.ir.relations[index];
     let mut paths = extra.to_vec();
-    if let Some(d) = ir.behavior.query_defaults.iter().find(|d| d.model == name) {
-        paths.extend(d.related.clone());
-    }
+    paths.extend(m.read_flags.related.clone());
     let children: Vec<_> = paths
         .iter()
         .filter(|p| p.first() == Some(&r.name))
@@ -856,7 +857,7 @@ fn normal_relation(
         .fields()
         .iter()
         .map(|f| {
-            if default_fields(ir, &r.target)
+            if default_fields(schema, &r.target)
                 .is_none_or(|fields| fields.iter().any(|n| n == &f.name))
             {
                 "Loaded".to_owned()
@@ -866,13 +867,34 @@ fn normal_relation(
         })
         .collect::<Vec<_>>();
     for i in 0..target.ir.relations.len() {
-        args.push(normal_relation(ir, schema, &r.target, i, &children)?);
+        args.push(normal_relation(schema, &r.target, i, &children)?);
     }
     Ok(format!(
         "orm_client::DefaultCached<{}<{}>>",
         ident(&r.target)?,
         args.join(",")
     ))
+}
+
+fn path_cardinality(
+    schema: &Schema,
+    model: &crate::schema::Model,
+    relation: &crate::ir::RelationIr,
+) -> &'static str {
+    let filtered = super::reference_target_filtered(schema, &relation.target);
+    if relation.kind != crate::ir::RelKind::One {
+        "Many"
+    } else if !relation.foreign_key
+        || filtered
+        || relation
+            .from
+            .iter()
+            .any(|name| model.fields().iter().any(|f| f.name == *name && f.nullable))
+    {
+        "OptionalOne"
+    } else {
+        "One"
+    }
 }
 
 fn cardinality(kind: crate::ir::RelKind) -> &'static str {

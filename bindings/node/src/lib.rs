@@ -190,6 +190,8 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
                 js.set(o, "start", js.number(j.start as f64)?)?;
                 js.set(o, "pk", js.number(j.pk_pos as f64)?)?;
                 js.set(o, "shape", shape_js(js, j.shape.as_ref())?)?;
+                js.set(o, "filtered", js.boolean(j.filtered)?)?;
+                js.set(o, "dangling", js.boolean(j.dangling)?)?;
                 Ok(o)
             }))?;
             js.set(obj, "joins", arr)?;
@@ -375,6 +377,18 @@ pub struct JsSchema {
 
 #[napi]
 impl JsSchema {
+    /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
+    #[napi]
+    pub fn read_flags(&self) -> String {
+        plan::read_flags_json(&self.inner).to_string()
+    }
+
+    /// The order the engine uses for a select IR document (JSON `[{field, desc, nulls}]`).
+    #[napi]
+    pub fn effective_order(&self, select_json: String) -> napi::Result<String> {
+        plan::effective_order_json(&self.inner, &select_json).map(|v| v.to_string()).map_err(engine_err)
+    }
+
     /// Inspect planned templates without executing or collecting statement events.
     #[napi]
     pub fn inspect(&self, env: &Env, op_json: String, params_: Unknown<'_>) -> napi::Result<String> {
@@ -1214,12 +1228,13 @@ pub fn compile_schema_file(path: String) -> napi::Result<String> {
 /// `models.ts` source for a schema file; the runtime is imported from `runtime`.
 #[cfg(feature = "generate-typescript")]
 #[napi]
-pub fn generate_typescript(path: String, runtime: Option<String>) -> napi::Result<String> {
+pub fn generate_typescript(path: String, runtime: Option<String>, query_sets: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
     let p = std::path::Path::new(&path);
     let (ir, schema) =
         orm_core::dsl::check(orm_core::dsl::compile_file(p).map_err(schema_err)?).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    orm_core::codegen::typescript::generate(&ir, &schema, &source, runtime.as_deref().unwrap_or("orm")).map_err(schema_err)
+    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default().into_iter().collect() };
+    orm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("orm"), &options).map_err(schema_err)
 }
 
 #[cfg(feature = "composition")]

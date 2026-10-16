@@ -76,6 +76,16 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         ir.behavior.soft_delete.push(SoftDelete { model: d.model.clone(), field: name, mode });
         added.push(d.model.clone());
     }
+    // The role follows shared storage; logical proxy rows need the same ORM
+    // update on delete. Database triggers are generated only for declarations.
+    for proxy in &ir.behavior.proxy_models {
+        if ir.behavior.soft_delete.iter().any(|s| s.model == proxy.model) { continue; }
+        if let Some(source) = ir.behavior.soft_delete.iter().find(|s| s.model == proxy.storage_owner) {
+            if ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == source.field)) {
+                ir.behavior.soft_delete.push(SoftDelete { model: proxy.model.clone(), field: source.field.clone(), mode: source.mode });
+            }
+        }
+    }
     let dialect = ir.dialect;
     for s in ir.behavior.soft_delete.clone().iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
         // Children: soft-delete models with a cascading foreign key to this model.
@@ -183,6 +193,27 @@ mod tests {
         prepared(&mut ir).unwrap();
         assert_eq!(ir.behavior.soft_delete.len(), 2);
         assert!(ir.behavior.storage.as_ref().unwrap().models.iter().all(|m| m.triggers.is_empty()));
+    }
+
+    #[test]
+    fn proxies_inherit_soft_delete_role_without_duplicate_triggers() {
+        for mode in ["application", "database"] {
+            let mut ir = schema("postgres", mode, true);
+            orm_contracts::extension::capture_storage(&mut ir).unwrap();
+            ir.behavior.lowered_models.push("AuthorView".into());
+            let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+            view.name = "AuthorView".into();
+            ir.models.push(view);
+            ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel {
+                model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default()
+            });
+            prepared(&mut ir).unwrap();
+            let role = ir.behavior.soft_delete.iter().find(|s| s.model == "AuthorView").expect("proxy inherits root soft delete");
+            assert_eq!(role.field, "deleted");
+            assert_eq!(role.mode, Mode::parse(Some(&serde_json::json!(mode))).unwrap());
+            assert!(ir.models[3].triggers.is_empty());
+            assert_eq!(ir.behavior.storage.as_ref().unwrap().models.iter().filter(|m| m.table == "authors").count(), 1);
+        }
     }
 
     #[test]

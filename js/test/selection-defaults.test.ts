@@ -14,7 +14,7 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean) {
         field("name"), field("id", "int", { primary_key: true, auto_increment: true }),
         field("visible", "bool", { default: true }), field("bio", "text"), field("note", "string", { nullable: true }),
       ], relations: [{ name: "books", kind: "many", target: "SelectedBook", from: "id", to: "author_id" }] },
-      { name: "SelectedBook", table: "selection03_js_books", fields: [field("title"), field("author_id", "int"), field("id", "int", { primary_key: true, auto_increment: true })],
+      { name: "SelectedBook", table: "selection03_js_books", fields: [field("title"), field("author_id", "int"), field("id", "int", { primary_key: true, auto_increment: true }), field("isbn", "string", { nullable: true })],
         relations: [{ name: "author", kind: "one", target: "SelectedAuthor", from: "author_id", to: "id", foreign_key: true, on_delete: "cascade" }] },
     ], behavior: defaults ? { schema_contract: 1, query_defaults: [
       { model: "SelectedAuthor", filter: { t: "col", path: [], name: "visible" }, fields: ["name", "note"] },
@@ -185,3 +185,60 @@ test("schema default order: one source per option", (t) => {
   assert.throws(() => loads(ordered.replace('"-body"', '"nope"'), { registry: new Registry() }), /order column "nope" is not a field/);
 });
 
+
+test("a missing reference is null only when the engine filtered the join", async (t) => {
+  if (!queryDefaults) {
+    t.skip("needs a native build with the query-defaults feature");
+    return;
+  }
+  const registry = new Registry();
+  const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
+  const models = define({ dialect: "sqlite", models: [
+    { name: "DAuthor", table: "d_authors", fields: [field("id", "int", { primary_key: true }), field("visible", "bool")] },
+    { name: "DBook", table: "d_books", fields: [field("id", "int", { primary_key: true }), field("author_id", "int")],
+      relations: [{ name: "author", kind: "one", target: "DAuthor", from: "author_id", to: "id", foreign_key: true }] },
+  ], behavior: { schema_contract: 1, query_defaults: [{ model: "DAuthor", filter: { t: "col", path: [], name: "visible" } }] } } as never, { registry });
+  const Author = models["DAuthor"] as any;
+  const Book = models["DBook"] as any;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    await db.execute("PRAGMA foreign_keys = OFF");
+    await Author.objects.using(db).insert({ id: 1, visible: false });
+    await Book.objects.using(db).insert({ id: 1, authorId: 1 });
+    await Book.objects.using(db).insert({ id: 2, authorId: 99 });
+    const books = Book.objects.using(db).orderBy(Book.id);
+    assert.deepEqual((await books.load(Book.author).all()).map((b: any) => b.author), [null, null]);
+    const [first, second] = await books.withoutDefaults().load(Book.author).all();
+    assert.notEqual(first.author, null);
+    assert.throws(() => second.author, NotLoaded);
+  } finally {
+    await db.close();
+  }
+});
+
+for (const dialect of ["sqlite", "postgres"] as const) {
+  test(`load() of a path with columns unites the default selection: ${dialect}`, async (t) => {
+    if (!queryDefaults) {
+      t.skip("needs a native build with the query-defaults feature");
+      return;
+    }
+    const { db, Author, Book, a, b } = await open(dialect, true);
+    try {
+      const ann = await a.insert({ name: "ann", bio: "large", note: "n" });
+      await b.insertMany([{ title: "one", authorId: ann.pk, isbn: "i1" }]);
+      for (const items of [[Book.author, Book.author.bio], [Book.author.bio, Book.author]]) {
+        const book = await b.load(...items).get();
+        assert.deepEqual(book.author.toJSON(), { name: "ann", note: "n", bio: "large" });
+      }
+      const mixed = await b.load(Book.author, Book.author.objects.load(Author.bio)).get();
+      assert.deepEqual(mixed.author.toJSON(), { name: "ann", note: "n", bio: "large" });
+      for (const items of [[Author.books, Author.books.isbn], [Author.books.isbn, Author.books]]) {
+        const author = await a.load(...items).get();
+        assert.deepEqual((await author.books).map((x: any) => x.toJSON()), [{ title: "one", isbn: "i1" }]);
+      }
+      assert.deepEqual((await b.load(Book.author.bio).get()).author.toJSON(), { bio: "large" });
+      assert.deepEqual(((await (await a.load(Author.books.isbn).get()).books) as any[]).map((x) => x.toJSON()), [{ isbn: "i1" }]);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}

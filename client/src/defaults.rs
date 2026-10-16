@@ -22,7 +22,7 @@ impl<S: SchemaSpec> Database<S> {
             .expect("default pool lock poisoned")
             .remove(&TypeId::of::<S>());
     }
-    fn configured() -> Result<Self> {
+    pub(crate) fn configured() -> Result<Self> {
         DEFAULTS
             .get_or_init(Default::default)
             .read()
@@ -67,31 +67,6 @@ impl<M: Model, R: Presence, L, D> Query<M, R, L, D> {
         self.using(&db).get(key, value).await
     }
 }
-impl<M: Model> QueryRoot<M> {
-    pub async fn first(&self) -> Result<Option<M>> {
-        self.query().first().await
-    }
-    pub async fn last(&self) -> Result<Option<M>> {
-        self.query().last().await
-    }
-    pub async fn all(&self) -> Result<Vec<M>> {
-        self.query().all().await
-    }
-    pub async fn count(&self) -> Result<i64> {
-        self.query().count().await
-    }
-    pub async fn exists(&self) -> Result<bool> {
-        self.query().exists().await
-    }
-    pub async fn get<V: KeyValues>(
-        &self,
-        key: Unique<M::Source, V>,
-        value: V::Input,
-    ) -> Result<Option<M>> {
-        self.query().get(key, value).await
-    }
-}
-
 impl<M: Model, R: Presence, L: Send + 'static, D: Send + 'static> std::future::IntoFuture
     for Query<M, R, L, D>
 {

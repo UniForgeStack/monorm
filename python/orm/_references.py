@@ -56,7 +56,10 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
                     return value
         elif key is None:
             return None
-        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; use await obj.load({owner.__name__}.{self.name})")
+        hint = f"use await obj.load({owner.__name__}.{self.name})"
+        if self.name in data and data[self.name] is None and key is not None:
+            raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded: the key is set and no row of the target has it; {hint}")
+        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; {hint}")
 
 
 def install(model: Any) -> None:
@@ -70,7 +73,7 @@ def install(model: Any) -> None:
             relation = specialized
             model._meta.relations[name] = relation
             setattr(model, name, relation)
-        filtered = any(policy.get("model") == relation.target_name and policy.get("filter") is not None for policy in model._meta.registry._behavior.get("query_defaults", ()))
+        filtered = model._meta.registry.get(relation.target_name)._meta.filtered
         if isinstance(relation, ReferenceBelongsTo):
             relation.filtered = filtered
             relation.optional = any(model._meta.fields[n].nullable for n in relation.via_fields)

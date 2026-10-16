@@ -279,6 +279,7 @@ pub enum Item {
     Enum(EnumDecl),
     Datasource { pos: Pos, props: Props },
     Function { pos: Pos, name: String, props: Props },
+    Partition { pos: Pos, name: String, props: Props, blocks: Vec<Attr> },
     Import { pos: Pos, path: String, prefix: String },
 }
 
@@ -359,6 +360,21 @@ impl Parser<'_> {
                 "generator" => {
                     self.ident("a generator name")?;
                     self.props("generator")?;
+                }
+                "partition" => {
+                    let (_, name) = self.ident("a partition name")?;
+                    self.expect("{")?;
+                    let (mut props, mut blocks) = (vec![], vec![]);
+                    while !self.eat("}")? {
+                        if self.tok == Tok::Eof { return err(pos, "unclosed partition block"); }
+                        if self.is("@@") { blocks.push(self.attr("@@")?); continue; }
+                        let (p, key) = self.ident("a partition property")?;
+                        self.expect("=")?;
+                        let value = self.value()?;
+                        if props.iter().any(|(k, _, _)| k == &key) { return err(p, "duplicate partition property"); }
+                        props.push((key, p, value));
+                    }
+                    items.push(Item::Partition { pos, name, props, blocks });
                 }
                 "function" => {
                     let (_, name) = self.ident("a function name")?;

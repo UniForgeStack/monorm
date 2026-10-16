@@ -241,6 +241,16 @@ impl PySchema {
         migrate::create_all(&self.inner).map_err(schema_err)
     }
 
+    /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
+    fn read_flags(&self) -> String {
+        orm_engine::plan::read_flags_json(&self.inner).to_string()
+    }
+
+    /// The order the engine uses for a select IR document (JSON `[{field, desc, nulls}]`).
+    fn effective_order(&self, select_json: &str) -> PyResult<String> {
+        orm_engine::plan::effective_order_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
+    }
+
     /// The database schema as a snapshot (JSON), the format migrations store.
     fn snapshot(&self) -> PyResult<String> {
         let s = migrate::snapshot(&self.inner).map_err(schema_err)?;
@@ -1017,12 +1027,14 @@ fn compile_schema_file(path: &str) -> PyResult<String> {
 /// `(models.py, models.pyi)` source for a schema file.
 #[cfg(feature = "generate-python")]
 #[pyfunction]
-fn generate_python(path: &str) -> PyResult<(String, String)> {
+#[pyo3(signature = (path, query_sets = None))]
+fn generate_python(path: &str, query_sets: Option<std::collections::BTreeMap<String, String>>) -> PyResult<(String, String)> {
     let p = std::path::Path::new(path);
     let (ir, schema) =
         orm_core::dsl::check(orm_core::dsl::compile_file(p).map_err(schema_err)?).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let g = orm_core::codegen::python::generate(&ir, &schema, &source).map_err(schema_err)?;
+    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default() };
+    let g = orm_core::codegen::python::generate_with(&ir, &schema, &source, &options).map_err(schema_err)?;
     Ok((g.module, g.stub))
 }
 

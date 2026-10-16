@@ -35,7 +35,7 @@ fn normal_query(schema: &Schema, model: usize) -> Result<SelectionPlan> {
     for r in &schema.models[model].ir.relations {
         q.model_helpers.extend(r.from.iter().cloned());
     }
-    for path in &schema.models[model].query_defaults.related {
+    for path in &schema.models[model].read_flags.related {
         add(
             schema,
             model,
@@ -84,6 +84,7 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
         mut self,
         fields: &[&str],
     ) -> Result<Query<RuntimeRow<M::Normal>, R, L, ExplicitSelection>> {
+        self = self.initialized();
         let schema = schema::<M>()?;
         let root = schema
             .models
@@ -137,13 +138,5 @@ impl<M: Model, R, L, D> Query<RuntimeRow<M>, R, L, D> {
             nulls: None,
         }];
         Ok(self)
-    }
-}
-impl<M: Model> QueryRoot<M> {
-    pub fn runtime(
-        &self,
-        fields: &[&str],
-    ) -> Result<Query<RuntimeRow<M::Normal>, Optional, Unsliced, ExplicitSelection>> {
-        self.query().runtime(fields)
     }
 }

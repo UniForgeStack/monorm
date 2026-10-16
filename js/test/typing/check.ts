@@ -184,6 +184,10 @@ export async function loading() {
   same<(typeof titles)[number]["posts"]["cached"][number]["title"], string>();
   // @ts-expect-error the posts are partial
   void titles[0]!.posts.cached[0]!.views;
+  const sibling = await User.objects.load(User.posts.objects.load(Post.title), User.posts.views).all();
+  same<(typeof sibling)[number]["posts"]["cached"][number]["views"], number>();
+  const bareAndSet = await User.objects.load(User.posts, User.posts.objects.load(Post.title)).all();
+  same<(typeof bareAndSet)[number]["posts"]["cached"][number]["body"], string>();
   const viaQuery = await Comment.objects.load(Comment.post.objects.asPrefetch()).all();
   same<(typeof viaQuery)[number]["post"]["title"], string>();
 }
