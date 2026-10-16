@@ -48,6 +48,7 @@ fn tagged(kind: &str, msg: impl std::fmt::Display) -> napi::Error {
 
 fn db_kind(e: &DbError) -> &'static str {
     match e.kind {
+        ErrorKind::Query => "QueryError",
         ErrorKind::Integrity => "IntegrityError",
         ErrorKind::LockNotAvailable => "LockNotAvailable",
         ErrorKind::TransactionAborted => "TransactionAborted",

@@ -33,6 +33,8 @@ pub type DbResult<T> = Result<T, DbError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
+    /// An invalid use of a transaction, rejected before SQL.
+    Query,
     /// Unique, foreign key, check, exclusion or not-null violation.
     Integrity,
     /// A `NOWAIT` lock (or a lock timeout) found the rows locked.
@@ -168,6 +170,14 @@ struct Guarded {
     failed: std::sync::Mutex<Option<Arc<DbError>>>,
 }
 
+/// Savepoints share one connection and must be used in stack order.
+fn check_savepoint(stack: &[String], savepoint: &Option<String>) -> DbResult<()> {
+    if stack.last() != savepoint.as_ref() {
+        return Err(DbError::new(ErrorKind::Query, "concurrent nested transactions share one connection; run them one after the other or give each task its own transaction"));
+    }
+    Ok(())
+}
+
 /// `tx` with the failed mark; give the bindings this, never a bare driver transaction.
 pub fn guard(tx: Arc<dyn Transaction>) -> Arc<dyn Transaction> {
     Arc::new(Guarded { inner: tx, failed: std::sync::Mutex::new(None) })
@@ -258,7 +268,8 @@ impl Transaction for Guarded {
     }
     fn mark_failed(&self, e: DbError) {
         let mut failed = self.failed.lock().unwrap();
-        if failed.is_none() && e.kind != ErrorKind::TransactionAborted {
+        // Preflight query errors sent no SQL and do not abort the transaction.
+        if failed.is_none() && !matches!(e.kind, ErrorKind::TransactionAborted | ErrorKind::Query) {
             *failed = Some(Arc::new(e));
         }
     }
@@ -500,6 +511,53 @@ mod failure_tests {
             assert_eq!(e.cause.unwrap().message, "first constraint failure");
             assert!(e.message.contains("first constraint failure"));
             guarded.rollback().await.unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod savepoint_stack_tests {
+    use super::*;
+
+    async fn check(db: &dyn Driver) {
+        let outer = guard(db.begin().await.unwrap());
+        let child = outer.begin().await.unwrap();
+        let grandchild = child.begin().await.unwrap();
+        // Invalid SQL proves the ownership error is raised before SQL is sent.
+        for tx in [&outer, &child] {
+            let e = tx.batch("INVALID SQL".into()).await.unwrap_err();
+            assert!(e.message.starts_with("concurrent nested transactions"));
+            assert!(tx.begin().await.err().unwrap().message.starts_with("concurrent nested transactions"));
+            assert!(tx.commit().await.unwrap_err().message.starts_with("concurrent nested transactions"));
+            assert!(tx.rollback().await.unwrap_err().message.starts_with("concurrent nested transactions"));
+        }
+        grandchild.rollback().await.unwrap();
+        child.batch("SELECT 1".into()).await.unwrap();
+        child.commit().await.unwrap();
+        let sibling = outer.begin().await.unwrap();
+        sibling.commit().await.unwrap();
+        outer.batch("SELECT 1".into()).await.unwrap();
+        outer.commit().await.unwrap();
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_savepoints_require_stack_order() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = sqlite::SqliteDriver::connect("sqlite://:memory:").await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), check(&db)).await.unwrap();
+        });
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_savepoints_require_stack_order() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL")
+                .or_else(|_| std::env::var("ORM_TEST_DATABASE_URL"))
+                .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
+            let db = postgres::PgDriver::connect(&url, 1).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), check(&db)).await.unwrap();
         });
     }
 }
