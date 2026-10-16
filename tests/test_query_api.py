@@ -3,6 +3,7 @@ to-one `load()` paths, OR of query sets, single-row labels, column paths and mod
 
 import os
 import sys
+from decimal import Decimal
 
 import pytest
 from blog.models import Comment, Post, PostTag, Profile, Tag, User
@@ -167,6 +168,24 @@ def test_cli_reads_query_sets_from_pyproject(tmp_path, monkeypatch, capfd):
     assert "expected module:Class" in capfd.readouterr().err
 
 
+def test_cli_rejects_duplicate_query_set_flags(tmp_path, monkeypatch, capfd):
+    (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
+    monkeypatch.chdir(tmp_path)
+    assert orm._native.cli(["generate", "python", "-o", "models.py",
+                            "--query-set", "Book=a:B", "--query-set", "Book=c:D"]) == 2
+    assert "duplicate --query-set for model Book" in capfd.readouterr().err
+    assert not (tmp_path / "models.py").exists()
+
+
+def test_cli_query_set_flag_overrides_config(tmp_path, monkeypatch):
+    (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
+    (tmp_path / "pyproject.toml").write_text('[tool.orm.query_sets]\nBook = "app.queries:BookQueries"\n')
+    monkeypatch.chdir(tmp_path)
+    assert orm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=other:Queries"]) == 0
+    assert 'use_query_set(Book, "other:Queries")' in (tmp_path / "models.py").read_text()
+    assert "from other import Queries as _BookObjects" in (tmp_path / "models.pyi").read_text()
+
+
 # -- prefetch on loaded instances (F10) -----------------------------------------------------
 
 
@@ -221,6 +240,115 @@ async def test_prefetch_checks_its_input(clean):
         await orm.prefetch([alice], Post.author)
 
 
+DECIMAL_KEYS = """datasource db { provider = "postgres" }
+model DecParent {
+  id Decimal @id @db.Decimal(10, 2)
+  kids DecKid[]
+  @@map("g6_dec_parents")
+}
+model DecKid {
+  id Int @id @default(autoincrement())
+  dec_id Decimal @db.Decimal(12, 4)
+  dec DecParent @relation(fields: [dec_id], references: [id])
+  @@map("g6_dec_kids")
+}
+"""
+
+
+@pytest.fixture
+async def decimal_keys():
+    from conftest import DATABASE_URL
+
+    registry = orm.Registry()
+    models = orm.loads(DECIMAL_KEYS, registry=registry)
+    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    try:
+        parent, kid = models["DecParent"], models["DecKid"]
+        await parent.objects.using(db).insert_many([{"id": Decimal("1.50")}, {"id": Decimal("2.00")}])
+        await kid.objects.using(db).insert_many([{"dec_id": Decimal("1.50")}, {"dec_id": Decimal("1.50")}])
+        yield parent, kid, db
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+async def test_prefetch_decimal_key_to_many(decimal_keys):
+    parent, _, db = decimal_keys
+    decs = await parent.objects.using(db).order_by(parent.id)
+    await orm.prefetch(decs, parent.kids, using=db)
+    assert [len(d.kids.cached) for d in decs] == [2, 0]  # the child column has scale 4
+
+
+async def test_prefetch_decimal_key_to_one(decimal_keys):
+    _, kid, db = decimal_keys
+    kids = await kid.objects.using(db).order_by(kid.id)
+    await orm.prefetch(kids, kid.dec, using=db)
+    assert [k.dec.id for k in kids] == [Decimal("1.50")] * 2
+
+
+@pytest.fixture
+async def prefetch_databases():
+    registry = orm.Registry()
+    models = orm.loads('''datasource db { provider = "sqlite" }
+model Author {
+  id Int @id @default(autoincrement())
+  name String
+  books Book[]
+}
+model Book {
+  id Int @id @default(autoincrement())
+  title String
+  author_id Int
+  author Author @relation(fields: [author_id], references: [id])
+}
+''', registry=registry)
+    Author, Book = models["Author"], models["Book"]
+    d1 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    d2 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        for db, name in ((d1, "d1"), (d2, "d2")):
+            await db.create_tables()
+            authors = await Author.objects.using(db).insert_many([{"name": name}, {"name": "empty"}]).returning()
+            await Book.objects.using(db).insert(title=f"B-{name}", author_id=authors[0].id)
+        a1 = await Author.objects.using(d1).order_by(Author.id).first()
+        x, y = await Author.objects.using(d2).order_by(Author.id)
+        yield Author, d2, [a1, y, x]
+    finally:
+        await d1.close()
+        await d2.close()
+
+
+async def test_prefetch_refuses_instances_from_two_databases(prefetch_databases):
+    Author, _, objs = prefetch_databases
+    with pytest.raises(orm.QueryError, match=r"prefetch\(\) takes instances from one database; pass using= to read another"):
+        await orm.prefetch(objs, Author.books)
+    # Rejection must leave every relation unloaded.
+    for obj in objs:
+        with pytest.raises(orm.NotLoaded):
+            obj.books.cached
+
+
+async def test_prefetch_with_using_reads_that_database(prefetch_databases):
+    Author, d2, objs = prefetch_databases
+    await orm.prefetch(objs, Author.books, using=d2)
+    assert [[b.title for b in obj.books.cached] for obj in objs] == [["B-d2"], [], ["B-d2"]]
+
+
+async def test_prefetch_accepts_instances_from_one_database(clean, prefetch_databases):
+    Author, _, objs = prefetch_databases
+    await orm.prefetch(objs[1:], Author.books)
+    assert [[b.title for b in obj.books.cached] for obj in objs[1:]] == [[], ["B-d2"]]
+    alice, bob, _ = await seed()
+    await orm.prefetch([alice, bob], User.posts)
+    assert [p.title for p in alice.posts.cached] == ["draft", "hit", "quiet"]
+    # Implicit default and explicit default resolve to the same database.
+    explicit = await User.objects.using(clean).require().get(User.id == alice.id)
+    await orm.prefetch([bob, explicit], User.posts)
+    assert [p.title for p in explicit.posts.cached] == ["draft", "hit", "quiet"]
+
+
 # -- model metadata for factories (item 12) ---------------------------------------------------
 
 
@@ -230,7 +358,7 @@ def test_describe_gives_fields_relations_and_unique_keys():
     from blog.models import Role
 
     post = orm.describe(Post)
-    assert post["name"] == "Post" and post["table"] == "posts" and post["primary_key"] == "id"
+    assert post["name"] == "Post" and post["table"] == "posts" and post["primary_key"] == ["id"]
     fields = {f["name"]: f for f in post["fields"]}
     assert fields["id"]["default"] == "database" and fields["id"]["primary_key"]
     assert fields["title"] == {
@@ -240,7 +368,7 @@ def test_describe_gives_fields_relations_and_unique_keys():
     }
     relations = {r["name"]: r for r in post["relations"]}
     assert relations["author"]["kind"] == "belongs_to" and relations["author"]["target"] is User
-    assert relations["author"]["from"] == "author_id" and not relations["author"]["nullable"]
+    assert relations["author"]["from"] == ["author_id"] and not relations["author"]["nullable"]
     assert relations["tags"]["kind"] == "many_to_many" and relations["tags"]["through"] is PostTag
     assert orm.describe(PostTag)["unique"] == [("id",), ("post_id", "tag_id")]
     assert orm.describe(User)["unique"] == [("id",), ("email",)]
@@ -258,12 +386,12 @@ async def make(model, n=[0], **values):
     info = orm.describe(model)
     n[0] += 1
     for rel in info["relations"]:
-        if rel["kind"] == "belongs_to" and not rel["nullable"] and rel["name"] not in values and rel["from"] not in values:
+        if rel["kind"] == "belongs_to" and not rel["nullable"] and rel["name"] not in values and not any(f in values for f in rel["from"]):
             values[rel["name"]] = await make(rel["target"])
     samples = {str: lambda f: f"{f['name']}-{n[0]}"[: f["max_length"] or None], int: lambda f: n[0], bool: lambda f: False}
     for f in info["fields"]:
         if f["insert"] and f["default"] is None and not f["nullable"] and f["name"] not in values:
-            if not any(r["from"] == f["name"] and r["name"] in values for r in info["relations"]):
+            if not any(f["name"] in r["from"] and r["name"] in values for r in info["relations"]):
                 values[f["name"]] = samples[f["python_type"]](f)
     return await model.objects.insert(**values)
 
@@ -350,6 +478,60 @@ async def test_or_of_query_sets(clean):
         popular[:1] | drafts
 
 
+async def _users_with_unpublished_posts_loaded():
+    await seed()
+    return await User.objects.order_by(User.id).load(User.posts.objects.filter(~Post.published))
+
+
+async def test_or_of_a_relation_set_ignores_the_loaded_rows(clean):
+    users = await _users_with_unpublished_posts_loaded()
+    rows = await (users[0].posts | Post.objects.filter(Post.published))
+    assert sorted(p.title for p in rows) == ["bob", "draft", "hit", "quiet"]
+
+
+async def test_or_of_a_relation_set_is_a_plain_query_set(clean):
+    users = await _users_with_unpublished_posts_loaded()
+    qs = users[0].posts | Post.objects.filter(Post.published)
+    assert type(qs) is QuerySet
+    assert not hasattr(qs, "_relation")
+
+
+async def test_or_of_a_many_to_many_set_ignores_the_loaded_rows(clean):
+    _, _, posts = await seed()
+    tags = await Tag.objects.insert_many([{"name": n} for n in "abc"]).returning()
+    await posts[1].tags.add(*tags)
+    post = (await Post.objects.filter(Post.id == posts[1].id).load(Post.tags.objects.filter(Tag.name == "a")))[0]
+    rows = await (post.tags | Tag.objects.filter(Tag.name == "c"))
+    assert sorted(t.name for t in rows) == ["a", "b", "c"]
+    assert type(post.tags | Tag.objects) is QuerySet
+
+
+async def test_or_with_a_relation_set_on_the_right_reads_the_database(clean):
+    users = await _users_with_unpublished_posts_loaded()
+    rows = await (Post.objects.filter(Post.published) | users[0].posts)
+    assert sorted(p.title for p in rows) == ["bob", "draft", "hit", "quiet"]
+
+
+async def test_or_of_two_via_query_sets_raises_query_error(clean):
+    a = User.posts.objects.filter(Post.views > 1)
+    b = User.posts.objects.filter(Post.views < 100)
+    with pytest.raises(orm.QueryError, match="via"):
+        a | b
+
+
+async def test_or_of_two_filtered_relation_sets_names_the_relation(clean):
+    alice, _, _ = await seed()
+    with pytest.raises(orm.QueryError, match=r"posts.*filter\(a \| b\)"):
+        alice.posts.filter(Post.views > 1) | alice.posts.filter(Post.views < 100)
+
+
+async def test_or_keeps_the_custom_query_set_class(clean, custom):
+    users = await _users_with_unpublished_posts_loaded()
+    qs = users[0].posts | Post.objects.filter(Post.published)
+    assert type(qs).__name__ == "PostQueries"
+    assert sorted(p.title for p in await qs.popular(60)) == ["bob", "hit"]
+
+
 async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
     await seed()
     await User.objects.insert(email="carol@example.com", name="Carol")
@@ -385,3 +567,117 @@ async def test_column_from_a_dotted_path(clean):
         orm.column(Post, "nope.title")
     with pytest.raises(LookupError, match="User has no field 'nope'"):
         orm.column(Post, "author.nope")
+
+
+# -- mutation regressions (G10) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("slot", ["db", "loads", "without_defaults"])
+def test_or_rejects_right_side_state(slot):
+    if slot == "db":
+        right = Post.objects.using(object())
+    elif slot == "loads":
+        # Isolate the slot: load() also derives state checked by separate guards.
+        right = Post.objects._clone(_loads=(Post.author,))
+    else:
+        right = Post.objects.without_defaults()
+    with pytest.raises(orm.QueryError, match=f"sets {slot}"):
+        Post.objects | right
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_or_rejects_offset_without_limit(side):
+    plain = Post.objects.filter(Post.published)
+    sliced = Post.objects[1:]
+    with pytest.raises(orm.QueryError, match="sliced"):
+        (sliced | plain) if side == "left" else (plain | sliced)
+
+
+def test_or_rejects_a_different_model():
+    with pytest.raises(TypeError, match="query sets of Post"):
+        Post.objects | User.objects
+
+
+@pytest.mark.parametrize("model, relation", [(Post, "posts"), (Tag, "tags")])
+async def test_changing_query_set_class_discards_cached_relation_class(clean, model, relation):
+    class Before(QuerySet):
+        def marker(self):
+            return "before"
+
+    class After(QuerySet):
+        def marker(self):
+            return "after"
+
+    alice, _, posts = await seed()
+    owner = alice if relation == "posts" else posts[0]
+    try:
+        use_query_set(model, Before)
+        assert getattr(owner, relation).marker() == "before"
+        use_query_set(model, After)
+        assert getattr(owner, relation).marker() == "after"
+    finally:
+        use_query_set(model, QuerySet)
+
+
+@pytest.mark.parametrize("base", [orm.RelatedSet, orm.ManyRelatedSet])
+def test_query_set_class_rejects_relation_subclasses(base):
+    class RelationQueries(base):
+        __slots__ = ()
+
+    with pytest.raises(TypeError, match="subclass of orm.QuerySet"):
+        use_query_set(Post, RelationQueries)
+
+
+async def test_prefetch_rejects_a_model_subclass(clean):
+    alice, _, _ = await seed()
+
+    class SpecialUser(User, registry=orm.Registry()):
+        pass
+
+    special = object.__new__(SpecialUser)
+    special.__dict__.update(alice.__dict__)
+    with pytest.raises(TypeError, match="one model"):
+        await orm.prefetch([alice, special], User.posts)
+
+
+def test_column_rejects_unknown_own_field():
+    with pytest.raises(LookupError, match="Post has no field 'nope'"):
+        orm.column(Post, "nope")
+
+
+def test_describe_primary_key_is_unique():
+    fields = {f["name"]: f for f in orm.describe(Post)["fields"]}
+    assert fields["id"]["unique"] is True
+
+
+def test_describe_reports_client_default():
+    models = orm.loads('model ClientItem {\n id Int @id\n n Int @client_default(3)\n}', registry=orm.Registry())
+    fields = {f["name"]: f for f in orm.describe(models["ClientItem"])["fields"]}
+    assert fields["n"]["default"] == "client"
+
+
+def test_describe_autoincrement_remains_insertable():
+    fields = {f["name"]: f for f in orm.describe(Post)["fields"]}
+    assert fields["id"]["insert"] is True
+
+
+def test_describe_array_python_type_is_list():
+    fields = {f["name"]: f for f in orm.describe(Profile)["fields"]}
+    assert fields["links"]["python_type"] is list
+
+
+async def test_or_with_unfiltered_left_returns_all_rows(clean):
+    await seed()
+    rows = await (Post.objects | Post.objects.filter(Post.title == "missing"))
+    assert {p.title for p in rows} == {"draft", "hit", "quiet", "bob"}
+
+
+def test_describe_optional_belongs_to_is_nullable():
+    relations = {r["name"]: r for r in orm.describe(Comment)["relations"]}
+    assert relations["author"]["nullable"] is True
+
+
+async def test_prefetch_rejects_own_column(clean):
+    alice, _, _ = await seed()
+    with pytest.raises(TypeError, match="own model"):
+        await orm.prefetch([alice], User.name)

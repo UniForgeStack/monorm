@@ -324,7 +324,9 @@ await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.order
 ```
 
 It takes the items of `load()` except columns of the instances' model, and loads every relation with an `IN (...)` query. Only those queries run: the keys come from the instances, so their own rows are not read again.
-The instances are of one model, and the queries run on the database each came from (`using=db` names another).
+The instances are of one model and one database; an unset database means the default.
+Mixed databases raise `QueryError` unless `using=db` names the database to read.
+Hooks, trace, `restore_cause` and replica selection (`_reader()`) skip `orm.prefetch()`.
 
 ### One-to-one and many-to-many
 
@@ -456,11 +458,11 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
 * `load(...)` with columns gives partial instances (see "Loading related objects" and [`selection-and-defaults.md`](selection-and-defaults.md)).
   A column through relations trims the related instance: `Comment.objects.load(Comment.body, Comment.post.title)` joins `comment.post`, with only `title` public; `User.objects.load(User.posts.title)` loads partial posts by `IN (...)` query.
   Unlike Django's `only("post__title")`, a column of a related model leaves the model itself whole; name `Comment.id` for a key-only root.
-* `qs1 | qs2` is one query set with the filter `(filters of qs1) OR (filters of qs2)`; order, loading and `using` come from `qs1`.
+* `qs1 | qs2` is one query set with the filter `(filters of qs1) OR (filters of qs2)`; order, loading and `using` come from `qs1`. A relation set on the left gives a plain query set. A custom class takes its state from the left side.
   `qs2` must set nothing but filters, neither may be sliced, and each side has at most one `filter()`/`exclude()` call, else `QueryError`:
   conditions of one call through a to-many relation must hold for one related row, so two calls can't be joined into one.
 * `User.posts.objects.order_by(-Post.views).label("best", one=True)` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.
-  It needs a to-many relation and a label, and takes no slice (it is a limit of one per parent).
+  It needs a to-many relation and a label, and takes no slice (it is a limit of one per parent); a slice raises `ValueError`.
 * `orm.column(Bundle, "items.product.title")` is the column a dotted path names, the same as `Bundle.items.product.title`.
   Each name before the last is a relation, the last a field; an unknown name raises `LookupError`.
   It is for adapters that map request names to columns (search and ordering filters). It is a function, not `Model.column`, so it can't collide with a field named `column`.
@@ -1267,7 +1269,8 @@ remove = db.on_query(log_slow)
   `error` is the first line of the database's message when the statement failed; the ORM call still raises.
   The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
   `db.lock(..., nowait=True)` gives `rows` 1 when it got the lock and 0 when it did not.
-* Each call to the database gives one event: a prefetch query, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
+* Each call to the database gives one event per statement: the prefetch queries that `load()` runs, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
+  `orm.prefetch()` gives no events.
   A call keeps its events until it ends, so a call with many statements holds them all in memory (the review reported 200k events at about +113 MB; not measured here).
   Reads sent to a replica and the lock and unlock of `db.lock(..., session=True)` give events too.
   `COMMIT`, `ROLLBACK` and the `set_config` statements of `db.tenant()` give no event.
@@ -1318,6 +1321,7 @@ A package that changes writes and reads from outside the ORM (for example
 The ORM has no factory library. It gives the two things a factory library needs:
 
 * `orm.describe(Model)`: plain data about the model.
+  `primary_key` and relation `from`/`to` are always lists of field names in key order, even for a single field (for example, `["id"]`).
   `fields` gives per field the name, column, schema type, `python_type` (an enum field gives its enum class), `nullable`, `array` (with `element_type`), `max_length`, `primary_key`, `unique`, `default` (`"database"`, `"client"` or `None`) and `insert` (whether `insert()` takes it).
   `relations` gives the kind (`belongs_to`, `has_one`, `has_many`, `many_to_many`), the target class, the `from`/`to` fields, the `through` model and `nullable`.
   `unique` lists the unique keys, the primary key first.

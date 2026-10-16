@@ -146,7 +146,8 @@ class Database:
 
     def on_query(self, hook: Callable[[QueryEvent], object]) -> Callable[[], None]:
         """Call ``hook(event)`` after each statement this database runs (prefetch queries
-        and ``update_many`` batches included), also when it fails or the caller cancels it.
+        from ``load()`` and ``update_many`` batches included), also when it fails or the caller cancels it.
+        ``orm.prefetch()`` gives no events.
         Returns a function that removes the hook.
 
         The hook runs in the task that sent the query, after the ORM call ends, so

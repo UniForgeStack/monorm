@@ -765,20 +765,27 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `other` sets nothing but filters, neither is sliced, and each has at most one
    * `filter()`/`exclude()` call: conditions of one call through a to-many relation hold
    * for one related row, so two calls can't be joined.
+   * A relation set on the left gives a plain query set; a custom class takes its state from the left side.
    */
   or<P2, X2 extends string>(other: QuerySet<M, unknown, S, P2, X2>): PreserveRequired<this, QuerySetOf<M, R, S, P & P2, X | X2, V>> {
     if (!(other instanceof QuerySet) || other.meta !== this.meta) throw new TypeError(`or() combines query sets of ${this.meta.name}`);
-    for (const qs of [this.state, other.state]) {
+    for (const side of [this, other]) {
+      const qs = side.state;
       if (qs.limit !== undefined || qs.offset !== undefined) throw new QueryError("or() can't combine a sliced query set");
-      if (qs.filters.length > 1) throw new QueryError("or() needs one filter() call per side; put the conditions in one call");
+      if (qs.filters.length > 1) {
+        const name = (side as { relation?: RelationMeta }).relation?.name;
+        throw new QueryError(`or() needs one filter() call per side${name ? ` (${name}: write filter(a.or(b)))` : ""}; put the conditions in one call`);
+      }
     }
     for (const [key, value] of Object.entries(other.state) as [keyof QueryState, unknown][]) {
       const base = EMPTY[key];
       const empty = Array.isArray(value) && !value.length && (base === undefined || Array.isArray(base));
       if (key !== "filters" && value !== base && !empty) throw new QueryError(`or() takes filters only from the other query set, which also sets ${key}`);
     }
-    if (!this.state.filters.length || !other.state.filters.length) return this.clone({ filters: [] }) as never;
-    return this.clone({ filters: [or(this.state.filters[0] as never, other.state.filters[0] as never) as unknown as Node] }) as never;
+    const { relation: _relation, instance: _instance, ...own } = this as unknown as Record<string, unknown>;
+    const left = Object.assign(new (querySetClass(this.meta))(this.meta, this.state), own) as unknown as this;
+    if (!this.state.filters.length || !other.state.filters.length) return left.clone({ filters: [] }) as never;
+    return left.clone({ filters: [or(this.state.filters[0] as never, other.state.filters[0] as never) as unknown as Node] }) as never;
   }
 
   /** Drop rows matching all `conditions`. */
@@ -2020,6 +2027,9 @@ export class Prepared<M extends ModelSpec, R, P> {
 
 // -- related sets -------------------------------------------------------------------------------------
 
+/** A copied method keeps its home object, so `super` can't reach a mixed-in class; `fetch()` and `getOrInsert()` go through this instead. */
+const SUPER: unique symbol = Symbol("orm.super");
+
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 /**
@@ -2033,11 +2043,13 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
   readonly relation!: RelationMeta;
   /** @internal */
   readonly instance!: Record<PropertyKey, unknown>;
+  /** @internal The prototype that `fetch()` and `getOrInsert()` continue on: the custom query-set class when mixed. */
+  declare readonly [SUPER]: QuerySet<ModelSpec>;
 
   /** @internal */
   pristine(): boolean {
     const s = this.state;
-    return s.filters.length === 1 && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length;
+    return s.filters.length === this.relation.to.length && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length;
   }
 
   /** @internal */
@@ -2048,9 +2060,9 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
     }
     if (debugging() && this.pristine()) {
       const owner = (this.instance.constructor as unknown as { meta: { name: string } }).meta.name;
-      return relationLoad(owner, this.relation.name, "load", () => super.fetch());
+      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this));
     }
-    return super.fetch();
+    return this[SUPER].fetch.call(this);
   }
 
   private link(): Record<string, unknown> {
@@ -2071,7 +2083,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
   /** The related row matching `lookup`, or a new one pointing at this instance; the link
    * field is part of the lookup. */
   override getOrInsert(lookup: Partial<M["insert"]>, options?: { readonly defaults?: Partial<M["insert"]> }): Promise<[M["row"], boolean]> {
-    return super.getOrInsert({ ...lookup, ...this.link() } as Partial<M["insert"]>, options);
+    return this[SUPER].getOrInsert.call(this, { ...lookup, ...this.link() } as Partial<M["insert"]>, options);
   }
 
   /** Inserts related rows pointing at this instance. */
@@ -2109,6 +2121,8 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
   readonly relation!: RelationMeta;
   /** @internal */
   readonly instance!: Record<PropertyKey, unknown>;
+  /** @internal The prototype that `fetch()` and `getOrInsert()` continue on: the custom query-set class when mixed. */
+  declare readonly [SUPER]: QuerySet<ModelSpec>;
 
   /** @internal */
   override async fetch(): Promise<M["row"][]> {
@@ -2120,9 +2134,9 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     }
     if (debugging() && pristine) {
       const owner = (this.instance.constructor as unknown as { meta: { name: string } }).meta.name;
-      return relationLoad(owner, this.relation.name, "load", () => super.fetch());
+      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this));
     }
-    return super.fetch();
+    return this[SUPER].fetch.call(this);
   }
 
   private get through(): ModelMeta {
@@ -2312,8 +2326,9 @@ for (const cls of [RelatedSet, ManyRelatedSet]) {
 /**
  * Loads relations onto instances you already have, as `load()` does for the
  * rows of a query, but always by `IN (...)` query: one query per relation level, and no query for the instances
- * themselves. The instances are of one model; they are read from the database each came
- * from, unless a last `{ using }` argument names another.
+ * themselves. The instances are of one model and one database (an unset database
+ * means the default). Mixed databases throw `QueryError` unless a last `{ using }`
+ * argument names the database to read.
  *
  * ```ts
  * await prefetch([bundle], Bundle.items.product, Bundle.versions.objects.orderBy(...).limit(1).label("latest"));
@@ -2332,6 +2347,10 @@ export async function prefetch(
   if (meta === undefined || objs.some((o) => (o.constructor as { meta?: ModelMeta }).meta !== meta)) {
     throw new TypeError("prefetch() takes instances of one model");
   }
+  const db = resolve(using ?? (objs[0]![DB] as Database | undefined));
+  if (using === undefined && objs.some((o) => resolve(o[DB] as Database | undefined) !== db)) {
+    throw new QueryError("prefetch() takes instances from one database; pass using= to read another");
+  }
   const loads = (meta.objects.load as (...r: unknown[]) => QuerySet<ModelSpec>)(...paths).state.loads ?? [];
   if (loads.some((i) => i instanceof Column && !i.path.length)) {
     throw new TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load");
@@ -2346,8 +2365,8 @@ export async function prefetch(
   }
   const names = keys.map((k) => meta.fieldByIr.get(k)!.name);
   const rows = objs.map((o) => names.map((n) => fieldValue(o, n)));
-  const db = resolve(using ?? (objs[0]![DB] as Database | undefined));
-  const res = await wait(() => db.engine.prefetch(JSON.stringify(ir), params, keys, rows, db.tx()));
+  const [op, withParams] = withScope(JSON.stringify(ir), params);
+  const res = await wait(() => db.engine.prefetch(op, withParams, keys, rows, db.tx()));
   new Builder(db.registry, using ?? (objs[0]![DB] as Database | undefined)).prefetched(meta, objs, res);
 }
 
@@ -2401,6 +2420,8 @@ function querySetClass(meta: ModelMeta): QuerySetClass {
   return found;
 }
 
+for (const cls of [RelatedSet, ManyRelatedSet]) Object.defineProperty(cls.prototype, SUPER, { value: QuerySet.prototype });
+
 /** `base` with the methods of the model's query-set class, built once per model. */
 function relationSetClass<B extends typeof RelatedSet | typeof ManyRelatedSet>(base: B, meta: ModelMeta): B {
   const custom = querySetClass(meta);
@@ -2409,9 +2430,10 @@ function relationSetClass<B extends typeof RelatedSet | typeof ManyRelatedSet>(b
   if (!cls) {
     const mixed = class extends custom {};
     for (const key of Reflect.ownKeys(base.prototype)) {
-      if (key !== "constructor") Object.defineProperty(mixed.prototype, key, Object.getOwnPropertyDescriptor(base.prototype, key)!);
+      if (key !== "constructor" && key !== SUPER) Object.defineProperty(mixed.prototype, key, Object.getOwnPropertyDescriptor(base.prototype, key)!);
     }
     Object.defineProperty(mixed.prototype, MIXED, { value: base });
+    Object.defineProperty(mixed.prototype, SUPER, { value: custom.prototype });
     Object.defineProperty(mixed, "name", { value: `${meta.name}${base.name}` });
     cls = mixed as unknown as B;
     meta.relatedSets.set(base, cls);

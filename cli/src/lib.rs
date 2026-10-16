@@ -410,10 +410,14 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = codegen::Options { query_sets: configured_query_sets(language)? };
+    let mut flag_models = std::collections::BTreeSet::new();
     for (key, value) in &args.options {
         if let ("--query-set", Some(value)) = (key.as_str(), value) {
             let (model, target) = value.split_once('=').filter(|(m, t)| !m.is_empty() && !t.is_empty())
                 .ok_or_else(|| Failure::Usage("--query-set needs Model=TARGET".into()))?;
+            if !flag_models.insert(model) {
+                return Err(Failure::Usage(format!("duplicate --query-set for model {model}")));
+            }
             options.query_sets.insert(model.to_owned(), target.to_owned());
         }
     }

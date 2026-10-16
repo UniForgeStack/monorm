@@ -524,6 +524,40 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
         await sdb.close()
 
 
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a query-defaults artifact")
+@pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
+async def test_prefetch_applies_scope_values(db, dialect):
+    registry = orm.Registry()
+    m = orm.define(scoped_schema(dialect), registry=registry)
+    Shop, Order = m["Shop"], m["Order"]
+    url = "sqlite://:memory:" if dialect == "sqlite" else db.url
+    sdb = await orm.connect(url, registry=registry, default=False, max_connections=2)
+    await sdb.drop_tables()
+    await sdb.create_tables()
+    try:
+        s1, s2 = await Shop.objects.using(sdb).insert_many([{"name": "one"}, {"name": "two"}]).returning()
+        await Order.objects.using(sdb).without_defaults().insert_many(
+            [{"shop_id": s1.id, "total": 10}, {"shop_id": s1.id, "total": 20}, {"shop_id": s2.id, "total": 30}])
+        shops = await Shop.objects.using(sdb).order_by(Shop.id).all()
+        # Outside a scope the default filter is closed, as for load().
+        with pytest.raises(orm.QueryError, match=r"default filter of Order reads scope\.shop"):
+            await orm.prefetch(shops, Shop.orders, using=sdb)
+        with orm.scope(shop=s1.id):
+            await orm.prefetch(shops, Shop.orders, using=sdb)
+            assert [sorted(o.total for o in await s.orders) for s in shops] == [[10, 20], []]
+            with orm.scope(shop=s2.id):
+                await orm.prefetch(shops, Shop.orders, using=sdb)
+                assert [sorted(o.total for o in await s.orders) for s in shops] == [[], [30]]
+        with orm.scope(shop=None):
+            with pytest.raises(orm.QueryError, match=r"scope\.shop is None"):
+                await orm.prefetch(shops, Shop.orders, using=sdb)
+            with pytest.raises(orm.QueryError, match=r"scope\.shop is None"):
+                await Shop.objects.using(sdb).load(Shop.orders).all()
+    finally:
+        await sdb.drop_tables()
+        await sdb.close()
+
+
 async def test_query_hooks_see_replica_reads_and_session_locks(clean):
     db = clean
     url = await replica_url(db)

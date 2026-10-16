@@ -1179,7 +1179,9 @@ class QuerySet(Generic[M]):
         ``(filters of qs1) OR (filters of qs2)``; the rest (order, loading, ``using``)
         comes from ``qs1``. ``qs2`` sets nothing but filters, neither is sliced, and each
         has at most one ``filter()``/``exclude()`` call: conditions of one call through a
-        to-many relation hold for one related row, so two calls can't be joined."""
+        to-many relation hold for one related row, so two calls can't be joined.
+        A relation set on the left gives a plain query set; a custom class takes its
+        state from the left side."""
         from .expr import or_
 
         if not isinstance(other, QuerySet) or other._model is not self._model:
@@ -1188,14 +1190,24 @@ class QuerySet(Generic[M]):
             if qs._limit is not None or qs._offset is not None:
                 raise QueryError("| can't combine a sliced query set")
             if len(qs._filters) > 1:
-                raise QueryError("| needs one filter() call per side; put the conditions in one call")
+                raise QueryError(f"| needs one filter() call per side{qs._or_origin()}; put the conditions in one call")
         base = QuerySet(self._model)
         for name in QuerySet.__slots__:
-            if name not in ("_filters", "_model", "_result") and getattr(other, name) != getattr(base, name):
+            if name in ("_filters", "_model", "_result"):
+                continue
+            theirs, ours = getattr(other, name), getattr(base, name)
+            if (theirs is not ours) if name == "_via" else (theirs != ours):
                 raise QueryError(f"| takes filters only from the right query set, which also sets {name.lstrip('_')}")
+        left = self._plain()
         if not self._filters or not other._filters:
-            return self._clone(_filters=())
-        return self._clone(_filters=(or_(self._filters[0], other._filters[0]),))
+            return left._clone(_filters=())
+        return left._clone(_filters=(or_(self._filters[0], other._filters[0]),))
+
+    def _plain(self) -> Self:
+        return self
+
+    def _or_origin(self) -> str:
+        return ""
 
     def __repr__(self) -> str:
         parts = [f"filter{f!r}" for f in self._filters]
@@ -1346,9 +1358,10 @@ async def prefetch(
 
         await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.filter(...))
 
-    The instances are of one model. They are read from the database each came from,
-    unless ``using`` names another."""
-    from .db import resolve
+    The instances are of one model and one database (an unset database means the
+    default). Mixed databases raise ``QueryError`` unless ``using`` names the
+    database to read."""
+    from .db import _with_scope, resolve
     from .fields import BelongsTo
 
     objs = list(instances)
@@ -1357,6 +1370,10 @@ async def prefetch(
     model = type(objs[0])
     if any(type(o) is not model for o in objs):
         raise TypeError("prefetch() takes instances of one model")
+    db = using if using is not None else objs[0].__dict__.get("_db")
+    database = resolve(db)
+    if using is None and any(resolve(o.__dict__.get("_db")) is not database for o in objs):
+        raise QueryError("prefetch() takes instances from one database; pass using= to read another")
     loads = model.objects.load(*relations)._loads
     if any(isinstance(i, ColumnRef) and not i._path for i in loads):
         raise TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load")
@@ -1373,9 +1390,8 @@ async def prefetch(
             if key not in keys:
                 keys.append(key)
     rows = [[o._field_value(k) for k in keys] for o in objs]
-    db = using if using is not None else objs[0].__dict__.get("_db")
-    database = resolve(db)
-    await database._engine.prefetch(json.dumps(ir), params, keys, rows, objs, database._tx(), db)
+    op, params = _with_scope(json.dumps(ir), params)
+    await database._engine.prefetch(op, params, keys, rows, objs, database._tx(), db)
 
 
 def use_query_set(model: type[M], query_set: type[QuerySet[M]] | str) -> None:
@@ -1453,6 +1469,23 @@ class RelatedSet(QuerySet[M]):
     def __new__(cls, *args: Any) -> Self:
         made: Any = _relation_set_class(RelatedSet, args[0].target) if cls is RelatedSet and args else cls
         return cast("Self", object.__new__(made))
+
+    def _plain(self) -> QuerySet[M]:  # type: ignore[override]
+        """The same query as a plain query set of the model: no relation, no loaded rows."""
+        plain = _query_set_class(self._model)
+        new: QuerySet[M] = plain.__new__(plain)
+        for name in QuerySet.__slots__:
+            setattr(new, name, None if name == "_result" else getattr(self, name))
+        state = getattr(self, "__dict__", None)
+        if state:
+            new.__dict__.update(state)
+        return new
+
+    def _or_origin(self) -> str:
+        return f" ({self._relation.name}: write filter(a | b))"
+
+    def __or__(self, other: QuerySet[M]) -> QuerySet[M]:  # type: ignore[override]
+        return cast("QuerySet[M]", super().__or__(other))
 
     def __init__(self, relation: HasMany[M, Any], instance: Model) -> None:
         super().__init__(relation.target)
@@ -1534,6 +1567,23 @@ class ManyRelatedSet(QuerySet[M]):
     def __new__(cls, *args: Any) -> Self:
         made: Any = _relation_set_class(ManyRelatedSet, args[0].target) if cls is ManyRelatedSet and args else cls
         return cast("Self", object.__new__(made))
+
+    def _plain(self) -> QuerySet[M]:  # type: ignore[override]
+        """The same query as a plain query set of the model: no relation, no loaded rows."""
+        plain = _query_set_class(self._model)
+        new: QuerySet[M] = plain.__new__(plain)
+        for name in QuerySet.__slots__:
+            setattr(new, name, None if name == "_result" else getattr(self, name))
+        state = getattr(self, "__dict__", None)
+        if state:
+            new.__dict__.update(state)
+        return new
+
+    def _or_origin(self) -> str:
+        return f" ({self._relation.name}: write filter(a | b))"
+
+    def __or__(self, other: QuerySet[M]) -> QuerySet[M]:  # type: ignore[override]
+        return cast("QuerySet[M]", super().__or__(other))
 
     def __init__(self, relation: ManyToMany[M, Any], instance: Model) -> None:
         from .expr import exists, outer

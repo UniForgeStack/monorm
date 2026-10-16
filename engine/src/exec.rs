@@ -199,6 +199,7 @@ impl RowSet for ValueRows {
             Value::Double(v) => v.map_or(Cell::Null, Cell::Float),
             Value::String(v) => v.as_deref().map_or(Cell::Null, Cell::Text),
             Value::Uuid(v) => v.map_or(Cell::Null, Cell::Uuid),
+            Value::BigDecimal(v) => v.as_ref().map_or(Cell::Null, |d| Cell::Decimal(d.to_string())),
             Value::ChronoDate(v) => v.map_or(Cell::Null, Cell::Date),
             Value::ChronoDateTimeWithTimeZone(v) => v.map_or(Cell::Null, |d| Cell::DateTime(d.with_timezone(&chrono::Utc))),
             other => return Err(DbError::other(format!("a prefetch key can't be {other:?}"))),

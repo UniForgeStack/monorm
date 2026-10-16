@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { connect, define, getDatabase, loads, param, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
+import { connect, define, getDatabase, loads, param, prefetch, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
 import { native } from '../src/native.js';
 import { User } from './blog/models.js';
 import { useDatabase, otherDatabase, DATABASE_URL } from './helpers.js';
@@ -437,6 +437,40 @@ for (const dialect of ['postgres', 'sqlite']) {
         assert.equal(await orders.filter(Order.id.eq(o3.id)).delete(), 0);
       });
       assert.deepEqual((await orders.withoutDefaults().all()).map((o: any) => o.total).sort(), [0, 0, 30]);
+    } finally {
+      await sdb.dropTables();
+      await sdb.close();
+    }
+  });
+}
+
+for (const dialect of ['postgres', 'sqlite']) {
+  test(`prefetch applies scope values (${dialect})`, { skip: !queryDefaults }, async () => {
+    const registry = new Registry();
+    const m = define(scopedSchema(dialect) as never, { registry });
+    const Shop = m['Shop'] as any, Order = m['Order'] as any;
+    const sdb = await connect(dialect === 'sqlite' ? 'sqlite://:memory:' : getDatabase().url, { registry, default: false, maxConnections: 2 });
+    await sdb.dropTables();
+    await sdb.createTables();
+    try {
+      const [s1, s2] = await Shop.objects.using(sdb).insertMany([{ name: 'one' }, { name: 'two' }]).returning();
+      await Order.objects.using(sdb).withoutDefaults().insertMany([{ shopId: s1.id, total: 10 }, { shopId: s1.id, total: 20 }, { shopId: s2.id, total: 30 }]);
+      const shops = await Shop.objects.using(sdb).orderBy('id');
+      const totals = () => shops.map((s: any) => s.orders.cached.map((o: any) => o.total).sort());
+      // Outside a scope the default filter is closed, as for load().
+      await assert.rejects(prefetch(shops, Shop.orders, { using: sdb }), /default filter of Order reads scope\.shop/);
+      await scope({ shop: s1.id }, async () => {
+        await prefetch(shops, Shop.orders, { using: sdb });
+        assert.deepEqual(totals(), [[10, 20], []]);
+        await scope({ shop: s2.id }, async () => {
+          await prefetch(shops, Shop.orders, { using: sdb });
+          assert.deepEqual(totals(), [[], [30]]);
+        });
+      });
+      await scope({ shop: null }, async () => {
+        await assert.rejects(prefetch(shops, Shop.orders, { using: sdb }), /scope\.shop is None/);
+        await assert.rejects(Shop.objects.using(sdb).load(Shop.orders).all(), /scope\.shop is None/);
+      });
     } finally {
       await sdb.dropTables();
       await sdb.close();

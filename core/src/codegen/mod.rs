@@ -22,11 +22,12 @@ impl Options {
             if !schema.models.iter().any(|m| m.ir.name == *model) {
                 return Err(format!("--query-set {model}: the schema has no model {model}"));
             }
-            let parts = target.split_once(sep).filter(|(m, c)| !m.is_empty() && is_ident(c));
+            let parts = if sep == '#' { target.rsplit_once(sep) } else { target.split_once(sep) }
+                .filter(|(m, c)| !m.is_empty() && if sep == ':' { is_python_ident(c) } else { is_js_ident(c) });
             let Some((module, class)) = parts else {
                 return Err(format!("--query-set {model}={target}: expected {}", if sep == ':' { "module:Class" } else { "specifier#Export" }));
             };
-            if sep == ':' && !module.split('.').all(is_ident) {
+            if sep == ':' && !module.split('.').all(is_python_ident) {
                 return Err(format!("--query-set {model}={target}: {module} is not an absolute module name"));
             }
             out.insert(model.as_str(), (module, class));
@@ -38,6 +39,21 @@ impl Options {
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c == '_' || c.is_ascii_alphabetic()) && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn is_python_ident(s: &str) -> bool {
+    is_ident(s) && !matches!(s,
+        "False" | "None" | "True" | "and" | "as" | "assert" | "async" | "await" |
+        "break" | "class" | "continue" | "def" | "del" | "elif" | "else" | "except" |
+        "finally" | "for" | "from" | "global" | "if" | "import" | "in" | "is" |
+        "lambda" | "nonlocal" | "not" | "or" | "pass" | "raise" | "return" | "try" |
+        "while" | "with" | "yield")
+}
+
+fn is_js_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c == '$' || c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '$' || c == '_' || c.is_ascii_alphanumeric())
 }
 
 /// Compact schema payload for self-contained generated modules in every language.
@@ -103,6 +119,41 @@ mod reference_tests {
         assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("module:Class"));
         options.query_sets = [("Nope".to_string(), "a:B".to_string())].into();
         assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("no model Nope"));
+    }
+
+    #[test]
+    fn python_query_sets_reject_hard_keywords() {
+        let (ir, schema) = schema();
+        for target in ["None:Q", "app.class:Q", "app:class", "app:False", "async:Q"] {
+            let options = Options { query_sets: [("Post".into(), target.into())].into() };
+            assert!(python::generate_with(&ir, &schema, "s", &options).is_err(), "{target}");
+        }
+    }
+
+    #[test]
+    fn python_query_sets_accept_soft_keywords() {
+        let (ir, schema) = schema();
+        for name in ["match", "case", "type", "_"] {
+            let options = Options { query_sets: [("Post".into(), format!("app.{name}:{name}"))].into() };
+            let py = python::generate_with(&ir, &schema, "s", &options).unwrap();
+            assert!(py.stub.contains(&format!("from app.{name} import {name} as _PostObjects")));
+        }
+    }
+
+    #[test]
+    fn typescript_query_sets_accept_subpaths_and_dollar_exports() {
+        let (ir, schema) = schema();
+        for (module, export) in [("#app/queries", "Q"), ("./queries.js", "$Q$"), ("#app/queries", "default")] {
+            let options = Options { query_sets: [("Post".into(), format!("{module}#{export}"))].into() };
+            let ts = typescript::generate_with(&ir, &schema, "s", "orm", &options).unwrap();
+            assert!(ts.contains(&format!("import * as _q0 from \"{module}\";")));
+            assert!(ts.contains(&format!("useQuerySet(Post, () => _q0.{export});")));
+            assert!(ts.contains(&format!("readonly queries: _q0.{export};")));
+        }
+        for target in ["#Q", "app#", "app#1Q", "app#bad-name"] {
+            let options = Options { query_sets: [("Post".into(), target.into())].into() };
+            assert!(typescript::generate_with(&ir, &schema, "s", "orm", &options).is_err());
+        }
     }
 
     #[test]

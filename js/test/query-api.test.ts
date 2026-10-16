@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, column, describe, prefetch, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
+import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, Registry, connect, getDatabase, loads, column, describe, prefetch, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
 import { Comment, Post, PostTag, Profile, Tag, User, type PostSpec, type TagSpec } from "./blog/models.js";
 import { useDatabase } from "./helpers.js";
 
@@ -126,12 +126,85 @@ test("prefetch checks its input", async () => {
   await assert.rejects(prefetch([alice], Post.author as never), /does not start at User|User has no relation/);
 });
 
+async function prefetchDatabases() {
+  const registry = new Registry();
+  const models = loads(`datasource db { provider = "sqlite" }
+model Author {
+  id Int @id @default(autoincrement())
+  name String
+  books Book[]
+}
+model Book {
+  id Int @id @default(autoincrement())
+  title String
+  authorId Int
+  author Author @relation(fields: [authorId], references: [id])
+}
+`, { registry });
+  const Author = models["Author"] as any, Book = models["Book"] as any;
+  const d1 = await connect("sqlite://:memory:", { registry, default: false });
+  const d2 = await connect("sqlite://:memory:", { registry, default: false });
+  const close = async () => { await d1.close(); await d2.close(); };
+  try {
+    for (const [db, name] of [[d1, "d1"], [d2, "d2"]] as const) {
+      await db.createTables();
+      const authors = await Author.objects.using(db).insertMany([{ name }, { name: "empty" }]).returning();
+      await Book.objects.using(db).insert({ title: `B-${name}`, authorId: authors[0].id });
+    }
+    const a1 = await Author.objects.using(d1).orderBy("id").first();
+    const [x, y] = await Author.objects.using(d2).orderBy("id");
+    return { Author, d2, objs: [a1, y, x], close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+test("prefetch refuses instances from two databases", async () => {
+  const { Author, objs, close } = await prefetchDatabases();
+  try {
+    await assert.rejects(prefetch(objs, Author.books), {
+      name: "QueryError", message: "prefetch() takes instances from one database; pass using= to read another",
+    });
+    for (const obj of objs) assert.throws(() => obj.books.cached, NotLoaded);
+  } finally {
+    await close();
+  }
+});
+
+test("prefetch with using reads that database", async () => {
+  const { Author, d2, objs, close } = await prefetchDatabases();
+  try {
+    await prefetch(objs, Author.books, { using: d2 });
+    assert.deepEqual(objs.map((obj) => obj.books.cached.map((b: any) => b.title)), [["B-d2"], [], ["B-d2"]]);
+  } finally {
+    await close();
+  }
+});
+
+test("prefetch accepts instances from one database", async () => {
+  const { Author, objs, close } = await prefetchDatabases();
+  try {
+    await prefetch(objs.slice(1), Author.books);
+    assert.deepEqual(objs.slice(1).map((obj) => obj.books.cached.map((b: any) => b.title)), [[], ["B-d2"]]);
+    const { alice, bob } = await seed();
+    await prefetch([alice, bob], User.posts);
+    const titles = (obj: User) => (obj.posts as unknown as { cached: Post[] }).cached.map((p) => p.title);
+    assert.deepEqual(titles(alice), ["draft", "hit", "quiet"]);
+    const explicit = await User.objects.using(getDatabase()).require().get(User.id.eq(alice.id));
+    await prefetch([bob, explicit], User.posts);
+    assert.deepEqual(titles(explicit), ["draft", "hit", "quiet"]);
+  } finally {
+    await close();
+  }
+});
+
 // -- model metadata for factories -------------------------------------------------------------
 
 test("describe gives fields, relations and unique keys", () => {
   const post = describe(Post);
   assert.equal(post.name, "Post");
-  assert.equal(post.primaryKey, "id");
+  assert.deepEqual(post.primaryKey, ["id"]);
   const fields = new Map(post.fields.map((f) => [f.name, f]));
   assert.deepEqual(fields.get("title"), {
     name: "title", column: "title", type: "string", nullable: false, array: false, enum: null, maxLength: 200,
@@ -142,7 +215,8 @@ test("describe gives fields, relations and unique keys", () => {
   const relations = new Map(post.relations.map((r) => [r.name, r]));
   assert.equal(relations.get("author")!.kind, "belongsTo");
   assert.equal(relations.get("author")!.target, User);
-  assert.equal(relations.get("author")!.from, "authorId");
+  assert.deepEqual(relations.get("author")!.from, ["authorId"]);
+  assert.deepEqual(relations.get("author")!.to, ["id"]);
   assert.equal(relations.get("tags")!.through, PostTag);
   assert.deepEqual(describe(PostTag).unique, [["id"], ["postId", "tagId"]]);
   assert.deepEqual(describe(User).unique, [["id"], ["email"]]);
@@ -157,11 +231,11 @@ async function make(model: ModelClass<ModelSpec>, values: Record<string, unknown
   const info = describe(model);
   made += 1;
   for (const rel of info.relations) {
-    if (rel.kind === "belongsTo" && !rel.nullable && !(rel.name in values) && ![rel.from].flat().some((f) => f in values)) {
+    if (rel.kind === "belongsTo" && !rel.nullable && !(rel.name in values) && !rel.from.some((f) => f in values)) {
       values[rel.name] = await make(rel.target);
     }
   }
-  const linked = new Set(info.relations.filter((r) => r.name in values).map((r) => r.from));
+  const linked = new Set(info.relations.filter((r) => r.name in values).flatMap((r) => r.from));
   for (const f of info.fields) {
     if (f.insert && f.default === null && !f.nullable && !(f.name in values) && !linked.has(f.name)) {
       values[f.name] = f.type === "string" || f.type === "text" ? `${f.name}-${made}` : f.type === "bool" ? false : made;
@@ -221,6 +295,75 @@ test("or() of query sets", async () => {
   assert.throws(() => popular.filter(Post.views.lt(100)).or(drafts), /one filter/);
   assert.throws(() => drafts.or(popular), /sets order/);
   assert.throws(() => popular.slice(0, 1).or(drafts), QueryError);
+});
+
+test("or() of a relation set ignores the loaded rows", async () => {
+  await seed();
+  const users = await User.objects.orderBy("id").load(User.posts.objects.filter(Post.published.eq(false)));
+  const qs = users[0]!.posts.or(Post.objects.filter(Post.published.eq(true)));
+  assert.ok(!(qs instanceof RelatedSet));
+  assert.deepEqual((await qs).map((p) => p.title).sort(), ["bob", "draft", "hit", "quiet"]);
+  assert.deepEqual((await Post.objects.filter(Post.published.eq(true)).or(users[0]!.posts)).map((p) => p.title).sort(), ["bob", "draft", "hit", "quiet"]);
+});
+
+test("or() of a many-to-many set ignores the loaded rows", async () => {
+  const { posts: rows } = await seed();
+  const tags = await Tag.objects.insertMany([{ name: "a" }, { name: "b" }, { name: "c" }]).returning();
+  await rows[1]!.tags.add(...tags);
+  const [post] = await Post.objects.filter(Post.id.eq(rows[1]!.id)).load(Post.tags.objects.filter(Tag.name.eq("a")));
+  const qs = post!.tags.or(Tag.objects.filter(Tag.name.eq("c")));
+  assert.ok(!(qs instanceof ManyRelatedSet));
+  assert.deepEqual((await qs).map((t) => t.name).sort(), ["a", "b", "c"]);
+});
+
+test("or() of two filtered relation sets names the relation", async () => {
+  const { alice } = await seed();
+  assert.throws(() => alice.posts.filter(Post.views.gt(1)).or(alice.posts.filter(Post.views.lt(100))), /posts.*filter\(a\.or\(b\)\)/);
+});
+
+test("or() keeps the custom query-set class", async (t) => {
+  useQuerySet(Post, () => PostQueries);
+  t.after(() => useQuerySet(Post, QuerySet));
+  await seed();
+  const users = await User.objects.orderBy("id").load(User.posts.objects.filter(Post.published.eq(false)));
+  const qs = users[0]!.posts.or(Post.objects.filter(Post.published.eq(true))) as unknown as PostQueries;
+  assert.ok(qs instanceof PostQueries && !(qs instanceof RelatedSet));
+  assert.deepEqual((await qs.popular(60)).map((p) => p.title).sort(), ["bob", "hit"]);
+});
+
+test("a custom fetch() override runs on a relation set", async (t) => {
+  let count = 0;
+  class Hooked<M extends ModelSpec> extends QuerySet<M> {
+    override async fetch(): Promise<M["row"][]> {
+      count++;
+      return super.fetch();
+    }
+  }
+  useQuerySet(Post, Hooked as never);
+  t.after(() => useQuerySet(Post, QuerySet));
+  const { alice } = await seed();
+  await Post.objects.all();
+  assert.equal(count, 1);
+  count = 0;
+  await alice.posts.all();
+  assert.equal(count, 1);
+  await alice.posts.filter(Post.views.gt(0)).all();
+  assert.equal(count, 2);
+});
+
+test("a custom getOrInsert() override runs on a relation set", async (t) => {
+  let count = 0;
+  class Hooked<M extends ModelSpec> extends QuerySet<M> {
+    override getOrInsert(): ReturnType<QuerySet<M>["getOrInsert"]> {
+      count++;
+      return Promise.resolve([undefined as never, false]);
+    }
+  }
+  useQuerySet(Post, Hooked as never);
+  t.after(() => useQuerySet(Post, QuerySet));
+  const { alice } = await seed();
+  await alice.posts.getOrInsert({ title: "fresh", body: "..." });
+  assert.equal(count, 1);
 });
 
 test("label one stores a row or null", async () => {

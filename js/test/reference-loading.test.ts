@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, loads, Registry, IntegrityError, NotLoaded, type Database } from "../src/index.js";
+import { connect, loads, prefetch, Decimal, Registry, IntegrityError, NotLoaded, type Database } from "../src/index.js";
 import { INTERNAL, RELATED } from "../src/model.js";
 import { QuerySet } from "../src/query.js";
 import { DATABASE_URL } from "./helpers.js";
@@ -268,6 +268,52 @@ for (const dialect of ["sqlite", "postgres"]) {
       await row.load(Required.owner);
       assert.equal(row.owner.id, 2);
       assert.equal(row.loadOwner, undefined);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+}
+
+const keySource = `datasource db {
+ provider = "postgres"
+}
+model KParent {
+ id Int @id
+ at DateTime @unique
+ amount Decimal @unique
+ num Int @unique
+ @@map("ref04k_parents")
+}
+model KChild {
+ id Int @id
+ at DateTime
+ amount Decimal
+ num Int
+ byDate KParent @relation(fields: [at], references: [at])
+ byDecimal KParent @relation(fields: [amount], references: [amount])
+ byInt KParent @relation(fields: [num], references: [num])
+ @@map("ref04k_children")
+}`;
+for (const name of ["byDate", "byDecimal", "byInt"]) {
+  test(`${name}: a to-one reference key returns the parent after load() and prefetch()`, async () => {
+    const registry = new Registry();
+    const m = loads(keySource, { registry }) as Dynamic;
+    const db = await connect(DATABASE_URL, { registry, default: false });
+    await db.dropTables();
+    await db.createTables();
+    try {
+      const { KParent, KChild } = m;
+      const values = { at: new Date("2024-01-02T03:04:05.678Z"), amount: new Decimal("1.50"), num: 7 };
+      await KParent.objects.using(db).insertMany([{ id: 1, ...values }]);
+      await KChild.objects.using(db).insertMany([{ id: 1, ...values }]);
+      const loaded = await KChild.objects.using(db).get(KChild.id.eq(1));
+      assert.throws(() => loaded[name], NotLoaded);
+      await loaded.load(KChild[name]);
+      assert.equal(loaded[name].id, 1);
+      const rows = await KChild.objects.using(db).all();
+      await prefetch(rows, KChild[name], { using: db });
+      assert.equal(rows[0][name].id, 1);
     } finally {
       await db.dropTables();
       await db.close();

@@ -3,7 +3,7 @@
  * joined objects and prefetched relations attached) and `select()` rows.
  */
 
-import { Decimal } from "./decimal.js";
+import { key } from "./value-key.js";
 import type { Database } from "./db.js";
 import { related, type ModelMeta, type Registry } from "./model.js";
 import type {
@@ -17,17 +17,6 @@ import type {
 } from "./native.js";
 
 type Obj = Record<PropertyKey, unknown>;
-
-/** A key for grouping related rows: values compared by value (`Date`, `Decimal`). */
-function key(v: unknown): unknown {
-  if (v instanceof Date) {
-    return `d${v.getTime()}`;
-  }
-  if (v instanceof Decimal) {
-    return `n${v.toString()}`;
-  }
-  return v;
-}
 
 /** The relation key of a row: its one value, or one string for several columns (`null` when one is NULL). */
 function rowKey(values: readonly unknown[], base: number, positions: readonly number[]): unknown {

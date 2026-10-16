@@ -744,7 +744,8 @@ def describe(model: type[Model]) -> dict[str, Any]:
     """Plain data about ``model`` for code that builds rows from it, such as a test
     factory: its fields (schema and Python type, nullability, enum, length, unique,
     who gives a default, whether ``insert()`` takes it), its relations and its unique
-    keys. Each entry is a new object; changing it changes nothing."""
+    keys. ``primary_key`` and relation ``from``/``to`` are lists in key order,
+    even for a single field. Each entry is a new object; changing it changes nothing."""
     meta = model._meta
     ir = meta.ir()
     registry = meta.registry
@@ -776,15 +777,15 @@ def describe(model: type[Model]) -> dict[str, Any]:
             "name": name,
             "kind": kind,
             "target": rel.target,
-            "from": r["from"],
-            "to": r["to"],
+            "from": [r["from"]] if isinstance(r["from"], str) else list(r["from"]),
+            "to": [r["to"]] if isinstance(r["to"], str) else list(r["to"]),
             "through": registry.get(r["through"]["model"]) if "through" in r else None,
             "nullable": kind != "belongs_to" or any(meta.fields[n].nullable for n in rel.via_fields),  # type: ignore[attr-defined]
         })
     unique: list[tuple[str, ...]] = [meta.key_names]
     unique += [(f["name"],) for f in ir["fields"] if f.get("unique") and (f["name"],) != meta.key_names]
     unique += [tuple(c["fields"]) for c in ir.get("constraints", ()) if c.get("kind") == "unique"]
-    return {"name": meta.name, "table": meta.table, "primary_key": meta.key_names[0] if len(meta.key) == 1 else meta.key_names, "fields": fields, "relations": relations, "unique": unique}
+    return {"name": meta.name, "table": meta.table, "primary_key": list(meta.key_names), "fields": fields, "relations": relations, "unique": unique}
 
 
 def loads(

@@ -1,5 +1,6 @@
 /** Build-selected reference loading adapter. Baseline profiles do not load this module. */
 import { active as debugging, relationLoad } from "./debug.js";
+import { key } from "./value-key.js";
 import { IntegrityError, NotLoaded } from "./errors.js";
 import type { Database } from "./db.js";
 import type { ModelMeta, Row } from "./model.js";
@@ -30,8 +31,8 @@ function peekKey(row: Row, names: readonly string[], internal: symbol): unknown 
   return parts.some((v) => v === null || v === undefined) ? null : parts;
 }
 function sameKey(a: unknown, b: unknown): boolean {
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => v === b[i]);
-  return a === b;
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => key(v) === key(b[i]));
+  return key(a) === key(b);
 }
 export function keyValue(row: Row, names: readonly string[], internal: symbol): unknown {
   const value = peekKey(row, names, internal);
