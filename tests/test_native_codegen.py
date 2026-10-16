@@ -27,6 +27,9 @@ def test_generate_python_query_sets(tmp_path):
 @pytest.mark.parametrize("query_sets, message", [
     ({"Missing": "app.queries:PostQueries"}, "no model Missing"),
     ({"Post": "./queries.js#PostQueries"}, "module:Class"),
+    ({"Post": "None:Q"}, "absolute module name"),
+    ({"Post": "app.class:Q"}, "absolute module name"),
+    ({"Post": "app:class"}, "module:Class"),
 ])
 def test_generate_python_checks_query_sets(tmp_path, query_sets, message):
     schema = tmp_path / "schema.prisma"

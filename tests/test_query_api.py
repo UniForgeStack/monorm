@@ -168,6 +168,24 @@ def test_cli_reads_query_sets_from_pyproject(tmp_path, monkeypatch, capfd):
     assert "expected module:Class" in capfd.readouterr().err
 
 
+def test_cli_rejects_duplicate_query_set_flags(tmp_path, monkeypatch, capfd):
+    (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
+    monkeypatch.chdir(tmp_path)
+    assert orm._native.cli(["generate", "python", "-o", "models.py",
+                            "--query-set", "Book=a:B", "--query-set", "Book=c:D"]) == 2
+    assert "duplicate --query-set for model Book" in capfd.readouterr().err
+    assert not (tmp_path / "models.py").exists()
+
+
+def test_cli_query_set_flag_overrides_config(tmp_path, monkeypatch):
+    (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
+    (tmp_path / "pyproject.toml").write_text('[tool.orm.query_sets]\nBook = "app.queries:BookQueries"\n')
+    monkeypatch.chdir(tmp_path)
+    assert orm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=other:Queries"]) == 0
+    assert 'use_query_set(Book, "other:Queries")' in (tmp_path / "models.py").read_text()
+    assert "from other import Queries as _BookObjects" in (tmp_path / "models.pyi").read_text()
+
+
 # -- prefetch on loaded instances (F10) -----------------------------------------------------
 
 

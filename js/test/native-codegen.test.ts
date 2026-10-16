@@ -31,3 +31,14 @@ test("native generation accepts query-set maps and matches the CLI", async (t) =
   assert.throws(() => addon.generateTypescript(schema, null, { Missing: "./queries.js#PostQueries" }), /no model Missing/);
   assert.throws(() => addon.generateTypescript(schema, null, { Post: "app.queries:PostQueries" }), /specifier#Export/);
 });
+
+test("native generation accepts subpath imports and dollar export names", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "orm-native-codegen-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const schema = join(dir, "schema.prisma");
+  writeFileSync(schema, "model Post {\n id Int @id\n}\n");
+  const generated = native().generateTypescript(schema, null, { Post: "#app/queries#$Q$" });
+  assert.ok(generated.includes('import * as _q0 from "#app/queries";'));
+  assert.ok(generated.includes("useQuerySet(Post, () => _q0.$Q$);"));
+  assert.ok(generated.includes("readonly queries: _q0.$Q$;"));
+});
