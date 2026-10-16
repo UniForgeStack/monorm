@@ -242,17 +242,17 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  const upsertDoc = (mode: string) => `
+  const upsertDoc = ({ mode, version = false }: { mode?: string; version?: boolean }) => `
 model Doc {
   id      Int      @id
   title   String
-  changed DateTime @default(now()) @timestamps.updated_at(mode: "${mode}")
-  version Int      @default(0) @locking.version
+  ${mode === undefined ? "" : `changed DateTime @default(now()) @timestamps.updated_at(mode: "${mode}")`}
+  ${version ? "version Int @default(0) @locking.version" : ""}
   @@map("tracking_node_upsert_docs")
 }`;
 
   test(`an upsert bumps the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") || !capabilities.includes("updated-at") }, async () => {
-    const [db, models] = await open(dialect, upsertDoc("application"));
+    const [db, models] = await open(dialect, upsertDoc({ mode: "application", version: true }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
       await docs.insert({ id: 1, title: "a" });
@@ -267,7 +267,7 @@ model Doc {
   });
 
   test(`an upsert sets updated_at in application mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
-    const [db, models] = await open(dialect, upsertDoc("application"));
+    const [db, models] = await open(dialect, upsertDoc({ mode: "application" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
       await docs.insert({ id: 1, title: "a", changed: OLD });
@@ -280,7 +280,7 @@ model Doc {
   });
 
   test(`an update: true upsert does not reset the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
-    const [db, models] = await open(dialect, upsertDoc("application"));
+    const [db, models] = await open(dialect, upsertDoc({ version: true }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
       await docs.insert({ id: 1, title: "a" });
@@ -291,7 +291,7 @@ model Doc {
   });
 
   test(`an upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
-    const [db, models] = await open(dialect, upsertDoc("database"));
+    const [db, models] = await open(dialect, upsertDoc({ mode: "database" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
       await docs.insert({ id: 1, title: "a", changed: OLD });

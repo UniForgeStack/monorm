@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../js/dist/src/index.js';
+import { allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../languages/js/dist/src/index.js';
 import { LocalStorage, Reference, Registry } from '../../typescript/dist/src/index.js';
 import { Upload, FileField, FileWriteError, FileFieldError } from '../typescript/dist/src/index.js';
 import { installModel } from '../typescript/dist/src/model.js';
