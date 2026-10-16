@@ -27,7 +27,7 @@ fn generated_consumer_contracts() {
         ("model projection rejects missing shape field","fn email<S:models::UserShape<Email=String>>(_:S) {} async fn bad(db:&Database) {let (row,)=User::objects.select((orm_client::model::<User<Loaded,Unloaded,Loaded,Loaded>>(),)).require().using(db).first().await.unwrap();email(row);}","E0271"),
         ("tuple and scalar inferred requiredness","async fn check(db:&Database) {let _:Vec<(String,Option<String>)>=User::objects.select((User::email,User::nickname)).require().using(db).await.unwrap();let _:Option<Option<String>>=User::objects.select(User::nickname).using(db).scalar().await.unwrap();let _:Option<String>=User::objects.require().select(User::nickname).using(db).scalar().await.unwrap();}",""),
         ("named export inferred fields","mod exported {orm_client::named_result! {pub struct Contact {email,nickname}}} async fn check(db:&Database)->orm_client::Result<exported::Contact<String,Option<String>>> {orm_client::select_named!(User::objects => exported::Contact; email=>User::email,nickname=>User::nickname).require().using(db).first().await}",""),
-        ("duplicate projection labels","fn bad() {let query=orm_client::select_named!(User::objects; email=>User::email,email=>User::nickname);}","E0124"),
+        ("duplicate projection labels","fn bad() {let query=orm_client::select_named!(User::objects; email=>User::email,email=>User::nickname);}","E0124|E0403|E0415"),
         ("wrong projection source","fn bad() {User::objects.select(Post::title);}","E0277"),
         ("many path projection","fn bad() {User::objects.select(User::posts_path().title());}","E0277"),
         ("tuple scalar arity","async fn bad(db:&Database) {User::objects.select((User::email,User::nickname)).using(db).scalar().await;}","E0599"),
@@ -57,7 +57,7 @@ fn generated_consumer_contracts() {
         ("wrong relation target", "fn bad() {User::posts.as_prefetch(User::objects.query());}", "E0271"),
         ("unloaded caches cannot be read", "fn bad(row:User) {row.posts.cached();}", "E0599"),
         ("mixed static rows need explicit erasure", "fn bad(a:User,b:User<Unloaded,Loaded,Unloaded,Unloaded>,flag:bool) {let row=if flag {a} else {b};}", "E0308"),
-        ("duplicate literal views", "async fn bad(row:User,db:&Database) {orm_client::relation_views!(row,db; recent=>User::posts,recent=>User::posts).await;}", "E0124"),
+        ("duplicate literal views", "async fn bad(row:User,db:&Database) {orm_client::relation_views!(row,db; recent=>User::posts,recent=>User::posts).await;}", "E0124|E0403|E0415"),
         ("named views are immutable", "async fn bad(row:User,db:&Database) {let mut view=orm_client::relation_views!(row,db; recent=>User::posts).await.unwrap();view.row.email.clear();}", "E0596"),
 
         ("direct shape requirements", "fn email<S:models::UserShape<Email=String>>(row:&S)->&String {row.email()} async fn check(db:&Database) {let partial=User::objects.load(User::email).require().using(db).first().await.unwrap(); email(&partial);let full=User::objects.require().using(db).first().await.unwrap();email(&full);}", ""),
@@ -107,11 +107,13 @@ fn generated_consumer_contracts() {
             .output()
             .unwrap();
         let diagnostics = String::from_utf8_lossy(&output.stderr);
+        // `A|B` accepts any listed code: rustc reports resolution errors (E0403, E0415) before E0124 for one duplicate label.
         if category.is_empty() {
             assert!(output.status.success(), "{name}: {diagnostics}");
         } else {
             assert!(
-                !output.status.success() && diagnostics.contains(category),
+                !output.status.success()
+                    && category.split('|').any(|code| diagnostics.contains(code)),
                 "{name} expected {category}: {diagnostics}"
             );
         }
