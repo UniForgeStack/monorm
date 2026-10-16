@@ -23,6 +23,20 @@ model Line {
 }
 `;
 
+test("describe lists single and composite keys", () => {
+  const models = loads(source, { registry: new Registry() });
+  const item = info(models["Item"]!);
+  const line = info(models["Line"]!);
+  assert.deepEqual(line.primaryKey, ["id"]);
+  assert.deepEqual(item.primaryKey, ["shop", "id"]);
+  const forward = line.relations.find((r) => r.name === "item")!;
+  assert.deepEqual(forward.from, ["shop", "itemId"]);
+  assert.deepEqual(forward.to, ["shop", "id"]);
+  const reverse = item.relations.find((r) => r.name === "lines")!;
+  assert.deepEqual(reverse.from, ["shop", "id"]);
+  assert.deepEqual(reverse.to, ["shop", "itemId"]);
+});
+
 for (const provider of ["sqlite", "postgresql"]) {
   const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];
 

@@ -26,6 +26,25 @@ model Line {
 """
 
 
+def test_describe_lists_single_and_composite_keys():
+    models = orm.loads(SCHEMA, registry=orm.Registry())
+    item = orm.describe(models["Item"])
+    line = orm.describe(models["Line"])
+    assert line["primary_key"] == ["id"]
+    assert item["primary_key"] == ["shop", "id"]
+    forward = next(r for r in line["relations"] if r["name"] == "item")
+    assert forward["from"] == ["shop", "item_id"]
+    assert forward["to"] == ["shop", "id"]
+    reverse = next(r for r in item["relations"] if r["name"] == "lines")
+    assert reverse["from"] == ["shop", "id"]
+    assert reverse["to"] == ["shop", "item_id"]
+    from blog.models import Post
+
+    author = next(r for r in orm.describe(Post)["relations"] if r["name"] == "author")
+    assert author["from"] == ["author_id"]
+    assert author["to"] == ["id"]
+
+
 @pytest.fixture(params=["sqlite", "postgres"])
 async def models(request):
     registry = orm.Registry()

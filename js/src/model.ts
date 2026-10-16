@@ -956,9 +956,9 @@ export interface RelationInfo {
   readonly name: string;
   readonly kind: "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
   readonly target: ModelClass<ModelSpec>;
-  /** The key field, or the key fields of a composite key. */
-  readonly from: string | readonly string[];
-  readonly to: string | readonly string[];
+  /** The key fields in key order, including single-field keys. */
+  readonly from: readonly string[];
+  readonly to: readonly string[];
   readonly through: ModelClass<ModelSpec> | null;
   /** The relation can be absent: a nullable key, or any relation but a to-one by key. */
   readonly nullable: boolean;
@@ -968,8 +968,8 @@ export interface RelationInfo {
 export interface ModelInfo {
   readonly name: string;
   readonly table: string;
-  /** The key field, or the key fields in key order. */
-  readonly primaryKey: string | readonly string[];
+  /** The key fields in key order, including single-field keys. */
+  readonly primaryKey: readonly string[];
   readonly fields: readonly FieldInfo[];
   readonly relations: readonly RelationInfo[];
   readonly unique: readonly (readonly string[])[];
@@ -1005,8 +1005,8 @@ export function describe(model: ModelClass<ModelSpec>): ModelInfo {
       name: r.name,
       kind: r.kind,
       target: target.model,
-      from: oneOrList(r.from.map((n) => meta.fieldByIr.get(n)!.name)),
-      to: oneOrList(r.to.map((n) => target.fieldByIr.get(n)!.name)),
+      from: r.from.map((n) => meta.fieldByIr.get(n)!.name),
+      to: r.to.map((n) => target.fieldByIr.get(n)!.name),
       through: r.through ? registry.get(r.through.model).model : null,
       nullable: r.kind !== "belongsTo" || r.from.some((n) => meta.fieldByIr.get(n)!.nullable),
     };
@@ -1019,11 +1019,7 @@ export function describe(model: ModelClass<ModelSpec>): ModelInfo {
     ...meta.ir.fields.filter((f) => f.unique && !(key.length === 1 && f.primary_key)).map((f) => [name(f.name)]),
     ...constraints.filter((c) => c.kind === "unique" && c.fields).map((c) => c.fields!.map(name)),
   ];
-  return { name: meta.name, table: meta.table, primaryKey: oneOrList(key), fields, relations, unique };
-}
-
-function oneOrList(names: readonly string[]): string | readonly string[] {
-  return names.length === 1 ? names[0]! : names;
+  return { name: meta.name, table: meta.table, primaryKey: key, fields, relations, unique };
 }
 
 /**

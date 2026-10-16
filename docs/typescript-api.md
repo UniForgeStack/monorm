@@ -732,6 +732,7 @@ A package that changes writes and reads from outside the ORM (for example
 The ORM has no factory library. It gives the two things a factory library needs:
 
 * `describe(Model)`: plain data about the model, with TypeScript (camelCase) names.
+  `primaryKey` and relation `from`/`to` are always lists of field names in key order, even for a single field (for example, `["id"]`).
   `fields` gives per field the name, column, schema type, `nullable`, `array`, `enum` (the enum's name), `maxLength`, `primaryKey`, `unique`, `default` (`"database"`, `"client"` or `null`) and `insert` (whether `insert()` takes it).
   `relations` gives the kind, the target model, the `from`/`to` fields, the `through` model and `nullable`. `unique` lists the unique keys, the primary key first.
 * The insert path: `await Model.objects.insert(values)`, typed by the generated `PostInsert`.

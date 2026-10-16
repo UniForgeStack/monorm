@@ -204,7 +204,7 @@ test("prefetch accepts instances from one database", async () => {
 test("describe gives fields, relations and unique keys", () => {
   const post = describe(Post);
   assert.equal(post.name, "Post");
-  assert.equal(post.primaryKey, "id");
+  assert.deepEqual(post.primaryKey, ["id"]);
   const fields = new Map(post.fields.map((f) => [f.name, f]));
   assert.deepEqual(fields.get("title"), {
     name: "title", column: "title", type: "string", nullable: false, array: false, enum: null, maxLength: 200,
@@ -215,7 +215,8 @@ test("describe gives fields, relations and unique keys", () => {
   const relations = new Map(post.relations.map((r) => [r.name, r]));
   assert.equal(relations.get("author")!.kind, "belongsTo");
   assert.equal(relations.get("author")!.target, User);
-  assert.equal(relations.get("author")!.from, "authorId");
+  assert.deepEqual(relations.get("author")!.from, ["authorId"]);
+  assert.deepEqual(relations.get("author")!.to, ["id"]);
   assert.equal(relations.get("tags")!.through, PostTag);
   assert.deepEqual(describe(PostTag).unique, [["id"], ["postId", "tagId"]]);
   assert.deepEqual(describe(User).unique, [["id"], ["email"]]);
@@ -230,11 +231,11 @@ async function make(model: ModelClass<ModelSpec>, values: Record<string, unknown
   const info = describe(model);
   made += 1;
   for (const rel of info.relations) {
-    if (rel.kind === "belongsTo" && !rel.nullable && !(rel.name in values) && ![rel.from].flat().some((f) => f in values)) {
+    if (rel.kind === "belongsTo" && !rel.nullable && !(rel.name in values) && !rel.from.some((f) => f in values)) {
       values[rel.name] = await make(rel.target);
     }
   }
-  const linked = new Set(info.relations.filter((r) => r.name in values).map((r) => r.from));
+  const linked = new Set(info.relations.filter((r) => r.name in values).flatMap((r) => r.from));
   for (const f of info.fields) {
     if (f.insert && f.default === null && !f.nullable && !(f.name in values) && !linked.has(f.name)) {
       values[f.name] = f.type === "string" || f.type === "text" ? `${f.name}-${made}` : f.type === "bool" ? false : made;

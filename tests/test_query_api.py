@@ -340,7 +340,7 @@ def test_describe_gives_fields_relations_and_unique_keys():
     from blog.models import Role
 
     post = orm.describe(Post)
-    assert post["name"] == "Post" and post["table"] == "posts" and post["primary_key"] == "id"
+    assert post["name"] == "Post" and post["table"] == "posts" and post["primary_key"] == ["id"]
     fields = {f["name"]: f for f in post["fields"]}
     assert fields["id"]["default"] == "database" and fields["id"]["primary_key"]
     assert fields["title"] == {
@@ -350,7 +350,7 @@ def test_describe_gives_fields_relations_and_unique_keys():
     }
     relations = {r["name"]: r for r in post["relations"]}
     assert relations["author"]["kind"] == "belongs_to" and relations["author"]["target"] is User
-    assert relations["author"]["from"] == "author_id" and not relations["author"]["nullable"]
+    assert relations["author"]["from"] == ["author_id"] and not relations["author"]["nullable"]
     assert relations["tags"]["kind"] == "many_to_many" and relations["tags"]["through"] is PostTag
     assert orm.describe(PostTag)["unique"] == [("id",), ("post_id", "tag_id")]
     assert orm.describe(User)["unique"] == [("id",), ("email",)]
@@ -368,12 +368,12 @@ async def make(model, n=[0], **values):
     info = orm.describe(model)
     n[0] += 1
     for rel in info["relations"]:
-        if rel["kind"] == "belongs_to" and not rel["nullable"] and rel["name"] not in values and rel["from"] not in values:
+        if rel["kind"] == "belongs_to" and not rel["nullable"] and rel["name"] not in values and not any(f in values for f in rel["from"]):
             values[rel["name"]] = await make(rel["target"])
     samples = {str: lambda f: f"{f['name']}-{n[0]}"[: f["max_length"] or None], int: lambda f: n[0], bool: lambda f: False}
     for f in info["fields"]:
         if f["insert"] and f["default"] is None and not f["nullable"] and f["name"] not in values:
-            if not any(r["from"] == f["name"] and r["name"] in values for r in info["relations"]):
+            if not any(f["name"] in r["from"] and r["name"] in values for r in info["relations"]):
                 values[f["name"]] = samples[f["python_type"]](f)
     return await model.objects.insert(**values)
 

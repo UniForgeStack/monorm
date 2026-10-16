@@ -4,7 +4,7 @@
  * two types are identical. Never run.
  */
 
-import { Decimal, exists, func, outer, param, window, type JsonValue, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
+import { describe, Decimal, exists, func, outer, param, window, type JsonValue, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
 import { Comment, Post, Priority, Profile, Role, Tag, User } from "../blog/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -439,4 +439,11 @@ export async function requiredResults() {
   Post.objects.filter(Post.id.eq(param("id"))).require().get();
   // @ts-expect-error required queries still cannot execute outer references directly
   Post.objects.filter(Post.authorId.eq(outer(User.id))).require().first();
+}
+
+export function describeKeys() {
+  const info = describe(Post);
+  same<typeof info.primaryKey, readonly string[]>();
+  same<typeof info.relations[number]["from"], readonly string[]>();
+  same<typeof info.relations[number]["to"], readonly string[]>();
 }

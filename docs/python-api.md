@@ -1300,6 +1300,7 @@ A package that changes writes and reads from outside the ORM (for example
 The ORM has no factory library. It gives the two things a factory library needs:
 
 * `orm.describe(Model)`: plain data about the model.
+  `primary_key` and relation `from`/`to` are always lists of field names in key order, even for a single field (for example, `["id"]`).
   `fields` gives per field the name, column, schema type, `python_type` (an enum field gives its enum class), `nullable`, `array` (with `element_type`), `max_length`, `primary_key`, `unique`, `default` (`"database"`, `"client"` or `None`) and `insert` (whether `insert()` takes it).
   `relations` gives the kind (`belongs_to`, `has_one`, `has_many`, `many_to_many`), the target class, the `from`/`to` fields, the `through` model and `nullable`.
   `unique` lists the unique keys, the primary key first.
