@@ -189,7 +189,7 @@ def _full_selection(qs: QuerySet[Any]) -> bool:
 
 def _derive(
     model: type[Model], loads: Iterable[_LoadItem], *, by_query: bool = False
-) -> tuple[list[str], tuple[tuple[str, ...], ...], tuple[tuple[tuple[str, ...], tuple[str, ...]], ...], tuple[_Prefetch, ...]]:
+) -> tuple[list[str], tuple[tuple[str, ...], ...], tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...], tuple[_Prefetch, ...]]:
     """The model's own fields, joined paths, fields of partial joined models and
     ``IN (...)`` loads for ``load(*loads)``. Items under one first hop share a strategy:
     a join, unless one of them needs a query (a to-many hop, a relation query set that
@@ -227,7 +227,7 @@ def _derive(
             continue
         target = model._meta.relations[hop].target
         path: RelationPath[Any] = RelationPath(model, (hop,), target)
-        # a bare path (or a plain query set) asks for the normal selection; named columns add to it
+        # a bare path (or a plain query set) asks for the normal selection; named columns add to it (the engine unites them)
         bare = any(len(h) == 1 and (isinstance(i, RelationPath) or (isinstance(i, QuerySet) and _full_selection(i))) for h, i in entries)
         base: QuerySet[Any] | None = None
         inner: list[_LoadItem] = []
@@ -248,7 +248,7 @@ def _derive(
                     base = item
             elif isinstance(item, ColumnRef):
                 column: ColumnRef[Any] = ColumnRef(target, rest, item._field)
-                if (rest or not bare) and not any(c._path == rest and c._field is item._field for c in inner if isinstance(c, ColumnRef)):
+                if not any(c._path == rest and c._field is item._field for c in inner if isinstance(c, ColumnRef)):
                     inner.append(column)
             elif rest:
                 inner.append(RelationPath(target, rest, item._target))
@@ -258,12 +258,17 @@ def _derive(
                     f"{path!r} has a column or path beside a query set that changes its rows; "
                     "put the columns in the set's own .load() or label() the set"
                 )
-        elif bare and base is not None and not _full_selection(base):
-            base = base._clone(_loads=tuple(i for i in base._loads if not (isinstance(i, ColumnRef) and not i._path)), _model_fields=None)._derived()
         if plain:
             qs = base if base is not None else target.objects
-            prefetch.append(_Prefetch(path, qs.load(*inner) if inner else qs))
-    related_fields = tuple((p, tuple(f)) for p, f in fields.items() if p not in whole)
+            if base is not None:
+                owned = {i._field.name for i in base._loads if isinstance(i, ColumnRef) and not i._path}
+                inner = [i for i in inner if not (isinstance(i, ColumnRef) and not i._path and i._field.name in owned)]
+            if inner:
+                qs = qs.load(*inner)
+            if bare and qs._model_fields is not None:
+                qs = qs._clone(_with_default_fields=True)
+            prefetch.append(_Prefetch(path, qs))
+    related_fields = tuple((p, tuple(f), p in whole) for p, f in fields.items())
     return own, tuple(related), related_fields, tuple(prefetch)
 
 
@@ -308,7 +313,7 @@ class QuerySet(Generic[M]):
     ``exclude(User.posts.published == False)`` keeps users with no unpublished post.
     """
 
-    __slots__ = ("_required", "_model_helpers", "_without_defaults", "_without_related", "_model_fields", "_related_fields", "_model", "_filters", "_order", "_limit", "_offset", "_related", "_prefetch", "_loads", "_via", "_label", "_one", "_as_prefetch", "_lock", "_db", "_from", "_joins", "_result")
+    __slots__ = ("_required", "_model_helpers", "_without_defaults", "_without_related", "_model_fields", "_with_default_fields", "_related_fields", "_model", "_filters", "_order", "_limit", "_offset", "_related", "_prefetch", "_loads", "_via", "_label", "_one", "_as_prefetch", "_lock", "_db", "_from", "_joins", "_result")
 
     def __init__(self, model: type[M]) -> None:
         self._required = False
@@ -316,8 +321,10 @@ class QuerySet(Generic[M]):
         self._without_defaults = False
         self._without_related = False
         self._model_fields: tuple[str, ...] | None = None
-        # load() through to-one paths: the fields of each partial joined model, by path.
-        self._related_fields: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
+        # _model_fields adds to the model's default selection (a bare path beside columns)
+        self._with_default_fields = False
+        # load() through to-one paths: the fields of each partial joined model, by path, and whether they add to its default selection.
+        self._related_fields: tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...] = ()
         self._model = model
         self._filters: tuple[Condition, ...] = ()
         self._order: tuple[Ordering, ...] = ()
@@ -351,6 +358,7 @@ class QuerySet(Generic[M]):
         new._without_defaults = self._without_defaults
         new._without_related = self._without_related
         new._model_fields = self._model_fields
+        new._with_default_fields = self._with_default_fields
         new._related_fields = self._related_fields
         new._model = self._model
         new._filters = self._filters
@@ -737,8 +745,12 @@ class QuerySet(Generic[M]):
             ir["without_related"] = True
         if self._model_fields is not None:
             ir["model_fields"] = list(self._model_fields)
+            if self._with_default_fields:
+                ir["with_default_fields"] = True
         if self._related_fields and op == "select" and outer is None and ctes is None:
-            ir["related_fields"] = [{"path": list(p), "fields": list(f)} for p, f in self._related_fields]
+            ir["related_fields"] = [
+                {"path": list(p), "fields": list(f), **({"with_default_fields": True} if union else {})} for p, f, union in self._related_fields
+            ]
         if self._model_helpers:
             ir["model_helpers"] = list(self._model_helpers)
         if self._from is not None:

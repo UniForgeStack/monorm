@@ -21,6 +21,7 @@ def schema(dialect, defaults=True):
             ], "relations": [{"name": "books", "kind": "many", "target": "SelectedBook", "from": "id", "to": "author_id"}]},
             {"name": "SelectedBook", "table": "selection03_books", "fields": [
                 field("title"), field("author_id", "int"), field("id", "int", primary_key=True, auto_increment=True),
+                field("isbn", nullable=True),
             ], "relations": [{"name": "author", "kind": "one", "target": "SelectedAuthor", "from": "author_id", "to": "id", "foreign_key": True, "on_delete": "cascade"}]},
         ],
         "behavior": {"schema_contract": 1, "query_defaults": [
@@ -255,4 +256,33 @@ async def test_a_joined_model_brings_its_related_default():
         shelf = await Shelf.objects.using(db).load(Shelf.book).get()
         assert shelf.book.author.name == "ann"
     finally:
+        await db.close()
+
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_load_path_with_columns_unites_the_default_selection(dialect):
+    db, Author, Book = await open_db(dialect, defaults=True)
+    a, b = Author.objects.using(db), Book.objects.using(db)
+    try:
+        ann = await a.insert(name="ann", bio="large", note="n")
+        await b.insert_many([{"title": "one", "author_id": ann.pk, "isbn": "i1"}])
+        # joined: the default selection (name, note) plus the named bio
+        for items in ((Book.author, Book.author.bio), (Book.author.bio, Book.author)):
+            book = await b.load(*items).get()
+            assert book.author.to_dict() == {"name": "ann", "note": "n", "bio": "large"}
+        # a bare path beside a set with own columns: the default selection plus those columns
+        book = await b.load(Book.author, Book.author.objects.load(Author.bio)).get()
+        assert book.author.to_dict() == {"name": "ann", "note": "n", "bio": "large"}
+        # IN query for a to-many relation, both orders
+        for items in ((Author.books, Author.books.isbn), (Author.books.isbn, Author.books)):
+            author = await a.load(*items).get()
+            assert [x.to_dict() for x in await author.books] == [{"title": "one", "isbn": "i1"}]
+        # guards: a column alone stays partial
+        book = await b.load(Book.author.bio).get()
+        assert book.author.to_dict() == {"bio": "large"}
+        author = await a.load(Author.books.isbn).get()
+        assert [x.to_dict() for x in await author.books] == [{"isbn": "i1"}]
+    finally:
+        await db.drop_tables()
         await db.close()

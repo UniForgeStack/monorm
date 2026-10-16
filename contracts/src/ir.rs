@@ -836,6 +836,9 @@ pub struct Order {
 pub struct RelatedFields {
     pub path: Vec<String>,
     pub fields: Vec<String>,
+    /// Load the model's default selection too (all public fields without one).
+    #[serde(default)]
+    pub with_default_fields: bool,
 }
 
 /// One entry per `filter()` call. Entries are AND-ed, but each is planned on its own:
@@ -846,6 +849,9 @@ pub struct Select {
     /// Public model fields; helpers are selected separately by the planner.
     #[serde(default)]
     pub model_fields: Option<Vec<String>>,
+    /// `model_fields` adds to the model's default selection (all public fields without one).
+    #[serde(default)]
+    pub with_default_fields: bool,
     /// The parameter index of each `scope.<name>` value (statement level only).
     #[serde(default)]
     pub scope: BTreeMap<String, usize>,

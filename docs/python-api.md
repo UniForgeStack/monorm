@@ -288,7 +288,7 @@ SQL text client-side, so the limit doesn't apply to it.)
 
 * A column of the model makes its instances partial: they hold the named fields, and, hidden, the primary key and the relation keys. Reading another field raises `NotLoaded`.
   Without a column of the model itself, its instances keep their normal selection: `load(Post.author)` gives whole posts.
-  A related model is partial in the same way when a column of it is named (`Post.author.name`) and no bare path ends at it (`load(Post.author, Post.author.name)` gives whole authors).
+  A related model is partial in the same way when a column of it is named (`Post.author.name`) and no bare path ends at it (`load(Post.author, Post.author.name)` gives the normal selection of the authors, which is all public fields or the schema's default selection, united with `name`).
   A bare path gives the normal selection united with the columns named beside it, and a set's own columns join the named ones.
   `load()` without items gives whole instances again (see [`selection-and-defaults.md`](selection-and-defaults.md)).
 * A path loads every relation along it: `User.posts.comments` fills `user.posts` and each post's `comments`.

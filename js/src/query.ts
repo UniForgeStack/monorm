@@ -305,7 +305,7 @@ function restOf(p: RelationPath<ModelSpec, string, readonly Hop[]>, root: ModelM
 interface Derived {
   readonly own: string[];
   readonly related: (readonly string[])[];
-  readonly relatedFields: { readonly path: readonly string[]; readonly fields: readonly string[] }[];
+  readonly relatedFields: { readonly path: readonly string[]; readonly fields: readonly string[]; readonly with_default_fields?: true }[];
   readonly prefetch: PrefetchItem[];
 }
 
@@ -369,7 +369,7 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
         else if (base && base !== item) throw new QueryError(`${String(path)} is loaded twice with different query sets; label() one of them`);
         else base = item;
       } else if (item instanceof Column) {
-        if ((rest.length || !bare) && !inner.some((c) => c instanceof Column && c.field === item.field && c.path.join(".") === rest.join("."))) {
+        if (!inner.some((c) => c instanceof Column && c.field === item.field && c.path.join(".") === rest.join("."))) {
           inner.push(new Column(target, rest, item.field, item.label));
         }
       } else if (rest.length) {
@@ -382,15 +382,22 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
           `${String(path)} has a column or path beside a query set that changes its rows; put the columns in the set's own .load() or label() the set`,
         );
       }
-    } else if (bare && base && !base.fullSelection()) {
-      base = base.withoutOwnColumns();
     }
     if (plain) {
-      const qs = base ?? (target.objects as QuerySet<ModelSpec, unknown, string, unknown, never>);
-      prefetch.push({ path, queryset: inner.length ? (qs.load as (...i: unknown[]) => typeof qs)(...inner) : qs, toAttr: undefined, one: false });
+      let qs = base ?? (target.objects as QuerySet<ModelSpec, unknown, string, unknown, never>);
+      if (base) {
+        const owned = (base.state.loads ?? []).filter((i) => i instanceof Column && !i.path.length).map((i) => (i as Column<unknown, string>).field.ir);
+        for (let i = inner.length - 1; i >= 0; i--) {
+          const c = inner[i]!;
+          if (c instanceof Column && !c.path.length && owned.includes(c.field.ir)) inner.splice(i, 1);
+        }
+      }
+      if (inner.length) qs = (qs.load as (...i: unknown[]) => typeof qs)(...inner);
+      if (bare && qs.state.modelFields !== undefined) qs = qs.withDefaultFields();
+      prefetch.push({ path, queryset: qs, toAttr: undefined, one: false });
     }
   }
-  const relatedFields = [...fields.entries()].filter(([k]) => !whole.has(k)).map(([, v]) => v);
+  const relatedFields = [...fields.entries()].map(([k, v]) => (whole.has(k) ? { ...v, with_default_fields: true as const } : v));
   return { own, related, relatedFields, prefetch };
 }
 
@@ -497,8 +504,10 @@ export interface QueryState {
   readonly withoutDefaults: boolean;
   readonly withoutRelated: boolean;
   readonly modelFields: readonly string[] | undefined;
+  /** `modelFields` adds to the model's default selection (a bare path beside columns). */
+  readonly withDefaultFields?: boolean;
   /** `load()` through to-one paths: the fields of each partial joined model, IR names. */
-  readonly relatedFields?: readonly { readonly path: readonly string[]; readonly fields: readonly string[] }[];
+  readonly relatedFields?: readonly { readonly path: readonly string[]; readonly fields: readonly string[]; readonly with_default_fields?: true }[];
   readonly filters: readonly Node[];
   readonly order: readonly Ordering<string, unknown>[];
   readonly limit: number | ParamRef<string> | undefined;
@@ -716,10 +725,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** @internal The normal selection plus nested loads: drops the set's own columns. */
-  withoutOwnColumns(): this {
-    const loads = (this.state.loads ?? []).filter((i) => !(i instanceof Column && !i.path.length));
-    return this.clone({ loads, modelFields: undefined }).derived();
-  }
+  withDefaultFields(): this { return this.clone({ withDefaultFields: true }); }
 
   /** @internal An unlabeled set that loads the target's normal selection and nothing else of its own. */
   fullSelection(): boolean {
@@ -996,7 +1002,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const ir: IR = { op, model: this.rootName() };
     if (s.withoutDefaults) ir["without_defaults"] = true;
     if (s.withoutRelated) ir["without_related"] = true;
-    if (s.modelFields !== undefined) ir["model_fields"] = s.modelFields;
+    if (s.modelFields !== undefined) {
+      ir["model_fields"] = s.modelFields;
+      if (s.withDefaultFields) ir["with_default_fields"] = true;
+    }
     if (s.relatedFields?.length && op === "select" && outer === undefined && ctes === undefined) ir["related_fields"] = s.relatedFields;
     if (s.modelHelpers?.length) ir["model_helpers"] = s.modelHelpers;
     if (s.from) {
