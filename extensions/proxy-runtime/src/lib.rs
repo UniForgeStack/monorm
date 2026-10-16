@@ -9,6 +9,14 @@ use serde_json::Value;
 pub struct PreparedProxy {
     pub model: String,
     pub fields: Vec<PreparedField>,
+    pub partition: Option<PreparedPartition>,
+}
+#[derive(Clone, Debug)]
+pub struct PreparedPartition {
+    pub table: String,
+    pub column: String,
+    /// SQL literals from validated schema values, never query input.
+    pub values: String,
 }
 #[derive(Clone, Debug)]
 pub struct PreparedField {
@@ -39,6 +47,16 @@ pub struct Warning {
 pub fn prepare(model: &str, fields: &[FieldIr], enums: &[EnumIr], proxy: Option<&ProxyModel>) -> Result<PreparedProxy, String> {
     let mut prepared = PreparedProxy { model: model.into(), ..Default::default() };
     let Some(proxy) = proxy else { return Ok(prepared) };
+    if let Some(p) = &proxy.partition {
+        let field = fields.iter().find(|f| f.name == p.field).ok_or_else(|| format!("{model}: unknown partition field {}", p.field))?;
+        if p.values.is_empty() { return Err(format!("{model}: empty partition values")); }
+        let values = p.values.iter().map(|v| match v {
+            Value::String(s) => Ok(format!("'{}'", s.replace('\'', "''"))),
+            Value::Number(_) | Value::Bool(_) => Ok(v.to_string()),
+            _ => Err(format!("{model}: invalid partition literal")),
+        }).collect::<Result<Vec<_>, _>>()?.join(", ");
+        prepared.partition = Some(PreparedPartition { table: p.table.clone(), column: field.column.clone(), values });
+    }
     let mut seen = std::collections::BTreeSet::new();
     for contract in &proxy.fields {
         if !seen.insert(&contract.field) { return Err(format!("{model}: duplicate proxy shape field {}", contract.field)); }

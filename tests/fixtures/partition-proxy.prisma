@@ -1,0 +1,43 @@
+enum RewardKind {
+ PERCENT @map("percent")
+ FIXED @map("fixed")
+ PRICE @map("price")
+ @@storage(text)
+}
+model Reward {
+ id Int @default(autoincrement())
+ kind RewardKind
+ shop Int
+ content_hash String @default("")
+ percent Int?
+ amount Int?
+ price Int?
+ deleted DateTime?
+ @@id([id, kind])
+ @@map("partition_proxy_reward")
+ @@partition(list: [kind])
+ @@index([shop])
+}
+model PercentageReward {
+ percent Int
+ @@proxy.of(Reward)
+ @@proxy.fields(exclude: ["kind", "amount", "price"])
+ @@partition.values([PERCENT])
+ @@map("partition_proxy_percent")
+ @@check("percent IS NOT NULL AND percent BETWEEN 0 AND 100 AND amount IS NULL AND price IS NULL")
+ @@index([shop, content_hash], unique: true, where: raw("deleted IS NULL AND content_hash <> ''"))
+ @@comment("percentage rewards")
+}
+model FixedReward {
+ amount Int
+ @@proxy.of(Reward)
+ @@proxy.fields(exclude: ["kind", "percent", "price"])
+ @@partition.values([FIXED])
+ @@map("partition_proxy_fixed")
+ @@check("amount IS NOT NULL AND amount >= 0 AND percent IS NULL AND price IS NULL")
+}
+partition partition_proxy_price {
+of = Reward
+values = [PRICE]
+@@check("price IS NOT NULL AND price >= 0")
+}
