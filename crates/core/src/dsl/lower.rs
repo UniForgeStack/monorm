@@ -1568,6 +1568,9 @@ fn lower_partitions(items: &[Item], ir: &mut SchemaIr) -> Result<()> {
                     value(v, field)
                 }).collect::<Result<Vec<_>>>().map(|v| v.join(", "))
             };
+            if matches!(get("default"), Some(Value::Bool(false))) {
+                return err(pos, format!("partition {name}: use `default = true` or remove it"));
+            }
             let allowed: &[&str] = if matches!(get("default"), Some(Value::Bool(true))) { &["of", "default"] }
                 else { match key.strategy.as_str() { "list" => &["of", "values"], "range" => &["of", "from", "to"], _ => &["of", "modulus", "remainder"] } };
             for (k, _, _) in props { if !allowed.contains(&k.as_str()) { return err(pos, format!("partition {name}: {k} does not match {} strategy", key.strategy)); } }

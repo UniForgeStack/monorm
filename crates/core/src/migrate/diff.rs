@@ -280,6 +280,69 @@ fn creation_order<'a>(tables: &[&'a Table]) -> (Vec<&'a Table>, Vec<(String, For
     (order.into_iter().map(|i| tables[i]).collect(), deferred)
 }
 
+/// Rename complete column identifiers without touching literals or longer names.
+fn rename_partition_column(sql: &str, from: &str, to: &str) -> String {
+    let mut out = String::new();
+    let mut chars = sql.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        // Keep dollar-quoted literals and comments opaque as well as ordinary strings.
+        let rest = &sql[start..];
+        let opaque_end = if rest.starts_with("--") {
+            Some(start + rest.find('\n').unwrap_or(rest.len()))
+        } else if rest.starts_with("/*") {
+            let (mut depth, mut end) = (1, start + 2);
+            while depth > 0 && end < sql.len() {
+                if sql[end..].starts_with("/*") { depth += 1; end += 2; }
+                else if sql[end..].starts_with("*/") { depth -= 1; end += 2; }
+                else { end += sql[end..].chars().next().unwrap().len_utf8(); }
+            }
+            Some(end)
+        } else if c == '$' {
+            rest[1..].find('$').and_then(|i| {
+                let tag = &rest[1..i + 1];
+                if !tag.chars().all(|c| c.is_alphanumeric() || c == '_') { return None; }
+                let delimiter = &rest[..i + 2];
+                rest[delimiter.len()..].find(delimiter).map(|end| start + delimiter.len() * 2 + end)
+            })
+        } else { None };
+        if let Some(end) = opaque_end {
+            out.push_str(&sql[start..end]);
+            while chars.peek().is_some_and(|(i, _)| *i < end) { chars.next(); }
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            let mut end = start + c.len_utf8();
+            while let Some((i, ch)) = chars.next() {
+                end = i + ch.len_utf8();
+                if ch == c {
+                    if chars.peek().is_some_and(|(_, next)| *next == c) {
+                        end = chars.next().unwrap().0 + c.len_utf8();
+                    } else { break; }
+                }
+            }
+            let token = &sql[start..end];
+            if c == '"' && token == super::pg::ident(from) { out.push_str(&super::pg::ident(to)); }
+            else { out.push_str(token); }
+        } else if c.is_alphabetic() || c == '_' {
+            let mut end = start + c.len_utf8();
+            while let Some(&(i, ch)) = chars.peek() {
+                if !(ch.is_alphanumeric() || ch == '_' || ch == '$') { break; }
+                end = i + ch.len_utf8();
+                chars.next();
+            }
+            let token = &sql[start..end];
+            // Unquoted PostgreSQL identifiers fold to lowercase. A function with
+            // the same name is not a column reference.
+            if token.to_lowercase() == from && !sql[end..].trim_start().starts_with('(') {
+                if to.chars().enumerate().all(|(i, c)| c == '_' || c.is_ascii_lowercase() || (i > 0 && c.is_ascii_digit())) {
+                    out.push_str(to);
+                } else { out.push_str(&super::pg::ident(to)); }
+            } else { out.push_str(token); }
+        } else { out.push(c); }
+    }
+    out
+}
+
 /// Operations turning `old` into `new`. `renames` maps new names to old ones.
 pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
     let mut changed = HashSet::new();
@@ -298,7 +361,7 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
             }
             for c in &owner.columns {
                 if let Some(from) = renames.columns.get(&(owner.name.clone(), c.name.clone())) {
-                    *key = key.replace(&super::pg::ident(from), &super::pg::ident(&c.name));
+                    *key = rename_partition_column(key, from, &c.name);
                 }
             }
         }
