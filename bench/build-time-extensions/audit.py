@@ -26,7 +26,7 @@ for label,workspace in [('disabled',args.disabled/'after'),('enabled',args.contr
         record['artifact']=json.loads((workspace/'artifact.json').read_text())
         record['execution_sha256']=hashlib.sha256(source.encode()).hexdigest()
     records[label]=record
-for path in ['core/src/schema.rs','engine/src/plan.rs','engine/src/exec.rs','engine/src/lib.rs']:
+for path in ['crates/core/src/schema.rs','crates/engine/src/plan.rs','crates/engine/src/exec.rs','crates/engine/src/lib.rs']:
     source=(args.disabled/'after'/path).read_text()
     records.setdefault('conditional_sources',{})[path]={'sha256':hashlib.sha256(source.encode()).hexdigest(),'composition_cfg_sites':source.count('#[cfg(feature = "composition")]')}
 records['scope']='Dependency trees prove selected runtime dependencies. Source cfg sites and generated direct calls are structural evidence; timing and separate allocation probes provide execution evidence. No claim of identical assembly is made.'

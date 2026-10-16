@@ -9,9 +9,9 @@ name = "orm_node"
 crate-type = ["cdylib"]
 
 [dependencies]
-orm-core = { path = "../../core", default-features = false }
-orm-engine = { path = "../../engine", default-features = false }
-orm-cli = { path = "../../cli", optional = true, default-features = false }
+orm-core = { path = "../../crates/core", default-features = false }
+orm-engine = { path = "../../crates/engine", default-features = false }
+orm-cli = { path = "../../crates/cli", optional = true, default-features = false }
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt", "serde-json"] }
 napi-derive = "3"
 sea-query = { version = "1.0", default-features = false, features = ["with-chrono", "with-json", "with-uuid", "with-bigdecimal", "postgres-array", "thread-safe", "hashable-value"] }

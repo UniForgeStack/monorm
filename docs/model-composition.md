@@ -4,7 +4,7 @@ A composed model stores its own fields in its own table and gets the fields of i
 The child primary key is also a foreign key to the parent.
 One parent row can have more than one child: a person can be an employee and a customer at the same time.
 
-**Enable:** select the `orm-model-composition` crate (`model-composition/`) in your build.
+**Enable:** select the `orm-model-composition` crate (`extensions/model-composition/`) in your build.
 See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
 
 ## Schema

@@ -22,8 +22,8 @@ A schema that uses an extension attribute needs a build with that extension.
 |---|---|---|---|
 | proxy-models | `extensions/proxy` (`orm-proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](proxy-models.md) |
 | query-defaults | `extensions/query-defaults/` (`orm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](selection-and-defaults.md) |
-| model-composition | `model-composition/` (`orm-model-composition`) | `@@composition.model` | [model-composition.md](model-composition.md) |
-| file-storage | `storage/orm-extension` (`orm-file-storage-extension`) | `@storage.file` | [file-storage.md](file-storage.md) |
+| model-composition | `extensions/model-composition/` (`orm-model-composition`) | `@@composition.model` | [model-composition.md](model-composition.md) |
+| file-storage | `extensions/file-storage` (`orm-file-storage-extension`) | `@storage.file` | [file-storage.md](file-storage.md) |
 | generic-relations | `extensions/generic` (`orm-generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](generic-identities.md) |
 
 [build-time-extensions.md](build-time-extensions.md#select-feature-extensions) shows how to select them, build, and package the result.

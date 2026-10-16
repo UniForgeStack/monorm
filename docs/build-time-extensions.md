@@ -87,7 +87,7 @@ Each is a crate that you put in `dependencies`; its manifest capability turns on
 | proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](proxy-models.md) |
 | query-defaults | `"query_defaults": {"package": "orm-query-defaults", "path": "extensions/query-defaults"}` | [selection-and-defaults.md](selection-and-defaults.md) |
 | model-composition | `"composition": {"package": "orm-model-composition", "path": "model-composition"}` | [model-composition.md](model-composition.md) |
-| file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "storage/orm-extension"}` | [file-storage.md](file-storage.md) |
+| file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](file-storage.md) |
 | generic-relations | `"generic": {"package": "orm-generic", "path": "extensions/generic"}` | [generic-identities.md](generic-identities.md) |
 
 Paths are relative to the repository root; write them relative to your configuration file.
@@ -148,7 +148,7 @@ Existing package build/install tools handle the platform library suffix and Pyth
 Rebuilding an emitted workspace requires its composition environment paths:
 `ORM_CORE_COMPOSITION`, and for native behaviors `ORM_ENGINE_COMPOSITION`, `ORM_PYTHON_METHODS`, `ORM_NODE_METHODS`.
 A generated build guard rejects changed recorded configuration/source inputs and asks for a fresh frontend output.
-The guard reads `core/composition-inputs.json` from its current workspace,
+The guard reads `crates/core/composition-inputs.json` from its current workspace,
 so revisiting an older profile through a shared Cargo cache retains the correct composition and stale-input checks.
 Use the frontend for a changed selection rather than editing generated files.
 

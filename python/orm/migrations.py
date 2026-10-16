@@ -8,9 +8,9 @@ A migrations directory holds one folder per migration::
             down.sql        # reverse DDL
             snapshot.json   # the database schema after up.sql
 
-Generating a migration (the Rust core: ``core/src/migrate``) diffs the schema against
+Generating a migration (the Rust core: ``crates/core/src/migrate``) diffs the schema against
 the newest ``snapshot.json``, so it needs no database. The SQL is plain DDL and can be
-edited before it is applied. Applying and reverting (``engine/src/migrate.rs``) records
+edited before it is applied. Applying and reverting (``crates/engine/src/migrate.rs``) records
 each migration with a checksum in the ``orm_migrations`` table and refuses to continue
 if an applied file changed. Both are the same Rust code the ``orm`` command line and the
 TypeScript package run, so every tool writes and applies the same files. A migration

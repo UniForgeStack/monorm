@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * `npx orm`: the `orm` command line, the same Rust code as the standalone `orm` binary
- * and `python -m orm` (`cli/`). See `npx orm --help`.
+ * and `python -m orm` (`crates/cli/`). See `npx orm --help`.
  *
  * The schema file and migrations directory come from `--schema` / `--dir`, or from the
  * `"orm"` key of `package.json` (`{"schema": "schema.prisma", "migrations":

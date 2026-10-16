@@ -6,11 +6,11 @@ publish = false
 description = "Selected soft-delete compiler for ORM: delete triggers or ORM-only soft deletes"
 
 [dependencies]
-orm-contracts = { path = "../../contracts" }
+orm-contracts = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [dev-dependencies]
-orm-core = { path = "../../core" }
+orm-core = { path = "../../crates/core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [package.metadata.orm-extension]

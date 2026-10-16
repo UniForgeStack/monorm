@@ -7,15 +7,15 @@ node_modules/
 *.node
 js/dist/
 
-storage/typescript/dist/
-storage/python/build/
-storage/python/src/*.egg-info/
+extensions/file-storage/typescript/dist/
+extensions/file-storage/python/build/
+extensions/file-storage/python/src/*.egg-info/
 .storage-venv/
 .storage-core-venv/
-storage/artifacts/
-storage/integration/typescript/dist/
-storage/integration/python/build/
-storage/integration/python/src/*.egg-info/
+extensions/file-storage/artifacts/
+extensions/file-storage/integration/typescript/dist/
+extensions/file-storage/integration/python/build/
+extensions/file-storage/integration/python/src/*.egg-info/
 .verification/
 # Local distribution build artifacts.
 build/

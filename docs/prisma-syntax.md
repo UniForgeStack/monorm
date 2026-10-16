@@ -1,6 +1,6 @@
 # Prisma-compatible schema syntax (design)
 
-Status: implemented in `core/src/dsl/`, which reads only `.prisma` files; the `.orm`
+Status: implemented in `crates/core/src/dsl/`, which reads only `.prisma` files; the `.orm`
 syntax is gone. The language reference is [`schema.md`](schema.md). This document
 records why the syntax looks the way it does and how the `.orm` syntax maps onto it.
 
@@ -334,12 +334,12 @@ Where the mapping above leaves something open:
 
 ## Migrations
 
-The migrator stays ours, in Rust (`core/src/migrate/`), and reads only our IR, so it
+The migrator stays ours, in Rust (`crates/core/src/migrate/`), and reads only our IR, so it
 handles triggers, checks, exclusions and functions like any other object. Prisma's
 engine code is a reference, not a dependency:
 
 * Live-database introspection (`orm pull`, drift detection) is ours too, in
-  `engine/src/introspect.rs`: it reads `pg_catalog`, including `pg_trigger` and
+  `crates/engine/src/introspect.rs`: it reads `pg_catalog`, including `pg_trigger` and
   `pg_proc`. `schema-engine/sql-schema-describer/src/postgres.rs` in
   `prisma/prisma-engines` (Apache-2.0) shows the catalog queries, but the crate itself
   depends on Prisma's `psl` and `quaint`, does not read triggers, and keeps only the

@@ -12,9 +12,9 @@
  *     snapshot.json   the database schema after up.sql
  * ```
  *
- * Generating a migration (`core/src/migrate`) diffs the schema against the newest
+ * Generating a migration (`crates/core/src/migrate`) diffs the schema against the newest
  * `snapshot.json`, so it needs no database. Applying and reverting
- * (`engine/src/migrate.rs`) records each migration with a checksum and refuses to
+ * (`crates/engine/src/migrate.rs`) records each migration with a checksum and refuses to
  * continue if an applied file changed. Both are the Rust code the `orm` command line and
  * the Python package run too.
  *

@@ -31,8 +31,8 @@ dependency() {
   case $1 in
     proxy-models) echo '"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}' ;;
     query-defaults) echo '"query_defaults":{"package":"orm-query-defaults","path":"'"$ROOT"'/extensions/query-defaults"}' ;;
-    model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/model-composition"}' ;;
-    file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/storage/orm-extension"}' ;;
+    model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}' ;;
+    file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}' ;;
     generic-relations) echo '"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}' ;;
     updated-at) echo '"timestamps":{"package":"orm-timestamps","path":"'"$ROOT"'/extensions/timestamps"}' ;;
     soft-delete) echo '"soft_delete":{"package":"orm-soft-delete","path":"'"$ROOT"'/extensions/soft-delete"}' ;;
@@ -59,17 +59,17 @@ mkdir -p "$LOGS"
 VENV=$WORK/venv
 if [ ! -x "$VENV/bin/python" ]; then uv venv -q --python "${PYTHON:-python3}" "$VENV" || exit 1; fi
 PY=$VENV/bin/python
-uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/storage/python" -e "$ROOT/storage/integration/python" || exit 1
+uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/python" -e "$ROOT/extensions/file-storage/integration/python" || exit 1
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 (cd "$ROOT/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
 
 # Suites that do not depend on an artifact.
-step storage rust-reference sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/storage/reference/Cargo.toml'"
-step storage rust-extension sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/storage/orm-extension/Cargo.toml'"
-step storage python "$PY" -m pytest -q -p no:cacheprovider "$ROOT/storage/python/tests" "$ROOT/storage/integration/python/tests"
-step storage typescript sh -c "cd '$ROOT/storage/typescript' && npm install --no-audit --no-fund -s && npm test"
-step storage typescript-integration sh -c "cd '$ROOT/storage/integration/typescript' && npm install --no-audit --no-fund -s && npm test"
+step storage rust-reference sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/extensions/file-storage/reference/Cargo.toml'"
+step storage rust-extension sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/extensions/file-storage/Cargo.toml'"
+step storage python "$PY" -m pytest -q -p no:cacheprovider "$ROOT/extensions/file-storage/python/tests" "$ROOT/extensions/file-storage/integration/python/tests"
+step storage typescript sh -c "cd '$ROOT/extensions/file-storage/typescript' && npm install --no-audit --no-fund -s && npm test"
+step storage typescript-integration sh -c "cd '$ROOT/extensions/file-storage/integration/typescript' && npm install --no-audit --no-fund -s && npm test"
 
 build() {
   local artifact=$1 dir=$WORK/$1 deps="" feature
@@ -119,8 +119,8 @@ for artifact in $ARTIFACTS; do
   if has "$artifact" file-storage; then
     for url in "sqlite://:memory:" "$ORM_TEST_DATABASE_URL"; do
       db=${url%%:*}
-      step "$artifact" "storage-python-$db" env PYTHONPATH="$dir/py" ORM_PROFILE=custom FILE_STORAGE_DATABASE_URL="$url" "$PY" "$ROOT/storage/integration/tests/native_python.py"
-      step "$artifact" "storage-node-$db" env ORM_NATIVE="$dir/orm.node" FILE_STORAGE_DATABASE_URL="$url" sh -c "cd '$ROOT/storage/typescript' && npm run -s build && cd '$ROOT/storage/integration/typescript' && npm run -s build && node --test '$ROOT/storage/integration/tests/native_node.mjs'"
+      step "$artifact" "storage-python-$db" env PYTHONPATH="$dir/py" ORM_PROFILE=custom FILE_STORAGE_DATABASE_URL="$url" "$PY" "$ROOT/extensions/file-storage/integration/tests/native_python.py"
+      step "$artifact" "storage-node-$db" env ORM_NATIVE="$dir/orm.node" FILE_STORAGE_DATABASE_URL="$url" sh -c "cd '$ROOT/extensions/file-storage/typescript' && npm run -s build && cd '$ROOT/extensions/file-storage/integration/typescript' && npm run -s build && node --test '$ROOT/extensions/file-storage/integration/tests/native_node.mjs'"
     done
   fi
 done

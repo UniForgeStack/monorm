@@ -5,7 +5,7 @@ The schema is written once, in a `.prisma` file, and every language uses it:
 ```
 schema.prisma ──▶ orm-core (Rust) ──▶ schema IR (JSON) ──▶ Python: orm.load() / generated models.py + .pyi
    ▲                 │                                └──▶ TypeScript: loads() / generated models.ts
-core/extensions/     │
+extension files      │
   postgres/*.toml    │
                      ├──▶ migrations/NNNN_name/{up.sql, down.sql, snapshot.json}
                      └──▶ PostgreSQL / SQLite DDL (create_tables)
@@ -19,17 +19,17 @@ engines: our parser, migrator and code generators do the work. The reasoning, an
 the mapping from the old `.orm` syntax, is in [`prisma-syntax.md`](prisma-syntax.md).
 
 No Python, Rust or JS class describes the schema. The parser, the extension catalog,
-the migration generator and the code generators live in the binding-free `core/` crate,
-so each language binding only loads the result. The `orm` command-line tool (`cli/`,
+the migration generator and the code generators live in the binding-free `crates/core/` crate,
+so each language binding only loads the result. The `orm` command-line tool (`crates/cli/`,
 crate `orm-cli`) uses the same crate and needs no Python.
 
 | Path | What |
 |---|---|
-| `core/src/dsl/` | parser (`syntax.rs`) and lowering to the IR (`lower.rs`) |
-| `core/src/ext.rs`, `core/extensions/postgres/*.toml` | extension files and the catalog built from them |
-| `core/src/migrate/` | snapshot model, diff, PostgreSQL / SQLite renderers, migration folders |
-| `core/src/codegen/python.rs`, `typescript.rs` | `models.py` / `models.pyi` and `models.ts` generators |
-| `cli/src/` | the `orm` CLI |
+| `crates/core/src/dsl/` | parser (`syntax.rs`) and lowering to the IR (`lower.rs`) |
+| `crates/core/src/ext.rs`, `crates/core/extensions/postgres/*.toml` | extension files and the catalog built from them |
+| `crates/core/src/migrate/` | snapshot model, diff, PostgreSQL / SQLite renderers, migration folders |
+| `crates/core/src/codegen/python.rs`, `typescript.rs` | `models.py` / `models.pyi` and `models.ts` generators |
+| `crates/cli/src/` | the `orm` CLI |
 | `python/orm/model.py` | `orm.load()` / `orm.loads()` / `orm.define()`: model classes from the IR |
 | `python/orm/migrations.py`, `__main__.py` | migration runner and `python -m orm` |
 
@@ -509,7 +509,7 @@ one column, say) are an error, so give one an explicit `name:`.
 An extension is a TOML file saying what it adds to the schema language:
 
 ```toml
-# core/extensions/postgres/vector.toml (excerpt)
+# crates/core/extensions/postgres/vector.toml (excerpt)
 name = "vector"                                   # the CREATE EXTENSION name
 index_methods = ["hnsw", "ivfflat"]
 opclasses = ["vector_l2_ops", "vector_cosine_ops"]
@@ -526,7 +526,7 @@ python = "list[float]"                            # optional type hints for gene
 typescript = "number[]"
 ```
 
-Built in (`core/extensions/postgres/`, compiled into the core):
+Built in (`crates/core/extensions/postgres/`, compiled into the core):
 
 | file | adds |
 |---|---|
@@ -599,7 +599,7 @@ python -m orm baseline                       # mark the first migration applied 
 python -m orm drift                          # exit 1 if the database differs from the last snapshot
 ```
 
-There is one command line, written in Rust (`cli/`): `python -m orm`, `npx orm` and the
+There is one command line, written in Rust (`crates/cli/`): `python -m orm`, `npx orm` and the
 standalone `orm` binary (`cargo install --path cli`) all run it, through the Python
 extension, the Node addon or on their own, so they take the same arguments, write the
 same files and apply migrations the same way. A migration with a data step is the
@@ -787,7 +787,7 @@ snapshot uses must be installed.
 has no down migrations and doesn't use sqlx. SeaORM's entity schema sync only adds
 missing tables and columns. None has triggers, exclusion constraints, extensions,
 renames or snapshot diffs, and using them would tie the migration IR to one engine.
-The runner is in Rust (`engine/src/migrate.rs`), shared by every binding.
+The runner is in Rust (`crates/engine/src/migrate.rs`), shared by every binding.
 
 ## Declarative partitions (PostgreSQL)
 

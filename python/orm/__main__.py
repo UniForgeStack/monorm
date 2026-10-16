@@ -1,5 +1,5 @@
 """``python -m orm``: the ``orm`` command line, the same Rust code as the standalone
-``orm`` binary and ``npx orm`` (``cli/``). See ``python -m orm --help``.
+``orm`` binary and ``npx orm`` (``crates/cli/``). See ``python -m orm --help``.
 
     python -m orm check
     python -m orm generate [-o models.py] [--query-set Model=module:Class]  # models.py + .pyi

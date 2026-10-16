@@ -13,8 +13,8 @@
  *
  *     ORM_NATIVE=$PWD/../../target/feature-check/all/orm.node node demo.ts sqlite://:memory:    (an absolute path)
  *
- * The file-storage section also needs `npm install && npm run build` in storage/typescript
- * and storage/integration/typescript. Each section creates its demo_* tables and drops them.
+ * The file-storage section also needs `npm install && npm run build` in extensions/file-storage/typescript
+ * and extensions/file-storage/integration/typescript. Each section creates its demo_* tables and drops them.
  *
  * The demo loads its schemas at run time (`loads`), so its models are untyped. Generated
  * models (`orm generate typescript`, see examples/blog/models.ts) type every column and row.
@@ -176,7 +176,7 @@ async function modelComposition(db: Database, m: Models): Promise<void> {
 
 async function fileStorage(db: Database, m: Models): Promise<void> {
   // Imported by path: the storage packages are not dependencies of this example.
-  const root = new URL("../../storage/", import.meta.url);
+  const root = new URL("../../extensions/file-storage/", import.meta.url);
   let storage: Models, files: Models, model: Models;
   try {
     [storage, files, model] = await Promise.all(
@@ -184,7 +184,7 @@ async function fileStorage(db: Database, m: Models): Promise<void> {
         .map((path) => import(new URL(path, root).href)),
     );
   } catch {
-    console.log("skipped: run `npm install && npm run build` in storage/typescript and storage/integration/typescript");
+    console.log("skipped: run `npm install && npm run build` in extensions/file-storage/typescript and extensions/file-storage/integration/typescript");
     return;
   }
   const { Report } = m;

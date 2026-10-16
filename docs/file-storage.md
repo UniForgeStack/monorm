@@ -2,12 +2,12 @@
 
 A file field is a nullable `Json` column that holds a storage reference.
 The ORM uploads `Upload` values before the SQL statement and reads the column back as a `Reference`.
-The files live in a storage backend (local directory or S3) from the independent `storage/` packages.
+The files live in a storage backend (local directory or S3) from the independent `extensions/file-storage/` packages.
 
-**Enable:** select the `orm-file-storage-extension` crate (`storage/orm-extension`) in your build.
+**Enable:** select the `orm-file-storage-extension` crate (`extensions/file-storage`) in your build.
 See [build-time-extensions.md](build-time-extensions.md#select-feature-extensions).
-Install the binding helpers too: Python `orm-file-storage` (`storage/integration/python`) and `orm-storage` (`storage/python`);
-TypeScript `@orm/file-storage` (`storage/integration/typescript`) and `@orm/storage` (`storage/typescript`).
+Install the binding helpers too: Python `orm-file-storage` (`extensions/file-storage/integration/python`) and `orm-storage` (`extensions/file-storage/python`);
+TypeScript `@orm/file-storage` (`extensions/file-storage/integration/typescript`) and `@orm/storage` (`extensions/file-storage/typescript`).
 
 ## Schema
 
@@ -45,4 +45,4 @@ With `orm.loads` (no generated module), install the adapter yourself:
 - A failed SQL statement keeps the uploaded files. The error (`FileWriteError`) holds the prepared `operation`; retry with `operation.execute(...)`. The ORM never deletes a stored file.
 - `Reference` values and `None` write as ordinary JSON.
 
-The storage packages, S3 setup, recovery and the TypeScript API are in [storage/README.md](../storage/README.md) and [storage/integration/README.md](../storage/integration/README.md).
+The storage packages, S3 setup, recovery and the TypeScript API are in [extensions/file-storage/README.md](../extensions/file-storage/README.md) and [extensions/file-storage/integration/README.md](../extensions/file-storage/integration/README.md).

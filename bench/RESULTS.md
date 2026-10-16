@@ -588,7 +588,7 @@ conversions through Rust types.
 Relevant source:
 [Diesel async row-to-model mapping](https://docs.rs/diesel-async/latest/src/diesel_async/run_query_dsl/mod.rs.html),
 [Diesel async PostgreSQL execution](https://docs.rs/diesel-async/latest/src/diesel_async/pg/mod.rs.html),
-[our PostgreSQL driver](../engine/src/db/postgres.rs).
+[our PostgreSQL driver](../crates/engine/src/db/postgres.rs).
 
 The controlled buffered-versus-streamed tokio-postgres pair uses the same pool,
 SQL, prepared-statement cache, row decoder, capacity for the final model vector,

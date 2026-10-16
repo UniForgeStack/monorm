@@ -43,7 +43,7 @@ from streaming.
 
 ### 1. Stream into final results
 
-Today, [the PostgreSQL driver](../engine/src/db/postgres.rs) calls
+Today, [the PostgreSQL driver](../crates/engine/src/db/postgres.rs) calls
 `Client::query`, collects a `Vec<Row>`, and returns a boxed `RowSet`. Consumers
 then allocate and fill their final result collection. Diesel's async adapter
 uses `query_raw`, converts arriving rows into typed models, and collects those

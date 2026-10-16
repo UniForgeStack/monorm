@@ -33,9 +33,9 @@ artifact per feature extension (proxy-models, query-defaults, model-composition,
 file-storage, generic-relations, updated-at, soft-delete, optimistic-locking) and one with all of them through `orm-extension-build`;
 the extension manifests select the Cargo features, never a hand-set `--features`.
 On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
-public scripts, and once the `storage/` packages and their end-to-end scripts.
+public scripts, and once the `extensions/file-storage` packages and their end-to-end scripts.
 CI runs it (`.github/workflows/feature-check.yml`). Run it before you commit a change
-to an extension crate, `contracts/`, `extension-build/` or feature-gated host code:
+to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code:
 
 ```bash
 PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/orm_test \

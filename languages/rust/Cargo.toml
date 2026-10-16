@@ -1,0 +1,28 @@
+[package]
+name = "orm-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+orm-core = { path = "../../crates/core", default-features = false, features = ["query-defaults"] }
+orm-engine = { path = "../../crates/engine", default-features = false, features = ["query-defaults"] }
+sea-query = { version = "1.0", default-features = false }
+serde_json = "1"
+serde = "1"
+chrono = "0.4"
+uuid = "1"
+bigdecimal = "0.4"
+
+[features]
+default = ["postgres", "sqlite"]
+postgres = ["orm-engine/postgres"]
+sqlite = ["orm-engine/sqlite"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+orm-core = { path = "../../crates/core", features = ["generate-rust", "query-defaults"] }
+
+[build-dependencies]
+serde_json = "1"
+orm-core = { path = "../../crates/core", features = ["generate-rust", "query-defaults"] }

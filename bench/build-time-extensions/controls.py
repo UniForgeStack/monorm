@@ -22,7 +22,7 @@ if any(out.iterdir()) and not args.resume:
     raise SystemExit('choose an empty controls output directory')
 script = ast.parse((root / 'bench/build-time-extensions/python.py').read_text())
 source = next(ast.literal_eval(n.value) for n in script.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'SCHEMA' for t in n.targets))
-fixture = root / 'extension-build/tests/fixtures/native'
+fixture = root / 'crates/extension-build/tests/fixtures/native'
 extension_manifest = tomllib.loads((fixture / 'Cargo.toml').read_text())['package']['metadata']['orm-extension']
 target = root / 'target/extension-proof'
 env = dict(os.environ, CARGO_TARGET_DIR=str(target), PYO3_PYTHON=sys.executable)
@@ -88,10 +88,10 @@ for backend, provider in [('sqlite','sqlite'),('postgres','postgresql')]:
     metadata['builds'][f'{backend}/extension']['generated_execution_sha256'] = hashlib.sha256((extension/'engine-composition.rs').read_bytes()).hexdigest()
     metadata['builds'][f'{backend}/builtin']['handwritten_execution_sha256'] = hashlib.sha256((builtin/'engine-composition.rs').read_bytes()).hexdigest()
     for workspace in (extension, builtin):
-        engine = workspace / 'engine'
+        engine = workspace / 'crates/engine'
         (engine/'examples').mkdir(exist_ok=True)
         shutil.copy2(root/'bench/build-time-extensions/native-enabled.rs', engine/'examples/extension_probe.rs')
-        shutil.copy2(root/'extension-build/tests/public/ownership-schema.json', engine/'examples/ownership-schema.json')
+        shutil.copy2(root/'crates/extension-build/tests/public/ownership-schema.json', engine/'examples/ownership-schema.json')
         manifest = engine/'Cargo.toml'
         text = manifest.read_text().replace('\nallocation-probe = []\n','\n')
         manifest.write_text(text.replace('[features]\n','[features]\nallocation-probe = []\n'))

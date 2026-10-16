@@ -1,7 +1,7 @@
 # TypeScript API
 
 The `orm` package in `js/` is the TypeScript counterpart of the Python package. It uses the
-same schema file, the same Rust engine (`engine/`, via the N-API addon in `bindings/node`),
+same schema file, the same Rust engine (`crates/engine/`, via the N-API addon in `bindings/node`),
 the same SQL and the same migrations. Its types are meant to catch as much as possible at
 compile time: a column of the wrong model, a value of the wrong type, a relation that
 wasn't loaded, a missing `param()` value, or an `outer()` reference with no enclosing
@@ -33,7 +33,7 @@ schema, and `attach()` is a query set method.
 |---|---|
 | `js/src/` | The package: `expr.ts` (expressions, `func`, `outer` / `exists`, windows), `model.ts` (`define()`, `loads()`, `Registry`, instances), `query.ts` (`QuerySet`, related sets, `load()`, `Prepared`), `select.ts` (`select()`), `cte.ts`, `write.ts`, `build.ts` (rows → instances), `pagination.ts`, `references.ts` (reference loaders), `protection.ts` (`allowWrites`), `debug.ts` (N+1 finder), `db.ts` (pools, transactions, locks), `errors.ts`, `meta.ts`, `decimal.ts`, `native.ts` (addon loading), `migrations.ts`, `cli.ts` |
 | `bindings/node/` | Rust crate `orm-node` (napi-rs) on top of `orm-engine`: `convert.rs` (JS ↔ values, strict), `js.rs`, `lib.rs` |
-| `core/src/codegen/typescript.rs` | `orm generate typescript`: `models.ts` from the schema |
+| `crates/core/src/codegen/typescript.rs` | `orm generate typescript`: `models.ts` from the schema |
 | `js/test/` | End-to-end tests (Node and Bun), SQL shape tests, `typing/check.ts` (compile-time checks) |
 
 Node 20+ or Bun. Build and test:
@@ -803,13 +803,13 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
 
 ## Migrations and the CLI
 
-`npx orm` is the one `orm` command line (Rust, `cli/`), run through the addon: the same
+`npx orm` is the one `orm` command line (Rust, `crates/cli/`), run through the addon: the same
 program as `python -m orm` and the standalone `orm` binary, with the same commands
 (`check`, `generate`, `makemigrations [--check]`, `sqlmigrate`, `migrate`, `rollback`,
 `showmigrations`, `pull`, `baseline`, `drift`; see [`schema.md`](schema.md#migrations)).
 Under `npx`, `generate` writes TypeScript and `package.json`'s `"orm"` key is read first.
 `Migrations` and `Migrator` are the programmatic API; they call the same Rust migrator
-(`engine/src/migrate.rs`). `await pull(db)` reads a live database into a `Pulled`
+(`crates/engine/src/migrate.rs`). `await pull(db)` reads a live database into a `Pulled`
 (`schema`, `gaps`, `differences`, `write(path)`), `migrator.baseline()` marks the first
 migration applied and does not run it, and `migrator.drift()` gives the `Drift`
 (`migration`, `steps`, `gaps`) between the database and the newest snapshot

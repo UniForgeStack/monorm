@@ -25,9 +25,9 @@ composition, file fields, generic relations) have their own docs: see [README.md
 | Path | What |
 |---|---|
 | `python/orm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](schema.md)), `_profiles.py` (native profile selection) |
-| `core/` | Rust crate `orm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `orm` CLI (see [`schema.md`](schema.md)) |
-| `engine/` | Rust crate `orm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
-| `cli/` | Rust crate `orm-cli`: the `orm` command line, run as the `orm` binary, `python -m orm` and `npx orm` |
+| `crates/core/` | Rust crate `orm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `orm` CLI (see [`schema.md`](schema.md)) |
+| `crates/engine/` | Rust crate `orm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
+| `crates/cli/` | Rust crate `orm-cli`: the `orm` command line, run as the `orm` binary, `python -m orm` and `npx orm` |
 | `bindings/python/` | Rust crate `orm-python` (PyO3) on top of `orm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `orm_native_<profile>._native`; `orm._native` forwards to the selected profile |
 | `packaging/python/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation), `custom` (an extension build): [`optional-packaging.md`](optional-packaging.md) |
 | `bindings/node/`, `js/` | The TypeScript package on the same engine: [`typescript-api.md`](typescript-api.md) |
@@ -1442,7 +1442,7 @@ planner ──sea-query statement──▶ db::build(dialect) ──(SQL, [Value
   SQL the database rejects. Schema definition checks it too.
   `orm.connect(url, _disable=("ilike", "update_from_values"))` switches capabilities off,
   so the tests run those fallback paths on Postgres.
-* **Execution is per driver**, behind the traits in `engine/src/db/mod.rs`: `Driver`
+* **Execution is per driver**, behind the traits in `crates/engine/src/db/mod.rs`: `Driver`
   (a pool), `Executor` (run SQL with values, on the pool or in a transaction),
   `Transaction` (commit, rollback, savepoints via `begin()`), `RowSet` (decode rows by
   the schema's column types, straight into Python tuples). `db::connect` picks the

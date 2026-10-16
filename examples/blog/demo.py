@@ -10,7 +10,7 @@ all extensions (see docs/build-time-extensions.md, "Select feature extensions"):
     scripts/feature-check.sh all     # or the steps in that doc; then:
     PYTHONPATH=target/feature-check/all/py ORM_PROFILE=custom python examples/blog/demo.py sqlite://:memory:
 
-The file-storage section also needs `uv pip install -e storage/python -e storage/integration/python`.
+The file-storage section also needs `uv pip install -e extensions/file-storage/python -e extensions/file-storage/integration/python`.
 Each section creates its demo_* tables and drops them at the end.
 """
 
@@ -172,7 +172,7 @@ async def file_storage(db: orm.Database, m: dict[str, Any]) -> None:
         from orm_file_storage.model import install_model
         from orm_storage import LocalStorage, Registry
     except ImportError:
-        print("skipped: uv pip install -e storage/python -e storage/integration/python")
+        print("skipped: uv pip install -e extensions/file-storage/python -e extensions/file-storage/integration/python")
         return
     Report = m["Report"]
     with tempfile.TemporaryDirectory() as directory:

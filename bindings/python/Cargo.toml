@@ -9,9 +9,9 @@ name = "_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-orm-core = { path = "../../core", default-features = false }
-orm-engine = { path = "../../engine", default-features = false }
-orm-cli = { path = "../../cli", optional = true, default-features = false }
+orm-core = { path = "../../crates/core", default-features = false }
+orm-engine = { path = "../../crates/engine", default-features = false }
+orm-cli = { path = "../../crates/cli", optional = true, default-features = false }
 pyo3 = { version = "0.29", features = ["chrono", "uuid"] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 sea-query = { version = "1.0", default-features = false, features = ["with-chrono", "with-json", "with-uuid", "with-bigdecimal", "postgres-array", "thread-safe", "hashable-value"] }

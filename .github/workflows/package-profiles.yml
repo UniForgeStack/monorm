@@ -2,7 +2,7 @@ name: Native profile release checks
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['**/Cargo.toml', 'Cargo.lock', 'engine/**', 'core/**', 'bindings/**', 'packaging/**', 'python/**', 'js/**', 'pyproject.toml', '.github/workflows/package-profiles.yml']
+    paths: ['**/Cargo.toml', 'Cargo.lock', 'crates/**', 'bindings/**', 'packaging/**', 'python/**', 'js/**', 'pyproject.toml', '.github/workflows/package-profiles.yml']
   push:
     tags: ['v*']
 permissions:

@@ -5,7 +5,7 @@
  * `User.posts` is a {@link RelationPath} whose properties are the related model's
  * columns and relations, so `User.posts.createdAt.lt(yesterday)` is a condition on a
  * column reached through a relation. Nothing here talks to the database: expressions
- * compile to the IR the native engine plans (`core/src/ir.rs`).
+ * compile to the IR the native engine plans (`crates/core/src/ir.rs`).
  *
  * Three type parameters ride along every expression, checked at compile time:
  *

@@ -7,8 +7,8 @@ publish = false
 [workspace]
 
 [dependencies]
-orm-core = { path = "../../core" }
-orm-engine = { path = "../../engine" }
+orm-core = { path = "../../crates/core" }
+orm-engine = { path = "../../crates/engine" }
 sea-orm = { version = "=2.0.4", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-json", "with-chrono", "with-uuid", "with-bigdecimal", "postgres-array"] }
 sea-query = "1.0"
 serde_json = "1"

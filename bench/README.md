@@ -39,7 +39,7 @@ ORM_BENCH_URL=postgres://... cargo run --release                 # writes result
 ORM_BENCH_URL=postgres://... cargo run --release --bin diagnose
 ```
 
-A separate Cargo workspace with path dependencies on `core/` and `engine/`.
+A separate Cargo workspace with path dependencies on `crates/core/` and `crates/engine/`.
 The tables `orm_rust_compare_post` and `orm_rust_diagnose_post` must not exist before a run.
 `ORM_BENCH_OUT` sets the output file; `ORM_BENCH_SEA_FAST=1` turns off SeaORM's per-checkout health ping (a matched-setting run).
 See [`rust-compare/README.md`](rust-compare/README.md).
