@@ -22,7 +22,7 @@ impl<S: SchemaSpec> Database<S> {
             .expect("default pool lock poisoned")
             .remove(&TypeId::of::<S>());
     }
-    fn configured() -> Result<Self> {
+    pub(crate) fn configured() -> Result<Self> {
         DEFAULTS
             .get_or_init(Default::default)
             .read()
