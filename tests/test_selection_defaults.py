@@ -256,3 +256,35 @@ async def test_a_joined_model_brings_its_related_default():
         assert shelf.book.author.name == "ann"
     finally:
         await db.close()
+
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
+    ir = schema("postgres")
+    book = ir["models"][1]
+    book["fields"].append({"name": "shelf_id", "column": "shelf_id", "type": "int", "nullable": True})
+    ir["models"].append({"name": "SelectedShelf", "table": "selection03_shelves", "fields": [
+        {"name": "id", "column": "id", "type": "int", "primary_key": True, "auto_increment": True},
+    ], "relations": [{"name": "books", "kind": "many", "target": "SelectedBook", "from": "id", "to": "shelf_id"}]})
+    registry = orm.Registry()
+    classes = orm.define(ir, registry=registry)
+    db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    Author, Book, Shelf = classes["SelectedAuthor"], classes["SelectedBook"], classes["SelectedShelf"]
+    try:
+        await db.drop_tables()
+        await db.create_tables()
+        shelf = await Shelf.objects.using(db).insert()
+        shown, hidden = await Author.objects.using(db).without_defaults().insert_many(
+            [{"name": "shown", "bio": "x"}, {"name": "hidden", "bio": "x", "visible": False}]
+        ).returning()
+        await Book.objects.using(db).insert_many(
+            [{"title": "a", "author_id": shown.pk, "shelf_id": shelf.pk}, {"title": "b", "author_id": hidden.pk, "shelf_id": shelf.pk}]
+        )
+        # The hidden author is no row of the join, but its book stays an element: the default sits in the ON.
+        row = await Shelf.objects.using(db).select(
+            orm.func.array_agg(Shelf.books.author.name, order_by=Shelf.books.title), orm.func.count(Shelf.books.author)
+        ).first()
+        assert tuple(row) == (["shown", None], 1)
+    finally:
+        await db.drop_tables()
+        await db.close()

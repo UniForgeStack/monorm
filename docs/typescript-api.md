@@ -317,13 +317,21 @@ outer level and keeps all posts of a matching user; a condition that reads no co
 relation filters the parent row.
 `func.arrayAgg(expr, { orderBy, distinct, filter })` is `ARRAY_AGG`: an array with the `null`
 values kept, `null` (not `[]`) over no rows; `orderBy` fixes the element order (with `distinct`
-it must use the same expression). It works over a relation, takes no array column, is not a
+it must use the same expression). The columns of `orderBy` must be on the relation path of
+the argument; a key that is constant there, a window function, or an aggregate on that path
+throws `QueryError`. It works over a relation, takes no array column, is not a
 window function, and is PostgreSQL only. Other aggregates take no `orderBy`.
-In a `select()` without `groupBy()`, `distinct()`, `lock()`, a limit or an offset, two or
+In a `select()` without `groupBy()`, `having()`, `distinct()`, `lock()`, a limit or an offset,
+and with no window function, local aggregate or CTE, two or
 more aggregates over the same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
 `null` empty sums, per-aggregate `filter` and `distinct`); SQLite keeps scalar subqueries.
+An aggregate whose `filter` reads only the parent's own columns also stays a scalar subquery.
 Queries with a limit or offset also keep scalar subqueries, so an unindexed parent sort
 can run before computing the selected aggregates.
+An aggregate whose arguments, `orderBy` keys and `filter` follow to-one hops only
+(`func.sum(Post.author.id)`) reads a `LEFT JOIN` of the query instead of a subquery: one value per group,
+not one per row, and a `NULL` foreign key keeps its row. This holds at the query root of a read, not in an `update()`.
+The `filter` stays an `EXISTS`.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
 compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
 `.asText()` for the last step as text (`->>`, no step can follow),

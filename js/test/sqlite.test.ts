@@ -12,13 +12,19 @@ test("SQLite has no array_agg and no LATERAL join", async () => {
   try {
     await db.createTables();
     await assert.rejects(Author.objects.using(db).select({ n: func.arrayAgg(Author.name) }).scalar(), /sqlite does not support array_agg/);
-    const rows = await Author.objects.using(db).select({ id: Author.id, n: func.count(Author.books), p: func.max(Author.books.pages) }).all();
-    assert.deepEqual(rows, []);
+    const [a, b, c] = await Author.objects.using(db).insertMany([
+      { email: "a", name: "A" }, { email: "b", name: "B" }, { email: "c", name: "C" },
+    ]).returning();
+    await Book.objects.using(db).insertMany([
+      { authorId: a!.id, title: "one" }, { authorId: a!.id, title: "two", pages: 7 }, { authorId: b!.id, title: "three", pages: 3 },
+    ]);
+    const rows = await Author.objects.using(db).select({ name: Author.name, n: func.count(Author.books), p: func.max(Author.books.pages) }).orderBy(Author.name).all();
+    assert.deepEqual(rows.map((r) => [r.name, Number(r.n), r.p]), [["A", 2, 7], ["B", 1, 3], ["C", 0, null]]);
     const page = Author.objects.using(db).select({ id: Author.id, n: func.count(Author.books), p: func.max(Author.books.pages) })
       .orderBy(Author.name).limit(10).offset(1);
     assert.equal(page.inspect().statements[0]!.correlatedCount, 2);
     assert.ok(!page.sql().includes("LATERAL"));
-    assert.deepEqual(await page.all(), []);
+    assert.deepEqual((await page.all()).map((r) => [r.id, Number(r.n), r.p]), [[b!.id, 1, 3], [c!.id, 0, null]]);
   } finally {
     await db.close();
   }

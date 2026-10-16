@@ -632,18 +632,27 @@ when its row exists but its column is NULL.
   not `[]` (like `sum`). `order_by=Post.views.desc()` (or a list) fixes the element order;
   with `distinct=True` it must use the same expression. It works over a relation
   (`func.array_agg(User.posts.title, order_by=User.posts.title)`, `None` for a user without
-  posts). It does not take an array column, and it can't be a window function.
+  posts). The columns of `order_by` must be on the relation path of the argument: a key
+  that is constant there, a window function, or an aggregate on that path raises `QueryError`.
+  It does not take an array column, and it can't be a window function.
   PostgreSQL only: SQLite raises `QueryError`. The other aggregates take no `order_by`
   (their result does not depend on row order).
 * **Same-relation aggregates share one subquery.** In a `select()` (without `group_by()`,
-  `distinct()`, `lock()`, a limit or an offset), two or more aggregates over the same
+  `having()`, `distinct()`, `lock()`, a limit or an offset, and with no window function,
+  local aggregate or CTE), two or more aggregates over the same
   relation path become one
   `LEFT JOIN LATERAL (SELECT COUNT(*), SUM(...) ...)` instead of one scalar subquery each.
   The result is the same: one row per parent (no fan-out), `0` for an empty count, `None` for
   an empty sum, and each aggregate keeps its own `filter` and `distinct`. Aggregates in
   `filter()`, `order_by()` and `having()` stay scalar subqueries. SQLite has no `LATERAL`
-  and keeps the scalar subqueries. Queries with a limit or offset also keep scalar subqueries,
+  and keeps the scalar subqueries. An aggregate whose `filter` reads only the parent's own
+  columns also stays a scalar subquery. Queries with a limit or offset also keep scalar subqueries,
   so an unindexed parent sort can run before computing the selected aggregates.
+* **Aggregates over to-one paths only join.** An aggregate whose arguments, `order_by` keys and
+  `filter` follow to-one hops only (`func.sum(Post.author.id)`,
+  `func.array_agg(Post.title, order_by=Post.author.name)`) reads a `LEFT JOIN` of the query
+  instead of a subquery, so it gives one value per group, not one per row; a `NULL` foreign key
+  keeps its row. This holds at the query root of a read, not in an `update()`. The `filter` stays an `EXISTS`.
 * **String concatenation** has two forms with different `NULL` rules:
   `func.concat(a, " ", b)` is `CONCAT(...)` and reads a `NULL` part as an empty string;
   `a.concat(b)` is `a || b` and is `NULL` when either side is `NULL`.
