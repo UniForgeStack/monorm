@@ -151,3 +151,17 @@ async def test_update_keeps_the_scale_with_a_distinct_subquery(nums):
     await objects.filter(Num.id.in_(objects.select(Num.id).distinct())).update(a=Decimal("1.0"), b=Decimal("1.00"))
     row = await objects.select(Num.a, Num.b).first()
     assert tuple(map(str, row)) == ("1.0", "1.00")
+
+
+async def test_typed_read_of_a_real_column():
+    db, Num = await connect(NUM, "Num", URL)
+    try:
+        await db.execute("ALTER TABLE grp_nums ALTER COLUMN f TYPE real")
+        objects = Num.objects.using(db)
+        await objects.insert_many([{"f": 0.5}])
+        assert [n.f for n in await objects.all()] == [0.5]
+        assert await objects.select(Num.f).scalars() == [0.5]
+        assert await objects.select(func.array_agg(Num.f)).scalars() == [[0.5]]
+    finally:
+        await db.drop_tables()
+        await db.close()
