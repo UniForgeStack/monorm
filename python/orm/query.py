@@ -129,7 +129,7 @@ def _prefetch_tree(model: type[Model], items: Iterable[tuple[tuple[str, ...], _P
         if len(hops) == 1:
             node.one = node.one or p.one
             if p.queryset is not None:
-                if node.qs is not None and node.qs is not p.queryset:
+                if node.qs is not None and node.qs is not p.queryset and not (node.qs._plain_relation() and p.queryset._plain_relation()):
                     raise ValueError(f"{p.path!r} is loaded twice with different query sets; label() one of them")
                 node.qs = p.queryset
         else:
@@ -242,7 +242,7 @@ def _derive(
                 if rest:
                     assert item._via is not None
                     inner.append(item._clone(_via=RelationPath(target, rest, item._via._target)))
-                elif base is not None and base is not item:
+                elif base is not None and base is not item and not (base._plain_relation() and item._plain_relation()):
                     raise ValueError(f"{path!r} is loaded twice with different query sets; label() one of them")
                 else:
                     base = item

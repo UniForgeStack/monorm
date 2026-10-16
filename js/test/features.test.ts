@@ -669,6 +669,23 @@ test("a plain, reset or labeled set beside a column keeps its meaning", async ()
   assert.equal((users[0] as unknown as { hot: { views: number }[] }).hot[0]!.views, 50);
 });
 
+test("load the same plain set twice", async () => {
+  await seed();
+  for (const q of [
+    User.objects.load(User.posts.objects, User.posts.objects),
+    User.objects.load(User.posts.objects).load(User.posts.objects),
+  ]) {
+    const users = await q.orderBy(User.id);
+    assert.deepEqual(users.map((u) => u.posts.cached.length), [3, 1, 0]);
+  }
+  assert.throws(() => User.objects.load(User.posts.objects.load(Post.comments), User.posts.objects.load(Post.comments)), /loaded twice/);
+  assert.throws(() => User.objects.load(User.posts.objects, User.posts.objects.filter(Post.views.gt(10))), /loaded twice/);
+  assert.throws(() => User.objects.load(User.posts.objects).load(User.posts.objects.filter(Post.views.gt(10))), /loaded twice/);
+  const same = User.posts.objects.filter(Post.views.gt(10));
+  const users = await User.objects.load(same, same).orderBy(User.id);
+  assert.deepEqual(users.map((u) => u.posts.cached.length), [2, 1, 0]);
+});
+
 test("load combines plain paths and sets; withoutRelated keeps IN loads and root fields", async () => {
   await seed();
   for (const qs of [User.posts.objects, User.posts.objects.load(Post.comments)]) {

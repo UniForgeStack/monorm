@@ -366,7 +366,7 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
       plain = true;
       if (item instanceof QuerySet) {
         if (rest.length) inner.push(item.withVia(restOf(item.state.via!, target)));
-        else if (base && base !== item) throw new QueryError(`${String(path)} is loaded twice with different query sets; label() one of them`);
+        else if (base && base !== item && !(base.plainRelation() && item.plainRelation())) throw new QueryError(`${String(path)} is loaded twice with different query sets; label() one of them`);
         else base = item;
       } else if (item instanceof Column) {
         if (!inner.some((c) => c instanceof Column && c.field === item.field && c.path.join(".") === rest.join("."))) {
@@ -439,7 +439,7 @@ function prefetchTree(
     if (hops.length === 1) {
       node.one ||= p.one;
       if (p.queryset) {
-        if (node.qs && node.qs !== p.queryset) {
+        if (node.qs && node.qs !== p.queryset && !(node.qs.plainRelation() && p.queryset.plainRelation())) {
           throw new QueryError(`${String(p.path)} is loaded twice with different query sets; label() one of them`);
         }
         node.qs = p.queryset;

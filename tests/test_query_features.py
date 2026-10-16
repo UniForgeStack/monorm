@@ -682,7 +682,7 @@ async def test_relation_query_set_with_joins_and_nested_query_set(clean, observe
 
 async def test_prefetch_errors(clean):
     with pytest.raises(ValueError, match="different query sets"):
-        User.objects.load(User.posts.objects.all(), User.posts.objects.all())
+        User.objects.load(User.posts.objects.filter(Post.views > 1), User.posts.objects.filter(Post.views > 2))
     with pytest.raises(TypeError, match="relation query set"):
         User.objects.load(Post.objects.all())
     with pytest.raises(TypeError, match="relation query set"):
@@ -943,6 +943,25 @@ async def test_load_set_and_column_guards(clean):
     labeled = User.posts.objects.filter(Post.views > 10).label("hot")
     users = await User.objects.load(labeled, User.posts.views).order_by(User.id)
     assert users[0].hot[0].views == 50
+
+
+async def test_load_the_same_plain_set_twice(clean):
+    await seed()
+    for load in (
+        lambda: User.objects.load(User.posts.objects, User.posts.objects),
+        lambda: User.objects.load(User.posts.objects).load(User.posts.objects),
+    ):
+        users = await load().order_by(User.id)
+        assert [len(u.posts.cached) for u in users] == [3, 1, 0]
+    with pytest.raises(ValueError, match="loaded twice"):
+        User.objects.load(User.posts.objects.load(Post.comments), User.posts.objects.load(Post.comments))
+    with pytest.raises(ValueError, match="loaded twice"):
+        User.objects.load(User.posts.objects, User.posts.objects.filter(Post.views > 10))
+    with pytest.raises(ValueError, match="loaded twice"):
+        User.objects.load(User.posts.objects).load(User.posts.objects.filter(Post.views > 10))
+    same = User.posts.objects.filter(Post.views > 10)
+    users = await User.objects.load(same, same).order_by(User.id)
+    assert [len(u.posts.cached) for u in users] == [2, 1, 0]
 
 
 async def test_load_plain_path_and_query_and_without_related(clean):
