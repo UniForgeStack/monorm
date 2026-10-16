@@ -15,6 +15,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | [prisma-syntax.md](schema/prisma-syntax.md) | Why the schema uses Prisma syntax, and the mapping from the old `.orm` syntax |
 | [python-api.md](api/python-api.md) | The Python API: models, queries, pagination, `select()`, subqueries, windows, CTEs, writes, connections, transactions, protected writes, locks, the N+1 finder, hooks, errors |
 | [typescript-api.md](api/typescript-api.md) | The TypeScript API, with the same sections |
+| [query-set-kinds.md](api/query-set-kinds.md) | The kinds of query set, and the methods each kind leaves out |
 | [async-reference-loading.md](api/async-reference-loading.md) | Explicit to-one loaders `load_<relation>()` / `load<Relation>()` (on by default in the bindings) |
 | [optional-packaging.md](contracts/optional-packaging.md) | Native profiles (`postgres`, `sqlite`, `combined`, `tooling`, `custom`) and exact source builds |
 
