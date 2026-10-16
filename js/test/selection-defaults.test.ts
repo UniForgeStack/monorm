@@ -185,3 +185,34 @@ test("schema default order: one source per option", (t) => {
   assert.throws(() => loads(ordered.replace('"-body"', '"nope"'), { registry: new Registry() }), /order column "nope" is not a field/);
 });
 
+
+test("a missing reference is null only when the engine filtered the join", async (t) => {
+  if (!queryDefaults) {
+    t.skip("needs a native build with the query-defaults feature");
+    return;
+  }
+  const registry = new Registry();
+  const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
+  const models = define({ dialect: "sqlite", models: [
+    { name: "DAuthor", table: "d_authors", fields: [field("id", "int", { primary_key: true }), field("visible", "bool")] },
+    { name: "DBook", table: "d_books", fields: [field("id", "int", { primary_key: true }), field("author_id", "int")],
+      relations: [{ name: "author", kind: "one", target: "DAuthor", from: "author_id", to: "id", foreign_key: true }] },
+  ], behavior: { schema_contract: 1, query_defaults: [{ model: "DAuthor", filter: { t: "col", path: [], name: "visible" } }] } } as never, { registry });
+  const Author = models["DAuthor"] as any;
+  const Book = models["DBook"] as any;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    await db.execute("PRAGMA foreign_keys = OFF");
+    await Author.objects.using(db).insert({ id: 1, visible: false });
+    await Book.objects.using(db).insert({ id: 1, authorId: 1 });
+    await Book.objects.using(db).insert({ id: 2, authorId: 99 });
+    const books = Book.objects.using(db).orderBy(Book.id);
+    assert.deepEqual((await books.load(Book.author).all()).map((b: any) => b.author), [null, null]);
+    const [first, second] = await books.withoutDefaults().load(Book.author).all();
+    assert.notEqual(first.author, null);
+    assert.throws(() => second.author, NotLoaded);
+  } finally {
+    await db.close();
+  }
+});

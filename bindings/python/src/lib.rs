@@ -241,6 +241,16 @@ impl PySchema {
         migrate::create_all(&self.inner).map_err(schema_err)
     }
 
+    /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
+    fn read_flags(&self) -> String {
+        orm_engine::plan::read_flags_json(&self.inner).to_string()
+    }
+
+    /// The order the engine uses for a select IR document (JSON `[{field, desc, nulls}]`).
+    fn effective_order(&self, select_json: &str) -> PyResult<String> {
+        orm_engine::plan::effective_order_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
+    }
+
     /// The database schema as a snapshot (JSON), the format migrations store.
     fn snapshot(&self) -> PyResult<String> {
         let s = migrate::snapshot(&self.inner).map_err(schema_err)?;

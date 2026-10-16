@@ -298,7 +298,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
                 format!(
                     "S{i}:orm_client::State<{}>={}",
                     ty(f),
-                    if default_fields(ir, &m.ir.name)
+                    if default_fields(schema, &m.ir.name)
                         .is_none_or(|fields| fields.iter().any(|n| n == &f.name))
                     {
                         "Loaded"
@@ -313,7 +313,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
             .chain(relation_decls.iter().enumerate().map(|(i, d)| {
                 format!(
                     "{d}={}",
-                    normal_relation(ir, schema, &m.ir.name, i, &[])
+                    normal_relation(schema, &m.ir.name, i, &[])
                         .expect("validated finite defaults")
                 )
             }))
@@ -822,15 +822,10 @@ fn key_type(model: &str, columns: &[&str]) -> String {
     )
 }
 
-fn default_fields<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a Vec<String>> {
-    ir.behavior
-        .query_defaults
-        .iter()
-        .find(|d| d.model == name)
-        .and_then(|d| d.fields.as_ref())
+fn default_fields<'a>(schema: &'a Schema, name: &str) -> Option<&'a Vec<String>> {
+    schema.models.iter().find(|m| m.ir.name == name).and_then(|m| m.read_flags.fields.as_ref())
 }
 fn normal_relation(
-    ir: &SchemaIr,
     schema: &Schema,
     name: &str,
     index: usize,
@@ -843,9 +838,7 @@ fn normal_relation(
         .ok_or("unknown default model")?;
     let r = &m.ir.relations[index];
     let mut paths = extra.to_vec();
-    if let Some(d) = ir.behavior.query_defaults.iter().find(|d| d.model == name) {
-        paths.extend(d.related.clone());
-    }
+    paths.extend(m.read_flags.related.clone());
     let children: Vec<_> = paths
         .iter()
         .filter(|p| p.first() == Some(&r.name))
@@ -864,7 +857,7 @@ fn normal_relation(
         .fields()
         .iter()
         .map(|f| {
-            if default_fields(ir, &r.target)
+            if default_fields(schema, &r.target)
                 .is_none_or(|fields| fields.iter().any(|n| n == &f.name))
             {
                 "Loaded".to_owned()
@@ -874,7 +867,7 @@ fn normal_relation(
         })
         .collect::<Vec<_>>();
     for i in 0..target.ir.relations.len() {
-        args.push(normal_relation(ir, schema, &r.target, i, &children)?);
+        args.push(normal_relation(schema, &r.target, i, &children)?);
     }
     Ok(format!(
         "orm_client::DefaultCached<{}<{}>>",
@@ -888,16 +881,7 @@ fn path_cardinality(
     model: &crate::schema::Model,
     relation: &crate::ir::RelationIr,
 ) -> &'static str {
-    #[cfg(feature = "query-defaults")]
-    let filtered = schema
-        .models
-        .iter()
-        .any(|target| target.ir.name == relation.target && target.query_defaults.filter.is_some());
-    #[cfg(not(feature = "query-defaults"))]
-    let filtered = {
-        let _ = schema;
-        false
-    };
+    let filtered = super::reference_target_filtered(schema, &relation.target);
     if relation.kind != crate::ir::RelKind::One {
         "Many"
     } else if !relation.foreign_key

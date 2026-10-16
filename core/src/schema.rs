@@ -13,6 +13,8 @@ pub struct ReadFlags {
     pub filtered: bool,
     /// The default field list of the model, if one is set.
     pub fields: Option<Vec<String>>,
+    /// The relation paths a default read loads with it.
+    pub related: Vec<Vec<String>>,
 }
 
 pub struct Model {

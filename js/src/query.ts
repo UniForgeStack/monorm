@@ -1180,9 +1180,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** @internal The order of this read: `orderBy()`, else the schema default order, else the pk. */
   defaultOrder(): readonly Ordering<string, unknown>[] {
     if (this.state.order.length) return this.state.order;
-    const keys = this.meta.defaultOrder;
-    if (keys.length && !this.state.withoutDefaults && !this.state.from) {
-      return keys.map((k) => new Ordering(this.meta.column(this.meta.fieldByIr.get(k.field)!), k.desc ?? false, k.nulls));
+    const select = JSON.stringify({ model: this.meta.name, without_defaults: this.state.withoutDefaults, from: this.state.from ? "cte" : null });
+    const keys = JSON.parse(call(() => this.meta.registry.native().effectiveOrder(select))) as { field: string; desc: boolean; nulls: "first" | "last" | null }[];
+    if (keys.length) {
+      return keys.map((k) => new Ordering(this.meta.column(this.meta.fieldByIr.get(k.field)!), k.desc, k.nulls ?? undefined));
     }
     return this.meta.key.map((f) => this.meta.column(f).asc());
   }

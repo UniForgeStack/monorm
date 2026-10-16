@@ -856,11 +856,10 @@ class QuerySet(Generic[M]):
         if self._order:
             return self._order
         meta = self._model._meta
-        if meta.default_order and not self._without_defaults and self._from is None:
-            return tuple(
-                Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k.get("desc", False), k.get("nulls"))
-                for k in meta.default_order
-            )
+        select = {"model": meta.name, "without_defaults": self._without_defaults, "from": None if self._from is None else "cte"}
+        keys = json.loads(self._native().effective_order(json.dumps(select)))
+        if keys:
+            return tuple(Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k["desc"], k["nulls"]) for k in keys)
         return tuple(Ordering(ref, desc=False) for ref in meta.key_refs())
 
     async def _fetch(self) -> list[M]:

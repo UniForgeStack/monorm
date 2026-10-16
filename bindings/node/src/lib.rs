@@ -191,6 +191,7 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
                 js.set(o, "pk", js.number(j.pk_pos as f64)?)?;
                 js.set(o, "shape", shape_js(js, j.shape.as_ref())?)?;
                 js.set(o, "filtered", js.boolean(j.filtered)?)?;
+                js.set(o, "dangling", js.boolean(j.dangling)?)?;
                 Ok(o)
             }))?;
             js.set(obj, "joins", arr)?;
@@ -376,6 +377,18 @@ pub struct JsSchema {
 
 #[napi]
 impl JsSchema {
+    /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
+    #[napi]
+    pub fn read_flags(&self) -> String {
+        plan::read_flags_json(&self.inner).to_string()
+    }
+
+    /// The order the engine uses for a select IR document (JSON `[{field, desc, nulls}]`).
+    #[napi]
+    pub fn effective_order(&self, select_json: String) -> napi::Result<String> {
+        plan::effective_order_json(&self.inner, &select_json).map(|v| v.to_string()).map_err(engine_err)
+    }
+
     /// Inspect planned templates without executing or collecting statement events.
     #[napi]
     pub fn inspect(&self, env: &Env, op_json: String, params_: Unknown<'_>) -> napi::Result<String> {
