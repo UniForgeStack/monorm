@@ -67,7 +67,7 @@ test("every write method fails outside allowWrites and works inside", async () =
   } finally { await db.close(); }
 });
 
-test("the check is on the model the SQL writes; scopes nest; work started inside gets the scope", async () => {
+test("the check is on the model the SQL writes; scopes nest; lazy writes read the scope at await", async () => {
   const { models, db } = await blog();
   const { Post, Tag, PostTag } = models;
   try {
@@ -79,7 +79,7 @@ test("the check is on the model the SQL writes; scopes nest; work started inside
     await allowWrites([Post], () => allowWrites([Tag], () => Post.objects.using(db).filter(Post.id.eq(1)).update({ title: "b" })));
     let started!: Promise<unknown>;
     await allowWrites([Post], async () => { started = Post.objects.using(db).insert({ id: 2, title: "b" }); });
-    await started;
+    await assert.rejects(started, WriteProtected);
     await assert.rejects(allowWrites(["Post"] as never, async () => {}), TypeError);
     await assert.rejects(allowWrites([] as never, undefined as never), TypeError);
     await assert.rejects(allowWrites(Post as never, async () => {}), /takes a list of models and a function/);
@@ -91,8 +91,8 @@ test("the check is on the model the SQL writes; scopes nest; work started inside
       Post.objects.using(db).filter(Post.id.eq(1)).prepareUpdate({ title: "c" });
     });
     // Reads are unchanged, and raw SQL still writes.
-    assert.equal(await Post.objects.using(db).count(), 2);
-    assert.equal(await db.execute("UPDATE post SET title = 'raw'"), 2);
+    assert.equal(await Post.objects.using(db).count(), 1);
+    assert.equal(await db.execute("UPDATE post SET title = 'raw'"), 1);
   } finally { await db.close(); }
 });
 

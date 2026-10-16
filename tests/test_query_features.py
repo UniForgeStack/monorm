@@ -250,7 +250,8 @@ async def test_relation_count_with_an_outer_filter(clean):
     users = User.objects.order_by(User.id)
     rows = await users.select(User.name, func.count(User.posts, filter=User.name == "Alice"))
     assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
-    # beside a second aggregate of the same relation, which shares a LATERAL join
+    # beside a second aggregate of the same relation: the outer-only filter keeps its own subquery,
+    # so the lone MAX is no LATERAL group
     rows = await users.select(
         User.name, func.count(User.posts, filter=User.name == "Alice"), func.max(User.posts.views)
     )
@@ -258,6 +259,20 @@ async def test_relation_count_with_an_outer_filter(clean):
     # a to-one hop under the relation is planned inside the subquery
     rows = await users.select(User.name, func.count(User.posts, filter=User.posts.author.name == "Alice"))
     assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
+
+
+async def test_lateral_group_reads_a_to_one_join(clean):
+    (alice, bob, _), (_, a2, _, b1) = await seed()
+    c_a2, c_b1 = await Comment.objects.insert_many(
+        [{"post": a2, "author": alice, "body": "Alice"}, {"post": b1, "author": bob, "body": "Bob"}]
+    ).returning()
+    # The LATERAL group's filter reads the author's name: the to-one join must come first.
+    rows = await Post.objects.order_by(Post.id).select(
+        Post.author.name,
+        func.count(Post.comments, filter=Post.comments.body == Post.author.name),
+        func.max(Post.comments.id),
+    )
+    assert [tuple(r) for r in rows] == [("Alice", 0, None), ("Alice", 1, c_a2.id), ("Alice", 0, None), ("Bob", 1, c_b1.id)]
 
 
 async def test_relation_count_with_a_to_one_filter_under_another_relation(clean):
@@ -289,7 +304,7 @@ async def test_array_agg(clean):
     comments = await Comment.objects.select(func.array_agg(Comment.author_id, order_by=Comment.body)).scalar()
     assert comments == [bob.id, None, alice.id]
     assert await Post.objects.filter(Post.views > 1000).select(func.array_agg(Post.title)).scalar() is None
-    # Over a relation: one correlated subquery per user, None for a user without posts.
+    # Over a relation: the two aggregates share one LATERAL join, None for a user without posts.
     users = await User.objects.order_by(User.id).select(
         User.name,
         func.array_agg(User.posts.title, order_by=User.posts.views.desc()).label("titles"),
@@ -303,6 +318,65 @@ async def test_array_agg(clean):
     assert filtered == [["a1", "a3"], None, None]
 
 
+async def test_array_agg_over_a_to_one_tail_keeps_null_elements(clean):
+    await seed()
+    posts = Post.objects.order_by(Post.title)
+    names = func.array_agg(Post.comments.author.name, order_by=Post.comments.author.name)
+    # The comment without an author stays an element (NULL sorts last); a post without comments gives None.
+    assert [tuple(r) for r in await posts.select(Post.title, names)] == [
+        ("a1", None), ("a2", ["Bob", None]), ("a3", None), ("b1", ["Alice"]),
+    ]
+    # The key may sit on the relation itself: the tail is opened below it.
+    by_id = func.array_agg(Post.comments.author.name, order_by=Post.comments.id)
+    assert [r[1] for r in await posts.select(Post.title, by_id)] == [None, ["Bob", None], None, ["Alice"]]
+    # In a LATERAL group: the count of the to-one path counts its rows, not the missing author.
+    rows = await posts.select(Post.title, names, func.count(Post.comments.author))
+    assert [tuple(r) for r in rows] == [("a1", None, 0), ("a2", ["Bob", None], 1), ("a3", None, 0), ("b1", ["Alice"], 1)]
+    # The count of a plain to-one tail beside it, with a filter on the tail.
+    rows = await posts.select(Post.title, func.count(Post.comments.author, filter=Post.comments.author.name == "Bob"))
+    assert [r[1] for r in rows] == [0, 1, 0, 0]
+
+
+async def test_aggregate_over_a_to_one_key_joins_at_the_root(clean):
+    (alice, bob, _), _ = await seed()
+    by_author = func.array_agg(Post.title, order_by=[Post.author.name, Post.id])
+    assert await Post.objects.select(by_author).scalars() == [["a1", "a2", "a3", "b1"]]
+    rows = await Post.objects.order_by(Post.author_id).select(Post.author_id, by_author).group_by(Post.author_id)
+    assert [tuple(r) for r in rows] == [(alice.id, ["a1", "a2", "a3"]), (bob.id, ["b1"])]
+    # A NULL foreign key keeps its row: the LEFT JOIN gives a NULL key, which sorts last.
+    by_commenter = func.array_agg(Comment.body, order_by=[Comment.author.name, Comment.id])
+    assert await Comment.objects.select(by_commenter).scalars() == [["c3", "c1", "c2"]]
+    by_post = func.array_agg(Comment.body, order_by=[Comment.post.title, Comment.author.name, Comment.id])
+    assert await Comment.objects.select(by_post).scalars() == [["c1", "c2", "c3"]]
+
+
+async def test_aggregate_over_a_to_one_argument_gives_one_value_per_group(clean):
+    (alice, bob, _), _ = await seed()
+    assert await Post.objects.select(func.sum(Post.author.id)).scalars() == [3 * alice.id + bob.id]
+    rows = await Post.objects.order_by(Post.author_id).select(Post.author_id, func.sum(Post.author.id)).group_by(Post.author_id)
+    assert [tuple(r) for r in rows] == [(alice.id, 3 * alice.id), (bob.id, bob.id)]
+    having = Post.objects.select(Post.author_id).group_by(Post.author_id).having(func.sum(Post.author.id) > bob.id)
+    assert await having.scalars() == [alice.id]
+    assert await Comment.objects.select(func.max(Comment.post.author.name)).scalars() == ["Bob"]
+    filtered = func.sum(Post.author.id, filter=Post.author.name == "Alice")
+    assert await Post.objects.select(filtered).scalars() == [3 * alice.id]
+
+
+async def test_aggregate_over_a_to_one_path_keeps_its_guards(clean):
+    (alice, bob, _), _ = await seed()
+    # The to-one filter stays an EXISTS, and a rel aggregate stays one value per row.
+    assert await Post.objects.select(func.count(Post.id, filter=Post.author.name == "Alice")).scalars() == [3]
+    assert await Post.objects.order_by(Post.id).select(func.count(Post.author)).scalars() == [1, 1, 1, 1]
+    ordered = Post.objects.select(Post.author_id).group_by(Post.author_id).order_by(func.max(Post.author.name))
+    assert [r[0] for r in await ordered] == [alice.id, bob.id]
+    window = func.sum(Post.author.id).over(partition_by=Post.author_id)
+    rows = await Post.objects.order_by(Post.title).select(Post.title, window)
+    assert [tuple(r) for r in rows] == [("a1", 3 * alice.id), ("a2", 3 * alice.id), ("a3", 3 * alice.id), ("b1", bob.id)]
+    # An UPDATE applies no joins: its aggregate keeps the subquery.
+    await Post.objects.update(views=func.max(Post.author.id))
+    assert await Post.objects.order_by(Post.title).select(Post.views).scalars() == [alice.id] * 3 + [bob.id]
+
+
 async def test_array_agg_errors(clean):
     await seed()
     with pytest.raises(QueryError, match="takes no order_by"):
@@ -311,6 +385,53 @@ async def test_array_agg_errors(clean):
         await Post.objects.select(func.array_agg(Post.title, order_by=Post.views).over(partition_by=Post.author_id))
     with pytest.raises(QueryError, match="over relations needs all its columns on one relation path"):
         await User.objects.select(func.array_agg(User.posts.title, order_by=User.comments.body))
+
+
+async def test_array_agg_rejects_invalid_order_keys(clean):
+    await seed()
+    # An outer-only key is constant inside the subquery.
+    with pytest.raises(QueryError, match="reads no column of the relation path"):
+        await User.objects.select(func.array_agg(User.posts.title, order_by=User.name))
+    with pytest.raises(QueryError, match="can only order by its argument"):
+        await Post.objects.select(func.array_agg(Post.title, distinct=True, order_by=Post.views))
+    with pytest.raises(QueryError, match="window function"):
+        await Post.objects.select(func.array_agg(Post.title, order_by=func.row_number().over()))
+    with pytest.raises(QueryError, match="constant for each group"):
+        await Post.objects.select(func.array_agg(Post.title, order_by=func.count(Post.id)))
+    with pytest.raises(QueryError, match="constant for each group"):
+        await User.objects.select(func.array_agg(User.posts.title, order_by=func.count(User.posts)))
+    # A local argument with a to-many key.
+    with pytest.raises(QueryError, match="does not"):
+        await User.objects.select(func.array_agg(User.name, order_by=User.posts.title))
+    # Valid shapes stay valid.
+    views = await Post.objects.select(func.array_agg(Post.views + 1, distinct=True, order_by=Post.views + 1)).scalar()
+    assert views == [6, 21, 51, 101]
+    titles = await Post.objects.select(func.array_agg(Post.title, order_by=orm.expr.Literal(1))).scalar()
+    assert sorted(titles) == ["a1", "a2", "a3", "b1"]
+    cased = await Post.objects.select(
+        func.array_agg(Post.title, order_by=func.case((Post.views > 30, 0), default=1)),
+    ).scalar()
+    assert sorted(cased) == ["a1", "a2", "a3", "b1"]
+    # An aggregate key on a deeper relation path, and a key with a column on and a column off the path.
+    deeper = await User.objects.select(func.array_agg(User.name, order_by=func.count(User.posts))).scalar()
+    assert deeper == ["Carol", "Bob", "Alice"]
+    mixed = await User.objects.order_by(User.id).select(
+        User.name, func.array_agg(User.posts.title, order_by=User.posts.views + func.length(User.name)).label("t")
+    )
+    assert mixed[0].t == ["a1", "a3", "a2"]
+
+
+async def test_nested_aggregate_needs_a_deeper_path(clean):
+    await seed()
+    with pytest.raises(QueryError, match="constant for each group"):
+        await User.objects.select(func.sum(User.posts.views + func.count(User.posts)))
+    with pytest.raises(QueryError, match="constant for each group"):
+        await Post.objects.select(func.array_agg(func.sum(Post.views)))
+    with pytest.raises(QueryError, match="plain column per row"):
+        await Post.objects.select(func.sum(func.max(Post.author.id)))
+    # An inner aggregate over a deeper relation path stays valid.
+    total = await User.objects.select(func.sum(func.count(User.posts))).scalar()
+    assert total == 4
 
 
 async def test_outer_through_relation_paths(clean):
@@ -1023,3 +1144,16 @@ async def test_load_set_of_another_model_raises(clean):
         User.objects.load(Comment.objects.all())
     with pytest.raises(ValueError, match="Post.comments does not start at User"):
         User.objects.load(Post.comments.objects)
+
+
+async def test_lateral_disabled_connection_uses_scalar_subqueries(clean, observe_queries):
+    await seed()
+    db = await orm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("lateral_join",))
+    try:
+        query = User.objects.using(db).order_by(User.id).select(User.name, func.count(User.posts), func.max(User.posts.views))
+        with observe_queries(db) as events:
+            rows = await query
+        assert [tuple(r) for r in rows] == [("Alice", 3, 50), ("Bob", 1, 100), ("Carol", 0, None)]
+        assert len(events) == 1 and "LATERAL" not in events[0].sql
+    finally:
+        await db.close()

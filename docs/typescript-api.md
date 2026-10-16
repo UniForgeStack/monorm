@@ -318,13 +318,21 @@ outer level and keeps all posts of a matching user; a condition that reads no co
 relation filters the parent row.
 `func.arrayAgg(expr, { orderBy, distinct, filter })` is `ARRAY_AGG`: an array with the `null`
 values kept, `null` (not `[]`) over no rows; `orderBy` fixes the element order (with `distinct`
-it must use the same expression). It works over a relation, takes no array column, is not a
+it must use the same expression). The columns of `orderBy` must be on the relation path of
+the argument; a key that is constant there, a window function, or an aggregate on that path
+throws `QueryError`. It works over a relation, takes no array column, is not a
 window function, and is PostgreSQL only. Other aggregates take no `orderBy`.
-In a `select()` without `groupBy()`, `distinct()`, `lock()`, a limit or an offset, two or
+In a `select()` without `groupBy()`, `having()`, `distinct()`, `lock()`, a limit or an offset,
+and with no window function, local aggregate or CTE, two or
 more aggregates over the same relation path share one `LEFT JOIN LATERAL` subquery (same results: `0n` empty counts,
 `null` empty sums, per-aggregate `filter` and `distinct`); SQLite keeps scalar subqueries.
+An aggregate whose `filter` reads only the parent's own columns also stays a scalar subquery.
 Queries with a limit or offset also keep scalar subqueries, so an unindexed parent sort
 can run before computing the selected aggregates.
+An aggregate whose arguments, `orderBy` keys and `filter` follow to-one hops only
+(`func.sum(Post.author.id)`) reads a `LEFT JOIN` of the query instead of a subquery: one value per group,
+not one per row, and a `NULL` foreign key keeps its row. This holds at the query root of a read, not in an `update()`.
+The `filter` stays an `EXISTS`.
 JSON columns: `Doc.meta.get("author", "name").eq("Ann")` (`meta -> 'author' -> 'name'`,
 compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and `[1]`),
 `.asText()` for the last step as text (`->>`, no step can follow),
@@ -398,7 +406,8 @@ type error. `from()` accepts only a CTE that has the model's columns.
 ## Writes
 
 `insert()` and `insertMany()` give a statement that runs when it is awaited, once, in
-the async context where it was built (its transaction, `allowWrites` and `scope`).
+the async context where it is first awaited (its transaction, `allowWrites` and `scope`).
+A write runs in the transaction where it is awaited.
 Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return inspectable statements. They execute once when first awaited (or when `then`, `catch` or `finally` is called), as inserts do. Instance writes still return a `Promise`.
 
 * `insert(row)` gives the stored row. A field left out gets its `@client_default`
@@ -550,7 +559,7 @@ Every ORM write to a `@@protected_write` model fails outside `allowWrites(models
 The check is on the table that the SQL writes, so `post.tags.add()` needs `allowWrites([PostTag], ...)` when `PostTag` is protected.
 The scope follows the async call chain through `AsyncLocalStorage`, like the transaction: work started inside `fn` gets it.
 A nested call adds its models to the outer ones. `allowWrites` starts no transaction and gives what `fn` gives.
-A write reads the scope when it is called, not when it is awaited (Python reads it at the `await`).
+A lazy write reads the scope when it is first awaited, as Python does; instance writes start when called.
 `prepareInsert` and `prepareUpdate` also check protection, so a file field uploads nothing for a rejected write.
 Wrong arguments give a rejected promise with a `TypeError`.
 See `docs/schema.md`, "Protected writes".
