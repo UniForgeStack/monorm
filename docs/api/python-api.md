@@ -1001,6 +1001,11 @@ async with db.transaction():
     await db.on_commit(lambda: send_receipt.delay(order.id))   # after COMMIT only
 ```
 
+Nested transactions must run in stack order on their shared connection. Overlapping
+siblings (for example, `asyncio.gather`), or statements on an enclosing
+transaction while a child savepoint is open, raise `QueryError`. Run siblings one after
+the other or give each task its own outer transaction. Ordinary nesting remains allowed.
+
 `await db.on_commit(fn)` calls `fn()` after the outermost transaction on `db` commits, and awaits the result when it is awaitable.
 A rollback drops the callback. A rolled-back savepoint drops only the callbacks registered inside it.
 Outside a transaction, `fn()` runs at once.

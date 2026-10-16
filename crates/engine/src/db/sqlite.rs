@@ -92,7 +92,7 @@ impl SqliteDriver {
         let guard = self.gate.clone().lock_owned().await;
         let state = Arc::new(TxState {
             worker: self.worker.clone(), gate: Arc::new(AsyncMutex::new(())), guard: Mutex::new(Some(guard)),
-            done: AtomicBool::new(false), savepoint: None, migration, parent: Mutex::new(None),
+            savepoints: Arc::new(Mutex::new(vec![])), done: AtomicBool::new(false), savepoint: None, migration, parent: Mutex::new(None),
         });
         // State already owns the guard: cancellation queues rollback before releasing it.
         self.worker.call(move |conn| {
@@ -221,8 +221,11 @@ impl Driver for SqliteDriver {
     }
 }
 
+// Children share the operation gate and savepoint stack. Only the root owns the
+// driver guard; child states keep their parent alive until cleanup is queued.
 struct TxState {
     worker: Arc<Worker>, gate: Arc<AsyncMutex<()>>, guard: Mutex<Option<OwnedMutexGuard<()>>>,
+    savepoints: Arc<Mutex<Vec<String>>>,
     done: AtomicBool, savepoint: Option<String>, migration: bool, parent: Mutex<Option<Arc<TxState>>>,
 }
 
@@ -232,9 +235,13 @@ impl Drop for TxState {
         let guard = self.guard.lock().unwrap().take();
         let sql = self.savepoint.as_ref().map(|n| format!("ROLLBACK TO {n}; RELEASE {n}")).unwrap_or_else(|| "ROLLBACK".into());
         let migration = self.migration;
+        let savepoints = self.savepoints.clone();
+        let name = self.savepoint.clone();
         let _ = self.worker.enqueue(Box::new(move |c| {
             let _guard = guard;
-            let _ = c.execute_batch(&sql);
+            let mut stack = savepoints.lock().unwrap();
+            if super::check_savepoint(&stack, &name).is_err() { return; }
+            if c.execute_batch(&sql).is_ok() && name.is_some() { stack.pop(); }
             if migration { let _ = c.execute_batch("PRAGMA foreign_keys = ON"); }
         }));
     }
@@ -246,19 +253,27 @@ impl SqliteTx {
     async fn with<T: Send + 'static>(&self, f: impl FnOnce(&mut Connection) -> DbResult<T> + Send + 'static) -> DbResult<T> {
         let _guard = self.state.gate.lock().await;
         if self.state.done.load(Ordering::Acquire) { return Err(closed()); }
-        self.state.worker.call(f).await
+        let state = self.state.clone();
+        self.state.worker.call(move |c| {
+            // Check on the worker, in SQL queue order, including after cancellation.
+            if state.done.load(Ordering::Acquire) { return Err(closed()); }
+            super::check_savepoint(&state.savepoints.lock().unwrap(), &state.savepoint)?;
+            f(c)
+        }).await
     }
 
     async fn finish(&self, commit: bool) -> DbResult<()> {
         let _gate = self.state.gate.lock().await;
-        if self.state.done.swap(true, Ordering::AcqRel) { return Err(closed()); }
-        let guard = self.state.guard.lock().unwrap().take();
-        let parent = self.state.parent.lock().unwrap().take();
-        let name = self.state.savepoint.clone();
-        let migration = self.state.migration;
+        let state = self.state.clone();
         self.state.worker.call(move |c| {
-            let _guard = guard;
-            let _parent = parent;
+            if state.done.load(Ordering::Acquire) { return Err(closed()); }
+            let mut stack = state.savepoints.lock().unwrap();
+            super::check_savepoint(&stack, &state.savepoint)?;
+            state.done.store(true, Ordering::Release);
+            let _guard = state.guard.lock().unwrap().take();
+            let _parent = state.parent.lock().unwrap().take();
+            let name = &state.savepoint;
+            let migration = state.migration;
             let result = (|| {
                 if migration && commit {
                     let mut stmt = c.prepare("PRAGMA foreign_key_check").map_err(sqlite_err)?;
@@ -266,13 +281,14 @@ impl SqliteTx {
                         return Err(DbError { sqlstate: Some("23503".into()), ..DbError::new(ErrorKind::Integrity, "SQLite migration violates foreign key constraints") });
                     }
                 }
-                let sql = match (&name, commit) {
+                let sql = match (name, commit) {
                     (Some(n), true) => format!("RELEASE {n}"),
                     (Some(n), false) => format!("ROLLBACK TO {n}; RELEASE {n}"),
                     (None, true) => "COMMIT".into(), (None, false) => "ROLLBACK".into(),
                 };
                 c.execute_batch(&sql).map_err(sqlite_err)
             })();
+            if result.is_ok() && name.is_some() { stack.pop(); }
             if result.is_err() && name.is_none() { let _ = c.execute_batch("ROLLBACK"); }
             if migration { c.execute_batch("PRAGMA foreign_keys = ON").map_err(sqlite_err)?; }
             result
@@ -289,12 +305,23 @@ impl Executor for SqliteTx {
     fn query_text(&self, sql: String) -> BoxFuture<'_, DbResult<Vec<Vec<Option<String>>>>> { Box::pin(self.with(move |c| query_text(c, sql))) }
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move {
-            let guard = self.state.gate.clone().lock_owned().await;
+            let _gate = self.state.gate.lock().await;
             if self.state.done.load(Ordering::Acquire) { return Err(closed()); }
-            let name = format!("orm_sp_{}", self.state.worker.next_savepoint.fetch_add(1, Ordering::Relaxed));
-            let state = Arc::new(TxState { worker: self.state.worker.clone(), gate: Arc::new(AsyncMutex::new(())), guard: Mutex::new(Some(guard)), done: AtomicBool::new(false), savepoint: Some(name.clone()), migration: false, parent: Mutex::new(Some(self.state.clone())) });
-            self.state.worker.call(move |c| c.execute_batch(&format!("SAVEPOINT {name}")).map_err(sqlite_err)).await?;
-            Ok(Arc::new(SqliteTx { state }) as Arc<dyn Transaction>)
+            let parent = self.state.clone();
+            self.state.worker.call(move |c| {
+                if parent.done.load(Ordering::Acquire) { return Err(closed()); }
+                let mut stack = parent.savepoints.lock().unwrap();
+                super::check_savepoint(&stack, &parent.savepoint)?;
+                let name = format!("orm_sp_{}", parent.worker.next_savepoint.fetch_add(1, Ordering::Relaxed));
+                c.execute_batch(&format!("SAVEPOINT {name}")).map_err(sqlite_err)?;
+                stack.push(name.clone());
+                let state = Arc::new(TxState {
+                    worker: parent.worker.clone(), gate: parent.gate.clone(), guard: Mutex::new(None),
+                    savepoints: parent.savepoints.clone(), done: AtomicBool::new(false),
+                    savepoint: Some(name), migration: false, parent: Mutex::new(Some(parent.clone())),
+                });
+                Ok(Arc::new(SqliteTx { state }) as Arc<dyn Transaction>)
+            }).await
         })
     }
 }

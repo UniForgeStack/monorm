@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Migration, Migrations, Migrator } from "../src/migrations.js";
 import { test } from "node:test";
 
-import { connect, DatabaseError, getDatabase, IntegrityError, TransactionAborted, type Database } from "../src/index.js";
+import { connect, DatabaseError, getDatabase, IntegrityError, QueryError, TransactionAborted, type Database } from "../src/index.js";
 import { User } from "./blog/models.js";
 import { Author, sqliteRegistry } from "./sqlite/models.js";
 import { useDatabase } from "./helpers.js";
@@ -228,3 +228,42 @@ for (const applicationError of [false, true]) {
       }
     }));
 }
+
+test("concurrent nested transactions raise", { timeout: 10000 }, () =>
+  run(async (c) => {
+    let started!: () => void;
+    let attempted!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const finished = new Promise<void>((resolve) => { attempted = resolve; });
+    await c.db.transaction(async () => {
+      await Promise.all([
+        c.db.transaction(async () => {
+          await c.insert("first");
+          started();
+          await finished;
+        }),
+        (async () => {
+          await ready;
+          try {
+            const ownershipError = (e: unknown) => e instanceof QueryError && e.message.includes("concurrent nested transactions share one connection");
+            for (let i = 0; i < 2; i++) {
+              await assert.rejects(c.db.transaction(async () => {
+                assert.fail("overlapping sibling entered");
+              }), ownershipError);
+            }
+            await assert.rejects(c.db.execute("SELECT 1"), ownershipError);
+          } finally {
+            attempted();
+          }
+        })(),
+      ]);
+    });
+    assert.equal(await c.count(), 1);
+    await c.db.transaction(async () => {
+      for (const tag of ["one", "two"]) {
+        await c.db.transaction(() => c.db.transaction(() => c.insert(tag)));
+      }
+    });
+    assert.equal(await c.count(), 3);
+  }),
+);

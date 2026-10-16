@@ -516,6 +516,11 @@ when it throws. The current transaction follows the async call chain through
 `AsyncLocalStorage`, so queries inside it need no handle. Nested calls are savepoints.
 A transaction that is never finished is rolled back when it is garbage-collected.
 
+Nested transactions must run in stack order on their shared connection. Overlapping
+siblings (for example, `Promise.all`), or statements on an enclosing
+transaction while a child savepoint is open, raise `QueryError`. Run siblings one after
+the other or give each task its own outer transaction. Ordinary nesting remains allowed.
+
 `await db.onCommit(fn)` calls `fn()` after the outermost transaction on `db` commits, and awaits a promise result.
 A rollback drops the callback. A rolled-back savepoint drops only the callbacks registered inside it.
 Outside a transaction, `fn()` runs at once.

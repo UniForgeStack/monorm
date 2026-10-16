@@ -42,6 +42,7 @@ create_exception!(
 
 pub fn db_err(e: DbError) -> PyErr {
     let err = match e.kind {
+        ErrorKind::Query => QueryError::new_err(e.message),
         ErrorKind::Integrity => IntegrityError::new_err(e.message),
         ErrorKind::LockNotAvailable => LockNotAvailable::new_err(e.message),
         ErrorKind::TransactionAborted => TransactionAborted::new_err(e.message),

@@ -1,4 +1,5 @@
 """A failed statement marks its transaction failed, also when the block catches the error."""
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -301,3 +302,37 @@ async def test_a_nested_transaction_recovers_a_failed_related_set(linked):
                 await c.rel.set([c.bad], **c.fail)
         assert await c.count() == 1
     assert [getattr(link, c.key) for link in await c.links()] == [c.kept]
+
+
+async def test_concurrent_nested_transactions_raise(case):
+    c = case
+    started, attempted = asyncio.Event(), asyncio.Event()
+
+    async def first():
+        async with c.db.transaction():
+            await c.model.objects.using(c.db).insert(**c.make("first"))
+            started.set()
+            await attempted.wait()
+
+    async def sibling():
+        await started.wait()
+        try:
+            for _ in range(2):
+                with pytest.raises(orm.QueryError, match="concurrent nested transactions share one connection"):
+                    async with c.db.transaction():
+                        pytest.fail("overlapping sibling entered")
+            with pytest.raises(orm.QueryError, match="concurrent nested transactions share one connection"):
+                await c.db.execute("SELECT 1")
+        finally:
+            attempted.set()
+
+    # Ownership errors are rejected before SQL and do not abort the transaction.
+    async with c.db.transaction():
+        await asyncio.wait_for(asyncio.gather(first(), sibling()), timeout=5)
+    assert await count(c) == 1
+    async with c.db.transaction():
+        for tag in ("one", "two"):
+            async with c.db.transaction():
+                async with c.db.transaction():
+                    await c.model.objects.using(c.db).insert(**c.make(tag))
+    assert await count(c) == 3
