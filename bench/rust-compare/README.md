@@ -6,7 +6,7 @@ limited to one connection, on one current-thread Tokio runtime.
 
 The executable requires `ORM_BENCH_URL` pointing to a disposable PostgreSQL
 database. Run its release binary with this directory as the working directory;
-it writes `results.json`. The table `orm_rust_compare_post` must not already
+it writes `results-diesel.json` (or `ORM_BENCH_OUT`). The table `orm_rust_compare_post` must not already
 exist. The executable creates it, seeds 1,000 rows, and drops it on success.
 After a failed run, use a fresh disposable database.
 
@@ -30,7 +30,7 @@ updating 100 rows to a constant. Read rows have two integers, a title, and a
 
 The harness asserts full result equality across implementations before timing,
 including expected row counts. It warms each contender 30 times, then records
-15 batches per case, rotating contender order each round. Results include the
+16 batches per case, rotating contender order each round. Results include the
 median and every batch average in microseconds per operation. A batch is
 20–150 operations, depending on the case. PostgreSQL durability uses defaults.
 
@@ -77,3 +77,43 @@ The original five-case harness accepts `ORM_BENCH_SEA_FAST=1` to disable
 SeaORM's default per-checkout ping for a matched-setting experiment. With that
 variable omitted, it retains the original default-health-check configuration.
 The JSON records this setting. Historical result files remain available.
+
+## Environment
+
+The retained 2026-10-03 measurements used macOS ARM64, Rust 1.97.0,
+a release build with LTO, isolated Homebrew PostgreSQL 18.6, localhost TCP
+with TLS disabled, default PostgreSQL durability, one pooled connection per
+contender and one current-thread Tokio runtime. These are measured results;
+CPU model, OS version, source commit and machine load were not recorded.
+See [the result record](../RESULTS.md#current-rust-engine-versus-seaorm--2026-10-03).
+Do not substitute today's environment for missing historical metadata.
+
+Both executables now collect `commit` (`git rev-parse HEAD`), `rustc` (`rustc -V`),
+`postgres_version` (`SELECT version()`), `os` (OS and architecture) and `cpu`
+(macOS `sysctl` or Linux `/proc/cpuinfo`) before timing. The fields are at the
+JSON root, with `"unknown"` for failed reads. `database` remains a legacy nested
+query-result alias of `postgres_version`. Old JSON files are unchanged.
+
+## Reproduce
+
+Use a quiet machine. Build both binaries before timing. From the repository
+root, in Bash with the PostgreSQL client tools installed, after starting the disposable database described in
+[the benchmark guide](../README.md#disposable-database):
+
+```bash
+export ORM_BENCH_URL=postgres://postgres:postgres@localhost:55432/orm_bench
+until pg_isready -h localhost -p 55432 -U postgres -d orm_bench; do sleep 1; done
+unset CARGO_PROFILE_RELEASE_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS
+cargo build --release --manifest-path bench/rust-compare/Cargo.toml --bins
+cd bench/rust-compare
+ORM_BENCH_SEA_FAST=1 ORM_BENCH_OUT=results-matched-local.json target/release/orm-rust-compare
+ORM_BENCH_OUT=results-diagnose-local.json target/release/diagnose
+```
+
+Use the selected host port in both the readiness check and URL.
+Run the binaries sequentially, with no builds
+or other benchmarks running. The default Cargo target directory above is the
+standalone workspace's `target/`; adjust the paths if using `CARGO_TARGET_DIR`.
+Keep local output files separate from the retained results. Record whether the
+machine was loaded when reporting any measured number. These Rust-only results
+support no speed claim about the Python or TypeScript API.
