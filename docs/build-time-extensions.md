@@ -85,7 +85,7 @@ Each is a crate that you put in `dependencies`; its manifest capability turns on
 | Feature | Dependency entry (`"alias": {...}`) | Doc |
 |---|---|---|
 | proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](proxy-models.md) |
-| query-defaults | `"query_defaults": {"package": "orm-query-defaults", "path": "query-defaults"}` | [selection-and-defaults.md](selection-and-defaults.md) |
+| query-defaults | `"query_defaults": {"package": "orm-query-defaults", "path": "extensions/query-defaults"}` | [selection-and-defaults.md](selection-and-defaults.md) |
 | model-composition | `"composition": {"package": "orm-model-composition", "path": "model-composition"}` | [model-composition.md](model-composition.md) |
 | file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "storage/orm-extension"}` | [file-storage.md](file-storage.md) |
 | generic-relations | `"generic": {"package": "orm-generic", "path": "extensions/generic"}` | [generic-identities.md](generic-identities.md) |
