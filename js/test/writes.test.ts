@@ -223,7 +223,9 @@ test("getOrInsert checks the lookup", async () => {
 
 test("getOrInsert reads the primary", async () => {
   // The replica lags: it has none of the primary's rows.
-  const routed = await connect(DATABASE_URL, { replicas: [await replicaUrl("orm_s3_replica_js")], default: false, maxConnections: 2 });
+  const replica = await replicaUrl("orm_s3_replica_js");
+  assert.equal(new URL(replica).pathname, `${new URL(DATABASE_URL).pathname}_orm_s3_replica_js`);
+  const routed = await connect(DATABASE_URL, { replicas: [replica], default: false, maxConnections: 2 });
   try {
     const users = User.objects.using(routed);
     const [user, created] = await users.getOrInsert({ email: "a@x.io" }, { defaults: { name: "A" } });
@@ -384,4 +386,33 @@ test("insertMany copy rejections", async () => {
   await assert.rejects(Tag.objects.insertMany([{ name: "a" }], { copy: true, batchSize: 2 } as never), /batchSize/);
   await assert.rejects(Tag.objects.insertMany([{ name: "a" }, { name: "b", priority: 1 }], { copy: true }), /some rows only/);
   assert.equal(await Tag.objects.insertMany([], { copy: true }), 0);
+});
+
+test("replica database names are relative to the current worker database", async () => {
+  // Keep the old implementation's probe inside this worker's namespace too.
+  const worker = new URL(DATABASE_URL).pathname.slice(1);
+  const name = `${worker}_isolation_probe`;
+  const url = await replicaUrl(name);
+  assert.equal(new URL(url).pathname, `/${worker}_${name}`);
+});
+
+test("related lazy inserts join the transaction at await", async () => {
+  const db = getDatabase();
+  const author = await User.objects.insert({ email: "lazy@x.io", name: "Lazy" });
+  const post = await Post.objects.insert({ author, title: "existing", body: "b" });
+  const statements = [
+    author.posts.insert({ title: "one", body: "b" }),
+    author.posts.insertMany([{ title: "many", body: "b" }]).returning(),
+    post.tags.insert({ name: "lazy tag" }),
+  ];
+  const rollback = new Error("rollback related insert");
+  for (const statement of statements) {
+    await assert.rejects(db.transaction(async () => {
+      await statement;
+      throw rollback;
+    }), (e) => e === rollback);
+  }
+  assert.equal(await Post.objects.count(), 1);
+  assert.equal(await Tag.objects.count(), 0);
+  assert.equal(await PostTag.objects.count(), 0);
 });

@@ -33,9 +33,10 @@ export function useDatabase(): void {
  * replica that lags behind the primary. */
 export async function replicaUrl(name: string): Promise<string> {
   const db = getDatabase();
+  name = `${db.url.split("/").pop()}_${name}`;
   const url = db.url.replace(/\/[^/]*$/, `/${name}`);
   if ((await db.fetchText(`SELECT 1 FROM pg_database WHERE datname = '${name}'`)).length === 0) {
-    await db.execute(`CREATE DATABASE ${name}`);
+    await db.execute(`CREATE DATABASE "${name}"`);
   }
   const replica = await connect(url, { default: false, maxConnections: 1 });
   try {
