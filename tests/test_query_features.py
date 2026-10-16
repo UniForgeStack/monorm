@@ -337,6 +337,46 @@ async def test_array_agg_over_a_to_one_tail_keeps_null_elements(clean):
     assert [r[1] for r in rows] == [0, 1, 0, 0]
 
 
+async def test_aggregate_over_a_to_one_key_joins_at_the_root(clean):
+    (alice, bob, _), _ = await seed()
+    by_author = func.array_agg(Post.title, order_by=[Post.author.name, Post.id])
+    assert await Post.objects.select(by_author).scalars() == [["a1", "a2", "a3", "b1"]]
+    rows = await Post.objects.order_by(Post.author_id).select(Post.author_id, by_author).group_by(Post.author_id)
+    assert [tuple(r) for r in rows] == [(alice.id, ["a1", "a2", "a3"]), (bob.id, ["b1"])]
+    # A NULL foreign key keeps its row: the LEFT JOIN gives a NULL key, which sorts last.
+    by_commenter = func.array_agg(Comment.body, order_by=[Comment.author.name, Comment.id])
+    assert await Comment.objects.select(by_commenter).scalars() == [["c3", "c1", "c2"]]
+    by_post = func.array_agg(Comment.body, order_by=[Comment.post.title, Comment.author.name, Comment.id])
+    assert await Comment.objects.select(by_post).scalars() == [["c1", "c2", "c3"]]
+
+
+async def test_aggregate_over_a_to_one_argument_gives_one_value_per_group(clean):
+    (alice, bob, _), _ = await seed()
+    assert await Post.objects.select(func.sum(Post.author.id)).scalars() == [3 * alice.id + bob.id]
+    rows = await Post.objects.order_by(Post.author_id).select(Post.author_id, func.sum(Post.author.id)).group_by(Post.author_id)
+    assert [tuple(r) for r in rows] == [(alice.id, 3 * alice.id), (bob.id, bob.id)]
+    having = Post.objects.select(Post.author_id).group_by(Post.author_id).having(func.sum(Post.author.id) > bob.id)
+    assert await having.scalars() == [alice.id]
+    assert await Comment.objects.select(func.max(Comment.post.author.name)).scalars() == ["Bob"]
+    filtered = func.sum(Post.author.id, filter=Post.author.name == "Alice")
+    assert await Post.objects.select(filtered).scalars() == [3 * alice.id]
+
+
+async def test_aggregate_over_a_to_one_path_keeps_its_guards(clean):
+    (alice, bob, _), _ = await seed()
+    # The to-one filter stays an EXISTS, and a rel aggregate stays one value per row.
+    assert await Post.objects.select(func.count(Post.id, filter=Post.author.name == "Alice")).scalars() == [3]
+    assert await Post.objects.order_by(Post.id).select(func.count(Post.author)).scalars() == [1, 1, 1, 1]
+    ordered = Post.objects.select(Post.author_id).group_by(Post.author_id).order_by(func.max(Post.author.name))
+    assert [r[0] for r in await ordered] == [alice.id, bob.id]
+    window = func.sum(Post.author.id).over(partition_by=Post.author_id)
+    rows = await Post.objects.order_by(Post.title).select(Post.title, window)
+    assert [tuple(r) for r in rows] == [("a1", 3 * alice.id), ("a2", 3 * alice.id), ("a3", 3 * alice.id), ("b1", bob.id)]
+    # An UPDATE applies no joins: its aggregate keeps the subquery.
+    await Post.objects.update(views=func.max(Post.author.id))
+    assert await Post.objects.order_by(Post.title).select(Post.views).scalars() == [alice.id] * 3 + [bob.id]
+
+
 async def test_array_agg_errors(clean):
     await seed()
     with pytest.raises(QueryError, match="takes no order_by"):

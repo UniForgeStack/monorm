@@ -112,6 +112,12 @@ test("the LATERAL join comes after the to-one joins", () => {
   assert.ok(sql.indexOf('LEFT JOIN "users" AS "j') < sql.indexOf("LEFT JOIN LATERAL"));
 });
 
+test("an aggregate over a to-one key is a join at the root", () => {
+  const sql = Post.objects.select({ titles: func.arrayAgg(Post.title, { orderBy: [Post.author.name, Post.id] }) }).sql();
+  assert.equal(sql.split('LEFT JOIN "users" AS "j1"').length, 2);
+  assert.ok(!sql.includes("LATERAL") && !sql.includes("(SELECT"));
+});
+
 test("an aggregate with an outer-only filter is not a LATERAL member", () => {
   const query = User.objects.select({ name: User.name, n: func.count(User.posts, { filter: User.name.eq("Alice") }), top: func.max(User.posts.views) });
   assert.ok(!query.sql().includes("LATERAL"));

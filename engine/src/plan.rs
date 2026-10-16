@@ -294,7 +294,9 @@ fn has_local_aggregate(cut: &Cut, e: &Expr) -> bool {
                 col_paths_all(f, &mut filter_paths, &mut has_not);
             }
             paths.extend(filter_paths.into_iter().map(|p| cut.path(p)));
-            (is_aggregate(name) && rel.is_none() && paths.iter().all(|p| p.is_empty()))
+            (is_aggregate(name)
+                && ((rel.is_none() && paths.iter().all(|p| p.is_empty()))
+                    || joined_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by).is_some()))
                 || args.iter().any(|a| has_local_aggregate(cut, a))
         }
         Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => has_local_aggregate(cut, l) || has_local_aggregate(cut, r),
@@ -409,6 +411,35 @@ fn below_paths<'e>(
     }
 }
 
+/// The to-one paths an aggregate reads at the query root, to join there instead of opening a
+/// subquery: `None` unless it has no `rel`, no path (argument, key or filter) with a to-many
+/// hop, and an argument or key with a non-empty path. The filter's paths are not joined.
+fn joined_paths<'e>(
+    cut: &Cut,
+    rel: Option<&[String]>,
+    args: &'e [Expr],
+    filter: Option<&'e Expr>,
+    order_by: &'e [Order],
+) -> Option<Vec<&'e [String]>> {
+    if rel.is_some() || !cut.base.is_empty() {
+        return None;
+    }
+    let (mut paths, mut has_not) = (vec![], false);
+    for a in args.iter().chain(order_by.iter().map(|o| &o.expr)) {
+        col_paths_all(a, &mut paths, &mut has_not);
+    }
+    let mut filter_paths = vec![];
+    if let Some(f) = filter {
+        col_paths_all(f, &mut filter_paths, &mut has_not);
+    }
+    if !paths.iter().chain(&filter_paths).all(|p| cut.is_to_one_from(p, 0)) {
+        return None;
+    }
+    paths.retain(|p| !p.is_empty());
+    paths.dedup();
+    (!paths.is_empty()).then_some(paths)
+}
+
 /// Whether an aggregate's filter reads columns of the cut's level only (and some column).
 fn cut_filter_is_outer(cut: &Cut, filter: Option<&Expr>) -> bool {
     let Some(f) = filter else { return false };
@@ -422,7 +453,9 @@ fn cut_filter_is_outer(cut: &Cut, filter: Option<&Expr>) -> bool {
 fn relation_aggregates(cut: &Cut, e: &Expr, out: &mut Vec<Vec<String>>) {
     match e {
         Expr::Func { name, args, rel, filter, order_by, .. } if is_aggregate(name) => {
-            if cut_filter_is_outer(cut, filter.as_deref()) {
+            if cut_filter_is_outer(cut, filter.as_deref())
+                || joined_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by).is_some()
+            {
                 return;
             }
             let below = below_paths(cut, rel.as_deref(), args, filter.as_deref(), order_by);
@@ -598,6 +631,8 @@ pub struct Planner<'s> {
     scopes: Vec<Scope>,
     /// Top-level to-one LEFT JOINs (select_related / order_by), keyed by path.
     joins: Vec<(Scope, SExpr)>,
+    /// Whether the statement being planned applies `joins`; an UPDATE or a DELETE does not.
+    applies_joins: bool,
     /// The roots of enclosing queries (alias, model), innermost last: `outer()`.
     outer: Vec<(String, usize)>,
     /// In the recursive part of a CTE: its name, and whether the query read its columns
@@ -644,6 +679,7 @@ impl<'s> Planner<'s> {
             source: String::new(),
             scopes: vec![],
             joins: vec![],
+            applies_joins: false,
             outer,
             recursive: None,
             joined: vec![],
@@ -1697,7 +1733,9 @@ impl<'s> Planner<'s> {
     /// `name(args)`. An aggregate whose arguments (or `rel`) go through relations below
     /// the current scope is computed per row, in a correlated subquery over those
     /// relations: `func.count(User.posts)` is `(SELECT COUNT(*) FROM posts WHERE
-    /// posts.author_id = users.id)`, never a JOIN that would multiply rows.
+    /// posts.author_id = users.id)`, never a JOIN that would multiply rows. The exception
+    /// is an aggregate over to-one paths only at the query root, in a statement that applies
+    /// its joins: it reads the to-one LEFT JOINs of the statement (see `joined_paths`).
     fn func(
         &mut self,
         name: &str,
@@ -1716,6 +1754,14 @@ impl<'s> Planner<'s> {
         if is_aggregate(name) {
             let base = self.scope().path.clone();
             let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
+            if self.applies_joins {
+                for path in joined_paths(&cut, rel, args, filter, order_by).unwrap_or_default() {
+                    self.ensure_join(path, "an aggregate")?;
+                }
+                if joined_paths(&cut, rel, args, filter, order_by).is_some() {
+                    return self.call(name, args, distinct, filter, order_by);
+                }
+            }
             let below = below_paths(&cut, rel, args, filter, order_by);
             if let Some(path) = below.first().map(|p| p.to_vec()) {
                 if below.iter().any(|p| *p != path.as_slice()) {
@@ -2094,6 +2140,7 @@ impl<'s> Planner<'s> {
     /// and the model's are stored as they are (`read_sql` applies when they are read).
     fn select_columns(&mut self, q: &Select, items: &[SelectItem], cte: bool) -> Result<SelectPlan> {
         self.enter(q)?;
+        self.applies_joins = true;
         if !q.select_related.is_empty() || !q.prefetch.is_empty() {
             return Err(Error::query("select() can't be combined with load() of relations"));
         }
@@ -2473,6 +2520,7 @@ impl<'s> Planner<'s> {
             return Err(Error::query("a CTE without a model is read with select(...)"));
         }
         self.enter(q)?;
+        self.applies_joins = true;
         let root = self.model(self.root);
         let alias = self.root_alias().to_owned();
         let mut stmt = Query::select();
@@ -2551,6 +2599,7 @@ impl<'s> Planner<'s> {
 
     fn sliced_inner(&mut self, q: &Select) -> Result<SelectStatement> {
         self.enter(q)?;
+        self.applies_joins = true;
         let mut inner = Query::select();
         inner.expr(SExpr::val(1));
         self.base_select(q, &mut inner, true)?;
@@ -2566,6 +2615,7 @@ impl<'s> Planner<'s> {
             stmt.expr(SExpr::cust("COUNT(*)")).from_subquery(inner, Alias::new("sliced"));
         } else {
             self.enter(q)?;
+            self.applies_joins = true;
             stmt.expr(SExpr::cust("COUNT(*)"));
             self.base_select(q, &mut stmt, false)?;
             self.apply_joins(&mut stmt);

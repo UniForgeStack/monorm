@@ -646,6 +646,11 @@ when its row exists but its column is NULL.
   and keeps the scalar subqueries. An aggregate whose `filter` reads only the parent's own
   columns also stays a scalar subquery. Queries with a limit or offset also keep scalar subqueries,
   so an unindexed parent sort can run before computing the selected aggregates.
+* **Aggregates over to-one paths only join.** An aggregate whose arguments, `order_by` keys and
+  `filter` follow to-one hops only (`func.sum(Post.author.id)`,
+  `func.array_agg(Post.title, order_by=Post.author.name)`) reads a `LEFT JOIN` of the query
+  instead of a subquery, so it gives one value per group, not one per row; a `NULL` foreign key
+  keeps its row. This holds at the query root of a read, not in an `update()`. The `filter` stays an `EXISTS`.
 * **String concatenation** has two forms with different `NULL` rules:
   `func.concat(a, " ", b)` is `CONCAT(...)` and reads a `NULL` part as an empty string;
   `a.concat(b)` is `a || b` and is `NULL` when either side is `NULL`.

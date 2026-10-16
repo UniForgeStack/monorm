@@ -307,6 +307,12 @@ def test_lateral_join_comes_after_the_to_one_joins():
     assert sql.index('LEFT JOIN "users" AS "j') < sql.index("LEFT JOIN LATERAL")
 
 
+def test_aggregate_over_a_to_one_key_is_a_join_at_the_root():
+    sql = Post.objects.select(func.array_agg(Post.title, order_by=[Post.author.name, Post.id])).sql()
+    assert sql.count('LEFT JOIN "users" AS "j1"') == 1
+    assert "LATERAL" not in sql and "(SELECT" not in sql
+
+
 def test_an_aggregate_with_an_outer_only_filter_is_not_a_lateral_member():
     query = User.objects.order_by(User.id).select(
         User.name, func.count(User.posts, filter=User.name == "Alice"), func.max(User.posts.views)

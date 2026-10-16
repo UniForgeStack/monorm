@@ -415,6 +415,16 @@ test("array_agg over a to-one tail keeps the NULL elements", async () => {
   assert.deepEqual(grouped.map((r) => r.n), [1n, 1n, 0n]);
 });
 
+test("aggregates over to-one paths join at the root", async () => {
+  const { alice, bob } = await seed();
+  const titles = func.arrayAgg(Post.title, { orderBy: [Post.author.name, Post.id] });
+  assert.deepEqual(await Post.objects.select({ titles }).scalar(), ["old draft", "new post", "bob's old"]);
+  assert.equal(await Post.objects.select({ total: func.sum(Post.author.id) }).scalar(), 2n * alice.id + bob.id);
+  // A NULL foreign key keeps its row: the LEFT JOIN gives a NULL key, which sorts last.
+  const bodies = func.arrayAgg(Comment.body, { orderBy: [Comment.author.name, Comment.id] });
+  assert.deepEqual(await Comment.objects.select({ bodies }).scalar(), ["hello", "nice, 100% agree", "anonymous"]);
+});
+
 test("subqueries with in()", async () => {
   await seed();
   const authors = User.objects.filter(User.name.in(["Alice", "Carol"])).select({ id: User.id });
