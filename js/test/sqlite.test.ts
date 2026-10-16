@@ -342,3 +342,23 @@ test("relation comparison rejects null-prototype objects clearly", () => {
     assert.throws(compare, { name: "TypeError", message: "Book.author compares with a Author instance" });
   }
 });
+
+test("SQLite related lazy inserts join the transaction at await", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const author = await Author.objects.using(db).insert({ email: "lazy", name: "Lazy" });
+    const statements = [
+      author.books.insert({ title: "one" }),
+      author.books.insertMany([{ title: "many" }]).returning(),
+    ];
+    const rollback = new Error("rollback related insert");
+    for (const statement of statements) {
+      await assert.rejects(db.transaction(async () => {
+        await statement;
+        throw rollback;
+      }), (e) => e === rollback);
+    }
+    assert.equal(await Book.objects.using(db).count(), 0);
+  } finally { await db.close(); }
+});

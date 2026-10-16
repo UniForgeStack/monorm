@@ -110,7 +110,7 @@ export async function inTransaction(db: Database, tx: NativeTransaction, fn: () 
   const scoped = new Map(callbacks.getStore() ?? []).set(db.root, mine);
   const txs = new Map(current.getStore() ?? []).set(db.root, tx);
   try {
-    await current.run(txs, () => callbacks.run(scoped, fn));
+    await current.run(txs, async () => await callbacks.run(scoped, async () => await fn()));
   } finally {
     ended.add(mine);
   }
@@ -197,7 +197,7 @@ export class Database {
     for (const hook of [...this.root.#hooks.values()]) {
       for (const e of events) {
         try {
-          await inHook.run(true, () => hook(e));
+          await inHook.run(true, async () => await hook(e));
         } catch (error) {
           errors.push(error);
         }
@@ -318,7 +318,7 @@ export class Database {
     const txs = new Map(current.getStore() ?? []).set(this.root, tx);
     const txTenant = new Map(txTenants.getStore() ?? []).set(this.root, tenants.getStore()?.get(this.root)?.id);
     try {
-      result = await current.run(txs, () => txTenants.run(txTenant, () => callbacks.run(scoped, fn)));
+      result = await current.run(txs, async () => await txTenants.run(txTenant, async () => await callbacks.run(scoped, async () => await fn())));
     } catch (e) {
       ended.add(mine);
       await wait(() => tx.rollback());

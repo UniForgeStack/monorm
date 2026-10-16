@@ -3,7 +3,6 @@
  * `all()`, `first()`, `get()`, `count()`, ... (or `for await`); writes run when awaited.
  */
 
-import { AsyncResource } from "node:async_hooks";
 import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
 import { resolve, withScope, type Database } from "./db.js";
@@ -1298,13 +1297,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   update(values: M["update"], options?: { readonly returning?: boolean }): InspectedStatement<number | M["row"][]>;
   update(values: M["update"], options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
     const returning = options.returning ?? false;
-    return new InspectedStatement(AsyncResource.bind(() => this.updateValues(values, returning)), AsyncResource.bind(() => {
+    return new InspectedStatement(() => this.updateValues(values, returning), () => {
       const params: unknown[] = [];
       const ir = this.mutationIr("update", params, values);
       if (!(ir["set"] as unknown[]).length) return emptyInspection();
       if (returning) ir["returning"] = true;
       return this.inspectIr(ir, params);
-    }));
+    });
   }
 
   private async updateValues(values: M["update"], returning: boolean): Promise<number | M["row"][]> {
@@ -1344,13 +1343,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const ir = { ...this.mutationIr("delete", params), returning };
       return { ir, params };
     };
-    return new InspectedStatement(AsyncResource.bind(() => {
+    return new InspectedStatement(() => {
       const { ir, params } = plan();
       return this.write(ir, params, returning);
-    }), AsyncResource.bind(() => {
+    }, () => {
       const { ir, params } = plan();
       return this.inspectIr(ir, params);
-    }));
+    });
   }
 
   /**
@@ -1367,13 +1366,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const ir = { ...this.mutationIr("delete", params), hard: true, returning };
       return { ir, params };
     };
-    return new InspectedStatement(AsyncResource.bind(() => {
+    return new InspectedStatement(() => {
       const { ir, params } = plan();
       return this.write(ir, params, returning);
-    }), AsyncResource.bind(() => {
+    }, () => {
       const { ir, params } = plan();
       return this.inspectIr(ir, params);
-    }));
+    });
   }
 
   /** Clear the soft-delete field of the matching soft-deleted rows. */
@@ -1384,7 +1383,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const field = this.softDeleteField();
       return this.filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
     };
-    return new InspectedStatement(AsyncResource.bind(async () => await statement()), AsyncResource.bind(() => statement().inspect()));
+    return new InspectedStatement(async () => await statement(), () => statement().inspect());
   }
 
   /** The rows with the soft-deleted ones: the query set without the schema defaults
@@ -1422,12 +1421,12 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   updateMany(rows: readonly M["updateRow"][], options?: { readonly batchSize?: number; readonly returning?: false }): InspectedStatement<number>;
   updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning: true }): InspectedStatement<M["row"][]>;
   updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
-    return new InspectedStatement(AsyncResource.bind(() => this.executeUpdateMany(rows, options)), AsyncResource.bind(() => {
+    return new InspectedStatement(() => this.executeUpdateMany(rows, options), () => {
       const { prepared, batchSize, returning, params, ir } = this.updateManyPlan(rows, options);
       if (ir === null) return emptyInspection();
       const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
       return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, this.state.withoutDefaults)));
-    }));
+    });
   }
 
   private updateManyPlan(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean }) {
@@ -1469,7 +1468,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * or the row with `.returning()`.
    */
   insert(values: M["insert"]): InsertOne<M> {
-    return new InsertOne(bound((conflict, returning) => this.insertRows([values], conflict, returning, null)), AsyncResource.bind((conflict, returning) => this.inspectInsert([values], conflict, returning, null)));
+    return new InsertOne((conflict, returning) => this.insertRows([values], conflict, returning, null), (conflict, returning) => this.inspectInsert([values], conflict, returning, null));
   }
 
   /**
@@ -1529,7 +1528,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       return this.copyRows(rows, options);
     }
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
-    return new InsertMany(bound((conflict, returning) => this.insertRows(rows, conflict, returning, batchSize)), AsyncResource.bind((conflict, returning) => this.inspectInsert(rows, conflict, returning, batchSize)));
+    return new InsertMany((conflict, returning) => this.insertRows(rows, conflict, returning, batchSize), (conflict, returning) => this.inspectInsert(rows, conflict, returning, batchSize));
   }
 
   /** @internal */
@@ -1643,12 +1642,6 @@ interface Conflict {
 type InspectInsert = (conflict: Conflict | undefined, returning: boolean) => QueryInspection;
 
 type RunInsert = (conflict: Conflict | undefined, returning: boolean) => Promise<unknown[] | number>;
-
-/** `run` in the async context of the caller (its transaction, `allowWrites` and
- * `scope`), however late the statement is awaited. */
-function bound(run: RunInsert): RunInsert {
-  return AsyncResource.bind(run);
-}
 
 /** A statement that runs once, when first awaited (or given `then` / `catch` /
  * `finally`). */
@@ -2016,7 +2009,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
 
   /** Inserts a related row pointing at this instance. */
   override insert(values: DistributiveOmit<M["insert"], L>): InsertOne<M> {
-    return new InsertOne(bound((conflict, returning) => this.insertRows([{ ...values, ...this.link() }], conflict, returning, null)), AsyncResource.bind((conflict, returning) => this.inspectInsert([{ ...values, ...this.link() }], conflict, returning, null)));
+    return new InsertOne((conflict, returning) => this.insertRows([{ ...values, ...this.link() }], conflict, returning, null), (conflict, returning) => this.inspectInsert([{ ...values, ...this.link() }], conflict, returning, null));
   }
 
   /** The related row matching `lookup`, or a new one pointing at this instance; the link
@@ -2035,7 +2028,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
       return this.copyRows(linked, options);
     }
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
-    return new InsertMany(bound((conflict, returning) => this.insertRows(linked, conflict, returning, batchSize)), AsyncResource.bind((conflict, returning) => this.inspectInsert(linked, conflict, returning, batchSize)));
+    return new InsertMany((conflict, returning) => this.insertRows(linked, conflict, returning, batchSize), (conflict, returning) => this.inspectInsert(linked, conflict, returning, batchSize));
   }
 
 }
@@ -2216,7 +2209,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
   /** Inserts a related row and links it, in one transaction. No `onConflict`: upsert
    * on the model's query set, then `add()`. */
   override insert(values: M["insert"]): InsertOne<M> {
-    return new InsertOne(bound(async (conflict) => {
+    return new InsertOne(async (conflict) => {
       if (conflict) {
         throw new TypeError(`${this.relation.name}.insert(...).onConflict() isn't supported; upsert with ${this.meta.name}.objects, then add()`);
       }
@@ -2226,7 +2219,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
         await this.add(obj as never);
         return [obj];
       });
-    }), () => { throw new QueryError("inspect() cannot plan a many-to-many insert before its generated key is known; inspect the model insert and link operations separately"); });
+    }, () => { throw new QueryError("inspect() cannot plan a many-to-many insert before its generated key is known; inspect the model insert and link operations separately"); });
   }
 
   /** Not supported: `getOrInsert()` on the model's query set, then `add()`. */
