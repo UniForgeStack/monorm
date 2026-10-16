@@ -594,6 +594,31 @@ test("load rejects paths combined with a query that changes their rows", () => {
   }
 });
 
+test("load without items resets the columns", async () => {
+  await seed();
+  const full = await Post.objects.load(Post.title).load().orderBy(Post.id).all();
+  assert.equal(full[0]!.body, "");
+  const two = await Post.objects.load(Post.title).load(Post.views).orderBy(Post.id).all();
+  assert.deepEqual([two[0]!.title, two[0]!.views], ["a1", 5]);
+  assert.throws(() => (two[0] as unknown as Post).body, NotLoaded);
+  const kept = await Post.objects.load(Post.author, Post.title).load().orderBy(Post.id).all();
+  assert.equal(kept[0]!.author.name, "Alice");
+  assert.equal(kept[0]!.body, "");
+});
+
+test("load to-one query sets", async () => {
+  await seed();
+  const filtered = Comment.post.objects.filter(Post.views.gt(60)).asPrefetch();
+  const comments = await Comment.objects.load(filtered).orderBy(Comment.id).all();
+  assert.equal(comments[2]!.post.title, "b1");
+  const partial = await Comment.objects.load(Comment.post.objects.load(Post.title)).orderBy(Comment.id).all();
+  assert.equal(partial[0]!.post.title, "a2");
+  assert.throws(() => (partial[0]!.post as unknown as Post).body, NotLoaded);
+  const joined = Comment.objects.load(Comment.post.objects).orderBy(Comment.id);
+  assert.equal(joined.inspect().statementCount, 1);
+  assert.equal((await joined.all())[0]!.post.title, "a2");
+});
+
 test("load keeps a column beside a set with its own columns", async () => {
   await seed();
   for (const reverse of [false, true]) {

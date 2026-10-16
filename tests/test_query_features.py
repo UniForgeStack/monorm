@@ -965,3 +965,42 @@ async def test_load_plain_path_and_query_and_without_related(clean):
     users = await User.objects.order_by(User.id)
     await orm.prefetch(users, User.posts, bound)
     assert [len(u.posts.cached) for u in users] == [3, 1, 0]
+
+
+async def test_load_without_items_resets_the_columns(clean):
+    await seed()
+    posts = await Post.objects.load(Post.title).load().order_by(Post.id)
+    assert posts[0].body == ""
+    posts = await Post.objects.load(Post.title).load(Post.views).order_by(Post.id)
+    assert (posts[0].title, posts[0].views) == ("a1", 5)
+    with pytest.raises(orm.NotLoaded):
+        _ = posts[0].body
+    posts = await Post.objects.load(Post.author, Post.title).load().order_by(Post.id)
+    assert posts[0].author.name == "Alice"
+    assert posts[0].body == ""
+
+
+async def test_load_to_one_query_sets(clean, observe_queries):
+    await seed()
+    filtered = Comment.post.objects.filter(Post.views > 60).as_prefetch()
+    with observe_queries(clean) as events:
+        comments = await Comment.objects.load(filtered).order_by(Comment.id)
+        assert len(events) == 2
+    assert comments[2].post.title == "b1"
+    partial = await Comment.objects.load(Comment.post.objects.load(Post.title)).order_by(Comment.id)
+    assert partial[0].post.title == "a2"
+    with pytest.raises(orm.NotLoaded):
+        _ = partial[0].post.body
+    joined = Comment.objects.load(Comment.post.objects).order_by(Comment.id)
+    assert joined.inspect().statement_count == 1
+    with observe_queries(clean) as events:
+        comments = await joined
+        assert len(events) == 1
+    assert comments[0].post.title == "a2"
+
+
+async def test_load_set_of_another_model_raises(clean):
+    with pytest.raises(TypeError):
+        User.objects.load(Comment.objects.all())
+    with pytest.raises(ValueError, match="Post.comments does not start at User"):
+        User.objects.load(Post.comments.objects)
