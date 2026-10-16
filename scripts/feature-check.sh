@@ -14,7 +14,10 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=${ORM_FEATURE_CHECK_DIR:-$ROOT/target/feature-check}
 : "${ORM_TEST_DATABASE_URL:?set ORM_TEST_DATABASE_URL to a PostgreSQL test database}"
 export ORM_TEST_DATABASE_URL
-export CARGO_TARGET_DIR=$WORK/target
+# Nested cargo runs find the target dir in $WORK/.cargo/config.toml, so cargo runs from $WORK.
+# Not CARGO_TARGET_DIR: sccache hashes every CARGO_* variable, and a per-checkout path would block cache hits.
+TARGET=$WORK/target
+mkdir -p "$WORK/.cargo" && printf '[build]\ntarget-dir = "%s"\n' "$TARGET" >"$WORK/.cargo/config.toml"
 ARTIFACTS=${*:-proxy-models query-defaults model-composition file-storage generic-relations updated-at soft-delete optimistic-locking all}
 LOGS=$WORK/logs
 MATRIX=$WORK/matrix.txt
@@ -62,8 +65,8 @@ EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUF
 (cd "$ROOT/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
 
 # Suites that do not depend on an artifact.
-step storage rust-reference cargo test -q --manifest-path "$ROOT/storage/reference/Cargo.toml"
-step storage rust-extension cargo test -q --manifest-path "$ROOT/storage/orm-extension/Cargo.toml"
+step storage rust-reference sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/storage/reference/Cargo.toml'"
+step storage rust-extension sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/storage/orm-extension/Cargo.toml'"
 step storage python "$PY" -m pytest -q -p no:cacheprovider "$ROOT/storage/python/tests" "$ROOT/storage/integration/python/tests"
 step storage typescript sh -c "cd '$ROOT/storage/typescript' && npm install --no-audit --no-fund -s && npm test"
 step storage typescript-integration sh -c "cd '$ROOT/storage/integration/typescript' && npm install --no-audit --no-fund -s && npm test"
@@ -74,12 +77,12 @@ build() {
   rm -rf "$dir" && mkdir -p "$dir/py/orm_native_custom" || return 1
   printf '{"host":"%s","output":"%s/build","prepare_only":true,"bindings":["python","node"],"dependencies":{%s}}\n' \
     "$ROOT" "$dir" "$deps" >"$dir/config.json"
-  (cd "$ROOT" && cargo run -q -p orm-extension-build -- "$dir/config.json") || return 1
+  (cd "$WORK" && cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-build -- "$dir/config.json") || return 1
   # The documented rebuild of an emitted workspace: composition paths, no feature flags.
   (cd "$dir/build" && cargo build -q -p orm-python -p orm-node) || return 1
   cp "$ROOT/packaging/python/custom/orm_native_custom/__init__.py" "$dir/py/orm_native_custom/"
-  cp "$CARGO_TARGET_DIR/debug/lib_native.$DYLIB" "$dir/py/orm_native_custom/_native$EXT_SUFFIX"
-  cp "$CARGO_TARGET_DIR/debug/liborm_node.$DYLIB" "$dir/orm.node"
+  cp "$TARGET/debug/lib_native.$DYLIB" "$dir/py/orm_native_custom/_native$EXT_SUFFIX"
+  cp "$TARGET/debug/liborm_node.$DYLIB" "$dir/orm.node"
 }
 
 # The loaded artifacts report exactly the selected host features.
