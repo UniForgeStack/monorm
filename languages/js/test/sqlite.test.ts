@@ -397,3 +397,27 @@ test("SQLite bound load guards and withoutRelated", async () => {
     await db.close();
   }
 });
+
+
+test("SQLite indexed relation labels", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const [a, b] = await Author.objects.using(db).insertMany([
+      { email: "a", name: "A" }, { email: "b", name: "B" }, { email: "c", name: "C" },
+    ]).returning();
+    await Book.objects.using(db).insertMany([
+      { authorId: a!.id, title: "one" }, { authorId: b!.id, title: "other" },
+      { authorId: a!.id, title: "two" }, { authorId: a!.id, title: "three" },
+    ]);
+    const rows = await Author.objects.using(db).orderBy(Author.id).load(
+      Author.books.objects.at(0).label("firstBook"),
+      Author.books.objects.at(1).label("secondBook"),
+      Author.books.objects.at(-1).label("lastBook"),
+    );
+    assert.deepEqual(rows.map((a) => [a.firstBook?.title ?? null, a.secondBook?.title ?? null, a.lastBook?.title ?? null]), [
+      ["one", "two", "three"], ["other", null, "other"], [null, null, null],
+    ]);
+    await assert.rejects(async () => { await Book.objects.using(db).load(Book.author.objects.at(0).label("person")); }, /to-many/);
+  } finally { await db.close(); }
+});

@@ -114,8 +114,6 @@ class _Prefetch:
         to_attr: str | None = None,
         one: bool = False,
     ) -> None:
-        if one and queryset is not None and (queryset._limit is not None or queryset._offset is not None):
-            raise ValueError("label(one=True) takes the first row by the query set's order; drop the slice")
         self.path = path
         self.queryset = queryset
         self.to_attr = to_attr
@@ -501,7 +499,7 @@ class QuerySet(Generic[M]):
         ``IN (...)`` query per relation level. A relation query set (``User.posts.objects``)
         filters, orders and slices the related rows (a slice applies per parent), loads
         its own items with ``.load()``, and goes to the relation, or to the plain
-        attribute ``.label(name)`` (``one=True``: the first row or ``None``).
+        attribute ``.label(name)`` (``[n].label(name)``: one row or ``None``).
         ``.as_prefetch()`` loads a to-one relation by ``IN (...)`` query instead of a join.
 
         Relation query sets run only inside ``load()``; standalone reads and writes
@@ -545,16 +543,12 @@ class QuerySet(Generic[M]):
         _prefetch_tree(self._model, ((p.path._path, p) for p in prefetch))  # validates
         return qs
 
-    def label(self, name: str, *, one: bool = False) -> Self:
-        """Store a relation query set's rows in the plain attribute ``name`` (a list, or
-        with ``one=True`` the first row or ``None``) instead of the relation::
-
-            User.objects.load(User.posts.objects.order_by(Post.id.desc()).label("latest", one=True))
-        """
+    def label(self, name: str) -> Self:
+        """Store related rows in a plain list attribute; use ``[n].label(name)`` for one row."""
         self._bound("label")
         if not isinstance(name, str) or not name.isidentifier() or name.startswith("_"):
             raise ValueError(f"label {name!r} must be an identifier not starting with '_'")
-        return self._clone(_label=name, _one=one)
+        return self._clone(_label=name)
 
     def as_prefetch(self) -> Self:
         """Load this relation with an ``IN (...)`` query instead of a join; the rows are
@@ -1376,6 +1370,10 @@ class OneRowQuery(Coroutine[Any, Any, T_co]):
         self._qs = qs
         self._unique = unique
         self._coroutine: Coroutine[Any, Any, T_co] | None = None
+
+    def label(self, name: str) -> QuerySet[Any]:
+        """Load one related row per parent into ``name`` (or None when absent)."""
+        return self._qs.label(name)._clone(_one=True)
 
     def _result(self, rows: list[Any]) -> T_co:
         if self._unique and len(rows) > 1:

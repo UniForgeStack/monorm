@@ -797,3 +797,48 @@ async def test_bound_load_guards_and_without_related(sqlite):
     assert sorted(b.title for b in books) == ["one", "three", "two"]
     with pytest.raises(orm.NotLoaded):
         _ = books[0].author
+
+
+async def test_indexed_relation_labels(sqlite):
+    db, m, _ = sqlite
+    Author, Book = m["Author"], m["Book"]
+    a, b, _ = (
+        await Author.objects.using(db)
+        .insert_many(
+            [
+                {"email": "a", "name": "A"},
+                {"email": "b", "name": "B"},
+                {"email": "c", "name": "C"},
+            ]
+        )
+        .returning()
+    )
+    await Book.objects.using(db).insert_many(
+        [
+            {"author_id": a.id, "title": "one"},
+            {"author_id": b.id, "title": "other"},
+            {"author_id": a.id, "title": "two"},
+            {"author_id": a.id, "title": "three"},
+        ]
+    )
+    rows = (
+        await Author.objects.using(db)
+        .order_by(Author.id)
+        .load(
+            Author.books.objects[0].label("first_book"),
+            Author.books.objects[1].label("second_book"),
+            Author.books.objects[-1].label("last_book"),
+        )
+    )
+    assert [
+        [getattr(a, label).title if getattr(a, label) else None for label in ("first_book", "second_book", "last_book")]
+        for a in rows
+    ] == [
+        ["one", "two", "three"],
+        ["other", None, "other"],
+        [None, None, None],
+    ]
+    with pytest.raises(TypeError):
+        Author.objects.using(db).load(Author.books.objects[0])
+    with pytest.raises(orm.QueryError, match="to-many"):
+        await Book.objects.using(db).load(Book.author.objects[0].label("person"))
