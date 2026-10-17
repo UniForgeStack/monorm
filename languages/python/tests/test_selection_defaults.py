@@ -356,111 +356,35 @@ async def test_a_joined_model_brings_its_related_default():
 
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
-async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_join():
-    def field(name, kind="string", **flags):
-        return {"name": name, "column": name, "type": kind, **flags}
-
-    ir = {
-        "dialect": "sqlite",
-        "models": [
-            {
-                "name": "DAuthor",
-                "table": "d_authors",
-                "fields": [field("id", "int", primary_key=True), field("visible", "bool")],
-            },
-            {
-                "name": "DBook",
-                "table": "d_books",
-                "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
-                "relations": [
-                    {
-                        "name": "author",
-                        "kind": "one",
-                        "target": "DAuthor",
-                        "from": "author_id",
-                        "to": "id",
-                        "foreign_key": True,
-                    }
-                ],
-            },
-        ],
-        "behavior": {
-            "schema_contract": 1,
-            "query_defaults": [{"model": "DAuthor", "filter": {"t": "col", "path": [], "name": "visible"}}],
-        },
-    }
-    registry = orm.Registry()
-    classes = orm.define(ir, registry=registry)
-    Author, Book = classes["DAuthor"], classes["DBook"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_join(request, dialect):
+    db, A, B, P = await open_unset(request, dialect, True)
     try:
-        await db.create_tables()
-        await db.execute("PRAGMA foreign_keys = OFF")
-        await Author.objects.using(db).insert(id=1, visible=False)
-        await Book.objects.using(db).insert(id=1, author_id=1)
-        await Book.objects.using(db).insert(id=2, author_id=99)
-        books = Book.objects.using(db).order_by(Book.id)
-        # The default filter hides author 1: the join is filtered, so the reference is None.
-        assert [b.author for b in await books.load(Book.author).all()] == [None, None]
-        # Without defaults the join is not filtered: author 1 loads and the dangling key 99 is not loaded.
-        first, second = await books.without_defaults().load(Book.author).all()
-        assert first.author is not None
-        with pytest.raises(orm.NotLoaded):
-            second.author
+        for Model in (B, P):
+            rows = Model.objects.using(db).order_by(Model.id)
+            for path in (Model.author, Model.author.objects.as_prefetch()):
+                loaded = await rows.load(path).all()
+                assert [row.author for row in loaded][1:] == ([None, None, None] if Model is B else [None, None])
+            first, dangling, *rest = await rows.without_defaults().load(Model.author).all()
+            assert first.author.name == "ann"
+            with pytest.raises(orm.NotLoaded):
+                dangling.author
     finally:
+        await db.drop_tables()
         await db.close()
 
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
-async def test_the_target_flag_does_not_depend_on_model_order():
-    def field(name, kind="string", **flags):
-        return {"name": name, "column": name, "type": kind, **flags}
-
-    # The book model is declared before the filtered author model it points at.
-    ir = {
-        "dialect": "sqlite",
-        "models": [
-            {
-                "name": "OBook",
-                "table": "o_books",
-                "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
-                "relations": [
-                    {
-                        "name": "author",
-                        "kind": "one",
-                        "target": "OAuthor",
-                        "from": "author_id",
-                        "to": "id",
-                        "foreign_key": True,
-                    }
-                ],
-            },
-            {
-                "name": "OAuthor",
-                "table": "o_authors",
-                "fields": [field("id", "int", primary_key=True), field("visible", "bool")],
-            },
-        ],
-        "behavior": {
-            "schema_contract": 1,
-            "query_defaults": [{"model": "OAuthor", "filter": {"t": "col", "path": [], "name": "visible"}}],
-        },
-    }
-    registry = orm.Registry()
-    classes = orm.define(ir, registry=registry)
-    Author, Book = classes["OAuthor"], classes["OBook"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_the_target_flag_does_not_depend_on_model_order(request, dialect):
+    # Put the book before the filtered author in the public schema.
+    db, A, B, P = await open_unset(request, dialect, True, target_last=True)
     try:
-        await db.create_tables()
-        await db.execute("PRAGMA foreign_keys = OFF")
-        await Author.objects.using(db).insert_many([{"id": 1, "visible": False}])
-        await Book.objects.using(db).insert_many([{"id": 1, "author_id": 1}, {"id": 2, "author_id": 99}])
-        books = Book.objects.using(db).order_by(Book.id)
-        # The target hides author 1 and has no author 99: the default filter ran, so both are None.
-        assert [b.author for b in await books.load(Book.author).all()] == [None, None]
-        prefetch = Book.author.objects.as_prefetch()
-        assert [b.author for b in await books.load(prefetch).all()] == [None, None]
+        books = B.objects.using(db).order_by(B.id)
+        for path in (B.author, B.author.objects.as_prefetch()):
+            assert [b.author for b in await books.load(path).all()][1:] == [None, None, None]
     finally:
+        await db.drop_tables()
         await db.close()
 
 
@@ -572,10 +496,13 @@ model UProfile {
 FILTER = '@@query.filter("active == true")'
 
 
-async def open_unset(request, dialect, filtered):
+async def open_unset(request, dialect, filtered, target_last=False):
     source = UNSET.replace("//FILTER", FILTER if filtered else "").replace(
         '"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'
     )
+    if target_last:
+        start, end = source.index("model UAuthor"), source.index("model UBook")
+        source = source[:start] + source[end:] + source[start:end]
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     url = (
@@ -590,7 +517,7 @@ async def open_unset(request, dialect, filtered):
         await db.execute("PRAGMA foreign_keys = OFF")
     else:
         await db.execute("ALTER TABLE g2_books DROP CONSTRAINT IF EXISTS g2_books_author_id_fkey")
-    request.addfinalizer(lambda: None)
+        await db.execute("ALTER TABLE g2_profiles DROP CONSTRAINT IF EXISTS g2_profiles_author_id_fkey")
     A, B, P = models["UAuthor"], models["UBook"], models["UProfile"]
     await (
         A.objects.using(db)
@@ -606,6 +533,9 @@ async def open_unset(request, dialect, filtered):
     # Book 1 has an author, 2 a dangling key, 3 a NULL key, 4 a hidden author.
     await B.objects.using(db).insert_many(
         [{"id": 1, "author_id": 1}, {"id": 2, "author_id": 99}, {"id": 3, "author_id": None}, {"id": 4, "author_id": 2}]
+    )
+    await P.objects.using(db).insert_many(
+        [{"id": 1, "author_id": 1}, {"id": 2, "author_id": 99}, {"id": 3, "author_id": 2}]
     )
     return db, A, B, P
 
@@ -660,7 +590,7 @@ async def test_base_getter_instance_load_of_an_unfiltered_dangling_key_is_not_lo
 
 async def test_base_getter_keeps_none_for_has_one_and_label(base_getter, unset):
     db, A, B, P = unset
-    ann = await A.objects.using(db).order_by(A.id).load(A.profile).first()
+    ann = await A.objects.using(db).order_by(A.id).load(A.profile).get(A.id == 3)
     assert ann.profile is None
     books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch().label("writer")).all()
     assert books[1].__dict__["writer"] is None
@@ -692,3 +622,27 @@ async def test_load_as_prefetch_of_a_nullable_dangling_key_is_not_loaded(unset):
     book = await B.objects.using(db).get(B.id == 2)
     await book.load(B.author.objects.as_prefetch())
     assert state(book) == "unset"
+
+
+async def test_adapter_join_and_prefetch_of_required_and_nullable_dangling_keys(unset):
+    db, A, B, P = unset
+    for Model in (B, P):
+        for path in (Model.author, Model.author.objects.as_prefetch()):
+            row = await Model.objects.using(db).load(path).get(Model.id == 2)
+            with pytest.raises(orm.NotLoaded):
+                row.author
+
+
+async def test_plain_load_of_a_required_dangling_key_raises_integrity_error(unset):
+    db, A, B, P = unset
+    row = await P.objects.using(db).get(P.id == 2)
+    with pytest.raises(orm.IntegrityError):
+        await row.load(P.author)
+
+
+async def test_plain_load_of_a_nullable_dangling_key_keeps_none(unset):
+    # F2: pin the current adapter behavior pending an owner decision.
+    db, A, B, P = unset
+    row = await B.objects.using(db).get(B.id == 2)
+    await row.load(B.author)
+    assert row.author is None

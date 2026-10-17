@@ -159,6 +159,8 @@ A filtered-out joined target is `None`/`null`, including a physically required
 reference. Its default filter is in the LEFT JOIN condition, so the source
 survives. Without a target default filter, a set key with no joined row still
 raises `NotLoaded`.
+Under `without_defaults()` the join has no filter. A set key with no joined row then
+raises `NotLoaded`, also when the target has a default filter.
 Generated reference types become nullable for filtered targets. This is absence in
 the filtered view, not evidence that the physical row is absent.
 
