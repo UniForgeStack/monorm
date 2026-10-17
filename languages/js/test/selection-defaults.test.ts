@@ -239,7 +239,7 @@ model UProfile {
 }
 `;
 
-async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean, composite = false) {
+async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean, composite = false, targetLast = false) {
   const registry = new Registry();
   let source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
   if (composite) {
@@ -247,6 +247,10 @@ async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean, comp
       .replace("author_id Int?", "author_region Int? @default(1)\n  author_id Int?")
       .replace("author_id Int @unique", "author_region Int @default(1)\n  @@unique([author_id, author_region])\n  author_id Int @unique")
       .replaceAll("fields: [author_id], references: [id]", "fields: [author_id, author_region], references: [id, region]");
+  }
+  if (targetLast) {
+    const start = source.indexOf("model UAuthor"), end = source.indexOf("model UBook");
+    source = source.slice(0, start) + source.slice(end) + source.slice(start, end);
   }
   const models = loads(source, { registry }) as any;
   const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
@@ -269,6 +273,44 @@ async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean, comp
 }
 
 const reference = (book: any) => { try { return book.author; } catch (e) { if (e instanceof NotLoaded) return "unset"; throw e; } };
+
+for (const dialect of ["sqlite", "postgres"] as const) {
+  for (const method of ["instance", "join", "prefetch"] as const) {
+    test(`a reference target declared last supports ${method}: ${dialect}`, async () => {
+      const { db, Book, Profile } = await openUnset(dialect, false, false, true);
+      try {
+        for (const Model of [Book, Profile]) {
+          let rows = Model.objects.using(db);
+          if (method !== "instance") rows = rows.load(method === "join" ? Model.author : Model.author.objects.asPrefetch());
+          const row = await rows.get(Model.id.eq(1));
+          if (method === "instance") {
+            assert.throws(() => row.author, NotLoaded);
+            await row.load(Model.author);
+          }
+          assert.equal(row.author.name, "ann");
+          // The getter must still reject a cached target after the source key changes.
+          row.authorId = 3;
+          assert.throws(() => row.author, NotLoaded);
+          await row.load(Model.author);
+          assert.equal(row.author.name, "cy");
+        }
+      } finally { await db.dropTables(); await db.close(); }
+    });
+  }
+
+  test(`the target flag does not depend on model order: ${dialect}`, async (t) => {
+    if (!queryDefaults) { t.skip("needs a native build with the query-defaults feature"); return; }
+    const { db, Book } = await openUnset(dialect, true, false, true);
+    try {
+      const books = Book.objects.using(db).orderBy(Book.id);
+      for (const path of [Book.author, Book.author.objects.asPrefetch()]) {
+        const loaded = await books.load(path).all();
+        assert.equal(loaded[0].author.name, "ann");
+        assert.deepEqual(loaded.slice(1).map((row: any) => row.author), [null, null, null]);
+      }
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
 
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`an unfiltered dangling key stays not loaded after a join, a prefetch and load(): ${dialect}`, async () => {
