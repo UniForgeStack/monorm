@@ -10,6 +10,8 @@ use std::{
 
 #[derive(serde::Deserialize)]
 pub struct InsertOptions {
+    #[serde(default)]
+    pub scope: std::collections::BTreeMap<String, usize>,
     pub conflict: Option<Vec<String>>,
     pub update: Option<Vec<String>>,
     pub set: Vec<orm_core::ir::Assignment>,

@@ -305,13 +305,16 @@ class _Insert:
             "set": self._set[0] if self._set else [],
             "filter": self._where,
         }
+        from .db import _with_scope
+
+        options_json, params = _with_scope(json.dumps(options), self._set[1] if self._set else [])
         return QueryInspection._from_json(
             _inspection_native(self._qs).inspect_insert(
                 self._qs.model._meta.name,
                 self._fields,
                 self._rows,
-                json.dumps(options),
-                self._set[1] if self._set else [],
+                options_json,
+                params,
                 self._batch_size,
                 returning,
             )

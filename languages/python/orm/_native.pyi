@@ -155,6 +155,7 @@ class Engine:
         conflict_where: str | None = None,
         trace: Trace | None = None,
         returning: bool = True,
+        scope: str | None = None,
     ) -> Awaitable[Any]: ...
     def copy_insert(
         self,

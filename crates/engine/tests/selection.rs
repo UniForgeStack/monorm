@@ -41,7 +41,6 @@ fn neutral_defaults_are_prepared_without_a_producer_feature() {
     assert_eq!(schema.models[0].read_flags.fields.as_deref().unwrap(), ["value"]);
 }
 
-#[cfg(feature = "query-defaults")]
 #[test]
 fn enabled_policy_shape_is_prepared() {
     let schema = Schema::from_ir(serde_json::from_value(schema(true)).unwrap()).unwrap();
@@ -51,7 +50,6 @@ fn enabled_policy_shape_is_prepared() {
     assert!(matches!(plan.output, Output::Instances { shape: Some(_), .. }));
 }
 
-#[cfg(feature = "query-defaults")]
 #[test]
 fn policies_reject_bad_fields_and_recursive_loading() {
     let mut invalid = schema(true);
@@ -64,7 +62,6 @@ fn policies_reject_bad_fields_and_recursive_loading() {
     assert!(error.contains("recursive default loading"));
 }
 
-#[cfg(feature = "query-defaults")]
 #[test]
 fn generated_types_distinguish_default_missing_fields_and_filtered_targets() {
     let mut raw = schema(true);
@@ -81,7 +78,6 @@ fn generated_types_distinguish_default_missing_fields_and_filtered_targets() {
     assert!(ts.contains("  active: In<boolean>;"));
 }
 
-#[cfg(feature = "query-defaults")]
 #[test]
 fn a_many_to_many_path_applies_the_default_filter_of_the_join_model() {
     use orm_engine::{db, plan::plan_prefetch_only};
@@ -110,7 +106,6 @@ fn a_many_to_many_path_applies_the_default_filter_of_the_join_model() {
     }
 }
 
-#[cfg(feature = "query-defaults")]
 mod read_flags {
     use super::*;
     use orm_core::ir::Select;
@@ -249,7 +244,6 @@ mod unset_when_absent {
         assert_eq!(join(&s, false), [true]);
     }
 
-    #[cfg(feature = "query-defaults")]
     #[test]
     fn filtered_targets_never_unset_unless_bypassed() {
         let s = schema(true);
@@ -259,7 +253,6 @@ mod unset_when_absent {
         assert_eq!(join(&s, true), [true]);
     }
 
-    #[cfg(feature = "query-defaults")]
     #[test]
     fn binding_json_wrappers_have_one_shape() {
         let s = schema(true);
@@ -269,5 +262,101 @@ mod unset_when_absent {
         assert!(flags["Owner"].get("fields").is_some() && flags["Owner"].get("related").is_some());
         let order = orm_engine::plan::effective_order_json(&s, r#"{"model":"Child","order":[{"expr":{"t":"col","path":[],"name":"owner_id"},"desc":true}]}"#).unwrap();
         assert_eq!(order, json!([{"field":"owner_id","desc":true,"nulls":null}]));
+    }
+}
+
+#[test]
+fn neutral_upsert_filters_the_update_action_and_fails_closed() {
+    use orm_engine::{db, plan::{plan_insert, OnConflict}};
+    let mut raw = schema(true);
+    // A second producer must contribute to the same action predicate.
+    raw["behavior"]["read_defaults"].as_array_mut().unwrap().push(json!({
+        "source":"other-producer","name":"tenant","model":"Selected",
+        "filter":{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"id"},"r":{"t":"scope","name":"tenant"}}
+    }));
+    let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
+    struct Tenant;
+    impl orm_engine::Params for Tenant {
+        fn len(&self) -> usize { 1 }
+        fn value(&self, _: usize, _: Option<orm_core::ir::ValueType>) -> orm_engine::Result<sea_query::Value> { Ok(7.into()) }
+        fn text(&self, _: usize) -> orm_engine::Result<String> { unreachable!() }
+        fn count(&self, _: usize) -> orm_engine::Result<u64> { unreachable!() }
+        fn scope(&self, name: &str) -> Option<usize> { (name == "tenant").then_some(0) }
+    }
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let insert = |update: bool, params: &dyn orm_engine::Params| {
+            let conflict = if update {
+                OnConflict::Update(vec!["id".into()], None, vec!["value".into()], vec![])
+            } else { OnConflict::Nothing(vec!["id".into()], None) };
+            plan_insert(&schema, Target::new(dialect), "Selected", &["id".into(), "value".into()],
+                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), params, false)
+        };
+        let error = insert(true, &NoParams).err().expect("missing scope must fail before execution");
+        assert!(error.to_string().contains("scope.tenant"), "{error}");
+        let (stmt, _) = insert(true, &Tenant).unwrap();
+        let (sql, values) = db::build(dialect, &stmt);
+        let (target, action) = sql.split_once(" DO UPDATE SET ").unwrap();
+        assert!(!target.contains(" WHERE "), "the default is not an index predicate: {sql}");
+        let (_, predicate) = action.split_once(" WHERE ").expect("action predicate");
+        assert!(predicate.contains("\"active\"") && predicate.contains("\"id\""), "{sql}");
+        assert_eq!(values.last(), Some(&sea_query::Value::Int(Some(7))));
+        assert!(insert(false, &NoParams).is_ok(), "DO NOTHING does not read defaults");
+    }
+}
+
+#[test]
+fn neutral_defaults_apply_to_reads_writes_and_returned_shapes() {
+    use orm_engine::{db, plan::plan_prefetch_only};
+    let mut raw = schema(true);
+    raw["models"][0]["relations"] = json!([{"name":"parent","kind":"one","target":"Parent","from":"id","to":"id","foreign_key":true}]);
+    raw["models"].as_array_mut().unwrap().push(json!({"name":"Parent","table":"parents","fields":[
+        {"name":"id","column":"id","type":"int","primary_key":true},
+        {"name":"live","column":"live","type":"bool"},
+        {"name":"label","column":"label","type":"text"}
+    ]}));
+    raw["behavior"]["read_defaults"][0]["source"] = json!("first-producer");
+    raw["behavior"]["read_defaults"][0]["name"] = json!("selection");
+    raw["behavior"]["read_defaults"][0]["order"] = json!([{"field":"id","desc":true}]);
+    raw["behavior"]["read_defaults"][0]["load"] = json!([["parent"]]);
+    raw["behavior"]["read_defaults"].as_array_mut().unwrap().push(json!({
+        "source":"second-producer","name":"visibility","model":"Parent",
+        "filter":{"t":"col","path":[],"name":"live"},"fields":["label"]
+    }));
+    let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        for bypass in [false, true] {
+            let operation = serde_json::from_value(json!({"op":"select","model":"Selected","without_defaults":bypass})).unwrap();
+            let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() else { panic!("select") };
+            let sql = db::build(dialect, &plan.stmt).0;
+            assert_eq!(sql.contains(" WHERE "), !bypass, "{sql}");
+            assert_eq!(sql.contains(" DESC"), !bypass, "{sql}");
+            let Output::Instances { shape, joins, .. } = plan.output else { panic!("instances") };
+            assert_eq!(shape.is_some(), !bypass);
+            assert_eq!(joins.len(), usize::from(!bypass));
+            if !bypass { assert!(joins[0].filtered && joins[0].shape.is_some()); }
+            for op in ["update", "delete"] {
+                let operation = serde_json::from_value(json!({"op":op,"model":"Selected","without_defaults":bypass,
+                    "returning":true,"set":[{"field":"value","value":{"t":"text","value":"updated"}}]})).unwrap();
+                let plan = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap();
+                let (sql, shaped) = match plan {
+                    Plan::Update(stmt, returned) => (db::build(dialect, &stmt).0, returned.unwrap().2.is_some()),
+                    Plan::Delete(stmt, returned) => (db::build(dialect, &stmt).0, returned.unwrap().2.is_some()),
+                    _ => panic!("write"),
+                };
+                assert_eq!(sql.contains(" WHERE "), !bypass, "{sql}");
+                assert_eq!(shaped, !bypass);
+            }
+            // The target's filter also applies inside EXISTS and standalone prefetches.
+            let operation = serde_json::from_value(json!({"op":"select","model":"Selected","without_defaults":bypass,
+                "filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":["parent"],"name":"label"},"r":{"t":"text","value":"x"}}],
+                "prefetch":[{"relation":"parent","model":"Parent"}]})).unwrap();
+            let Operation::Select(q) = &operation else { panic!("select") };
+            let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() else { panic!("select") };
+            let sql = db::build(dialect, &plan.stmt).0;
+            assert!(sql.contains("EXISTS"), "{sql}");
+            assert_eq!(sql.contains("\"live\""), !bypass, "{sql}");
+            let prefetch = plan_prefetch_only(&schema, Target::new(dialect), q, &NoParams).unwrap();
+            assert_eq!(prefetch[0].filtered, !bypass);
+        }
     }
 }

@@ -1662,23 +1662,25 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
         }
       }
     }
-    return { prepared, conflict, update, set, params, conflictWhere };
+    const [scopeJson, scopedParams] = withScope("{}", params);
+    const scope: Record<string, number> = (JSON.parse(scopeJson) as { scope?: Record<string, number> }).scope ?? {};
+    return { prepared, conflict, update, set, params: scopedParams, conflictWhere, scope };
   }
 
   protected inspectInsert(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null): QueryInspection {
-    const { prepared, conflict, update, set, params, conflictWhere } = this.insertPlan(rows, onConflict, batchSize);
+    const { prepared, conflict, update, set, params, conflictWhere, scope } = this.insertPlan(rows, onConflict, batchSize);
     if (!prepared.rows.length) return emptyInspection();
-    const options = JSON.stringify({ conflict, update, set: set ? JSON.parse(set) : [], filter: conflictWhere ? JSON.parse(conflictWhere) : null });
+    const options = JSON.stringify({ conflict, update, set: set ? JSON.parse(set) : [], filter: conflictWhere ? JSON.parse(conflictWhere) : null, scope });
     return call(() => inspection(inspector(this.meta, this.state.db).inspectInsert(this.meta.name, prepared.fields, prepared.rows, options, params, batchSize, returning)));
   }
 
   /** @internal */
   protected async insertRows(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null): Promise<M["row"][] | number> {
-    const { prepared, conflict, update, set, params, conflictWhere } = this.insertPlan(rows, onConflict, batchSize);
+    const { prepared, conflict, update, set, params, conflictWhere, scope } = this.insertPlan(rows, onConflict, batchSize);
     if (!prepared.rows.length) return returning ? [] : 0;
     const db = this.db();
     const res = await db_wait(db, (tx, allowed, trace) =>
-      db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictWhere, trace, returning),
+      db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictWhere, trace, returning, JSON.stringify(scope)),
       ["insert", this.meta.name, prepared.fields, conflict],
     );
     return returning ? (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][]) : (res as number);

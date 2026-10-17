@@ -57,7 +57,8 @@ fn inspect_insert(schema: &schema::Schema, target: Target, model: &str, fields: 
         None => Conflict::Nothing { target, filter: opts.filter },
     });
     let values = convert_rows(schema, model, fields, rows, true)?;
-    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &PyParams(params), batch_size, returning).map_err(engine_err)?;
+    let params = orm_engine::params::Scoped { params: &PyParams(params), scope: &opts.scope };
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params, batch_size, returning).map_err(engine_err)?;
     let batching = plans.len() > 1;
     inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
 }
@@ -529,7 +530,7 @@ impl Engine {
     /// partial unique index.
     /// Rows beyond the parameter limit, or beyond `batch_size`, go to further statements
     /// in one transaction (inside `tx` when given).
-    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_where = None, trace = None, returning = true))]
+    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_where = None, trace = None, returning = true, scope = None))]
     #[allow(clippy::too_many_arguments)]
     fn insert<'py>(
         &self,
@@ -548,6 +549,7 @@ impl Engine {
         conflict_where: Option<&str>,
         trace: Option<&Bound<'py, Trace>>,
         returning: bool,
+        scope: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
         let set: Vec<ir::Assignment> = match set {
@@ -563,8 +565,10 @@ impl Engine {
             None => Conflict::Nothing { target, filter },
         });
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
+        let scope = serde_json::from_str(scope.unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
+        let params = orm_engine::params::Scoped { params: &PyParams(&params), scope: &scope };
         let plans =
-            exec::plan_inserts(&self.schema, self.target, model, &fields, values, conflict, &PyParams(&params), batch_size, returning)
+            exec::plan_inserts(&self.schema, self.target, model, &fields, values, conflict, &params, batch_size, returning)
                 .map_err(engine_err)?;
         let target = self.target;
         let conn = self.traced(tx, trace);
