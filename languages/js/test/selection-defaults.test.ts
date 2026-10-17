@@ -242,3 +242,87 @@ for (const dialect of ["sqlite", "postgres"] as const) {
     } finally { await db.dropTables(); await db.close(); }
   });
 }
+
+const unsetSource = `
+datasource db {
+  provider = "sqlite"
+}
+model UAuthor {
+  id Int @id
+  name String
+  active Boolean @default(true)
+  books UBook[]
+  profile UProfile?
+  @@map("g2_js_authors")
+  //FILTER
+}
+model UBook {
+  id Int @id
+  author_id Int?
+  author UAuthor? @relation(fields: [author_id], references: [id])
+  @@map("g2_js_books")
+}
+model UProfile {
+  id Int @id
+  author_id Int @unique
+  author UAuthor @relation(fields: [author_id], references: [id])
+  @@map("g2_js_profiles")
+}
+`;
+
+async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean) {
+  const registry = new Registry();
+  const source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
+  const models = loads(source, { registry }) as any;
+  const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
+  const db = await connect(url, { registry, default: false });
+  await db.dropTables(); await db.createTables();
+  if (dialect === "sqlite") await db.execute("PRAGMA foreign_keys = OFF");
+  else await db.execute("ALTER TABLE g2_js_books DROP CONSTRAINT IF EXISTS g2_js_books_author_id_fkey");
+  const { UAuthor: Author, UBook: Book, UProfile: Profile } = models;
+  await Author.objects.using(db).withoutDefaults().insertMany([{ id: 1, name: "ann", active: true }, { id: 2, name: "bob", active: false }, { id: 3, name: "cy", active: true }]);
+  // Book 1 has an author, 2 a dangling key, 3 a NULL key, 4 a hidden author.
+  await Book.objects.using(db).insertMany([{ id: 1, authorId: 1 }, { id: 2, authorId: 99 }, { id: 3, authorId: null }, { id: 4, authorId: 2 }]);
+  return { db, Author, Book, Profile };
+}
+
+const reference = (book: any) => { try { return book.author; } catch (e) { if (e instanceof NotLoaded) return "unset"; throw e; } };
+
+for (const dialect of ["sqlite", "postgres"] as const) {
+  test(`an unfiltered dangling key stays not loaded after a join, a prefetch and load(): ${dialect}`, async () => {
+    const { db, Book } = await openUnset(dialect, false);
+    try {
+      const books = Book.objects.using(db).orderBy(Book.id);
+      const joined = await books.load(Book.author).all();
+      assert.deepEqual([1, 2].map((i) => reference(joined[i])), ["unset", null]);
+      const prefetched = await books.load(Book.author.objects.asPrefetch()).all();
+      assert.equal(reference(prefetched[0]).name, "ann");
+      assert.deepEqual([1, 2].map((i) => reference(prefetched[i])), ["unset", null]);
+      const book = await Book.objects.using(db).get(Book.id.eq(2));
+      await book.load(Book.author.objects.asPrefetch());
+      assert.equal(reference(book), "unset");
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a labelled prefetch and a has-one keep null for no row: ${dialect}`, async () => {
+    const { db, Author, Book } = await openUnset(dialect, false);
+    try {
+      const books = await Book.objects.using(db).orderBy(Book.id).load(Book.author.objects.asPrefetch().label("writer")).all();
+      assert.equal(books[1].writer, null);
+      const ann = await Author.objects.using(db).orderBy(Author.id).load(Author.profile).first();
+      assert.equal(ann.profile, null);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a filtered target is null and a bypassed prefetch is not loaded: ${dialect}`, async (t) => {
+    if (!queryDefaults) { t.skip("needs a native build with the query-defaults feature"); return; }
+    const { db, Book } = await openUnset(dialect, true);
+    try {
+      const prefetched = await Book.objects.using(db).orderBy(Book.id).load(Book.author.objects.asPrefetch()).all();
+      assert.deepEqual([1, 2, 3].map((i) => reference(prefetched[i])), [null, null, null]);
+      const bypassed = await Book.objects.using(db).withoutDefaults().orderBy(Book.id).load(Book.author.objects.asPrefetch()).all();
+      assert.deepEqual([1, 2].map((i) => reference(bypassed[i])), ["unset", null]);
+      assert.equal(reference(bypassed[3]).name, "bob");
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}

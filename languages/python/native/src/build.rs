@@ -177,8 +177,8 @@ impl<'a, 'py> Builder<'a, 'py> {
                     Some(p) => related[p].as_ref(),
                 };
                 if let Some(parent) = parent {
-                    // A reference with no row and no filter to explain it stays unloaded.
-                    if child.is_some() || !j.dangling {
+                    // A reference with no row and no filter to explain it stays unset.
+                    if child.is_some() || !j.unset_when_absent {
                         parent.dict.set_item(&j.attr, child.as_ref().map(|c| &c.obj))?;
                     }
                 }
@@ -295,7 +295,10 @@ impl<'a, 'py> Builder<'a, 'py> {
                     };
                     d.set_item(back, &parent.obj)?;
                 }
-                parent.dict.set_item(&attr, found)?;
+                // A key with no row and no filter to explain it stays unset; a NULL key is none.
+                if !(p.unset_when_absent && found.is_none() && !key.is_none(py)) {
+                    parent.dict.set_item(&attr, found)?;
+                }
                 continue;
             }
             let list = match found {

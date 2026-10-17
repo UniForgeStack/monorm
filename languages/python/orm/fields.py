@@ -352,10 +352,10 @@ class BelongsTo(Relation[M, P]):
         key = key_value(cast("Model", obj), self.via_fields)
         if self.name in d:
             related = d[self.name]
-            # The engine stores None only for a reference its filter hid or whose key is None.
+            # The engine stores None only when the filter hid the row or the key is None.
             if related is None:
                 return None
-            if related is not None and key_value(related, self.to_fields) == key:
+            if key_value(related, self.to_fields) == key:
                 return related
         elif key is None:
             return None

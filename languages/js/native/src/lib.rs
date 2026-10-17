@@ -192,7 +192,7 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
                 js.set(o, "pk", js.number(j.pk_pos as f64)?)?;
                 js.set(o, "shape", shape_js(js, j.shape.as_ref())?)?;
                 js.set(o, "filtered", js.boolean(j.filtered)?)?;
-                js.set(o, "dangling", js.boolean(j.dangling)?)?;
+                js.set(o, "unsetWhenAbsent", js.boolean(j.unset_when_absent)?)?;
                 Ok(o)
             }))?;
             js.set(obj, "joins", arr)?;
@@ -213,6 +213,7 @@ fn prefetched_js(c: Conv, schema: &schema::Schema, fetched: &[Fetched]) -> napi:
         let o = js.object()?;
         js.set(o, "attr", js.str(&p.attr)?)?;
         js.set(o, "many", js.boolean(p.many)?)?;
+        js.set(o, "unsetWhenAbsent", js.boolean(p.unset_when_absent)?)?;
         js.set(o, "keyPos", js.array_of(p.key_pos.iter().map(|&k| js.number(k as f64)))?)?;
         js.set(o, "childKeyPos", js.array_of(p.child_key_pos.iter().map(|&k| js.number(k as f64)))?)?;
         js.set(o, "back", match &p.back {

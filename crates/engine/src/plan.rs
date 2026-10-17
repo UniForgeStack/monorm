@@ -44,9 +44,9 @@ pub struct JoinShape {
     /// A default filter was ANDed into this join's ON and no bypass removed it: a NULL
     /// object means "hidden by the filter", not a dangling key.
     pub filtered: bool,
-    /// A missing object is a dangling key: the parent holds the key and no filter hid the row.
-    /// Bindings leave such a reference unloaded instead of setting it to none.
-    pub dangling: bool,
+    /// The parent holds the key and no filter ran: a missing object is a key with no row.
+    /// Bindings leave such a reference unset instead of setting it to none. Derived from `filtered`.
+    pub unset_when_absent: bool,
 }
 
 /// How a statement's rows become objects.
@@ -71,6 +71,9 @@ pub struct PrefetchPlan {
     pub child_key_pos: Vec<usize>,
     /// A default filter was ANDed into the fetch's WHERE and no bypass removed it.
     pub filtered: bool,
+    /// A to-one that holds the key, with no filter and no label: no matching row leaves the
+    /// attribute unset instead of none. Derived from `filtered`.
+    pub unset_when_absent: bool,
     /// The related model's to-one relation back to the parent, filled in too.
     pub back: Option<String>,
     stmt: SelectStatement,
@@ -2714,7 +2717,7 @@ impl<'s> Planner<'s> {
                 pk_pos: joined_positions.iter().position(|f| f == m.pk).expect("identity selected"),
                 shape: joined_shape,
                 filtered,
-                dangling: holds_key && !filtered,
+                unset_when_absent: holds_key && !filtered,
             });
             for position in joined_positions.iter() {
                 let f = &m.fields()[position];
@@ -3159,6 +3162,7 @@ fn plan_prefetch(
         key_type: rel.from.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
         filtered: plan.filtered,
+        unset_when_absent: rel.foreign_key && !plan.filtered && !many && node.attr.is_none(),
         back,
         stmt: plan.stmt,
         dialect: target.dialect,

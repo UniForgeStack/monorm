@@ -134,6 +134,14 @@ export async function loadInstance(
         keys.set(source, fieldValue(owner, source));
       }
     }
+    // A load that leaves a name unset must not keep the old cached value.
+    for (const item of relations) {
+      const path = itemPath(item);
+      const hops = path instanceof Column ? path.path : path[PATH].path;
+      const label = item instanceof QuerySet ? item.state.label : undefined;
+      if (label && hops.length === 1) delete staged[label];
+      else delete staged[RELATED]![meta.relationByIr.get(hops[0]!)!.name];
+    }
     await prefetch([staged], ...relations);
     const fresh = Object.create(Object.getPrototypeOf(owner)) as Row;
     fresh[RELATED] = {};
@@ -144,10 +152,13 @@ export async function loadInstance(
       try { if (sources.some((source) => fieldValue(owner, source) !== keys.get(source))) continue; }
       catch (e) { if (e instanceof NotLoaded) continue; throw e; }
       const label = item instanceof QuerySet ? item.state.label : undefined;
-      if (label && hops.length === 1) fresh[label] = staged[label];
-      else {
+      if (label && hops.length === 1) {
+        if (Object.hasOwn(staged, label)) fresh[label] = staged[label];
+        else delete owner[label];
+      } else {
         const name = meta.relationByIr.get(hops[0]!)!.name;
-        fresh[RELATED][name] = staged[RELATED]![name];
+        if (Object.hasOwn(staged[RELATED]!, name)) fresh[RELATED][name] = staged[RELATED]![name];
+        else delete owner[RELATED]?.[name];
       }
     }
     merge(owner, fresh, reload, invalidate);

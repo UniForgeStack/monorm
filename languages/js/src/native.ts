@@ -26,7 +26,7 @@ export type NativeShape = readonly { field: number; slot: number; public: boolea
 export interface NativeInstances {
   readonly shape?: NativeShape;
   readonly model: string;
-  readonly joins: readonly { parent: number; attr: string; model: string; start: number; pk: number; filtered: boolean; dangling: boolean; shape?: NativeShape }[];
+  readonly joins: readonly { parent: number; attr: string; model: string; start: number; pk: number; filtered: boolean; unsetWhenAbsent: boolean; shape?: NativeShape }[];
 }
 
 /** `select()` rows: per item, the width of a model instance or -1 for one value. */
@@ -38,6 +38,7 @@ export interface NativeColumns {
 export interface NativePrefetch {
   readonly attr: string;
   readonly many: boolean;
+  readonly unsetWhenAbsent: boolean;
   readonly keyPos: readonly number[];
   readonly childKeyPos: readonly number[];
   readonly back: string | null;

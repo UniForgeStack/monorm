@@ -67,8 +67,8 @@ export class Builder {
         const parent = j.parent < 0 ? root : joined[j.parent];
         if (parent) {
           const pmeta = j.parent < 0 ? meta : joins[j.parent]!.meta;
-          // A dangling key (no match, no filter) stays unset so the getter raises NotLoaded.
-          if (child !== null || !j.dangling) related(parent)[pmeta.relationByIr.get(j.attr)!.name] = child;
+          // A key with no row and no filter to explain it stays unset so the getter raises NotLoaded.
+          if (child !== null || !j.unsetWhenAbsent) related(parent)[pmeta.relationByIr.get(j.attr)!.name] = child;
         }
       }
       objs[r] = root;
@@ -167,6 +167,8 @@ export class Builder {
           related(found as Obj)[back] = parent;
         }
         value = found ?? null;
+        // A NULL key is none; a set key with no row and no filter stays unset.
+        if (found === undefined && k !== null && f.unsetWhenAbsent) continue;
       }
       if (rel) {
         related(parent)[rel.name] = value;
