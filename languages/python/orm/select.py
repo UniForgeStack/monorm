@@ -50,6 +50,7 @@ __all__ = ["Row", "Select"]
 
 # -- rows --------------------------------------------------------------------------------
 
+
 class Row(tuple[Unpack[Ts]]):
     """A result row: a tuple (``row[0]``, ``a, b = row``) whose items can also be read
     by name (``row.total``; typed ``Any``). ``row._asdict()`` gives a dict."""
@@ -109,6 +110,7 @@ def _column_name(item: Any, i: int) -> str:
 
 
 # -- the query ---------------------------------------------------------------------------
+
 
 class Select(Generic[Unpack[Ts]]):
     """A query returning rows of chosen columns. Built by ``QuerySet.select(...)``;
@@ -341,6 +343,7 @@ class Select(Generic[Unpack[Ts]]):
 
 
 if TYPE_CHECKING:
+
     class RequiredSelect(Select[Unpack[Ts]]):
         """The type of a selection whose row reads require a result."""
 

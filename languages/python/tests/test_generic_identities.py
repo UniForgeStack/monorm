@@ -1,4 +1,5 @@
 """Public identity/ContentType seam; full generic execution is tested separately."""
+
 import json
 import os
 
@@ -11,13 +12,25 @@ def generate(path):
     assert cli(["--schema", str(path), "identities"]) == 0
 
 
-@pytest.mark.parametrize("url,provider", [
-    ("sqlite://:memory:", "sqlite"),
-    pytest.param(os.environ.get("ORM_TEST_DATABASE_URL", ""), "postgresql", marks=pytest.mark.skipif(not os.environ.get("ORM_TEST_DATABASE_URL"), reason="set ORM_TEST_DATABASE_URL for PostgreSQL acceptance")),
-])
+@pytest.mark.parametrize(
+    "url,provider",
+    [
+        ("sqlite://:memory:", "sqlite"),
+        pytest.param(
+            os.environ.get("ORM_TEST_DATABASE_URL", ""),
+            "postgresql",
+            marks=pytest.mark.skipif(
+                not os.environ.get("ORM_TEST_DATABASE_URL"),
+                reason="set ORM_TEST_DATABASE_URL for PostgreSQL acceptance",
+            ),
+        ),
+    ],
+)
 async def test_runtime_and_generated_identities_roundtrip(tmp_path, url, provider):
     schema = tmp_path / "schema.prisma"
-    schema.write_text(f'datasource db {{\nprovider = "{provider}"\n}}\nmodel Post {{\nid Int @id\n@@map("identity08_posts")\n}}\nmodel Tag {{\nid Int @id\nkind ContentType\nobject_id Int\n@@map("identity08_tags")\n}}')
+    schema.write_text(
+        f'datasource db {{\nprovider = "{provider}"\n}}\nmodel Post {{\nid Int @id\n@@map("identity08_posts")\n}}\nmodel Tag {{\nid Int @id\nkind ContentType\nobject_id Int\n@@map("identity08_tags")\n}}'
+    )
     generate(schema)
     frozen = schema.with_suffix(".identities.json").read_bytes()
     registry = orm.Registry()
@@ -35,7 +48,7 @@ async def test_runtime_and_generated_identities_roundtrip(tmp_path, url, provide
         assert tag.object_id == 7
         # Check constraints are the core integer-enum constraint, no registry table.
         with pytest.raises(orm.IntegrityError):
-            await db.execute('INSERT INTO identity08_tags (id, kind, object_id) VALUES (2, 99, 7)')
+            await db.execute("INSERT INTO identity08_tags (id, kind, object_id) VALUES (2, 99, 7)")
         await post.delete()
         assert (await models["Tag"].objects.using(db).get()).object_id == 7
         # Generated Python embeds the same immutable mapping, runtime needs no file.
@@ -54,7 +67,7 @@ async def test_runtime_and_generated_identities_roundtrip(tmp_path, url, provide
 
 def test_missing_stale_or_conflicting_manifest_fails_before_definition(tmp_path):
     schema = tmp_path / "schema.prisma"
-    schema.write_text('model Post {\nid Int @id\n}\nmodel Tag {\nid Int @id\nkind ContentType\n}')
+    schema.write_text("model Post {\nid Int @id\n}\nmodel Tag {\nid Int @id\nkind ContentType\n}")
     with pytest.raises(orm.SchemaError, match="orm identities"):
         orm.load(schema, registry=orm.Registry())
     generate(schema)
@@ -66,10 +79,20 @@ def test_missing_stale_or_conflicting_manifest_fails_before_definition(tmp_path)
         orm.load(schema, registry=orm.Registry())
 
 
-@pytest.mark.parametrize("url,provider", [
-    ("sqlite://:memory:", "sqlite"),
-    pytest.param(os.environ.get("ORM_TEST_DATABASE_URL", ""), "postgresql", marks=pytest.mark.skipif(not os.environ.get("ORM_TEST_DATABASE_URL"), reason="set ORM_TEST_DATABASE_URL for PostgreSQL acceptance")),
-])
+@pytest.mark.parametrize(
+    "url,provider",
+    [
+        ("sqlite://:memory:", "sqlite"),
+        pytest.param(
+            os.environ.get("ORM_TEST_DATABASE_URL", ""),
+            "postgresql",
+            marks=pytest.mark.skipif(
+                not os.environ.get("ORM_TEST_DATABASE_URL"),
+                reason="set ORM_TEST_DATABASE_URL for PostgreSQL acceptance",
+            ),
+        ),
+    ],
+)
 async def test_retirement_migration_requires_reference_cleanup(tmp_path, url, provider):
     from orm.migrations import Migrations, Migrator
 
@@ -102,7 +125,7 @@ async def test_retirement_migration_requires_reference_cleanup(tmp_path, url, pr
         await models["Tag"].objects.using(db).delete()
         await runner.upgrade()
         with pytest.raises(orm.IntegrityError):
-            await db.execute('INSERT INTO identity08_migration_tags (id, kind, object_id) VALUES (2, 1, 9)')
+            await db.execute("INSERT INTO identity08_migration_tags (id, kind, object_id) VALUES (2, 1, 9)")
     finally:
         await db.drop_tables()
         await db.execute("DROP TABLE IF EXISTS orm_migrations")
@@ -113,9 +136,11 @@ async def test_generic_relation_schema_follows_the_artifact_capability(tmp_path)
     from orm import _native
 
     schema = tmp_path / "schema.prisma"
-    schema.write_text('datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\n@@map("generic08_posts")\n}\n'
-                      'model Tag {\nid Int @id\ncontent_type ContentType?\nobject_id Int?\n'
-                      '@@generic.relation("target", type: "content_type", key: "object_id", targets: ["Post"])\n@@map("generic08_tags")\n}')
+    schema.write_text(
+        'datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\n@@map("generic08_posts")\n}\n'
+        "model Tag {\nid Int @id\ncontent_type ContentType?\nobject_id Int?\n"
+        '@@generic.relation("target", type: "content_type", key: "object_id", targets: ["Post"])\n@@map("generic08_tags")\n}'
+    )
     generate(schema)
     if "generic-relations" not in json.loads(_native.native_artifact())["capabilities"]:
         with pytest.raises(orm.SchemaError, match="rebuild"):
@@ -141,7 +166,10 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, cap
     from orm import _native
 
     schema = tmp_path / "schema.prisma"
-    schema.write_text(GENERIC_HEADER + 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nnote String\n@@map("generic_field_tags")\n}')
+    schema.write_text(
+        GENERIC_HEADER
+        + 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nnote String\n@@map("generic_field_tags")\n}'
+    )
     if "generic-relations" not in json.loads(_native.native_artifact())["capabilities"]:
         assert cli(["--schema", str(schema), "identities"]) != 0
         assert "unknown type Generic; a Generic field needs @generic.relation" in capfd.readouterr().err
@@ -151,15 +179,29 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, cap
     models = orm.load(schema, registry=registry)
     tag = next(m for m in registry.ir()["models"] if m["name"] == "Tag")
     assert [(f["name"], f.get("nullable", False), f.get("enum")) for f in tag["fields"]] == [
-        ("id", False, None), ("target_type", True, "ContentType"), ("target_id", True, None), ("note", False, None)]
+        ("id", False, None),
+        ("target_type", True, "ContentType"),
+        ("target_id", True, None),
+        ("note", False, None),
+    ]
     assert tag["indexes"] == [{"columns": [{"field": "target_type"}, {"field": "target_id"}]}]
     behavior = registry.ir()["behavior"]
-    assert behavior["generic_relations"] == [{"model": "Tag", "name": "target", "type_field": "target_type", "key_field": "target_id", "targets": ["Photo", "Post"]}]
+    assert behavior["generic_relations"] == [
+        {
+            "model": "Tag",
+            "name": "target",
+            "type_field": "target_type",
+            "key_field": "target_id",
+            "targets": ["Photo", "Post"],
+        }
+    ]
     assert behavior["generic_reverse"] == [{"model": "Post", "name": "tags", "source": "Tag", "relation": "target"}]
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
-        await models["Tag"].objects.using(db).insert(id=1, target_type=models["ContentType"].Post, target_id=7, note="n")
+        await (
+            models["Tag"].objects.using(db).insert(id=1, target_type=models["ContentType"].Post, target_id=7, note="n")
+        )
         tag = await models["Tag"].objects.using(db).get()
         assert tag.target_type is models["ContentType"].Post and tag.target_id == 7
     finally:
@@ -173,15 +215,22 @@ def test_moving_to_the_generic_field_form_needs_no_migration(tmp_path):
     if "generic-relations" not in json.loads(_native.native_artifact())["capabilities"]:
         pytest.skip("needs an artifact with generic-relations")
     schema = tmp_path / "schema.prisma"
-    explicit = ('model Tag {\nid Int @id\ntarget_type ContentType?\ntarget_id Int?\nkind ContentType\nobject_id Int\n'
-                '@@generic.relation("target", type: "target_type", key: "target_id", targets: ["Post", "Photo"])\n'
-                '@@generic.relation("owner", type: "kind", key: "object_id", targets: ["Post"])\n'
-                '@@index([target_type, target_id])\n@@map("generic_field_tags")\n}')
-    field = ('model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nkind ContentType\nobject_id Int\n'
-             'owner Generic @generic.relation(type: "kind", key: "object_id", targets: ["Post"], index: false)\n@@map("generic_field_tags")\n}')
+    explicit = (
+        "model Tag {\nid Int @id\ntarget_type ContentType?\ntarget_id Int?\nkind ContentType\nobject_id Int\n"
+        '@@generic.relation("target", type: "target_type", key: "target_id", targets: ["Post", "Photo"])\n'
+        '@@generic.relation("owner", type: "kind", key: "object_id", targets: ["Post"])\n'
+        '@@index([target_type, target_id])\n@@map("generic_field_tags")\n}'
+    )
+    field = (
+        'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nkind ContentType\nobject_id Int\n'
+        'owner Generic @generic.relation(type: "kind", key: "object_id", targets: ["Post"], index: false)\n@@map("generic_field_tags")\n}'
+    )
     directory = str(tmp_path / "migrations")
     for i, model in enumerate([explicit, field]):
-        schema.write_text(GENERIC_HEADER.replace("tags Tag[] @generic.reverse", 'tags Tag[] @generic.reverse(relation: "target")') + model)
+        schema.write_text(
+            GENERIC_HEADER.replace("tags Tag[] @generic.reverse", 'tags Tag[] @generic.reverse(relation: "target")')
+            + model
+        )
         generate(schema)
         registry = orm.Registry()
         orm.load(schema, registry=registry)
@@ -205,7 +254,11 @@ async def test_a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads
         db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
         try:
             await db.create_tables()
-            await models["Tag"].objects.using(db).insert(id=1, target_type=models["ContentType"].Post, target_id=7, note="n")
+            await (
+                models["Tag"]
+                .objects.using(db)
+                .insert(id=1, target_type=models["ContentType"].Post, target_id=7, note="n")
+            )
             assert [(t.id, t.note) for t in await models["NotedTag"].objects.using(db)] == [(1, "n")]
         finally:
             await db.close()

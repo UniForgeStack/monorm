@@ -56,7 +56,7 @@ async def test_pull_baseline_and_drift_of_a_django_style_database(tmp_path):
         text = pulled.schema
         # Django's names survive: foreign keys, uniques, like-indexes, checks.
         assert 'map: "bundles_bundle_shop_id_8f3e_fk_account_shop_id"' in text
-        assert 'deferrable: deferred' in text
+        assert "deferrable: deferred" in text
         assert '@@unique([domain], map: "account_shop_domain_9a1b2c3d_uniq")' in text
         assert 'ops: raw("varchar_pattern_ops")' in text
         assert "with: { fillfactor: 70 }" in text
@@ -122,8 +122,10 @@ async def test_owned_serials_pull_as_identity_and_shared_sequences_stay_defaults
         assert "column s_empty.id uses a sequence" in gaps and "column s_full.id uses a sequence" in gaps
         assert text.count("@default(autoincrement())") == 2
         # a shared sequence stays a raw default, with a note
-        assert "column c_empty.id defaults to nextval('shared_seq'::regclass), a sequence the column does not own" in gaps
-        assert '@default(dbgenerated("nextval(\'shared_seq\'::regclass)"))' in text
+        assert (
+            "column c_empty.id defaults to nextval('shared_seq'::regclass), a sequence the column does not own" in gaps
+        )
+        assert "@default(dbgenerated(\"nextval('shared_seq'::regclass)\"))" in text
         # the next migration leaves the column on the shared sequence
         schema = tmp_path / "schema.prisma"
         pulled.write(schema)
@@ -135,7 +137,10 @@ async def test_owned_serials_pull_as_identity_and_shared_sequences_stay_defaults
             "JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
             "WHERE attrelid IN ('c_empty'::regclass, 'c_full'::regclass) ORDER BY 1"
         )
-        assert rows == [("c_empty", "", "nextval('shared_seq'::regclass)"), ("c_full", "", "nextval('shared_seq'::regclass)")]
+        assert rows == [
+            ("c_empty", "", "nextval('shared_seq'::regclass)"),
+            ("c_full", "", "nextval('shared_seq'::regclass)"),
+        ]
     finally:
         await db.close()
 
@@ -147,15 +152,23 @@ async def test_add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_t
     )
     try:
         pulled = await pull(db)
-        assert '@default(dbgenerated("nextval(\'other_seq\'::regclass)"))' in pulled.schema
+        assert "@default(dbgenerated(\"nextval('other_seq'::regclass)\"))" in pulled.schema
         schema = tmp_path / "schema.prisma"
-        schema.write_text(pulled.schema.replace('@default(dbgenerated("nextval(\'other_seq\'::regclass)"))', "@default(autoincrement())"))
+        schema.write_text(
+            pulled.schema.replace(
+                "@default(dbgenerated(\"nextval('other_seq'::regclass)\"))", "@default(autoincrement())"
+            )
+        )
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
         add = next(s for s in (await migrator.drift()).steps if s.summary == "make t_owns.id an identity column")
-        with pytest.raises(orm.DatabaseError, match="cannot make t_owns.id an identity column: it still owns the sequence"):
+        with pytest.raises(
+            orm.DatabaseError, match="cannot make t_owns.id an identity column: it still owns the sequence"
+        ):
             await db.execute(add.sql)
-        assert await db._fetch_text("SELECT attidentity::text FROM pg_attribute WHERE attrelid = 't_owns'::regclass AND attname = 'id'") == [("",)]
+        assert await db._fetch_text(
+            "SELECT attidentity::text FROM pg_attribute WHERE attrelid = 't_owns'::regclass AND attname = 'id'"
+        ) == [("",)]
     finally:
         await db.close()
 
@@ -330,9 +343,11 @@ async def test_pull_reports_what_it_cannot_write(tmp_path):
 
 async def test_comments_cannot_escape_the_shadow(tmp_path):
     db = await fresh("CREATE TABLE victim (id bigint PRIMARY KEY); CREATE TABLE t (id bigint PRIMARY KEY);")
-    await db.execute(f"ALTER DATABASE \"{PULL_DB}\" SET standard_conforming_strings = off")
+    await db.execute(f'ALTER DATABASE "{PULL_DB}" SET standard_conforming_strings = off')
     try:
-        await db.execute("SET standard_conforming_strings = on; COMMENT ON TABLE t IS 'x\\''; COMMIT; DROP TABLE victim; --'")
+        await db.execute(
+            "SET standard_conforming_strings = on; COMMENT ON TABLE t IS 'x\\''; COMMIT; DROP TABLE victim; --'"
+        )
         legacy = await orm.connect(PULL_URL, max_connections=1, default=False, registry=Registry())
         try:
             pulled = await pull(legacy)
@@ -342,12 +357,14 @@ async def test_comments_cannot_escape_the_shadow(tmp_path):
         assert await db._fetch_text("SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'orm_shadow%'") == [("0",)]
         assert pulled.differences == []
     finally:
-        await db.execute(f"ALTER DATABASE \"{PULL_DB}\" RESET standard_conforming_strings")
+        await db.execute(f'ALTER DATABASE "{PULL_DB}" RESET standard_conforming_strings')
         await db.close()
 
 
 async def test_drift_after_an_enum_value_recreates_the_columns(tmp_path):
-    db = await fresh("CREATE TYPE order_state AS ENUM ('new', 'paid'); CREATE TABLE orders (id bigint PRIMARY KEY, state order_state);")
+    db = await fresh(
+        "CREATE TYPE order_state AS ENUM ('new', 'paid'); CREATE TABLE orders (id bigint PRIMARY KEY, state order_state);"
+    )
     try:
         (await pull(db)).write(tmp_path / "schema.prisma")
         made = Migrations(tmp_path / "migrations", tmp_path / "schema.prisma")
@@ -367,7 +384,7 @@ async def test_pull_without_create_writes_the_schema(tmp_path):
     try:
         await db.execute(
             f"DROP ROLE IF EXISTS {role}; CREATE ROLE {role} LOGIN PASSWORD 'r';"
-            f"REVOKE CREATE ON DATABASE \"{PULL_DB}\" FROM PUBLIC; GRANT USAGE ON SCHEMA public TO {role};"
+            f'REVOKE CREATE ON DATABASE "{PULL_DB}" FROM PUBLIC; GRANT USAGE ON SCHEMA public TO {role};'
             f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role}"
         )
         url = urlunsplit(_url._replace(path="/" + PULL_DB, netloc=f"{role}:r@{_url.netloc.rsplit('@', 1)[-1]}"))
@@ -385,13 +402,16 @@ async def test_pull_without_create_writes_the_schema(tmp_path):
         env = {**os.environ, "ORM_DATABASE_URL": url}
         done = subprocess.run(
             [sys.executable, "-m", "orm", "--schema", "schema.prisma", "--dir", "migrations", "baseline"],
-            cwd=tmp_path, env=env, capture_output=True, text=True,
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
         )
         assert done.returncode == 0, done.stderr
         assert "warning: the database was not compared with 0001_initial" in done.stdout, done.stdout
     finally:
         await db.execute(
-            f"GRANT CREATE ON DATABASE \"{PULL_DB}\" TO PUBLIC; DROP TABLE IF EXISTS orm_migrations;"
+            f'GRANT CREATE ON DATABASE "{PULL_DB}" TO PUBLIC; DROP TABLE IF EXISTS orm_migrations;'
             f"DROP OWNED BY {role}; DROP ROLE {role}"
         )
         await db.close()

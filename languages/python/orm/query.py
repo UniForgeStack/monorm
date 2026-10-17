@@ -33,7 +33,17 @@ from .fields import BelongsTo, HasMany, ManyToMany, key_items, key_value
 from .pagination import Page
 from .protection import allowed_writes
 from . import debug
-from .write import CopyInsert, Delete, InsertMany, InsertOne, Update, UpdateMany, assignments, lookup_values, prepare_rows
+from .write import (
+    CopyInsert,
+    Delete,
+    InsertMany,
+    InsertOne,
+    Update,
+    UpdateMany,
+    assignments,
+    lookup_values,
+    prepare_rows,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -66,10 +76,14 @@ def _key_after(refs: tuple[ColumnRef[Any], ...], value: Any) -> Condition:
     if len(refs) == 1:
         return as_condition(refs[0] > value)
     items = key_items(tuple(r._field.name for r in refs), value)
-    return or_(*(
-        and_(*(r == items[r._field.name] for r in refs[:i]), refs[i] > items[refs[i]._field.name])
-        for i in range(len(refs))
-    ))
+    return or_(
+        *(
+            and_(*(r == items[r._field.name] for r in refs[:i]), refs[i] > items[refs[i]._field.name])
+            for i in range(len(refs))
+        )
+    )
+
+
 # get_or_insert: rounds of read, then insert, before a concurrent delete wins.
 GET_OR_INSERT_ROUNDS = 3
 
@@ -82,7 +96,12 @@ class _Prefetch:
     __slots__ = ("path", "queryset", "to_attr", "one")
 
     def __init__(
-        self, path: RelationPath[Any], queryset: QuerySet[Any] | None = None, *, to_attr: str | None = None, one: bool = False
+        self,
+        path: RelationPath[Any],
+        queryset: QuerySet[Any] | None = None,
+        *,
+        to_attr: str | None = None,
+        one: bool = False,
     ) -> None:
         if one and queryset is not None and (queryset._limit is not None or queryset._offset is not None):
             raise ValueError("label(one=True) takes the first row by the query set's order; drop the slice")
@@ -92,7 +111,9 @@ class _Prefetch:
         self.one = one
 
     def __repr__(self) -> str:
-        return f"_Prefetch({self.path!r}, {self.queryset!r}, to_attr={self.to_attr!r}{', one=True' if self.one else ''})"
+        return (
+            f"_Prefetch({self.path!r}, {self.queryset!r}, to_attr={self.to_attr!r}{', one=True' if self.one else ''})"
+        )
 
 
 class _Node:
@@ -116,8 +137,10 @@ def _prefetch_tree(model: type[Model], items: Iterable[tuple[tuple[str, ...], _P
         hop = hops[0]
         if hop not in model._meta.relations:
             raise ValueError(f"{model.__name__} has no relation {hop!r}")
-        if len(hops) == 1 and p.to_attr is not None and (
-            p.to_attr in model._meta.fields or p.to_attr in model._meta.relations or hasattr(model, p.to_attr)
+        if (
+            len(hops) == 1
+            and p.to_attr is not None
+            and (p.to_attr in model._meta.fields or p.to_attr in model._meta.relations or hasattr(model, p.to_attr))
         ):
             raise ValueError(f"label {p.to_attr!r} is a field, relation or member of {model.__name__}")
         attr = (p.to_attr or hop) if len(hops) == 1 else hop
@@ -129,7 +152,11 @@ def _prefetch_tree(model: type[Model], items: Iterable[tuple[tuple[str, ...], _P
         if len(hops) == 1:
             node.one = node.one or p.one
             if p.queryset is not None:
-                if node.qs is not None and node.qs is not p.queryset and not (node.qs._plain_relation() and p.queryset._plain_relation()):
+                if (
+                    node.qs is not None
+                    and node.qs is not p.queryset
+                    and not (node.qs._plain_relation() and p.queryset._plain_relation())
+                ):
                     raise ValueError(f"{p.path!r} is loaded twice with different query sets; label() one of them")
                 node.qs = p.queryset
         else:
@@ -189,7 +216,12 @@ def _full_selection(qs: QuerySet[Any]) -> bool:
 
 def _derive(
     model: type[Model], loads: Iterable[_LoadItem], *, by_query: bool = False
-) -> tuple[list[str], tuple[tuple[str, ...], ...], tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...], tuple[_Prefetch, ...]]:
+) -> tuple[
+    list[str],
+    tuple[tuple[str, ...], ...],
+    tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...],
+    tuple[_Prefetch, ...],
+]:
     """The model's own fields, joined paths, fields of partial joined models and
     ``IN (...)`` loads for ``load(*loads)``. Items under one first hop share a strategy:
     a join, unless one of them needs a query (a to-many hop, a relation query set that
@@ -214,7 +246,8 @@ def _derive(
     prefetch: list[_Prefetch] = []
     for hop, entries in groups.items():
         if not by_query and not any(
-            _to_many(model, hops) or (isinstance(item, QuerySet) and not item._plain_relation()) for hops, item in entries
+            _to_many(model, hops) or (isinstance(item, QuerySet) and not item._plain_relation())
+            for hops, item in entries
         ):
             for hops, item in entries:
                 related.extend(hops[:i] for i in range(1, len(hops) + 1) if hops[:i] not in related)
@@ -228,7 +261,10 @@ def _derive(
         target = model._meta.relations[hop].target
         path: RelationPath[Any] = RelationPath(model, (hop,), target)
         # a bare path (or a plain query set) asks for the normal selection; named columns add to it (the engine unites them)
-        bare = any(len(h) == 1 and (isinstance(i, RelationPath) or (isinstance(i, QuerySet) and _full_selection(i))) for h, i in entries)
+        bare = any(
+            len(h) == 1 and (isinstance(i, RelationPath) or (isinstance(i, QuerySet) and _full_selection(i)))
+            for h, i in entries
+        )
         base: QuerySet[Any] | None = None
         inner: list[_LoadItem] = []
         plain = False
@@ -252,7 +288,13 @@ def _derive(
                     inner.append(column)
             elif rest:
                 inner.append(RelationPath(target, rest, item._target))
-        if base is not None and (base._filters or base._order or base._limit is not None or base._offset is not None or base._without_defaults):
+        if base is not None and (
+            base._filters
+            or base._order
+            or base._limit is not None
+            or base._offset is not None
+            or base._without_defaults
+        ):
             if any(isinstance(item, (RelationPath, ColumnRef)) for _, item in entries):
                 raise ValueError(
                     f"{path!r} has a column or path beside a query set that changes its rows; "
@@ -313,7 +355,32 @@ class QuerySet(Generic[M]):
     ``exclude(User.posts.published == False)`` keeps users with no unpublished post.
     """
 
-    __slots__ = ("_required", "_model_helpers", "_without_defaults", "_without_related", "_model_fields", "_with_default_fields", "_related_fields", "_model", "_filters", "_order", "_limit", "_offset", "_related", "_prefetch", "_loads", "_via", "_label", "_one", "_as_prefetch", "_lock", "_db", "_from", "_joins", "_result")
+    __slots__ = (
+        "_required",
+        "_model_helpers",
+        "_without_defaults",
+        "_without_related",
+        "_model_fields",
+        "_with_default_fields",
+        "_related_fields",
+        "_model",
+        "_filters",
+        "_order",
+        "_limit",
+        "_offset",
+        "_related",
+        "_prefetch",
+        "_loads",
+        "_via",
+        "_label",
+        "_one",
+        "_as_prefetch",
+        "_lock",
+        "_db",
+        "_from",
+        "_joins",
+        "_result",
+    )
 
     def __init__(self, model: type[M]) -> None:
         self._required = False
@@ -440,7 +507,9 @@ class QuerySet(Generic[M]):
         for item in items:
             if isinstance(item, QuerySet):
                 if item._via is None:
-                    raise TypeError(f"load() takes a relation query set such as {self._model.__name__}.<relation>.objects, not {item!r}")
+                    raise TypeError(
+                        f"load() takes a relation query set such as {self._model.__name__}.<relation>.objects, not {item!r}"
+                    )
                 self._check_path(item._via)
             elif isinstance(item, RelationPath):
                 self._check_path(item)
@@ -448,7 +517,9 @@ class QuerySet(Generic[M]):
                 if not item._path:
                     own.append(item._field.name)
             else:
-                raise TypeError(f"load() takes columns, relations and relation query sets of {self._model.__name__}, got {item!r}")
+                raise TypeError(
+                    f"load() takes columns, relations and relation query sets of {self._model.__name__}, got {item!r}"
+                )
         if len(set(own)) != len(own):
             raise TypeError("duplicate model field")
         return self._clone(_loads=(*self._loads, *items))._derived()
@@ -457,7 +528,9 @@ class QuerySet(Generic[M]):
         """``_model_fields``, ``_related``, ``_related_fields`` and ``_prefetch`` from ``_loads``."""
         own, related, related_fields, prefetch = _derive(self._model, self._loads)
         model_fields = tuple(dict.fromkeys(own)) if own else self._model_fields
-        qs = self._clone(_model_fields=model_fields, _related=related, _related_fields=related_fields, _prefetch=prefetch)
+        qs = self._clone(
+            _model_fields=model_fields, _related=related, _related_fields=related_fields, _prefetch=prefetch
+        )
         _prefetch_tree(self._model, ((p.path._path, p) for p in prefetch))  # validates
         return qs
 
@@ -480,14 +553,26 @@ class QuerySet(Generic[M]):
 
     def _bound(self, method: str) -> None:
         if self._via is None:
-            raise TypeError(f"{method}() applies to a relation query set such as User.posts.objects, not to {self._model.__name__}.objects")
+            raise TypeError(
+                f"{method}() applies to a relation query set such as User.posts.objects, not to {self._model.__name__}.objects"
+            )
 
     def _plain_relation(self) -> bool:
         """A relation query set that asks for nothing a join can't give."""
         return not (
-            self._filters or self._order or self._limit is not None or self._offset is not None or self._loads
-            or self._model_fields is not None or self._label is not None or self._as_prefetch or self._lock is not None
-            or self._without_defaults or self._without_related or self._from is not None or self._joins
+            self._filters
+            or self._order
+            or self._limit is not None
+            or self._offset is not None
+            or self._loads
+            or self._model_fields is not None
+            or self._label is not None
+            or self._as_prefetch
+            or self._lock is not None
+            or self._without_defaults
+            or self._without_related
+            or self._from is not None
+            or self._joins
         )
 
     def filter(self, *conditions: ConditionLike) -> Self:
@@ -520,9 +605,7 @@ class QuerySet(Generic[M]):
         if isinstance(self._limit, Param) or isinstance(self._offset, Param):
             raise QueryError("a query set limited by param() can't be sliced; use limit() and offset()")
         if not isinstance(s, slice):
-            raise TypeError(
-                "query sets can only be sliced; use `await qs.offset(i).first()` for one row"
-            )
+            raise TypeError("query sets can only be sliced; use `await qs.offset(i).first()` for one row")
         if s.step is not None or (s.start or 0) < 0 or (s.stop is not None and s.stop < 0):
             raise ValueError("only non-negative slices without a step are supported")
         start = s.start or 0
@@ -701,8 +784,8 @@ class QuerySet(Generic[M]):
     async def iterate(self, batch_size: int = 1000) -> AsyncIterator[M]:
         """Every row, fetched ``batch_size`` at a time (see :meth:`batches`)::
 
-            async for post in Post.objects.iterate():
-                ...
+        async for post in Post.objects.iterate():
+            ...
         """
         async for batch in self.batches(batch_size):
             for obj in batch:
@@ -749,7 +832,8 @@ class QuerySet(Generic[M]):
                 ir["with_default_fields"] = True
         if self._related_fields and op == "select" and outer is None and ctes is None:
             ir["related_fields"] = [
-                {"path": list(p), "fields": list(f), **({"with_default_fields": True} if union else {})} for p, f, union in self._related_fields
+                {"path": list(p), "fields": list(f), **({"with_default_fields": True} if union else {})}
+                for p, f, union in self._related_fields
             ]
         if self._model_helpers:
             ir["model_helpers"] = list(self._model_helpers)
@@ -783,7 +867,9 @@ class QuerySet(Generic[M]):
 
     def _standalone(self) -> None:
         if self._via is not None:
-            raise TypeError(f"a relation query set can only be used inside load(); use {self._model.__name__}.objects for a standalone query")
+            raise TypeError(
+                f"a relation query set can only be used inside load(); use {self._model.__name__}.objects for a standalone query"
+            )
 
     def _select_ir(self, op: str, params: list[Any]) -> dict[str, Any]:
         self._standalone()
@@ -861,7 +947,9 @@ class QuerySet(Generic[M]):
         from .db import _with_scope, resolve
 
         if analyze and self._lock is not None:
-            raise QueryError("explain(analyze=True) would run the query and take its row locks; drop lock() to explain it")
+            raise QueryError(
+                "explain(analyze=True) would run the query and take its row locks; drop lock() to explain it"
+            )
         params: list[Any] = []
         op, params = _with_scope(json.dumps(self._select_ir("select", params)), params)
         db = resolve(self._db)
@@ -881,10 +969,16 @@ class QuerySet(Generic[M]):
         if self._order:
             return self._order
         meta = self._model._meta
-        select = {"model": meta.name, "without_defaults": self._without_defaults, "from": None if self._from is None else "cte"}
+        select = {
+            "model": meta.name,
+            "without_defaults": self._without_defaults,
+            "from": None if self._from is None else "cte",
+        }
         keys = json.loads(self._native().effective_order(json.dumps(select)))
         if keys:
-            return tuple(Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k["desc"], k["nulls"]) for k in keys)
+            return tuple(
+                Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k["desc"], k["nulls"]) for k in keys
+            )
         return tuple(Ordering(ref, desc=False) for ref in meta.key_refs())
 
     async def _fetch(self) -> list[M]:
@@ -948,7 +1042,9 @@ class QuerySet(Generic[M]):
         qs = self._clone(_model_helpers=helpers)
         cursor = after if forward else before
         if cursor is not None:
-            qs = qs.filter(pagination.after(self._model, order, pagination.decode_cursor(self._model, cursor, fp, keys)))
+            qs = qs.filter(
+                pagination.after(self._model, order, pagination.decode_cursor(self._model, cursor, fp, keys))
+            )
         rows = await qs.order_by(*order)[: size + 1]._fetch()
         more = len(rows) > size
         rows = rows[:size] if forward else rows[:size][::-1]
@@ -977,9 +1073,7 @@ class QuerySet(Generic[M]):
         ``require().get()`` also raises ``Model.DoesNotExist`` when absent."""
         objs = await self.filter(*conditions).limit(2)._read()
         if len(objs) > 1:
-            raise self._model.MultipleObjectsReturned(
-                f"more than one {self._model.__name__} matches the query"
-            )
+            raise self._model.MultipleObjectsReturned(f"more than one {self._model.__name__} matches the query")
         return objs[0] if objs else None
 
     async def count(self) -> int:
@@ -1012,13 +1106,19 @@ class QuerySet(Generic[M]):
             raise QueryError("in_bulk() can't be used on a sliced query set")
         name = col._field.name
         if ids is None:
-            return {o._field_value(name): o for o in await self._clone(_model_helpers=(*self._model_helpers, name))._fetch()}
+            return {
+                o._field_value(name): o for o in await self._clone(_model_helpers=(*self._model_helpers, name))._fetch()
+            }
         keys = list(dict.fromkeys(ids))
         out: dict[Any, M] = {}
         seen: set[str] = set()
         for i in range(0, len(keys), IN_BULK_CHUNK):
             with debug.internal_loop(seen):
-                chunk = await self.filter(col.in_(keys[i : i + IN_BULK_CHUNK]))._clone(_model_helpers=(*self._model_helpers, name))._fetch()
+                chunk = (
+                    await self.filter(col.in_(keys[i : i + IN_BULK_CHUNK]))
+                    ._clone(_model_helpers=(*self._model_helpers, name))
+                    ._fetch()
+                )
             for o in chunk:
                 out[o._field_value(name)] = o
         return out
@@ -1134,7 +1234,10 @@ class QuerySet(Generic[M]):
             if row is not None:
                 return row, True
             found = await read()
-            if found is None and await QuerySet(self._model)._clone(_db=reads._db, _without_defaults=True).filter(*where).exists():
+            if (
+                found is None
+                and await QuerySet(self._model)._clone(_db=reads._db, _without_defaults=True).filter(*where).exists()
+            ):
                 raise QueryError(
                     f"get_or_insert: a {self._model.__name__} row matching the lookup exists, "
                     f"but the query set's filters hide it"
@@ -1328,9 +1431,11 @@ class Prepared(Generic[M]):
         from .inspection import _native as inspection_native
 
         c = self._statement("select")
-        return QueryInspection._from_json(inspection_native(self._qs).inspect(
-            *_with_scope(c.json, c.bind(values, self._names)),
-        ))
+        return QueryInspection._from_json(
+            inspection_native(self._qs).inspect(
+                *_with_scope(c.json, c.bind(values, self._names)),
+            )
+        )
 
     def sql(self, **values: Any) -> str:
         """The SELECT for these values, parameters inlined (for debugging)."""
@@ -1350,7 +1455,9 @@ class Prepared(Generic[M]):
 
 
 async def prefetch(
-    instances: Iterable[M], *relations: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any], using: Database | None = None
+    instances: Iterable[M],
+    *relations: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any],
+    using: Database | None = None,
 ) -> None:
     """Load relations onto instances you already have, as :meth:`QuerySet.load` does for
     the rows of a query, but always by ``IN (...)`` query: one query per relation level,
@@ -1438,7 +1545,9 @@ def _query_set_class(model: type[Model]) -> type[QuerySet[Any]]:
     if meta.extension_sets:
         if meta.composed_set is None:
             user = [_resolve_query_set(model, cls)] if cls is not None else []
-            meta.composed_set = cast("type[QuerySet[Any]]", type(f"{model.__name__}QuerySet", (*user, *meta.extension_sets, QuerySet), {}))
+            meta.composed_set = cast(
+                "type[QuerySet[Any]]", type(f"{model.__name__}QuerySet", (*user, *meta.extension_sets, QuerySet), {})
+            )
         return meta.composed_set
     if cls is None:
         return QuerySet
@@ -1529,9 +1638,7 @@ class RelatedSet(QuerySet[M]):
 
         rows = self._instance.__dict__.get(self._relation.name)
         if rows is None:
-            raise NotLoaded(
-                f"{self._relation.model.__name__}.{self._relation.name} was not prefetched"
-            )
+            raise NotLoaded(f"{self._relation.model.__name__}.{self._relation.name} was not prefetched")
         return list(rows)
 
     def _is_pristine(self) -> bool:
@@ -1665,7 +1772,9 @@ class ManyRelatedSet(QuerySet[M]):
             if isinstance(o, target):
                 keys.append(o._field_value(to))
             elif hasattr(o, "_meta"):
-                raise TypeError(f"{self._relation.model.__name__}.{self._relation.name} links {target.__name__}, not {o!r}")
+                raise TypeError(
+                    f"{self._relation.model.__name__}.{self._relation.name} links {target.__name__}, not {o!r}"
+                )
             else:
                 keys.append(o)
         return list(dict.fromkeys(keys))
@@ -1733,7 +1842,9 @@ class ManyRelatedSet(QuerySet[M]):
         self._through_defaults(through_defaults)
         keys = self._target_keys(objs)
         col = self._target_col()
-        async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(savepoint=False):
+        async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(
+            savepoint=False
+        ):
             await self._links().filter(col.not_in(keys)).delete()
             await self.add(*keys, through_defaults=through_defaults)
 
@@ -1763,6 +1874,7 @@ class ManyRelatedSet(QuerySet[M]):
 
 
 if TYPE_CHECKING:
+
     class RequiredQuerySet(QuerySet[M]):
         """The type of a query whose row reads require a result."""
 

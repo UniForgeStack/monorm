@@ -74,7 +74,12 @@ def size(Item):
 async def test_case_in_group_by_having_and_order_by(items):
     objects, Item = items
     case = size(Item)
-    rows = await objects.select(case.label("size"), func.count().label("n")).group_by(case).having(func.count() > 2).order_by(case)
+    rows = (
+        await objects.select(case.label("size"), func.count().label("n"))
+        .group_by(case)
+        .having(func.count() > 2)
+        .order_by(case)
+    )
     assert [tuple(r) for r in rows] == [("small", 3)]
     rows = await objects.select(case.label("size"), func.count().label("n")).group_by(case).order_by(case.desc())
     assert [tuple(r) for r in rows] == [("small", 3), ("large", 2)]
@@ -140,9 +145,13 @@ async def nums():
 
 async def test_equal_numeric_values_with_different_scale_keep_separate_binds(nums):
     objects, Num = nums
-    rows = await objects.select(func.coalesce(Num.p, Decimal("1.0")).label("x"), func.coalesce(Num.p, Decimal("1.00")).label("y")).order_by(Num.id)
+    rows = await objects.select(
+        func.coalesce(Num.p, Decimal("1.0")).label("x"), func.coalesce(Num.p, Decimal("1.00")).label("y")
+    ).order_by(Num.id)
     assert [tuple(map(str, r)) for r in rows] == [("1.0", "1.00")]
-    rows = await objects.select(func.coalesce(Num.f, 0.0).label("x"), func.coalesce(Num.f, -0.0).label("y")).order_by(Num.id)
+    rows = await objects.select(func.coalesce(Num.f, 0.0).label("x"), func.coalesce(Num.f, -0.0).label("y")).order_by(
+        Num.id
+    )
     assert [tuple(map(str, r)) for r in rows] == [("0.0", "-0.0")]
 
 

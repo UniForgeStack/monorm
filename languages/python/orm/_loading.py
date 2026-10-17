@@ -1,4 +1,5 @@
 """Additive instance loading using the queryset's load vocabulary."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -8,12 +9,16 @@ from .expr import ColumnRef, RelationPath
 from .fields import BelongsTo, HasOne
 
 
-def loaded(owner: Any, path: tuple[str, ...], field: str | None = None, *, label: str | None = None, query: Any = None) -> bool:
+def loaded(
+    owner: Any, path: tuple[str, ...], field: str | None = None, *, label: str | None = None, query: Any = None
+) -> bool:
     if not path and query is not None:
         names = query._model_fields if query._model_fields is not None else owner._meta.field_names
         return all(n in owner.__dict__ for n in names) and all(item_loaded(owner, i) for i in query._loads)
     if not path:
-        return field in owner.__dict__ if field is not None else all(n in owner.__dict__ for n in owner._meta.field_names)
+        return (
+            field in owner.__dict__ if field is not None else all(n in owner.__dict__ for n in owner._meta.field_names)
+        )
     name, *rest = path
     relation = owner._meta.relations[name]
     attr = label if not rest and label is not None else name
@@ -32,9 +37,13 @@ def item_loaded(owner: Any, item: Any) -> bool:
 
     path = item._via if isinstance(item, QuerySet) else item
     assert path is not None
-    return loaded(owner, path._path, path._field.name if isinstance(path, ColumnRef) else None,
-                  label=item._label if isinstance(item, QuerySet) else None,
-                  query=item if isinstance(item, QuerySet) else None)
+    return loaded(
+        owner,
+        path._path,
+        path._field.name if isinstance(path, ColumnRef) else None,
+        label=item._label if isinstance(item, QuerySet) else None,
+        query=item if isinstance(item, QuerySet) else None,
+    )
 
 
 def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | None = None) -> None:
@@ -92,8 +101,11 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
     # Validate the whole request before doing I/O, including relation query options.
     model.objects.without_defaults().load(*items)._select_ir("select", [])
     requested = items or tuple(getattr(model, name) for name in owner._meta.field_names)
-    own = [item for item in requested if isinstance(item, ColumnRef) and not item._path
-           and (reload or item._field.name not in owner.__dict__)]
+    own = [
+        item
+        for item in requested
+        if isinstance(item, ColumnRef) and not item._path and (reload or item._field.name not in owner.__dict__)
+    ]
     if own:
         fresh = await owner._row_query().load(*own).require().get()
         merge(owner, fresh, reload)
@@ -115,7 +127,9 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
                     cached = None
                 # A partial cached target needs to be filled rather than treated as complete.
                 if reload or cached is None:
-                    await _reference_adapter.load_reference(owner, name, reload=reload, filtered=rel.target._meta.filtered)
+                    await _reference_adapter.load_reference(
+                        owner, name, reload=reload, filtered=rel.target._meta.filtered
+                    )
                     continue
         relations.append(item)
     if relations:
@@ -132,7 +146,9 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
         for item in relations:
             path = item._via if isinstance(item, QuerySet) else item
             assert path is not None
-            names[id(item)] = item._label if isinstance(item, QuerySet) and item._label and len(path._path) == 1 else path._path[0]
+            names[id(item)] = (
+                item._label if isinstance(item, QuerySet) and item._label and len(path._path) == 1 else path._path[0]
+            )
         # A load that leaves a name unset must not keep the old cached value.
         for name in names.values():
             staged.__dict__.pop(name, None)

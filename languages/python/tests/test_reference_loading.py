@@ -1,4 +1,5 @@
 """Explicit instance loads run on the instance context and cache per owner."""
+
 import asyncio
 
 import pytest
@@ -6,7 +7,7 @@ import orm
 from conftest import DATABASE_URL
 from orm.query import QuerySet
 
-SOURCE = '''
+SOURCE = """
 model Owner {
   id Int @id
   name String
@@ -39,7 +40,7 @@ model Role {
   person Owner @relation(fields: [id], references: [id])
   @@map("ref04_roles")
 }
-'''
+"""
 
 
 async def load_relation(row, name, *, reload=False):
@@ -160,7 +161,10 @@ async def test_dangling_key_message_says_why(references):
     assert "no row of the target" not in str(plain.value)
     # Emulate corrupt data: the join found no target for a required key.
     row.__dict__["owner"] = None
-    with pytest.raises(orm.NotLoaded, match=r"is not loaded: the key is set and no row of the target has it; use await obj\.load\(Required\.owner\)"):
+    with pytest.raises(
+        orm.NotLoaded,
+        match=r"is not loaded: the key is set and no row of the target has it; use await obj\.load\(Required\.owner\)",
+    ):
         _ = row.owner
 
 
@@ -237,8 +241,10 @@ async def test_hidden_dependency_keys_and_missing_key_fail_before_io(references,
     assert row.owner is owner
     assert owner.id == 1
     row.__dict__["_orm_internal"].clear()
+
     async def forbidden(qs):
         raise AssertionError("must fail before I/O")
+
     monkeypatch.setattr(QuerySet, "first", forbidden)
     with pytest.raises(orm.NotLoaded, match="owner_id"):
         await load_relation(row, "owner", reload=True)
@@ -258,6 +264,7 @@ async def test_different_transaction_contexts_do_not_coalesce(references, monkey
     gate, started = asyncio.Event(), asyncio.Event()
     original = QuerySet.first
     calls = 0
+
     async def delayed(qs):
         nonlocal calls
         calls += 1
@@ -266,6 +273,7 @@ async def test_different_transaction_contexts_do_not_coalesce(references, monkey
             started.set()
             await gate.wait()
         return value
+
     monkeypatch.setattr(QuerySet, "first", delayed)
     outside = asyncio.create_task(row.load(m["Required"].owner))
     await started.wait()

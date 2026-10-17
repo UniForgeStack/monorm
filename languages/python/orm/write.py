@@ -64,9 +64,7 @@ def _link(rel: BelongsTo[Any, Any], value: Any) -> dict[str, Any]:
     return {via: _key_of(value, to) for via, to in zip(rel.via_fields, rel.to_fields, strict=True)}
 
 
-def prepare_rows(
-    model: type[Model], rows: Iterable[Mapping[str, Any]]
-) -> tuple[list[str], list[list[Any]], set[str]]:
+def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple[list[str], list[list[Any]], set[str]]:
     """Validates rows and aligns them on one column list.
 
     Returns (fields, rows, provided): the fields any row sets, each row as values in
@@ -82,7 +80,9 @@ def prepare_rows(
             if isinstance(value, Expression):
                 raise TypeError(f"{meta.name}.{key}: insert takes plain values, not expressions")
             if isinstance(value, Ordering):
-                raise TypeError(f"{key}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value")
+                raise TypeError(
+                    f"{key}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value"
+                )
             if key in meta.input_fields:
                 values[key] = value
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
@@ -119,7 +119,9 @@ def lookup_values(model: type[Model], values: Mapping[str, Any]) -> dict[str, An
             items = {key: value}
         for key, value in items.items():
             if value is None:
-                raise ValueError(f"get_or_insert: {meta.name}.{key} is None; NULL never conflicts, so the row is not unique")
+                raise ValueError(
+                    f"get_or_insert: {meta.name}.{key} is None; NULL never conflicts, so the row is not unique"
+                )
             out[key] = value
     if not out:
         raise TypeError("get_or_insert() needs the fields of a unique constraint")
@@ -179,7 +181,9 @@ def assignments(model: type[Model], values: Mapping[str, Any], ctx: IRContext) -
             if name not in meta.input_fields:
                 raise TypeError(f"{meta.name} has no field {name!r}")
             if isinstance(value, Ordering):
-                raise TypeError(f"{name}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value")
+                raise TypeError(
+                    f"{name}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value"
+                )
             node = value._ir(ctx) if isinstance(value, Expression) else ctx.param(value)
             out.append({"field": name, "value": node})
     return out
@@ -195,7 +199,18 @@ def _field_names(model: type[Model], columns: tuple[ColumnRef[Any], ...], what: 
 
 
 class _Insert:
-    __slots__ = ("_qs", "_fields", "_rows", "_provided", "_conflict", "_where", "_update", "_set", "_batch_size", "_used")
+    __slots__ = (
+        "_qs",
+        "_fields",
+        "_rows",
+        "_provided",
+        "_conflict",
+        "_where",
+        "_update",
+        "_set",
+        "_batch_size",
+        "_used",
+    )
 
     def __init__(
         self,
@@ -209,7 +224,9 @@ class _Insert:
         batch_size: int | None = None,
         where: dict[str, Any] | None = None,
     ) -> None:
-        if batch_size is not None and (isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1):
+        if batch_size is not None and (
+            isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1
+        ):
             raise ValueError("batch_size must be an integer of at least 1")
         self._qs = qs
         self._fields = fields
@@ -241,12 +258,16 @@ class _Insert:
         if not isinstance(update, bool):
             raise TypeError(f"on_conflict(update=...) must be True or False, got {update!r}")
         if not update and (update_fields is not None or update_values is not None):
-            raise TypeError("on_conflict(update=False) skips conflicting rows; it takes no update_fields or update_values")
+            raise TypeError(
+                "on_conflict(update=False) skips conflicting rows; it takes no update_fields or update_values"
+            )
         params: list[Any] = []
         where_ir = None if where is None else as_condition(where)._ir(IRContext(model, params))
         set_: tuple[list[dict[str, Any]], list[Any]] | None = None if where_ir is None else ([], params)
         if not update:
-            return cls(self._qs, self._fields, self._rows, self._provided, target, None, set_, self._batch_size, where_ir)
+            return cls(
+                self._qs, self._fields, self._rows, self._provided, target, None, set_, self._batch_size, where_ir
+            )
         fields = None if update_fields is None else _field_names(model, tuple(update_fields), "update_fields")
         if fields is not None and not fields:
             raise TypeError("on_conflict(update_fields=[]) updates nothing; use update=False to skip conflicting rows")
@@ -254,13 +275,21 @@ class _Insert:
             raise TypeError("on_conflict(update_values={}) updates nothing; use update=False to skip conflicting rows")
         if fields is None and update_values is None:
             key = model._meta.key_names
-            fields = [f for f in self._fields if f in self._provided and f not in target and f not in key and f != model._meta.version_field]
+            fields = [
+                f
+                for f in self._fields
+                if f in self._provided and f not in target and f not in key and f != model._meta.version_field
+            ]
         if update_values is not None:
             set_ = (assignments(model, update_values, IRContext(model, params)), params)
             overlap = set(fields or ()) & {a["field"] for a in set_[0]}
             if overlap:
-                raise TypeError(f"on_conflict() updates {', '.join(sorted(overlap))} in both update_fields and update_values")
-        return cls(self._qs, self._fields, self._rows, self._provided, target, fields or [], set_, self._batch_size, where_ir)
+                raise TypeError(
+                    f"on_conflict() updates {', '.join(sorted(overlap))} in both update_fields and update_values"
+                )
+        return cls(
+            self._qs, self._fields, self._rows, self._provided, target, fields or [], set_, self._batch_size, where_ir
+        )
 
     def inspect(self) -> QueryInspection:
         """Inspect planned INSERT batches without executing them."""
@@ -270,12 +299,23 @@ class _Insert:
     def _inspect_returning(self, returning: bool) -> QueryInspection:
         if not self._rows:
             return QueryInspection(0, False, ())
-        options = {"conflict": self._conflict, "update": self._update,
-                   "set": self._set[0] if self._set else [], "filter": self._where}
-        return QueryInspection._from_json(_inspection_native(self._qs).inspect_insert(
-            self._qs.model._meta.name, self._fields, self._rows, json.dumps(options),
-            self._set[1] if self._set else [], self._batch_size, returning,
-        ))
+        options = {
+            "conflict": self._conflict,
+            "update": self._update,
+            "set": self._set[0] if self._set else [],
+            "filter": self._where,
+        }
+        return QueryInspection._from_json(
+            _inspection_native(self._qs).inspect_insert(
+                self._qs.model._meta.name,
+                self._fields,
+                self._rows,
+                json.dumps(options),
+                self._set[1] if self._set else [],
+                self._batch_size,
+                returning,
+            )
+        )
 
     async def _execute(self, returning: bool) -> Any:
         from .db import resolve
@@ -284,8 +324,16 @@ class _Insert:
             return [] if returning else 0
         db = resolve(self._qs._db)
         return await db._insert(
-            self._qs.model._meta.name, self._fields, self._rows, self._conflict, self._update, self._set, self._qs._db,
-            self._batch_size, self._where, returning=returning,
+            self._qs.model._meta.name,
+            self._fields,
+            self._rows,
+            self._conflict,
+            self._update,
+            self._set,
+            self._qs._db,
+            self._batch_size,
+            self._where,
+            returning=returning,
         )
 
     def __del__(self) -> None:
@@ -623,10 +671,18 @@ class UpdateMany(Generic[M]):
         if "with" in ir:
             raise QueryError("update_many() filters can't read CTEs")
         filters, params = _with_scope(json.dumps(ir["filters"]), params, key="filters")
-        return QueryInspection._from_json(_inspection_native(self._qs).inspect_update_many(
-            self._qs.model._meta.name, self._fields, self._rows, filters, params,
-            self._batch_size, returning, self._qs._without_defaults,
-        ))
+        return QueryInspection._from_json(
+            _inspection_native(self._qs).inspect_update_many(
+                self._qs.model._meta.name,
+                self._fields,
+                self._rows,
+                filters,
+                params,
+                self._batch_size,
+                returning,
+                self._qs._without_defaults,
+            )
+        )
 
     async def _run(self, returning: bool) -> Any:
         from .db import resolve
@@ -639,8 +695,15 @@ class UpdateMany(Generic[M]):
             raise QueryError("update_many() filters can't read CTEs")
         db = resolve(self._qs._db)
         return await db._update_many(
-            self._qs.model._meta.name, self._fields, self._rows, ir["filters"], params, returning, self._batch_size,
-            self._qs._db, self._qs._without_defaults,
+            self._qs.model._meta.name,
+            self._fields,
+            self._rows,
+            ir["filters"],
+            params,
+            returning,
+            self._batch_size,
+            self._qs._db,
+            self._qs._without_defaults,
         )
 
     def returning(self) -> _UpdateManyReturning[M]:

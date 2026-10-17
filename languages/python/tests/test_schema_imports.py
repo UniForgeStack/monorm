@@ -1,4 +1,5 @@
 """Schema composition reaches migrations, runtime identity and typed generation."""
+
 import importlib
 import os
 from pathlib import Path
@@ -14,7 +15,9 @@ import orm.model
 
 @pytest.mark.parametrize("first", ["main", "child"])
 @pytest.mark.parametrize("external", [False, True])
-async def test_generated_schema_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, external: bool) -> None:
+async def test_generated_schema_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, external: bool
+) -> None:
     package = tmp_path / "composed"
     billing = tmp_path / "library" if external else package / "billing"
     package.mkdir()
@@ -22,7 +25,7 @@ async def test_generated_schema_modules(tmp_path: Path, monkeypatch: pytest.Monk
     (package / "__init__.py").touch()
     (billing / "__init__.py").touch()
     root = package / "schema.prisma"
-    root.write_text('''datasource db {
+    root.write_text("""datasource db {
  provider = "sqlite"
 }
 import "billing/schema.prisma" (prefix: "billing_")
@@ -30,21 +33,23 @@ model User {
  id Int @id
  invoices Invoice[]
 }
-''')
-    (billing / "schema.prisma").write_text('''model Invoice {
+""")
+    (billing / "schema.prisma").write_text("""model Invoice {
  id Int @id
  user_id Int
  user User @relation(fields: [user_id], references: [id])
 }
-''')
+""")
     if external:
-        root.write_text(root.read_text().replace('billing/schema.prisma', '../library/schema.prisma'))
+        root.write_text(root.read_text().replace("billing/schema.prisma", "../library/schema.prisma"))
     loaded = orm.load(root, registry=Registry())
     assert loaded["Invoice"]._meta.ir()["table"] == "billing_invoice"
     repo = Path(__file__).resolve().parents[3]
     result = subprocess.run(
         ["cargo", "run", "-q", "-p", "orm-cli", "--", "--schema", str(root), "generate", "python"],
-        cwd=repo, text=True, capture_output=True,
+        cwd=repo,
+        text=True,
+        capture_output=True,
     )
     assert result.returncode == 0, result.stderr
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -77,19 +82,29 @@ model User {
         assert len(list(reg)) == 2
         if first == "main" and external:
             consumer = tmp_path / "check.py"
-            consumer.write_text("from typing import assert_type\nfrom orm import ColumnRef\nfrom composed.models import User\nfrom library.models import Invoice\nassert_type(User.invoices.id, ColumnRef[int])\nassert_type(Invoice.user.id, ColumnRef[int])\n")
+            consumer.write_text(
+                "from typing import assert_type\nfrom orm import ColumnRef\nfrom composed.models import User\nfrom library.models import Invoice\nassert_type(User.invoices.id, ColumnRef[int])\nassert_type(Invoice.user.id, ColumnRef[int])\n"
+            )
             checked = subprocess.run(
                 [sys.executable, "-m", "mypy", "--strict", str(consumer)],
-                cwd=tmp_path, text=True, capture_output=True,
+                cwd=tmp_path,
+                text=True,
+                capture_output=True,
                 env={**os.environ, "MYPYPATH": f"{repo / 'languages/python'}:{tmp_path}"},
             )
             assert checked.returncode == 0, checked.stdout + checked.stderr
             checked = subprocess.run(
                 [str(Path(sys.executable).with_name("pyright")), "--pythonpath", sys.executable, str(consumer)],
-                cwd=tmp_path, text=True, capture_output=True,
+                cwd=tmp_path,
+                text=True,
+                capture_output=True,
             )
             assert checked.returncode == 0, checked.stdout + checked.stderr
     finally:
         for name in list(sys.modules):
-            if name in ("composed", "library") or name.startswith(("composed.", "library.")) or name == f"_orm_schema:{package / '_orm_models.py'}":
+            if (
+                name in ("composed", "library")
+                or name.startswith(("composed.", "library."))
+                or name == f"_orm_schema:{package / '_orm_models.py'}"
+            ):
                 del sys.modules[name]

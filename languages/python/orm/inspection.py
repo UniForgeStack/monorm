@@ -75,13 +75,9 @@ def _native(qs: QuerySet[Any]) -> Any:
     return db._engine if db is not None else qs._native()
 
 
-def _inspect(
-    qs: QuerySet[Any], ir: dict[str, Any] | None, params: list[Any]
-) -> QueryInspection:
+def _inspect(qs: QuerySet[Any], ir: dict[str, Any] | None, params: list[Any]) -> QueryInspection:
     from .db import _with_scope
 
     if ir is None:
         return QueryInspection(0, False, ())
-    return QueryInspection._from_json(
-        _native(qs).inspect(*_with_scope(json.dumps(ir), params))
-    )
+    return QueryInspection._from_json(_native(qs).inspect(*_with_scope(json.dumps(ir), params)))

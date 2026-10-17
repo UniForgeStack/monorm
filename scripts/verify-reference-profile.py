@@ -1,4 +1,5 @@
 """Standalone enabled/disabled smoke check; does not import generated fixtures."""
+
 import asyncio
 import json
 import sys
@@ -12,9 +13,12 @@ available = "reference-loading" in json.loads(_native.native_artifact())["capabi
 assert available is expected
 assert ("orm._references" in sys.modules) is expected
 registry = orm.Registry()
-m = orm.loads('''datasource db {\n provider = "sqlite"\n}
+m = orm.loads(
+    """datasource db {\n provider = "sqlite"\n}
 model Parent {\n id Int @id\n children Child[]\n}
-model Child {\n id Int @id\n parent_id Int\n parent Parent @relation(fields: [parent_id], references: [id])\n}''', registry=registry)
+model Child {\n id Int @id\n parent_id Int\n parent Parent @relation(fields: [parent_id], references: [id])\n}""",
+    registry=registry,
+)
 assert hasattr(m["Child"], "load")
 assert not hasattr(m["Child"], "load_parent")
 assert (m["Child"]._replace_from is Model._replace_from) is not expected
@@ -27,6 +31,7 @@ if not expected:
     else:
         raise AssertionError("missing generated capability must reject")
     assert registry.ir() == before
+
 
 async def verify():
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
@@ -44,5 +49,7 @@ async def verify():
             assert joined.parent.id == 1
     finally:
         await db.close()
+
+
 asyncio.run(verify())
 print(f"reference profile {sys.argv[1]} verified")

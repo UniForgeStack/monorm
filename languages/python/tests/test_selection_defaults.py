@@ -1,4 +1,5 @@
 """Partial output shapes and compiled defaults on both supported databases."""
+
 import json
 import os
 
@@ -12,29 +13,70 @@ QUERY_DEFAULTS = "query-defaults" in json.loads(_native.native_artifact()).get("
 def schema(dialect, defaults=True):
     def field(name, kind="string", **flags):
         return {"name": name, "column": name, "type": kind, **flags}
+
     return {
         "dialect": dialect,
         "models": [
-            {"name": "SelectedAuthor", "table": "selection03_authors", "fields": [
-                field("name"), field("id", "int", primary_key=True, auto_increment=True),
-                field("visible", "bool", default=True), field("bio", "text"), field("note", nullable=True),
-            ], "relations": [{"name": "books", "kind": "many", "target": "SelectedBook", "from": "id", "to": "author_id"}]},
-            {"name": "SelectedBook", "table": "selection03_books", "fields": [
-                field("title"), field("author_id", "int"), field("id", "int", primary_key=True, auto_increment=True),
-                field("isbn", nullable=True),
-            ], "relations": [{"name": "author", "kind": "one", "target": "SelectedAuthor", "from": "author_id", "to": "id", "foreign_key": True, "on_delete": "cascade"}]},
+            {
+                "name": "SelectedAuthor",
+                "table": "selection03_authors",
+                "fields": [
+                    field("name"),
+                    field("id", "int", primary_key=True, auto_increment=True),
+                    field("visible", "bool", default=True),
+                    field("bio", "text"),
+                    field("note", nullable=True),
+                ],
+                "relations": [
+                    {"name": "books", "kind": "many", "target": "SelectedBook", "from": "id", "to": "author_id"}
+                ],
+            },
+            {
+                "name": "SelectedBook",
+                "table": "selection03_books",
+                "fields": [
+                    field("title"),
+                    field("author_id", "int"),
+                    field("id", "int", primary_key=True, auto_increment=True),
+                    field("isbn", nullable=True),
+                ],
+                "relations": [
+                    {
+                        "name": "author",
+                        "kind": "one",
+                        "target": "SelectedAuthor",
+                        "from": "author_id",
+                        "to": "id",
+                        "foreign_key": True,
+                        "on_delete": "cascade",
+                    }
+                ],
+            },
         ],
-        "behavior": {"schema_contract": 1, "query_defaults": [
-            {"model": "SelectedAuthor", "filter": {"t": "col", "path": [], "name": "visible"}, "fields": ["name", "note"]},
-            {"model": "SelectedBook", "fields": ["title"], "related": [["author"]]},
-        ]} if defaults else {},
+        "behavior": {
+            "schema_contract": 1,
+            "query_defaults": [
+                {
+                    "model": "SelectedAuthor",
+                    "filter": {"t": "col", "path": [], "name": "visible"},
+                    "fields": ["name", "note"],
+                },
+                {"model": "SelectedBook", "fields": ["title"], "related": [["author"]]},
+            ],
+        }
+        if defaults
+        else {},
     }
 
 
 async def open_db(dialect, defaults):
     registry = orm.Registry()
     classes = orm.define(schema(dialect, defaults), registry=registry)
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
@@ -131,7 +173,10 @@ async def test_selection_defaults(dialect):
         prefetched = await a.load(Author.books).get()
         assert prefetched.books.cached[0].title == "one"
         bypassed_prefetch = await a.without_defaults().load(Author.books).filter(Author.id == visible.pk).get()
-        assert bypassed_prefetch.books.cached[0].title == "one" and bypassed_prefetch.books.cached[0].author_id == visible.pk
+        assert (
+            bypassed_prefetch.books.cached[0].title == "one"
+            and bypassed_prefetch.books.cached[0].author_id == visible.pk
+        )
         assert await a.filter(Author.books.title == "one").count() == 1
         written = await a.load().update(visible=False).returning()
         assert len(written) == 1 and written[0].visible is False
@@ -172,9 +217,15 @@ model Note {
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_order(dialect):
     registry = orm.Registry()
-    models = orm.loads(ORDERED.replace('"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'), registry=registry)
+    models = orm.loads(
+        ORDERED.replace('"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'), registry=registry
+    )
     Topic, Note = models["Topic"], models["Note"]
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
@@ -190,7 +241,10 @@ async def test_default_order(dialect):
         assert (await t.first()).name == "c" and (await t.last()).name == "b"
         assert names(await t.order_by(Topic.name.desc())) == ["d", "c", "b", "a"]
         assert names(await t.order_by(Topic.rank.asc(nulls="first"), Topic.id)) == ["b", "a", "c", "d"]
-        assert "ORDER BY" not in t.without_defaults().sql() and "ORDER BY" not in t.filter(Topic.id > 0).without_defaults().sql()
+        assert (
+            "ORDER BY" not in t.without_defaults().sql()
+            and "ORDER BY" not in t.filter(Topic.id > 0).without_defaults().sql()
+        )
         assert (await t.without_defaults().first()).name == "a"
         assert await t.count() == 4 and await t.exists()
         assert [names(b) async for b in t.batches(2)] == [["a", "b"], ["c", "d"]]
@@ -219,30 +273,72 @@ async def test_default_order(dialect):
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
 def test_default_order_options_have_one_source():
-    both = ORDERED.replace('@@query.defaults(order: ["-body"])', '@@query.defaults(order: ["-body"])\n  @@query.order("id")')
-    with pytest.raises(Exception, match=r"Note: order is set by both @@query\.defaults\(order:\) at .* and @@query\.order at"):
+    both = ORDERED.replace(
+        '@@query.defaults(order: ["-body"])', '@@query.defaults(order: ["-body"])\n  @@query.order("id")'
+    )
+    with pytest.raises(
+        Exception, match=r"Note: order is set by both @@query\.defaults\(order:\) at .* and @@query\.order at"
+    ):
         orm.loads(both, registry=orm.Registry())
     with pytest.raises(Exception, match=r"order column \"nope\" is not a field"):
         orm.loads(ORDERED.replace('"-body"', '"nope"'), registry=orm.Registry())
-    with pytest.raises(Exception, match=r'Topic: order column "rank" can be NULL: write "-rank nulls first" or "-rank nulls last"'):
+    with pytest.raises(
+        Exception, match=r'Topic: order column "rank" can be NULL: write "-rank nulls first" or "-rank nulls last"'
+    ):
         orm.loads(ORDERED.replace('"-rank nulls last"', '"-rank"'), registry=orm.Registry())
     with pytest.raises(Exception, match=r'elsewhere quote it: "-name"'):
         orm.loads(ORDERED.replace('"-rank nulls last", "id"', "-name"), registry=orm.Registry())
     with pytest.raises(Exception, match=r'order column "k" is json, which the database can\'t order'):
-        orm.loads(ORDERED.replace("  rank Int?\n", "  rank Int?\n  k Json @db.Json\n").replace('"-rank nulls last", "id"', '"k"').replace('"sqlite"', '"postgresql"'), registry=orm.Registry())
+        orm.loads(
+            ORDERED.replace("  rank Int?\n", "  rank Int?\n  k Json @db.Json\n")
+            .replace('"-rank nulls last", "id"', '"k"')
+            .replace('"sqlite"', '"postgresql"'),
+            registry=orm.Registry(),
+        )
 
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
 async def test_a_joined_model_brings_its_related_default():
     def field(name, kind="string", **flags):
         return {"name": name, "column": name, "type": kind, **flags}
-    ir = {"dialect": "sqlite", "models": [
-        {"name": "JAuthor", "table": "j_authors", "fields": [field("id", "int", primary_key=True), field("name")]},
-        {"name": "JBook", "table": "j_books", "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
-         "relations": [{"name": "author", "kind": "one", "target": "JAuthor", "from": "author_id", "to": "id", "foreign_key": True}]},
-        {"name": "JShelf", "table": "j_shelves", "fields": [field("id", "int", primary_key=True), field("book_id", "int")],
-         "relations": [{"name": "book", "kind": "one", "target": "JBook", "from": "book_id", "to": "id", "foreign_key": True}]},
-    ], "behavior": {"schema_contract": 1, "query_defaults": [{"model": "JBook", "related": [["author"]]}]}}
+
+    ir = {
+        "dialect": "sqlite",
+        "models": [
+            {"name": "JAuthor", "table": "j_authors", "fields": [field("id", "int", primary_key=True), field("name")]},
+            {
+                "name": "JBook",
+                "table": "j_books",
+                "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
+                "relations": [
+                    {
+                        "name": "author",
+                        "kind": "one",
+                        "target": "JAuthor",
+                        "from": "author_id",
+                        "to": "id",
+                        "foreign_key": True,
+                    }
+                ],
+            },
+            {
+                "name": "JShelf",
+                "table": "j_shelves",
+                "fields": [field("id", "int", primary_key=True), field("book_id", "int")],
+                "relations": [
+                    {
+                        "name": "book",
+                        "kind": "one",
+                        "target": "JBook",
+                        "from": "book_id",
+                        "to": "id",
+                        "foreign_key": True,
+                    }
+                ],
+            },
+        ],
+        "behavior": {"schema_contract": 1, "query_defaults": [{"model": "JBook", "related": [["author"]]}]},
+    }
     registry = orm.Registry()
     classes = orm.define(ir, registry=registry)
     Author, Book, Shelf = classes["JAuthor"], classes["JBook"], classes["JShelf"]
@@ -263,11 +359,36 @@ async def test_a_joined_model_brings_its_related_default():
 async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_join():
     def field(name, kind="string", **flags):
         return {"name": name, "column": name, "type": kind, **flags}
-    ir = {"dialect": "sqlite", "models": [
-        {"name": "DAuthor", "table": "d_authors", "fields": [field("id", "int", primary_key=True), field("visible", "bool")]},
-        {"name": "DBook", "table": "d_books", "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
-         "relations": [{"name": "author", "kind": "one", "target": "DAuthor", "from": "author_id", "to": "id", "foreign_key": True}]},
-    ], "behavior": {"schema_contract": 1, "query_defaults": [{"model": "DAuthor", "filter": {"t": "col", "path": [], "name": "visible"}}]}}
+
+    ir = {
+        "dialect": "sqlite",
+        "models": [
+            {
+                "name": "DAuthor",
+                "table": "d_authors",
+                "fields": [field("id", "int", primary_key=True), field("visible", "bool")],
+            },
+            {
+                "name": "DBook",
+                "table": "d_books",
+                "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
+                "relations": [
+                    {
+                        "name": "author",
+                        "kind": "one",
+                        "target": "DAuthor",
+                        "from": "author_id",
+                        "to": "id",
+                        "foreign_key": True,
+                    }
+                ],
+            },
+        ],
+        "behavior": {
+            "schema_contract": 1,
+            "query_defaults": [{"model": "DAuthor", "filter": {"t": "col", "path": [], "name": "visible"}}],
+        },
+    }
     registry = orm.Registry()
     classes = orm.define(ir, registry=registry)
     Author, Book = classes["DAuthor"], classes["DBook"]
@@ -290,17 +411,41 @@ async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_joi
         await db.close()
 
 
-
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
 async def test_the_target_flag_does_not_depend_on_model_order():
     def field(name, kind="string", **flags):
         return {"name": name, "column": name, "type": kind, **flags}
+
     # The book model is declared before the filtered author model it points at.
-    ir = {"dialect": "sqlite", "models": [
-        {"name": "OBook", "table": "o_books", "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
-         "relations": [{"name": "author", "kind": "one", "target": "OAuthor", "from": "author_id", "to": "id", "foreign_key": True}]},
-        {"name": "OAuthor", "table": "o_authors", "fields": [field("id", "int", primary_key=True), field("visible", "bool")]},
-    ], "behavior": {"schema_contract": 1, "query_defaults": [{"model": "OAuthor", "filter": {"t": "col", "path": [], "name": "visible"}}]}}
+    ir = {
+        "dialect": "sqlite",
+        "models": [
+            {
+                "name": "OBook",
+                "table": "o_books",
+                "fields": [field("id", "int", primary_key=True), field("author_id", "int")],
+                "relations": [
+                    {
+                        "name": "author",
+                        "kind": "one",
+                        "target": "OAuthor",
+                        "from": "author_id",
+                        "to": "id",
+                        "foreign_key": True,
+                    }
+                ],
+            },
+            {
+                "name": "OAuthor",
+                "table": "o_authors",
+                "fields": [field("id", "int", primary_key=True), field("visible", "bool")],
+            },
+        ],
+        "behavior": {
+            "schema_contract": 1,
+            "query_defaults": [{"model": "OAuthor", "filter": {"t": "col", "path": [], "name": "visible"}}],
+        },
+    }
     registry = orm.Registry()
     classes = orm.define(ir, registry=registry)
     Author, Book = classes["OAuthor"], classes["OBook"]
@@ -353,9 +498,16 @@ async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
     ir = schema("postgres")
     book = ir["models"][1]
     book["fields"].append({"name": "shelf_id", "column": "shelf_id", "type": "int", "nullable": True})
-    ir["models"].append({"name": "SelectedShelf", "table": "selection03_shelves", "fields": [
-        {"name": "id", "column": "id", "type": "int", "primary_key": True, "auto_increment": True},
-    ], "relations": [{"name": "books", "kind": "many", "target": "SelectedBook", "from": "id", "to": "shelf_id"}]})
+    ir["models"].append(
+        {
+            "name": "SelectedShelf",
+            "table": "selection03_shelves",
+            "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": True, "auto_increment": True},
+            ],
+            "relations": [{"name": "books", "kind": "many", "target": "SelectedBook", "from": "id", "to": "shelf_id"}],
+        }
+    )
     registry = orm.Registry()
     classes = orm.define(ir, registry=registry)
     db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
@@ -364,16 +516,27 @@ async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
         await db.drop_tables()
         await db.create_tables()
         shelf = await Shelf.objects.using(db).insert()
-        shown, hidden = await Author.objects.using(db).without_defaults().insert_many(
-            [{"name": "shown", "bio": "x"}, {"name": "hidden", "bio": "x", "visible": False}]
-        ).returning()
+        shown, hidden = (
+            await Author.objects.using(db)
+            .without_defaults()
+            .insert_many([{"name": "shown", "bio": "x"}, {"name": "hidden", "bio": "x", "visible": False}])
+            .returning()
+        )
         await Book.objects.using(db).insert_many(
-            [{"title": "a", "author_id": shown.pk, "shelf_id": shelf.pk}, {"title": "b", "author_id": hidden.pk, "shelf_id": shelf.pk}]
+            [
+                {"title": "a", "author_id": shown.pk, "shelf_id": shelf.pk},
+                {"title": "b", "author_id": hidden.pk, "shelf_id": shelf.pk},
+            ]
         )
         # The hidden author is no row of the join, but its book stays an element: the default sits in the ON.
-        row = await Shelf.objects.using(db).select(
-            orm.func.array_agg(Shelf.books.author.name, order_by=Shelf.books.title), orm.func.count(Shelf.books.author)
-        ).first()
+        row = (
+            await Shelf.objects.using(db)
+            .select(
+                orm.func.array_agg(Shelf.books.author.name, order_by=Shelf.books.title),
+                orm.func.count(Shelf.books.author),
+            )
+            .first()
+        )
         assert tuple(row) == (["shown", None], 1)
     finally:
         await db.drop_tables()
@@ -410,10 +573,16 @@ FILTER = '@@query.filter("active == true")'
 
 
 async def open_unset(request, dialect, filtered):
-    source = UNSET.replace("//FILTER", FILTER if filtered else "").replace('"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"')
+    source = UNSET.replace("//FILTER", FILTER if filtered else "").replace(
+        '"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'
+    )
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
@@ -423,10 +592,21 @@ async def open_unset(request, dialect, filtered):
         await db.execute("ALTER TABLE g2_books DROP CONSTRAINT IF EXISTS g2_books_author_id_fkey")
     request.addfinalizer(lambda: None)
     A, B, P = models["UAuthor"], models["UBook"], models["UProfile"]
-    await A.objects.using(db).without_defaults().insert_many([{"id": 1, "name": "ann", "active": True}, {"id": 2, "name": "bob", "active": False},
-                                                              {"id": 3, "name": "cy", "active": True}])
+    await (
+        A.objects.using(db)
+        .without_defaults()
+        .insert_many(
+            [
+                {"id": 1, "name": "ann", "active": True},
+                {"id": 2, "name": "bob", "active": False},
+                {"id": 3, "name": "cy", "active": True},
+            ]
+        )
+    )
     # Book 1 has an author, 2 a dangling key, 3 a NULL key, 4 a hidden author.
-    await B.objects.using(db).insert_many([{"id": 1, "author_id": 1}, {"id": 2, "author_id": 99}, {"id": 3, "author_id": None}, {"id": 4, "author_id": 2}])
+    await B.objects.using(db).insert_many(
+        [{"id": 1, "author_id": 1}, {"id": 2, "author_id": 99}, {"id": 3, "author_id": None}, {"id": 4, "author_id": 2}]
+    )
     return db, A, B, P
 
 
@@ -444,6 +624,7 @@ async def unset(request):
 def base_getter(monkeypatch):
     """The base getter: no reference adapter, as in a build without reference loading."""
     import orm.model
+
     monkeypatch.setattr(orm.model, "_reference_adapter", None)
 
 

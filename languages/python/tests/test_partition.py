@@ -1,4 +1,5 @@
 """Declarative base-model partitions survive registry preparation and route ORM writes."""
+
 import pytest
 
 import orm
@@ -42,9 +43,17 @@ async def test_partition_routes_orm_inserts_and_checks_moves():
     try:
         await db.drop_tables()
         await db.create_tables()
-        rows = await Row.objects.using(db).insert_many([
-            {"kind": "a", "amount": 3}, {"kind": "b", "amount": None}, {"kind": "b", "amount": 5},
-        ]).returning()
+        rows = (
+            await Row.objects.using(db)
+            .insert_many(
+                [
+                    {"kind": "a", "amount": 3},
+                    {"kind": "b", "amount": None},
+                    {"kind": "b", "amount": 5},
+                ]
+            )
+            .returning()
+        )
         with pytest.raises(orm.IntegrityError):
             await Row.objects.using(db).insert(kind="a", amount=None)
         with pytest.raises(orm.IntegrityError):
@@ -62,6 +71,7 @@ async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
     import json
     from pathlib import Path
     from orm import _native
+
     if "proxy-models" not in json.loads(_native.native_artifact())["capabilities"]:
         pytest.skip("requires proxy native artifact")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
@@ -105,12 +115,16 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
     import json
     from pathlib import Path
     from orm import _native
+
     capabilities = json.loads(_native.native_artifact())["capabilities"]
     if not {"proxy-models", "query-defaults", "soft-delete"}.issubset(capabilities):
         pytest.skip("requires combined proxy, query-defaults and soft-delete artifact")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
     source = source.replace("deleted DateTime?", "deleted DateTime? @soft_delete.deleted_at")
-    source = source.replace('@@map("partition_proxy_reward")', '@@map("partition_proxy_reward")\n @@query.filter("shop == scope.shop and deleted == null")')
+    source = source.replace(
+        '@@map("partition_proxy_reward")',
+        '@@map("partition_proxy_reward")\n @@query.filter("shop == scope.shop and deleted == null")',
+    )
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     Reward, Percent, Fixed = (models[n] for n in ("Reward", "PercentageReward", "FixedReward"))
@@ -137,9 +151,10 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
 async def test_multi_value_proxy_partition_requires_a_key_and_owns_only_its_values():
     import json
     from orm import _native
+
     if "proxy-models" not in json.loads(_native.native_artifact())["capabilities"]:
         pytest.skip("requires proxy native artifact")
-    source = '''
+    source = """
 model Item {
  id Int
  kind String
@@ -153,7 +168,7 @@ model Selected {
  @@map("multi_partition_selected")
 }
 partition multi_partition_other { of = Item default = true }
-'''
+"""
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     Item, Selected = models["Item"], models["Selected"]
@@ -171,7 +186,10 @@ partition multi_partition_other { of = Item default = true }
             await Selected.objects.using(db).insert(id=2, kind="other")
         with pytest.raises(orm.IntegrityError):
             await Selected.objects.using(db).insert_many([{"id": 2, "kind": "other"}], copy=True)
-        assert await Selected.objects.using(db).insert_many([{"id": 2, "kind": "a"}, {"id": 2, "kind": "b"}], copy=True) == 2
+        assert (
+            await Selected.objects.using(db).insert_many([{"id": 2, "kind": "a"}, {"id": 2, "kind": "b"}], copy=True)
+            == 2
+        )
         assert await Selected.objects.using(db).without_defaults().count() == 4
     finally:
         await db.drop_tables()
@@ -183,21 +201,33 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
     from decimal import Decimal
     from pathlib import Path
     from orm import _native
-    if not {"proxy-models", "query-defaults", "soft-delete"}.issubset(json.loads(_native.native_artifact())["capabilities"]):
+
+    if not {"proxy-models", "query-defaults", "soft-delete"}.issubset(
+        json.loads(_native.native_artifact())["capabilities"]
+    ):
         pytest.skip("requires combined proxy, query-defaults and soft-delete artifact")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-rewards.prisma").read_text()
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
-    Tier, Reward, Percent, Fixed, Price = (models[n] for n in (
-        "Tier", "Reward", "PercentageDiscountReward", "FixedDiscountReward", "SetPriceReward",
-    ))
+    Tier, Reward, Percent, Fixed, Price = (
+        models[n]
+        for n in (
+            "Tier",
+            "Reward",
+            "PercentageDiscountReward",
+            "FixedDiscountReward",
+            "SetPriceReward",
+        )
+    )
     db = await orm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
         await Tier.objects.using(db).insert(id=1)
         with orm.scope(shop=1):
-            percent = await Percent.objects.using(db).insert(shop_id=1, tier_id=1, content_hash="same", percent=Decimal("10.25"))
+            percent = await Percent.objects.using(db).insert(
+                shop_id=1, tier_id=1, content_hash="same", percent=Decimal("10.25")
+            )
             await Fixed.objects.using(db).insert(shop_id=1, tier_id=1, content_hash="same", amount=Decimal("2.50"))
             await Price.objects.using(db).insert(shop_id=1, tier_id=1, content_hash="same", price=Decimal("3.75"))
             assert percent.percent == Decimal("10.25")
@@ -206,7 +236,9 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
             with pytest.raises(orm.IntegrityError):
                 await Percent.objects.using(db).insert(shop_id=1, tier_id=1, content_hash="same", percent=Decimal("12"))
             with pytest.raises(orm.IntegrityError):
-                await Reward.objects.using(db).insert(shop_id=1, tier_id=1, type=models["RewardType"].PERCENTAGE_DISCOUNT, percent=None)
+                await Reward.objects.using(db).insert(
+                    shop_id=1, tier_id=1, type=models["RewardType"].PERCENTAGE_DISCOUNT, percent=None
+                )
             assert await Percent.objects.using(db).delete() == 1
             assert await Percent.objects.using(db).count() == 0
             assert await Percent.objects.using(db).without_defaults().count() == 1

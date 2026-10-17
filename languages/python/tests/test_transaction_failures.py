@@ -1,4 +1,5 @@
 """A failed statement marks its transaction failed, also when the block catches the error."""
+
 import asyncio
 from types import SimpleNamespace
 
@@ -12,9 +13,7 @@ from test_sqlite import models
 @pytest.fixture(params=["postgres", "sqlite"])
 async def case(request, clean):
     if request.param == "postgres":
-        yield SimpleNamespace(
-            db=clean, model=User, make=lambda i: {"email": f"{i}@x.io", "name": "n"}
-        )
+        yield SimpleNamespace(db=clean, model=User, make=lambda i: {"email": f"{i}@x.io", "name": "n"})
         return
     registry, classes = models()
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
@@ -251,9 +250,16 @@ async def linked(request, clean):
             post = await Post.objects.insert(author=alice, title="t", body="b")
             t1, t2 = await Tag.objects.insert_many([{"name": "a"}, {"name": "b"}]).returning()
             await post.tags.add(t1)
-            return SimpleNamespace(rel=post.tags, bad=t2.id + 10_000, kept=t1.id, count=PostTag.objects.count,
-                                   links=lambda: PostTag.objects.all(), key="tag_id", db=clean,
-                                   fail={})
+            return SimpleNamespace(
+                rel=post.tags,
+                bad=t2.id + 10_000,
+                kept=t1.id,
+                count=PostTag.objects.count,
+                links=lambda: PostTag.objects.all(),
+                key="tag_id",
+                db=clean,
+                fail={},
+            )
 
         yield link
         return
@@ -265,11 +271,20 @@ async def linked(request, clean):
     Person, Follow = m["Person"], m["Follow"]
 
     async def link():
-        ann, bob, cat = await Person.objects.using(db).insert_many([{"name": "a"}, {"name": "b"}, {"name": "c"}]).returning()
+        ann, bob, cat = (
+            await Person.objects.using(db).insert_many([{"name": "a"}, {"name": "b"}, {"name": "c"}]).returning()
+        )
         await ann.following.using(db).add(bob)
-        return SimpleNamespace(rel=ann.following.using(db), bad=cat.id + 1000, kept=bob.id,
-                               count=Follow.objects.using(db).count, links=lambda: Follow.objects.using(db).all(),
-                               key="followee_id", db=db, fail={})
+        return SimpleNamespace(
+            rel=ann.following.using(db),
+            bad=cat.id + 1000,
+            kept=bob.id,
+            count=Follow.objects.using(db).count,
+            links=lambda: Follow.objects.using(db).all(),
+            key="followee_id",
+            db=db,
+            fail={},
+        )
 
     yield link
     await db.drop_tables()

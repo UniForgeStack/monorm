@@ -1,4 +1,5 @@
 """Independent object storage. No ORM imports, global clients, or implicit I/O."""
+
 from __future__ import annotations
 
 import asyncio
@@ -130,7 +131,7 @@ async def chunks(source: Source, max_size: int = MAX_SIZE) -> AsyncIterator[byte
     async def incoming() -> AsyncIterator[bytes]:
         if isinstance(source, (bytes, bytearray, memoryview)):
             for i in range(0, len(source), CHUNK_SIZE):
-                yield bytes(source[i:i + CHUNK_SIZE])
+                yield bytes(source[i : i + CHUNK_SIZE])
         elif isinstance(source, AsyncIterable):
             async for chunk in source:
                 yield chunk
@@ -148,14 +149,15 @@ async def chunks(source: Source, max_size: int = MAX_SIZE) -> AsyncIterator[byte
         if size > max_size:
             raise SizeLimitError(f"upload exceeds {max_size} bytes")
         for i in range(0, len(chunk), CHUNK_SIZE):
-            yield bytes(chunk[i:i + CHUNK_SIZE])
+            yield bytes(chunk[i : i + CHUNK_SIZE])
 
 
 class Provider(Protocol):
     storage: str
 
-    async def upload(self, source: Source, *, filename: str | None = None,
-                     content_type: str | None = None, max_size: int = MAX_SIZE) -> Reference: ...
+    async def upload(
+        self, source: Source, *, filename: str | None = None, content_type: str | None = None, max_size: int = MAX_SIZE
+    ) -> Reference: ...
     def open(self, reference: Reference) -> AsyncIterator[bytes]: ...
     async def delete(self, reference: Reference) -> None: ...
     async def signed_url(self, reference: Reference, *, expires_in: int = 300) -> str: ...
@@ -173,8 +175,8 @@ def check_expiry(expires_in: int) -> None:
 
 class LocalStorage:
     """Flat object directory controlled by the application; filenames are metadata."""
-    def __init__(self, storage: str, root: str | Path,
-                 signer: Callable[[Reference, int], Any] | None = None):
+
+    def __init__(self, storage: str, root: str | Path, signer: Callable[[Reference, int], Any] | None = None):
         Reference(storage, "validation")
         self.storage = storage
         self.root = Path(root).resolve()
@@ -189,10 +191,12 @@ class LocalStorage:
             raise StorageError("local object keys must be flat safe identifiers")
         return self.root / reference.key
 
-    async def upload(self, source: Source, *, filename: str | None = None,
-                     content_type: str | None = None, max_size: int = MAX_SIZE) -> Reference:
-        ref = Reference(self.storage, uuid.uuid4().hex, filename=filename,
-                        content_type=content_type or "application/octet-stream")
+    async def upload(
+        self, source: Source, *, filename: str | None = None, content_type: str | None = None, max_size: int = MAX_SIZE
+    ) -> Reference:
+        ref = Reference(
+            self.storage, uuid.uuid4().hex, filename=filename, content_type=content_type or "application/octet-stream"
+        )
         path = self._path(ref)
         size = 0
         # Joined worker writes avoid blocking the event loop and cannot race cleanup.
@@ -203,8 +207,7 @@ class LocalStorage:
                     await _io(output.write, chunk)
                     size += len(chunk)
                     await asyncio.sleep(0)
-            return Reference(ref.storage, ref.key, filename=ref.filename,
-                             content_type=ref.content_type, size=size)
+            return Reference(ref.storage, ref.key, filename=ref.filename, content_type=ref.content_type, size=size)
         except BaseException:
             path.unlink(missing_ok=True)
             raise

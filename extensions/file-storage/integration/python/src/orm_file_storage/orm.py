@@ -1,6 +1,7 @@
 """Selected ORM statement implementation; imported only during file model setup.
 
 It uses only the public ``orm.hooks`` and ``QuerySet`` interfaces of the ORM."""
+
 from __future__ import annotations
 from collections.abc import Generator, Mapping, Iterable
 from typing import Any
@@ -24,8 +25,10 @@ def install_queries(model: type[Any], adapter: ModelAdapter) -> None:
         return out
 
     def placeholders(values: Mapping[str, Any]) -> dict[str, Any]:
-        return {name: Reference(adapter.fields[name].storage, "preflight").to_dict() if isinstance(value, Upload) else value
-                for name, value in values.items()}
+        return {
+            name: Reference(adapter.fields[name].storage, "preflight").to_dict() if isinstance(value, Upload) else value
+            for name, value in values.items()
+        }
 
     class FileInsert:
         """``await`` uploads, then inserts; ``operation`` keeps the references for a retry."""

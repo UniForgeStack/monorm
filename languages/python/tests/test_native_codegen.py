@@ -24,13 +24,16 @@ def test_generate_python_query_sets(tmp_path):
     assert "objects: ClassVar[_PostObjects]" in stub
 
 
-@pytest.mark.parametrize("query_sets, message", [
-    ({"Missing": "app.queries:PostQueries"}, "no model Missing"),
-    ({"Post": "./queries.js#PostQueries"}, "module:Class"),
-    ({"Post": "None:Q"}, "absolute module name"),
-    ({"Post": "app.class:Q"}, "absolute module name"),
-    ({"Post": "app:class"}, "module:Class"),
-])
+@pytest.mark.parametrize(
+    "query_sets, message",
+    [
+        ({"Missing": "app.queries:PostQueries"}, "no model Missing"),
+        ({"Post": "./queries.js#PostQueries"}, "module:Class"),
+        ({"Post": "None:Q"}, "absolute module name"),
+        ({"Post": "app.class:Q"}, "absolute module name"),
+        ({"Post": "app:class"}, "module:Class"),
+    ],
+)
 def test_generate_python_checks_query_sets(tmp_path, query_sets, message):
     schema = tmp_path / "schema.prisma"
     schema.write_text("model Post {\n id Int @id\n}\n")

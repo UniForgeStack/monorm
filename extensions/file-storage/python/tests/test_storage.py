@@ -5,7 +5,17 @@ import tempfile
 import tracemalloc
 import unittest
 from pathlib import Path
-from orm_storage import Reference, LocalStorage, Registry, StorageError, CapabilityError, SizeLimitError, UploadError, UploadCancelled, CHUNK_SIZE
+from orm_storage import (
+    Reference,
+    LocalStorage,
+    Registry,
+    StorageError,
+    CapabilityError,
+    SizeLimitError,
+    UploadError,
+    UploadCancelled,
+    CHUNK_SIZE,
+)
 from orm_storage.s3 import S3Storage, PART_SIZE
 
 
@@ -36,20 +46,25 @@ class LocalTests(unittest.IsolatedAsyncioTestCase):
         async def large():
             for _ in range(200):
                 yield b"x" * CHUNK_SIZE
+
         ref = await self.storage.upload(large())
         self.assertEqual(ref.size, 200 * CHUNK_SIZE)
         self.assertTrue(all([len(c) <= CHUNK_SIZE async for c in self.storage.open(ref)]))
         with self.assertRaises(SizeLimitError):
             await self.storage.upload(large(), max_size=CHUNK_SIZE)
         with self.assertRaises(TypeError):
+
             async def invalid():
                 yield "not bytes"
+
             await self.storage.upload(invalid())
         started = asyncio.Event()
+
         async def blocked():
             yield b"partial"
             started.set()
             await asyncio.Event().wait()
+
         task = asyncio.create_task(self.storage.upload(blocked()))
         await started.wait()
         task.cancel()
@@ -61,6 +76,7 @@ class LocalTests(unittest.IsolatedAsyncioTestCase):
         async def source():
             for _ in range(1024):
                 yield b"x" * CHUNK_SIZE
+
         asyncio.get_running_loop().set_debug(False)
         tracemalloc.start()
         try:
@@ -93,26 +109,42 @@ class FakeS3:
     def __init__(self):
         self.calls = []
         self.fail = None
+
     async def call(self, name, params):
         self.calls.append((name, params))
         if self.fail == name:
             raise RuntimeError(name)
         return {"UploadId": "upload", "ETag": "tag", "VersionId": "version"}
-    async def create_multipart_upload(self, **kw): return await self.call("create", kw)
-    async def upload_part(self, **kw): return await self.call("part", kw)
-    async def complete_multipart_upload(self, **kw): return await self.call("complete", kw)
-    async def abort_multipart_upload(self, **kw): return await self.call("abort", kw)
-    async def delete_object(self, **kw): return await self.call("delete", kw)
+
+    async def create_multipart_upload(self, **kw):
+        return await self.call("create", kw)
+
+    async def upload_part(self, **kw):
+        return await self.call("part", kw)
+
+    async def complete_multipart_upload(self, **kw):
+        return await self.call("complete", kw)
+
+    async def abort_multipart_upload(self, **kw):
+        return await self.call("abort", kw)
+
+    async def delete_object(self, **kw):
+        return await self.call("delete", kw)
+
     async def generate_presigned_url(self, name, **kw):
-        self.calls.append((name, kw)); return "https://signed"
+        self.calls.append((name, kw))
+        return "https://signed"
 
 
 class S3Tests(unittest.IsolatedAsyncioTestCase):
     async def test_multipart_version_and_delegation(self):
         client = FakeS3()
         storage = S3Storage("s3", "bucket", client)
+
         async def source():
-            for _ in range(100): yield b"x" * CHUNK_SIZE
+            for _ in range(100):
+                yield b"x" * CHUNK_SIZE
+
         reference = await storage.upload(source(), filename="report")
         self.assertEqual(reference.size, 100 * CHUNK_SIZE)
         self.assertEqual(reference.version, "version")
@@ -125,7 +157,8 @@ class S3Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failure_aborts_without_deletion(self):
         for failed in ["part", "complete"]:
-            client = FakeS3(); client.fail = failed
+            client = FakeS3()
+            client.fail = failed
             with self.assertRaises(UploadError) as failure:
                 await S3Storage("s3", "bucket", client).upload(b"data")
             self.assertEqual(failure.exception.recovery.completion_unknown, failed == "complete")
@@ -141,12 +174,15 @@ class S3Tests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_preserves_recovery(self):
         client = FakeS3()
         entered = asyncio.Event()
+
         async def pending(**kwargs):
             entered.set()
             await asyncio.Event().wait()
+
         client.complete_multipart_upload = pending
         task = asyncio.create_task(S3Storage("s3", "bucket", client).upload(b"data"))
-        await entered.wait(); task.cancel()
+        await entered.wait()
+        task.cancel()
         with self.assertRaises(UploadCancelled) as cancelled:
             await task
         self.assertEqual(cancelled.exception.recovery.upload_id, "upload")
@@ -158,8 +194,11 @@ class S3Tests(unittest.IsolatedAsyncioTestCase):
         class DiscardS3(FakeS3):
             async def call(self, name, params):
                 return {"UploadId": "upload", "ETag": "tag"}
+
         async def source():
-            for _ in range(1024): yield b"x" * CHUNK_SIZE
+            for _ in range(1024):
+                yield b"x" * CHUNK_SIZE
+
         asyncio.get_running_loop().set_debug(False)
         tracemalloc.start()
         try:
@@ -175,9 +214,21 @@ class ReferenceTests(unittest.TestCase):
     def test_shared_vectors(self):
         for data in json.loads((Path(__file__).parents[2] / "fixtures/references.json").read_text()):
             self.assertEqual(Reference.from_dict(data).to_dict(), data)
+
     def test_invalid(self):
-        for extra in [{"v": 2}, {"size": -1}, {"size": True}, {"size": 2**53}, {"version": None}, {"storage": ""}, {"secret": "no"}, {"key": "\ud800"}]:
+        for extra in [
+            {"v": 2},
+            {"size": -1},
+            {"size": True},
+            {"size": 2**53},
+            {"version": None},
+            {"storage": ""},
+            {"secret": "no"},
+            {"key": "\ud800"},
+        ]:
             with self.assertRaises(ValueError):
                 Reference.from_dict({"v": 1, "storage": "local", "key": "key", **extra})
 
-if __name__ == "__main__": unittest.main()
+
+if __name__ == "__main__":
+    unittest.main()

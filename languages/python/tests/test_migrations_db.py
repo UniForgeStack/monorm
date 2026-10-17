@@ -52,8 +52,7 @@ async def connect(reg: Registry) -> orm.Database:
 
 async def reset(db: orm.Database) -> None:
     await db.execute(
-        "DROP TABLE IF EXISTS books, authors, orm_migrations CASCADE;"
-        "DROP FUNCTION IF EXISTS books_touch() CASCADE"
+        "DROP TABLE IF EXISTS books, authors, orm_migrations CASCADE;DROP FUNCTION IF EXISTS books_touch() CASCADE"
     )
 
 
@@ -70,8 +69,10 @@ async def test_upgrade_downgrade_round_trip(tmp_path):
         Migrations(tmp_path, reg1).make()
         migrator = Migrator(db, Migrations(tmp_path, reg2))
         assert [m.name for m in await migrator.upgrade()] == ["0001_initial"]
-        await db.execute("INSERT INTO authors (email) VALUES ('Ann@Example.com');"
-                         "INSERT INTO books (author_id, title) VALUES (1, 'Dune')")
+        await db.execute(
+            "INSERT INTO authors (email) VALUES ('Ann@Example.com');"
+            "INSERT INTO books (author_id, title) VALUES (1, 'Dune')"
+        )
 
         Migrations(tmp_path, reg2).make("v2")
         assert [s.applied for s in await migrator.status()] == [True, False]
@@ -99,8 +100,14 @@ async def test_upgrade_downgrade_round_trip(tmp_path):
         assert len(await migrator.upgrade()) == 2
         assert await migrator.upgrade() == []
         assert [m.name for m in await migrator.downgrade()] == ["0002_v2"]
-        assert await scalar(db, "SELECT data_type::text FROM information_schema.columns "
-                                "WHERE table_name = 'books' AND column_name = 'title'") == "character varying"
+        assert (
+            await scalar(
+                db,
+                "SELECT data_type::text FROM information_schema.columns "
+                "WHERE table_name = 'books' AND column_name = 'title'",
+            )
+            == "character varying"
+        )
     finally:
         await reset(db)
         await db.close()
@@ -214,7 +221,9 @@ async def test_enum_migrations(tmp_path):
         await migrator.upgrade(target="0002")
         labels = "SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder) FROM pg_enum JOIN pg_type t ON t.oid = enumtypid WHERE typname = 'status'"
         assert await scalar(db, labels) == "draft,review,published,archived"
-        await db.execute("INSERT INTO docs (status, history) VALUES ('published', '{draft,published}'), ('archived', DEFAULT)")
+        await db.execute(
+            "INSERT INTO docs (status, history) VALUES ('published', '{draft,published}'), ('archived', DEFAULT)"
+        )
         await migrator.upgrade()
         assert await scalar(db, labels) == "draft,published,archived"
         Doc = regs[2].get("Doc")

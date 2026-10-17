@@ -44,13 +44,24 @@ async def items(request):
     provider = "postgresql" if request.param == "postgres" else "sqlite"
     models = orm.loads(SCHEMA.replace('"sqlite"', f'"{provider}"'), registry=registry)
     Owner, Item = models["Owner"], models["Item"]
-    url = "sqlite://:memory:" if request.param == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if request.param == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     owner = await Owner.objects.using(db).insert(name="o")
     rows = [
-        {"owner_id": owner.pk, "score": i % 4, "rank": None if i % 3 == 0 else i % 5, "name": f"n{i % 3}", "code": f"c{i:02}", "at": T0 + timedelta(microseconds=i * 7)}
+        {
+            "owner_id": owner.pk,
+            "score": i % 4,
+            "rank": None if i % 3 == 0 else i % 5,
+            "name": f"n{i % 3}",
+            "code": f"c{i:02}",
+            "at": T0 + timedelta(microseconds=i * 7),
+        }
         for i in range(23)
     ]
     await Item.objects.using(db).insert_many(rows)
@@ -143,13 +154,22 @@ async def test_rejected_orders_and_cursors(items):
         await qs.paginate()
     with pytest.raises(ValueError, match="at least 1"):
         await qs.paginate(first=0)
-    with pytest.raises(TypeError, match=r"score=Item.score.desc\(\) is an ordering, for order_by\(\); write 0 - Item.score"):
+    with pytest.raises(
+        TypeError, match=r"score=Item.score.desc\(\) is an ordering, for order_by\(\); write 0 - Item.score"
+    ):
         qs.update(score=-Item.score)
-    for misuse in (lambda: qs.insert(owner_id=1, score=-Item.score, name="x", code="x", at=T0), lambda: qs.filter(Item.score == -Item.score).count()):
-        with pytest.raises(TypeError, match=r"Item.score.desc\(\) is an ordering, for order_by\(\); write 0 - Item.score"):
+    for misuse in (
+        lambda: qs.insert(owner_id=1, score=-Item.score, name="x", code="x", at=T0),
+        lambda: qs.filter(Item.score == -Item.score).count(),
+    ):
+        with pytest.raises(
+            TypeError, match=r"Item.score.desc\(\) is an ordering, for order_by\(\); write 0 - Item.score"
+        ):
             await misuse()
     cursor = (await qs.order_by(-Item.score).paginate(first=2)).next_cursor
-    assert cursor == "eyJvIjoiMDQ5ZjZhMzYwOGNlYzljMiIsInYiOlsiMyIsIjgiXX0", "the same cursor as languages/js/test/pagination.test.ts"
+    assert cursor == "eyJvIjoiMDQ5ZjZhMzYwOGNlYzljMiIsInYiOlsiMyIsIjgiXX0", (
+        "the same cursor as languages/js/test/pagination.test.ts"
+    )
     with pytest.raises(QueryError, match="another order or model"):
         await qs.order_by(Item.score).paginate(first=2, after=cursor)
     for bad in ["%%%", "e30", "eyJvIjoxLCJ2IjpbXX0"]:
@@ -179,7 +199,9 @@ async def test_edited_cursors_are_query_errors(items):
         await by_score.paginate(first=2, after=edited(score, ["3", "1" * 23]))
     assert (await by_score.paginate(first=2, after=edited(score, ["-2147483648", "1"]))).items == []
     with pytest.raises(QueryError, match="another order or model"):
-        await qs.order_by(Item.rank.asc(nulls="first")).paginate(first=2, after=(await qs.order_by(Item.rank.asc(nulls="last")).paginate(first=1)).next_cursor)
+        await qs.order_by(Item.rank.asc(nulls="first")).paginate(
+            first=2, after=(await qs.order_by(Item.rank.asc(nulls="last")).paginate(first=1)).next_cursor
+        )
     with pytest.raises(QueryError, match="json columns have no cursor value"):
         await qs.order_by(Item.tags).paginate(first=2)
 
@@ -187,7 +209,10 @@ async def test_edited_cursors_are_query_errors(items):
 async def test_cursor_of_a_microsecond_datetime(items):
     Item, qs = items
     page = await qs.order_by(-Item.at).paginate(first=2)
-    assert page.next_cursor == "eyJvIjoiNzNhMGQ4YWEwZWEzMWQwOSIsInYiOlsiMjAyNi0xMC0wMVQwMDowMDowMC4wMDAxNDcrMDA6MDAiLCIyMiJdfQ", "the same cursor as languages/js/test/pagination.test.ts"
+    assert (
+        page.next_cursor
+        == "eyJvIjoiNzNhMGQ4YWEwZWEzMWQwOSIsInYiOlsiMjAyNi0xMC0wMVQwMDowMDowMC4wMDAxNDcrMDA6MDAiLCIyMiJdfQ"
+    ), "the same cursor as languages/js/test/pagination.test.ts"
     assert await walk(qs.order_by(Item.name, -Item.at), 1) == [x.pk for x in await qs.order_by(Item.name, -Item.at)]
 
 
@@ -202,7 +227,9 @@ async def test_reading_back_from_the_second_row(items):
 
 async def test_a_deep_page_has_a_leading_bound(items):
     Item, qs = items
-    sql = qs.order_by(-Item.score, -Item.at).filter(pagination.after(Item, [Item.score.desc(), Item.at.desc()], [3, T0]))
+    sql = qs.order_by(-Item.score, -Item.at).filter(
+        pagination.after(Item, [Item.score.desc(), Item.at.desc()], [3, T0])
+    )
     assert re.search(r'WHERE "page07_items"\."score" <= \S+ AND \(', sql.sql())
     nullable = qs.filter(pagination.after(Item, [Item.rank.asc(nulls="last"), Item.id.asc()], [1, 1])).sql()
     assert '"rank" >=' not in nullable and '"rank" > ' in nullable
@@ -222,12 +249,18 @@ async def test_a_nullable_unique_order_gets_the_primary_key(dialect):
     registry = orm.Registry()
     provider = "postgresql" if dialect == "postgres" else "sqlite"
     Coded = orm.loads(f'datasource db {{ provider = "{provider}" }}\n' + NULLABLE_UNIQUE, registry=registry)["Coded"]
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
-        await Coded.objects.using(db).insert_many([{"id": 1, "code": "x"}, {"id": 2, "code": None}, {"id": 3, "code": None}, {"id": 4, "code": "y"}])
+        await Coded.objects.using(db).insert_many(
+            [{"id": 1, "code": "x"}, {"id": 2, "code": None}, {"id": 3, "code": None}, {"id": 4, "code": "y"}]
+        )
         assert await walk(Coded.objects.using(db).order_by(Coded.code.asc(nulls="last")), 1) == [1, 4, 2, 3]
     finally:
         await db.drop_tables()
@@ -267,13 +300,20 @@ async def test_a_char_order_column(postgres):
 async def test_a_char_column_from_ir_without_write_sql():
     """A generated module embeds compiled IR; its `char(n)` column has no `write_sql`."""
     source = orm.Registry()
-    orm.loads('datasource db {\n  provider = "postgresql"\n}\nmodel Padded {\n  id Int @id\n  k String @db.Char(4)\n  @@map("page07_padded_ir")\n}', registry=source)
+    orm.loads(
+        'datasource db {\n  provider = "postgresql"\n}\nmodel Padded {\n  id Int @id\n  k String @db.Char(4)\n  @@map("page07_padded_ir")\n}',
+        registry=source,
+    )
     ir = source.ir()
     for f in ir["models"][0]["fields"]:
         f.pop("write_sql", None)
     registry = orm.Registry()
     Padded = orm.define(ir, registry=registry)["Padded"]
-    db = await orm.connect(os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test"), registry=registry, default=False)
+    db = await orm.connect(
+        os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test"),
+        registry=registry,
+        default=False,
+    )
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -292,8 +332,12 @@ async def test_non_finite_float_order_values(postgres):
     qs = Measure.objects.using(db)
     await qs.insert_many([{"id": i, "f": f, "d": 1} for i, f in enumerate([1.0, math.inf, math.inf, math.nan, 2.0], 1)])
     assert await walk(qs.order_by(Measure.f), 2) == [1, 5, 2, 3, 4]
-    page = await qs.order_by(Measure.f).paginate(first=2, after=(await qs.order_by(Measure.f).paginate(first=2)).next_cursor)
-    assert page.next_cursor == "eyJvIjoiYWY4ZDc2YzZmZDZmZTllNyIsInYiOlsiSW5maW5pdHkiLCIzIl19", "the same cursor as languages/js/test/pagination.test.ts"
+    page = await qs.order_by(Measure.f).paginate(
+        first=2, after=(await qs.order_by(Measure.f).paginate(first=2)).next_cursor
+    )
+    assert page.next_cursor == "eyJvIjoiYWY4ZDc2YzZmZDZmZTllNyIsInYiOlsiSW5maW5pdHkiLCIzIl19", (
+        "the same cursor as languages/js/test/pagination.test.ts"
+    )
     by_d = qs.order_by(Measure.d)
     with pytest.raises(QueryError, match="invalid cursor"):
         await by_d.paginate(first=1, after=edited((await by_d.paginate(first=1)).next_cursor, ["NaN", "1"]))
@@ -317,11 +361,16 @@ model Named {
 """
 
 
-@pytest.mark.skipif("proxy-models" not in json.loads(_native.native_artifact())["capabilities"], reason="requires selected proxy native artifact")
+@pytest.mark.skipif(
+    "proxy-models" not in json.loads(_native.native_artifact())["capabilities"],
+    reason="requires selected proxy native artifact",
+)
 async def test_a_proxy_narrowed_order_column(postgres):
     models, db = await postgres(PROXY)
     User, Named = models["User"], models["Named"]
-    await User.objects.using(db).insert_many([{"id": 1, "name": "a", "code": "x"}, {"id": 2}, {"id": 3, "name": "c"}, {"id": 4, "code": "y"}])
+    await User.objects.using(db).insert_many(
+        [{"id": 1, "name": "a", "code": "x"}, {"id": 2}, {"id": 3, "name": "c"}, {"id": 4, "code": "y"}]
+    )
     qs = Named.objects.using(db)
     with pytest.raises(QueryError, match="Named.name is nullable"):
         await qs.order_by(Named.name).paginate(first=1)

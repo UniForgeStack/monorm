@@ -1,4 +1,5 @@
 """Run against a package containing the example-native artifact."""
+
 import asyncio
 import json
 import os
@@ -7,6 +8,7 @@ import orm
 from orm.fields import Integer, String
 
 SCHEMA = json.loads(Path(os.environ["ORM_EXTENSION_TEST_SCHEMA"]).read_text())
+
 
 async def check():
     reg = orm.Registry()
@@ -23,6 +25,7 @@ async def check():
     else:
         raise AssertionError("compiled model method did not call the validator")
     from generated import NativeUser as GeneratedUser
+
     assert GeneratedUser._meta.schema_ir == User._meta.schema_ir
     assert GeneratedUser.validate_username("valid") is None
     assert "display" in User._meta.fields
@@ -48,6 +51,7 @@ async def check():
             raise AssertionError("requested computation was not executed")
         await User.objects.filter(User.username == "unrequested").delete()
         from generated import LoweredUser as GeneratedLowered
+
         lowered = await Lowered.objects.insert(id=7, public_name="Alice")
         assert lowered.public_name == "Alice" and not hasattr(lowered, "secret")
         physical = json.loads(json.dumps(SCHEMA["models"][2]))
@@ -55,9 +59,19 @@ async def check():
         handwritten["fields"][1]["name"] = "public_name"
         handwritten["fields"].pop()
         direct_registry = orm.Registry()
-        Direct = orm.define({"dialect":SCHEMA["dialect"], "models":[handwritten],"behavior":{"schema_contract":1,"storage":{"models":[physical]}}}, registry=direct_registry)["LoweredUser"]
+        Direct = orm.define(
+            {
+                "dialect": SCHEMA["dialect"],
+                "models": [handwritten],
+                "behavior": {"schema_contract": 1, "storage": {"models": [physical]}},
+            },
+            registry=direct_registry,
+        )["LoweredUser"]
         assert Lowered.objects.sql() == Direct.objects.sql()
-        assert next(t for t in json.loads(reg.native().snapshot())["tables"] if t["name"] == "lowered_users") == json.loads(direct_registry.native().snapshot())["tables"][0]
+        assert (
+            next(t for t in json.loads(reg.native().snapshot())["tables"] if t["name"] == "lowered_users")
+            == json.loads(direct_registry.native().snapshot())["tables"][0]
+        )
         direct = await Direct.objects.using(db).filter(Direct.id == 7).get()
         generated = await GeneratedLowered.objects.using(db).filter(GeneratedLowered.id == 7).get()
         assert direct.public_name == generated.public_name == lowered.public_name
@@ -75,12 +89,15 @@ async def check():
         row = await User.objects.insert(username="  alice  ")
         assert row.username == "alice" and row.display == "Hello, alice!"
         collisions = orm.Registry(dialect=SCHEMA.get("dialect", "postgres"))
+
         class NativeUser(orm.Model, registry=collisions, table="native_users"):
             id = Integer(primary_key=True, auto_increment=True)
             username = String()
+
             @staticmethod
             def validate_username(value):
                 return "application method"
+
         before_fields = NativeUser._meta.fields
         try:
             collisions.prepare()
@@ -91,11 +108,15 @@ async def check():
         assert NativeUser.validate_username("valid") == "application method"
         assert NativeUser._meta.fields is before_fields and "display" not in before_fields
         classes = orm.Registry(dialect=SCHEMA.get("dialect", "postgres"))
+
         class NativeUser(orm.Model, registry=classes, table="native_users"):
             id = Integer(primary_key=True, auto_increment=True)
             username = String(default=lambda: "  default_user  ")
+
         classes.prepare()
-        class_db = await orm.connect(os.environ.get("ORM_EXTENSION_TEST_URL", "sqlite://:memory:"), registry=classes, default=False)
+        class_db = await orm.connect(
+            os.environ.get("ORM_EXTENSION_TEST_URL", "sqlite://:memory:"), registry=classes, default=False
+        )
         try:
             await class_db.create_tables()
             default = await NativeUser.objects.using(class_db).insert()
@@ -143,15 +164,18 @@ async def check():
             raise AssertionError("native computation incorrectly offered SQL filtering")
         rows = await User.objects.insert_many([{"username": "carol"}, {"username": "dave"}]).returning()
         assert [r.display for r in rows] == ["Hello, carol!", "Hello, dave!"]
-        await User.objects.update_many([{"id": rows[0].id, "username": " eve "}, {"id": rows[1].id, "username": " frank "}])
+        await User.objects.update_many(
+            [{"id": rows[0].id, "username": " eve "}, {"id": rows[1].id, "username": " frank "}]
+        )
         loaded = await User.objects.filter(User.id >= rows[0].id).order_by(User.id)
         assert [r.display for r in loaded] == ["Hello, eve!", "Hello, frank!"]
-        await db.execute('UPDATE "native_users" SET username = \'raw!\' WHERE id = ' + str(row.id))
+        await db.execute("UPDATE \"native_users\" SET username = 'raw!' WHERE id = " + str(row.id))
         raw = await User.objects.filter(User.id == row.id).get()
         assert raw.username == "raw!" and raw.display == "Hello, raw!!"
     finally:
         await db.drop_tables()
         await db.close()
+
 
 async def check_ownership():
     schema = json.loads(Path(__file__).with_name("ownership-schema.json").read_text())
@@ -166,8 +190,8 @@ async def check_ownership():
     try:
         await db.drop_tables()
         await db.create_tables()
-        await db.execute('INSERT INTO extension_owner_parents (id, name) VALUES (7, \'Alice\')')
-        await db.execute('INSERT INTO extension_owner_children (id, role) VALUES (7, \'employee\')')
+        await db.execute("INSERT INTO extension_owner_parents (id, name) VALUES (7, 'Alice')")
+        await db.execute("INSERT INTO extension_owner_children (id, role) VALUES (7, 'employee')")
         child = await Child.objects.using(db).get()
         assert child.name == "Alice" and child.role == "employee"
         assert await Child.objects.using(db).filter(Child.name == "Alice").count() == 1
@@ -183,6 +207,7 @@ async def check_ownership():
     finally:
         await db.drop_tables()
         await db.close()
+
 
 asyncio.run(check())
 asyncio.run(check_ownership())

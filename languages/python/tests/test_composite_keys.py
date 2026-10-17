@@ -1,4 +1,5 @@
 """Composite primary keys (`@@id`) and composite foreign keys on Postgres and SQLite."""
+
 import pytest
 
 import orm
@@ -64,9 +65,13 @@ async def models(request):
 
 async def test_crud_by_the_whole_key(models):
     db, Item, Line = models
-    items = await Item.objects.using(db).insert_many(
-        [{"shop": 1, "id": 1, "title": "a"}, {"shop": 2, "id": 1, "title": "b"}, {"shop": 1, "id": 2, "title": "c"}]
-    ).returning()
+    items = (
+        await Item.objects.using(db)
+        .insert_many(
+            [{"shop": 1, "id": 1, "title": "a"}, {"shop": 2, "id": 1, "title": "b"}, {"shop": 1, "id": 2, "title": "c"}]
+        )
+        .returning()
+    )
     assert [i.pk for i in items] == [(1, 1), (2, 1), (1, 2)]
     assert Item._meta.key_names == ("shop", "id")
 
@@ -94,7 +99,9 @@ async def test_crud_by_the_whole_key(models):
 
 async def test_pagination_and_batches_walk_the_whole_key(models):
     db, Item, _ = models
-    await Item.objects.using(db).insert_many([{"shop": s, "id": i, "title": f"{s}.{i}"} for s in (1, 2) for i in (1, 2, 3)])
+    await Item.objects.using(db).insert_many(
+        [{"shop": s, "id": i, "title": f"{s}.{i}"} for s in (1, 2) for i in (1, 2, 3)]
+    )
     titles = []
     cursor = None
     while True:
@@ -107,15 +114,18 @@ async def test_pagination_and_batches_walk_the_whole_key(models):
     back = await Item.objects.using(db).paginate(last=2)
     assert [i.title for i in back.items] == ["2.2", "2.3"]
     assert [[i.title for i in batch] async for batch in Item.objects.using(db).batches(4)] == [
-        ["1.1", "1.2", "1.3", "2.1"], ["2.2", "2.3"]
+        ["1.1", "1.2", "1.3", "2.1"],
+        ["2.2", "2.3"],
     ]
 
 
 async def test_relations_through_a_composite_foreign_key(models):
     db, Item, Line = models
-    items = await Item.objects.using(db).insert_many(
-        [{"shop": 1, "id": 1, "title": "a"}, {"shop": 2, "id": 1, "title": "b"}]
-    ).returning()
+    items = (
+        await Item.objects.using(db)
+        .insert_many([{"shop": 1, "id": 1, "title": "a"}, {"shop": 2, "id": 1, "title": "b"}])
+        .returning()
+    )
     a, b = items
     await Line.objects.using(db).insert_many(
         [{"item": a, "qty": 1}, {"item": a, "qty": 2}, {"shop": 2, "item_id": 1, "qty": 3}]
@@ -140,7 +150,6 @@ async def test_relations_through_a_composite_foreign_key(models):
     assert (line.shop, line.item_id) == (2, 1)
     await line.load(Line.item)
     assert line.item.title == "b"
-
 
 
 def test_generated_key_types(tmp_path):

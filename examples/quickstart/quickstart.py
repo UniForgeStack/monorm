@@ -1,4 +1,5 @@
 """Run from the repo root: .venv/bin/python examples/quickstart/quickstart.py [url]."""
+
 import asyncio
 import sys
 
@@ -29,10 +30,12 @@ async def main():
     try:
         await db.create_tables()
         alice = await User.objects.insert(name="Alice")
-        await Post.objects.insert_many([
-            {"title": "Hello", "published": True, "author": alice},
-            {"title": "Draft", "published": False, "author": alice},
-        ])
+        await Post.objects.insert_many(
+            [
+                {"title": "Hello", "published": True, "author": alice},
+                {"title": "Draft", "published": False, "author": alice},
+            ]
+        )
         users = await User.objects.filter(User.posts.published).load(User.posts)
         for user in users:
             print(user.name, [post.title for post in user.posts.cached])

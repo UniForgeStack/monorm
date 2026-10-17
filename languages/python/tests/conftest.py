@@ -13,6 +13,7 @@ DATABASE_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:post
 @pytest.fixture
 def observe_queries():
     """Count executed statements separately from inspect()'s planned templates."""
+
     @contextmanager
     def observe(database):
         events: list[orm.QueryEvent] = []

@@ -4,6 +4,7 @@ A package such as ``orm-file-storage`` must check a write before it does I/O, ru
 the write later with some values replaced, and decode loaded values. These hooks
 do that through the same conversion and planning as ``insert()`` and ``update()``.
 """
+
 from __future__ import annotations
 
 import json

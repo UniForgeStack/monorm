@@ -8,13 +8,16 @@ import orm
 @pytest.fixture
 async def required_queries():
     registry = orm.Registry()
-    Note = orm.loads('''
+    Note = orm.loads(
+        """
         datasource db { provider = "sqlite" }
         model Note {
           id Int @id
           n Int?
         }
-    ''', registry=registry)["Note"]
+    """,
+        registry=registry,
+    )["Note"]
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()

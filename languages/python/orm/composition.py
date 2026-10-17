@@ -1,4 +1,5 @@
 """Explicit composition operations; imported only when attach is requested."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from .query import QuerySet
 
 M = TypeVar("M", bound="Model")
+
 
 async def attach(qs: QuerySet[M], parent_id: Any, values: Mapping[str, Any]) -> M:
     from .db import resolve

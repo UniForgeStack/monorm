@@ -1,4 +1,5 @@
 """Compatibility namespace forwarding to one selected native profile."""
+
 from ._profiles import load as _load
 
 _engine = _load()

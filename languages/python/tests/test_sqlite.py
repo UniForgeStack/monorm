@@ -1,4 +1,5 @@
 """SQLite through the same Python API and native engine as PostgreSQL."""
+
 import asyncio
 import gc
 from datetime import datetime, timezone
@@ -31,11 +32,17 @@ async def test_crud_relations_defaults_and_upserts(sqlite):
     a = await Author.objects.using(db).insert(email="a@example.com", name="Alice")
     assert a.active and a.created_at.tzinfo == timezone.utc
     b = await Author.objects.using(db).insert(email="b@example.com", name="Bob")
-    books = await Book.objects.using(db).insert_many([
-        {"author_id": a.id, "title": "one"},
-        {"author_id": a.id, "title": "two", "pages": 7, "metadata": {"tags": [1, True]}},
-        {"author_id": b.id, "title": "three", "status": m["Status"].published},
-    ]).returning()
+    books = (
+        await Book.objects.using(db)
+        .insert_many(
+            [
+                {"author_id": a.id, "title": "one"},
+                {"author_id": a.id, "title": "two", "pages": 7, "metadata": {"tags": [1, True]}},
+                {"author_id": b.id, "title": "three", "status": m["Status"].published},
+            ]
+        )
+        .returning()
+    )
     assert [x.pages for x in books] == [0, 7, 0]
     assert books[0].status is m["Status"].draft
     assert books[1].metadata == {"tags": [1, True]}
@@ -46,7 +53,12 @@ async def test_crud_relations_defaults_and_upserts(sqlite):
     assert await Author.objects.using(db).filter(Author.books.pages > 0).count() == 1
     assert await Book.objects.using(db).exists()
     assert await Author.objects.using(db).filter(Author.name.icontains("ali")).count() == 1
-    same = await Author.objects.using(db).insert(email=a.email, name="Updated").on_conflict(Author.email, update=True).returning()
+    same = (
+        await Author.objects.using(db)
+        .insert(email=a.email, name="Updated")
+        .on_conflict(Author.email, update=True)
+        .returning()
+    )
     assert same.id == a.id and same.name == "Updated"
     rows = await Book.objects.using(db).filter(Book.pages > 0).update(pages=Book.pages + 1).returning()
     assert rows[0].pages == 8
@@ -68,9 +80,13 @@ async def test_array_agg_is_postgres_only(sqlite):
     with pytest.raises(orm.QueryError, match="sqlite does not support array_agg"):
         await Author.objects.using(db).select(orm.func.array_agg(Author.name)).scalar()
     # Relation aggregates keep the scalar subqueries: no LATERAL join.
-    a, b, c = await Author.objects.using(db).insert_many(
-        [{"email": "a@x.io", "name": "A"}, {"email": "b@x.io", "name": "B"}, {"email": "c@x.io", "name": "C"}]
-    ).returning()
+    a, b, c = (
+        await Author.objects.using(db)
+        .insert_many(
+            [{"email": "a@x.io", "name": "A"}, {"email": "b@x.io", "name": "B"}, {"email": "c@x.io", "name": "C"}]
+        )
+        .returning()
+    )
     await Book.objects.using(db).insert_many(
         [
             {"author_id": a.id, "title": "one"},
@@ -78,16 +94,30 @@ async def test_array_agg_is_postgres_only(sqlite):
             {"author_id": b.id, "title": "three", "pages": 3},
         ]
     )
-    result = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).inspect()
+    result = (
+        Author.objects.using(db)
+        .select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages))
+        .inspect()
+    )
     assert result.statement_count == 1
     assert result.statements[0].joins_count == 0
     assert result.statements[0].correlated_count == 2
     assert result.statements[0].uncorrelated_count == 0
-    page = Author.objects.using(db).select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages)).order_by(Author.name).limit(10).offset(1)
+    page = (
+        Author.objects.using(db)
+        .select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages))
+        .order_by(Author.name)
+        .limit(10)
+        .offset(1)
+    )
     assert page.inspect().statements[0].correlated_count == 2
     assert "LATERAL" not in page.sql()
     assert [tuple(r) for r in await page] == [(b.id, 1, 3), (c.id, 0, None)]
-    rows = await Author.objects.using(db).select(Author.name, orm.func.count(Author.books), orm.func.max(Author.books.pages)).order_by(Author.name)
+    rows = (
+        await Author.objects.using(db)
+        .select(Author.name, orm.func.count(Author.books), orm.func.max(Author.books.pages))
+        .order_by(Author.name)
+    )
     assert [tuple(r) for r in rows] == [("A", 2, 7), ("B", 1, 3), ("C", 0, None)]
 
 
@@ -109,12 +139,18 @@ async def test_bulk_writes(sqlite, observe_queries):
     assert not created and first.name == "U0"
     # A failed later batch rolls back the earlier ones.
     with pytest.raises(orm.IntegrityError):
-        await Author.objects.using(db).insert_many([{"email": "n1@x.io", "name": "N"}, {"email": "u1@x.io", "name": "N"}], batch_size=1)
+        await Author.objects.using(db).insert_many(
+            [{"email": "n1@x.io", "name": "N"}, {"email": "u1@x.io", "name": "N"}], batch_size=1
+        )
     assert not await Author.objects.using(db).filter(Author.email == "n1@x.io").exists()
     # A boolean partial-index predicate: SQLite matches it only as a literal.
     await db.execute("CREATE UNIQUE INDEX authors_active_name ON author (name) WHERE active")
     for _ in range(2):
-        await Author.objects.using(db).insert(email="v@x.io", name="U0").on_conflict(Author.name, where=Author.active, update=False)
+        await (
+            Author.objects.using(db)
+            .insert(email="v@x.io", name="U0")
+            .on_conflict(Author.name, where=Author.active, update=False)
+        )
 
 
 async def test_outer_through_a_relation_path(sqlite):
@@ -122,7 +158,9 @@ async def test_outer_through_a_relation_path(sqlite):
     Author, Book = m["Author"], m["Book"]
     alice = await Author.objects.using(db).insert(email="a@example.com", name="Alice")
     bob = await Author.objects.using(db).insert(email="b@example.com", name="Bob")
-    await Book.objects.using(db).insert_many([{"author_id": alice.id, "title": "one"}, {"author_id": bob.id, "title": "two"}])
+    await Book.objects.using(db).insert_many(
+        [{"author_id": alice.id, "title": "one"}, {"author_id": bob.id, "title": "two"}]
+    )
     name = Author.objects.filter(Author.email == orm.outer(Book.author.email)).select(Author.name).as_scalar()
     rows = await Book.objects.using(db).order_by(Book.id).select(Book.title, name.label("name"))
     assert [tuple(r) for r in rows] == [("one", "Alice"), ("two", "Bob")]
@@ -157,8 +195,13 @@ async def test_transactions_concurrency_and_abandonment(sqlite):
 
 async def test_migrations_rebuild_preserve_rows_and_sequences(tmp_path):
     from orm.migrations import Migrations, Migrator
+
     reg1, _ = models()
-    reg2, _ = models(SOURCE.replace("  title     String", '  name      String @renamed_from("title")').replace("  pages     Int", "  added     Int @default(42)\n  pages     Int").replace("@@index([title]", "@@index([name]"))
+    reg2, _ = models(
+        SOURCE.replace("  title     String", '  name      String @renamed_from("title")')
+        .replace("  pages     Int", "  added     Int @default(42)\n  pages     Int")
+        .replace("@@index([title]", "@@index([name]")
+    )
     directory = str(tmp_path / "migrations")
     Migrations(directory, reg1).make("initial")
     Migrations(directory, reg2).make("rename")
@@ -166,7 +209,9 @@ async def test_migrations_rebuild_preserve_rows_and_sequences(tmp_path):
     runner = Migrator(db, Migrations(directory, reg1))
     try:
         await runner.upgrade("1")
-        await db.execute("INSERT INTO author (id, email, name) VALUES (100, 'gone', 'gone'); DELETE FROM author; INSERT INTO author (email, name) VALUES ('kept', 'kept')")
+        await db.execute(
+            "INSERT INTO author (id, email, name) VALUES (100, 'gone', 'gone'); DELETE FROM author; INSERT INTO author (email, name) VALUES ('kept', 'kept')"
+        )
         await db.execute("INSERT INTO book (author_id, title) VALUES (101, 'kept')")
         await runner.upgrade()
         assert (await db._fetch_text("SELECT name, added FROM book"))[0] == ("kept", "42")
@@ -183,8 +228,20 @@ async def test_migrations_rebuild_preserve_rows_and_sequences(tmp_path):
 
 async def test_kept_rename_hints_do_not_redirect_later_rebuilds(tmp_path):
     from orm.migrations import Migrations, Migrator
-    renamed = SOURCE.replace("  books      Book[]", '  books      Book[]\n  @@map("writer")\n  @@renamed_from("author")').replace("  title     String", '  name      String @renamed_from("title")').replace("@@index([title]", "@@index([name]")
-    regs = [models(source)[0] for source in (SOURCE, renamed, renamed.replace("  pages     Int", "  added     Int @default(42)\n  pages     Int"))]
+
+    renamed = (
+        SOURCE.replace("  books      Book[]", '  books      Book[]\n  @@map("writer")\n  @@renamed_from("author")')
+        .replace("  title     String", '  name      String @renamed_from("title")')
+        .replace("@@index([title]", "@@index([name]")
+    )
+    regs = [
+        models(source)[0]
+        for source in (
+            SOURCE,
+            renamed,
+            renamed.replace("  pages     Int", "  added     Int @default(42)\n  pages     Int"),
+        )
+    ]
     directory = str(tmp_path / "migrations")
     for reg, name in zip(regs, ("initial", "rename", "later")):
         Migrations(directory, reg).make(name)
@@ -192,32 +249,50 @@ async def test_kept_rename_hints_do_not_redirect_later_rebuilds(tmp_path):
     runner = Migrator(db, Migrations(directory, regs[0]))
     try:
         await runner.upgrade("1")
-        await db.execute("INSERT INTO author (id, email, name) VALUES (100, 'gone', 'gone'); DELETE FROM author; INSERT INTO author (email, name) VALUES ('kept', 'kept')")
+        await db.execute(
+            "INSERT INTO author (id, email, name) VALUES (100, 'gone', 'gone'); DELETE FROM author; INSERT INTO author (email, name) VALUES ('kept', 'kept')"
+        )
         await db.execute("INSERT INTO book (author_id, title) VALUES (101, 'kept')")
         await runner.upgrade("2")
         await runner.upgrade()
-        assert await db._fetch_text("SELECT w.email, b.name, b.added FROM writer w JOIN book b ON b.author_id = w.id") == [("kept", "kept", "42")]
+        assert await db._fetch_text(
+            "SELECT w.email, b.name, b.added FROM writer w JOIN book b ON b.author_id = w.id"
+        ) == [("kept", "kept", "42")]
         assert await db._fetch_text("PRAGMA foreign_key_check") == []
         await db.execute("INSERT INTO writer (email, name) VALUES ('next', 'next')")
         assert (await db._fetch_text("SELECT max(id) FROM writer"))[0][0] == "102"
         await runner.downgrade()
-        assert await db._fetch_text("SELECT w.email, b.name FROM writer w JOIN book b ON b.author_id = w.id") == [("kept", "kept")]
+        assert await db._fetch_text("SELECT w.email, b.name FROM writer w JOIN book b ON b.author_id = w.id") == [
+            ("kept", "kept")
+        ]
     finally:
         await db.close()
 
 
 async def test_string_functions_and_concatenation():
     from orm import func
-    registry, m = models('datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  title String\n  tag String?\n}')
+
+    registry, m = models(
+        'datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  title String\n  tag String?\n}'
+    )
     Note = m["Note"]
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await Note.objects.using(db).insert_many([{"title": "  a-b  ", "tag": "x"}, {"title": "c", "tag": None}])
-        rows = await Note.objects.using(db).order_by(Note.id).select(
-            func.concat(Note.title, Note.tag).label("c"), Note.title.concat(Note.tag).label("p"), func.trim(Note.title).label("t"),
-            func.ltrim(Note.title).label("l"), func.rtrim(Note.title).label("r"), func.replace(Note.title, "-", "+").label("x"),
-            func.substr(func.trim(Note.title), 2, 1).label("s"), func.strpos(Note.title, "b").label("i"),
+        rows = (
+            await Note.objects.using(db)
+            .order_by(Note.id)
+            .select(
+                func.concat(Note.title, Note.tag).label("c"),
+                Note.title.concat(Note.tag).label("p"),
+                func.trim(Note.title).label("t"),
+                func.ltrim(Note.title).label("l"),
+                func.rtrim(Note.title).label("r"),
+                func.replace(Note.title, "-", "+").label("x"),
+                func.substr(func.trim(Note.title), 2, 1).label("s"),
+                func.strpos(Note.title, "b").label("i"),
+            )
         )
         assert [tuple(r) for r in rows] == [
             ("  a-b  x", "  a-b  x", "a-b", "a-b  ", "  a-b", "  a+b  ", "-", 5),
@@ -230,7 +305,10 @@ async def test_string_functions_and_concatenation():
 
 async def test_case_expression():
     from orm import func
-    registry, m = models('datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  n Int\n}')
+
+    registry, m = models(
+        'datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  n Int\n}'
+    )
     Note = m["Note"]
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
@@ -247,13 +325,20 @@ async def test_case_expression():
 
 async def test_aggregate_filter():
     from orm import func
-    registry, m = models('datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  n Int\n}')
+
+    registry, m = models(
+        'datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  n Int\n}'
+    )
     Note = m["Note"]
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await Note.objects.using(db).insert_many([{"n": 1}, {"n": 5}, {"n": 10}])
-        row = await Note.objects.using(db).select(func.count(filter=Note.n >= 5), func.sum(Note.n, filter=Note.n < 10)).get()
+        row = (
+            await Note.objects.using(db)
+            .select(func.count(filter=Note.n >= 5), func.sum(Note.n, filter=Note.n < 10))
+            .get()
+        )
         assert tuple(row) == (2, 6)
         selected = Note.objects.using(db).select(Note.n)
         assert await selected.get(Note.n == 5) == (5,)
@@ -293,21 +378,42 @@ async def test_unsupported_queries(sqlite):
 
 async def test_aggregates_windows_ctes_sliced_prefetch_and_bulk_updates(sqlite):
     from orm import func
+
     db, m, _ = sqlite
     Author, Book = m["Author"], m["Book"]
-    authors = await Author.objects.using(db).insert_many([
-        {"email": "a", "name": "A"}, {"email": "b", "name": "B"},
-    ]).returning()
-    books = await Book.objects.using(db).insert_many([
-        {"author_id": a.id, "title": f"{a.name}{pages}", "pages": pages}
-        for a in authors for pages in [3, 7, 11]
-    ]).returning()
+    authors = (
+        await Author.objects.using(db)
+        .insert_many(
+            [
+                {"email": "a", "name": "A"},
+                {"email": "b", "name": "B"},
+            ]
+        )
+        .returning()
+    )
+    books = (
+        await Book.objects.using(db)
+        .insert_many(
+            [{"author_id": a.id, "title": f"{a.name}{pages}", "pages": pages} for a in authors for pages in [3, 7, 11]]
+        )
+        .returning()
+    )
     assert await Book.objects.using(db).select(func.sum(Book.pages)).scalar() == 42
     rank = func.row_number().over(partition_by=Book.author_id, order_by=Book.pages.desc())
     rows = await Book.objects.using(db).select(Book.title, rank.label("rank")).order_by(Book.title)
     assert [tuple(r) for r in rows] == [("A11", 1), ("A3", 3), ("A7", 2), ("B11", 1), ("B3", 3), ("B7", 2)]
-    totals = Book.objects.using(db).select(Book.author_id, func.sum(Book.pages).label("pages")).group_by(Book.author_id).cte("totals")
-    rows = await Author.objects.using(db).join(totals, totals.c.author_id == Author.id).select(Author.name, totals.c.pages).order_by(Author.id)
+    totals = (
+        Book.objects.using(db)
+        .select(Book.author_id, func.sum(Book.pages).label("pages"))
+        .group_by(Book.author_id)
+        .cte("totals")
+    )
+    rows = (
+        await Author.objects.using(db)
+        .join(totals, totals.c.author_id == Author.id)
+        .select(Author.name, totals.c.pages)
+        .order_by(Author.id)
+    )
     assert [tuple(r) for r in rows] == [("A", 21), ("B", 21)]
     second = Author.books.objects.order_by(Book.pages.desc())[1:2]
     rows = await Author.objects.using(db).load(second).order_by(Author.id)
@@ -315,14 +421,17 @@ async def test_aggregates_windows_ctes_sliced_prefetch_and_bulk_updates(sqlite):
     rows = await Book.objects.using(db).update_many([{"id": b.id, "pages": b.pages + 1} for b in books]).returning()
     assert sorted(b.pages for b in rows) == [4, 4, 8, 8, 12, 12]
     with pytest.raises(orm.IntegrityError):
-        await Book.objects.using(db).update_many([{"id": b.id, "pages": -1 if i == 1 else 99} for i, b in enumerate(books)], batch_size=1)
+        await Book.objects.using(db).update_many(
+            [{"id": b.id, "pages": -1 if i == 1 else 99} for i, b in enumerate(books)], batch_size=1
+        )
     assert await Book.objects.using(db).select(func.sum(Book.pages)).scalar() == 48
 
 
 async def test_uuid_date_timestamp_and_inline_trigger():
     from datetime import date, timedelta
     from uuid import UUID
-    source = '''
+
+    source = """
     datasource db { provider = "sqlite" }
     model Event {
       id String @id @db.Uuid
@@ -331,7 +440,7 @@ async def test_uuid_date_timestamp_and_inline_trigger():
       name String
       @@trigger(uppercase, after: [insert], body: "UPDATE event SET name = upper(NEW.name) WHERE id = NEW.id")
     }
-    '''
+    """
     reg, m = models(source)
     db = await orm.connect("sqlite://:memory:", registry=reg, default=False)
     try:
@@ -358,11 +467,13 @@ async def test_finished_nested_transaction_and_cancellation_release_connection(s
     # Keep the finished child alive: it must no longer retain its parent's guard.
     assert await asyncio.wait_for(m["Author"].objects.using(db).count(), 3) == 0
     started = asyncio.Event()
+
     async def work():
         async with db.transaction():
             await m["Author"].objects.using(db).insert(email="cancelled", name="cancelled")
             started.set()
             await asyncio.Event().wait()
+
     task = asyncio.create_task(work())
     await started.wait()
     task.cancel()
@@ -371,12 +482,16 @@ async def test_finished_nested_transaction_and_cancellation_release_connection(s
     assert await asyncio.wait_for(m["Author"].objects.using(db).count(), 3) == 0
 
 
-@pytest.mark.parametrize("object_sql", [
-    "CREATE INDEX custom_index ON author(name)",
-    "CREATE TRIGGER custom_trigger AFTER INSERT ON author BEGIN SELECT 1; END",
-])
+@pytest.mark.parametrize(
+    "object_sql",
+    [
+        "CREATE INDEX custom_index ON author(name)",
+        "CREATE TRIGGER custom_trigger AFTER INSERT ON author BEGIN SELECT 1; END",
+    ],
+)
 async def test_migration_refuses_unmanaged_objects(tmp_path, object_sql):
     from orm.migrations import Migrations, Migrator
+
     first, _ = models()
     second, _ = models(SOURCE.replace("  name       String", "  name       String\n  extra      Int @default(1)"))
     directory = str(tmp_path / "migrations")
@@ -402,8 +517,14 @@ async def test_migration_refuses_unmanaged_objects(tmp_path, object_sql):
 
 async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
     from orm.migrations import Migrations, Migrator
+
     first, _ = models()
-    second, _ = models(SOURCE.replace('  pages     Int    @default(0) @check("pages >= 0")', '  pages     Int    @default(0) @check("pages >= 10")'))
+    second, _ = models(
+        SOURCE.replace(
+            '  pages     Int    @default(0) @check("pages >= 0")',
+            '  pages     Int    @default(0) @check("pages >= 10")',
+        )
+    )
     directory = str(tmp_path / "migrations")
     Migrations(directory, first).make("initial")
     Migrations(directory, second).make("strict")
@@ -411,7 +532,9 @@ async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
     runner = Migrator(db, Migrations(directory, first))
     try:
         await runner.upgrade("1")
-        await db.execute("INSERT INTO author (email, name) VALUES ('a', 'A'); INSERT INTO book (author_id, title) VALUES (1, 'kept')")
+        await db.execute(
+            "INSERT INTO author (email, name) VALUES ('a', 'A'); INSERT INTO book (author_id, title) VALUES (1, 'kept')"
+        )
         with pytest.raises(orm.IntegrityError):
             await runner.upgrade()
         assert (await db._fetch_text("SELECT title, pages FROM book"))[0] == ("kept", "0")
@@ -427,7 +550,8 @@ async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
 
 async def test_cyclic_fks_table_rename_and_empty_sequence(tmp_path):
     from orm.migrations import Migrations, Migrator
-    source = '''
+
+    source = """
     datasource db { provider = "sqlite" }
     model A {
       id BigInt @id @default(autoincrement())
@@ -444,9 +568,14 @@ async def test_cyclic_fks_table_rename_and_empty_sequence(tmp_path):
     model Empty {
       id BigInt @id @default(autoincrement())
     }
-    '''
+    """
     first, _ = models(source)
-    second, _ = models(source.replace('      bs B[] @relation("BA")', '      bs B[] @relation("BA")\n      @@map("renamed_a")\n      @@renamed_from("a")'))
+    second, _ = models(
+        source.replace(
+            '      bs B[] @relation("BA")',
+            '      bs B[] @relation("BA")\n      @@map("renamed_a")\n      @@renamed_from("a")',
+        )
+    )
     directory = str(tmp_path / "migrations")
     Migrations(directory, first).make("initial")
     Migrations(directory, second).make("rename")
@@ -454,7 +583,9 @@ async def test_cyclic_fks_table_rename_and_empty_sequence(tmp_path):
     runner = Migrator(db, Migrations(directory, first))
     try:
         await runner.upgrade("1")
-        await db.execute("INSERT INTO a DEFAULT VALUES; INSERT INTO b (a_id) VALUES (1); UPDATE a SET b_id=1; INSERT INTO empty (id) VALUES (200); DELETE FROM empty")
+        await db.execute(
+            "INSERT INTO a DEFAULT VALUES; INSERT INTO b (a_id) VALUES (1); UPDATE a SET b_id=1; INSERT INTO empty (id) VALUES (200); DELETE FROM empty"
+        )
         await runner.upgrade()
         assert (await db._fetch_text("SELECT b_id FROM renamed_a"))[0][0] == "1"
         assert await db._fetch_text("PRAGMA foreign_key_check") == []
@@ -471,6 +602,7 @@ async def test_cyclic_fks_table_rename_and_empty_sequence(tmp_path):
 
 async def test_cross_dialect_snapshots_are_rejected(tmp_path):
     from orm.migrations import Migrations, Migrator
+
     postgres, _ = models(SOURCE.replace('provider = "sqlite"', 'provider = "postgresql"'))
     sqlite, _ = models()
     directory = str(tmp_path / "migrations")
@@ -567,20 +699,25 @@ async def test_related_sets_use_the_database_of_their_instance():
 
 async def test_aggregate_filter_through_relations(sqlite):
     from orm import func
+
     db, m, _ = sqlite
     Author, Book = m["Author"], m["Book"]
     a = await Author.objects.using(db).insert(email="a@example.com", name="Alice")
     b = await Author.objects.using(db).insert(email="b@example.com", name="Bob")
-    await Book.objects.using(db).insert_many([
-        {"author_id": a.id, "title": "one", "pages": 5},
-        {"author_id": a.id, "title": "two", "pages": 7},
-        {"author_id": b.id, "title": "three", "pages": 100},
-    ])
+    await Book.objects.using(db).insert_many(
+        [
+            {"author_id": a.id, "title": "one", "pages": 5},
+            {"author_id": a.id, "title": "two", "pages": 7},
+            {"author_id": b.id, "title": "three", "pages": 100},
+        ]
+    )
     books = Book.objects.using(db)
     assert await books.select(func.sum(Book.pages, filter=Book.author.name == "Alice")).scalar() == 12
     assert await books.select(func.count(filter=Book.author.name == "Alice")).scalar() == 2
-    rows = await Author.objects.using(db).order_by(Author.id).select(
-        Author.name, func.count(Author.books, filter=Author.name == "Alice")
+    rows = (
+        await Author.objects.using(db)
+        .order_by(Author.id)
+        .select(Author.name, func.count(Author.books, filter=Author.name == "Alice"))
     )
     assert [tuple(r) for r in rows] == [("Alice", 2), ("Bob", 0)]
 
@@ -628,20 +765,33 @@ async def test_bound_load_guards_and_without_related(sqlite):
     Author, Book = m["Author"], m["Book"]
     a = await Author.objects.using(db).insert(email="a", name="Alice")
     b = await Author.objects.using(db).insert(email="b", name="Bob")
-    await Book.objects.using(db).insert_many([
-        {"author_id": a.id, "title": "one"}, {"author_id": a.id, "title": "two"},
-        {"author_id": b.id, "title": "three"},
-    ])
+    await Book.objects.using(db).insert_many(
+        [
+            {"author_id": a.id, "title": "one"},
+            {"author_id": a.id, "title": "two"},
+            {"author_id": b.id, "title": "three"},
+        ]
+    )
     bound = Author.books.objects.using(db).filter(Book.title == "one")
-    for operation in (lambda: bound, lambda: bound.count(), lambda: bound.delete(),
-                      lambda: bound.insert_many([]), lambda: bound.insert_many([], copy=True)):
+    for operation in (
+        lambda: bound,
+        lambda: bound.count(),
+        lambda: bound.delete(),
+        lambda: bound.insert_many([]),
+        lambda: bound.insert_many([], copy=True),
+    ):
         with pytest.raises(TypeError, match="inside load"):
             await operation()
     assert await Book.objects.using(db).count() == 3
     for path in (Author.books, Author.books.author):
         with pytest.raises(ValueError, match=r"label\(\)"):
             Author.objects.load(path, bound)
-    authors = await Author.objects.using(db).load(Author.name, Author.books, Author.books.objects).without_related().order_by(Author.id)
+    authors = (
+        await Author.objects.using(db)
+        .load(Author.name, Author.books, Author.books.objects)
+        .without_related()
+        .order_by(Author.id)
+    )
     assert [len(a.books.cached) for a in authors] == [2, 1]
     books = await Book.objects.using(db).load(Book.title, Book.author).without_related()
     assert sorted(b.title for b in books) == ["one", "three", "two"]

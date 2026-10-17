@@ -94,7 +94,7 @@ def test_query_set_class_is_checked():
         use_query_set(Post, QuerySet)
 
 
-CHECK_QUERY_SETS = '''\
+CHECK_QUERY_SETS = """\
 from typing_extensions import assert_type
 
 from app.models import Post, User, UserQuerySet
@@ -107,7 +107,7 @@ Post.objects.insert(title="t", body="b", author_id=1)
 Post.objects.nope()  # E
 Post.objects.published().insert(title=1)  # E
 User.objects.published()  # E
-'''
+"""
 
 
 def _query_set_project(tmp_path):
@@ -121,8 +121,18 @@ def _query_set_project(tmp_path):
         "from typing_extensions import Self\n\nfrom app.models import Post, PostQuerySet\n\n\n"
         "class PostQueries(PostQuerySet):\n    def published(self) -> Self:\n        return self.filter(Post.published)\n"
     )
-    code = orm._native.cli(["--schema", str(app / "schema.prisma"), "generate", "python", "-o", str(app / "models.py"),
-                            "--query-set", "Post=app.queries:PostQueries"])
+    code = orm._native.cli(
+        [
+            "--schema",
+            str(app / "schema.prisma"),
+            "generate",
+            "python",
+            "-o",
+            str(app / "models.py"),
+            "--query-set",
+            "Post=app.queries:PostQueries",
+        ]
+    )
     assert code == 0
     (tmp_path / "check.py").write_text(CHECK_QUERY_SETS)
     return {i for i, line in enumerate(CHECK_QUERY_SETS.splitlines(), 1) if "# E" in line}
@@ -138,8 +148,11 @@ def test_generated_query_set_types(tmp_path):
     expected = _query_set_project(tmp_path)
     root = Path(__file__).parent.parent
     out = subprocess.run(
-        [sys.executable, "-m", "mypy", "--strict", "--no-incremental", "check.py"], capture_output=True, text=True,
-        env={"MYPYPATH": f"{root}:{tmp_path}", "PATH": ""}, cwd=tmp_path,
+        [sys.executable, "-m", "mypy", "--strict", "--no-incremental", "check.py"],
+        capture_output=True,
+        text=True,
+        env={"MYPYPATH": f"{root}:{tmp_path}", "PATH": ""},
+        cwd=tmp_path,
     ).stdout
     assert {int(n) for n in re.findall(r"^check\.py:(\d+): error", out, re.M)} == expected, out
     exe = shutil.which("pyright")
@@ -151,7 +164,9 @@ def test_generated_query_set_types(tmp_path):
         assert {int(n) for n in re.findall(r"check\.py:(\d+):\d+ - error", out)} == expected, out
     run = subprocess.run(
         [sys.executable, "-c", "from app.models import Post; print(type(Post.objects).__name__)"],
-        capture_output=True, text=True, cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(tmp_path), os.environ.get("PYTHONPATH")]))},
     )
     assert run.stdout.strip() == "PostQueries", run.stderr
@@ -171,8 +186,10 @@ def test_cli_reads_query_sets_from_pyproject(tmp_path, monkeypatch, capfd):
 def test_cli_rejects_duplicate_query_set_flags(tmp_path, monkeypatch, capfd):
     (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
     monkeypatch.chdir(tmp_path)
-    assert orm._native.cli(["generate", "python", "-o", "models.py",
-                            "--query-set", "Book=a:B", "--query-set", "Book=c:D"]) == 2
+    assert (
+        orm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=a:B", "--query-set", "Book=c:D"])
+        == 2
+    )
     assert "duplicate --query-set for model Book" in capfd.readouterr().err
     assert not (tmp_path / "models.py").exists()
 
@@ -213,10 +230,14 @@ async def test_prefetch_to_one_and_many_to_many(clean):
     await posts[0].tags.add(*tags)
     loaded = await Post.objects.order_by(Post.id)
     # The equivalent load describes the batched many-to-many statement too.
-    assert Post.objects.load(Post.author, Post.tags).inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 1, 0, 0, 0),
-        orm.StatementInspection(True, 1, 0, 0, 0),
-    ))
+    assert Post.objects.load(Post.author, Post.tags).inspect() == orm.QueryInspection(
+        2,
+        True,
+        (
+            orm.StatementInspection(False, 1, 0, 0, 0),
+            orm.StatementInspection(True, 1, 0, 0, 0),
+        ),
+    )
     await orm.prefetch(loaded, Post.author, Post.tags)
     assert [p.author.name for p in loaded] == ["Alice", "Alice", "Alice", "Bob"]
     assert [t.name for t in loaded[0].tags.cached] == ["a", "b"] and loaded[1].tags.cached == []
@@ -291,7 +312,8 @@ async def test_prefetch_decimal_key_to_one(decimal_keys):
 @pytest.fixture
 async def prefetch_databases():
     registry = orm.Registry()
-    models = orm.loads('''datasource db { provider = "sqlite" }
+    models = orm.loads(
+        """datasource db { provider = "sqlite" }
 model Author {
   id Int @id @default(autoincrement())
   name String
@@ -303,7 +325,9 @@ model Book {
   author_id Int
   author Author @relation(fields: [author_id], references: [id])
 }
-''', registry=registry)
+""",
+        registry=registry,
+    )
     Author, Book = models["Author"], models["Book"]
     d1 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     d2 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
@@ -322,7 +346,9 @@ model Book {
 
 async def test_prefetch_refuses_instances_from_two_databases(prefetch_databases):
     Author, _, objs = prefetch_databases
-    with pytest.raises(orm.QueryError, match=r"prefetch\(\) takes instances from one database; pass using= to read another"):
+    with pytest.raises(
+        orm.QueryError, match=r"prefetch\(\) takes instances from one database; pass using= to read another"
+    ):
         await orm.prefetch(objs, Author.books)
     # Rejection must leave every relation unloaded.
     for obj in objs:
@@ -362,9 +388,19 @@ def test_describe_gives_fields_relations_and_unique_keys():
     fields = {f["name"]: f for f in post["fields"]}
     assert fields["id"]["default"] == "database" and fields["id"]["primary_key"]
     assert fields["title"] == {
-        "name": "title", "column": "title", "type": "string", "python_type": str, "element_type": None,
-        "nullable": False, "array": False, "enum": None, "max_length": 200, "primary_key": False,
-        "unique": False, "default": None, "insert": True,
+        "name": "title",
+        "column": "title",
+        "type": "string",
+        "python_type": str,
+        "element_type": None,
+        "nullable": False,
+        "array": False,
+        "enum": None,
+        "max_length": 200,
+        "primary_key": False,
+        "unique": False,
+        "default": None,
+        "insert": True,
     }
     relations = {r["name"]: r for r in post["relations"]}
     assert relations["author"]["kind"] == "belongs_to" and relations["author"]["target"] is User
@@ -386,9 +422,18 @@ async def make(model, n=[0], **values):
     info = orm.describe(model)
     n[0] += 1
     for rel in info["relations"]:
-        if rel["kind"] == "belongs_to" and not rel["nullable"] and rel["name"] not in values and not any(f in values for f in rel["from"]):
+        if (
+            rel["kind"] == "belongs_to"
+            and not rel["nullable"]
+            and rel["name"] not in values
+            and not any(f in values for f in rel["from"])
+        ):
             values[rel["name"]] = await make(rel["target"])
-    samples = {str: lambda f: f"{f['name']}-{n[0]}"[: f["max_length"] or None], int: lambda f: n[0], bool: lambda f: False}
+    samples = {
+        str: lambda f: f"{f['name']}-{n[0]}"[: f["max_length"] or None],
+        int: lambda f: n[0],
+        bool: lambda f: False,
+    }
     for f in info["fields"]:
         if f["insert"] and f["default"] is None and not f["nullable"] and f["name"] not in values:
             if not any(f["name"] in r["from"] and r["name"] in values for r in info["relations"]):
@@ -411,9 +456,7 @@ async def test_a_factory_needs_only_describe_and_insert(clean):
 async def test_only_through_a_to_one_path(clean):
     await seed()
     qs = Comment.objects.load(Comment.body, Comment.post.title)
-    assert qs.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 1, 0, 0, 0),
-    ))
+    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 0, 0, 0),))
     sql = qs.sql()
     assert '"title"' in sql and '"views"' not in sql and '"published"' not in sql
     comment = await Comment.objects.insert(post=(await Post.objects.get(Post.title == "hit")), body="x")
@@ -430,9 +473,7 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
     _, _, posts = await seed()
     await Comment.objects.insert(post=posts[0], body="x")
     query = Comment.objects.load(Comment.post.author.name)
-    assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 2, 0, 0, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 2, 0, 0, 0),))
     (c,) = await query
     assert c.post.author.name == "Alice" and c.body == "x" and c.post.title == posts[0].title
     with pytest.raises(orm.NotLoaded):
@@ -448,10 +489,14 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
 async def test_load_a_column_through_a_to_many_path(clean, observe_queries):
     await seed()
     query = User.objects.load(User.posts.title).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 0, 0, 0, 0),
-        orm.StatementInspection(True, 0, 0, 0, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(
+        2,
+        True,
+        (
+            orm.StatementInspection(False, 0, 0, 0, 0),
+            orm.StatementInspection(True, 0, 0, 0, 0),
+        ),
+    )
     with observe_queries(clean) as events:
         users = await query
     assert len(events) == 2
@@ -535,13 +580,15 @@ async def test_or_keeps_the_custom_query_set_class(clean, custom):
 async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
     await seed()
     await User.objects.insert(email="carol@example.com", name="Carol")
-    query = User.objects.order_by(User.id).load(
-        User.posts.objects.order_by(-Post.views).label("best", one=True)
+    query = User.objects.order_by(User.id).load(User.posts.objects.order_by(-Post.views).label("best", one=True))
+    assert query.inspect() == orm.QueryInspection(
+        2,
+        True,
+        (
+            orm.StatementInspection(False, 0, 0, 0, 0),
+            orm.StatementInspection(True, 0, 0, 1, 0),
+        ),
     )
-    assert query.inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 0, 0, 0, 0),
-        orm.StatementInspection(True, 0, 0, 1, 0),
-    ))
     with observe_queries(clean) as events:
         users = await query
     assert len(events) == 2
@@ -651,7 +698,7 @@ def test_describe_primary_key_is_unique():
 
 
 def test_describe_reports_client_default():
-    models = orm.loads('model ClientItem {\n id Int @id\n n Int @client_default(3)\n}', registry=orm.Registry())
+    models = orm.loads("model ClientItem {\n id Int @id\n n Int @client_default(3)\n}", registry=orm.Registry())
     fields = {f["name"]: f for f in orm.describe(models["ClientItem"])["fields"]}
     assert fields["n"]["default"] == "client"
 

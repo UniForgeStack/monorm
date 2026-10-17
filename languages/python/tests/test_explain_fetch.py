@@ -1,4 +1,5 @@
 """`qs.explain()` and `db.fetch(sql, *params)` on Postgres and SQLite."""
+
 import datetime
 import decimal
 import uuid
@@ -7,14 +8,14 @@ import pytest
 import orm
 from blog.models import Post, User
 
-SOURCE = '''datasource db {
+SOURCE = """datasource db {
   provider = "sqlite"
 }
 model Person {
   id   Int    @id
   name String @unique
 }
-'''
+"""
 
 
 @pytest.fixture
@@ -66,11 +67,22 @@ async def test_fetch_on_postgres(clean):
     [row] = await db.fetch(
         "SELECT $1::uuid AS u, $2::timestamptz AS t, $3::numeric AS d, $4::jsonb AS j, 2::int2 AS small, "
         "1.5::float4 AS f, ARRAY[1, 2] AS a, NULL::text AS n, true AS b, DATE '2026-01-02' AS day",
-        u, when, decimal.Decimal("1.50"), {"k": [1]},
+        u,
+        when,
+        decimal.Decimal("1.50"),
+        {"k": [1]},
     )
     assert row == {
-        "u": u, "t": when, "d": decimal.Decimal("1.50"), "j": {"k": [1]}, "small": 2, "f": 1.5,
-        "a": [1, 2], "n": None, "b": True, "day": datetime.date(2026, 1, 2),
+        "u": u,
+        "t": when,
+        "d": decimal.Decimal("1.50"),
+        "j": {"k": [1]},
+        "small": 2,
+        "f": 1.5,
+        "a": [1, 2],
+        "n": None,
+        "b": True,
+        "day": datetime.date(2026, 1, 2),
     }
     async with db.transaction():
         await db.execute("UPDATE users SET name = 'G'")

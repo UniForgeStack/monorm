@@ -25,7 +25,9 @@ import orm  # noqa: E402
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default=os.environ.get("ORM_TEST_DATABASE_URL"), required="ORM_TEST_DATABASE_URL" not in os.environ)
+    parser.add_argument(
+        "--url", default=os.environ.get("ORM_TEST_DATABASE_URL"), required="ORM_TEST_DATABASE_URL" not in os.environ
+    )
     parser.add_argument("--parents", type=int, default=100_000)
     parser.add_argument("--posts-per-parent", type=int, default=10)
     parser.add_argument("--rounds", type=int, default=5)
@@ -48,9 +50,9 @@ async def main() -> None:
         )
         await db.execute("ANALYZE users")
         await db.execute("ANALYZE posts")
-        query = User.objects.select(
-            User.id, orm.func.count(User.posts), orm.func.max(User.posts.views)
-        ).order_by(User.name)
+        query = User.objects.select(User.id, orm.func.count(User.posts), orm.func.max(User.posts.views)).order_by(
+            User.name
+        )
         sql = {
             "scalar": query.limit(20).offset(10).sql(),
             # Deliberately apply pagination AFTER planning to reproduce the old form.
@@ -67,7 +69,7 @@ async def main() -> None:
         samples: dict[str, list[float]] = {name: [] for name in sql}
         for round_number in range(args.rounds):
             # Alternate order after both warm-ups to reduce ordering bias.
-            for name in (list(sql) if round_number % 2 == 0 else list(reversed(sql))):
+            for name in list(sql) if round_number % 2 == 0 else list(reversed(sql)):
                 start = time.perf_counter()
                 await db.fetch(sql[name])
                 samples[name].append((time.perf_counter() - start) * 1000)
@@ -80,7 +82,9 @@ async def main() -> None:
             "offset": 10,
             "median_ms": {name: statistics.median(values) for name, values in samples.items()},
             "sql": sql,
-            "plans": {name: await db.fetch("EXPLAIN (ANALYZE, BUFFERS) " + statement) for name, statement in sql.items()},
+            "plans": {
+                name: await db.fetch("EXPLAIN (ANALYZE, BUFFERS) " + statement) for name, statement in sql.items()
+            },
         }
         print(json.dumps(results, indent=2))
         if args.out:

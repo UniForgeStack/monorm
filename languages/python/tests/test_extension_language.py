@@ -3,6 +3,7 @@
 The default native artifact has no extension, so the artifact record is faked; the
 files and `define()` are real.
 """
+
 import importlib
 import sys
 
@@ -22,7 +23,7 @@ model Tag {
 }
 """
 
-BASE = '''\
+BASE = """\
 from orm import QuerySet
 from orm.ext import ModelT
 
@@ -38,9 +39,9 @@ class AQuerySet(QuerySet[ModelT]):
 class AInstance:
     def label(self):
         return f"a{self.pk}"
-'''
+"""
 
-SECOND = '''\
+SECOND = """\
 from orm import QuerySet
 from orm.ext import ModelT
 
@@ -53,14 +54,20 @@ class BQuerySet(QuerySet[ModelT]):
 class BInstance:
     def label(self):
         return "b" + super().label()
-'''
+"""
 
 
 def record(extension, files, **changes):
     version = "1.0.0"
     out = {
-        "extension": extension, "version": version, "language": "python", "query_set": "AQuerySet", "instance": "AInstance",
-        "query_set_members": ["chain", "everything"], "instance_members": ["label"], "overrides": [],
+        "extension": extension,
+        "version": version,
+        "language": "python",
+        "query_set": "AQuerySet",
+        "instance": "AInstance",
+        "query_set_members": ["chain", "everything"],
+        "instance_members": ["label"],
+        "overrides": [],
         "hash": _extensions._digest([(name, text.encode()) for name, text in files.items()]),
     }
     out.update(changes)
@@ -116,11 +123,21 @@ def test_members_reach_only_the_models_that_use_the_extension(project, monkeypat
 
 def test_two_mixins_chain_through_super_in_dependency_order(project, monkeypatch):
     modules, _ = install(
-        project, monkeypatch,
+        project,
+        monkeypatch,
         ("ext.a", "ext_a", {"__init__.py": BASE}, {}),
-        ("ext.b", "ext_b", {"__init__.py": SECOND}, {
-            "query_set": "BQuerySet", "instance": "BInstance", "query_set_members": ["chain"], "instance_members": ["label"], "overrides": ["chain", "label"],
-        }),
+        (
+            "ext.b",
+            "ext_b",
+            {"__init__.py": SECOND},
+            {
+                "query_set": "BQuerySet",
+                "instance": "BInstance",
+                "query_set_members": ["chain"],
+                "instance_members": ["label"],
+                "overrides": ["chain", "label"],
+            },
+        ),
     )
     Post = build(modules, {"Post": ("ext.a", "ext.b")})["Post"]
     assert Post.objects.chain() == ["b", "a"]
@@ -142,7 +159,8 @@ class AInstance:
 
     changes = {"query_set_members": [], "instance_members": ["to_dict"], "overrides": ["to_dict"]}
     modules, _ = install(
-        project, monkeypatch,
+        project,
+        monkeypatch,
         ("ext.a", "ext_a", {"__init__.py": instance_source("a")}, changes),
         ("ext.b", "ext_b", {"__init__.py": instance_source("b")}, changes),
     )
@@ -168,23 +186,46 @@ def test_user_query_set_comes_first(project, monkeypatch):
 
 
 def test_undeclared_collision_fails_at_define(project, monkeypatch):
-    clash = BASE.replace("def everything", "def where").replace("def chain(self):\n        return [\"a\"]", "def filter(self):\n        return 1")
-    modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": clash}, {"query_set_members": ["filter", "where"], "instance_members": []}))
+    clash = BASE.replace("def everything", "def where").replace(
+        'def chain(self):\n        return ["a"]', "def filter(self):\n        return 1"
+    )
+    modules, _ = install(
+        project,
+        monkeypatch,
+        ("ext.a", "ext_a", {"__init__.py": clash}, {"query_set_members": ["filter", "where"], "instance_members": []}),
+    )
     with pytest.raises(TypeError, match=r"Post\.filter: extension ext\.a query set member collides with a host member"):
         build(modules, {"Post": ("ext.a",)})
     field = BASE.replace("def label", "def title")
-    modules, _ = install(project, monkeypatch, ("ext.f", "ext_f", {"__init__.py": field}, {"instance_members": ["title"], "overrides": ["title"]}))
+    modules, _ = install(
+        project,
+        monkeypatch,
+        ("ext.f", "ext_f", {"__init__.py": field}, {"instance_members": ["title"], "overrides": ["title"]}),
+    )
     with pytest.raises(TypeError, match=r"Post\.title: .* field or a relation"):
         build(modules, {"Post": ("ext.f",)})
 
 
 def test_two_extensions_with_one_name_collide_unless_overridden(project, monkeypatch):
     modules, _ = install(
-        project, monkeypatch,
+        project,
+        monkeypatch,
         ("ext.a", "ext_a", {"__init__.py": BASE}, {}),
-        ("ext.b", "ext_b", {"__init__.py": SECOND}, {"query_set": "BQuerySet", "instance": "BInstance", "query_set_members": ["chain"], "instance_members": ["label"]}),
+        (
+            "ext.b",
+            "ext_b",
+            {"__init__.py": SECOND},
+            {
+                "query_set": "BQuerySet",
+                "instance": "BInstance",
+                "query_set_members": ["chain"],
+                "instance_members": ["label"],
+            },
+        ),
     )
-    with pytest.raises(TypeError, match=r"Post\.chain: extension ext\.b query set member collides with a member of extension ext\.a"):
+    with pytest.raises(
+        TypeError, match=r"Post\.chain: extension ext\.b query set member collides with a member of extension ext\.a"
+    ):
         build(modules, {"Post": ("ext.a", "ext.b")})
 
 

@@ -1,12 +1,13 @@
 """Definition publishes a prepared snapshot, or leaves the registry intact."""
+
 import pytest
 import orm
 from orm.fields import Integer
 
-GOOD = '''model User {
+GOOD = """model User {
   id Int @id
   name String
-}'''
+}"""
 
 
 def test_definition_is_eager_and_failure_is_atomic():
@@ -16,9 +17,23 @@ def test_definition_is_eager_and_failure_is_atomic():
     assert prepared is not None
     before = registry.ir()
     with pytest.raises(orm.SchemaError, match="unknown model"):
-        orm.define({"models": [{"name": "Bad", "table": "bad", "fields": [
-            {"name": "id", "column": "id", "type": "int", "primary_key": True},
-        ], "relations": [{"name": "missing", "kind": "one", "target": "Missing", "from": "id", "to": "id"}]}]}, registry=registry)
+        orm.define(
+            {
+                "models": [
+                    {
+                        "name": "Bad",
+                        "table": "bad",
+                        "fields": [
+                            {"name": "id", "column": "id", "type": "int", "primary_key": True},
+                        ],
+                        "relations": [
+                            {"name": "missing", "kind": "one", "target": "Missing", "from": "id", "to": "id"}
+                        ],
+                    }
+                ]
+            },
+            registry=registry,
+        )
     assert registry.ir() == before
     assert registry.native() is prepared
     assert registry.get("User") is User
@@ -28,7 +43,7 @@ def test_existing_models_keep_their_prepared_snapshot():
     registry = orm.Registry()
     User = orm.loads(GOOD, registry=registry)["User"]
     snapshot = User._meta.registry.native()
-    orm.loads('model Other {\n id Int @id\n}', registry=registry)
+    orm.loads("model Other {\n id Int @id\n}", registry=registry)
     assert User._meta.registry.native() is snapshot
     assert registry.native() is not snapshot
 
@@ -59,9 +74,17 @@ def test_class_declarations_require_preparation_and_keep_previous_snapshot():
 
 def test_definition_owns_input_schema():
     registry = orm.Registry()
-    ir = {"models": [{"name": "User", "table": "users", "fields": [
-        {"name": "id", "column": "id", "type": "int", "primary_key": True},
-    ]}]}
+    ir = {
+        "models": [
+            {
+                "name": "User",
+                "table": "users",
+                "fields": [
+                    {"name": "id", "column": "id", "type": "int", "primary_key": True},
+                ],
+            }
+        ]
+    }
     User = orm.define(ir, registry=registry)["User"]
     ir["models"][0]["table"] = "mutated"
     assert User._meta.registry.ir()["models"][0]["table"] == "users"

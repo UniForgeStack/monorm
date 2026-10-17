@@ -30,7 +30,9 @@ _default: Database | None = None
 # For each database (its root) with an open transaction in the current task: the innermost one.
 _current_tx: ContextVar[dict[Database, _native.Transaction]] = ContextVar("orm_current_tx", default={})
 # For each database in a `tenant()` block: its primary and replica engines with the tenant set.
-_tenants: ContextVar[dict[Database, tuple[_native.Engine, list[_native.Engine]]]] = ContextVar("orm_tenants", default={})
+_tenants: ContextVar[dict[Database, tuple[_native.Engine, list[_native.Engine]]]] = ContextVar(
+    "orm_tenants", default={}
+)
 # For each database in a `tenant()` block: the tenant id.
 _tenant_ids: ContextVar[dict[Database, str]] = ContextVar("orm_tenant_ids", default={})
 # For each database with an open transaction in the current task: the tenant id it began under.

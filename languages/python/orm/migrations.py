@@ -209,7 +209,9 @@ def has_data_steps(directory: str | os.PathLike[str]) -> bool:
     return any((Path(path) / "data.py").is_file() for _, path in _native.list_migrations(os.fspath(directory)))
 
 
-async def migrate_command(schema: str | os.PathLike[str], directory: str | os.PathLike[str], url: str, target: str | None) -> int:
+async def migrate_command(
+    schema: str | os.PathLike[str], directory: str | os.PathLike[str], url: str, target: str | None
+) -> int:
     """``python -m orm migrate`` for a directory with data steps: applies with
     :meth:`Migrator.upgrade`. The data modules of the pending migrations are imported
     first, so the models they import are in the default registry when the database
@@ -278,9 +280,13 @@ class Migrator:
         """
         return await self._upgrade(target, await self._load_pending(target))
 
-    async def _load_pending(self, target: str | None) -> list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None]]:
+    async def _load_pending(
+        self, target: str | None
+    ) -> list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None]]:
         """The pending migrations with their loaded data steps; refuses before anything runs."""
-        todo = [Migration(name, Path(path)) for name, path in await self.db._engine.migration_pending(self._dir, target)]
+        todo = [
+            Migration(name, Path(path)) for name, path in await self.db._engine.migration_pending(self._dir, target)
+        ]
         for m in todo:
             if (m.path / "data.ts").is_file():
                 raise MigrationError(f"{m.name} has a data step (data.ts); apply it with npx orm migrate")

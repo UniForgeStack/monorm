@@ -30,7 +30,9 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.flush()
     sys.stderr.flush()
     if not hasattr(_native, "cli"):
-        raise RuntimeError("CLI is unavailable in this runtime profile; install orm[tooling] and set ORM_PROFILE=tooling")
+        raise RuntimeError(
+            "CLI is unavailable in this runtime profile; install orm[tooling] and set ORM_PROFILE=tooling"
+        )
     args = sys.argv[1:] if argv is None else list(argv)
     found = _native.cli_migrate_args(args)
     if found is not None:

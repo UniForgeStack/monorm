@@ -1,4 +1,5 @@
 """Commit callbacks, session advisory locks, read replicas and tenants."""
+
 import asyncio
 import json
 import time
@@ -17,6 +18,7 @@ async def sqlite_db():
     registry = orm.Registry()
     orm.loads(SQLITE, registry=registry)
     return await orm.connect("sqlite://:memory:", registry=registry, default=False)
+
 
 async def test_on_commit_runs_after_the_outer_commit(clean):
     db = clean
@@ -64,7 +66,9 @@ async def test_on_commit_is_dropped_on_rollback_and_runs_at_once_outside(clean):
 async def two_sqlite_files(tmp_path):
     registry = orm.Registry()
     Item = orm.loads(SQLITE, registry=registry)["Item"]
-    dbs = [await orm.connect(f"sqlite://{tmp_path / name}", registry=registry, default=False) for name in ("a.db", "b.db")]
+    dbs = [
+        await orm.connect(f"sqlite://{tmp_path / name}", registry=registry, default=False) for name in ("a.db", "b.db")
+    ]
     for db in dbs:
         await db.create_tables()
     return Item, dbs
@@ -334,7 +338,9 @@ DO $$ BEGIN
 END $$;
 """
 
-RLS = RLS_ROLE + """
+RLS = (
+    RLS_ROLE
+    + """
 GRANT SELECT, INSERT, UPDATE, DELETE ON s6_notes TO orm_s6_app;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO orm_s6_app;
 ALTER TABLE s6_notes ENABLE ROW LEVEL SECURITY;
@@ -342,6 +348,7 @@ CREATE POLICY tenant ON s6_notes
   USING (tenant = current_setting('app.tenant', true))
   WITH CHECK (tenant = current_setting('app.tenant', true));
 """
+)
 
 
 async def test_tenant_sets_app_tenant_for_row_level_security(db):
@@ -352,7 +359,9 @@ async def test_tenant_sets_app_tenant_for_row_level_security(db):
     await admin.create_tables()
     await admin.execute(RLS)
     await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
-    app = await orm.connect("postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=1)
+    app = await orm.connect(
+        "postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=1
+    )
     try:
         assert await Note.objects.using(app).count() == 0  # no tenant: the policy hides every row
         with app.tenant("a"):
@@ -390,8 +399,11 @@ async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
     await admin.create_tables()
     await admin.execute(RLS)
     await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
-    app = await orm.connect("postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2)
+    app = await orm.connect(
+        "postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2
+    )
     try:
+
         async def other():
             with app.tenant("b"):
                 async with app.transaction():
@@ -465,16 +477,50 @@ def scoped_schema(dialect):
     return {
         "dialect": dialect,
         "models": [
-            {"name": "Shop", "table": "s6_shops", "fields": [
-                field("id", primary_key=True, auto_increment=True), field("name", "string"),
-            ], "relations": [{"name": "orders", "kind": "many", "target": "Order", "from": "id", "to": "shop_id"}]},
-            {"name": "Order", "table": "s6_orders", "fields": [
-                field("id", primary_key=True, auto_increment=True), field("shop_id"), field("total"),
-            ], "relations": [{"name": "shop", "kind": "one", "target": "Shop", "from": "shop_id", "to": "id",
-                              "foreign_key": True, "on_delete": "cascade"}]},
+            {
+                "name": "Shop",
+                "table": "s6_shops",
+                "fields": [
+                    field("id", primary_key=True, auto_increment=True),
+                    field("name", "string"),
+                ],
+                "relations": [{"name": "orders", "kind": "many", "target": "Order", "from": "id", "to": "shop_id"}],
+            },
+            {
+                "name": "Order",
+                "table": "s6_orders",
+                "fields": [
+                    field("id", primary_key=True, auto_increment=True),
+                    field("shop_id"),
+                    field("total"),
+                ],
+                "relations": [
+                    {
+                        "name": "shop",
+                        "kind": "one",
+                        "target": "Shop",
+                        "from": "shop_id",
+                        "to": "id",
+                        "foreign_key": True,
+                        "on_delete": "cascade",
+                    }
+                ],
+            },
         ],
-        "behavior": {"schema_contract": 1, "query_defaults": [{"model": "Order", "filter": {
-            "t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "shop_id"}, "r": {"t": "scope", "name": "shop"}}}]},
+        "behavior": {
+            "schema_contract": 1,
+            "query_defaults": [
+                {
+                    "model": "Order",
+                    "filter": {
+                        "t": "cmp",
+                        "op": "eq",
+                        "l": {"t": "col", "path": [], "name": "shop_id"},
+                        "r": {"t": "scope", "name": "shop"},
+                    },
+                }
+            ],
+        },
     }
 
 
@@ -492,9 +538,14 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
         s1, s2 = await Shop.objects.using(sdb).insert_many([{"name": "one"}, {"name": "two"}]).returning()
         orders = Order.objects.using(sdb)
         o1, o2, o3 = await orders.insert_many(
-            [{"shop_id": s1.id, "total": 10}, {"shop_id": s1.id, "total": 20}, {"shop_id": s2.id, "total": 30}]).returning()
-        for read in (lambda: orders.all(), lambda: orders.count(), lambda: orders.filter(Order.total > 0).exists(),
-                     lambda: Shop.objects.using(sdb).filter(Shop.orders.total > 25).count()):
+            [{"shop_id": s1.id, "total": 10}, {"shop_id": s1.id, "total": 20}, {"shop_id": s2.id, "total": 30}]
+        ).returning()
+        for read in (
+            lambda: orders.all(),
+            lambda: orders.count(),
+            lambda: orders.filter(Order.total > 0).exists(),
+            lambda: Shop.objects.using(sdb).filter(Shop.orders.total > 25).count(),
+        ):
             with pytest.raises(orm.QueryError, match=r"default filter of Order reads scope\.shop"):
                 await read()
         assert await orders.without_defaults().count() == 3
@@ -536,8 +587,13 @@ async def test_prefetch_applies_scope_values(db, dialect):
     await sdb.create_tables()
     try:
         s1, s2 = await Shop.objects.using(sdb).insert_many([{"name": "one"}, {"name": "two"}]).returning()
-        await Order.objects.using(sdb).without_defaults().insert_many(
-            [{"shop_id": s1.id, "total": 10}, {"shop_id": s1.id, "total": 20}, {"shop_id": s2.id, "total": 30}])
+        await (
+            Order.objects.using(sdb)
+            .without_defaults()
+            .insert_many(
+                [{"shop_id": s1.id, "total": 10}, {"shop_id": s1.id, "total": 20}, {"shop_id": s2.id, "total": 30}]
+            )
+        )
         shops = await Shop.objects.using(sdb).order_by(Shop.id).all()
         # Outside a scope the default filter is closed, as for load().
         with pytest.raises(orm.QueryError, match=r"default filter of Order reads scope\.shop"):

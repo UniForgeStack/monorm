@@ -39,16 +39,10 @@ def test_nested_subqueries_have_their_own_dependencies():
     assert result.statements[0].uncorrelated_count == 1
     # Same-model aliases must not mistake a local reference for an outer one.
     average = (
-        Post.objects.filter(Post.author_id == orm.outer(Post.author_id))
-        .select(orm.func.avg(Post.views))
-        .as_scalar()
+        Post.objects.filter(Post.author_id == orm.outer(Post.author_id)).select(orm.func.avg(Post.views)).as_scalar()
     )
-    assert Post.objects.filter(Post.views > average).inspect().statements[
-        0
-    ].correlated_count == 1
-    assert Post.objects.filter(Post.views > average).inspect().statements[
-        0
-    ].uncorrelated_count == 0
+    assert Post.objects.filter(Post.views > average).inspect().statements[0].correlated_count == 1
+    assert Post.objects.filter(Post.views > average).inspect().statements[0].uncorrelated_count == 0
 
 
 def test_ctes_are_counted_separately_from_subqueries():
@@ -57,14 +51,8 @@ def test_ctes_are_counted_separately_from_subqueries():
     assert result.statements[0].correlated_count == 0
     assert result.statements[0].uncorrelated_count == 0
     assert result.statements[0].cte_count == 1
-    totals = (
-        Post.objects.select(Post.author_id, orm.func.count().label("n"))
-        .group_by(Post.author_id)
-        .cte("totals")
-    )
-    result = User.objects.filter(
-        User.id.in_(totals.select(totals.c.author_id))
-    ).inspect()
+    totals = Post.objects.select(Post.author_id, orm.func.count().label("n")).group_by(Post.author_id).cte("totals")
+    result = User.objects.filter(User.id.in_(totals.select(totals.c.author_id))).inspect()
     assert result.statements[0].correlated_count == 0
     assert result.statements[0].uncorrelated_count == 1
     assert result.statements[0].cte_count == 1
@@ -90,9 +78,7 @@ async def test_empty_parents_skip_prefetch_execution(clean):
 async def test_prefetch_templates_repeat_for_key_batches(clean):
     db = await orm.connect(clean.url, default=False, _disable=("max_params=2",))
     try:
-        await User.objects.insert_many(
-            [{"email": f"u{i}@x", "name": f"U{i}"} for i in range(5)]
-        )
+        await User.objects.insert_many([{"email": f"u{i}@x", "name": f"U{i}"} for i in range(5)])
         query = User.objects.using(db).load(User.posts)
         assert query.inspect().statement_count == 2
         events = []
@@ -107,9 +93,7 @@ async def test_prefetch_templates_repeat_for_key_batches(clean):
 
 
 async def test_write_batch_inspection_and_observation(clean):
-    statement = Tag.objects.insert_many(
-        [{"name": f"t{i}"} for i in range(5)], batch_size=2
-    ).returning()
+    statement = Tag.objects.insert_many([{"name": f"t{i}"} for i in range(5)], batch_size=2).returning()
     result = statement.inspect()
     assert result.statement_count == 3
     assert result.has_batching and all(s.has_batching for s in result.statements)
@@ -121,9 +105,7 @@ async def test_write_batch_inspection_and_observation(clean):
     finally:
         remove()
     assert len(events) == result.statement_count
-    update = Tag.objects.update_many(
-        [{"id": t.id, "name": t.name + "!"} for t in tags], batch_size=2
-    )
+    update = Tag.objects.update_many([{"id": t.id, "name": t.name + "!"} for t in tags], batch_size=2)
     assert update.inspect().statement_count == 3
     assert update.inspect().has_batching
     returned = update.returning()
@@ -141,11 +123,7 @@ async def test_write_batch_inspection_and_observation(clean):
 
 
 async def test_mutations_inspect_generated_subqueries(clean):
-    scalar = (
-        Comment.objects.filter(Comment.post_id == orm.outer(Post.id))
-        .select(orm.func.count())
-        .as_scalar()
-    )
+    scalar = Comment.objects.filter(Comment.post_id == orm.outer(Post.id)).select(orm.func.count()).as_scalar()
     update = Post.objects.update(views=scalar)
     assert update.inspect().statements[0].correlated_count == 1
     assert update.inspect().statements[0].uncorrelated_count == 0
@@ -166,36 +144,20 @@ def test_prepared_inspection_binds_parameters():
 def test_inspecting_a_write_is_a_valid_terminal_use():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        assert (
-            Tag.objects.insert_many([{"name": "inspection only"}])
-            .inspect()
-            .statement_count
-            == 1
-        )
+        assert Tag.objects.insert_many([{"name": "inspection only"}]).inspect().statement_count == 1
         assert Tag.objects.update_many([]).inspect().statement_count == 0
         assert Tag.objects.update(name="inspection only").inspect().statement_count == 1
-        assert (
-            Tag.objects.filter(Tag.name == "absent")
-            .delete()
-            .returning()
-            .inspect()
-            .statement_count
-            == 1
-        )
+        assert Tag.objects.filter(Tag.name == "absent").delete().returning().inspect().statement_count == 1
         gc.collect()
     assert caught == []
 
 
-async def test_unbound_inspection_honors_default_connection_capabilities(
-    clean, monkeypatch
-):
+async def test_unbound_inspection_honors_default_connection_capabilities(clean, monkeypatch):
     db = await orm.connect(clean.url, default=False, _disable=("max_params=2",))
     try:
         with monkeypatch.context() as patch:
             patch.setattr(orm.db, "_default", db)
-            result = Tag.objects.insert_many(
-                [{"name": f"t{i}"} for i in range(5)]
-            ).inspect()
+            result = Tag.objects.insert_many([{"name": f"t{i}"} for i in range(5)]).inspect()
             assert result.statement_count == 3
             assert result.has_batching
     finally:

@@ -1,6 +1,8 @@
 line-length = 120
 # First-party roots, so import sorting keeps `orm` and `orm_file_storage` in the project group.
 src = ["languages/python", "extensions/file-storage/python/src"]
+# Generated models: a test compares them with the generator output.
+extend-exclude = ["examples/blog/models.py", "examples/blog/models.pyi"]
 
 [lint]
 # ORM None and boolean comparisons build query expressions.

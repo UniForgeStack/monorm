@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from ._native import DatabaseError, IntegrityError, LockNotAvailable, QueryError, SchemaError, TransactionAborted, WriteProtected
+from ._native import (
+    DatabaseError,
+    IntegrityError,
+    LockNotAvailable,
+    QueryError,
+    SchemaError,
+    TransactionAborted,
+    WriteProtected,
+)
 
 __all__ = [
     "ORMError",

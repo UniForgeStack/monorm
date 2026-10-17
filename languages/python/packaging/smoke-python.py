@@ -1,4 +1,5 @@
 """Run against installed wheels in a fresh environment, not the source checkout."""
+
 import asyncio
 import json
 import os
@@ -14,6 +15,7 @@ assert not ADAPTERS
 _selector = os.environ["ORM_PROFILE"]
 os.environ["ORM_PROFILE"] = "invalid-after-initialization"
 from orm import _native as _again
+
 assert _again is _native
 os.environ["ORM_PROFILE"] = _selector
 assert hasattr(_native, "cli") == metadata["capabilities"]["cli"]
@@ -65,6 +67,7 @@ async def run():
             await db.drop_tables()
         finally:
             await db.close()
+
 
 asyncio.run(run())
 print(json.dumps(metadata, sort_keys=True))

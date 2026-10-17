@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compare projection type checking with warm dependencies on the current machine."""
+
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,9 @@ def check(project):
     start = time.perf_counter()
     result = subprocess.run(
         ["cargo", "check", "--offline", "--quiet", "--manifest-path", str(project / "Cargo.toml")],
-        env=ENV, capture_output=True, text=True,
+        env=ENV,
+        capture_output=True,
+        text=True,
     )
     if result.returncode:
         raise RuntimeError(result.stderr)
@@ -25,9 +28,12 @@ def check(project):
 def main():
     # Recreate build-script output after cargo clean, without changing timed checks.
     subprocess.run(
-        ["cargo", "build", "--quiet", "-p", "orm-client"], cwd=ROOT,
+        ["cargo", "build", "--quiet", "-p", "orm-client"],
+        cwd=ROOT,
         env=dict(os.environ, CARGO_TARGET_DIR=str(ROOT / "target"), CARGO_INCREMENTAL="0"),
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     generated = max((ROOT / "target/debug/build").glob("orm-client-*/out/models.rs"), key=lambda p: p.stat().st_mtime)
     variants = {
@@ -40,31 +46,39 @@ def main():
     with tempfile.TemporaryDirectory(prefix="orm-projection-cost-") as temp:
         project = Path(temp)
         (project / "src").mkdir()
-        (project / "Cargo.toml").write_text(f'''[package]
+        (project / "Cargo.toml").write_text(f"""[package]
 name="orm-projection-cost"
 version="0.0.0"
 edition="2021"
 [workspace]
 [dependencies]
-orm-client={{path={json.dumps(str(ROOT / 'languages/rust'))}}}
-''')
+orm-client={{path={json.dumps(str(ROOT / "languages/rust"))}}}
+""")
         (project / "src/models.rs").write_text(generated.read_text())
-        prefix = '''#![allow(dead_code)]
+        prefix = """#![allow(dead_code)]
 mod models;
 use models::User;
 orm_client::named_result! {pub struct Contact {person,nickname}}
 fn email<S:models::UserShape<Email=String>>(row:&S)->&String {row.email()}
-'''
+"""
         # Warm all dependencies and this generated schema before comparing variants.
         (project / "src/lib.rs").write_text(prefix)
         check(project)
         for label, body in variants.items():
-            source = prefix + "pub async fn consume(db:&models::Database)->orm_client::Result<()> {" + body + "Ok(())}\n"
+            source = (
+                prefix + "pub async fn consume(db:&models::Database)->orm_client::Result<()> {" + body + "Ok(())}\n"
+            )
             samples = []
             for repeat in range(3):
                 (project / "src/lib.rs").write_text(source + f"// rebuild {repeat}\n")
                 samples.append(check(project))
-            records.append({"variant": label, "consumer_source_bytes": len(source.encode()), "warm_dependency_check_seconds": samples})
+            records.append(
+                {
+                    "variant": label,
+                    "consumer_source_bytes": len(source.encode()),
+                    "warm_dependency_check_seconds": samples,
+                }
+            )
     result = {
         "measurement": "measured on a loaded machine; warm dependencies; incremental compilation disabled",
         "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),

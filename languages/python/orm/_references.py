@@ -1,4 +1,5 @@
 """Explicit to-one loads, sharing the owner's existing relation cache."""
+
 from __future__ import annotations
 
 import asyncio
@@ -46,7 +47,12 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
         if self.name in data:
             value = data[self.name]
             keys = data.get("_reference_keys", {})
-            absent_is_valid = key is None or (self.optional and self.name not in keys) or keys.get(self.name, _MISSING) == key or owner._meta.registry.get(self.target_name)._meta.filtered
+            absent_is_valid = (
+                key is None
+                or (self.optional and self.name not in keys)
+                or keys.get(self.name, _MISSING) == key
+                or owner._meta.registry.get(self.target_name)._meta.filtered
+            )
             if value is None and absent_is_valid:
                 return None
             if value is not None:
@@ -57,7 +63,9 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
             return None
         hint = f"use await obj.load({owner.__name__}.{self.name})"
         if self.name in data and data[self.name] is None and key is not None:
-            raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded: the key is set and no row of the target has it; {hint}")
+            raise NotLoaded(
+                f"{owner.__name__}.{self.name} is not loaded: the key is set and no row of the target has it; {hint}"
+            )
         raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; {hint}")
 
 
@@ -84,18 +92,21 @@ def install(model: Any) -> None:
     replace = model._replace_from
     if getattr(replace, "_reference_adapter", False):
         replace = replace._reference_base
+
     def replace_from(self: Any, fresh: Any) -> None:
         before = {source: peek_key(self, source) for source in sources}
         replace(self, fresh)
         for name, source in dependencies:
             if before[source] != peek_key(self, source):
                 invalidate_reference(self, name)
+
     replace_from._reference_adapter = True  # type: ignore[attr-defined]
     replace_from._reference_base = replace  # type: ignore[attr-defined]
     setattr(model, "_replace_from", replace_from)
     baseline_refresh = model.refresh
     if getattr(baseline_refresh, "_reference_adapter", False):
         baseline_refresh = baseline_refresh._reference_base
+
     async def refresh(self: Any, *fields: Any, **options: Any) -> bool:
         before = {source: peek_key(self, source) for source in sources}
         if not await baseline_refresh(self, *fields, **options):
@@ -104,6 +115,7 @@ def install(model: Any) -> None:
             if name in reverse_names or before[source] != peek_key(self, source):
                 invalidate_reference(self, name)
         return True
+
     refresh._reference_adapter = True  # type: ignore[attr-defined]
     refresh._reference_base = baseline_refresh  # type: ignore[attr-defined]
     setattr(model, "refresh", refresh)
@@ -125,6 +137,7 @@ async def load_reference(owner: Any, name: str, *, reload: bool = False, filtere
             pass
     db = resolve(data.get("_db"))
     context = (key, db, db._tx())
+
     async def fetch() -> Any:
         target = relation.target
         to = relation.to_fields if isinstance(relation, BelongsTo) else relation.via_fields
@@ -134,10 +147,12 @@ async def load_reference(owner: Any, name: str, *, reload: bool = False, filtere
         if value is None and isinstance(relation, BelongsTo) and not nullable and not filtered:
             raise IntegrityError(f"{owner._meta.name}.{name}: required target {relation.target_name} is missing")
         return value
+
     def publish(value: Any) -> None:
         if key_value(owner, source) == key:
             data[name] = value
             data.setdefault("_reference_keys", {})[name] = key
+
     if debug._scope.get() is not None:
         # The loader runs `fetch` in its own task, so the call site is captured here.
         with debug.relation_load(owner._meta.name, name, "load"):
@@ -159,6 +174,7 @@ async def coalesced_load(owner: Any, name: str, context: tuple[Any, ...], fetch:
     tokens = data.setdefault("_reference_tokens", {})
     token = object()
     tokens[name] = token
+
     async def run() -> Any:
         try:
             value = await fetch()
@@ -168,6 +184,7 @@ async def coalesced_load(owner: Any, name: str, context: tuple[Any, ...], fetch:
         finally:
             if pending.get(name, (None, None))[1] is asyncio.current_task():
                 pending.pop(name, None)
+
     task = asyncio.create_task(run())
     task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
     pending[name] = (context, task)

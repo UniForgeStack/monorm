@@ -1,10 +1,12 @@
 """A report producer independent of ORM models and SQL transactions."""
+
 from orm_storage import Provider, Reference
 
 
 async def generate_report(storage: Provider) -> Reference:
     # A producer may supply a large async stream instead of these CSV bytes.
     return await storage.upload(b"product,total\nexample,42\n", filename="report.csv", content_type="text/csv")
+
 
 # Application composition:
 # reference = await generate_report(configured_reports_provider)

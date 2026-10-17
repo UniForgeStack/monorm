@@ -312,7 +312,11 @@ class Expression(Node, Generic[T]):
         """``vector @@ query``: the document matches the search. A plain string is
         ``plainto_tsquery(<config of the vector>, query)``. PostgreSQL only."""
         if isinstance(query, (str, Param)):
-            config = self._args[0] if isinstance(self, Func) and self._name == "to_tsvector" and len(self._args) == 2 else None
+            config = (
+                self._args[0]
+                if isinstance(self, Func) and self._name == "to_tsvector" and len(self._args) == 2
+                else None
+            )
             query = Func("plainto_tsquery", (query,) if config is None else (config, query))
         return Comparison("match", self, query)
 
@@ -321,7 +325,9 @@ class Expression(Node, Generic[T]):
     @overload
     def concat(self: Expression[str], other: str | Expression[str]) -> Expression[str]: ...  # pyright: ignore[reportOverlappingOverload]
     @overload
-    def concat(self: Expression[str] | Expression[str | None], other: str | Expression[str] | Expression[str | None]) -> Expression[str | None]: ...
+    def concat(
+        self: Expression[str] | Expression[str | None], other: str | Expression[str] | Expression[str | None]
+    ) -> Expression[str | None]: ...
     def concat(self: Expression[Any], other: Any) -> Expression[Any]:
         """``self || other``: ``NULL`` when either side is ``NULL``. :func:`func.concat`
         reads ``NULL`` as an empty string instead."""
@@ -782,7 +788,12 @@ class Outer(Expression[T]):
         depth, c = 1, ctx.outer
         while c is not None:
             if c.root is self._column._root:
-                return {"t": "outer", "depth": depth, "path": list(self._column._path), "name": self._column._field.name}
+                return {
+                    "t": "outer",
+                    "depth": depth,
+                    "path": list(self._column._path),
+                    "name": self._column._field.name,
+                }
             depth, c = depth + 1, c.outer
         raise ValueError(f"{self!r} is not a column of an enclosing query")
 
@@ -931,16 +942,24 @@ class _Functions:
         return Func("count", () if what is None else (what,), distinct=distinct, filter=filter)
 
     @overload
-    def sum(self, expr: Expression[N], *, distinct: bool = False, filter: ConditionLike | None = None) -> Func[N | None]: ...
+    def sum(
+        self, expr: Expression[N], *, distinct: bool = False, filter: ConditionLike | None = None
+    ) -> Func[N | None]: ...
     @overload
-    def sum(self, expr: Expression[N | None], *, distinct: bool = False, filter: ConditionLike | None = None) -> Func[N | None]: ...
+    def sum(
+        self, expr: Expression[N | None], *, distinct: bool = False, filter: ConditionLike | None = None
+    ) -> Func[N | None]: ...
     def sum(self, expr: Expression[Any], *, distinct: bool = False, filter: ConditionLike | None = None) -> Func[Any]:
         """``SUM``; integer sums come back as ``int`` (cast to bigint)."""
         return Func("sum", (expr,), distinct=distinct, filter=filter)
 
     @overload
     def avg(  # type: ignore[overload-overlap]  # pyright: ignore[reportOverlappingOverload]
-        self, expr: Expression[Decimal] | Expression[Decimal | None], *, distinct: bool = False, filter: ConditionLike | None = None
+        self,
+        expr: Expression[Decimal] | Expression[Decimal | None],
+        *,
+        distinct: bool = False,
+        filter: ConditionLike | None = None,
     ) -> Func[Decimal | None]: ...
     @overload
     def avg(
@@ -1012,12 +1031,16 @@ class _Functions:
         """Every ``old`` in ``expr`` replaced by ``new``."""
         return Func("replace", (expr, old, new))
 
-    def substr(self, expr: Expression[str] | Expression[str | None], start: int, length: int | None = None) -> Func[str]:
+    def substr(
+        self, expr: Expression[str] | Expression[str | None], start: int, length: int | None = None
+    ) -> Func[str]:
         """The characters from the 1-based ``start`` (at least 1), ``length`` of them
         (at least 0; default: all)."""
         return Func("substr", (expr, _Int(start)) if length is None else (expr, _Int(start), _Int(length)))
 
-    def strpos(self, expr: Expression[str] | Expression[str | None], part: str | Expression[str] | Expression[str | None]) -> Func[int]:
+    def strpos(
+        self, expr: Expression[str] | Expression[str | None], part: str | Expression[str] | Expression[str | None]
+    ) -> Func[int]:
         """The 1-based position of the first ``part`` in ``expr``, 0 if absent
         (``STRPOS``; ``INSTR`` on SQLite)."""
         return Func("strpos", (expr, part))
@@ -1049,7 +1072,9 @@ class _Functions:
     @overload
     def to_tsvector(self, document: str | Expression[str] | Expression[str | None], /) -> Func[TsVector]: ...
     @overload
-    def to_tsvector(self, config: str, document: str | Expression[str] | Expression[str | None], /) -> Func[TsVector]: ...
+    def to_tsvector(
+        self, config: str, document: str | Expression[str] | Expression[str | None], /
+    ) -> Func[TsVector]: ...
     def to_tsvector(self, a: Any, b: Any = None, /) -> Func[TsVector]:
         """``to_tsvector([config,] document)``: the document's normalized words. Index it
         with ``@@index([sql("to_tsvector('english', title)")], type: Gin)``."""
@@ -1091,7 +1116,9 @@ class _Functions:
     @overload
     def case(self, *whens: tuple[ConditionLike, Expression[T]]) -> Case[T | None]: ...
     @overload
-    def case(self, *whens: tuple[ConditionLike, Expression[T]] | tuple[ConditionLike, T], default: Expression[T] | T) -> Case[T]: ...
+    def case(
+        self, *whens: tuple[ConditionLike, Expression[T]] | tuple[ConditionLike, T], default: Expression[T] | T
+    ) -> Case[T]: ...
     @overload
     def case(self, *whens: tuple[ConditionLike, Expression[T]] | tuple[ConditionLike, T]) -> Case[T | None]: ...
     def case(self, *whens: tuple[ConditionLike, Any], default: Any = None) -> Case[Any]:
@@ -1236,7 +1263,9 @@ class RelationPath(Generic[M]):
                 f"{self!r} is a {type(rel).__name__} relation; only a BelongsTo relation "
                 "compares with an instance (compare a key column instead)"
             )
-        columns: list[ColumnRef[Any]] = [ColumnRef(self._root, self._path[:-1], owner._meta.fields[n]) for n in rel.via_fields]
+        columns: list[ColumnRef[Any]] = [
+            ColumnRef(self._root, self._path[:-1], owner._meta.fields[n]) for n in rel.via_fields
+        ]
         if other is None:
             nulls: list[Condition] = [IsNull(c, neg=neg) for c in columns]
             return nulls[0] if len(nulls) == 1 else (or_ if neg else and_)(*nulls)
@@ -1348,7 +1377,12 @@ class InSelect(Condition):
         self.neg = neg
 
     def _ir(self, ctx: IRContext) -> IR:
-        return {"t": "in_select", "item": self.item._ir(ctx), "select": self.select._subquery_ir(ctx, "in_()"), "neg": self.neg}
+        return {
+            "t": "in_select",
+            "item": self.item._ir(ctx),
+            "select": self.select._subquery_ir(ctx, "in_()"),
+            "neg": self.neg,
+        }
 
     def __repr__(self) -> str:
         return f"{self.item!r} {'NOT IN' if self.neg else 'IN'} ({self.select!r})"
@@ -1465,9 +1499,7 @@ def as_condition(value: ConditionLike) -> Condition:
         return value
     if isinstance(value, Expression):
         return Comparison("eq", value, Literal(True))
-    raise TypeError(
-        f"expected a condition such as `User.email == 'a@b.c'`, got {value!r}"
-    )
+    raise TypeError(f"expected a condition such as `User.email == 'a@b.c'`, got {value!r}")
 
 
 def _combine(op: str, items: tuple[ConditionLike, ...]) -> Condition:

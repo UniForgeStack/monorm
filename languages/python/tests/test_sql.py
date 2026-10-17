@@ -19,14 +19,12 @@ def where(qs) -> str:
 
 def test_to_many_filter_is_exists():
     query = User.objects.filter(User.posts.created_at < Y)
-    assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 0, 1, 0, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 1, 0, 0),))
     sql = query.sql()
     assert sql == (
-        f"{USER_COLS} WHERE EXISTS(SELECT 1 FROM \"posts\" AS \"t1\" "
-        "WHERE \"t1\".\"author_id\" = \"users\".\"id\" "
-        "AND \"t1\".\"created_at\" < '2026-10-01 00:00:00.000000 +00:00')"
+        f'{USER_COLS} WHERE EXISTS(SELECT 1 FROM "posts" AS "t1" '
+        'WHERE "t1"."author_id" = "users"."id" '
+        'AND "t1"."created_at" < \'2026-10-01 00:00:00.000000 +00:00\')'
     )
 
 
@@ -84,7 +82,9 @@ def test_to_one_filter():
     assert query.inspect().statements[0].correlated_count == 1
     assert query.inspect().statements[0].uncorrelated_count == 0
     w = where(query)
-    assert w == 'EXISTS(SELECT 1 FROM "users" AS "t1" WHERE "t1"."id" = "posts"."author_id" AND "t1"."email" = \'a@b.c\')'
+    assert (
+        w == 'EXISTS(SELECT 1 FROM "users" AS "t1" WHERE "t1"."id" = "posts"."author_id" AND "t1"."email" = \'a@b.c\')'
+    )
 
 
 def test_column_to_column_across_relation():
@@ -97,9 +97,9 @@ def test_column_to_column_across_relation():
 
 def test_to_one_load_and_order_use_left_joins():
     query = Comment.objects.load(Comment.post.author).order_by(Comment.post.title.desc())
-    assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 2, 0, 0, 0),
-    ))  # ordering reuses the load's join
+    assert query.inspect() == orm.QueryInspection(
+        1, False, (orm.StatementInspection(False, 2, 0, 0, 0),)
+    )  # ordering reuses the load's join
     sql = query.sql()
     assert 'LEFT JOIN "posts" AS "j1" ON "j1"."id" = "comments"."post_id"' in sql
     assert 'LEFT JOIN "users" AS "j2" ON "j2"."id" = "j1"."author_id"' in sql
@@ -173,7 +173,9 @@ def test_writes_validate_when_built():
     with pytest.raises(TypeError):
         excluded(User.posts.views)
     with pytest.raises(TypeError):
-        User.objects.insert(email="a", name="b").on_conflict(User.email, update=True, update_fields=[User.name], update_values={"name": "x"})
+        User.objects.insert(email="a", name="b").on_conflict(
+            User.email, update=True, update_fields=[User.name], update_values={"name": "x"}
+        )
 
 
 def native():
@@ -184,7 +186,7 @@ def test_update_many_joins_a_values_list():
     (sql,) = native().update_many_sql("Post", ["id", "title", "views"], [[1, "a", 10], [2, "b", 20]])
     assert sql == (
         'UPDATE "posts" SET "title" = "v"."column2", "views" = "v"."column3" '
-        "FROM (VALUES (1, 'a', 10), (2, 'b', 20)) AS \"v\" WHERE \"posts\".\"id\" = \"v\".\"column1\""
+        'FROM (VALUES (1, \'a\', 10), (2, \'b\', 20)) AS "v" WHERE "posts"."id" = "v"."column1"'
     )
 
 
@@ -267,9 +269,7 @@ def test_aggregate_over_relation_is_a_correlated_subquery():
 
 def test_same_relation_aggregates_share_one_lateral_join():
     query = User.objects.select(User.id, func.count(User.posts), func.max(User.posts.views))
-    assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 1, 1, 0, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 1, 0, 0),))
     sql = query.sql()
     assert sql == (
         'SELECT "users"."id", "l1"."c1", "l1"."c2" FROM "users" LEFT JOIN LATERAL '
@@ -292,7 +292,11 @@ def test_same_relation_aggregates_share_one_lateral_join():
     filtered = User.objects.filter(func.count(User.posts) > 1, func.sum(User.posts.views) > 1).select(User.id).inspect()
     assert filtered.statements[0].joins_count == 0
     assert filtered.statements[0].correlated_count == 2
-    grouped = User.objects.select(User.id, func.count(User.posts), func.sum(User.posts.views), func.count().label("all")).group_by(User.id).inspect()
+    grouped = (
+        User.objects.select(User.id, func.count(User.posts), func.sum(User.posts.views), func.count().label("all"))
+        .group_by(User.id)
+        .inspect()
+    )
     assert grouped.statements[0].joins_count == 0
     assert grouped.statements[0].correlated_count == 2
 
@@ -347,7 +351,7 @@ def _cte_body():
 def test_lateral_guards_keep_scalar_subqueries(build):
     sql = build().sql()
     assert "LATERAL" not in sql
-    assert '(SELECT COUNT(*) FROM "posts"' in sql and '(SELECT MAX(' in sql
+    assert '(SELECT COUNT(*) FROM "posts"' in sql and "(SELECT MAX(" in sql
 
 
 def test_lock_guard_keeps_for_update():
@@ -361,7 +365,7 @@ def test_paginated_relation_aggregates_keep_scalar_subqueries(limit, offset):
     sql = query.sql()
     assert "LATERAL" not in sql
     assert '(SELECT COUNT(*) FROM "posts"' in sql
-    assert '(SELECT MAX(' in sql
+    assert "(SELECT MAX(" in sql
     assert 'ORDER BY "users"."name" ASC, "users"."id" ASC' in sql
     if limit is not None:
         assert f"LIMIT {limit}" in sql
@@ -374,9 +378,7 @@ def test_paginated_relation_aggregates_keep_scalar_subqueries(limit, offset):
 
 def test_select_to_one_columns_join_and_to_many_is_rejected():
     query = Post.objects.select(Post.title, Post.author.name.label("author"))
-    assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 1, 0, 0, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 0, 0, 0),))
     sql = query.sql()
     assert sql == (
         'SELECT "posts"."title", "j1"."name" FROM "posts" LEFT JOIN "users" AS "j1" ON "j1"."id" = "posts"."author_id"'
@@ -471,7 +473,9 @@ def test_cte_sql():
 
 
 def test_recursive_cte_joins_itself():
-    chain = User.objects.filter(User.id == 1).cte("chain", recursive=lambda c: User.objects.filter(User.id == c.c.id + 1))
+    chain = User.objects.filter(User.id == 1).cte(
+        "chain", recursive=lambda c: User.objects.filter(User.id == c.c.id + 1)
+    )
     query = User.objects.from_(chain)
     assert query.inspect().statements[0].correlated_count == 0
     assert query.inspect().statements[0].uncorrelated_count == 0
@@ -492,19 +496,19 @@ def test_many_to_many_filter_is_one_exists_through_the_join_table():
     w = where(query)
     assert w == (
         'EXISTS(SELECT 1 FROM "tags" AS "t1" INNER JOIN "post_tags" AS "t2" ON "t2"."tag_id" = "t1"."id" '
-        "WHERE \"t2\".\"post_id\" = \"posts\".\"id\" AND \"t1\".\"name\" = 'x')"
+        'WHERE "t2"."post_id" = "posts"."id" AND "t1"."name" = \'x\')'
     )
     sql = Post.objects.select(func.count(Post.tags)).sql()
-    assert '(SELECT COUNT(*) FROM "tags" AS "a1" INNER JOIN "post_tags" AS "a2" ON "a2"."tag_id" = "a1"."id" ' \
-           'WHERE "a2"."post_id" = "posts"."id")' in sql
+    assert (
+        '(SELECT COUNT(*) FROM "tags" AS "a1" INNER JOIN "post_tags" AS "a2" ON "a2"."tag_id" = "a1"."id" '
+        'WHERE "a2"."post_id" = "posts"."id")' in sql
+    )
     assert Tag.objects.filter(Tag.posts.author.name == "A").inspect().statements[0].correlated_count == 2
 
 
 def test_has_one_joins_on_the_other_side():
     query = User.objects.load(User.profile)
-    assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 1, 0, 0, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 0, 0, 0),))
     sql = query.sql()
     assert 'LEFT JOIN "profiles" AS "j1" ON "j1"."user_id" = "users"."id"' in sql
 
@@ -512,7 +516,9 @@ def test_has_one_joins_on_the_other_side():
 def test_cte_reads_each_column_once(tmp_path):
     import orm
 
-    (tmp_path / "loud.toml").write_text('name = "hstore"\n[types.loud]\nsql = "text"\nvalue = "text"\nread = "({} || \'!\')"\n')
+    (tmp_path / "loud.toml").write_text(
+        'name = "hstore"\n[types.loud]\nsql = "text"\nvalue = "text"\nread = "({} || \'!\')"\n'
+    )
     source = (
         f'import "{tmp_path / "loud.toml"}"\n'
         'datasource db {\n  provider = "postgresql"\n  extensions = [hstore]\n}\n'
@@ -524,7 +530,10 @@ def test_cte_reads_each_column_once(tmp_path):
 
 
 def test_minus_column_is_a_descending_order():
-    assert Post.objects.order_by(-Post.created_at, Post.id).sql() == Post.objects.order_by(Post.created_at.desc(), Post.id).sql()
+    assert (
+        Post.objects.order_by(-Post.created_at, Post.id).sql()
+        == Post.objects.order_by(Post.created_at.desc(), Post.id).sql()
+    )
     assert Comment.objects.order_by(-Comment.post.title).sql().endswith('ORDER BY "j1"."title" DESC')
     assert repr(-Post.views) == "Post.views.desc()"
     with pytest.raises(TypeError, match="expected a condition"):
@@ -536,8 +545,16 @@ def test_minus_column_is_a_descending_order():
 
 
 def test_nulls_first_and_last():
-    assert Comment.objects.order_by(Comment.author_id.desc(nulls="last")).sql().endswith('ORDER BY "comments"."author_id" DESC NULLS LAST')
-    assert Comment.objects.order_by(Comment.author_id.asc(nulls="first"), Comment.id).sql().endswith('ORDER BY "comments"."author_id" ASC NULLS FIRST, "comments"."id" ASC')
+    assert (
+        Comment.objects.order_by(Comment.author_id.desc(nulls="last"))
+        .sql()
+        .endswith('ORDER BY "comments"."author_id" DESC NULLS LAST')
+    )
+    assert (
+        Comment.objects.order_by(Comment.author_id.asc(nulls="first"), Comment.id)
+        .sql()
+        .endswith('ORDER BY "comments"."author_id" ASC NULLS FIRST, "comments"."id" ASC')
+    )
     assert repr(Comment.author_id.asc(nulls="first").reversed()) == "Comment.author_id.desc(nulls='last')"
     with pytest.raises(ValueError, match="nulls is 'first' or 'last'"):
         Comment.author_id.desc(nulls="middle")  # type: ignore[arg-type]
@@ -545,24 +562,32 @@ def test_nulls_first_and_last():
 
 def test_string_functions_and_concatenation():
     sql = Post.objects.select(
-        func.concat(Post.title, " by ", Post.views), Post.title.concat("!"), func.trim(Post.title),
-        func.ltrim(Post.title), func.rtrim(Post.title), func.replace(Post.title, "a", "b"),
-        func.substr(Post.title, 2, 3), func.strpos(Post.title, "x"),
+        func.concat(Post.title, " by ", Post.views),
+        Post.title.concat("!"),
+        func.trim(Post.title),
+        func.ltrim(Post.title),
+        func.rtrim(Post.title),
+        func.replace(Post.title, "a", "b"),
+        func.substr(Post.title, 2, 3),
+        func.strpos(Post.title, "x"),
     ).sql()
     assert sql == (
-        "SELECT CONCAT(\"posts\".\"title\", ' by ', \"posts\".\"views\"), \"posts\".\"title\" || '!', "
-        "TRIM(\"posts\".\"title\"), LTRIM(\"posts\".\"title\"), RTRIM(\"posts\".\"title\"), "
-        "REPLACE(\"posts\".\"title\", 'a', 'b'), SUBSTR(\"posts\".\"title\", 2, 3), "
-        "STRPOS(\"posts\".\"title\", 'x') FROM \"posts\""
+        'SELECT CONCAT("posts"."title", \' by \', "posts"."views"), "posts"."title" || \'!\', '
+        'TRIM("posts"."title"), LTRIM("posts"."title"), RTRIM("posts"."title"), '
+        'REPLACE("posts"."title", \'a\', \'b\'), SUBSTR("posts"."title", 2, 3), '
+        'STRPOS("posts"."title", \'x\') FROM "posts"'
     )
-    assert where(Post.objects.filter(Post.title.concat(Post.body) == "ab")) == "(\"posts\".\"title\" || \"posts\".\"body\") = 'ab'"
+    assert (
+        where(Post.objects.filter(Post.title.concat(Post.body) == "ab"))
+        == '("posts"."title" || "posts"."body") = \'ab\''
+    )
     with pytest.raises(TypeError, match="at least one"):
         func.concat()
 
 
 def test_array_element_and_unnest():
     sql = Profile.objects.select(Profile.links[1], func.unnest(Profile.links)).sql()
-    assert sql == "SELECT (\"profiles\".\"links\")[1], UNNEST(\"profiles\".\"links\") FROM \"profiles\""
+    assert sql == 'SELECT ("profiles"."links")[1], UNNEST("profiles"."links") FROM "profiles"'
     with pytest.raises(QueryError, match="only be a select\\(\\) column"):
         Profile.objects.filter(func.unnest(Profile.links) == "x").sql()
     with pytest.raises(QueryError, match="an index needs an array"):
@@ -572,17 +597,23 @@ def test_array_element_and_unnest():
 
 
 def test_case_expression():
-    sql = Post.objects.select(Post.author_id, func.sum(func.case((Post.published, 1), default=0)).label("n")).group_by(Post.author_id).sql()
+    sql = (
+        Post.objects.select(Post.author_id, func.sum(func.case((Post.published, 1), default=0)).label("n"))
+        .group_by(Post.author_id)
+        .sql()
+    )
     assert sql == (
         'SELECT "posts"."author_id", CAST(SUM(CASE WHEN "posts"."published" = TRUE THEN 1 ELSE 0 END) AS BIGINT) '
         'FROM "posts" GROUP BY "posts"."author_id"'
     )
     heat = func.case((Post.views > 100, "hot"), (Post.views > 10, "warm"), default="cold")
     assert where(Post.objects.filter(heat == "hot")) == (
-        '(CASE WHEN "posts"."views" > 100 THEN \'hot\' WHEN "posts"."views" > 10 THEN \'warm\' ELSE \'cold\' END) = \'hot\''
+        "(CASE WHEN \"posts\".\"views\" > 100 THEN 'hot' WHEN \"posts\".\"views\" > 10 THEN 'warm' ELSE 'cold' END) = 'hot'"
     )
-    assert Post.objects.order_by(func.case((Post.published, 0), default=1)).sql().endswith(
-        'ORDER BY CASE WHEN "posts"."published" = TRUE THEN 0 ELSE 1 END ASC'
+    assert (
+        Post.objects.order_by(func.case((Post.published, 0), default=1))
+        .sql()
+        .endswith('ORDER BY CASE WHEN "posts"."published" = TRUE THEN 0 ELSE 1 END ASC')
     )
     # without a default: ELSE NULL; a to-many path in a condition is an EXISTS
     assert where(User.objects.filter(func.case((User.posts.views > 3, User.name)) == "x")) == (
@@ -596,9 +627,13 @@ def test_case_expression():
 
 
 def test_aggregate_filter():
-    sql = Post.objects.select(
-        Post.author_id, func.count(filter=Post.published), func.sum(Post.views, filter=Post.views > 10)
-    ).group_by(Post.author_id).sql()
+    sql = (
+        Post.objects.select(
+            Post.author_id, func.count(filter=Post.published), func.sum(Post.views, filter=Post.views > 10)
+        )
+        .group_by(Post.author_id)
+        .sql()
+    )
     assert sql == (
         'SELECT "posts"."author_id", COUNT(*) FILTER (WHERE "posts"."published" = TRUE), '
         'CAST(SUM("posts"."views") FILTER (WHERE "posts"."views" > 10) AS BIGINT) FROM "posts" GROUP BY "posts"."author_id"'
@@ -608,7 +643,10 @@ def test_aggregate_filter():
         'SELECT "users"."id", (SELECT COUNT(*) FILTER (WHERE "a1"."published" = TRUE) FROM "posts" AS "a1" '
         'WHERE "a1"."author_id" = "users"."id") FROM "users"'
     )
-    assert 'COUNT(*) FILTER (WHERE "a1"."views" > 3) FROM "posts" AS "a1"' in User.objects.select(func.count(filter=User.posts.views > 3)).sql()
+    assert (
+        'COUNT(*) FILTER (WHERE "a1"."views" > 3) FROM "posts" AS "a1"'
+        in User.objects.select(func.count(filter=User.posts.views > 3)).sql()
+    )
     # before OVER in a window
     assert 'SUM("posts"."views") FILTER (WHERE "posts"."published" = TRUE) OVER (PARTITION BY "posts"."author_id")' in (
         Post.objects.select(func.sum(Post.views, filter=Post.published).over(partition_by=Post.author_id)).sql()

@@ -66,9 +66,7 @@ async def test_insert_returns_row_with_server_defaults(clean):
     assert u.created_at.tzinfo is not None
     p = await Post.objects.insert(author=u, title="t", body="b")
     assert p.author_id == u.id
-    assert (
-        p.views == 0 and p.published is False
-    )  # DDL defaults, read back via RETURNING
+    assert p.views == 0 and p.published is False  # DDL defaults, read back via RETURNING
 
 
 async def test_insert_many_mixed_columns(clean):
@@ -102,16 +100,10 @@ async def test_insert_validation(clean):
 
 async def test_upsert(clean):
     u = await User.objects.insert(email="a@example.com", name="A")
-    same = (
-        await User.objects.insert(email="a@example.com", name="A2")
-        .on_conflict(User.email, update=True)
-        .returning()
-    )
+    same = await User.objects.insert(email="a@example.com", name="A2").on_conflict(User.email, update=True).returning()
     assert (same.id, same.name, same.created_at) == (u.id, "A2", u.created_at)
     skipped = (
-        await User.objects.insert(email="a@example.com", name="A3")
-        .on_conflict(User.email, update=False)
-        .returning()
+        await User.objects.insert(email="a@example.com", name="A3").on_conflict(User.email, update=False).returning()
     )
     assert skipped is None
     rows = (
@@ -161,9 +153,7 @@ async def test_instances_are_read_only(clean):
 async def test_result_cache(clean, observe_queries):
     await User.objects.insert(email="a@example.com", name="A")
     qs = User.objects.filter(User.name != "Z")
-    assert qs.inspect() == orm.QueryInspection(
-        1, False, (orm.StatementInspection(False, 0, 0, 0, 0),)
-    )
+    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 0, 0, 0),))
     with observe_queries(clean) as events:
         first = await qs
     assert len(events) == 1
@@ -207,18 +197,12 @@ async def test_filter_across_to_many_autojoins(clean):
 async def test_same_row_vs_independent_filters(clean):
     await seed()
     # One filter() call: the same post must be old AND unpublished.
-    same = await User.objects.filter(
-        User.posts.created_at < YESTERDAY, User.posts.published == False
-    )
+    same = await User.objects.filter(User.posts.created_at < YESTERDAY, User.posts.published == False)
     assert names(same) == ["Alice"]
     # Two calls: an old post, and an unpublished post (possibly different ones).
-    indep = await User.objects.filter(User.posts.created_at < YESTERDAY).filter(
-        User.posts.views > 40
-    )
+    indep = await User.objects.filter(User.posts.created_at < YESTERDAY).filter(User.posts.views > 40)
     assert names(indep) == ["Alice", "Bob"]
-    both_same = await User.objects.filter(
-        User.posts.created_at < YESTERDAY, User.posts.views > 40
-    )
+    both_same = await User.objects.filter(User.posts.created_at < YESTERDAY, User.posts.views > 40)
     assert names(both_same) == ["Bob"]
 
 
@@ -237,32 +221,24 @@ async def test_exclude_and_negation(clean):
 
 async def test_or_with_local_column(clean):
     await seed()
-    users = await User.objects.filter(
-        (User.name == "Carol") | (User.posts.views >= 100)
-    )
+    users = await User.objects.filter((User.name == "Carol") | (User.posts.views >= 100))
     assert names(users) == ["Bob", "Carol"]
 
 
 async def test_nested_and_reverse_paths(clean):
     await seed()
     # Users whose posts got a comment containing a literal '%'.
-    assert names(
-        await User.objects.filter(User.posts.comments.body.contains("100%"))
-    ) == ["Alice"]
+    assert names(await User.objects.filter(User.posts.comments.body.contains("100%"))) == ["Alice"]
     # Posts commented on by Bob, via comment -> author.
     posts = await Post.objects.filter(Post.comments.author.name == "Bob")
     assert [p.title for p in posts] == ["new post"]
     # To-one hop in a filter.
-    assert (
-        len(await Post.objects.filter(Post.author.email.endswith("@example.com"))) == 3
-    )
+    assert len(await Post.objects.filter(Post.author.email.endswith("@example.com"))) == 3
 
 
 async def test_load_to_one(clean, observe_queries):
     await seed()
-    query = Comment.objects.load(Comment.post.author, Comment.author).order_by(
-        Comment.id
-    )
+    query = Comment.objects.load(Comment.post.author, Comment.author).order_by(Comment.id)
     result = query.inspect()
     assert result.statement_count == 1
     assert not result.has_batching
@@ -296,9 +272,7 @@ async def test_load_to_many(clean, observe_queries):
     assert result.has_batching
     assert all(s.joins_count == 0 for s in result.statements)
     assert [s.has_batching for s in result.statements] == [False, True]
-    assert all(
-        (s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements
-    )
+    assert all((s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements)
     with observe_queries(clean) as events:
         users = await query
         assert len(events) == 2
@@ -318,9 +292,7 @@ async def test_related_set_queries_and_insert(clean):
     assert await alice.posts.filter(Post.published).count() == 1
     p = await alice.posts.insert(title="via relation", body="b")
     assert p.author_id == alice.id
-    more = await alice.posts.insert_many(
-        [{"title": "x", "body": "y"}, {"title": "z", "body": "w"}]
-    ).returning()
+    more = await alice.posts.insert_many([{"title": "x", "body": "y"}, {"title": "z", "body": "w"}]).returning()
     assert {q.author_id for q in more} == {alice.id}
     assert await alice.posts.count() == 5
 
@@ -347,9 +319,7 @@ async def test_terminal_methods(clean):
 
 async def test_update_and_delete(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
-    n = await Post.objects.filter(Post.author.name == "Alice").update(
-        views=Post.views + 1
-    )
+    n = await Post.objects.filter(Post.author.name == "Alice").update(views=Post.views + 1)
     assert n == 2
     assert sorted(p.views for p in await alice.posts) == [6, 51]
 
@@ -382,15 +352,9 @@ async def test_update_and_delete(clean):
 
 async def test_update_and_delete_returning(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
-    posts = (
-        await Post.objects.filter(Post.author_id == alice.id)
-        .update(views=Post.views + 1)
-        .returning()
-    )
+    posts = await Post.objects.filter(Post.author_id == alice.id).update(views=Post.views + 1).returning()
     assert sorted(p.views for p in posts) == [6, 51]
-    assert (
-        await Post.objects.filter(Post.views > 1000).update(views=0).returning() == []
-    )
+    assert await Post.objects.filter(Post.views > 1000).update(views=0).returning() == []
     assert await Post.objects.update().returning() == []  # nothing to set: no SQL
 
     gone = await Post.objects.filter(Post.views > 90).delete().returning()
@@ -473,22 +437,13 @@ async def test_update_many(clean):
     # The query set's filters still apply: Bob's post is left alone.
     rows = [{"id": a1.id, "views": 10}, {"id": b1.id, "views": 30}]
     assert await Post.objects.filter(Post.author_id == alice.id).update_many(rows) == 1
-    assert (
-        await alice.posts.update_many(
-            [{"id": a2.id, "views": 20}, {"id": b1.id, "views": 30}]
-        )
-        == 1
-    )
+    assert await alice.posts.update_many([{"id": a2.id, "views": 20}, {"id": b1.id, "views": 30}]) == 1
     assert sorted(p.views for p in await Post.objects) == [3, 10, 20]
 
     # Relations, NULLs, RETURNING, unknown ids.
-    out = await Comment.objects.update_many(
-        [{"id": c.id, "author": None} for c in await Comment.objects]
-    ).returning()
+    out = await Comment.objects.update_many([{"id": c.id, "author": None} for c in await Comment.objects]).returning()
     assert len(out) == 3 and all(c.author_id is None for c in out)
-    moved = await Post.objects.update_many(
-        [{"id": b1.id, "author": alice}, {"id": 999, "author": alice}]
-    ).returning()
+    moved = await Post.objects.update_many([{"id": b1.id, "author": alice}, {"id": 999, "author": alice}]).returning()
     assert [(p.id, p.author_id) for p in moved] == [(b1.id, alice.id)]
     assert await Post.objects.update_many([]) == 0
 
@@ -526,16 +481,11 @@ async def test_fallback_sql_runs_on_postgres(clean):
             {"id": b1.id, "title": "y", "views": 2},
         ]
         assert await Post.objects.using(db).update_many(rows) == 2
-        assert {
-            (p.title, p.views)
-            for p in await Post.objects.filter(Post.id.in_([a1.id, b1.id]))
-        } == {
+        assert {(p.title, p.views) for p in await Post.objects.filter(Post.id.in_([a1.id, b1.id]))} == {
             ("x", 1),
             ("y", 2),
         }
-        assert names(
-            await User.objects.using(db).filter(User.name.icontains("ALI"))
-        ) == ["Alice"]
+        assert names(await User.objects.using(db).filter(User.name.icontains("ALI"))) == ["Alice"]
         with pytest.raises(orm.QueryError, match="does not support update"):
             await Post.objects.using(db).update(views=0).returning()
     finally:
@@ -555,9 +505,7 @@ async def test_select_rows(clean):
         .group_by(Post.author_id)
         .order_by(Post.author_id)
     )
-    assert query.inspect() == orm.QueryInspection(
-        1, False, (orm.StatementInspection(False, 0, 0, 0, 0),)
-    )
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 0, 0, 0),))
     rows = await query
     assert rows == [(alice.id, 2, 55), (bob.id, 1, 100)]
     r = rows[0]
@@ -568,42 +516,23 @@ async def test_select_rows(clean):
     assert isinstance(r, tuple) and type(r).__name__ == "Row"
     import pickle
 
-    assert (
-        pickle.loads(pickle.dumps(r)) == r and pickle.loads(pickle.dumps(r)).posts == 2
-    )
+    assert pickle.loads(pickle.dumps(r)) == r and pickle.loads(pickle.dumps(r)).posts == 2
 
-    many = (
-        await Post.objects.select(Post.author_id, func.count())
-        .group_by(Post.author_id)
-        .having(func.count() > 1)
-    )
+    many = await Post.objects.select(Post.author_id, func.count()).group_by(Post.author_id).having(func.count() > 1)
     assert many == [(alice.id, 2)]
 
     assert await Post.objects.select(func.max(Post.views)).scalar() == 100
-    assert (
-        await Post.objects.filter(Post.views > 1000)
-        .select(func.max(Post.views))
-        .scalar()
-        is None
-    )
+    assert await Post.objects.filter(Post.views > 1000).select(func.max(Post.views)).scalar() is None
     assert await Post.objects.filter(Post.views > 1000).select(Post.id).scalar() is None
     assert await Post.objects.select(func.count()).scalar() == 3
-    assert await Post.objects.select(func.avg(Post.views)).scalar() == pytest.approx(
-        155 / 3
-    )
+    assert await Post.objects.select(func.avg(Post.views)).scalar() == pytest.approx(155 / 3)
     assert sorted(await Post.objects.select(Post.title).scalars()) == [
         "bob's old",
         "new post",
         "old draft",
     ]
-    assert await Post.objects.select(func.lower(Post.title)).order_by(
-        Post.id
-    ).first() == ("old draft",)
-    one = (
-        await Post.objects.filter(Post.id == b1.id)
-        .select(Post.title, Post.author.name.label("author"))
-        .get()
-    )
+    assert await Post.objects.select(func.lower(Post.title)).order_by(Post.id).first() == ("old draft",)
+    one = await Post.objects.filter(Post.id == b1.id).select(Post.title, Post.author.name.label("author")).get()
     assert (one.title, one.author) == ("bob's old", "Bob")
     assert await Post.objects.select(Post.title).get(Post.id == b1.id) == ("bob's old",)
     with pytest.raises(orm.DoesNotExist):
@@ -612,9 +541,7 @@ async def test_select_rows(clean):
         await Post.objects.select(Post.id).get()
     with pytest.raises(orm.QueryError):
         await Post.objects.select(Post.id, Post.title).scalars()
-    assert sorted(
-        await Post.objects.select(Post.author_id).distinct().scalars()
-    ) == sorted([alice.id, bob.id])
+    assert sorted(await Post.objects.select(Post.author_id).distinct().scalars()) == sorted([alice.id, bob.id])
     top = (
         await Post.objects.select(Post.author_id, Post.title)
         .distinct(Post.author_id)
@@ -633,9 +560,9 @@ async def test_select_model_with_relation_aggregates(clean):
     from orm import func
 
     # Same-relation aggregates share one LATERAL subquery: empty counts stay 0, empty sums None.
-    query = User.objects.select(
-        User, func.count(User.posts).label("posts"), func.sum(User.posts.views)
-    ).order_by(User.id)
+    query = User.objects.select(User, func.count(User.posts).label("posts"), func.sum(User.posts.views)).order_by(
+        User.id
+    )
     result = query.inspect()
     assert result.statement_count == 1
     assert not result.has_batching
@@ -653,9 +580,9 @@ async def test_select_model_with_relation_aggregates(clean):
     assert page.inspect().statements[0].correlated_count == 2
     assert [(u.name, n, v) for u, n, v in await page] == [("Bob", 1, 100), ("Carol", 0, None)]
     # Two counts over different relations don't multiply each other (no JOIN fan-out).
-    query = User.objects.select(
-        User.name, func.count(User.posts), func.count(User.comments).label("c")
-    ).order_by(User.id)
+    query = User.objects.select(User.name, func.count(User.posts), func.count(User.comments).label("c")).order_by(
+        User.id
+    )
     result = query.inspect()
     assert result.statement_count == 1
     assert not result.has_batching
@@ -686,31 +613,20 @@ async def test_select_model_with_relation_aggregates(clean):
     ]
 
     # Comments on a user's posts: two hops in one subquery.
-    assert (
-        await User.objects.filter(User.id == alice.id)
-        .select(func.count(User.posts.comments))
-        .scalar()
-        == 2
-    )
+    assert await User.objects.filter(User.id == alice.id).select(func.count(User.posts.comments)).scalar() == 2
     # Aggregates over relations filter per row.
     assert names(await User.objects.filter(func.count(User.posts) >= 1)) == [
         "Alice",
         "Bob",
     ]
-    assert names(
-        await User.objects.filter(func.coalesce(func.sum(User.posts.views), 0) > 60)
-    ) == ["Bob"]
+    assert names(await User.objects.filter(func.coalesce(func.sum(User.posts.views), 0) > 60)) == ["Bob"]
 
 
 async def test_subqueries(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     authors = User.objects.filter(User.name.in_(["Alice", "Carol"])).select(User.id)
-    assert {
-        p.title for p in await Post.objects.filter(Post.author_id.in_(authors))
-    } == {"old draft", "new post"}
-    assert [
-        p.title for p in await Post.objects.filter(Post.author_id.not_in(authors))
-    ] == ["bob's old"]
+    assert {p.title for p in await Post.objects.filter(Post.author_id.in_(authors))} == {"old draft", "new post"}
+    assert [p.title for p in await Post.objects.filter(Post.author_id.not_in(authors))] == ["bob's old"]
     popular = Post.objects.filter(Post.views >= 50).select(Post.author_id)
     assert names(await User.objects.filter(User.id.in_(popular))) == ["Alice", "Bob"]
 
@@ -736,13 +652,7 @@ async def test_batches(clean, observe_queries):
     assert [event.rows for event in events] == [7, 7, 7, 4]
     assert seen == sorted(p.id for p in posts)
     assert [len(b) async for b in Post.objects.filter(Post.id < 0).batches(10)] == []
-    assert [
-        len(b)
-        async for b in Post.objects.all()[:0]
-        .filter(Post.id > 0)
-        .limit(None)
-        .batches(25)
-    ] == [25]
+    assert [len(b) async for b in Post.objects.all()[:0].filter(Post.id > 0).limit(None).batches(25)] == [25]
     batch = await anext(Post.objects.load(Post.author).batches(3))
     assert batch[0].author == alice
     with pytest.raises(orm.QueryError):
@@ -775,46 +685,21 @@ async def test_row_locks(clean):
         locked = await User.objects.lock().get(User.id == alice.id)
         assert locked == alice
         with pytest.raises(orm.LockNotAvailable):
-            await _in_new_tx(
-                lambda: User.objects.lock(nowait=True).get(User.id == alice.id)
-            )
+            await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
         with pytest.raises(orm.LockNotAvailable):  # exclusive blocks shared too
-            await _in_new_tx(
-                lambda: User.objects.lock(False, nowait=True).get(User.id == alice.id)
-            )
-        others = await _in_new_tx(
-            lambda: User.objects.order_by(User.id).lock(skip_locked=True)
-        )
+            await _in_new_tx(lambda: User.objects.lock(False, nowait=True).get(User.id == alice.id))
+        others = await _in_new_tx(lambda: User.objects.order_by(User.id).lock(skip_locked=True))
         assert names(others) == ["Bob", "Carol"]
         # Plain reads aren't blocked.
-        assert (
-            await _in_new_tx(lambda: User.objects.get(User.id == alice.id))
-        ).name == "Alice"
+        assert (await _in_new_tx(lambda: User.objects.get(User.id == alice.id))).name == "Alice"
 
     async with db.transaction():
-        await (
-            Post.objects.load(Post.author)
-            .lock(exclusive=False)
-            .filter(Post.id == a1.id)
-        )
+        await Post.objects.load(Post.author).lock(exclusive=False).filter(Post.id == a1.id)
         # Shared locks coexist; the joined author row isn't locked at all.
-        assert (
-            len(
-                await _in_new_tx(
-                    lambda: Post.objects.lock(False, nowait=True).filter(
-                        Post.id == a1.id
-                    )
-                )
-            )
-            == 1
-        )
-        await _in_new_tx(
-            lambda: User.objects.lock(nowait=True).get(User.id == alice.id)
-        )
+        assert len(await _in_new_tx(lambda: Post.objects.lock(False, nowait=True).filter(Post.id == a1.id))) == 1
+        await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
         with pytest.raises(orm.LockNotAvailable):
-            await _in_new_tx(
-                lambda: Post.objects.lock(nowait=True).filter(Post.id == a1.id)
-            )
+            await _in_new_tx(lambda: Post.objects.lock(nowait=True).filter(Post.id == a1.id))
 
 
 async def test_refresh_lock(clean):
@@ -834,21 +719,14 @@ async def test_refresh_lock(clean):
         assert await alice.refresh(User.name, lock=True) is True
         # A partial refresh locks the whole row.
         with pytest.raises(orm.LockNotAvailable):
-            await _in_new_tx(
-                lambda: User.objects.lock(nowait=True).get(User.id == alice.id)
-            )
+            await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
     await User.objects.filter(User.id == alice.id).update(name="Alicia")
     await alice.refresh()
     assert alice.name == "Alicia"
 
     async with db.transaction():
         assert await bob.refresh(lock=True, exclusive=False) is True
-        assert (
-            await _in_new_tx(
-                lambda: User.objects.lock(False, nowait=True).get(User.id == bob.id)
-            )
-            == bob
-        )
+        assert await _in_new_tx(lambda: User.objects.lock(False, nowait=True).get(User.id == bob.id)) == bob
 
     other = await User.objects.get(User.id == alice.id)
     async with db.transaction():
@@ -856,10 +734,7 @@ async def test_refresh_lock(clean):
         await User.objects.filter(User.id == alice.id).update(name="Al")
         with pytest.raises(orm.LockNotAvailable):
             await _in_new_tx(lambda: other.refresh(lock=True, nowait=True))
-        assert (
-            await _in_new_tx(lambda: other.refresh(lock=True, skip_locked=True))
-            is False
-        )
+        assert await _in_new_tx(lambda: other.refresh(lock=True, skip_locked=True)) is False
         assert other.name == "Alicia"  # unchanged
     async with db.transaction():
         assert await other.refresh(lock=True, skip_locked=True) is True
@@ -877,10 +752,7 @@ async def test_refresh_lock(clean):
 async def test_relation_equals_instance(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     qs = Post.objects.filter(Post.author == alice).order_by(Post.id)
-    assert (
-        qs.sql()
-        == Post.objects.filter(Post.author_id == alice.id).order_by(Post.id).sql()
-    )
+    assert qs.sql() == Post.objects.filter(Post.author_id == alice.id).order_by(Post.id).sql()
     assert qs.inspect().statements[0].joins_count == 0
     assert [p.id for p in await qs] == [a1.id, a2.id]
     assert [p.id for p in await Post.objects.filter(Post.author != alice)] == [b1.id]
@@ -893,9 +765,7 @@ async def test_relation_equals_instance(clean):
     assert result.statements[0].correlated_count == 1
     assert result.statements[0].uncorrelated_count == 0  # reaches posts, not users
     assert result.statements[0].joins_count == 0
-    expected = await Comment.objects.filter(Comment.post_id == b1.id).order_by(
-        Comment.id
-    )
+    expected = await Comment.objects.filter(Comment.post_id == b1.id).order_by(Comment.id)
     assert comment in expected
     assert await nested.order_by(Comment.id) == expected
     with pytest.raises(TypeError, match="HasMany"):
@@ -917,12 +787,8 @@ async def test_advisory_locks(clean):
         assert await db.lock("import") is True
         assert await _in_new_tx(lambda: db.lock("import", nowait=True)) is False
         assert await _in_new_tx(lambda: db.lock("other", nowait=True)) is True
-        assert (
-            await _in_new_tx(lambda: db.lock(42, exclusive=False, nowait=True)) is True
-        )
-    assert (
-        await _in_new_tx(lambda: db.lock("import", nowait=True)) is True
-    )  # released at commit
+        assert await _in_new_tx(lambda: db.lock(42, exclusive=False, nowait=True)) is True
+    assert await _in_new_tx(lambda: db.lock("import", nowait=True)) is True  # released at commit
 
 
 async def test_integrity_error(clean):
@@ -973,9 +839,7 @@ async def test_transactions(clean):
 
 async def test_concurrent_queries(clean):
     await seed()
-    counts = await asyncio.gather(
-        *(User.objects.filter(User.posts.views > i).count() for i in range(20))
-    )
+    counts = await asyncio.gather(*(User.objects.filter(User.posts.views > i).count() for i in range(20)))
     assert counts[0] == 2 and counts[-1] == 2
 
 

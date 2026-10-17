@@ -1,4 +1,5 @@
 """Model composition through the public API; needs an artifact with orm-model-composition selected."""
+
 import json
 import os
 
@@ -6,10 +7,12 @@ import pytest
 import orm
 from orm import _native
 
-pytestmark = pytest.mark.skipif("model-composition" not in json.loads(_native.native_artifact())["capabilities"],
-                                reason="requires a model-composition native artifact")
+pytestmark = pytest.mark.skipif(
+    "model-composition" not in json.loads(_native.native_artifact())["capabilities"],
+    reason="requires a model-composition native artifact",
+)
 
-SOURCE = '''
+SOURCE = """
 model Person {
  id Int @id @default(autoincrement())
  name String @check("name <> 'BADROOT'")
@@ -30,7 +33,7 @@ model Customer {
  @@composition.model(parent: "Person", parentRef: "person", childRef: "customer")
  @@map("composition06_customers")
 }
-'''
+"""
 
 
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
@@ -134,7 +137,7 @@ async def test_a_failed_composed_insert_marks_the_enclosing_transaction(provider
         await db.close()
 
 
-SCOPED = '''
+SCOPED = """
 model Person {
  id Int @id @default(autoincrement())
  name String
@@ -146,11 +149,13 @@ model Employee {
  @@query.filter("shop_id == scope.shop")
  @@map("composition06_scoped_employees")
 }
-'''
+"""
 
 
-@pytest.mark.skipif("query-defaults" not in json.loads(_native.native_artifact())["capabilities"],
-                    reason="requires a query-defaults native artifact")
+@pytest.mark.skipif(
+    "query-defaults" not in json.loads(_native.native_artifact())["capabilities"],
+    reason="requires a query-defaults native artifact",
+)
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 async def test_composed_writes_read_the_scope(provider):
     url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
@@ -181,15 +186,18 @@ async def test_composed_writes_read_the_scope(provider):
         await db.close()
 
 
-@pytest.mark.parametrize("field,capability", [
-    ("version Int @default(0) @locking.version", "optimistic-locking"),
-    ("deleted DateTime? @soft_delete.deleted_at", "soft-delete"),
-    ("changed DateTime @default(now()) @timestamps.updated_at", "updated-at"),
-])
+@pytest.mark.parametrize(
+    "field,capability",
+    [
+        ("version Int @default(0) @locking.version", "optimistic-locking"),
+        ("deleted DateTime? @soft_delete.deleted_at", "soft-delete"),
+        ("changed DateTime @default(now()) @timestamps.updated_at", "updated-at"),
+    ],
+)
 def test_a_role_on_a_composed_model_is_rejected(field, capability):
     if capability not in json.loads(_native.native_artifact())["capabilities"]:
         pytest.skip(f"requires a {capability} native artifact")
-    source = f'''
+    source = f"""
 model Person {{
  id Int @id
  @@map("composition06_role_people")
@@ -200,6 +208,6 @@ model Employee {{
  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
  @@map("composition06_role_employees")
 }}
-'''
+"""
     with pytest.raises(Exception, match="not supported on a composed model"):
         orm.loads('datasource db {\n provider = "sqlite"\n}\n' + source, registry=orm.Registry())

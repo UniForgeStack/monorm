@@ -1,4 +1,5 @@
 """`@@protected_write` and `orm.allow_writes`: an application-level write check."""
+
 import asyncio
 import json
 
@@ -8,7 +9,7 @@ from orm import _native
 
 CAPABILITIES = json.loads(_native.native_artifact())["capabilities"]
 
-SOURCE = '''datasource db {
+SOURCE = """datasource db {
   provider = "sqlite"
 }
 model Post {
@@ -33,7 +34,7 @@ model PostTag {
   @@unique([post_id, tag_id])
   @@protected_write
 }
-'''
+"""
 
 
 @pytest.fixture
@@ -145,7 +146,7 @@ def test_protected_write_creates_no_ddl_and_no_snapshot_change():
 
 @pytest.mark.skipif("proxy-models" not in CAPABILITIES, reason="requires a proxy-models artifact")
 async def test_a_proxy_writes_the_table_of_its_protected_root():
-    source = SOURCE + 'model Draft {\n  @@proxy.of(Post)\n}\n'
+    source = SOURCE + "model Draft {\n  @@proxy.of(Post)\n}\n"
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     Post, Draft = models["Post"], models["Draft"]
@@ -161,13 +162,19 @@ async def test_a_proxy_writes_the_table_of_its_protected_root():
     finally:
         await db.close()
     # The proxy shares the protection of its root, so it cannot declare its own.
-    with pytest.raises(orm.SchemaError, match="Draft: a proxy cannot declare @@protected_write; protect the root model Post"):
-        orm.loads(SOURCE.replace("  @@protected_write\n", "", 1) + 'model Draft {\n  @@proxy.of(Post)\n  @@protected_write\n}\n', registry=orm.Registry())
+    with pytest.raises(
+        orm.SchemaError, match="Draft: a proxy cannot declare @@protected_write; protect the root model Post"
+    ):
+        orm.loads(
+            SOURCE.replace("  @@protected_write\n", "", 1)
+            + "model Draft {\n  @@proxy.of(Post)\n  @@protected_write\n}\n",
+            registry=orm.Registry(),
+        )
 
 
 @pytest.mark.skipif("model-composition" not in CAPABILITIES, reason="requires a model-composition artifact")
 async def test_a_composed_write_also_writes_its_protected_parent():
-    source = '''datasource db {
+    source = """datasource db {
   provider = "sqlite"
 }
 model Person {
@@ -179,7 +186,7 @@ model Employee {
   salary Int
   @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
 }
-'''
+"""
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     Person, Employee = models["Person"], models["Employee"]

@@ -1,4 +1,5 @@
 """`@client_default`: the ORM fills omitted insert values; `@default` stays the database default."""
+
 import datetime
 import os
 import uuid
@@ -59,7 +60,12 @@ async def test_client_defaults_fill_insert_bulk_insert_and_upsert(dialect):
         rows = await Item.objects.using(db).insert_many([{"note": "x"}, {}, {"note": None}]).returning()
         assert [r.note for r in rows] == ["x", "note", None]
         assert len({r.id for r in rows} | {item.id, explicit.id}) == 5
-        upserted = await Item.objects.using(db).insert(id=item.id, n=4).on_conflict(Item.id, update=True, update_fields=[Item.n, Item.token]).returning()
+        upserted = (
+            await Item.objects.using(db)
+            .insert(id=item.id, n=4)
+            .on_conflict(Item.id, update=True, update_fields=[Item.n, Item.token])
+            .returning()
+        )
         assert upserted is not None and upserted.id == item.id and upserted.n == 4 and upserted.token != item.token
         # Other writers get only the database default.
         await db.execute(
@@ -87,7 +93,11 @@ async def test_python_callable_defaults_fill_the_same_omitted_values():
     db = await orm.connect(URL, registry=registry, default=False)
     await db.create_tables()
     try:
-        rows = await Counter.objects.using(db).insert_many([{"id": 1}, {"id": 2, "label": None, "token": None}, {"id": 3}]).returning()
+        rows = (
+            await Counter.objects.using(db)
+            .insert_many([{"id": 1}, {"id": 2, "label": None, "token": None}, {"id": 3}])
+            .returning()
+        )
         assert [r.label for r in rows] == ["made-0", None, "made-1"]
         assert [r.token is None for r in rows] == [False, True, False]
     finally:

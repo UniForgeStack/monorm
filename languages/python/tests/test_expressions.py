@@ -48,14 +48,20 @@ async def docs():
 
 def test_json_path_sql():
     _, Doc = load()
-    assert Doc.objects.filter(Doc.meta["author"]["name"] == "Ann").sql().endswith(
-        """WHERE ((("expr_docs"."meta" -> E'author') -> E'name')) = '"Ann"'"""
+    assert (
+        Doc.objects.filter(Doc.meta["author"]["name"] == "Ann")
+        .sql()
+        .endswith("""WHERE ((("expr_docs"."meta" -> E'author') -> E'name')) = '"Ann"'""")
     )
-    assert Doc.objects.filter(Doc.meta["tags"][0].as_text() == "x").sql().endswith(
-        """WHERE ((("expr_docs"."meta" -> E'tags') ->> 0)) = 'x'"""
+    assert (
+        Doc.objects.filter(Doc.meta["tags"][0].as_text() == "x")
+        .sql()
+        .endswith("""WHERE ((("expr_docs"."meta" -> E'tags') ->> 0)) = 'x'""")
     )
-    assert Doc.objects.filter(Doc.meta.json_contains({"kind": "post"})).sql().endswith(
-        """WHERE "expr_docs"."meta" @> '{"kind":"post"}'"""
+    assert (
+        Doc.objects.filter(Doc.meta.json_contains({"kind": "post"}))
+        .sql()
+        .endswith("""WHERE "expr_docs"."meta" @> '{"kind":"post"}'""")
     )
     assert Doc.objects.filter(Doc.meta.has_key("tags")).sql().endswith("""WHERE "expr_docs"."meta" ? 'tags'""")
     # On an array column, an int index stays SQL's array element access.
@@ -71,8 +77,12 @@ async def test_json_paths(docs):
     assert await objects.filter(Doc.meta["author"]["name"] == "Ann").select(Doc.title).scalars() == ["a"]
     assert await objects.filter(Doc.meta["n"] > 3).order_by(Doc.id).select(Doc.title).scalars() == ["a", "c"]
     assert await objects.filter(Doc.meta["tags"][0].as_text() == "y").select(Doc.title).scalars() == ["b"]
-    assert await objects.filter(Doc.meta["author"]["name"].as_text().startswith("B")).select(Doc.title).scalars() == ["b"]
-    rows = await objects.order_by(Doc.id).select(Doc.meta["author"].label("author"), Doc.meta["kind"].as_text().label("kind"))
+    assert await objects.filter(Doc.meta["author"]["name"].as_text().startswith("B")).select(Doc.title).scalars() == [
+        "b"
+    ]
+    rows = await objects.order_by(Doc.id).select(
+        Doc.meta["author"].label("author"), Doc.meta["kind"].as_text().label("kind")
+    )
     assert [tuple(r) for r in rows] == [({"name": "Ann"}, "post"), ({"name": "Bob"}, "page"), (None, "post")]
     assert await objects.order_by(Doc.meta["n"].desc()).select(Doc.title).scalars() == ["c", "a", "b"]
 
@@ -81,7 +91,9 @@ async def test_json_containment_and_keys(docs):
     Doc, objects = docs
     assert await objects.filter(Doc.meta.json_contains({"kind": "post"})).count() == 2
     assert await objects.filter(Doc.meta["tags"].json_contains(["y"])).count() == 2
-    assert await objects.filter(Doc.meta.json_contained_by({"kind": "post", "n": 9, "x": 1})).select(Doc.title).scalars() == ["c"]
+    assert await objects.filter(Doc.meta.json_contained_by({"kind": "post", "n": 9, "x": 1})).select(
+        Doc.title
+    ).scalars() == ["c"]
     assert await objects.filter(Doc.meta.has_key("author")).count() == 2
     assert await objects.filter(~Doc.meta.has_key("tags")).select(Doc.title).scalars() == ["c"]
 
@@ -120,7 +132,9 @@ async def test_json_contains_prepared_param(docs):
     contains = objects.filter(Doc.meta.json_contains(orm.param("v"))).order_by(Doc.title).prepare()
     assert [d.title for d in await contains(v={"kind": "post"})] == ["a", "c"]
     contained = objects.filter(Doc.meta.json_contained_by(orm.param("v"))).prepare()
-    assert [d.title for d in await contained(v={"kind": "page", "n": 1, "author": {"name": "Bob"}, "tags": ["y"], "z": 0})] == ["b"]
+    assert [
+        d.title for d in await contained(v={"kind": "page", "n": 1, "author": {"name": "Bob"}, "tags": ["y"], "z": 0})
+    ] == ["b"]
     with pytest.raises(TypeError, match="not the expression"):
         Doc.meta.json_contains(Doc.meta["a"])
 
@@ -134,7 +148,9 @@ def test_json_index_out_of_range(docs):
 
 
 async def test_json_on_sqlite_is_an_error():
-    registry, Doc = load('datasource db { provider = "sqlite" }\n' + SOURCE.replace("  tags  String[] @default([])\n", ""))
+    registry, Doc = load(
+        'datasource db { provider = "sqlite" }\n' + SOURCE.replace("  tags  String[] @default([])\n", "")
+    )
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
@@ -167,17 +183,26 @@ def test_full_text_search_sql():
 
     registry, Article = load_articles()
     vector = func.to_tsvector("english", Article.body)
-    assert Article.objects.filter(vector.matches("running dogs")).sql().endswith(
-        """WHERE TO_TSVECTOR('english'::regconfig, "expr_articles"."body") @@ PLAINTO_TSQUERY('english'::regconfig, 'running dogs')"""
+    assert (
+        Article.objects.filter(vector.matches("running dogs"))
+        .sql()
+        .endswith(
+            """WHERE TO_TSVECTOR('english'::regconfig, "expr_articles"."body") @@ PLAINTO_TSQUERY('english'::regconfig, 'running dogs')"""
+        )
     )
     sql = Article.objects.order_by(func.ts_rank(vector, func.websearch_to_tsquery("english", "fox -lazy")).desc()).sql()
-    assert "ORDER BY CAST(TS_RANK(TO_TSVECTOR('english'::regconfig, " in sql and "WEBSEARCH_TO_TSQUERY('english'::regconfig, 'fox -lazy')" in sql
-    assert 'TO_TSVECTOR("expr_articles"."body") @@ TO_TSQUERY(\'cat & !dog\')' in Article.objects.filter(
-        func.to_tsvector(Article.body).matches(func.to_tsquery("cat & !dog"))
-    ).sql()
+    assert (
+        "ORDER BY CAST(TS_RANK(TO_TSVECTOR('english'::regconfig, " in sql
+        and "WEBSEARCH_TO_TSQUERY('english'::regconfig, 'fox -lazy')" in sql
+    )
+    assert (
+        'TO_TSVECTOR("expr_articles"."body") @@ TO_TSQUERY(\'cat & !dog\')'
+        in Article.objects.filter(func.to_tsvector(Article.body).matches(func.to_tsquery("cat & !dog"))).sql()
+    )
     # The GIN index on the same expression, from the schema.
     assert any(
-        'CREATE INDEX IF NOT EXISTS "articles_body_search" ON "expr_articles" USING gin ((to_tsvector(\'english\', body)))' in s
+        'CREATE INDEX IF NOT EXISTS "articles_body_search" ON "expr_articles" USING gin ((to_tsvector(\'english\', body)))'
+        in s
         for s in registry.native().ddl()
     ), registry.native().ddl()
     with pytest.raises(QueryError, match="text search configuration"):
@@ -188,7 +213,9 @@ def test_full_text_search_config_names():
     from orm import func
 
     registry, Article = load_articles()
-    assert "'español'::regconfig" in Article.objects.filter(func.to_tsvector("español", Article.body).matches("x")).sql()
+    assert (
+        "'español'::regconfig" in Article.objects.filter(func.to_tsvector("español", Article.body).matches("x")).sql()
+    )
     for bad in ("a'b", "a b", "a.b.c", "1a", ""):
         with pytest.raises(QueryError, match="text search configuration"):
             Article.objects.filter(func.to_tsvector(bad, Article.body).matches("x")).sql()
@@ -206,7 +233,9 @@ async def test_matches_prepared_param():
         await db.drop_tables()
         await db.create_tables()
         objects = Article.objects.using(db)
-        await objects.insert_many([{"body": "The quick brown fox"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running"}])
+        await objects.insert_many(
+            [{"body": "The quick brown fox"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running"}]
+        )
         vector = func.to_tsvector("english", Article.body)
         found = objects.filter(vector.matches(orm.param("q"))).order_by(Article.id).prepare()
         assert [a.id for a in await found(q="dogs")] == [2, 3]
@@ -228,7 +257,9 @@ async def test_matches_forms():
         await db.drop_tables()
         await db.create_tables()
         objects = Article.objects.using(db)
-        await objects.insert_many([{"body": "The quick brown fox"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running"}])
+        await objects.insert_many(
+            [{"body": "The quick brown fox"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running"}]
+        )
         vector = func.to_tsvector("english", Article.body)
         both = func.plainto_tsquery("english", "lazy dog")
         assert await objects.filter(vector.matches(both)).select(Article.id).scalars() == [2]
@@ -253,15 +284,28 @@ async def test_full_text_search():
         await db.create_tables()
         objects = Article.objects.using(db)
         await objects.insert_many(
-            [{"body": "The quick brown fox jumps"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running; the fox and the dog"}]
+            [
+                {"body": "The quick brown fox jumps"},
+                {"body": "A lazy dog sleeps"},
+                {"body": "Dogs are running; the fox and the dog"},
+            ]
         )
         vector = func.to_tsvector("english", Article.body)
         found = await objects.filter(vector.matches("running dogs")).select(Article.id).scalars()
         assert found == [3]  # stemmed: "running" is "run", "dogs" is "dog"
         query = func.websearch_to_tsquery("english", "fox -lazy")
-        ranked = await objects.filter(vector.matches(query)).order_by(func.ts_rank(vector, query).desc(), Article.id).select(Article.id).scalars()
+        ranked = (
+            await objects.filter(vector.matches(query))
+            .order_by(func.ts_rank(vector, query).desc(), Article.id)
+            .select(Article.id)
+            .scalars()
+        )
         assert sorted(ranked) == [1, 3]
-        rank = await objects.filter(Article.id == 3).select(func.ts_rank(vector, func.to_tsquery("english", "dog"))).scalar()
+        rank = (
+            await objects.filter(Article.id == 3)
+            .select(func.ts_rank(vector, func.to_tsquery("english", "dog")))
+            .scalar()
+        )
         assert isinstance(rank, float) and rank > 0
     finally:
         await db.drop_tables()
@@ -271,9 +315,12 @@ async def test_full_text_search():
 async def test_full_text_search_on_sqlite_is_an_error():
     from orm import func
 
-    registry, Article = load_articles('datasource db { provider = "sqlite" }\n' + ARTICLES.replace(
-        '  @@index([sql("to_tsvector(\'english\', body)")], type: Gin, name: "articles_body_search")\n', ""
-    ))
+    registry, Article = load_articles(
+        'datasource db { provider = "sqlite" }\n'
+        + ARTICLES.replace(
+            '  @@index([sql("to_tsvector(\'english\', body)")], type: Gin, name: "articles_body_search")\n', ""
+        )
+    )
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()

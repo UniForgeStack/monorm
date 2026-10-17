@@ -3,13 +3,25 @@
 Importing this module does not import or require an SDK. The client may instead
 be any compatible async transport, useful for tests and additional providers.
 """
+
 from __future__ import annotations
 import asyncio
 import inspect
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
-from . import MAX_SIZE, Reference, Source, StorageError, UploadRecovery, UploadError, UploadCancelled, check_expiry, check_reference, chunks
+from . import (
+    MAX_SIZE,
+    Reference,
+    Source,
+    StorageError,
+    UploadRecovery,
+    UploadError,
+    UploadCancelled,
+    check_expiry,
+    check_reference,
+    chunks,
+)
 
 PART_SIZE = 5 * 1024 * 1024
 
@@ -28,10 +40,12 @@ class S3Storage:
             params["VersionId"] = reference.version
         return params
 
-    async def upload(self, source: Source, *, filename: str | None = None,
-                     content_type: str | None = None, max_size: int = MAX_SIZE) -> Reference:
-        ref = Reference(self.storage, uuid.uuid4().hex, filename=filename,
-                        content_type=content_type or "application/octet-stream")
+    async def upload(
+        self, source: Source, *, filename: str | None = None, content_type: str | None = None, max_size: int = MAX_SIZE
+    ) -> Reference:
+        ref = Reference(
+            self.storage, uuid.uuid4().hex, filename=filename, content_type=content_type or "application/octet-stream"
+        )
         params = self._params(ref)
         upload_id: str | None = None
         completing = False
@@ -43,8 +57,7 @@ class S3Storage:
             number = len(parts) + 1
             if number > 10000:
                 raise StorageError("S3 multipart limit exceeded")
-            response = await self.client.upload_part(**params, UploadId=upload_id,
-                                                     PartNumber=number, Body=data)
+            response = await self.client.upload_part(**params, UploadId=upload_id, PartNumber=number, Body=data)
             parts.append({"PartNumber": number, "ETag": response["ETag"]})
 
         try:
@@ -60,9 +73,16 @@ class S3Storage:
                 await part(bytes(buffer))
             completing = True
             completed = await self.client.complete_multipart_upload(
-                **params, UploadId=upload_id, MultipartUpload={"Parts": parts})
-            return Reference(ref.storage, ref.key, version=completed.get("VersionId"),
-                             filename=ref.filename, content_type=ref.content_type, size=size)
+                **params, UploadId=upload_id, MultipartUpload={"Parts": parts}
+            )
+            return Reference(
+                ref.storage,
+                ref.key,
+                version=completed.get("VersionId"),
+                filename=ref.filename,
+                content_type=ref.content_type,
+                size=size,
+            )
         except BaseException as error:
             # Abort only unfinished multipart state, never delete a possibly committed object.
             cleanup_error = None
@@ -87,8 +107,7 @@ class S3Storage:
 
     async def signed_url(self, reference: Reference, *, expires_in: int = 300) -> str:
         check_expiry(expires_in)
-        value = self.client.generate_presigned_url("get_object", Params=self._params(reference),
-                                                   ExpiresIn=expires_in)
+        value = self.client.generate_presigned_url("get_object", Params=self._params(reference), ExpiresIn=expires_in)
         if inspect.isawaitable(value):
             value = await value
         if not isinstance(value, str):

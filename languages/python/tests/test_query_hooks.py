@@ -1,4 +1,5 @@
 """`db.on_query` hooks, `orm.otel` spans, and the N+1 finder on the same events."""
+
 import asyncio
 import contextvars
 import subprocess
@@ -10,7 +11,7 @@ import orm
 from orm import debug
 from blog.models import Comment, Post, User
 
-SOURCE = '''datasource db {
+SOURCE = """datasource db {
   provider = "sqlite"
 }
 model Person {
@@ -23,7 +24,7 @@ model Customer {
   person_id Int
   person    Person @relation(fields: [person_id], references: [id])
 }
-'''
+"""
 
 
 @pytest.fixture
@@ -51,7 +52,9 @@ async def test_a_hook_gets_each_statement_with_its_shape_time_and_rows(shop):
     assert select.error is None and 0 <= select.duration < 5 and select.start <= prefetch.start
 
     events.clear()
-    assert await Customer.objects.using(db).update_many([{"id": i, "person_id": 2} for i in range(3)], batch_size=1) == 3
+    assert (
+        await Customer.objects.using(db).update_many([{"id": i, "person_id": 2} for i in range(3)], batch_size=1) == 3
+    )
     assert [e.rows for e in events] == [1, 1, 1] and all(e.sql.startswith("UPDATE") for e in events)
 
     events.clear()

@@ -179,7 +179,9 @@ def capture() -> tuple[str, str | None] | None:
 
 def write_key(parts: tuple[object, ...]) -> str:
     """The key of a write call: ``insert:{model}:{fields}:{conflict}``. Lists join with commas."""
-    return ":".join(",".join(map(str, p)) if isinstance(p, (list, tuple)) else "" if p is None else str(p) for p in parts)
+    return ":".join(
+        ",".join(map(str, p)) if isinstance(p, (list, tuple)) else "" if p is None else str(p) for p in parts
+    )
 
 
 def record(key: str, sql: str, origin: tuple[str, str | None]) -> None:

@@ -1,4 +1,5 @@
 """Run with an artifact that selects the timestamps, soft-delete or locking extension."""
+
 import json
 import os
 from datetime import datetime, timezone
@@ -14,7 +15,9 @@ OLD = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
 def requires(capability: str) -> pytest.MarkDecorator:
-    return pytest.mark.skipif(capability not in CAPABILITIES, reason=f"requires a selected {capability} native artifact")
+    return pytest.mark.skipif(
+        capability not in CAPABILITIES, reason=f"requires a selected {capability} native artifact"
+    )
 
 
 async def connect(dialect: str, source: str) -> tuple[orm.Database, dict]:
@@ -22,7 +25,11 @@ async def connect(dialect: str, source: str) -> tuple[orm.Database, dict]:
         source = 'datasource db { provider = "sqlite" }\n' + source
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
@@ -37,14 +44,17 @@ def as_utc(value: datetime) -> datetime:
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("mode", ["database", "application"])
 async def test_updated_at_is_set_on_orm_updates_and_by_the_trigger(dialect, mode):
-    db, models = await connect(dialect, f"""
+    db, models = await connect(
+        dialect,
+        f"""
 model Note {{
   id      Int      @id
   views   Int      @default(0)
   changed DateTime @default(now()) @timestamps.updated_at(mode: "{mode}")
   @@map("tracking_notes")
 }}
-""")
+""",
+    )
     Note = models["Note"]
     try:
         note = await Note.objects.using(db).insert(id=1, changed=OLD)
@@ -293,14 +303,17 @@ async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
 @requires("optimistic-locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_stale_instance_write_raises_version_conflict(dialect):
-    db, models = await connect(dialect, """
+    db, models = await connect(
+        dialect,
+        """
 model Doc {
   id      Int    @id
   title   String
   version Int    @default(0) @locking.version
   @@map("tracking_docs")
 }
-""")
+""",
+    )
     Doc = models["Doc"]
     try:
         docs = Doc.objects.using(db)
@@ -375,7 +388,9 @@ async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
         await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
         assert as_utc((await docs.get(Doc.id == 1)).changed) > OLD
         await docs.update(changed=OLD)
-        await docs.insert(id=1, title="c", changed=OLD).on_conflict(Doc.id, update=True, update_fields=[Doc.title, Doc.changed])
+        await docs.insert(id=1, title="c", changed=OLD).on_conflict(
+            Doc.id, update=True, update_fields=[Doc.title, Doc.changed]
+        )
         assert as_utc((await docs.get(Doc.id == 1)).changed) == OLD
     finally:
         await db.drop_tables()
@@ -447,7 +462,9 @@ async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect)
     try:
         await Post.objects.using(db).insert_many([{"id": 1}])
         await Tag.objects.using(db).insert_many([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}])
-        await PostTag.objects.using(db).insert_many([{"id": 1, "post_id": 1, "tag_id": 1}, {"id": 2, "post_id": 1, "tag_id": 2}])
+        await PostTag.objects.using(db).insert_many(
+            [{"id": 1, "post_id": 1, "tag_id": 1}, {"id": 2, "post_id": 1, "tag_id": 2}]
+        )
         assert await PostTag.objects.using(db).filter(PostTag.id == 2).delete() == 1
         posts = Post.objects.using(db)
         (post,) = await posts.load(Post.tags)

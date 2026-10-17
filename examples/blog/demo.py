@@ -33,8 +33,12 @@ def schema(name: str, provider: str) -> str:
     return f'datasource db {{\n  provider = "{provider}"\n}}\n' + (HERE / f"{name}.prisma").read_text()
 
 
-async def section(name: str, url: str, run: Callable[[orm.Database, dict[str, Any]], Awaitable[None]],
-                  load: Callable[[str, orm.Registry], dict[str, Any]] | None = None) -> None:
+async def section(
+    name: str,
+    url: str,
+    run: Callable[[orm.Database, dict[str, Any]], Awaitable[None]],
+    load: Callable[[str, orm.Registry], dict[str, Any]] | None = None,
+) -> None:
     """Load the section's schema into its own registry, run it, and drop its tables."""
     print(f"\n== {name}")
     provider = "sqlite" if url.startswith("sqlite:") else "postgresql"
@@ -65,12 +69,19 @@ async def core(db: orm.Database, m: dict[str, Any]) -> None:
     alice = await User.objects.using(db).insert(email="alice@example.com", name="Alice", role=Role.admin)
     bob = await User.objects.using(db).insert(email="bob@example.com", name="Bob")
     print("client default token:", len(alice.token) == 36)
-    posts = await Post.objects.using(db).insert_many([
-        {"author": alice, "title": f"Post {i}", "views": i, "published": i % 2 == 0} for i in range(6)
-    ]).returning()
+    posts = (
+        await Post.objects.using(db)
+        .insert_many([{"author": alice, "title": f"Post {i}", "views": i, "published": i % 2 == 0} for i in range(6)])
+        .returning()
+    )
     await posts[0].comments.insert(body="first!", author=bob)
     # Upsert on the unique email.
-    bob = await User.objects.using(db).insert(email="bob@example.com", name="Robert").on_conflict(User.email, update=True).returning()
+    bob = (
+        await User.objects.using(db)
+        .insert(email="bob@example.com", name="Robert")
+        .on_conflict(User.email, update=True)
+        .returning()
+    )
     print("upserted:", bob.name)
 
     # Filters follow relations; a to-many hop is an EXISTS, so no duplicate rows.
@@ -85,11 +96,15 @@ async def core(db: orm.Database, m: dict[str, Any]) -> None:
     print("loaded:", c.post.title)
 
     # select(): rows of columns, aggregates, string functions and correlated subqueries.
-    rows = await User.objects.using(db).select(
-        func.concat(User.name, " <", User.email, ">").label("who"),
-        func.count(User.posts).label("posts"),
-        orm.exists(Post.objects.filter(Post.author_id == orm.outer(User.id), Post.views > 4)).label("popular"),
-    ).order_by(User.name)
+    rows = (
+        await User.objects.using(db)
+        .select(
+            func.concat(User.name, " <", User.email, ">").label("who"),
+            func.count(User.posts).label("posts"),
+            orm.exists(Post.objects.filter(Post.author_id == orm.outer(User.id), Post.views > 4)).label("popular"),
+        )
+        .order_by(User.name)
+    )
     print([tuple(r) for r in rows])
 
     # Many-to-many through PostTag.
@@ -97,7 +112,13 @@ async def core(db: orm.Database, m: dict[str, Any]) -> None:
     print("tagged rust:", await Post.objects.using(db).filter(Post.tags.name == "rust").count())
 
     # Prepared queries: build once, bind values per call.
-    by_author = Post.objects.using(db).filter(Post.author_id == orm.param("author")).order_by(Post.id).limit(orm.param("n")).prepare()
+    by_author = (
+        Post.objects.using(db)
+        .filter(Post.author_id == orm.param("author"))
+        .order_by(Post.id)
+        .limit(orm.param("n"))
+        .prepare()
+    )
     print("prepared:", [p.title for p in await by_author(author=alice.id, n=2)])
 
     # Cursor pagination: keyset pages with an opaque cursor.
@@ -133,10 +154,12 @@ async def core(db: orm.Database, m: dict[str, Any]) -> None:
 
 async def proxy_models(db: orm.Database, m: dict[str, Any]) -> None:
     Account, ActiveAccount, Status = m["Account"], m["ActiveAccount"], m["Status"]
-    await Account.objects.using(db).insert_many([
-        {"id": 1, "name": "old", "status": Status.OLD, "note": "x"},
-        {"id": 2, "name": "live", "status": Status.ACTIVE},
-    ])
+    await Account.objects.using(db).insert_many(
+        [
+            {"id": 1, "name": "old", "status": Status.OLD, "note": "x"},
+            {"id": 2, "name": "live", "status": Status.ACTIVE},
+        ]
+    )
     # The proxy fills its client defaults and has no `note` field.
     created = await ActiveAccount.objects.using(db).insert(id=3)
     print("proxy insert:", created.name, created.status, "note" in ActiveAccount._meta.fields)
@@ -145,9 +168,13 @@ async def proxy_models(db: orm.Database, m: dict[str, Any]) -> None:
 
 async def query_defaults(db: orm.Database, m: dict[str, Any]) -> None:
     Article = m["Article"]
-    await Article.objects.using(db).insert_many([
-        {"title": "a", "body": "long"}, {"title": "b", "body": "long"}, {"title": "hidden", "body": "x", "visible": False},
-    ])
+    await Article.objects.using(db).insert_many(
+        [
+            {"title": "a", "body": "long"},
+            {"title": "b", "body": "long"},
+            {"title": "hidden", "body": "x", "visible": False},
+        ]
+    )
     rows = await Article.objects.using(db)
     print("default filter and order:", [r.title for r in rows])
     try:
@@ -159,8 +186,8 @@ async def query_defaults(db: orm.Database, m: dict[str, Any]) -> None:
 
 async def model_composition(db: orm.Database, m: dict[str, Any]) -> None:
     Person, Employee, Customer = m["Person"], m["Employee"], m["Customer"]
-    ann = await Employee.objects.using(db).insert(name="Ann", salary=10)   # a Person row and an Employee row
-    await Customer.objects.using(db).attach(ann.id, {"points": 5})         # Ann is also a customer
+    ann = await Employee.objects.using(db).insert(name="Ann", salary=10)  # a Person row and an Employee row
+    await Customer.objects.using(db).attach(ann.id, {"points": 5})  # Ann is also a customer
     await Employee.objects.using(db).filter(Employee.name == "Ann").update(salary=12)
     person = await Person.objects.using(db).load(Person.employee, Person.customer).require().get()
     print("composed:", person.name, person.employee.salary, person.customer.points)
@@ -176,7 +203,11 @@ async def file_storage(db: orm.Database, m: dict[str, Any]) -> None:
         return
     Report = m["Report"]
     with tempfile.TemporaryDirectory() as directory:
-        install_model(Report, {"file": FileField("file", "reports", True)}, Registry({"reports": LocalStorage("reports", directory)}))
+        install_model(
+            Report,
+            {"file": FileField("file", "reports", True)},
+            Registry({"reports": LocalStorage("reports", directory)}),
+        )
         report = await Report.objects.using(db).insert(id=1, file=Upload(b"quarterly numbers", filename="q3.txt"))
         report = await Report.objects.using(db).require().get(Report.id == 1)
         content = b"".join([chunk async for chunk in report.file_open()])
@@ -196,10 +227,12 @@ async def generic_relations(db: orm.Database, m: dict[str, Any]) -> None:
     Photo, Video, Label, ContentType = m["Photo"], m["Video"], m["Label"], m["ContentType"]
     photo = await Photo.objects.using(db).insert(id=1, url="cat.png")
     await Video.objects.using(db).insert(id=1, title="cats")
-    await Label.objects.using(db).insert_many([
-        {"id": 1, "name": "cute", "target_type": ContentType.Photo, "target_id": photo.id},
-        {"id": 2, "name": "long", "target_type": ContentType.Video, "target_id": 1},
-    ])
+    await Label.objects.using(db).insert_many(
+        [
+            {"id": 1, "name": "cute", "target_type": ContentType.Photo, "target_id": photo.id},
+            {"id": 2, "name": "long", "target_type": ContentType.Video, "target_id": 1},
+        ]
+    )
     on_photos = await Label.objects.using(db).filter(Label.target_type == ContentType.Photo)
     print("labels on photos:", [x.name for x in on_photos], "ContentType.Photo =", ContentType.Photo.value)
 

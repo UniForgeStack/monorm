@@ -102,11 +102,17 @@ async def test_on_conflict_where_picks_a_partial_index(anon_index):
     with pytest.raises(orm.DatabaseError, match="no unique or exclusion constraint"):
         await Comment.objects.insert(post=post, body="hi").on_conflict(Comment.post_id, Comment.body, update=False)
     where = Comment.author_id.is_null()
-    assert await Comment.objects.insert(post=post, body="hi").on_conflict(Comment.post_id, Comment.body, where=where, update=False).returning() is None
+    assert (
+        await Comment.objects.insert(post=post, body="hi")
+        .on_conflict(Comment.post_id, Comment.body, where=where, update=False)
+        .returning()
+        is None
+    )
     later = datetime(2030, 1, 1, tzinfo=timezone.utc)
     again = await (
         Comment.objects.insert(post=post, body="hi", created_at=later)
-        .on_conflict(Comment.post_id, Comment.body, where=where, update=True, update_fields=[Comment.created_at]).returning()
+        .on_conflict(Comment.post_id, Comment.body, where=where, update=True, update_fields=[Comment.created_at])
+        .returning()
     )
     assert again.id == first.id and again.created_at == later
     # The other rows of the index predicate's complement are not unique.
@@ -120,7 +126,14 @@ async def test_on_conflict_where_with_set_parameters(anon_index):
     await Comment.objects.insert(post=post, body="hi")
     row = await (
         Comment.objects.insert(post=post, body="hi")
-        .on_conflict(Comment.post_id, Comment.body, where=Comment.author_id.is_null(), update=True, update_values={"body": "hi again"}).returning()
+        .on_conflict(
+            Comment.post_id,
+            Comment.body,
+            where=Comment.author_id.is_null(),
+            update=True,
+            update_values={"body": "hi again"},
+        )
+        .returning()
     )
     assert row.body == "hi again"
 
@@ -139,7 +152,9 @@ async def test_on_conflict_where_with_a_boolean_column(clean):
             )
         assert [p.body for p in await posts] == ["b7"]
         rows = [{"author": alice, "title": f"t{i % 2}", "body": "x", "published": True} for i in range(8)]
-        await posts.insert_many(rows, batch_size=1).on_conflict(Post.author_id, Post.title, where=Post.published == True, update=False)  # noqa: E712
+        await posts.insert_many(rows, batch_size=1).on_conflict(
+            Post.author_id, Post.title, where=Post.published == True, update=False
+        )  # noqa: E712
         assert await posts.count() == 3
     finally:
         await db.close()
@@ -148,7 +163,8 @@ async def test_on_conflict_where_with_a_boolean_column(clean):
 
 async def test_on_conflict_infers_the_partial_unique_index():
     registry = orm.Registry()
-    Account = orm.loads("""
+    Account = orm.loads(
+        """
         datasource db { provider = "postgresql" }
         model Account {
           id     BigInt  @id @default(autoincrement())
@@ -156,7 +172,9 @@ async def test_on_conflict_infers_the_partial_unique_index():
           active Boolean @default(true)
           @@index([email], unique: true, where: raw("active"))
         }
-    """, registry=registry)["Account"]
+    """,
+        registry=registry,
+    )["Account"]
     db = await orm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.create_tables()
@@ -176,7 +194,9 @@ async def test_on_conflict_infers_the_partial_unique_index():
 async def test_on_conflict_where_reads_own_columns_only(anon_index):
     # Postgres refuses a relation path (a subquery) in an index predicate.
     with pytest.raises(orm.DatabaseError, match="subquery in index predicate"):
-        await Comment.objects.insert(post_id=1, body="x").on_conflict(Comment.post_id, where=Comment.post.title == "t", update=False)
+        await Comment.objects.insert(post_id=1, body="x").on_conflict(
+            Comment.post_id, where=Comment.post.title == "t", update=False
+        )
 
 
 # -- insert results and on_conflict options ---------------------------------------------------
@@ -216,7 +236,12 @@ async def test_on_conflict_update_fields_and_values(clean):
     # Both options: the union; the other fields keep their values.
     out = await (
         Post.objects.insert(**again)
-        .on_conflict(Post.id, update=True, update_fields=[Post.title], update_values={"views": Post.views + orm.excluded(Post.views)})
+        .on_conflict(
+            Post.id,
+            update=True,
+            update_fields=[Post.title],
+            update_values={"views": Post.views + orm.excluded(Post.views)},
+        )
         .returning()
     )
     assert (out.title, out.views, out.body) == ("t2", 7, "b")
@@ -328,7 +353,9 @@ async def test_get_or_insert_checks_the_lookup(clean):
 async def test_add_with_through_defaults(clean):
     alice = await User.objects.insert(email="a@x.io", name="A")
     post = await Post.objects.insert(author=alice, title="t", body="b")
-    t1, t2, t3, t4 = await Tag.objects.insert_many([{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]).returning()
+    t1, t2, t3, t4 = await Tag.objects.insert_many(
+        [{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]
+    ).returning()
     await post.tags.add(t1, t2, through_defaults={"position": 1})
     # An existing link keeps its values.
     await post.tags.add(t2, t3, through_defaults={"position": 2})
@@ -379,7 +406,9 @@ async def test_copy_loads_many_rows(clean):
 
 async def test_copy_column_types(clean):
     # A native enum, a decimal, a text array, and an int-stored enum.
-    alice, bob = await User.objects.insert_many([{"email": "a@x.io", "name": "A"}, {"email": "b@x.io", "name": "B"}]).returning()
+    alice, bob = await User.objects.insert_many(
+        [{"email": "a@x.io", "name": "A"}, {"email": "b@x.io", "name": "B"}]
+    ).returning()
     rows = [
         {"user": alice, "role": Role.admin, "balance": Decimal("12.50"), "links": ["x", "y"]},
         {"user": bob, "role": Role.member, "balance": Decimal("0"), "links": []},
@@ -451,11 +480,18 @@ async def test_typed_read_of_a_smallint_column(clean):
         alice = await User.objects.using(narrow).insert(email="a@x.io", name="A")
         posts = Post.objects.using(narrow)
         await posts.insert_many(
-            [{"author": alice, "title": "t", "body": "b", "views": 7}, {"author": alice, "title": "u", "body": "b", "views": 9}]
+            [
+                {"author": alice, "title": "t", "body": "b", "views": 7},
+                {"author": alice, "title": "u", "body": "b", "views": 9},
+            ]
         )
         assert sorted(p.views for p in await posts.all()) == [7, 9]
         assert sorted(await posts.select(Post.views).scalars()) == [7, 9]
-        agg = await User.objects.using(narrow).select(func.array_agg(User.posts.views, order_by=User.posts.views)).scalars()
+        agg = (
+            await User.objects.using(narrow)
+            .select(func.array_agg(User.posts.views, order_by=User.posts.views))
+            .scalars()
+        )
         assert agg == [[7, 9]]
 
 

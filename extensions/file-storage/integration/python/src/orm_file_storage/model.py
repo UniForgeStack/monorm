@@ -1,4 +1,5 @@
 """Selected model setup shared by generated and runtime-defined bindings."""
+
 from collections.abc import Mapping, Sequence
 from typing import Any
 from orm_storage import Registry
@@ -32,6 +33,7 @@ def install_model(model: type[Any], fields: Mapping[str, FileField], registry: R
     adapter = ModelAdapter(fields, registry)
     methods: dict[str, Any] = {}
     for name, field in fields.items():
+
         def signed_url(self: Any, *, expires_in: int = 300, _field: FileField = field) -> Any:
             reference = _field.reference(vars(self))
             if adapter.registry is None:
@@ -54,9 +56,11 @@ def install_model(model: type[Any], fields: Mapping[str, FileField], registry: R
         setattr(model, name, method)
     if hasattr(model, "_meta"):
         from orm.hooks import decode_field
+
         for name, field in fields.items():
             # A loaded file field reads as a Reference, without I/O.
             decode_field(model, name, field.decode)
         from .orm import install_queries
+
         install_queries(model, adapter)
     return adapter

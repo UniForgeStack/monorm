@@ -367,8 +367,7 @@ class BelongsTo(Relation[M, P]):
 
     def __set__(self, obj: Model, value: Never) -> None:
         raise AttributeError(
-            f"{self.model.__name__}.{self.name} is read-only; write the key with "
-            f"`await obj.update({self.name}=...)`"
+            f"{self.model.__name__}.{self.name} is read-only; write the key with `await obj.update({self.name}=...)`"
         )
 
     def ir(self) -> dict[str, Any]:
@@ -393,7 +392,9 @@ class HasMany(Relation[MM, P]):
 
     kind = "many"
 
-    def __init__(self, target: str | type[MM], *, via: str | Sequence[str], from_: str | Sequence[str] | None = None) -> None:
+    def __init__(
+        self, target: str | type[MM], *, via: str | Sequence[str], from_: str | Sequence[str] | None = None
+    ) -> None:
         super().__init__(target)
         self.via_fields = key_names(via)
         self._from = None if from_ is None else key_names(from_)
@@ -444,7 +445,9 @@ class HasOne(Relation[M, P]):
 
     kind = "one"
 
-    def __init__(self, target: str | type[M], *, via: str | Sequence[str], from_: str | Sequence[str] | None = None) -> None:
+    def __init__(
+        self, target: str | type[M], *, via: str | Sequence[str], from_: str | Sequence[str] | None = None
+    ) -> None:
         super().__init__(target)
         self.via_fields = key_names(via)
         self._from = None if from_ is None else key_names(from_)
@@ -471,9 +474,7 @@ class HasOne(Relation[M, P]):
         d = obj.__dict__
         if self.name in d:
             return d[self.name]
-        raise NotLoaded(
-            f"{owner.__name__}.{self.name} is not loaded; use load({owner.__name__}.{self.name})"
-        )
+        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; use load({owner.__name__}.{self.name})")
 
     def __set__(self, obj: Model, value: Never) -> None:
         raise AttributeError(
@@ -482,8 +483,13 @@ class HasOne(Relation[M, P]):
         )
 
     def ir(self) -> dict[str, Any]:
-        return {"name": self.name, "kind": "one", "target": self.target_name,
-                "from": _ir_names(self.from_fields), "to": _ir_names(self.via_fields)}
+        return {
+            "name": self.name,
+            "kind": "one",
+            "target": self.target_name,
+            "from": _ir_names(self.from_fields),
+            "to": _ir_names(self.via_fields),
+        }
 
 
 class ManyToMany(Relation[MM, P]):

@@ -1,4 +1,5 @@
 """Run with the isolated native artifact containing the selected proxy compiler."""
+
 import json
 import os
 import re
@@ -9,7 +10,10 @@ import orm
 from orm import _native
 
 SOURCE = Path(__file__).parents[3].joinpath("fixtures/proxy.prisma").read_text()
-pytestmark = pytest.mark.skipif("proxy-models" not in json.loads(_native.native_artifact())["capabilities"], reason="requires selected proxy native artifact")
+pytestmark = pytest.mark.skipif(
+    "proxy-models" not in json.loads(_native.native_artifact())["capabilities"],
+    reason="requires selected proxy native artifact",
+)
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
@@ -19,24 +23,36 @@ async def test_proxy_warning_rows_defaults_writes_and_relation_targets(dialect, 
         source = 'datasource db { provider = "sqlite" }\n' + source
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
-    with pytest.raises(orm.SchemaError, match=r":\d+:\d+: relation \w+\.\w+: \w+ has no field missing after extension lowering"):
+    with pytest.raises(
+        orm.SchemaError, match=r":\d+:\d+: relation \w+\.\w+: \w+ has no field missing after extension lowering"
+    ):
         orm.loads(source.replace("references: [id]", "references: [missing]"), registry=orm.Registry())
     User, Active, Post, Status = (models[k] for k in ("User", "Active", "Post", "Status"))
     assert not Active._meta.fields["name"].has_server_value
     assert Active._meta.fields["name"].has_insert_default
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.create_tables()
     try:
-        await User.objects.using(db).insert_many([
-            {"id": 1, "name": None, "status": Status.OLD},
-            {"id": 2, "name": None, "status": Status.OLD},
-            {"id": 3, "name": "ok", "status": Status.ACTIVE},
-        ])
+        await User.objects.using(db).insert_many(
+            [
+                {"id": 1, "name": None, "status": Status.OLD},
+                {"id": 2, "name": None, "status": Status.OLD},
+                {"id": 3, "name": "ok", "status": Status.ACTIVE},
+            ]
+        )
         capfd.readouterr()
         rows = await Active.objects.using(db).order_by(Active.id)
         assert len(rows) == 3 and rows[0].name is None and rows[0].status is Status.OLD
-        warnings = [json.loads(line) for line in capfd.readouterr().err.splitlines() if line.startswith('{"code":"orm.proxy.shape"')]
+        warnings = [
+            json.loads(line)
+            for line in capfd.readouterr().err.splitlines()
+            if line.startswith('{"code":"orm.proxy.shape"')
+        ]
         assert len(warnings) == 2 and all(w["occurrence_count"] == 2 for w in warnings)
         assert all(w["model"] == "Active" for w in warnings)
         assert await Active.objects.using(db).count() == 3
@@ -77,21 +93,30 @@ model ActiveMember {
 """
 
 
-@pytest.mark.skipif("query-defaults" not in json.loads(_native.native_artifact())["capabilities"], reason="requires proxy and query-defaults in one artifact")
+@pytest.mark.skipif(
+    "query-defaults" not in json.loads(_native.native_artifact())["capabilities"],
+    reason="requires proxy and query-defaults in one artifact",
+)
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_proxy_with_query_defaults_is_a_filtered_view(dialect):
     source = DEFAULTS_SOURCE if dialect == "postgres" else 'datasource db { provider = "sqlite" }\n' + DEFAULTS_SOURCE
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     Member, Active = models["Member"], models["ActiveMember"]
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.create_tables()
     try:
-        await Member.objects.using(db).insert_many([
-            {"id": 1, "name": "ann", "status": "active", "bio": "a"},
-            {"id": 2, "name": "bob", "status": "old", "bio": "b"},
-        ])
+        await Member.objects.using(db).insert_many(
+            [
+                {"id": 1, "name": "ann", "status": "active", "bio": "a"},
+                {"id": 2, "name": "bob", "status": "old", "bio": "b"},
+            ]
+        )
         # the proxy policy filters and narrows; the parent model is unchanged
         rows = await Active.objects.using(db).order_by(Active.id)
         assert [type(r) for r in rows] == [Active] and rows[0].to_dict() == {"id": 1, "name": "ann"}
@@ -142,7 +167,11 @@ async def test_omitted_proxy_fields_are_not_part_of_the_model(dialect):
     Member, Current, Named = models["Member"], models["Current"], models["Named"]
     assert list(Current._meta.fields) == ["id", "name"] and list(Named._meta.fields) == ["id", "name"]
     assert not hasattr(Current, "legacy") and hasattr(Member, "legacy")
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.create_tables()
     try:
@@ -162,7 +191,10 @@ async def test_omitted_proxy_fields_are_not_part_of_the_model(dialect):
 
 def test_proxy_field_rules_fail_at_definition():
     cases = [
-        ('@@proxy.fields(exclude: ["name"])', "Current.name: a NOT NULL field without a database default cannot be omitted"),
+        (
+            '@@proxy.fields(exclude: ["name"])',
+            "Current.name: a NOT NULL field without a database default cannot be omitted",
+        ),
         ('@@proxy.fields(include: ["id"], exclude: ["legacy"])', "include and exclude together"),
         ('@@proxy.nonNull("legacy")', "proxy.nonNull"),
     ]
@@ -170,8 +202,13 @@ def test_proxy_field_rules_fail_at_definition():
         source = FIELDS_SOURCE.replace('@@proxy.fields(exclude: ["legacy", "status"])', attribute)
         with pytest.raises(orm.SchemaError, match=re.escape(message)):
             orm.loads(source, registry=orm.Registry())
-    with pytest.raises(orm.SchemaError, match=re.escape("an enum subset Status(...) is only allowed on a field of a proxy model")):
-        orm.loads("enum Status {\n  A\n  @@storage(text)\n}\nmodel M {\n  id Int @id\n  s Status(A)\n}", registry=orm.Registry())
+    with pytest.raises(
+        orm.SchemaError, match=re.escape("an enum subset Status(...) is only allowed on a field of a proxy model")
+    ):
+        orm.loads(
+            "enum Status {\n  A\n  @@storage(text)\n}\nmodel M {\n  id Int @id\n  s Status(A)\n}",
+            registry=orm.Registry(),
+        )
 
 
 ROLES_SOURCE = """
@@ -193,14 +230,21 @@ def _has(*names):
     return all(n in caps for n in names)
 
 
-@pytest.mark.skipif(not _has("proxy-models", "soft-delete", "optimistic-locking"), reason="requires proxy-models, soft-delete and optimistic-locking")
+@pytest.mark.skipif(
+    not _has("proxy-models", "soft-delete", "optimistic-locking"),
+    reason="requires proxy-models, soft-delete and optimistic-locking",
+)
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_a_proxy_takes_the_roles_of_its_root(dialect):
     source = ROLES_SOURCE if dialect == "postgres" else 'datasource db { provider = "sqlite" }\n' + ROLES_SOURCE
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     Doc, Draft = models["Doc"], models["Draft"]
-    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()

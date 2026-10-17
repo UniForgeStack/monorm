@@ -1,4 +1,5 @@
 """`@@query.defaults` from the schema language to a query; needs a query-defaults artifact."""
+
 import asyncio
 import json
 import os
@@ -8,7 +9,9 @@ import orm
 from orm import _native
 
 FIXTURE = Path(__file__).parent.parent.joinpath("fixtures/schema.prisma").read_text()
-assert "query-defaults" in json.loads(_native.native_artifact())["capabilities"], "select orm-query-defaults in the build"
+assert "query-defaults" in json.loads(_native.native_artifact())["capabilities"], (
+    "select orm-query-defaults in the build"
+)
 
 
 async def run(provider: str, url: str) -> None:
@@ -19,8 +22,9 @@ async def run(provider: str, url: str) -> None:
     await db.drop_tables()
     await db.create_tables()
     try:
-        await Policy.objects.using(db).insert_many([
-            {"name": "Alice", "bio": "large"}, {"name": "hidden", "active": False, "bio": "large"}])
+        await Policy.objects.using(db).insert_many(
+            [{"name": "Alice", "bio": "large"}, {"name": "hidden", "active": False, "bio": "large"}]
+        )
         assert await Policy.objects.using(db).count() == 1
         assert await Policy.objects.using(db).without_defaults().count() == 2
         row = await Policy.objects.using(db).get()

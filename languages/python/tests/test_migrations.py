@@ -88,7 +88,7 @@ def test_schema_errors_name_the_line():
     with pytest.raises(SchemaError, match=r"<schema>:3:9: Book.title: unknown type Strin"):
         orm.loads("model Book {\n  id    BigInt @id\n  title Strin\n}")
     with pytest.raises(SchemaError, match="unknown argument `wher`"):
-        orm.loads("model Book {\n  id BigInt @id\n  @@index([id], wher: \"x\")\n}")
+        orm.loads('model Book {\n  id BigInt @id\n  @@index([id], wher: "x")\n}')
 
 
 def test_first_migration(tmp_path):
@@ -97,7 +97,10 @@ def test_first_migration(tmp_path):
     assert m is not None and m.name == "0001_initial"
     up = m.up_sql
     assert up.index('CREATE TABLE "authors"') < up.index('CREATE TABLE "books"')
-    assert 'CONSTRAINT "books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "authors" ("id") ON DELETE CASCADE' in up
+    assert (
+        'CONSTRAINT "books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "authors" ("id") ON DELETE CASCADE'
+        in up
+    )
     assert 'CREATE INDEX "books_author_id_idx" ON "books" ("author_id");' in up
     assert 'DROP TABLE "books";' in m.down_sql
     snap = json.loads(m.snapshot)
@@ -119,7 +122,7 @@ def test_second_migration_alters_in_place(tmp_path):
     assert 'ALTER TABLE "books" ADD CONSTRAINT "books_pages_check" CHECK (pages >= 0)' in sql
     assert 'CREATE INDEX "books_name_idx" ON "books" USING gin ("name" gin_trgm_ops)' in sql
     assert sql[-2] == 'CREATE TRIGGER "touch" BEFORE UPDATE ON "books" FOR EACH ROW EXECUTE FUNCTION "books_touch"()'
-    assert sql[-1] == "COMMENT ON COLUMN \"books\".\"meta\" IS 'free-form attributes'"
+    assert sql[-1] == 'COMMENT ON COLUMN "books"."meta" IS \'free-form attributes\''
     assert any("changes authors.email from varchar(254) to citext" in w for w in plan.warnings)
     down = [s.sql for s in plan.down]
     assert 'ALTER TABLE "books" RENAME COLUMN "name" TO "title"' in down
@@ -146,10 +149,14 @@ def test_table_rename_renames_generated_constraint_names(tmp_path):
 
 
 def test_kept_rename_hints_do_nothing_after_the_rename(tmp_path):
-    renamed = V1.replace('@@map("authors")', '@@map("writers")\n  @@renamed_from("authors")').replace("  title     String @db.VarChar(200)", '  name      String @renamed_from("title") @db.VarChar(200)')
+    renamed = V1.replace('@@map("authors")', '@@map("writers")\n  @@renamed_from("authors")').replace(
+        "  title     String @db.VarChar(200)", '  name      String @renamed_from("title") @db.VarChar(200)'
+    )
     Migrations(tmp_path, models(V1)).make()
     Migrations(tmp_path, models(renamed)).make()
-    later = Migrations(tmp_path, models(renamed.replace("  pages     Int", "  added     Int    @default(42)\n  pages     Int"))).plan()
+    later = Migrations(
+        tmp_path, models(renamed.replace("  pages     Int", "  added     Int    @default(42)\n  pages     Int"))
+    ).plan()
     assert [s.sql for s in later.up] == ['ALTER TABLE "books" ADD COLUMN "added" integer DEFAULT 42 NOT NULL']
 
 

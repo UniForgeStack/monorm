@@ -42,7 +42,9 @@ class Page(Generic[M]):
 
     __slots__ = ("items", "has_next", "has_previous", "next_cursor", "previous_cursor")
 
-    def __init__(self, items: list[M], has_next: bool, has_previous: bool, next_cursor: str | None, previous_cursor: str | None) -> None:
+    def __init__(
+        self, items: list[M], has_next: bool, has_previous: bool, next_cursor: str | None, previous_cursor: str | None
+    ) -> None:
         self.items = items
         self.has_next = has_next
         self.has_previous = has_previous
@@ -74,16 +76,24 @@ def keyset(model: type[Model], order: tuple[Ordering, ...]) -> list[Key]:
             raise QueryError(f"paginate() can't order by {e!r}: {f.type_name} columns have no cursor value")
         if nullable and o.nulls is None:
             direction = "desc" if o.desc else "asc"
-            raise QueryError(f"{e!r} is nullable: order by {e!r}.{direction}(nulls='first') or (nulls='last') to paginate")
+            raise QueryError(
+                f"{e!r} is nullable: order by {e!r}.{direction}(nulls='first') or (nulls='last') to paginate"
+            )
         keys.append((f, o))
     names = {f.name for f, _ in keys}
-    if not (names.issuperset(model._meta.key_names) or any(f.unique and not stored_nullable(model, f) for f, _ in keys)):
+    if not (
+        names.issuperset(model._meta.key_names) or any(f.unique and not stored_nullable(model, f) for f, _ in keys)
+    ):
         keys += [(r._field, Ordering(r, desc=False)) for r in model._meta.key_refs() if r._field.name not in names]
     return keys
 
 
 def fingerprint(model: type[Model], keys: list[Key]) -> str:
-    text = model.__name__ + ":" + ",".join(f"{'-' if o.desc else ''}{f.name}{'' if o.nulls is None else ' nulls ' + o.nulls}" for f, o in keys)
+    text = (
+        model.__name__
+        + ":"
+        + ",".join(f"{'-' if o.desc else ''}{f.name}{'' if o.nulls is None else ' nulls ' + o.nulls}" for f, o in keys)
+    )
     return blake2b(text.encode(), digest_size=8).hexdigest()
 
 
@@ -131,7 +141,11 @@ def _decode(f: Field[Any], nullable: bool, v: Any) -> Any:
             return date.fromisoformat(v)
     except (ValueError, InvalidOperation):
         pass
-    if (t in ("string", "text") and isinstance(v, str)) or (t == "bool" and isinstance(v, bool)) or (t == "float" and isinstance(v, (int, float)) and not isinstance(v, bool)):
+    if (
+        (t in ("string", "text") and isinstance(v, str))
+        or (t == "bool" and isinstance(v, bool))
+        or (t == "float" and isinstance(v, (int, float)) and not isinstance(v, bool))
+    ):
         return v
     if t == "float" and isinstance(v, str) and v in _NONFINITE:
         return _NONFINITE[v]

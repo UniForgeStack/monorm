@@ -1,4 +1,5 @@
 """`orm.debug.n_plus_one`: find N+1 query patterns by statement shape."""
+
 import asyncio
 import sys
 import warnings
@@ -9,7 +10,7 @@ from orm import debug
 
 pytest_plugins = ["orm.testing", "pytester"]
 
-SOURCE = '''datasource db {
+SOURCE = """datasource db {
   provider = "sqlite"
 }
 model Person {
@@ -22,7 +23,7 @@ model Customer {
   person_id Int
   person    Person @relation(fields: [person_id], references: [id])
 }
-'''
+"""
 
 
 @pytest.fixture
@@ -48,8 +49,8 @@ async def test_a_loader_in_a_loop_raises_with_the_shape_the_site_and_the_fix(sho
     report = raised.value.report
     [shape] = report.repeated
     assert shape.count == 8
-    assert shape.sql.startswith('SELECT ') and '"person"' in shape.sql and "?" in shape.sql and "7" not in shape.sql
-    assert shape.site.endswith("test_n_plus_one.py:47")
+    assert shape.sql.startswith("SELECT ") and '"person"' in shape.sql and "?" in shape.sql and "7" not in shape.sql
+    assert shape.site.endswith("test_n_plus_one.py:48")
     assert shape.fix == "load(Customer.person)"
     assert "8 queries with one shape `SELECT " in str(raised.value)
     assert "use load(Customer.person)" in str(raised.value)
@@ -71,7 +72,9 @@ def line() -> int:
 
 
 async def test_an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix():
-    source = (SOURCE + """model Tag {
+    source = (
+        SOURCE
+        + """model Tag {
   id Int @id
 }
 model PersonTag {
@@ -81,7 +84,8 @@ model PersonTag {
   person    Person @relation(fields: [person_id], references: [id])
   tag       Tag    @relation(fields: [tag_id], references: [id])
 }
-""").replace("  customers Customer[]", "  customers Customer[]\n  tags      Tag[]      @relation(through: PersonTag)")
+"""
+    ).replace("  customers Customer[]", "  customers Customer[]\n  tags      Tag[]      @relation(through: PersonTag)")
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
     Person = models["Person"]
@@ -95,16 +99,25 @@ model PersonTag {
                 warnings.simplefilter("ignore")
                 for p in people:
                     if loop == "related":
-                        await p.customers.using(db).all(); here = line()  # noqa: E702
+                        await p.customers.using(db).all()
+                        here = line() - 1  # the awaiting line above
                     elif loop == "many":
-                        await p.tags.using(db).all(); here = line()  # noqa: E702
+                        await p.tags.using(db).all()
+                        here = line() - 1  # the awaiting line above
                     elif loop == "filtered many":
-                        await p.tags.using(db).filter(models["Tag"].id >= 0); here = line()  # noqa: E702
+                        await p.tags.using(db).filter(models["Tag"].id >= 0)
+                        here = line() - 1  # the awaiting line above
                     else:
-                        await Person.objects.using(db).filter(Person.id == p.id); here = line()  # noqa: E702
+                        await Person.objects.using(db).filter(Person.id == p.id)
+                        here = line() - 1  # the awaiting line above
             [shape] = report.repeated
             assert shape.site.endswith(f"test_n_plus_one.py:{here}"), (loop, shape.site)
-            fix = {"related": "load(Person.customers)", "many": "load(Person.tags)", "filtered many": None, "query set": None}[loop]
+            fix = {
+                "related": "load(Person.customers)",
+                "many": "load(Person.tags)",
+                "filtered many": None,
+                "query set": None,
+            }[loop]
             assert shape.fix == fix, (loop, shape.fix)
     finally:
         await db.close()
@@ -143,7 +156,7 @@ async def test_the_pytest_fixture_counts_the_test(shop, n_plus_one):
 
 def test_the_pytest_fixture_fails_a_test_with_an_n_plus_one(pytester):
     pytester.makeconftest('pytest_plugins = ["orm.testing"]')
-    pytester.makepyfile(f'''
+    pytester.makepyfile(f"""
 import orm
 
 SOURCE = {SOURCE!r}
@@ -156,7 +169,7 @@ async def test_loop(n_plus_one):
     for i in range(6):
         await Person.objects.using(db).filter(Person.id == i).first()
     await db.close()
-''')
+""")
     result = pytester.runpytest("-p", "no:cacheprovider", "-o", "asyncio_mode=auto")
     result.assert_outcomes(passed=1, errors=1)
     result.stdout.fnmatch_lines(["*N+1 queries in the test:*", "*6 queries with one shape*"])

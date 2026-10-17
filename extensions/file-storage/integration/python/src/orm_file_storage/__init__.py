@@ -1,4 +1,5 @@
 """Selected file-field binding helpers. No native/provider callback registry."""
+
 from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -23,6 +24,7 @@ class MissingFile(FileFieldError):
 @dataclass(frozen=True)
 class Upload:
     """Deferred write input: construction performs no I/O."""
+
     source: Source
     filename: str | None = None
     content_type: str | None = None
@@ -30,7 +32,10 @@ class Upload:
 
     def __post_init__(self) -> None:
         from collections.abc import AsyncIterable
-        if not isinstance(self.source, (bytes, bytearray, memoryview, AsyncIterable)) and not callable(getattr(self.source, "read", None)):
+
+        if not isinstance(self.source, (bytes, bytearray, memoryview, AsyncIterable)) and not callable(
+            getattr(self.source, "read", None)
+        ):
             raise TypeError("Upload requires bytes or a byte stream")
         Reference("validation", "validation", filename=self.filename, content_type=self.content_type)
         if type(self.max_size) is not int or not 0 <= self.max_size <= MAX_SIZE:
@@ -92,8 +97,10 @@ class PreparedFileWrite:
     Its completed JSON values can be reused for explicit SQL retries. Failed or
     cancelled source preparation is terminal to avoid replaying caller streams.
     """
-    def __init__(self, values: Mapping[str, Any], fields: Mapping[str, FileField],
-                 registry: Registry, *, shape: str = "insert"):
+
+    def __init__(
+        self, values: Mapping[str, Any], fields: Mapping[str, FileField], registry: Registry, *, shape: str = "insert"
+    ):
         self._values = dict(values)
         self._fields = dict(fields)
         self._registry = registry
@@ -112,8 +119,7 @@ class PreparedFileWrite:
             if isinstance(value, Upload):
                 if shape not in ("insert", "unique_update"):
                     raise FileFieldError(f"Upload is unsupported for {shape}")
-                Reference(field.storage, "validation", filename=value.filename,
-                          content_type=value.content_type)
+                Reference(field.storage, "validation", filename=value.filename, content_type=value.content_type)
                 if type(value.max_size) is not int or not 0 <= value.max_size <= MAX_SIZE:
                     raise FileFieldError("max_size must be a nonnegative safe integer")
                 registry.resolve(Reference(field.storage, "validation"))
@@ -141,8 +147,9 @@ class PreparedFileWrite:
                     continue
                 field = self._fields[name]
                 provider = self._registry.resolve(Reference(field.storage, "validation"))
-                reference = await provider.upload(value.source, filename=value.filename,
-                    content_type=value.content_type, max_size=value.max_size)
+                reference = await provider.upload(
+                    value.source, filename=value.filename, content_type=value.content_type, max_size=value.max_size
+                )
                 # No await between receipt and publishing recovery data.
                 self._references[name] = reference
                 self._data[name] = reference.to_dict()

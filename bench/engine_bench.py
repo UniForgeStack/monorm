@@ -31,7 +31,9 @@ async def seed() -> None:
     db = orm.get_database()
     await db.drop_tables()
     await db.create_tables()
-    users = await User.objects.insert_many([{"email": f"u{i}@x.io", "name": f"User {i}"} for i in range(10)]).returning()
+    users = await User.objects.insert_many(
+        [{"email": f"u{i}@x.io", "name": f"User {i}"} for i in range(10)]
+    ).returning()
     await Post.objects.insert_many(
         [{"author": users[i % 10], "title": f"post {i}", "body": "x" * 200, "views": i} for i in range(1000)]
     )

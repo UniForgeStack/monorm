@@ -27,12 +27,15 @@ if TYPE_CHECKING:
 # The native artifact is fixed for the process; read its capabilities once.
 _CAPABILITIES: tuple[str, ...] = tuple(json.loads(_native.native_artifact()).get("capabilities", ()))
 # Only a composition artifact (schema transformations) can change an already prepared schema.
-_REPREPARE: bool = ("schema-transformations" in _CAPABILITIES
-                    or json.loads(_native.profile_metadata())["capabilities"].get("composition") is True)
+_REPREPARE: bool = (
+    "schema-transformations" in _CAPABILITIES
+    or json.loads(_native.profile_metadata())["capabilities"].get("composition") is True
+)
 
 _reference_adapter: types.ModuleType | None = None
 if "reference-loading" in _CAPABILITIES:
     from . import _references
+
     _reference_adapter = _references
 
 __all__ = ["Model", "ModelMeta", "Registry", "registry", "column", "define", "describe", "load", "loads"]
@@ -59,7 +62,9 @@ def _key_fields(name: str, fields: dict[str, Field[Any]], order: Sequence[str] |
     pks = [n for n, f in fields.items() if f.primary_key]
     names = list(order) if order else pks
     if not pks or sorted(names) != sorted(pks):
-        raise TypeError(f"model {name} must declare exactly one primary key: one field, or the fields of @@id in key order")
+        raise TypeError(
+            f"model {name} must declare exactly one primary key: one field, or the fields of @@id in key order"
+        )
     return tuple(fields[n] for n in names)
 
 
@@ -228,10 +233,14 @@ class Registry:
         else:
             prepared_json, prepared = done
         classes: dict[str, type] = {**snapshot._models, **snapshot._enums}
-        associations: list[tuple[type[Model], dict[str, Any], dict[str, Field[Any]], dict[str, Relation[Any, Any]]]] = []
+        associations: list[
+            tuple[type[Model], dict[str, Any], dict[str, Field[Any]], dict[str, Relation[Any, Any]]]
+        ] = []
         for ir in prepared["models"]:
             if ir["name"] not in snapshot._models:
-                raise TypeError("class preparation cannot add or rename models; use define() for transformed model identities")
+                raise TypeError(
+                    "class preparation cannot add or rename models; use define() for transformed model identities"
+                )
             model = snapshot._models[ir["name"]]
             if model._meta.registry is not self:
                 continue
@@ -245,27 +254,35 @@ class Registry:
                     raise TypeError(f"{ir['name']}.{name}: generated field collides with an existing model member")
                 field = existing if existing is not None and existing.ir() == f else _field(f)
                 if field is not existing:
-                    original = existing or next((old for old in model._meta.fields.values() if old.column == f["column"]), None)
+                    original = existing or next(
+                        (old for old in model._meta.fields.values() if old.column == f["column"]), None
+                    )
                     if original is not None and callable(original.default):
                         field.default = original.default
                     field.__set_name__(model, name)
                 fields[name] = field
             for old in model._meta.fields.keys() - fields.keys():
                 if old not in vars(model):
-                    raise TypeError("class preparation cannot remove inherited members; use define() for this logical view")
+                    raise TypeError(
+                        "class preparation cannot remove inherited members; use define() for this logical view"
+                    )
             relations: dict[str, Relation[Any, Any]] = {}
             for r in ir.get("relations", ()):
                 name = r["name"]
                 existing_relation = model._meta.relations.get(name)
                 if name in _RESERVED or (existing_relation is None and hasattr(model, name)):
                     raise TypeError(f"{ir['name']}.{name}: generated relation collides with an existing model member")
-                relation = existing_relation if existing_relation is not None and existing_relation.ir() == r else _relation(r)
+                relation = (
+                    existing_relation if existing_relation is not None and existing_relation.ir() == r else _relation(r)
+                )
                 if relation is not existing_relation:
                     relation.__set_name__(model, name)
                 relations[name] = relation
             for old in model._meta.relations.keys() - relations.keys():
                 if old not in vars(model):
-                    raise TypeError("class preparation cannot remove inherited members; use define() for this logical view")
+                    raise TypeError(
+                        "class preparation cannot remove inherited members; use define() for this logical view"
+                    )
             associations.append((model, ir, fields, relations))
         methods_by_model: dict[str, dict[str, Any]] = {}
         for method in prepared.get("behavior", {}).get("methods", ()):
@@ -300,14 +317,24 @@ class Registry:
             meta.schema_ir = ir
             meta.filtered = read_flags[meta.name]["filtered"]
             behavior = prepared.get("behavior", {})
-            meta.soft_delete = next((d["field"] for d in behavior.get("soft_delete", ()) if d["model"] == meta.name), None)
-            meta.version_field = next((d["field"] for d in behavior.get("versions", ()) if d["model"] == meta.name), None)
-            proxy: dict[str, Any] = next((p for p in prepared.get("behavior", {}).get("proxy_models", ()) if p["model"] == meta.name), {})
+            meta.soft_delete = next(
+                (d["field"] for d in behavior.get("soft_delete", ()) if d["model"] == meta.name), None
+            )
+            meta.version_field = next(
+                (d["field"] for d in behavior.get("versions", ()) if d["model"] == meta.name), None
+            )
+            proxy: dict[str, Any] = next(
+                (p for p in prepared.get("behavior", {}).get("proxy_models", ()) if p["model"] == meta.name), {}
+            )
             meta.narrowed = frozenset(f["field"] for f in proxy.get("fields", ()) if f.get("non_null"))
             meta.field_names = tuple(fields)
             pk_ir = next(f for f in ir["fields"] if f["name"] == meta.key[0].name)
             meta.attach_fields = (
-                {f["name"]: fields[f["name"]] for f in ir["fields"] if f.get("hints", {}).get("composition.local") == "true"}
+                {
+                    f["name"]: fields[f["name"]]
+                    for f in ir["fields"]
+                    if f.get("hints", {}).get("composition.local") == "true"
+                }
                 if pk_ir.get("hints", {}).get("composition.child") == "true"
                 else None
             )
@@ -339,7 +366,22 @@ class Registry:
         return self._native
 
 
-_RESERVED = {"pk", "objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", "update", "delete", "hard_delete", "undelete", "refresh", "load", "to_dict", "_field_value", "_orm_internal"}
+_RESERVED = {
+    "pk",
+    "objects",
+    "_meta",
+    "DoesNotExist",
+    "MultipleObjectsReturned",
+    "update",
+    "delete",
+    "hard_delete",
+    "undelete",
+    "refresh",
+    "load",
+    "to_dict",
+    "_field_value",
+    "_orm_internal",
+}
 
 registry = Registry()
 
@@ -381,7 +423,12 @@ def _relation(ir: dict[str, Any]) -> Relation[Any, Any]:
     if "through" in ir:
         t = ir["through"]
         return ManyToMany(
-            ir["target"], through=t["model"], source=t["source"], target_field=t["target"], from_=ir["from"], to=ir["to"]
+            ir["target"],
+            through=t["model"],
+            source=t["source"],
+            target_field=t["target"],
+            from_=ir["from"],
+            to=ir["to"],
         )
     return HasMany(ir["target"], via=ir["to"], from_=ir["from"])
 
@@ -396,8 +443,13 @@ def _enum(ir: dict[str, Any], module: str | None) -> type[enum.Enum]:
 
 
 def define(
-    schema: str | dict[str, Any], *, registry: Registry | None = None, module: str | None = None, required_capabilities: tuple[str, ...] = (),
-    extensions: dict[str, types.ModuleType] | None = None, members: dict[str, tuple[str, ...]] | None = None,
+    schema: str | dict[str, Any],
+    *,
+    registry: Registry | None = None,
+    module: str | None = None,
+    required_capabilities: tuple[str, ...] = (),
+    extensions: dict[str, types.ModuleType] | None = None,
+    members: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """Build model classes from a compiled schema (the JSON IR ``orm compile`` and
     :func:`load` produce). Generated ``models.py`` modules call this.
@@ -441,21 +493,29 @@ def define(
     for m in ir["models"]:
         if m["name"] in destination._models:
             if m != destination._models[m["name"]]._meta.ir():
-                raise TypeError(f"extension changed existing model {m['name']}; define dependent schemas together in a new registry")
+                raise TypeError(
+                    f"extension changed existing model {m['name']}; define dependent schemas together in a new registry"
+                )
             continue
         ns: dict[str, Any] = {f["name"]: _field(f) for f in m["fields"]}
         ns.update({r["name"]: _relation(r) for r in m.get("relations", ())})
         if module is not None:
             ns["__module__"] = module
         chain = chains.get(m["name"], [])
-        classes = [(getattr(extensions[i], r["query_set"]), getattr(extensions[i], r["instance"])) for i, r in chain] if chain else []  # type: ignore[index]
+        classes = (
+            [(getattr(extensions[i], r["query_set"]), getattr(extensions[i], r["instance"])) for i, r in chain]  # type: ignore[index]
+            if chain
+            else []
+        )
         if chain:
             _extensions.members(
                 m["name"], set(ns), chain, lambda n: hasattr(QuerySet, n), lambda n: hasattr(Model, n) or n in _RESERVED
             )
         cls: type[Model] = types.new_class(
-            m["name"], (*(c[1] for c in reversed(classes)), Model),
-            {"table": m["table"], "registry": reg, "key": m.get("primary_key")}, lambda body: body.update(ns)
+            m["name"],
+            (*(c[1] for c in reversed(classes)), Model),
+            {"table": m["table"], "registry": reg, "key": m.get("primary_key")},
+            lambda body: body.update(ns),
         )
         if classes:
             use_extensions(cls, tuple(c[0] for c in reversed(classes)))
@@ -488,9 +548,7 @@ def define(
     return out
 
 
-def load(
-    path: str | PathLike[str], *, registry: Registry | None = None, module: str | None = None
-) -> dict[str, Any]:
+def load(path: str | PathLike[str], *, registry: Registry | None = None, module: str | None = None) -> dict[str, Any]:
     """Compile a schema file (``schema.prisma``) and build its models: no generated code
     needed (generate ``models.py`` / ``.pyi`` for editor and type-checker support)."""
     return define(_native.compile_schema_file(str(path)), registry=registry, module=module)
@@ -509,7 +567,12 @@ class Model:
     MultipleObjectsReturned: ClassVar[type[MultipleObjectsReturned]] = MultipleObjectsReturned
 
     def __init_subclass__(
-        cls, *, table: str | None = None, registry: Registry | None = None, key: Sequence[str] | None = None, **kwargs: Any
+        cls,
+        *,
+        table: str | None = None,
+        registry: Registry | None = None,
+        key: Sequence[str] | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init_subclass__(**kwargs)
         from .query import QuerySet
@@ -525,8 +588,7 @@ class Model:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         name = type(self).__name__
         raise TypeError(
-            f"{name} instances come from the database; insert a row with "
-            f"`await {name}.objects.insert(...)`"
+            f"{name} instances come from the database; insert a row with `await {name}.objects.insert(...)`"
         )
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -612,7 +674,9 @@ class Model:
         """No row matched a versioned write: raise when the row has another version."""
         name = self._meta.version_field
         if name is not None:
-            changed = self._row_query().filter(ColumnRef(type(self), (), self._meta.fields[name]) != getattr(self, name))
+            changed = self._row_query().filter(
+                ColumnRef(type(self), (), self._meta.fields[name]) != getattr(self, name)
+            )
             if await changed.exists():
                 raise VersionConflict(f"{type(self).__name__} {self.pk!r} was changed since it was loaded")
 
@@ -703,9 +767,7 @@ class Model:
         requested = self._refresh_fields(fields)
         query = self._loaded_query(*requested).using("primary")
         if lock:
-            query = query.lock(
-                exclusive is not False, nowait=bool(nowait), skip_locked=bool(skip_locked)
-            )
+            query = query.lock(exclusive is not False, nowait=bool(nowait), skip_locked=bool(skip_locked))
         try:
             fresh = await query.require().get()
         except self.DoesNotExist:
@@ -734,13 +796,24 @@ class Model:
         return f"{type(self).__name__}({shown})"
 
 
-
 _PYTHON_TYPES: dict[str, type] = {
-    "big_int": int, "int": int, "float": float, "bool": bool, "string": str, "text": str,
-    "date_time": datetime.datetime, "date": datetime.date, "uuid": uuid.UUID, "json": object, "decimal": decimal.Decimal,
+    "big_int": int,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "string": str,
+    "text": str,
+    "date_time": datetime.datetime,
+    "date": datetime.date,
+    "uuid": uuid.UUID,
+    "json": object,
+    "decimal": decimal.Decimal,
 }
 _RELATION_KINDS: tuple[tuple[type, str], ...] = (
-    (ManyToMany, "many_to_many"), (HasMany, "has_many"), (HasOne, "has_one"), (BelongsTo, "belongs_to"),
+    (ManyToMany, "many_to_many"),
+    (HasMany, "has_many"),
+    (HasOne, "has_one"),
+    (BelongsTo, "belongs_to"),
 )
 
 
@@ -776,43 +849,52 @@ def describe(model: type[Model]) -> dict[str, Any]:
         enum_cls = registry.get_enum(f["enum"]) if "enum" in f else None
         python_type: type = enum_cls or _PYTHON_TYPES[f["type"]]
         database = bool(f.get("auto_increment") or "default" in f or f.get("default_now") or "default_sql" in f)
-        fields.append({
-            "name": f["name"],
-            "column": f["column"],
-            "type": f["type"],
-            "python_type": list if f.get("array") else python_type,
-            "element_type": python_type if f.get("array") else None,
-            "nullable": bool(f.get("nullable")),
-            "array": bool(f.get("array")),
-            "enum": enum_cls,
-            "max_length": f.get("max_length"),
-            "primary_key": bool(f.get("primary_key")),
-            "unique": bool(f.get("unique")) or (f["name"],) == meta.key_names,
-            "default": "database" if database else "client" if "client_default" in f else None,
-            "insert": f["name"] in meta.input_fields,
-        })
+        fields.append(
+            {
+                "name": f["name"],
+                "column": f["column"],
+                "type": f["type"],
+                "python_type": list if f.get("array") else python_type,
+                "element_type": python_type if f.get("array") else None,
+                "nullable": bool(f.get("nullable")),
+                "array": bool(f.get("array")),
+                "enum": enum_cls,
+                "max_length": f.get("max_length"),
+                "primary_key": bool(f.get("primary_key")),
+                "unique": bool(f.get("unique")) or (f["name"],) == meta.key_names,
+                "default": "database" if database else "client" if "client_default" in f else None,
+                "insert": f["name"] in meta.input_fields,
+            }
+        )
     relations = []
     for name, rel in meta.relations.items():
         kind = next(k for cls, k in _RELATION_KINDS if isinstance(rel, cls))
         r = next(r for r in ir.get("relations", ()) if r["name"] == name)
-        relations.append({
-            "name": name,
-            "kind": kind,
-            "target": rel.target,
-            "from": [r["from"]] if isinstance(r["from"], str) else list(r["from"]),
-            "to": [r["to"]] if isinstance(r["to"], str) else list(r["to"]),
-            "through": registry.get(r["through"]["model"]) if "through" in r else None,
-            "nullable": kind != "belongs_to" or any(meta.fields[n].nullable for n in rel.via_fields),  # type: ignore[attr-defined]
-        })
+        relations.append(
+            {
+                "name": name,
+                "kind": kind,
+                "target": rel.target,
+                "from": [r["from"]] if isinstance(r["from"], str) else list(r["from"]),
+                "to": [r["to"]] if isinstance(r["to"], str) else list(r["to"]),
+                "through": registry.get(r["through"]["model"]) if "through" in r else None,
+                "nullable": kind != "belongs_to" or any(meta.fields[n].nullable for n in rel.via_fields),  # type: ignore[attr-defined]
+            }
+        )
     unique: list[tuple[str, ...]] = [meta.key_names]
     unique += [(f["name"],) for f in ir["fields"] if f.get("unique") and (f["name"],) != meta.key_names]
     unique += [tuple(c["fields"]) for c in ir.get("constraints", ()) if c.get("kind") == "unique"]
-    return {"name": meta.name, "table": meta.table, "primary_key": list(meta.key_names), "fields": fields, "relations": relations, "unique": unique}
+    return {
+        "name": meta.name,
+        "table": meta.table,
+        "primary_key": list(meta.key_names),
+        "fields": fields,
+        "relations": relations,
+        "unique": unique,
+    }
 
 
-def loads(
-    source: str, *, registry: Registry | None = None, module: str | None = None
-) -> dict[str, Any]:
+def loads(source: str, *, registry: Registry | None = None, module: str | None = None) -> dict[str, Any]:
     """Like :func:`load`, for schema source text (``import`` paths resolve against the
     current directory)."""
     return define(_native.compile_schema(source), registry=registry, module=module)

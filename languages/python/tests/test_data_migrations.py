@@ -140,7 +140,9 @@ def test_python_m_orm_migrate_runs_data_steps(tmp_path):
 
     (tmp_path / "migrations" / "0003_bad").mkdir()
     (tmp_path / "migrations" / "0003_bad" / "up.sql").write_text("SELECT 1;\n")
-    (tmp_path / "migrations" / "0003_bad" / "data.py").write_text("async def run(db):\n    raise ValueError('bad data')\n")
+    (tmp_path / "migrations" / "0003_bad" / "data.py").write_text(
+        "async def run(db):\n    raise ValueError('bad data')\n"
+    )
     failed = orm_cli("migrate")
     assert failed.returncode == 1
     assert "error: bad data" in failed.stderr
@@ -281,9 +283,14 @@ def test_python_m_orm_migrate_needs_no_schema_and_skips_applied_steps(tmp_path):
     base = [sys.executable, "-m", "orm", "--schema", "schema.prisma", "--dir", "migrations"]
     (tmp_path / "migrations" / "0002_old" / "data.py").write_text("async def run(db):\n    pass\n")
     assert subprocess.run([*base, "migrate"], cwd=tmp_path, env=env, capture_output=True, text=True).returncode == 0
-    (tmp_path / "migrations" / "0002_old" / "data.py").write_text("import gone_module\n\nasync def run(db):\n    pass\n")
+    (tmp_path / "migrations" / "0002_old" / "data.py").write_text(
+        "import gone_module\n\nasync def run(db):\n    pass\n"
+    )
     data_migration(
-        migrations, "0003_new", "data.py", "async def run(db):\n    await db.execute(\"INSERT INTO author (name) VALUES ('x')\")\n"
+        migrations,
+        "0003_new",
+        "data.py",
+        "async def run(db):\n    await db.execute(\"INSERT INTO author (name) VALUES ('x')\")\n",
     )
     schema.unlink()
     done = subprocess.run([*base, "migrate"], cwd=tmp_path, env=env, capture_output=True, text=True)

@@ -111,18 +111,14 @@ async def test_prepared_like_patterns_are_escaped_per_call(clean):
 
 async def test_prepared_has_and_prefetch(clean, observe_queries):
     (alice, bob), _ = await seed()
-    await Profile.objects.insert_many(
-        [{"user": alice, "links": ["x", "y"]}, {"user": bob, "links": ["y"]}]
-    )
+    await Profile.objects.insert_many([{"user": alice, "links": ["x", "y"]}, {"user": bob, "links": ["y"]}])
     with_link = Profile.objects.filter(Profile.links.has(param("link"))).prepare()
     assert await with_link.count(link="x") == 1
     assert await with_link.count(link="y") == 2
 
     top = (
         User.objects.order_by(User.id)
-        .load(
-            User.posts.objects.filter(Post.views >= param("min")).order_by(Post.views.desc()).limit(param("k"))
-        )
+        .load(User.posts.objects.filter(Post.views >= param("min")).order_by(Post.views.desc()).limit(param("k")))
         .prepare()
     )
     result = top.inspect(min=10, k=1)
@@ -131,7 +127,8 @@ async def test_prepared_has_and_prefetch(clean, observe_queries):
     assert [s.has_batching for s in result.statements] == [False, True]
     assert all(s.joins_count == 0 for s in result.statements)
     assert [(s.correlated_count, s.uncorrelated_count) for s in result.statements] == [
-        (0, 0), (0, 1),
+        (0, 0),
+        (0, 1),
     ]
     with observe_queries(clean) as events:
         users = await top(min=10, k=1)

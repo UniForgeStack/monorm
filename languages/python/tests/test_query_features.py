@@ -89,7 +89,10 @@ async def test_exists_expression(clean):
     assert len(await query) == 0
     # A select() with group_by / having.
     many = exists(
-        Post.objects.filter(Post.author_id == outer(User.id)).select(Post.author_id).group_by(Post.author_id).having(func.count() > 2)
+        Post.objects.filter(Post.author_id == outer(User.id))
+        .select(Post.author_id)
+        .group_by(Post.author_id)
+        .having(func.count() > 2)
     )
     assert [u.name for u in await User.objects.filter(many)] == ["Alice"]
 
@@ -125,9 +128,7 @@ async def test_scalar_subquery_in_update(clean):
     (alice, bob, carol), _ = await seed()
     n_comments = Comment.objects.filter(Comment.post_id == outer(Post.id)).select(func.count()).as_scalar()
     statement = Post.objects.update(views=n_comments)
-    assert statement.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 0, 1, 0, 0),
-    ))
+    assert statement.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 1, 0, 0),))
     await statement
     views = {p.title: p.views for p in await Post.objects.all()}
     assert views == {"a1": 0, "a2": 2, "a3": 0, "b1": 1}
@@ -139,11 +140,18 @@ async def test_string_functions_and_concatenation(clean):
         Comment.body, func.concat(Comment.author.name, "!").label("c"), Comment.author.name.concat("!").label("p")
     )
     assert [tuple(r) for r in rows] == [("c1", "Bob!", "Bob!"), ("c2", "!", None), ("c3", "Alice!", "Alice!")]
-    row = await Post.objects.filter(Post.title == "b1").select(
-        func.trim(func.concat("  ", Post.title, " ")).label("t"), func.ltrim(func.concat("  ", Post.title)).label("l"),
-        func.rtrim(func.concat(Post.title, "  ")).label("r"), func.replace(Post.title, "b", "B").label("x"),
-        func.substr(Post.title, 2).label("s"), func.strpos(Post.title, "1").label("i"),
-    ).first()
+    row = (
+        await Post.objects.filter(Post.title == "b1")
+        .select(
+            func.trim(func.concat("  ", Post.title, " ")).label("t"),
+            func.ltrim(func.concat("  ", Post.title)).label("l"),
+            func.rtrim(func.concat(Post.title, "  ")).label("r"),
+            func.replace(Post.title, "b", "B").label("x"),
+            func.substr(Post.title, 2).label("s"),
+            func.strpos(Post.title, "1").label("i"),
+        )
+        .first()
+    )
     assert row is not None and tuple(row) == ("b1", "b1", "b1", "B1", "1", 2)
     assert [p.title for p in await Post.objects.filter(Post.title.concat("!") == "a2!")] == ["a2"]
     # A literal after a non-text column still binds as text.
@@ -165,21 +173,36 @@ async def seed_profiles():
 
 async def test_case_enum_branch(clean):
     await seed_profiles()
-    roles = await Profile.objects.order_by(Profile.id).select(func.case((Profile.balance > 5, Profile.role), default="editor")).scalars()
+    roles = (
+        await Profile.objects.order_by(Profile.id)
+        .select(func.case((Profile.balance > 5, Profile.role), default="editor"))
+        .scalars()
+    )
     assert roles == [Role.editor, Role.editor]
-    roles = await Profile.objects.order_by(Profile.id).select(func.case((Profile.balance <= 5, Profile.role), default="editor")).scalars()
+    roles = (
+        await Profile.objects.order_by(Profile.id)
+        .select(func.case((Profile.balance <= 5, Profile.role), default="editor"))
+        .scalars()
+    )
     assert roles == [Role.admin, Role.member]
 
 
 async def test_case_value_types(clean):
     await seed_profiles()
     # a decimal among integers makes the case a decimal
-    value = await Post.objects.filter(Post.title == "a1").select(func.case((Post.published, 1), default=Decimal("0.5"))).scalar()
+    value = (
+        await Post.objects.filter(Post.title == "a1")
+        .select(func.case((Post.published, 1), default=Decimal("0.5")))
+        .scalar()
+    )
     assert value == Decimal("0.5") and isinstance(value, Decimal)
     # the type the context expects wins over the case's own: an integer branch assigned to a decimal field
     await Profile.objects.update(balance=func.case((Profile.role == Role.admin, 7), default=2))
     assert sorted(await Profile.objects.select(Profile.balance).scalars()) == [Decimal("2"), Decimal("7")]
-    assert await Profile.objects.filter(Profile.balance > func.case((Profile.role == Role.admin, 1), default=9)).count() == 1
+    assert (
+        await Profile.objects.filter(Profile.balance > func.case((Profile.role == Role.admin, 1), default=9)).count()
+        == 1
+    )
 
 
 async def test_case_expression(clean):
@@ -188,37 +211,60 @@ async def test_case_expression(clean):
     rows = await Post.objects.order_by(Post.title).select(Post.title, heat.label("heat"))
     assert [tuple(r) for r in rows] == [("a1", "cold"), ("a2", "hot"), ("a3", "warm"), ("b1", "hot")]
     # Several conditional counts in one grouped query (Django's Sum(Case(When(...)))).
-    counts = await Post.objects.order_by(Post.author_id).select(
-        Post.author_id,
-        func.sum(func.case((Post.views >= 50, 1), default=0)).label("hot"),
-        func.sum(func.case((Post.views < 50, Post.views), default=0)).label("rest"),
-    ).group_by(Post.author_id)
+    counts = (
+        await Post.objects.order_by(Post.author_id)
+        .select(
+            Post.author_id,
+            func.sum(func.case((Post.views >= 50, 1), default=0)).label("hot"),
+            func.sum(func.case((Post.views < 50, Post.views), default=0)).label("rest"),
+        )
+        .group_by(Post.author_id)
+    )
     assert [tuple(r) for r in counts] == [(alice.id, 1, 25), (bob.id, 1, 0)]
     assert await Post.objects.filter(heat == "hot").count() == 2
-    by_heat = await Post.objects.order_by(func.case((Post.views >= 50, 0), default=1), Post.title).select(Post.title).scalars()
+    by_heat = (
+        await Post.objects.order_by(func.case((Post.views >= 50, 0), default=1), Post.title)
+        .select(Post.title)
+        .scalars()
+    )
     assert by_heat == ["a2", "b1", "a1", "a3"]
     # annotate: the model with a computed column
-    users = await User.objects.order_by(User.id).select(User, func.case((func.count(User.posts) > 1, "many"), default="few"))
+    users = await User.objects.order_by(User.id).select(
+        User, func.case((func.count(User.posts) > 1, "many"), default="few")
+    )
     assert [(u.name, n) for u, n in users] == [("Alice", "many"), ("Bob", "few"), ("Carol", "few")]
     # in an update, values bind with the field's type
-    await Post.objects.update(views=func.case((Post.views >= 50, Post.views - 50), (Post.title == "a1", 1), default=Post.views))
+    await Post.objects.update(
+        views=func.case((Post.views >= 50, Post.views - 50), (Post.title == "a1", 1), default=Post.views)
+    )
     views = {p.title: p.views for p in await Post.objects.all()}
     assert views == {"a1": 1, "a2": 0, "a3": 20, "b1": 50}
     # a float among integer values makes the case a float
-    assert await Post.objects.filter(Post.title == "a1").select(func.case((Post.published, 1), default=0.5)).scalar() == 0.5
+    assert (
+        await Post.objects.filter(Post.title == "a1").select(func.case((Post.published, 1), default=0.5)).scalar()
+        == 0.5
+    )
 
 
 async def test_aggregate_filter(clean):
     (alice, bob, carol), _ = await seed()
-    rows = await Post.objects.order_by(Post.author_id).select(
-        Post.author_id,
-        func.count().label("all"),
-        func.count(filter=Post.views >= 20).label("popular"),
-        func.sum(Post.views, filter=Post.views < 50).label("small"),
-        func.max(Post.title, filter=Post.views < 50).label("last_small"),
-    ).group_by(Post.author_id)
+    rows = (
+        await Post.objects.order_by(Post.author_id)
+        .select(
+            Post.author_id,
+            func.count().label("all"),
+            func.count(filter=Post.views >= 20).label("popular"),
+            func.sum(Post.views, filter=Post.views < 50).label("small"),
+            func.max(Post.title, filter=Post.views < 50).label("last_small"),
+        )
+        .group_by(Post.author_id)
+    )
     assert [tuple(r) for r in rows] == [(alice.id, 3, 2, 25, "a3"), (bob.id, 1, 1, None, None)]
-    mins = await Post.objects.order_by(Post.author_id).select(Post.author_id, func.min(Post.views, filter=Post.views >= 20)).group_by(Post.author_id)
+    mins = (
+        await Post.objects.order_by(Post.author_id)
+        .select(Post.author_id, func.min(Post.views, filter=Post.views >= 20))
+        .group_by(Post.author_id)
+    )
     assert [tuple(r) for r in mins] == [(alice.id, 20), (bob.id, 100)]
     users = await User.objects.order_by(User.id).select(User.name, func.count(User.posts, filter=User.posts.views > 10))
     assert [tuple(u) for u in users] == [("Alice", 2), ("Bob", 1), ("Carol", 0)]
@@ -239,9 +285,11 @@ async def test_aggregate_filter_through_a_to_one_hop(clean):
     # The filter follows to-one hops only: a plain aggregate over the posts, filtered by an EXISTS.
     assert await posts.select(func.sum(Post.views, filter=Post.author.name == "Alice")).scalar() == 75
     assert await posts.select(func.count(filter=Post.author.name == "Alice")).scalar() == 3
-    rows = await posts.order_by(Post.author_id).select(
-        Post.author_id, func.sum(Post.views, filter=Post.author.name == "Alice")
-    ).group_by(Post.author_id)
+    rows = (
+        await posts.order_by(Post.author_id)
+        .select(Post.author_id, func.sum(Post.views, filter=Post.author.name == "Alice"))
+        .group_by(Post.author_id)
+    )
     assert [r[1] for r in rows] == [75, None]
 
 
@@ -272,7 +320,12 @@ async def test_lateral_group_reads_a_to_one_join(clean):
         func.count(Post.comments, filter=Post.comments.body == Post.author.name),
         func.max(Post.comments.id),
     )
-    assert [tuple(r) for r in rows] == [("Alice", 0, None), ("Alice", 1, c_a2.id), ("Alice", 0, None), ("Bob", 1, c_b1.id)]
+    assert [tuple(r) for r in rows] == [
+        ("Alice", 0, None),
+        ("Alice", 1, c_a2.id),
+        ("Alice", 0, None),
+        ("Bob", 1, c_b1.id),
+    ]
 
 
 async def test_relation_count_with_a_to_one_filter_under_another_relation(clean):
@@ -289,17 +342,26 @@ async def test_relation_count_with_a_to_one_filter_under_another_relation(clean)
 async def test_array_agg(clean):
     (alice, bob, carol), _ = await seed()
     # Grouped: the elements in the order given; the empty group does not exist.
-    rows = await Post.objects.order_by(Post.author_id).select(
-        Post.author_id,
-        func.array_agg(Post.title, order_by=Post.views.desc()).label("by_views"),
-        func.array_agg(Post.views, order_by=[Post.views]).label("views"),
-        func.array_agg(Post.title, filter=Post.views >= 20, order_by=Post.title).label("popular"),
-    ).group_by(Post.author_id)
+    rows = (
+        await Post.objects.order_by(Post.author_id)
+        .select(
+            Post.author_id,
+            func.array_agg(Post.title, order_by=Post.views.desc()).label("by_views"),
+            func.array_agg(Post.views, order_by=[Post.views]).label("views"),
+            func.array_agg(Post.title, filter=Post.views >= 20, order_by=Post.title).label("popular"),
+        )
+        .group_by(Post.author_id)
+    )
     assert [tuple(r) for r in rows] == [
         (alice.id, ["a2", "a3", "a1"], [5, 20, 50], ["a2", "a3"]),
         (bob.id, ["b1"], [100], ["b1"]),
     ]
-    assert await Post.objects.select(func.array_agg(Post.views, distinct=True, order_by=Post.views)).scalar() == [5, 20, 50, 100]
+    assert await Post.objects.select(func.array_agg(Post.views, distinct=True, order_by=Post.views)).scalar() == [
+        5,
+        20,
+        50,
+        100,
+    ]
     # NULL elements are kept; no rows gives None, not [].
     comments = await Comment.objects.select(func.array_agg(Comment.author_id, order_by=Comment.body)).scalar()
     assert comments == [bob.id, None, alice.id]
@@ -312,9 +374,11 @@ async def test_array_agg(clean):
     )
     assert [tuple(u) for u in users] == [("Alice", ["a2", "a3", "a1"], 3), ("Bob", ["b1"], 1), ("Carol", None, 0)]
     assert users[0].titles == ["a2", "a3", "a1"]
-    filtered = await User.objects.order_by(User.id).select(
-        func.array_agg(User.posts.title, filter=User.posts.views < 50, order_by=User.posts.title)
-    ).scalars()
+    filtered = (
+        await User.objects.order_by(User.id)
+        .select(func.array_agg(User.posts.title, filter=User.posts.views < 50, order_by=User.posts.title))
+        .scalars()
+    )
     assert filtered == [["a1", "a3"], None, None]
 
 
@@ -324,14 +388,22 @@ async def test_array_agg_over_a_to_one_tail_keeps_null_elements(clean):
     names = func.array_agg(Post.comments.author.name, order_by=Post.comments.author.name)
     # The comment without an author stays an element (NULL sorts last); a post without comments gives None.
     assert [tuple(r) for r in await posts.select(Post.title, names)] == [
-        ("a1", None), ("a2", ["Bob", None]), ("a3", None), ("b1", ["Alice"]),
+        ("a1", None),
+        ("a2", ["Bob", None]),
+        ("a3", None),
+        ("b1", ["Alice"]),
     ]
     # The key may sit on the relation itself: the tail is opened below it.
     by_id = func.array_agg(Post.comments.author.name, order_by=Post.comments.id)
     assert [r[1] for r in await posts.select(Post.title, by_id)] == [None, ["Bob", None], None, ["Alice"]]
     # In a LATERAL group: the count of the to-one path counts its rows, not the missing author.
     rows = await posts.select(Post.title, names, func.count(Post.comments.author))
-    assert [tuple(r) for r in rows] == [("a1", None, 0), ("a2", ["Bob", None], 1), ("a3", None, 0), ("b1", ["Alice"], 1)]
+    assert [tuple(r) for r in rows] == [
+        ("a1", None, 0),
+        ("a2", ["Bob", None], 1),
+        ("a3", None, 0),
+        ("b1", ["Alice"], 1),
+    ]
     # The count of a plain to-one tail beside it, with a filter on the tail.
     rows = await posts.select(Post.title, func.count(Post.comments.author, filter=Post.comments.author.name == "Bob"))
     assert [r[1] for r in rows] == [0, 1, 0, 0]
@@ -353,7 +425,11 @@ async def test_aggregate_over_a_to_one_key_joins_at_the_root(clean):
 async def test_aggregate_over_a_to_one_argument_gives_one_value_per_group(clean):
     (alice, bob, _), _ = await seed()
     assert await Post.objects.select(func.sum(Post.author.id)).scalars() == [3 * alice.id + bob.id]
-    rows = await Post.objects.order_by(Post.author_id).select(Post.author_id, func.sum(Post.author.id)).group_by(Post.author_id)
+    rows = (
+        await Post.objects.order_by(Post.author_id)
+        .select(Post.author_id, func.sum(Post.author.id))
+        .group_by(Post.author_id)
+    )
     assert [tuple(r) for r in rows] == [(alice.id, 3 * alice.id), (bob.id, bob.id)]
     having = Post.objects.select(Post.author_id).group_by(Post.author_id).having(func.sum(Post.author.id) > bob.id)
     assert await having.scalars() == [alice.id]
@@ -371,7 +447,12 @@ async def test_aggregate_over_a_to_one_path_keeps_its_guards(clean):
     assert [r[0] for r in await ordered] == [alice.id, bob.id]
     window = func.sum(Post.author.id).over(partition_by=Post.author_id)
     rows = await Post.objects.order_by(Post.title).select(Post.title, window)
-    assert [tuple(r) for r in rows] == [("a1", 3 * alice.id), ("a2", 3 * alice.id), ("a3", 3 * alice.id), ("b1", bob.id)]
+    assert [tuple(r) for r in rows] == [
+        ("a1", 3 * alice.id),
+        ("a2", 3 * alice.id),
+        ("a3", 3 * alice.id),
+        ("b1", bob.id),
+    ]
     # An UPDATE applies no joins: its aggregate keeps the subquery.
     await Post.objects.update(views=func.max(Post.author.id))
     assert await Post.objects.order_by(Post.title).select(Post.views).scalars() == [alice.id] * 3 + [bob.id]
@@ -445,7 +526,11 @@ async def test_outer_through_relation_paths(clean):
     assert [tuple(r) for r in rows] == [("a1", 0), ("a2", 1), ("a3", 0), ("b1", 1)]
     email = User.objects.filter(User.name == outer(Comment.post.author.name)).select(User.email).as_scalar()
     rows = await Comment.objects.order_by(Comment.id).select(Comment.body, email.label("email"))
-    assert [tuple(r) for r in rows] == [("c1", "alice@example.com"), ("c2", "alice@example.com"), ("c3", "bob@example.com")]
+    assert [tuple(r) for r in rows] == [
+        ("c1", "alice@example.com"),
+        ("c2", "alice@example.com"),
+        ("c3", "bob@example.com"),
+    ]
 
 
 async def test_outer_errors(clean):
@@ -474,7 +559,11 @@ async def test_window_functions(clean):
 
     prev = func.lag(Post.views, 1, -1).over(partition_by=Post.author_id, order_by=Post.created_at)
     nxt = func.lead(Post.title).over(order_by=Post.created_at)
-    rows = await Post.objects.filter(Post.author.name == "Alice").select(Post.title, prev.label("prev"), nxt.label("next")).order_by(Post.created_at)
+    rows = (
+        await Post.objects.filter(Post.author.name == "Alice")
+        .select(Post.title, prev.label("prev"), nxt.label("next"))
+        .order_by(Post.created_at)
+    )
     assert [tuple(r) for r in rows] == [("a1", -1, "a2"), ("a2", 5, "a3"), ("a3", 50, None)]
 
     rows = await Post.objects.select(
@@ -487,14 +576,21 @@ async def test_window_functions(clean):
         func.percent_rank().over(order_by=Post.views).label("pct"),
     ).order_by(Post.id)
     assert [(r.rank, r.dense, r.half, r.n, r.least) for r in rows] == [
-        (1, 1, 1, 4, "a1"), (1, 1, 1, 4, "a1"), (1, 1, 2, 4, "a1"), (4, 2, 2, 4, "b1")
+        (1, 1, 1, 4, "a1"),
+        (1, 1, 1, 4, "a1"),
+        (1, 1, 2, 4, "a1"),
+        (4, 2, 2, 4, "b1"),
     ]
     assert rows[3].pct == 1.0
 
     # Ordering by a window function; a frame by range.
-    titles = await Post.objects.order_by(func.row_number().over(order_by=Post.views.desc())).select(Post.title).scalars()
+    titles = (
+        await Post.objects.order_by(func.row_number().over(order_by=Post.views.desc())).select(Post.title).scalars()
+    )
     assert titles == ["b1", "a2", "a3", "a1"]
-    rows = await Post.objects.select(Post.title, func.sum(Post.views).over(order_by=Post.views, range=(-20, 0)).label("s")).order_by(Post.views)
+    rows = await Post.objects.select(
+        Post.title, func.sum(Post.views).over(order_by=Post.views, range=(-20, 0)).label("s")
+    ).order_by(Post.views)
     assert [r.s for r in rows] == [5, 25, 50, 100]
 
 
@@ -522,7 +618,7 @@ async def test_named_windows(clean):
         func.avg(Post.views).over(w).label("avg"),
         func.row_number().over(w).label("n"),
     )
-    assert q.sql().count("WINDOW") == 1 and 'OVER w1' in q.sql()
+    assert q.sql().count("WINDOW") == 1 and "OVER w1" in q.sql()
     rows = sorted(await q)
     assert [(r.title, r.total, r.n) for r in rows] == [("a1", 5, 1), ("a2", 55, 2), ("a3", 75, 3), ("b1", 100, 1)]
     assert rows[1].avg == 27.5
@@ -531,15 +627,23 @@ async def test_named_windows(clean):
     sql = Post.objects.select(Post.title, last2.label("s")).sql()
     assert "OVER (w1 ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)" in sql
     assert sorted(tuple(r) for r in await Post.objects.select(Post.title, last2.label("s"))) == [
-        ("a1", 5), ("a2", 55), ("a3", 70), ("b1", 100)
+        ("a1", 5),
+        ("a2", 55),
+        ("a3", 70),
+        ("b1", 100),
     ]
     # ... and a window without order_by with one.
     part = window(partition_by=Post.author_id)
     rows = await Post.objects.select(Post.title, func.rank().over(part, order_by=Post.views.desc()).label("r"))
     assert sorted(tuple(r) for r in rows) == [("a1", 3), ("a2", 1), ("a3", 2), ("b1", 1)]
     # The same window in a subquery is declared there, not in the outer query.
-    ranked = Post.objects.select(Post, func.row_number().over(window(Post.author_id, Post.views.desc())).label("rank")).cte("ranked")
-    assert [p.title for p in await Post.objects.from_(ranked).filter(ranked.c.rank == 1)] in (["a2", "b1"], ["b1", "a2"])
+    ranked = Post.objects.select(
+        Post, func.row_number().over(window(Post.author_id, Post.views.desc())).label("rank")
+    ).cte("ranked")
+    assert [p.title for p in await Post.objects.from_(ranked).filter(ranked.c.rank == 1)] in (
+        ["a2", "b1"],
+        ["b1", "a2"],
+    )
 
 
 async def test_named_window_limits(clean):
@@ -567,16 +671,26 @@ async def test_join_cte(clean):
         .group_by(Post.author_id)
         .cte("totals")
     )
-    rows = await User.objects.join(totals, totals.c.author_id == User.id).select(User, totals.c.views).order_by(totals.c.views.desc())
+    rows = (
+        await User.objects.join(totals, totals.c.author_id == User.id)
+        .select(User, totals.c.views)
+        .order_by(totals.c.views.desc())
+    )
     assert [(u.name, v) for u, v in rows] == [("Bob", 100), ("Alice", 75)]
-    rows = await User.objects.join(totals, totals.c.author_id == User.id, outer=True).select(User.name, totals.c.n).order_by(User.id)
+    rows = (
+        await User.objects.join(totals, totals.c.author_id == User.id, outer=True)
+        .select(User.name, totals.c.n)
+        .order_by(User.id)
+    )
     assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 1), ("Carol", None)]
     # Filters, instances, count, prefetch.
     busy = User.objects.join(totals, totals.c.author_id == User.id).filter(totals.c.n > 1)
     assert [u.name for u in await busy] == ["Alice"] and await busy.count() == 1
     assert [len(u.posts.cached) for u in await busy.load(User.posts)] == [3]
     # Two CTEs joined.
-    commenters = Comment.objects.select(Comment.author_id, func.count().label("c")).group_by(Comment.author_id).cte("commenters")
+    commenters = (
+        Comment.objects.select(Comment.author_id, func.count().label("c")).group_by(Comment.author_id).cte("commenters")
+    )
     rows = await (
         User.objects.join(totals, totals.c.author_id == User.id)
         .join(commenters, commenters.c.author_id == User.id)
@@ -593,11 +707,19 @@ async def test_join_cte(clean):
 async def test_recursive_cte_with_join(clean):
     users = await User.objects.insert_many([{"email": f"u{i}@x.io", "name": f"u{i}"} for i in range(5)]).returning()
     first = users[0].id
-    walk = User.objects.filter(User.id == first).select(User.id, User.name, func.abs(User.id - User.id).label("depth")).cte(
-        "walk",
-        recursive=lambda w: User.objects.join(w, User.id == w.c.id + 1).filter(w.c.depth < 2).select(User.id, User.name, w.c.depth + 1),
+    walk = (
+        User.objects.filter(User.id == first)
+        .select(User.id, User.name, func.abs(User.id - User.id).label("depth"))
+        .cte(
+            "walk",
+            recursive=lambda w: (
+                User.objects.join(w, User.id == w.c.id + 1)
+                .filter(w.c.depth < 2)
+                .select(User.id, User.name, w.c.depth + 1)
+            ),
+        )
     )
-    assert "JOIN \"walk\" ON" in walk.select(walk.c.name).sql()
+    assert 'JOIN "walk" ON' in walk.select(walk.c.name).sql()
     rows = await walk.select(walk.c.name, walk.c.depth).order_by(walk.c.depth)
     assert [tuple(r) for r in rows] == [("u0", 0), ("u1", 1), ("u2", 2)]
 
@@ -669,9 +791,13 @@ async def test_recursive_cte(clean):
     )
     assert [u.name for u in await User.objects.from_(chain).order_by(User.id)] == ["u0", "u1", "u2"]
     # A select() CTE with a depth column.
-    walk = User.objects.filter(User.id == first).select(User.id, func.abs(User.id - User.id).label("depth")).cte(
-        "walk",
-        recursive=lambda w: User.objects.filter(User.id == w.c.id + 1).select(User.id, w.c.depth + 1),
+    walk = (
+        User.objects.filter(User.id == first)
+        .select(User.id, func.abs(User.id - User.id).label("depth"))
+        .cte(
+            "walk",
+            recursive=lambda w: User.objects.filter(User.id == w.c.id + 1).select(User.id, w.c.depth + 1),
+        )
     )
     assert await walk.select(walk.c.depth).order_by(walk.c.depth.desc()).limit(1).scalars() == [4]
 
@@ -688,7 +814,9 @@ async def test_cte_errors(clean):
         await Post.objects.from_(Post.objects.cte("p")).delete()
     other = Post.objects.select(Post.author_id).cte("totals")
     with pytest.raises(ValueError, match="two different CTEs"):
-        User.objects.filter(User.id.in_(totals.select(totals.c.author_id)), User.id.in_(other.select(other.c.author_id))).sql()
+        User.objects.filter(
+            User.id.in_(totals.select(totals.c.author_id)), User.id.in_(other.select(other.c.author_id))
+        ).sql()
     with pytest.raises(ValueError, match="several columns named id"):
         Post.objects.select(Post, Post.id.label("id")).cte("x")
 
@@ -736,13 +864,15 @@ async def test_to_one_prefetch(clean, observe_queries):
 
 async def test_filtered_prefetch(clean, observe_queries):
     (alice, bob, carol), _ = await seed()
-    query = User.objects.load(
-        User.posts.objects.filter(Post.views >= 20).order_by(Post.views.desc())
-    ).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 0, 0, 0, 0),
-        orm.StatementInspection(True, 0, 0, 0, 0),
-    ))
+    query = User.objects.load(User.posts.objects.filter(Post.views >= 20).order_by(Post.views.desc())).order_by(User.id)
+    assert query.inspect() == orm.QueryInspection(
+        2,
+        True,
+        (
+            orm.StatementInspection(False, 0, 0, 0, 0),
+            orm.StatementInspection(True, 0, 0, 0, 0),
+        ),
+    )
     with observe_queries(clean) as events:
         users = await query
     assert len(events) == 2
@@ -831,13 +961,17 @@ async def test_instances_get_their_database(clean):
 async def test_prefetch_query_reading_a_cte(clean, observe_queries):
     await seed()
     best = Post.objects.select(Post.id).filter(Post.views >= 50).cte("best")
-    query = User.objects.load(
-        User.posts.objects.filter(Post.id.in_(best.select(best.c.id))).label("best")
-    ).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 0, 0, 0, 0),
-        orm.StatementInspection(True, 0, 0, 1, 1),
-    ))
+    query = User.objects.load(User.posts.objects.filter(Post.id.in_(best.select(best.c.id))).label("best")).order_by(
+        User.id
+    )
+    assert query.inspect() == orm.QueryInspection(
+        2,
+        True,
+        (
+            orm.StatementInspection(False, 0, 0, 0, 0),
+            orm.StatementInspection(True, 0, 0, 1, 1),
+        ),
+    )
     with observe_queries(clean) as events:
         users = await query
     assert len(events) == 2
@@ -848,9 +982,7 @@ async def test_correlated_in_subquery(clean):
     await seed()
     commented = Comment.objects.filter(Comment.author_id == outer(User.id)).select(Comment.post_id)
     query = User.objects.filter(exists(Post.objects.filter(Post.id.in_(commented)))).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(1, False, (
-        orm.StatementInspection(False, 0, 2, 0, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 2, 0, 0),))
     rows = await query
     assert [u.name for u in rows] == ["Alice", "Bob"]
 
@@ -900,10 +1032,14 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
     # A slice per parent still holds: each parent's rows stay in one query.
     top = User.posts.objects.filter(Post.views >= 0).order_by(Post.views.desc())[:2].label("top")
     query = User.objects.load(top).order_by(User.id).using(db)
-    assert query.inspect() == orm.QueryInspection(2, True, (
-        orm.StatementInspection(False, 0, 0, 0, 0),
-        orm.StatementInspection(True, 0, 0, 1, 0),
-    ))
+    assert query.inspect() == orm.QueryInspection(
+        2,
+        True,
+        (
+            orm.StatementInspection(False, 0, 0, 0, 0),
+            orm.StatementInspection(True, 0, 0, 1, 0),
+        ),
+    )
     with observe_queries(db) as events:
         got = await query
     # Filter and limit reserve 2 parameters: 3 parent keys per batch.
@@ -941,12 +1077,37 @@ async def test_prefetch_beyond_the_parameter_limit(clean, observe_queries):
     assert sum(len(u.posts.cached) for u in users) == 7
 
 
-@pytest.mark.parametrize("operation", [
-    "await", "async_for", "iterate", "batches", "paginate", "first", "last", "get",
-    "count", "exists", "in_bulk", "in_bulk_empty", "get_or_insert", "prepare",
-    "update", "update_many", "delete", "insert", "insert_many", "copy", "select",
-    "cte", "subquery", "explain", "sql", "inspect",
-])
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "await",
+        "async_for",
+        "iterate",
+        "batches",
+        "paginate",
+        "first",
+        "last",
+        "get",
+        "count",
+        "exists",
+        "in_bulk",
+        "in_bulk_empty",
+        "get_or_insert",
+        "prepare",
+        "update",
+        "update_many",
+        "delete",
+        "insert",
+        "insert_many",
+        "copy",
+        "select",
+        "cte",
+        "subquery",
+        "explain",
+        "sql",
+        "inspect",
+    ],
+)
 async def test_bound_query_refuses_standalone(clean, operation):
     qs = User.posts.objects.filter(Post.views >= 0)
     with pytest.raises(TypeError, match="inside load"):
@@ -1006,9 +1167,7 @@ def test_load_path_query_collision(change, nested, reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 async def test_load_set_with_columns_keeps_sibling_columns(clean, reverse):
     await seed()
-    for qs, column in (
-        (User.posts.objects.load(Post.title), User.posts.views),
-    ):
+    for qs, column in ((User.posts.objects.load(Post.title), User.posts.views),):
         items = (column, qs) if reverse else (qs, column)
         users = await User.objects.load(*items).order_by(User.id)
         post = users[0].posts.cached[0]
@@ -1150,7 +1309,11 @@ async def test_lateral_disabled_connection_uses_scalar_subqueries(clean, observe
     await seed()
     db = await orm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("lateral_join",))
     try:
-        query = User.objects.using(db).order_by(User.id).select(User.name, func.count(User.posts), func.max(User.posts.views))
+        query = (
+            User.objects.using(db)
+            .order_by(User.id)
+            .select(User.name, func.count(User.posts), func.max(User.posts.views))
+        )
         with observe_queries(db) as events:
             rows = await query
         assert [tuple(r) for r in rows] == [("Alice", 3, 50), ("Bob", 1, 100), ("Carol", 0, None)]

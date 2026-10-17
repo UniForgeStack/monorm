@@ -94,14 +94,20 @@ async def check() -> None:
     assert_type(await Post.objects.insert_many(rows).on_conflict(Post.id, update=False).returning(), list[Post])
     assert_type(await User.objects.insert(email="a@b.c", name="A").on_conflict(User.email, update=True), int)
     flag = alice.name == "A"
-    assert_type(await User.objects.insert(email="a@b.c", name="A").on_conflict(User.email, update=flag).returning(), User | None)
+    assert_type(
+        await User.objects.insert(email="a@b.c", name="A").on_conflict(User.email, update=flag).returning(), User | None
+    )
     User.objects.insert(email="a@b.c", name="A").on_conflict(User.email)  # E: update is required
     User.objects.insert(email="a@b.c", name="A").returning()  # E: a plain insert gives the instance
     assert_type(await Post.objects.filter(Post.id == 1).update(views=Post.views + 1), int)
     assert_type(await Post.objects.filter(Post.id == 1).update(views=1).returning(), list[Post])
     assert_type(await Post.objects.filter(Post.id == 1).delete(), int)
     assert_type(await Post.objects.filter(Post.id == 1).delete().returning(), list[Post])
-    bumped = await Post.objects.insert(author=alice, title="t", body="b").on_conflict(Post.id, update=True, update_values={"views": Post.views + excluded(Post.views)}).returning()
+    bumped = (
+        await Post.objects.insert(author=alice, title="t", body="b")
+        .on_conflict(Post.id, update=True, update_values={"views": Post.views + excluded(Post.views)})
+        .returning()
+    )
     assert_type(bumped, Post)
     assert_type(await Post.objects.update_many([{"id": 1, "views": 2}]), int)
     assert_type(await Post.objects.update_many([{"id": 1, "author": alice}]).returning(), list[Post])
@@ -112,7 +118,9 @@ async def check() -> None:
     assert_type(grouped[0][1], int)
     grouped[0].anything  # untyped name access
     assert_type(await Post.objects.select(func.max(Post.views)).scalar(), int | None)
-    assert_type(await Post.objects.select(func.array_agg(Post.title, order_by=Post.views.desc())).scalar(), list[str] | None)
+    assert_type(
+        await Post.objects.select(func.array_agg(Post.title, order_by=Post.views.desc())).scalar(), list[str] | None
+    )
     assert_type(await Post.objects.select(Post.title).scalars(), list[str])
     pairs = await User.objects.select(User, func.count(User.posts))
     assert_type(pairs[0][0], User)

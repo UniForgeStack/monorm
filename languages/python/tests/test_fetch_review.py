@@ -1,4 +1,5 @@
 """`db.fetch` and error details: stale plans, int2/float4 arrays, parameter types, SQLSTATE of NOT NULL and CHECK."""
+
 import datetime
 
 import pytest
@@ -49,7 +50,9 @@ async def test_postgres_fetch_reads_int2_and_float4_arrays(single):
 
 async def test_postgres_fetch_parameters_of_bool_float_date_and_list(single):
     day = datetime.date(2026, 1, 2)
-    [row] = await single.fetch("SELECT $1::bool AS b, $2::float8 AS f, $3::date AS d, $4::jsonb AS l", True, 1.5, day, [1, "x"])
+    [row] = await single.fetch(
+        "SELECT $1::bool AS b, $2::float8 AS f, $3::date AS d, $4::jsonb AS l", True, 1.5, day, [1, "x"]
+    )
     assert row == {"b": True, "f": 1.5, "d": day, "l": [1, "x"]}
 
 
@@ -60,7 +63,9 @@ async def test_sqlite_fetch_parameters_of_bool_float_date_and_list(lite):
 
 
 async def test_sqlite_not_null_check_and_unique_have_a_sqlstate(lite):
-    await lite.execute("CREATE TABLE fx (id integer PRIMARY KEY, n text NOT NULL, c integer CHECK (c > 0), u text UNIQUE)")
+    await lite.execute(
+        "CREATE TABLE fx (id integer PRIMARY KEY, n text NOT NULL, c integer CHECK (c > 0), u text UNIQUE)"
+    )
     with pytest.raises(orm.IntegrityError) as e:
         await lite.execute("INSERT INTO fx (id, n) VALUES (1, NULL)")
     assert e.value.sqlstate == "23502"
