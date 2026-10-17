@@ -89,3 +89,21 @@ test("required prepared queries", async () => {
     assert.equal(await optional.get({ id: -1 }), null);
   } finally { await db.close(); }
 });
+
+test("required one-row queries: at(), lazy and prepared", async () => {
+  const { db, Note, qs } = await fixture();
+  try {
+    const required = qs.require();
+    assert.equal((await required.orderBy(Note.id).at(1)).id, 2);
+    assert.equal((await required.orderBy(Note.id).at(-1)).id, 2);
+    assert.equal(await qs.orderBy(Note.id).at(5), null);
+    await assert.rejects(required.at(5), Note.DoesNotExist);
+    await assert.rejects(required.filter(Note.id.eq(-1)).at(0), Note.DoesNotExist);
+    const lazy = required.at(5);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await assert.rejects(lazy, Note.DoesNotExist);
+    const byId = qs.filter(Note.id.eq(param("id"))).first().prepare();
+    assert.equal(await byId.run({ id: -1 }), null);
+    await assert.rejects(qs.require().filter(Note.id.eq(param("id"))).first().prepare().run({ id: -1 }), Note.DoesNotExist);
+  } finally { await db.close(); }
+});

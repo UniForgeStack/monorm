@@ -14,10 +14,13 @@ from orm import (
     Func,
     Condition,
     ManyRelatedSet,
+    OneRowQuery,
+    PreparedOneRowQuery,
     Ordering,
     Page,
     Prepared,
     QuerySet,
+    QueryInspection,
     RelatedSet,
     Row,
     TsVector,
@@ -229,6 +232,8 @@ async def errors() -> None:
     await u.update(name=1)  # E: wrong type
     u.posts = []  # E: read-only relation
     User.objects.load(1)  # E: not a column, relation or relation query set
+    User.objects.load(User.posts.objects[0].label("chosen"))
+    User.posts.objects.label("old", one=True)  # E: one-row loads use [n].label()
     func.ntile("2")  # E: buckets are ints
     func.sum(Post.views).over(window(), rows=(None, "x"))  # E: frame bounds are ints
     await Profile.objects.insert(user_id=1, role="boss")  # E: roles are Role members
@@ -237,7 +242,7 @@ async def errors() -> None:
 
 
 def inspection_types() -> None:
-    from orm import QueryInspection, StatementInspection
+    from orm import StatementInspection
 
     result = User.objects.all().inspect()
     assert_type(result, QueryInspection)
@@ -254,6 +259,21 @@ def inspection_types() -> None:
 
 
 async def required_results() -> None:
+    assert_type(Post.objects.first(), OneRowQuery[Post | None])
+    assert_type(Post.objects.last(), OneRowQuery[Post | None])
+    assert_type(Post.objects.get(), OneRowQuery[Post | None])
+    assert_type(Post.objects[0], OneRowQuery[Post | None])
+    assert_type(Post.objects[:2], PostQuerySet)
+    assert_type(await Post.objects[-1], Post | None)
+    assert_type(Post.objects.require()[0], OneRowQuery[Post])
+    assert_type(await Post.objects.require()[:2][0], Post)
+    assert_type(Post.objects.require().first(), OneRowQuery[Post])
+    assert_type(Post.objects.first().prepare(), PreparedOneRowQuery[Post | None])
+    assert_type(await Post.objects.require().first().prepare()(), Post)
+    assert_type(Post.objects.first().inspect(), QueryInspection)
+    assert_type(Post.objects.first().sql(), str)
+    bad: Post = await Post.objects[0]  # E: a missing row is optional
+    Post.objects.first().filter(Post.id == 1)  # E: a one-row query cannot be filtered
     assert_type(await Post.objects.get(Post.id == 1), Post | None)
     assert_type(await Post.objects.require().get(Post.id == 1), Post)
     assert_type(await Post.objects.require().filter(Post.id == 1).first(), Post)

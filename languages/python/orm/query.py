@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Generator, Iterable, Mapping
+from collections.abc import AsyncIterator, Coroutine, Generator, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeAlias, TypeVar, Unpack, cast, overload
 
 from .inspection import QueryInspection, _inspect
@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from .select import RequiredSelect, Select
 
 M = TypeVar("M", bound="Model")
+T_co = TypeVar("T_co", covariant=True)
 T1 = TypeVar("T1")
 T2 = TypeVar("T2")
 T3 = TypeVar("T3")
@@ -63,7 +64,17 @@ T4 = TypeVar("T4")
 T5 = TypeVar("T5")
 T6 = TypeVar("T6")
 
-__all__ = ["QuerySet", "RelatedSet", "ManyRelatedSet", "Prepared", "prefetch", "use_query_set", "use_extensions"]
+__all__ = [
+    "OneRowQuery",
+    "PreparedOneRowQuery",
+    "QuerySet",
+    "RelatedSet",
+    "ManyRelatedSet",
+    "Prepared",
+    "prefetch",
+    "use_query_set",
+    "use_extensions",
+]
 
 # Ids per query in in_bulk(), well below Postgres' 65535 parameters.
 IN_BULK_CHUNK = 10_000
@@ -103,8 +114,6 @@ class _Prefetch:
         to_attr: str | None = None,
         one: bool = False,
     ) -> None:
-        if one and queryset is not None and (queryset._limit is not None or queryset._offset is not None):
-            raise ValueError("label(one=True) takes the first row by the query set's order; drop the slice")
         self.path = path
         self.queryset = queryset
         self.to_attr = to_attr
@@ -490,7 +499,7 @@ class QuerySet(Generic[M]):
         ``IN (...)`` query per relation level. A relation query set (``User.posts.objects``)
         filters, orders and slices the related rows (a slice applies per parent), loads
         its own items with ``.load()``, and goes to the relation, or to the plain
-        attribute ``.label(name)`` (``one=True``: the first row or ``None``).
+        attribute ``.label(name)`` (``[n].label(name)``: one row or ``None``).
         ``.as_prefetch()`` loads a to-one relation by ``IN (...)`` query instead of a join.
 
         Relation query sets run only inside ``load()``; standalone reads and writes
@@ -534,16 +543,12 @@ class QuerySet(Generic[M]):
         _prefetch_tree(self._model, ((p.path._path, p) for p in prefetch))  # validates
         return qs
 
-    def label(self, name: str, *, one: bool = False) -> Self:
-        """Store a relation query set's rows in the plain attribute ``name`` (a list, or
-        with ``one=True`` the first row or ``None``) instead of the relation::
-
-            User.objects.load(User.posts.objects.order_by(Post.id.desc()).label("latest", one=True))
-        """
+    def label(self, name: str) -> Self:
+        """Store related rows in a plain list attribute; use ``[n].label(name)`` for one row."""
         self._bound("label")
         if not isinstance(name, str) or not name.isidentifier() or name.startswith("_"):
             raise ValueError(f"label {name!r} must be an identifier not starting with '_'")
-        return self._clone(_label=name, _one=one)
+        return self._clone(_label=name)
 
     def as_prefetch(self) -> Self:
         """Load this relation with an ``IN (...)`` query instead of a join; the rows are
@@ -600,12 +605,24 @@ class QuerySet(Generic[M]):
         """Skip ``n`` rows; ``n`` may be a :func:`orm.param` in a prepared query."""
         return self._clone(_offset=n if isinstance(n, Param) else n or None)
 
-    def __getitem__(self, s: slice) -> Self:
-        """``qs[10:20]`` is ``qs.offset(10).limit(10)``."""
+    @overload
+    def __getitem__(self, s: int) -> OneRowQuery[M | None]: ...
+    @overload
+    def __getitem__(self, s: slice) -> Self: ...
+    def __getitem__(self, s: int | slice) -> OneRowQuery[M | None] | Self:
+        """Slice rows, or lazily read one row by index; ``[-1]`` is ``last()``."""
+        if isinstance(s, Param):
+            raise QueryError("a query set index can't be param()")
+        if isinstance(s, int):
+            if s == -1:
+                return self.last()
+            if s < 0:
+                raise ValueError("only -1 or non-negative indices are supported")
+            return self[s : s + 1].first()
         if isinstance(self._limit, Param) or isinstance(self._offset, Param):
             raise QueryError("a query set limited by param() can't be sliced; use limit() and offset()")
         if not isinstance(s, slice):
-            raise TypeError("query sets can only be sliced; use `await qs.offset(i).first()` for one row")
+            raise TypeError("query set indices must be integers or slices")
         if s.step is not None or (s.start or 0) < 0 or (s.stop is not None and s.stop < 0):
             raise ValueError("only non-negative slices without a step are supported")
         start = s.start or 0
@@ -1056,25 +1073,22 @@ class QuerySet(Generic[M]):
             previous_cursor=pagination.encode_cursor(fp, keys, rows[0]) if rows else None,
         )
 
-    async def first(self) -> M | None:
-        """First row by the current ordering (primary key if none), or None."""
-        objs = await self._clone(_order=self._default_order())[:1]._read()
-        return objs[0] if objs else None
+    def first(self) -> OneRowQuery[M | None]:
+        """Lazy first row by the current ordering, or None."""
+        return OneRowQuery(self._clone(_order=self._default_order())[:1])
 
-    async def last(self) -> M | None:
-        """Last row by the current ordering (primary key if none), or None."""
+    def last(self) -> OneRowQuery[M | None]:
+        """Lazy last row by the current ordering, or None; slices are unsupported."""
+        if self._limit is not None or self._offset is not None:
+            raise ValueError("last() can't be used on a query set with a limit or offset")
         order = tuple(o.reversed() for o in self._default_order())
-        objs = await self._clone(_order=order)[:1]._read()
-        return objs[0] if objs else None
+        return OneRowQuery(self._clone(_order=order)[:1])
 
-    async def get(self, *conditions: ConditionLike) -> M | None:
-        """The single matching row, or None; multiple matches always raise.
+    def get(self, *conditions: ConditionLike) -> OneRowQuery[M | None]:
+        """Lazy single matching row, or None; multiple matches always raise.
 
         ``require().get()`` also raises ``Model.DoesNotExist`` when absent."""
-        objs = await self.filter(*conditions).limit(2)._read()
-        if len(objs) > 1:
-            raise self._model.MultipleObjectsReturned(f"more than one {self._model.__name__} matches the query")
-        return objs[0] if objs else None
+        return OneRowQuery(self.filter(*conditions).limit(2), unique=True)
 
     async def count(self) -> int:
         params: list[Any] = []
@@ -1347,6 +1361,73 @@ class _Compiled:
                 raise ValueError(f"param({name!r}) can't be None; compare with None (IS NULL) in the query itself")
             params[i] = v if transform is None else transform(v)
         return params
+
+
+class OneRowQuery(Coroutine[Any, Any, T_co]):
+    """A lazy one-row read. Each await runs afresh; tasks drive one inner coroutine."""
+
+    def __init__(self, qs: QuerySet[Any], *, unique: bool = False) -> None:
+        self._qs = qs
+        self._unique = unique
+        self._coroutine: Coroutine[Any, Any, T_co] | None = None
+
+    def label(self, name: str) -> QuerySet[Any]:
+        """Load one related row per parent into ``name`` (or None when absent)."""
+        return self._qs.label(name)._clone(_one=True)
+
+    def _result(self, rows: list[Any]) -> T_co:
+        if self._unique and len(rows) > 1:
+            model = self._qs.model
+            raise model.MultipleObjectsReturned(f"more than one {model.__name__} matches the query")
+        return cast(T_co, rows[0] if rows else None)
+
+    async def _read(self) -> T_co:
+        return self._result(await self._qs._read())
+
+    def __await__(self) -> Generator[Any, None, T_co]:
+        return self._read().__await__()
+
+    def send(self, value: Any) -> Any:
+        if self._coroutine is None:
+            self._coroutine = self._read()
+        return self._coroutine.send(value)
+
+    def throw(self, typ: Any, val: Any = None, tb: Any = None) -> Any:
+        if self._coroutine is None:
+            self._coroutine = self._read()
+        if val is None and tb is None:
+            return self._coroutine.throw(typ)
+        return self._coroutine.throw(typ, val, tb)
+
+    def close(self) -> None:
+        if self._coroutine is not None:
+            self._coroutine.close()
+
+    def prepare(self) -> PreparedOneRowQuery[T_co]:
+        return PreparedOneRowQuery(self, self._qs.prepare())
+
+    def inspect(self) -> QueryInspection:
+        return self._qs.inspect()
+
+    def sql(self) -> str:
+        return self._qs.sql()
+
+
+class PreparedOneRowQuery(Generic[T_co]):
+    """A compiled one-row query whose calls bind parameters and return one row."""
+
+    def __init__(self, query: OneRowQuery[T_co], prepared: Prepared[Any]) -> None:
+        self._query = query
+        self._prepared = prepared
+
+    async def __call__(self, **values: Any) -> T_co:
+        return self._query._result(await self._prepared.all(**values))
+
+    def inspect(self, **values: Any) -> QueryInspection:
+        return self._prepared.inspect(**values)
+
+    def sql(self, **values: Any) -> str:
+        return self._prepared.sql(**values)
 
 
 class Prepared(Generic[M]):
@@ -1878,9 +1959,14 @@ if TYPE_CHECKING:
     class RequiredQuerySet(QuerySet[M]):
         """The type of a query whose row reads require a result."""
 
-        async def get(self, *conditions: ConditionLike) -> M: ...
-        async def first(self) -> M: ...
-        async def last(self) -> M: ...
+        def get(self, *conditions: ConditionLike) -> OneRowQuery[M]: ...
+        def first(self) -> OneRowQuery[M]: ...
+        def last(self) -> OneRowQuery[M]: ...
+        @overload
+        def __getitem__(self, s: int) -> OneRowQuery[M]: ...
+        @overload
+        def __getitem__(self, s: slice) -> Self: ...
+        def __getitem__(self, s: int | slice) -> OneRowQuery[M] | Self: ...
         def prepare(self) -> RequiredPrepared[M]: ...
 
         @overload

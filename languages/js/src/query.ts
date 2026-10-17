@@ -426,9 +426,6 @@ function prefetchTree(
     if (hops.length === 1 && p.toAttr !== undefined && (meta.fields.has(p.toAttr) || meta.relations.has(p.toAttr) || meta.fieldByIr.has(p.toAttr) || meta.relationByIr.has(p.toAttr) || p.toAttr in meta.Row.prototype)) {
       throw new QueryError(`label ${JSON.stringify(p.toAttr)} is a field, relation or member of ${meta.name}`);
     }
-    if (p.one && p.queryset && (p.queryset.state.limit !== undefined || p.queryset.state.offset !== undefined)) {
-      throw new QueryError("label(name, { one: true }) takes the first row by the query set's order; drop the slice");
-    }
     const attr = hops.length === 1 ? (p.toAttr ?? hop) : hop;
     let node = nodes.get(attr);
     if (!node) {
@@ -649,7 +646,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * query per relation level. A relation query set (`User.posts.objects`) filters, orders
    * and slices the related rows (a slice applies per parent), loads its own items with
    * `.load()`, and goes to the relation, or to the plain attribute `.label(name)`
-   * (`{ one: true }`: the first row or `null`). `.asPrefetch()` loads a to-one relation
+   * (`at(n).label(name)`: one row or `null`). `.asPrefetch()` loads a to-one relation
    * by `IN (...)` query instead of a join.
    *
    * Relation query sets run only inside `load()`; standalone reads and writes
@@ -693,20 +690,15 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return this.clone({ modelFields, related: d.related, relatedFields: d.relatedFields, prefetch: d.prefetch });
   }
 
-  /**
-   * Stores a relation query set's rows in the plain attribute `name` (an array, or with
-   * `{ one: true }` the first row or `null`) instead of the relation:
-   * `User.objects.load(User.posts.objects.orderBy(Post.id.desc()).label("latest", { one: true }))`.
-   */
-  label<const A extends string, const O extends boolean = false>(
+  /** Stores related rows in a plain array attribute; use `at(n).label(name)` for one row. */
+  label<const A extends string>(
     name: A,
-    options?: { readonly one?: O },
-  ): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V extends Via<infer H, string | undefined, boolean, infer S0> ? Via<H, A, O, S0> : never>> {
+  ): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V extends Via<infer H, string | undefined, infer O, infer S0> ? Via<H, A, O, S0> : never>> {
     this.bound("label");
     if (typeof name !== "string" || !/^[A-Za-z$][\w$]*$/.test(name)) {
       throw new TypeError(`label ${JSON.stringify(name)} must be an identifier not starting with '_'`);
     }
-    return this.clone({ label: name, one: options?.one ?? false }) as never;
+    return this.clone({ label: name }) as never;
   }
 
   /** Loads this relation with an `IN (...)` query instead of a join; the rows are the same. */
@@ -1263,30 +1255,44 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     };
   }
 
-  /** The first row by the current ordering (the primary key if none), or `null`. */
-  async first(...check: Runnable<P, X>): Promise<RequiredResult<this, R>> {
-    void check;
-    const objs = await this.clone({ order: this.defaultOrder() }).slice(0, 1).fetch();
-    this.checkRows(objs);
-    return (objs[0] ?? null) as RequiredResult<this, R>;
+  /** The first row by the current ordering (the primary key if none), or `null`.
+   * Lazy: no query runs until the result is awaited. */
+  first(): OneRowQuery<RequiredResult<this, R>, P, X, V> {
+    return new OneRowQuery(() => {
+      const qs = this.clone({ order: this.defaultOrder() });
+      return (qs.state.limit instanceof ParamRef ? qs.limit(1) : qs.slice(0, 1)) as never;
+    }, pickFirst);
   }
 
-  /** The last row by the current ordering (the primary key if none), or `null`. */
-  async last(...check: Runnable<P, X>): Promise<RequiredResult<this, R>> {
-    void check;
-    const objs = await this.clone({ order: this.defaultOrder().map((o) => o.reversed()) }).slice(0, 1).fetch();
-    this.checkRows(objs);
-    return (objs[0] ?? null) as RequiredResult<this, R>;
+  /** The last row by the current ordering (the primary key if none), or `null`.
+   * Throws on a query set with a limit or an offset: the last row of a slice is not
+   * the last row of the reversed order. */
+  last(): OneRowQuery<RequiredResult<this, R>, P, X, V> {
+    return new OneRowQuery(() => {
+      if (this.state.limit !== undefined || this.state.offset !== undefined) {
+        throw new QueryError("last() can't be used on a sliced query set");
+      }
+      return this.clone({ order: this.defaultOrder().map((o) => o.reversed()) }).slice(0, 1) as never;
+    }, pickFirst);
+  }
+
+  /**
+   * The row at position `n` of the current ordering (the primary key if none), or
+   * `null`: `at(1)` is `offset(1).first()`. `at(-1)` is `last()`; another negative
+   * index throws. On a sliced query set `n` counts from the start of the slice.
+   */
+  at(n: number): OneRowQuery<RequiredResult<this, R>, P, X, V> {
+    if (!Number.isInteger(n) || n < -1) throw new RangeError("at() takes a non-negative integer, or -1");
+    if (n === -1) return this.last();
+    return new OneRowQuery(() => this.clone({ order: this.defaultOrder() }).slice(n, n + 1) as never, pickFirst);
   }
 
   /** The single matching row or null; multiple matches always throw.
    * `require().get()` also throws `Model.DoesNotExist` when absent. */
-  async get<const C extends readonly Expression<boolean | null, Allowed<S>, {}>[]>(
-    ...conditions: C & ([X] extends [never] ? ([keyof P] extends [never] ? unknown : never) : never)
-  ): Promise<RequiredResult<this, R>> {
-    const objs = await (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2).fetch();
-    this.checkRows(objs);
-    return (objs.length ? one(this.meta, objs) : null) as RequiredResult<this, R>;
+  get<const C extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
+    ...conditions: C
+  ): OneRowQuery<RequiredResult<this, R>, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>> {
+    return new OneRowQuery(() => (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null));
   }
 
   /** The number of rows. */
@@ -1720,6 +1726,92 @@ abstract class Statement<T> implements Promise<T> {
 
   finally(onfinally?: (() => void) | null): Promise<T> {
     return this.start().finally(onfinally);
+  }
+}
+
+function pickFirst(rows: unknown[]): unknown {
+  return rows[0] ?? null;
+}
+
+/**
+ * `first()`, `last()`, `at(n)` and `get()`: one row of a query set, or `null`. It runs
+ * once, on the first `then` / `catch` / `finally`, so `qs.first()` starts no query by
+ * itself. A query that holds `param()` placeholders can't be awaited: use `prepare()`.
+ */
+export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends Statement<T> {
+  readonly #shape: () => QuerySet<ModelSpec, unknown, string, P, X>;
+  readonly #pick: (rows: unknown[]) => unknown;
+  #shaped: QuerySet<ModelSpec, unknown, string, P, X> | undefined;
+
+  /** @internal */
+  constructor(shape: () => unknown, pick: (rows: unknown[]) => unknown) {
+    super();
+    this.#shape = shape as () => QuerySet<ModelSpec, unknown, string, P, X>;
+    this.#pick = pick;
+  }
+
+  private shaped(): QuerySet<ModelSpec, unknown, string, P, X> {
+    return (this.#shaped ??= this.#shape());
+  }
+
+  /** Loads one related row per parent into `name`, or `null` when absent. */
+  label<const A extends string>(name: A): QuerySetOf<ModelSpec, NonNullable<T>, string, P, X, V extends Via<infer H, string | undefined, boolean, infer S0> ? Via<H, A, true, S0> : never> {
+    const qs = this.shaped().label(name);
+    return new QuerySet(qs.meta, { ...qs.state, one: true }) as never;
+  }
+
+  override then<A = T, B = never>(
+    this: OneRowQuery<T, P, X, V> & Awaitable<P, X>,
+    onfulfilled?: ((value: T) => A | PromiseLike<A>) | null,
+    onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+  ): Promise<A | B> {
+    return super.then(onfulfilled, onrejected);
+  }
+
+  /** @internal */
+  protected async execute(): Promise<T> {
+    const qs = this.shaped();
+    return this.#pick(qs.checkRows(await qs.fetch())) as T;
+  }
+
+  /** This query compiled once, to run with `param()` values: `run(values)` gives the row or `null`. */
+  prepare(...check: [X] extends [never] ? [] : [error: "a prepared query can't read outer() columns"]): PreparedOneRowQuery<T, P> {
+    void check;
+    return new PreparedOneRowQuery(new Prepared(this.shaped() as never), this.#pick);
+  }
+
+  /** The SELECT this query runs, parameters inlined (for debugging). */
+  sql(...check: Runnable<P, X>): string {
+    return this.shaped().sql(...check);
+  }
+
+  /** Inspect the planned templates without running the query. */
+  inspect(...check: Runnable<P, X>): QueryInspection {
+    return this.shaped().inspect(...check);
+  }
+}
+
+/** A one-row query compiled by `OneRowQuery.prepare()`. */
+export class PreparedOneRowQuery<T, P> {
+  /** @internal */
+  constructor(private readonly prepared: Prepared<ModelSpec, unknown, P>, private readonly pick: (rows: unknown[]) => unknown) {}
+
+  /** The names of the values each call takes. */
+  get params(): ReadonlySet<string> {
+    return this.prepared.params;
+  }
+
+  /** Runs the query with `values`: the row, or `null`. */
+  async run(...values: Values<P>): Promise<T> {
+    return this.pick(await this.prepared.all(...values)) as T;
+  }
+
+  inspect(...values: Values<P>): QueryInspection {
+    return this.prepared.inspect(...values);
+  }
+
+  sql(...values: Values<P>): string {
+    return this.prepared.sql(...values);
   }
 }
 

@@ -50,7 +50,8 @@ for (const dialect of ["sqlite", "postgres"]) {
     const m = loads(`datasource db {\n provider = "${dialect}"\n}\n${source}`, { registry }) as Dynamic;
     const url = dialect === "sqlite" ? "sqlite://:memory:" : DATABASE_URL;
     const db = await connect(url, { registry, default: false });
-    const original = QuerySet.prototype.first;
+    const proto = QuerySet.prototype as unknown as { first: unknown };
+    const original = QuerySet.prototype.first as unknown as (this: unknown, ...args: unknown[]) => PromiseLike<unknown>;
     let calls = 0;
     await db.dropTables();
     await db.createTables();
@@ -59,7 +60,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       await Owner.objects.using(db).insert({ id: 1, name: "one" });
       await Owner.objects.using(db).insert({ id: 2, name: "two" });
       const row = await Required.objects.using(db).insert({ id: 1, ownerId: 1 });
-      QuerySet.prototype.first = async function (...args) { calls++; return original.apply(this, args); };
+      proto.first = async function (this: unknown, ...args: unknown[]) { calls++; return original.apply(this, args); };
       assert.throws(() => row.owner, NotLoaded);
       const values = await Promise.all(Array.from({ length: 12 }, () => loadRelation(row, "owner")));
       assert.equal(calls, 1);
@@ -112,7 +113,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       const outsideGate = new Promise<void>((done) => { releaseOutside = done; });
       const outsideReady = new Promise<void>((done) => { outsideStarted = done; });
       let contextQueries = 0;
-      QuerySet.prototype.first = async function (...args) {
+      proto.first = async function (this: unknown, ...args: unknown[]) {
         contextQueries++;
         const value = await original.apply(this, args);
         if (contextQueries === 1) { outsideStarted(); await outsideGate; }
@@ -134,7 +135,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       let start!: () => void;
       const gate = new Promise<void>((done) => { release = done; });
       const started = new Promise<void>((done) => { start = done; });
-      QuerySet.prototype.first = async function (...args) {
+      proto.first = async function (this: unknown, ...args: unknown[]) {
         const value = await original.apply(this, args);
         start(); await gate;
         return value;
@@ -146,9 +147,9 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.equal(await inFlight, row);
       assert.throws(() => row.owner, NotLoaded);
       assert.equal((await loadRelation(row, "owner")).id, 2);
-      QuerySet.prototype.first = async function () { throw new Error("temporary"); };
+      proto.first = async function () { throw new Error("temporary"); };
       await assert.rejects(loadRelation(row, "owner", true), /temporary/);
-      QuerySet.prototype.first = original;
+      proto.first = original;
       assert.equal((await loadRelation(row, "owner", true)).id, 2);
       // Helper-only source keys remain sufficient for loading without becoming public.
       const hidden = await Required.objects.using(db).get();
@@ -167,7 +168,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.equal(person.role, reverse);
       assert.equal(reverse.pk, person.pk);
     } finally {
-      QuerySet.prototype.first = original;
+      proto.first = original;
       await db.dropTables();
       await db.close();
     }

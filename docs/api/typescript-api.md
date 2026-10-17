@@ -154,16 +154,21 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 |---|---|
 | `await qs` / `for await (const u of qs)` | `R[]`, cached per query set (below) |
 | `.all()` | `Promise<R[]>`, always a fresh query |
-| `.first()` / `.last()` | `Promise<R \| null>` |
-| `.get(...conditions)` | `Promise<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
-| `.require().get(...)` | `Promise<R>`; throws on zero or multiple matches |
-| `.require().first()` / `.require().last()` | `Promise<R>`; throws on zero matches |
+| `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws on a query set with a limit or an offset |
+| `.at(n)` | `OneRowQuery<R \| null>`: the row at position `n` of the order; `at(-1)` is `last()`, another negative `n` throws |
+| `.get(...conditions)` | `OneRowQuery<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
+| `.require().get(...)` | `OneRowQuery<R>`; throws on zero or multiple matches |
+| `.require().first()` / `.require().last()` / `.require().at(n)` | `OneRowQuery<R>`; throws on zero matches |
 | `.require().all()` | `Promise<R[]>`; throws if the result is empty |
 | `.count()` / `.exists()` | `Promise<number>` / `Promise<boolean>` |
 | `.inBulk(keys?, { field })` | `Promise<Map<key, R>>`; a model with a composite key needs `field` |
 | `.batches(size)` / `.iterate(size)` | async generators that walk the primary key (keyset pagination) |
 | `.paginate({ first, after })` / `.paginate({ last, before })` | one page by keyset: `{ items, hasNext, hasPrevious, nextCursor, previousCursor }` |
 | `.sql()` / `.toString()` | the SQL with values inlined, for reading |
+
+A `OneRowQuery` is lazy: `qs.first()` starts no query until `then`, `catch` or `finally` (an `await`) runs on it, and it runs once.
+Before this, `first()`, `last()` and `get()` started the query at the call; code that calls one and never awaits it no longer queries.
+It has `.prepare()` (the prepared query's `.run(values)` gives the row), `.inspect()` and `.sql()`.
 
 `.require()` clones the query and rejects absent row results with
 `Model.DoesNotExist`. Builders retain the modifier, which also applies when awaiting
@@ -211,7 +216,7 @@ The types check the following:
 
 * `load(Comment.body, Comment.post.title)`: partial comments (`Pick` of `body`, with `pk` and the methods) whose `post` is joined and has only `title`; see "Loading related objects".
 * `qs1.or(qs2)`: one query set with the filter `(filters of qs1) OR (filters of qs2)`. `qs2` sets nothing but filters, neither is sliced, and each side has at most one `filter()`/`exclude()` call. A relation set on the left gives a plain query set. A custom class takes its state from the left side.
-* `load(User.posts.objects.orderBy("-views").label("best", { one: true }))` stores the first related row, or `null`, in `user.best` (typed `Post | null`). It takes no slice; a slice throws `QueryError`.
+* `load(User.posts.objects.orderBy("-views").at(0).label("best"))` stores the first related row, or `null`, in `user.best` (typed `Post | null`). Positions are per parent; `at(-1)` reverses the order. A label and a to-many relation are required. An unlabeled one-row query in `load()` throws `TypeError`, as does awaiting a relation query outside `load()`.
 * `column(Bundle, "items.product.title")` is the column a dotted path of TypeScript names gives, for adapters that map request names to columns. An unknown name throws `TypeError`.
 
 ### Cursor pagination
@@ -259,7 +264,7 @@ objects without a prototype, get a message naming the expected target model.
   A column or path through the relation combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `QueryError`: put the columns in the set's own `.load()`, or label the set to request a separate result. A plain set or one that only adds `.load()` can share the path.
   A bare path or plain set gives the normal selection united with the columns named beside it. A column beside a set with its own columns is added to that set's columns.
   `load(User.posts.objects.filter(...).orderBy(...).limit(2))` gives the related rows their own query (filtered, nested with `.load()`, or sliced per parent); they fill `u.posts.cached`.
-  `.label("top")` puts them in a typed plain array attribute (`u.top: Post[]`) instead; `{ one: true }` stores the first row or `null`.
+  `.label("top")` puts them in a typed plain array attribute (`u.top: Post[]`) instead; `at(n).label("top")` stores one row or `null`.
   `Comment.post.objects.asPrefetch()` loads a to-one relation with an `IN` query instead of a join.
   A label that is a field, relation or member of the model throws `QueryError`; `label()` and `asPrefetch()` on a query set that is not a relation query set throw `TypeError`.
 

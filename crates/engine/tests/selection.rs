@@ -202,6 +202,35 @@ mod unset_when_absent {
         plan_prefetch_only(schema, Target::new(Dialect::Postgres), &q, &NoParams).unwrap().iter().map(|p| (p.filtered, p.unset_when_absent)).collect()
     }
 
+    #[test]
+    fn one_row_offset_uses_a_per_parent_window() {
+        use orm_engine::db;
+        let s = schema(false);
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            for desc in [false, true] {
+                let q = select(json!({"op":"select","model":"Owner","prefetch":[{
+                    "relation":"children","model":"Child","attr":"chosen","one":true,
+                    "limit":1,"offset":1,"order":[{"expr":{"t":"col","path":[],"name":"id"},"desc":desc}]
+                }]}));
+                let plans = plan_prefetch_only(&s, Target::new(dialect), &q, &NoParams).unwrap();
+                assert!(!plans[0].many);
+                let (sql, values) = db::build(dialect, &plans[0].statement(vec![vec![1.into()], vec![2.into()]]));
+                assert_eq!(&values[values.len() - 2..], &[sea_query::Value::BigUnsigned(Some(1)), sea_query::Value::BigUnsigned(Some(2))]);
+                assert!(sql.contains("ROW_NUMBER() OVER (PARTITION BY"), "{sql}");
+                assert!(sql.contains(if desc { " DESC" } else { " ASC" }), "{sql}");
+                assert!(sql.contains("\"p\".\"_rn\" >") && sql.contains("\"p\".\"_rn\" <="), "{sql}");
+            }
+        }
+        for item in [
+            json!({"relation":"children","model":"Child","one":true,"limit":1}),
+            json!({"relation":"profile","model":"Child","one":true,"attr":"chosen","limit":1}),
+            json!({"relation":"children","model":"Child","one":true,"attr":"chosen","limit":2}),
+        ] {
+            let q = select(json!({"op":"select","model":"Owner","prefetch":[item]}));
+            assert!(plan_prefetch_only(&s, Target::new(Dialect::Sqlite), &q, &NoParams).is_err());
+        }
+    }
+
     fn join(schema: &Schema, bypass: bool) -> Vec<bool> {
         let operation: Operation = serde_json::from_value(json!({"op":"select","model":"Child","select_related":[["owner"]],"without_defaults":bypass})).unwrap();
         let Plan::Select(plan) = Planner::plan(schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() else { panic!("select") };

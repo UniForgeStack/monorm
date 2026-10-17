@@ -366,13 +366,21 @@ test("a custom getOrInsert() override runs on a relation set", async (t) => {
   assert.equal(count, 1);
 });
 
-test("label one stores a row or null", async () => {
+test("indexed labels store one row per parent or null", async () => {
   await seed();
   await User.objects.insert({ email: "carol@example.com", name: "Carol" });
-  const users = await User.objects.orderBy("id").load(User.posts.objects.orderBy("-views").label("best", { one: true }));
+  const users = await User.objects.orderBy("id").load(
+    User.posts.objects.orderBy("-views").at(0).label("best"),
+    User.posts.objects.orderBy("-views").at(1).label("second"),
+    User.posts.objects.orderBy("-views").at(-1).label("lastPost"),
+  );
   assert.deepEqual(users.map((u) => u.best?.title ?? null), ["hit", "bob", null]);
-  assert.throws(() => User.objects.load(User.posts.objects.slice(0, 2).label("x", { one: true })), /slice/);
-  await assert.rejects(async () => { await Post.objects.load(Post.author.objects.label("writer", { one: true })); }, (e: Error) => /to-many/.test(e.message) && !/to_attr/.test(e.message));
+  assert.deepEqual(users.map((u) => u.second?.title ?? null), ["draft", null, null]);
+  assert.deepEqual(users.map((u) => u.lastPost?.title ?? null), ["quiet", "bob", null]);
+  // @ts-expect-error a one-row load requires a label
+  assert.throws(() => User.objects.load(User.posts.objects.at(0)), TypeError);
+  await assert.rejects(async () => { await User.posts.objects.at(0); }, TypeError);
+  await assert.rejects(async () => { await Post.objects.load(Post.author.objects.at(0).label("writer")); }, (e: Error) => /to-many/.test(e.message) && !/to_attr/.test(e.message));
 });
 
 test("column() from a dotted path", async () => {
