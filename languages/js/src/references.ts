@@ -113,9 +113,10 @@ export function invalidateReference(owner: Row, name: string): void {
 export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) => unknown, internal: symbol, related: symbol): (this: Row) => unknown {
   if (r.kind !== "belongsTo") return baseline;
   const from = fieldNames(meta, r.from);
-  const to = fieldNames(meta.registry.get(r.target), r.to);
   const nullable = r.from.some((ir) => meta.fieldByIr.get(ir)!.nullable);
   return function (this: Row): unknown {
+    // The target may be declared after this model (or be this model itself).
+    const to = fieldNames(meta.registry.get(r.target), r.to);
     const key = keyValue(this, from, internal);
     const loaded = this[related] as Record<string, unknown> | undefined;
     if (loaded && Object.hasOwn(loaded, r.name)) {
