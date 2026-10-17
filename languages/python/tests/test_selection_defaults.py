@@ -1,5 +1,6 @@
 """Partial output shapes and compiled defaults on both supported databases."""
 
+import asyncio
 import json
 import os
 
@@ -239,6 +240,8 @@ async def test_default_order(dialect):
             await t.insert(name=name, rank=rank)
         assert names(await t.all()) == ["c", "d", "a", "b"]
         assert (await t.first()).name == "c" and (await t.last()).name == "b"
+        assert (await t[1]).name == "d"
+        assert (await t[-1]).name == "b"
         assert names(await t.order_by(Topic.name.desc())) == ["d", "c", "b", "a"]
         assert names(await t.order_by(Topic.rank.asc(nulls="first"), Topic.id)) == ["b", "a", "c", "d"]
         assert (
@@ -269,6 +272,120 @@ async def test_default_order(dialect):
     finally:
         await db.drop_tables()
         await db.close()
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def one_row_topics(request):
+    dialect = request.param
+    registry = orm.Registry()
+    models = orm.loads(
+        ORDERED.replace('@@query.defaults(order: ["-body"])', "")
+        .replace('@@query.order("-rank nulls last", "id")', "")
+        .replace('"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'),
+        registry=registry,
+    )
+    Topic = models["Topic"]
+    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ["ORM_TEST_DATABASE_URL"]
+    db = await orm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    t = Topic.objects.using(db)
+    try:
+        await t.insert_many([{"name": name, "rank": rank} for name, rank in [("c", 3), ("b", 2), ("a", 1)]])
+        yield db, Topic, t
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+async def test_one_row_indices_and_default_order(one_row_topics):
+    _, Topic, t = one_row_topics
+    assert (await t[0]).name == "c"
+    assert (await t[1]).name == "b"
+    assert (await t[-1]).name == "a"
+    assert (await t.order_by(Topic.name)[0]).name == "a"
+    assert (await t.without_defaults()[0]).name == "c"
+    assert (await t[1:3][1]).name == "a"
+    assert (await t[1:2].first()).name == "b"
+
+
+async def test_one_row_missing_and_required(one_row_topics):
+    _, Topic, t = one_row_topics
+    assert await t[1:2][1] is None
+    assert await t[99] is None
+    assert await t.filter(Topic.name == "missing").first() is None
+    with pytest.raises(Topic.DoesNotExist):
+        await t.require()[99]
+    with pytest.raises(Topic.DoesNotExist):
+        await t.filter(Topic.name == "missing").require().last()
+
+
+async def test_one_row_laziness_and_fresh_awaits(one_row_topics, observe_queries):
+    db, Topic, t = one_row_topics
+    with observe_queries(db) as events:
+        first, last, get, indexed = t.first(), t.last(), t.get(Topic.name == "b"), t[1]
+        assert isinstance(first, orm.OneRowQuery)
+        assert events == []
+        assert first.sql() and first.inspect().statements
+        assert events == []
+        assert (await first).name == "c"
+        assert (await last).name == "a"
+        assert (await get).name == "b"
+        assert (await indexed).name == "b"
+        assert len(events) == 4
+        assert (await first).name == "c"
+        assert len(events) == 5
+    with pytest.raises(Topic.MultipleObjectsReturned):
+        await t.get()
+
+
+async def test_one_row_create_task(one_row_topics):
+    _, Topic, t = one_row_topics
+    query = t.first()
+    assert isinstance(query, orm.OneRowQuery)
+    assert (await asyncio.create_task(query)).name == "c"
+    assert (await query).name == "c"
+    assert (await asyncio.create_task(t.get(Topic.name == "b"))).name == "b"
+    cancelled_query = t.first()
+    task = asyncio.create_task(cancelled_query)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (await cancelled_query).name == "c"
+    with pytest.raises(Topic.DoesNotExist):
+        await asyncio.create_task(t.filter(Topic.name == "missing").require().first())
+
+
+async def test_one_row_index_errors(one_row_topics):
+    _, _, t = one_row_topics
+    for sliced in [t[:2], t[1:], t.limit(0), t.offset(1)]:
+        with pytest.raises(ValueError, match="limit or offset"):
+            sliced.last()
+        with pytest.raises(ValueError, match="limit or offset"):
+            sliced[-1]
+    with pytest.raises(ValueError):
+        t[-2]
+    with pytest.raises(orm.QueryError, match="param"):
+        t[orm.param("index")]
+    with pytest.raises(orm.QueryError, match="param"):
+        t.limit(orm.param("limit"))[0]
+
+
+async def test_one_row_prepared(one_row_topics, observe_queries):
+    db, Topic, t = one_row_topics
+    for make in [lambda q: q.first(), lambda q: q.last(), lambda q: q[0], lambda q: q.get()]:
+        query = make(t.filter(Topic.name == orm.param("name")))
+        prepared = query.prepare()
+        with observe_queries(db) as events:
+            assert prepared.sql(name="b") and prepared.inspect(name="b").statements
+            assert events == []
+            assert (await prepared(name="b")).name == "b"
+            assert await prepared(name="missing") is None
+            assert len(events) == 2
+    with pytest.raises(Topic.MultipleObjectsReturned):
+        await t.get().prepare()()
+    with pytest.raises(Topic.DoesNotExist):
+        await t.filter(Topic.name == "missing").require().first().prepare()()
 
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
