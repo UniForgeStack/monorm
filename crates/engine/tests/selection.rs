@@ -171,3 +171,74 @@ mod read_flags {
         assert!(!order(explicit)[0].desc);
     }
 }
+
+mod unset_when_absent {
+    use super::*;
+    use orm_engine::plan::plan_prefetch_only;
+
+    // `Child.owner` is a to-one that holds the key; `Owner.profile` is a has-one; `Owner.children` is a has-many.
+    fn schema(filter_owner: bool) -> Schema {
+        let id = json!({"name":"id","column":"id","type":"int","primary_key":true});
+        let mut raw = json!({"models":[
+            {"name":"Owner","table":"owner","fields":[id, {"name":"active","column":"active","type":"bool"}],
+             "relations":[
+                {"name":"profile","kind":"one","target":"Child","from":"id","to":"owner_id"},
+                {"name":"children","kind":"many","target":"Child","from":"id","to":"owner_id"}]},
+            {"name":"Child","table":"child","fields":[id, {"name":"owner_id","column":"owner_id","type":"int"}],
+             "relations":[{"name":"owner","kind":"one","target":"Owner","from":"owner_id","to":"id","foreign_key":true}]}]});
+        if filter_owner {
+            raw["behavior"] = json!({"schema_contract":1,"query_defaults":[{"model":"Owner","filter":{"t":"col","path":[],"name":"active"}}]});
+        }
+        Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
+    }
+
+    fn select(op: serde_json::Value) -> orm_core::ir::Select {
+        let Operation::Select(q) = serde_json::from_value(op).unwrap() else { panic!("select") };
+        q
+    }
+
+    fn prefetch(schema: &Schema, model: &str, prefetch: serde_json::Value, bypass: bool) -> Vec<(bool, bool)> {
+        let q = select(json!({"op":"select","model":model,"without_defaults":bypass,"prefetch":[prefetch]}));
+        plan_prefetch_only(schema, Target::new(Dialect::Postgres), &q, &NoParams).unwrap().iter().map(|p| (p.filtered, p.unset_when_absent)).collect()
+    }
+
+    fn join(schema: &Schema, bypass: bool) -> Vec<bool> {
+        let operation: Operation = serde_json::from_value(json!({"op":"select","model":"Child","select_related":[["owner"]],"without_defaults":bypass})).unwrap();
+        let Plan::Select(plan) = Planner::plan(schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() else { panic!("select") };
+        let Output::Instances { joins, .. } = plan.output else { panic!("instances") };
+        joins.iter().map(|j| j.unset_when_absent).collect()
+    }
+
+    #[test]
+    fn prefetch_flag_follows_direction_label_and_cardinality() {
+        let s = schema(false);
+        assert_eq!(prefetch(&s, "Child", json!({"relation":"owner","model":"Owner"}), false), [(false, true)], "belongs-to");
+        assert_eq!(prefetch(&s, "Child", json!({"relation":"owner","model":"Owner","attr":"label"}), false), [(false, false)], "label");
+        assert_eq!(prefetch(&s, "Owner", json!({"relation":"profile","model":"Child"}), false), [(false, false)], "has-one");
+        assert_eq!(prefetch(&s, "Owner", json!({"relation":"children","model":"Child"}), false), [(false, false)], "has-many");
+        assert_eq!(prefetch(&s, "Owner", json!({"relation":"children","model":"Child","attr":"first","one":true}), false), [(false, false)], "one=true");
+        assert_eq!(join(&s, false), [true]);
+    }
+
+    #[cfg(feature = "query-defaults")]
+    #[test]
+    fn filtered_targets_never_unset_unless_bypassed() {
+        let s = schema(true);
+        assert_eq!(prefetch(&s, "Child", json!({"relation":"owner","model":"Owner"}), false), [(true, false)], "filtered");
+        assert_eq!(prefetch(&s, "Child", json!({"relation":"owner","model":"Owner"}), true), [(false, true)], "bypassed");
+        assert_eq!(join(&s, false), [false]);
+        assert_eq!(join(&s, true), [true]);
+    }
+
+    #[cfg(feature = "query-defaults")]
+    #[test]
+    fn binding_json_wrappers_have_one_shape() {
+        let s = schema(true);
+        let flags = orm_engine::plan::read_flags_json(&s);
+        assert_eq!(flags["Owner"]["filtered"], json!(true));
+        assert_eq!(flags["Child"]["filtered"], json!(false));
+        assert!(flags["Owner"].get("fields").is_some() && flags["Owner"].get("related").is_some());
+        let order = orm_engine::plan::effective_order_json(&s, r#"{"model":"Child","order":[{"expr":{"t":"col","path":[],"name":"owner_id"},"desc":true}]}"#).unwrap();
+        assert_eq!(order, json!([{"field":"owner_id","desc":true,"nulls":null}]));
+    }
+}

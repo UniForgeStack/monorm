@@ -128,6 +128,14 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
             rel = owner._meta.relations[path._path[0]]
             for source in rel.via_fields if isinstance(rel, BelongsTo) else rel.from_fields:
                 keys[source] = _peek(owner, source)
+        names = {}
+        for item in relations:
+            path = item._via if isinstance(item, QuerySet) else item
+            assert path is not None
+            names[id(item)] = item._label if isinstance(item, QuerySet) and item._label and len(path._path) == 1 else path._path[0]
+        # A load that leaves a name unset must not keep the old cached value.
+        for name in names.values():
+            staged.__dict__.pop(name, None)
         await prefetch([staged], *relations)
         # Publish only the fetched roots/labels; staging protects the existing cache on failure.
         fresh_relations = object.__new__(model)
@@ -138,6 +146,9 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
             sources = rel.via_fields if isinstance(rel, BelongsTo) else rel.from_fields
             if any(_peek(owner, source) != keys[source] for source in sources):
                 continue
-            name = item._label if isinstance(item, QuerySet) and item._label and len(path._path) == 1 else path._path[0]
-            fresh_relations.__dict__[name] = staged.__dict__[name]
+            name = names[id(item)]
+            if name in staged.__dict__:
+                fresh_relations.__dict__[name] = staged.__dict__[name]
+            else:
+                owner.__dict__.pop(name, None)
         merge(owner, fresh_relations, reload)

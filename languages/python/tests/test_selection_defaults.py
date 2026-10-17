@@ -378,3 +378,136 @@ async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
     finally:
         await db.drop_tables()
         await db.close()
+
+
+UNSET = """
+datasource db {
+  provider = "sqlite"
+}
+model UAuthor {
+  id Int @id
+  name String
+  active Boolean @default(true)
+  books UBook[]
+  profile UProfile?
+  @@map("g2_authors")
+  //FILTER
+}
+model UBook {
+  id Int @id
+  author_id Int?
+  author UAuthor? @relation(fields: [author_id], references: [id])
+  @@map("g2_books")
+}
+model UProfile {
+  id Int @id
+  author_id Int @unique
+  author UAuthor @relation(fields: [author_id], references: [id])
+  @@map("g2_profiles")
+}
+"""
+FILTER = '@@query.filter("active == true")'
+
+
+async def open_unset(request, dialect, filtered):
+    source = UNSET.replace("//FILTER", FILTER if filtered else "").replace('"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"')
+    registry = orm.Registry()
+    models = orm.loads(source, registry=registry)
+    url = "sqlite://:memory:" if dialect == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    db = await orm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    if dialect == "sqlite":
+        await db.execute("PRAGMA foreign_keys = OFF")
+    else:
+        await db.execute("ALTER TABLE g2_books DROP CONSTRAINT IF EXISTS g2_books_author_id_fkey")
+    request.addfinalizer(lambda: None)
+    A, B, P = models["UAuthor"], models["UBook"], models["UProfile"]
+    await A.objects.using(db).without_defaults().insert_many([{"id": 1, "name": "ann", "active": True}, {"id": 2, "name": "bob", "active": False},
+                                                              {"id": 3, "name": "cy", "active": True}])
+    # Book 1 has an author, 2 a dangling key, 3 a NULL key, 4 a hidden author.
+    await B.objects.using(db).insert_many([{"id": 1, "author_id": 1}, {"id": 2, "author_id": 99}, {"id": 3, "author_id": None}, {"id": 4, "author_id": 2}])
+    return db, A, B, P
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def unset(request):
+    db, A, B, P = await open_unset(request, request.param, False)
+    try:
+        yield db, A, B, P
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.fixture
+def base_getter(monkeypatch):
+    """The base getter: no reference adapter, as in a build without reference loading."""
+    import orm.model
+    monkeypatch.setattr(orm.model, "_reference_adapter", None)
+
+
+def state(book):
+    try:
+        return book.author
+    except orm.NotLoaded:
+        return "unset"
+
+
+async def test_base_getter_prefetch_of_an_unfiltered_dangling_key_is_not_loaded(base_getter, unset):
+    db, A, B, P = unset
+    books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch()).all()
+    assert [state(b) for b in books[:3]] == [books[0].author, "unset", None]
+    assert books[0].author.name == "ann"
+
+
+async def test_base_getter_join_of_an_unfiltered_dangling_key_is_not_loaded(base_getter, unset):
+    db, A, B, P = unset
+    books = await B.objects.using(db).order_by(B.id).load(B.author).all()
+    assert [state(b) for b in books][1:3] == ["unset", None]
+
+
+async def test_base_getter_instance_load_of_an_unfiltered_dangling_key_is_not_loaded(base_getter, unset):
+    db, A, B, P = unset
+    book = await B.objects.using(db).get(B.id == 2)
+    book.__dict__["author"] = None  # a stale value the load must not keep
+    await book.load(B.author, reload=True)
+    assert state(book) == "unset"
+    await book.load(B.author.objects.as_prefetch(), reload=True)
+    assert state(book) == "unset"
+
+
+async def test_base_getter_keeps_none_for_has_one_and_label(base_getter, unset):
+    db, A, B, P = unset
+    ann = await A.objects.using(db).order_by(A.id).load(A.profile).first()
+    assert ann.profile is None
+    books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch().label("writer")).all()
+    assert books[1].__dict__["writer"] is None
+
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_base_getter_filtered_target_is_none_and_bypassed_prefetch_is_not_loaded(base_getter, request, dialect):
+    db, A, B, P = await open_unset(request, dialect, True)
+    try:
+        books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch()).all()
+        assert [state(b) for b in books[1:]] == [None, None, None]
+        books = await B.objects.using(db).without_defaults().order_by(B.id).load(B.author.objects.as_prefetch()).all()
+        assert [state(b) for b in books][1:] == ["unset", None, books[3].author]
+        assert books[3].author.name == "bob"
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+async def test_prefetch_of_a_nullable_dangling_key_is_not_loaded(unset):
+    db, A, B, P = unset
+    books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch()).all()
+    assert [state(b) for b in books[:3]] == [books[0].author, "unset", None]
+
+
+async def test_load_as_prefetch_of_a_nullable_dangling_key_is_not_loaded(unset):
+    db, A, B, P = unset
+    book = await B.objects.using(db).get(B.id == 2)
+    await book.load(B.author.objects.as_prefetch())
+    assert state(book) == "unset"
