@@ -152,6 +152,18 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
     }
 }
 impl<M: Model, P: Projection<M::Source>, R, L, D> ProjectedQuery<M, P, R, L, D> {
+    pub(crate) fn map_query(self, f: impl FnOnce(Query<M, R, L, D>) -> Query<M, R, L, D>) -> Self {
+        Self {
+            query: f(self.query),
+            projection: self.projection,
+        }
+    }
+    pub(crate) fn trees_mut(&mut self) -> &mut Vec<Tree> {
+        &mut self.query.filters
+    }
+    pub fn scope<T: Codec>(self, name: &str, value: T) -> Self {
+        self.map_query(|q| q.scope(name, value))
+    }
     pub fn filter(mut self, p: Predicate<M::Source>) -> Self {
         self.query = self.query.filter(p);
         self

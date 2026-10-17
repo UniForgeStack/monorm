@@ -2,6 +2,7 @@
 mod defaults;
 mod dynamic;
 mod named;
+mod placeholder;
 mod prepared;
 mod projection;
 mod query;
@@ -11,6 +12,7 @@ mod runtime;
 mod selection;
 mod unify;
 pub use named::*;
+pub use placeholder::{Cons, Has, Join, Nil, Pack, Param, Provides, Slot};
 pub use relation::*;
 pub use row::RowData;
 pub use runtime::*;
