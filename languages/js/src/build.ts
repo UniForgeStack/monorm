@@ -3,9 +3,10 @@
  * joined objects and prefetched relations attached) and `select()` rows.
  */
 
+import { clearAbsent, markAbsent } from "./reference-absence.js";
 import { key } from "./value-key.js";
 import type { Database } from "./db.js";
-import { related, type ModelMeta, type Registry } from "./model.js";
+import { fieldValue, related, type ModelMeta, type Registry } from "./model.js";
 import type {
   NativeColumns,
   NativeInstances,
@@ -68,7 +69,10 @@ export class Builder {
         if (parent) {
           const pmeta = j.parent < 0 ? meta : joins[j.parent]!.meta;
           // A key with no row and no filter to explain it stays unset so the getter raises NotLoaded.
-          if (child !== null || !j.unsetWhenAbsent) related(parent)[pmeta.relationByIr.get(j.attr)!.name] = child;
+          const rel = pmeta.relationByIr.get(j.attr)!;
+          clearAbsent(parent, rel.name);
+          if (child !== null || !j.unsetWhenAbsent) related(parent)[rel.name] = child;
+          else markAbsent(parent, rel.name, rel.from.map((ir) => fieldValue(parent, pmeta.fieldByIr.get(ir)!.name)));
         }
       }
       objs[r] = root;
@@ -151,6 +155,7 @@ export class Builder {
     const pw = parentRows.width;
     for (let i = 0; i < parents.length; i++) {
       const parent = parents[i]!;
+      if (rel) clearAbsent(parent, rel.name);
       const k = rowKey(parentRows.values, i * pw, f.keyPos);
       const found = k === null ? undefined : groups.get(k);
       let value: unknown;
@@ -168,7 +173,10 @@ export class Builder {
         }
         value = found ?? null;
         // A NULL key is none; a set key with no row and no filter stays unset.
-        if (found === undefined && k !== null && f.unsetWhenAbsent) continue;
+        if (found === undefined && k !== null && f.unsetWhenAbsent) {
+          if (rel) markAbsent(parent, rel.name, rel.from.map((ir) => fieldValue(parent, meta.fieldByIr.get(ir)!.name)));
+          continue;
+        }
       }
       if (rel) {
         related(parent)[rel.name] = value;

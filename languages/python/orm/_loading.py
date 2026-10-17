@@ -58,7 +58,14 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
     seen.add(pair)
     data = owner.__dict__
     for name, value in fresh.__dict__.items():
-        if name in ("_db", "_orm_internal", "_reference_keys", "_reference_pending", "_reference_tokens"):
+        if name in (
+            "_db",
+            "_orm_internal",
+            "_reference_keys",
+            "_reference_pending",
+            "_reference_tokens",
+            "_reference_absent",
+        ):
             continue
         old = data.get(name)
         if name in owner._meta.fields and not reload and name in data:
@@ -85,6 +92,11 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
                         else:
                             data.pop(rel_name, None)
             data[name] = value
+    for name in owner._meta.relations:
+        if name in fresh.__dict__:
+            data.get("_reference_absent", {}).pop(name, None)
+    if "_reference_absent" in fresh.__dict__:
+        data.setdefault("_reference_absent", {}).update(fresh.__dict__["_reference_absent"])
     if "_orm_internal" in fresh.__dict__:
         internal = data.setdefault("_orm_internal", {})
         for name, value in fresh.__dict__["_orm_internal"].items():
@@ -167,4 +179,8 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
                 fresh_relations.__dict__[name] = staged.__dict__[name]
             else:
                 owner.__dict__.pop(name, None)
+            markers = owner.__dict__.setdefault("_reference_absent", {})
+            markers.pop(name, None)
+            if name in staged.__dict__.get("_reference_absent", {}):
+                markers[name] = staged.__dict__["_reference_absent"][name]
         merge(owner, fresh_relations, reload)

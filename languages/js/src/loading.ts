@@ -1,4 +1,5 @@
 /** Additive instance loading through the queryset load vocabulary. */
+import { clearAbsent, copyAbsent, mergeAbsent } from "./reference-absence.js";
 import { Column, PATH, RelationPath } from "./expr.js";
 import { NotLoaded } from "./errors.js";
 import { DB, INTERNAL, RELATED, fieldValue, type ModelMeta, type Row } from "./model.js";
@@ -85,8 +86,12 @@ function merge(row: Row, fresh: Row, reload: boolean, invalidate?: (row: Row, na
     for (const [name, value] of Object.entries(fresh[INTERNAL] as object)) if (!Object.hasOwn(internal, name)) internal[name] = value;
   }
   if (meta.fieldList.every((f) => Object.hasOwn(row, f.name))) delete row[INTERNAL];
+  mergeAbsent(row, fresh);
   const cache = (row[RELATED] ??= {});
-  for (const [name, value] of Object.entries(fresh[RELATED] ?? {})) cache[name] = mergeValue(cache[name], value, reload, invalidate, seen);
+  for (const [name, value] of Object.entries(fresh[RELATED] ?? {})) {
+    clearAbsent(row, name);
+    cache[name] = mergeValue(cache[name], value, reload, invalidate, seen);
+  }
 }
 
 export async function loadInstance(
@@ -159,6 +164,7 @@ export async function loadInstance(
         const name = meta.relationByIr.get(hops[0]!)!.name;
         if (Object.hasOwn(staged[RELATED]!, name)) fresh[RELATED][name] = staged[RELATED]![name];
         else delete owner[RELATED]?.[name];
+        copyAbsent(owner, staged, name);
       }
     }
     merge(owner, fresh, reload, invalidate);

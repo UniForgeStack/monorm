@@ -496,10 +496,20 @@ model UProfile {
 FILTER = '@@query.filter("active == true")'
 
 
-async def open_unset(request, dialect, filtered, target_last=False):
+async def open_unset(request, dialect, filtered, target_last=False, composite=False):
     source = UNSET.replace("//FILTER", FILTER if filtered else "").replace(
         '"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'
     )
+    if composite:
+        source = source.replace("id Int @id\n  name", "id Int\n  region Int @default(1)\n  @@id([id, region])\n  name")
+        source = source.replace("author_id Int?", "author_region Int? @default(1)\n  author_id Int?")
+        source = source.replace(
+            "author_id Int @unique",
+            "author_region Int @default(1)\n  @@unique([author_id, author_region])\n  author_id Int @unique",
+        )
+        source = source.replace(
+            "fields: [author_id], references: [id]", "fields: [author_id, author_region], references: [id, region]"
+        )
     if target_last:
         start, end = source.index("model UAuthor"), source.index("model UBook")
         source = source[:start] + source[end:] + source[start:end]
@@ -518,6 +528,9 @@ async def open_unset(request, dialect, filtered, target_last=False):
     else:
         await db.execute("ALTER TABLE g2_books DROP CONSTRAINT IF EXISTS g2_books_author_id_fkey")
         await db.execute("ALTER TABLE g2_profiles DROP CONSTRAINT IF EXISTS g2_profiles_author_id_fkey")
+        if composite:
+            for table in ("g2_books", "g2_profiles"):
+                await db.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_author_id_author_region_fkey")
     A, B, P = models["UAuthor"], models["UBook"], models["UProfile"]
     await (
         A.objects.using(db)
@@ -646,3 +659,50 @@ async def test_plain_load_of_a_nullable_dangling_key_keeps_none(unset):
     row = await B.objects.using(db).get(B.id == 2)
     await row.load(B.author)
     assert row.author is None
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+@pytest.mark.parametrize("composite", [False, True])
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("method", ["join", "prefetch", "instance"])
+async def test_absent_reference_message_tracks_the_loaded_key(request, dialect, composite, filtered, method):
+    if filtered and not QUERY_DEFAULTS:
+        pytest.skip("needs a native build with the query-defaults feature")
+    db, A, B, P = await open_unset(request, dialect, filtered, composite=composite)
+    message = "the key is set and no row of the target has it"
+    try:
+        for Model in (B, P):
+            rows = Model.objects.using(db).without_defaults()
+            if method != "instance":
+                rows = rows.load(Model.author if method == "join" else Model.author.objects.as_prefetch())
+            row = await rows.get(Model.id == 2)
+            if method == "instance":
+                await row.load(Model.author.objects.without_defaults().as_prefetch(), reload=True)
+            with pytest.raises(orm.NotLoaded, match=message):
+                row.author
+            source = "author_region" if composite else "author_id"
+            row.__dict__[source] = 2 if composite else 98
+            with pytest.raises(orm.NotLoaded) as error:
+                row.author
+            assert message not in str(error.value)
+            row = await Model.objects.using(db).get(Model.id == 2)
+            with pytest.raises(orm.NotLoaded) as error:
+                row.author
+            assert message not in str(error.value)
+            await row.load(Model.author.objects.without_defaults().as_prefetch(), reload=True)
+            with pytest.raises(orm.NotLoaded, match=message):
+                row.author
+            await row.update(author_id=3)
+            with pytest.raises(orm.NotLoaded) as error:
+                row.author
+            assert message not in str(error.value)
+            await row.load(Model.author.objects.as_prefetch(), reload=True)
+            assert row.author.name == "cy"
+        row = await B.objects.using(db).without_defaults().load(B.author).get(B.id == 3)
+        assert row.author is None
+        if filtered:
+            row = await B.objects.using(db).load(B.author).get(B.id == 4)
+            assert row.author is None
+    finally:
+        await db.drop_tables()
+        await db.close()
