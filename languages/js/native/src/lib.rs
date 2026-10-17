@@ -321,7 +321,7 @@ fn update_many_plan(
     params_: Unknown<'_>,
     returning: bool,
     batch_size: Option<u32>,
-    without_defaults: bool,
+    without_defaults: &str,
 ) -> napi::Result<(Vec<sea_query::UpdateStatement>, exec::UpdateMany)> {
     let values = convert_rows(env, schema, model, fields, rows, false)?
         .into_iter()
@@ -330,7 +330,7 @@ fn update_many_plan(
     let (filters, scope) = orm_engine::params::scoped_filters(filters_json).map_err(engine_err)?;
     let p = params(env, params_)?;
     let p = orm_engine::params::Scoped { params: &p, scope: &scope };
-    exec::plan_update_many(schema, target, model, fields, values, &filters, &p, returning, batch_size.map(|n| n as usize), without_defaults)
+    exec::plan_update_many(schema, target, model, fields, values, &filters, &p, returning, batch_size.map(|n| n as usize), &serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?)
         .map_err(engine_err)
 }
 
@@ -362,7 +362,7 @@ fn inspect_insert(env: &Env, schema: &schema::Schema, target: Target, model: &st
 
 #[allow(clippy::too_many_arguments)]
 fn inspect_updates(env: &Env, schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: Unknown<'_>,
-    filters_json: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: bool) -> napi::Result<String> {
+    filters_json: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: &str) -> napi::Result<String> {
     let (stmts, _) = update_many_plan(env, schema, target, model, fields, rows, filters_json, params_, returning, batch_size, without_defaults)?;
     let batching = stmts.len() > 1;
     inspection_json(orm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
@@ -409,8 +409,8 @@ impl JsSchema {
     #[napi]
     #[allow(clippy::too_many_arguments)]
     pub fn inspect_update_many(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, filters_json: String,
-        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: bool) -> napi::Result<String> {
-        inspect_updates(env, &self.inner, Target::new(self.inner.dialect), &model, &fields, rows, &filters_json, params_, batch_size, returning, without_defaults)
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: String) -> napi::Result<String> {
+        inspect_updates(env, &self.inner, Target::new(self.inner.dialect), &model, &fields, rows, &filters_json, params_, batch_size, returning, &without_defaults)
     }
 
     /// Converts and plans a single-row insert without SQL or I/O (`prepareInsert`); the
@@ -481,7 +481,7 @@ impl JsSchema {
     ) -> napi::Result<Vec<String>> {
         let target = Target::new(self.inner.dialect).without(&disable).map_err(query_err)?;
         let (stmts, _) =
-            update_many_plan(env, &self.inner, target, &model, &fields, rows, &filters_json, params_, false, batch_size, false)?;
+            update_many_plan(env, &self.inner, target, &model, &fields, rows, &filters_json, params_, false, batch_size, "false")?;
         Ok(stmts.iter().map(|s| db::to_string(target.dialect, s)).collect())
     }
 
@@ -668,8 +668,8 @@ impl Engine {
     #[napi]
     #[allow(clippy::too_many_arguments)]
     pub fn inspect_update_many(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, filters_json: String,
-        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: bool) -> napi::Result<String> {
-        inspect_updates(env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, batch_size, returning, without_defaults)
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: String) -> napi::Result<String> {
+        inspect_updates(env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, batch_size, returning, &without_defaults)
     }
 
     /// Runs one query IR document (see `outcome_js` for what the promise gives).
@@ -834,14 +834,14 @@ impl Engine {
         returning: bool,
         batch_size: Option<u32>,
         tx: Option<&Transaction>,
-        without_defaults: Option<bool>,
+        without_defaults: Option<String>,
         allowed: Option<Vec<String>>,
         trace: Option<&Trace>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let (_, um) = update_many_plan(
             env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, returning, batch_size,
-            without_defaults.unwrap_or(false),
+            without_defaults.as_deref().unwrap_or("false"),
         )?;
         let conn = self.traced(tx, trace);
         let own_tx = tx.is_none();

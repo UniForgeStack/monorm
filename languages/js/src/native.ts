@@ -73,7 +73,7 @@ export interface NativeSessionLock {
 export interface NativeInspector {
   inspect(opJson: string, params: unknown[]): string;
   inspectInsert(model: string, fields: string[], rows: unknown[][], options: string, params: unknown[], batchSize: number | null, returning: boolean): string;
-  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: boolean): string;
+  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: string): string;
 }
 
 export interface NativeSchema extends NativeInspector {
@@ -150,7 +150,7 @@ export interface NativeEngine extends NativeInspector {
     returning: boolean,
     batchSize: number | null,
     tx: NativeTransaction | null,
-    withoutDefaults: boolean,
+    withoutDefaults: string,
     allowed?: readonly string[],
     trace?: NativeTrace | null,
   ): Promise<unknown>;

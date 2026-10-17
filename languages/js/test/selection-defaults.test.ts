@@ -73,6 +73,10 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.equal(await a.count(), 1); assert.equal(await a.exists(), true);
       assert.equal(await a.withoutDefaults().count(), 2);
       assert.equal(await a.withoutDefaults().filter(Author.name.eq("visible")).count(), 1);
+      assert.equal(await a.withoutDefaults("query").count(), 2);
+      assert.equal(await a.withoutDefaults("query").withoutDefaults("query").count(), 2);
+      assert.equal(await a.withoutDefaults("query").withoutDefaults().count(), 2);
+      await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"; available defaults: \["query"\]/);
       assert.equal((await a.load().get()).bio, "large");
       const explicit = await a.load(Author.note, Author.name).get();
       await explicit.refresh(); assert.deepEqual(explicit.toJSON(), { note: null, name: "visible" });
@@ -422,3 +426,11 @@ for (const dialect of ["sqlite", "postgres"] as const) for (const composite of [
     } finally { await db.dropTables(); await db.close(); }
   });
 }
+
+test("withoutDefaults names reach the engine", async () => {
+  const { db, a } = await open("sqlite", false);
+  try {
+    await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"/);
+    assert.equal(await a.withoutDefaults("nope").withoutDefaults().count(), 0);
+  } finally { await db.dropTables(); await db.close(); }
+});

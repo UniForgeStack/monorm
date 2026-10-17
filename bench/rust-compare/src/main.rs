@@ -93,7 +93,7 @@ async fn ours(db: &dyn Driver, schema: &Schema, c: &Case, json: bool) -> ResultV
             Operation::Update(q) => Operation::Update(orm_core::ir::Update {
                 scope: q.scope.clone(),
                 model_fields: q.model_fields.clone(),
-                without_defaults: q.without_defaults,
+                without_defaults: q.without_defaults.clone(),
                 model: q.model.clone(),
                 with: q.with.clone(),
                 filters: q.filters.clone(),

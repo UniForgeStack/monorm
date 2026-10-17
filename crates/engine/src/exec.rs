@@ -593,7 +593,7 @@ pub fn plan_update_many(
     params: &dyn Params,
     returning: bool,
     batch_size: Option<usize>,
-    without_defaults: bool,
+    without_defaults: &ir::Bypass,
 ) -> Result<(Vec<UpdateStatement>, UpdateMany)> {
     if rows.iter().any(|r| r.len() != fields.len()) {
         return Err(Error::query("update_many row length does not match fields"));

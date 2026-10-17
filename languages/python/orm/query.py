@@ -394,7 +394,7 @@ class QuerySet(Generic[M]):
     def __init__(self, model: type[M]) -> None:
         self._required = False
         self._model_helpers: tuple[str, ...] = ()
-        self._without_defaults = False
+        self._without_defaults: bool | tuple[str, ...] = False
         self._without_related = False
         self._model_fields: tuple[str, ...] | None = None
         # _model_fields adds to the model's default selection (a bare path beside columns)
@@ -468,9 +468,12 @@ class QuerySet(Generic[M]):
     def all(self) -> Self:
         return self._clone()
 
-    def without_defaults(self) -> Self:
-        """Bypass schema filter, selection and loading defaults; retain caller filters."""
-        return self._clone(_without_defaults=True)
+    def without_defaults(self, *names: str) -> Self:
+        """Bypass named defaults, or all defaults with no names; retain caller filters."""
+        if not names or self._without_defaults is True:
+            return self._clone(_without_defaults=True)
+        previous = self._without_defaults if isinstance(self._without_defaults, tuple) else ()
+        return self._clone(_without_defaults=tuple(dict.fromkeys((*previous, *names))))
 
     def without_related(self) -> Self:
         """Clear the default joins and the joins ``load()`` asked for; relations loaded by
@@ -842,7 +845,7 @@ class QuerySet(Generic[M]):
         ctx = self._context(params, outer, ctes)
         ir: dict[str, Any] = {"op": op, "model": self._root_name()}
         if self._without_defaults:
-            ir["without_defaults"] = True
+            ir["without_defaults"] = self._without_defaults
         if self._without_related:
             ir["without_related"] = True
         if self._model_fields is not None:
@@ -916,7 +919,7 @@ class QuerySet(Generic[M]):
         ctx = IRContext(self._model, params)
         ir: dict[str, Any] = {"op": op, "model": self._model._meta.name, "filters": [f._ir(ctx) for f in self._filters]}
         if self._without_defaults:
-            ir["without_defaults"] = True
+            ir["without_defaults"] = self._without_defaults
         if self._model_fields is not None:
             ir["model_fields"] = list(self._model_fields)
         if values is not None:
@@ -983,17 +986,22 @@ class QuerySet(Generic[M]):
 
         return await resolve(self._db)._run(ir, params, row_cls, self._db)
 
+    def _read_defaults(self) -> dict[str, Any]:
+        """The active default order and filtered flag; the engine needs only the model and the bypass."""
+        select = {
+            "model": self._model._meta.name,
+            "without_defaults": self._without_defaults,
+            "from": None if self._from is None else "cte",
+        }
+        result: dict[str, Any] = json.loads(self._native().effective_order(json.dumps(select)))
+        return result
+
     def _default_order(self) -> tuple[Ordering, ...]:
         """The order of this read: ``order_by()``, else the schema default order, else the pk."""
         if self._order:
             return self._order
         meta = self._model._meta
-        select = {
-            "model": meta.name,
-            "without_defaults": self._without_defaults,
-            "from": None if self._from is None else "cte",
-        }
-        keys = json.loads(self._native().effective_order(json.dumps(select)))
+        keys = self._read_defaults()["order"]
         if keys:
             return tuple(
                 Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k["desc"], k["nulls"]) for k in keys

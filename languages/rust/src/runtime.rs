@@ -299,7 +299,7 @@ async fn fetch_upgrade<M: Model, R, L, D>(
     let relations = std::mem::take(&mut q.prefetch);
     q.select_related.clear();
     q.related_fields.clear();
-    q.without_defaults = true;
+    q.without_defaults = true.into();
     q.without_related = true;
     for chunk in rows.chunks(budget / model.key.len()) {
         let mut params = p.clone();
@@ -331,7 +331,7 @@ async fn fetch_upgrade<M: Model, R, L, D>(
         let mut selected = crate::query::run_select(db, root, params.clone()).await?;
         let mut child = q.clone();
         child.prefetch = relations.clone();
-        child.without_defaults = false;
+        child.without_defaults = false.into();
         let mut plans = orm_engine::plan::plan_prefetch_only(
             &db.schema,
             orm_core::dialect::Target::new(db.driver.dialect()),

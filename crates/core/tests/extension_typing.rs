@@ -16,8 +16,8 @@ from orm.ext import ModelLike, ModelT
 
 
 class SecondQuerySet(QuerySet[ModelT]):
-    def without_defaults(self) -> Self:
-        return super().without_defaults()
+    def without_defaults(self, *names: str) -> Self:
+        return super().without_defaults(*names)
 
     def second(self) -> Self:
         return self.without_defaults()

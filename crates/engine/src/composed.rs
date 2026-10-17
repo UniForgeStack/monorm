@@ -84,7 +84,7 @@ fn owner_chain(schema: &Schema, owner: OwnerId) -> Vec<&PreparedOwnerLink> {
 
 /// An unfiltered select of the whole logical model. The identity reads skip the default
 /// filters: they read back rows by key, which a filter (or an unset `scope.<name>`) must not hide.
-fn model_select(model: &str, without_defaults: bool) -> Result<Select> {
+fn model_select(model: &str, without_defaults: orm_core::ir::Bypass) -> Result<Select> {
     serde_json::from_value(serde_json::json!({ "model": model, "without_defaults": without_defaults }))
         .map_err(|e| query_err(e.to_string()))
 }
@@ -171,7 +171,7 @@ pub fn prepare_insert(
         }
         prepared.push(steps);
     }
-    let read = plan::plan_select(schema, target, &model_select(model, true)?, &NoParams)?.stmt;
+    let read = plan::plan_select(schema, target, &model_select(model, true.into())?, &NoParams)?.stmt;
     Ok(Insert {
         rows: prepared,
         read,
@@ -310,12 +310,12 @@ fn mutation(
     params: &dyn crate::Params,
     returning: bool,
     delete: bool,
-    without_defaults: bool,
+    without_defaults: orm_core::ir::Bypass,
     prepared_match: Option<SelectStatement>,
 ) -> Result<Mutation> {
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let logical = schema.model(model_idx);
-    let read = plan::plan_select(schema, target, &model_select(model, true)?, &NoParams)?.stmt;
+    let read = plan::plan_select(schema, target, &model_select(model, true.into())?, &NoParams)?.stmt;
     let mut query = model_select(model, without_defaults)?;
     query.filters = filters;
     query.with = with;
@@ -379,7 +379,7 @@ pub fn prepare_delete(
         params,
         query.returning,
         true,
-        query.without_defaults,
+        query.without_defaults.clone(),
         None,
     )
 }
@@ -401,7 +401,7 @@ pub fn prepare_update(
         params,
         query.returning,
         false,
-        query.without_defaults,
+        query.without_defaults.clone(),
         Some(matched),
     )?;
     let logical = schema.model(plan.model);

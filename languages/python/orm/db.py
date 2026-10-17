@@ -322,13 +322,24 @@ class Database:
         returning: bool,
         batch_size: int | None,
         db: Database | None = None,
-        without_defaults: bool = False,
+        without_defaults: bool | tuple[str, ...] = False,
     ) -> Any:
         filters_json, params = _with_scope(json.dumps(filters), params, key="filters")
         tx, allowed = self._tx(), allowed_writes()
         return await self._call(
             lambda t: self._engine.update_many(
-                model, fields, rows, filters_json, params, returning, batch_size, tx, db, without_defaults, allowed, t
+                model,
+                fields,
+                rows,
+                filters_json,
+                params,
+                returning,
+                batch_size,
+                tx,
+                db,
+                json.dumps(without_defaults),
+                allowed,
+                t,
             ),
             ("update_many", model, fields, filters_json),
         )

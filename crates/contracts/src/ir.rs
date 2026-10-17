@@ -837,6 +837,35 @@ pub struct Order {
     pub nulls: Option<Nulls>,
 }
 
+/// Defaults to bypass: none (`false`), all (`true`), or the named entries.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Bypass {
+    All(bool),
+    Names(Vec<String>),
+}
+impl Default for Bypass {
+    fn default() -> Self { Self::All(false) }
+}
+impl From<bool> for Bypass {
+    fn from(all: bool) -> Self { Self::All(all) }
+}
+impl Bypass {
+    pub fn skips(&self, name: &str) -> bool {
+        match self { Self::All(all) => *all, Self::Names(names) => names.iter().any(|n| n == name) }
+    }
+    pub fn merge(&mut self, other: &Self) {
+        match (&mut *self, other) {
+            (_, Self::All(true)) => *self = Self::All(true),
+            (Self::All(true), _) | (_, Self::All(false)) => {},
+            (Self::All(false), Self::Names(names)) => *self = Self::Names(names.clone()),
+            (Self::Names(names), Self::Names(more)) => for name in more {
+                if !names.contains(name) { names.push(name.clone()); }
+            },
+        }
+    }
+}
+
 /// The public fields of the model a `select_related` path joins (columns named beside a `load()` path).
 #[derive(Deserialize, Debug, Clone)]
 pub struct RelatedFields {
@@ -864,7 +893,7 @@ pub struct Select {
     #[serde(default)]
     pub model_helpers: Vec<String>,
     #[serde(default)]
-    pub without_defaults: bool,
+    pub without_defaults: Bypass,
     #[serde(default)]
     pub without_related: bool,
     /// The root model, or a CTE of this statement when the query reads a CTE that has no
@@ -961,7 +990,7 @@ pub struct Update {
     #[serde(default)]
     pub scope: BTreeMap<String, usize>,
     #[serde(default)]
-    pub without_defaults: bool,
+    pub without_defaults: Bypass,
     pub model: String,
     #[serde(default)]
     pub with: Vec<Cte>,
@@ -981,7 +1010,7 @@ pub struct Delete {
     #[serde(default)]
     pub scope: BTreeMap<String, usize>,
     #[serde(default)]
-    pub without_defaults: bool,
+    pub without_defaults: Bypass,
     pub model: String,
     #[serde(default)]
     pub with: Vec<Cte>,

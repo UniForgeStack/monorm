@@ -98,7 +98,12 @@ Literal types are checked by the database when the query runs.
 cycles and recursive default loading reject during compilation/definition.
 Related paths use schema names separated by dots and must be to-one references.
 
-Python `without_defaults()` and TypeScript `withoutDefaults()` bypass default
+Python `without_defaults(*names)` and TypeScript `withoutDefaults(...names)` bypass the
+named defaults, or all of them with no name. Names add up across calls, and a call with no name
+bypasses all defaults. A name that the model does not define raises `QueryError`:
+`<Model>: unknown default "<name>"; available defaults: [...]`. A bypassed default drops its
+filter, selection, order and eager loading. In Rust the call is `without_defaults_named(names)`.
+Without names, the call bypasses default
 filters, selections and eager loading, including joined and `IN (...)` loads, while preserving caller filters and explicit
 loading/selection. `without_related()` / `withoutRelated()` clears the default joins and the joins
 `load()` asked for so far (relations loaded by `IN (...)` query stay); later `load()` calls add references.
@@ -130,8 +135,7 @@ await scope({ shop: shop.id }, async () => { const orders = await Order.objects.
 * The frontend sends the scope values as parameters of each statement; the value is bound with the type of the column it is compared with.
 * Closed by default: a read, count, exists, update, delete or `update_many` on a model whose default filter reads `scope.shop` raises `QueryError` when no enclosing `scope()` sets `shop`. Relation hops, prefetches and joined targets of that model check it too.
   The error names the model, default name and source that read the value, and suggests
-  `without_defaults("<name>")` (named bypass is added in the next refactor step).
-  Until named bypass is available, `without_defaults()` bypasses all defaults.
+  `without_defaults("<name>")`, which bypasses only that default.
 * A NULL scope value (`None`, `null`) raises `QueryError` ("scope.shop is None/null") when a default filter reads it, because `shop_id = NULL` would match no rows.
   In TypeScript, the binding rejects `undefined` before any filter reads it ("undefined is not a value").
   `0`, `""` and `false` are valid values.

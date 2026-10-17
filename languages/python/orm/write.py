@@ -683,7 +683,7 @@ class UpdateMany(Generic[M]):
                 params,
                 self._batch_size,
                 returning,
-                self._qs._without_defaults,
+                json.dumps(self._qs._without_defaults),
             )
         )
 

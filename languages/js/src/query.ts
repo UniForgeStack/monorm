@@ -499,7 +499,7 @@ export type PreserveRequired<Q, T> = T & Pick<Q, Extract<keyof Q, "~required">>;
 export interface QueryState {
   readonly required?: boolean;
   readonly modelHelpers?: readonly string[];
-  readonly withoutDefaults: boolean;
+  readonly withoutDefaults: boolean | readonly string[];
   readonly withoutRelated: boolean;
   readonly modelFields: readonly string[] | undefined;
   /** `modelFields` adds to the model's default selection (a bare path beside columns). */
@@ -614,7 +614,11 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   onlyFields(names: readonly string[]): this { return this.clone({ modelFields: names }); }
 
   /** Bypass schema filter, selection and loading defaults; keep caller filters. */
-  withoutDefaults(): this { return this.clone({ withoutDefaults: true }); }
+  withoutDefaults(...names: string[]): this {
+    if (!names.length || this.state.withoutDefaults === true) return this.clone({ withoutDefaults: true });
+    const previous = Array.isArray(this.state.withoutDefaults) ? this.state.withoutDefaults : [];
+    return this.clone({ withoutDefaults: [...new Set([...previous, ...names])] });
+  }
 
   /** Clears the default joins and the joins `load()` asked for; relations loaded by
    * `IN (...)` query stay. */
@@ -1001,7 +1005,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const s = this.state;
     const ctx = this.context(params, outer, ctes);
     const ir: IR = { op, model: this.rootName() };
-    if (s.withoutDefaults) ir["without_defaults"] = true;
+    if (s.withoutDefaults) ir["without_defaults"] = s.withoutDefaults;
     if (s.withoutRelated) ir["without_related"] = true;
     if (s.modelFields !== undefined) {
       ir["model_fields"] = s.modelFields;
@@ -1090,7 +1094,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     }
     const ctx = new IRContext(this.meta, params);
     const ir: IR = { op, model: this.meta.name, filters: s.filters.map((f) => f.ir(ctx)) };
-    if (s.withoutDefaults) ir["without_defaults"] = true;
+    if (s.withoutDefaults) ir["without_defaults"] = s.withoutDefaults;
     if (s.modelFields !== undefined) ir["model_fields"] = s.modelFields;
     if (values !== undefined) {
       ir["set"] = assignments(this.meta, values, ctx);
@@ -1206,11 +1210,16 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return rows;
   }
 
+  /** @internal The active default order and filtered flag; the engine needs only the model and the bypass. */
+  readDefaults(): { order: { field: string; desc: boolean; nulls: "first" | "last" | null }[]; filtered: boolean } {
+    const select = JSON.stringify({ model: this.meta.name, without_defaults: this.state.withoutDefaults, from: this.state.from ? "cte" : null });
+    return JSON.parse(call(() => this.meta.registry.native().effectiveOrder(select)));
+  }
+
   /** @internal The order of this read: `orderBy()`, else the schema default order, else the pk. */
   defaultOrder(): readonly Ordering<string, unknown>[] {
     if (this.state.order.length) return this.state.order;
-    const select = JSON.stringify({ model: this.meta.name, without_defaults: this.state.withoutDefaults, from: this.state.from ? "cte" : null });
-    const keys = JSON.parse(call(() => this.meta.registry.native().effectiveOrder(select))) as { field: string; desc: boolean; nulls: "first" | "last" | null }[];
+    const keys = this.readDefaults().order;
     if (keys.length) {
       return keys.map((k) => new Ordering(this.meta.column(this.meta.fieldByIr.get(k.field)!), k.desc, k.nulls ?? undefined));
     }
@@ -1484,7 +1493,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const { prepared, batchSize, returning, params, ir } = this.updateManyPlan(rows, options);
       if (ir === null) return emptyInspection();
       const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
-      return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, this.state.withoutDefaults)));
+      return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, JSON.stringify(this.state.withoutDefaults))));
     });
   }
 
@@ -1515,7 +1524,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const db = this.db();
     const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
     const res = await db_wait(db, (tx, allowed, trace) =>
-      db.engine.updateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, returning, batchSize ?? null, tx, this.state.withoutDefaults, allowed, trace),
+      db.engine.updateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, returning, batchSize ?? null, tx, JSON.stringify(this.state.withoutDefaults), allowed, trace),
       ["update_many", this.meta.name, prepared.fields, filters],
     );
     return returning ? (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][]) : (res as number);
