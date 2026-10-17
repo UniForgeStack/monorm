@@ -100,7 +100,11 @@ fn code(id: &str, attribute: &str, language: &str, query_set: &str, instance: &s
     }
 }
 
-fn host() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap() }
+// A feature-check artifact copies only some crates and builds under the repo's `target/`, so walk up to the fixtures.
+fn host() -> PathBuf {
+    let start = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
+    start.ancestors().find(|d| d.join("crates/extension-build/tests/fixtures").is_dir()).expect("repo root").to_path_buf()
+}
 
 fn fixture(dir: &str) -> Vec<(String, String)> {
     let root = host().join("crates/extension-build/tests/fixtures/language").join(dir);
