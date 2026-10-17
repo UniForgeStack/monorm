@@ -718,10 +718,20 @@ test("last() and at(-1) throw on a query set with a limit or an offset; first() 
   await seed();
   const byName = User.objects.orderBy(User.name);
   for (const sliced of [byName.limit(2), byName.offset(1), byName.slice(1, 3)]) {
-    await assert.rejects(async () => await sliced.last(), QueryError);
-    await assert.rejects(async () => await sliced.at(-1), QueryError);
+    assert.throws(() => sliced.last(), { name: "RangeError", message: /limit or offset/ });
+    assert.throws(() => sliced.at(-1), { name: "RangeError", message: /limit or offset/ });
   }
   assert.equal((await byName.slice(1, 3).first())!.name, "Bob");
+});
+
+test("param() limits cannot be replaced by one-row queries", async () => {
+  const limited = User.objects.limit(param("n"));
+  assert.throws(() => limited.first(), QueryError);
+  assert.throws(() => limited.at(0), QueryError);
+  assert.throws(() => limited.get(), QueryError);
+  assert.throws(() => limited.last(), RangeError);
+  await assert.rejects(() => limited.prepare().first({ n: 0 }), QueryError);
+  await assert.rejects(() => limited.prepare().get({ n: 0 }), QueryError);
 });
 
 test("a one-row query inspects, prints its SQL and prepares", async () => {

@@ -366,6 +366,21 @@ test("a custom getOrInsert() override runs on a relation set", async (t) => {
   assert.equal(count, 1);
 });
 
+test("get() cannot be labeled for loading", () => {
+  assert.throws(() => User.posts.objects.get().label("uniquePost"), { name: "TypeError", message: /get\(\) can't be loaded per parent; use \[0\]\.label\(name\)/ });
+});
+
+test("unlabeled one-row loads suggest label()", () => {
+  // @ts-expect-error a one-row load requires a label
+  assert.throws(() => User.objects.load(User.posts.objects.at(0)), { name: "TypeError", message: /needs \.label\(name\)/ });
+});
+
+test("one-row labels keep the custom query-set class", (t) => {
+  useQuerySet(Post, () => PostQueries);
+  t.after(() => useQuerySet(Post, QuerySet));
+  assert.ok(User.posts.objects.at(0).label("best") instanceof PostQueries);
+});
+
 test("indexed labels store one row per parent or null", async () => {
   await seed();
   await User.objects.insert({ email: "carol@example.com", name: "Carol" });
@@ -378,7 +393,7 @@ test("indexed labels store one row per parent or null", async () => {
   assert.deepEqual(users.map((u) => u.second?.title ?? null), ["draft", null, null]);
   assert.deepEqual(users.map((u) => u.lastPost?.title ?? null), ["quiet", "bob", null]);
   // @ts-expect-error a one-row load requires a label
-  assert.throws(() => User.objects.load(User.posts.objects.at(0)), TypeError);
+  assert.throws(() => User.objects.load(User.posts.objects.at(0)), { name: "TypeError", message: /needs \.label\(name\)/ });
   await assert.rejects(async () => { await User.posts.objects.at(0); }, TypeError);
   await assert.rejects(async () => { await Post.objects.load(Post.author.objects.at(0).label("writer")); }, (e: Error) => /to-many/.test(e.message) && !/to_attr/.test(e.message));
 });

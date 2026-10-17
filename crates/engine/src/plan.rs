@@ -3057,10 +3057,10 @@ fn plan_prefetch(
     let many = rel.kind == RelKind::Many && !node.one;
     let mut q = node.query.clone();
     if node.one {
-        if q.limit.map(|n| count(params, n)).transpose()?.is_some_and(|n| n != 1) {
-            return Err(Error::query("one-row loading needs limit 1"));
+        if q.limit.map(|n| count(params, n)).transpose()?.is_some_and(|n| n > 1) {
+            return Err(Error::query("one-row loading needs limit 0 or 1"));
         }
-        q.limit = Some(Count::Value(1));
+        q.limit = q.limit.or(Some(Count::Value(1)));
     }
     q.without_defaults |= without_defaults;
     let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone() }, desc: false, nulls: None }).collect();

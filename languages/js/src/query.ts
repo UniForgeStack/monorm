@@ -670,6 +670,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       if (item instanceof QuerySet) {
         if (!item.state.via) throw new TypeError(`load() takes a relation query set such as ${this.meta.name}.<relation>.objects, not ${item.meta.name}.objects`);
         this.checkPath(item.state.via);
+      } else if (item instanceof OneRowQuery) {
+        throw new TypeError("a one-row query in load() needs .label(name)");
       } else if (item instanceof Column && item.root === this.meta) {
         if (!item.path.length) own.push(item.field.ir);
       } else if (item instanceof RelationPath && !(item instanceof Column)) {
@@ -1258,22 +1260,22 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** The first row by the current ordering (the primary key if none), or `null`.
    * Lazy: no query runs until the result is awaited. */
   first(): OneRowQuery<RequiredResult<this, R>, P, X, V> {
-    return new OneRowQuery(() => {
-      const qs = this.clone({ order: this.defaultOrder() });
-      return (qs.state.limit instanceof ParamRef ? qs.limit(1) : qs.slice(0, 1)) as never;
-    }, pickFirst);
+    return this.at(0);
+  }
+
+  /** @internal */
+  protected firstRows(n = 0): this {
+    return this.clone({ order: this.defaultOrder() }).slice(n, n + 1) as never;
   }
 
   /** The last row by the current ordering (the primary key if none), or `null`.
    * Throws on a query set with a limit or an offset: the last row of a slice is not
    * the last row of the reversed order. */
   last(): OneRowQuery<RequiredResult<this, R>, P, X, V> {
-    return new OneRowQuery(() => {
-      if (this.state.limit !== undefined || this.state.offset !== undefined) {
-        throw new QueryError("last() can't be used on a sliced query set");
-      }
-      return this.clone({ order: this.defaultOrder().map((o) => o.reversed()) }).slice(0, 1) as never;
-    }, pickFirst);
+    if (this.state.limit !== undefined || this.state.offset !== undefined) {
+      throw new RangeError("last() can't be used on a query set with a limit or offset");
+    }
+    return new OneRowQuery(() => this.clone({ order: this.defaultOrder().map((o) => o.reversed()) }).slice(0, 1) as never, pickFirst);
   }
 
   /**
@@ -1284,7 +1286,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   at(n: number): OneRowQuery<RequiredResult<this, R>, P, X, V> {
     if (!Number.isInteger(n) || n < -1) throw new RangeError("at() takes a non-negative integer, or -1");
     if (n === -1) return this.last();
-    return new OneRowQuery(() => this.clone({ order: this.defaultOrder() }).slice(n, n + 1) as never, pickFirst);
+    const qs = this.firstRows(n);
+    return new OneRowQuery(() => qs, pickFirst);
   }
 
   /** The single matching row or null; multiple matches always throw.
@@ -1292,7 +1295,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   get<const C extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: C
   ): OneRowQuery<RequiredResult<this, R>, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>> {
-    return new OneRowQuery(() => (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null));
+    if (this.state.limit instanceof ParamRef) throw new QueryError("a one-row query can't have a param() limit");
+    return new OneRowQuery(() => (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null), true);
   }
 
   /** The number of rows. */
@@ -1744,7 +1748,7 @@ export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends 
   #shaped: QuerySet<ModelSpec, unknown, string, P, X> | undefined;
 
   /** @internal */
-  constructor(shape: () => unknown, pick: (rows: unknown[]) => unknown) {
+  constructor(shape: () => unknown, pick: (rows: unknown[]) => unknown, private readonly unique = false) {
     super();
     this.#shape = shape as () => QuerySet<ModelSpec, unknown, string, P, X>;
     this.#pick = pick;
@@ -1756,8 +1760,9 @@ export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends 
 
   /** Loads one related row per parent into `name`, or `null` when absent. */
   label<const A extends string>(name: A): QuerySetOf<ModelSpec, NonNullable<T>, string, P, X, V extends Via<infer H, string | undefined, boolean, infer S0> ? Via<H, A, true, S0> : never> {
+    if (this.unique) throw new TypeError("get() can't be loaded per parent; use [0].label(name)");
     const qs = this.shaped().label(name);
-    return new QuerySet(qs.meta, { ...qs.state, one: true }) as never;
+    return qs["clone"]({ one: true }) as never;
   }
 
   override then<A = T, B = never>(
@@ -2036,13 +2041,13 @@ export class Prepared<M extends ModelSpec, R, P> {
   private statement(kind: string): Compiled {
     let c = this.compiled.get(kind);
     if (!c) {
-      let qs = this.qs as QuerySet<M, R> & { clone: QuerySet<M, R>["clone"] };
+      let qs = this.qs;
       let op = "select";
       if (kind === "get") {
+        if (qs.state.limit instanceof ParamRef) throw new QueryError("a one-row query can't have a param() limit");
         qs = qs.limit(2) as never;
       } else if (kind === "first") {
-        qs = (qs as never as { clone(c: Partial<QueryState>): typeof qs }).clone({ order: qs.defaultOrder() });
-        qs = (qs.state.limit instanceof ParamRef ? qs.limit(1) : qs.slice(0, 1)) as never;
+        qs = qs["firstRows"]();
       } else if (kind === "count" || kind === "exists") {
         op = kind;
       }
