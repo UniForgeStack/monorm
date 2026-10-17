@@ -98,6 +98,9 @@ fn build() -> Result<(), String> {
         return Err("output must be outside the host source directories".into());
     }
     for module in &config.modules {
+        if let Some((language, _)) = module.manifest.language_sections().next() {
+            return Err(format!("local module {} ({}): {language} language sections are not supported in config.modules; package the extension as a crate and select it through config.dependencies", module.alias, module.manifest.id));
+        }
         orm_extension_build::rust_path(&module.alias)?;
         if module.alias.contains("::") || config.dependencies.contains_key(&module.alias) { return Err(format!("invalid or duplicate module alias {}", module.alias)); }
         let source = base.join(&module.source).canonicalize().map_err(|e| e.to_string())?;
