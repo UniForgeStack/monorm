@@ -668,3 +668,71 @@ test("relation comparison rejects null-prototype objects clearly", () => {
     assert.throws(compare, { name: "TypeError", message: "Post.author compares with a User instance" });
   }
 });
+
+test("at(n) is the row at a position of the order; at(-1) is last()", async () => {
+  await seed();
+  const byName = User.objects.orderBy(User.name);
+  assert.equal((await byName.at(0))!.name, "Alice");
+  assert.equal((await byName.at(1))!.name, "Bob");
+  assert.equal((await byName.at(-1))!.name, "Carol");
+  assert.equal((await byName.orderBy(User.name.desc()).at(1))!.name, "Bob");
+  assert.equal(await byName.at(99), null);
+  // no orderBy(): the default order, as first()
+  assert.equal((await User.objects.at(0))!.name, "Alice");
+  assert.equal((await User.objects.at(2))!.name, "Carol");
+  // on a slice, n counts from the start of the slice
+  assert.equal((await byName.slice(1).at(0))!.name, "Bob");
+  assert.equal(await byName.slice(1, 2).at(1), null);
+  await assert.rejects(async () => byName.at(-2), RangeError);
+  await assert.rejects(async () => byName.at(1.5), RangeError);
+});
+
+test("first(), last(), at() and get() start no query until awaited", async () => {
+  await seed();
+  const db = getDatabase();
+  const events: unknown[] = [];
+  const stop = db.onQuery((e) => events.push(e));
+  try {
+    const firstQuery = User.objects.first();
+    const queries = [firstQuery, User.objects.last(), User.objects.at(1), User.objects.get(User.name.eq("Bob"))] as const;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(events.length, 0);
+    const [first, last, second, bob] = await Promise.all(queries);
+    assert.equal(events.length, 4);
+    assert.deepEqual([first!.name, last!.name, second!.name, bob!.name], ["Alice", "Carol", "Bob", "Bob"]);
+    // one run per query, however often it is awaited
+    await firstQuery;
+    await firstQuery.then((u) => u);
+    assert.equal(events.length, 4);
+    // `then` is what starts it
+    const lazy = User.objects.first();
+    assert.equal(events.length, 4);
+    await lazy.catch(() => undefined);
+    assert.equal(events.length, 5);
+  } finally {
+    stop();
+  }
+});
+
+test("last() and at(-1) throw on a query set with a limit or an offset; first() keeps working", async () => {
+  await seed();
+  const byName = User.objects.orderBy(User.name);
+  for (const sliced of [byName.limit(2), byName.offset(1), byName.slice(1, 3)]) {
+    await assert.rejects(async () => await sliced.last(), QueryError);
+    await assert.rejects(async () => await sliced.at(-1), QueryError);
+  }
+  assert.equal((await byName.slice(1, 3).first())!.name, "Bob");
+});
+
+test("a one-row query inspects, prints its SQL and prepares", async () => {
+  await seed();
+  const one = User.objects.orderBy(User.name).at(1);
+  assert.match(one.sql(), /OFFSET 1/i);
+  assert.match(one.sql(), /LIMIT 1/i);
+  assert.equal(one.inspect().statements.length, 1);
+  const byId = User.objects.filter(User.id.eq(param("id"))).first().prepare();
+  assert.equal((await byId.run({ id: (await User.objects.at(1))!.id }))!.name, "Bob");
+  assert.equal(await byId.run({ id: 0n }), null);
+  const only = User.objects.filter(User.name.eq(param("name"))).get().prepare();
+  assert.equal((await only.run({ name: "Carol" }))!.name, "Carol");
+});
