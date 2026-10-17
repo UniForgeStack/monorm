@@ -150,6 +150,6 @@ model Employee {
  @@map("composition06_node_role_employees")
 }
 `;
-    assert.throws(() => loads(roleSource, { registry: new Registry() }), /not supported on a composed model/);
+    assert.throws(() => loads(roleSource, { registry: new Registry() }), /not supported in a composed model's ownership chain/);
   });
 }
