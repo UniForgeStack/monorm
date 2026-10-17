@@ -1,7 +1,7 @@
 id = "file-storage"
 version = "0.1.0"
 host_contract = 1
-schema_contract = 1
+schema_contract = 2
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "file-storage"]

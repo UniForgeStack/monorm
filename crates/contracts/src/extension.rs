@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::ir::{ColType, SchemaIr, ValueType};
 
 pub const HOST_CONTRACT: u32 = 1;
-pub const SCHEMA_CONTRACT: u32 = 1;
+pub const SCHEMA_CONTRACT: u32 = 2;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -45,7 +45,7 @@ pub struct Requirements {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generic_reverse: Vec<crate::generic::GenericReverse>,
     #[serde(default)]
-    pub query_defaults: Vec<QueryDefaults>,
+    pub read_defaults: Vec<ReadDefault>,
     #[serde(default)]
     pub schema_contract: u32,
     #[serde(default)]
@@ -81,7 +81,7 @@ pub struct Requirements {
 }
 impl Requirements {
     pub fn is_empty(&self) -> bool {
-        self.query_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.specializations.is_empty()
+        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
             && self.updated_at.is_empty() && self.soft_delete.is_empty() && self.versions.is_empty() && self.schema_contract == 0
     }
@@ -731,7 +731,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.proxy_models.extend(n.proxy_models);
     c.generic_relations.extend(n.generic_relations);
     c.generic_reverse.extend(n.generic_reverse);
-    c.query_defaults.extend(n.query_defaults);
+    c.read_defaults.extend(n.read_defaults);
     c.specializations.extend(n.specializations);
     c.result_fields.extend(n.result_fields);
     c.methods.extend(n.methods);
@@ -773,17 +773,18 @@ pub fn specialization_storage(model: &crate::ir::ModelIr, requirements: &Require
     Ok(vec![physical])
 }
 
-/// Resolved schema policies. `filter` is query expression JSON, never SQL text.
+/// A named read default contributed by any extension. Expressions are query IR, never SQL.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct QueryDefaults {
+pub struct ReadDefault {
+    pub source: String,
+    pub name: String,
     pub model: String,
-    #[serde(default)] pub parent: Option<String>,
     #[serde(default)] pub filter: Option<serde_json::Value>,
+    #[serde(default)] pub order: Option<Vec<OrderKey>>,
+    #[serde(default)] pub annotate: BTreeMap<String, serde_json::Value>,
+    #[serde(default)] pub load: Vec<Vec<String>>,
     #[serde(default)] pub fields: Option<Vec<String>>,
-    #[serde(default)] pub related: Vec<Vec<String>>,
-    /// The order of reads that give no `order_by()`; empty is none.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub order: Vec<OrderKey>,
 }
 
 /// One column of a default order.

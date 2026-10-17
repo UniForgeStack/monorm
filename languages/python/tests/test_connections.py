@@ -508,9 +508,11 @@ def scoped_schema(dialect):
             },
         ],
         "behavior": {
-            "schema_contract": 1,
-            "query_defaults": [
+            "schema_contract": 2,
+            "read_defaults": [
                 {
+                    "source": "orm.query-defaults",
+                    "name": "query",
                     "model": "Order",
                     "filter": {
                         "t": "cmp",

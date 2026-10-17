@@ -10,6 +10,9 @@ const { NativeUser: GeneratedUser, LoweredUser:GeneratedLowered } = await import
 assert.equal(GeneratedUser.validateUsername("valid"), undefined);
 const snapshot = JSON.parse(registry.native().snapshot());
 assert.deepEqual(snapshot.tables.find(t => t.name === "native_users").columns.map(c => c.name), ["id", "username"]);
+const staleDefaults = structuredClone(schema);
+staleDefaults.behavior.read_defaults = [{ source: "another-extension", name: "selection", model: "NativeUser", fields: ["username"] }];
+assert.throws(() => orm.define(staleDefaults, { registry: new orm.Registry() }), /read-default specialization.*rebuild/);
 const db = await orm.connect(process.env.ORM_EXTENSION_TEST_URL ?? "sqlite://:memory:", { registry });
 await db.createTables();
 await db.execute('DELETE FROM "native_users"');
@@ -31,7 +34,7 @@ try {
   const handwritten = structuredClone(physical);
   handwritten.fields[1].name = "public_name";
   handwritten.fields.pop();
-  const {LoweredUser:Direct} = orm.define({dialect:schema.dialect,models:[handwritten],behavior:{schema_contract:1,storage:{models:[physical]}}},{registry:directRegistry});
+  const {LoweredUser:Direct} = orm.define({dialect:schema.dialect,models:[handwritten],behavior:{schema_contract:2,storage:{models:[physical]}}},{registry:directRegistry});
   assert.equal(Lowered.objects.sql(),Direct.objects.sql());
   assert.deepEqual(JSON.parse(registry.native().snapshot()).tables.find(t=>t.name === "lowered_users"),JSON.parse(directRegistry.native().snapshot()).tables[0]);
   const direct = await Direct.objects.using(db).filter(Direct.id.eq(7)).get();

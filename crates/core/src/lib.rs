@@ -36,5 +36,4 @@ pub mod generic;
 
 #[cfg(feature = "proxy-models")]
 pub use orm_proxy_runtime as proxy;
-#[cfg(feature = "query-defaults")]
 pub mod selection;

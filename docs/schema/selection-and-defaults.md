@@ -76,9 +76,10 @@ model User {
 A second copy of the same attribute is an error too.
 
 Build-select the compiler as a dependency with alias `query_defaults`; its
-manifest selects the `query-defaults` host capability. Disabled artifacts reject
-policy metadata during definition with a rebuild instruction. Ordinary explicit
-partial selections remain available in baseline builds.
+manifest selects the `query-defaults` host capability. Without that compiler,
+`@@query.*` declarations fail at definition. The neutral `read_defaults` prepared
+contract is accepted in every build; other extensions can contribute to it.
+Ordinary explicit partial selections remain available in baseline builds.
 
 Options omitted on a child inherit the nearest parent's policy. An explicit filter
 replaces the inherited filter. `parent.default_filter and active == true` composes

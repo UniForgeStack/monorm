@@ -8,7 +8,7 @@ fn schema(defaults: bool) -> serde_json::Value {
         {"name":"id","column":"id","type":"int","primary_key":true},
         {"name":"active","column":"active","type":"bool"}
     ]}]});
-    if defaults { schema["behavior"] = json!({"schema_contract":1,"query_defaults":[{"model":"Selected","filter":{"t":"col","path":[],"name":"active"},"fields":["value"]}]}); }
+    if defaults { schema["behavior"] = json!({"schema_contract":2,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"Selected","filter":{"t":"col","path":[],"name":"active"},"fields":["value"]}]}); }
     schema
 }
 
@@ -34,18 +34,18 @@ fn duplicate_or_unknown_selection_rejected() {
     }
 }
 
-#[cfg(not(feature = "query-defaults"))]
 #[test]
-fn disabled_artifact_rejects_policies_at_definition() {
-    let error = Schema::from_ir(serde_json::from_value(schema(true)).unwrap()).err().unwrap();
-    assert!(error.contains("query-defaults") && error.contains("rebuild"));
+fn neutral_defaults_are_prepared_without_a_producer_feature() {
+    let schema = Schema::from_ir(serde_json::from_value(schema(true)).unwrap()).unwrap();
+    assert!(schema.models[0].read_flags.filtered);
+    assert_eq!(schema.models[0].read_flags.fields.as_deref().unwrap(), ["value"]);
 }
 
 #[cfg(feature = "query-defaults")]
 #[test]
 fn enabled_policy_shape_is_prepared() {
     let schema = Schema::from_ir(serde_json::from_value(schema(true)).unwrap()).unwrap();
-    assert!(schema.models[0].query_defaults.filter.is_some());
+    assert!(schema.models[0].read_defaults.filter.is_some());
     let operation = serde_json::from_value(json!({"op":"select","model":"Selected"})).unwrap();
     let Plan::Select(plan) = Planner::plan(&schema, Target::new(Dialect::Sqlite), &operation, &NoParams).unwrap() else { panic!("select") };
     assert!(matches!(plan.output, Output::Instances { shape: Some(_), .. }));
@@ -55,11 +55,11 @@ fn enabled_policy_shape_is_prepared() {
 #[test]
 fn policies_reject_bad_fields_and_recursive_loading() {
     let mut invalid = schema(true);
-    invalid["behavior"]["query_defaults"][0]["fields"] = json!(["missing"]);
+    invalid["behavior"]["read_defaults"][0]["fields"] = json!(["missing"]);
     assert!(Schema::from_ir(serde_json::from_value(invalid).unwrap()).is_err());
     let mut recursive = schema(true);
     recursive["models"][0]["relations"] = json!([{"name":"self_ref","kind":"one","target":"Selected","from":"id","to":"id"}]);
-    recursive["behavior"]["query_defaults"][0]["related"] = json!([["self_ref"]]);
+    recursive["behavior"]["read_defaults"][0]["load"] = json!([["self_ref"]]);
     let error = Schema::from_ir(serde_json::from_value(recursive).unwrap()).err().unwrap();
     assert!(error.contains("recursive default loading"));
 }
@@ -93,7 +93,7 @@ fn a_many_to_many_path_applies_the_default_filter_of_the_join_model() {
         {"name":"PostTag","table":"post_tags","fields":[id,
             {"name":"post_id","column":"post_id","type":"big_int"}, {"name":"tag_id","column":"tag_id","type":"big_int"},
             {"name":"live","column":"live","type":"bool"}]}
-    ],"behavior":{"schema_contract":1,"query_defaults":[{"model":"PostTag","filter":{"t":"col","path":[],"name":"live"}}]}});
+    ],"behavior":{"schema_contract":2,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"PostTag","filter":{"t":"col","path":[],"name":"live"}}]}});
     let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
     let target = Target::new(Dialect::Postgres);
     let filter = json!({"t":"cmp","op":"eq","l":{"t":"col","path":["tags"],"name":"name"},"r":{"t":"text","value":"b"}});
@@ -128,9 +128,9 @@ mod read_flags {
              "relations":[
                 {"name":"owner","kind":"one","target":"Owner","from":"owner_id","to":"id","foreign_key":true},
                 {"name":"plain","kind":"one","target":"Plain","from":"plain_id","to":"id","foreign_key":true}]}],
-            "behavior":{"schema_contract":1,"query_defaults":[
-                {"model":"Owner","filter":{"t":"col","path":[],"name":"active"}},
-                {"model":"Child","order":[{"field":"id","desc":true}]}]}});
+            "behavior":{"schema_contract":2,"read_defaults":[
+                {"source":"orm.query-defaults","name":"query","model":"Owner","filter":{"t":"col","path":[],"name":"active"}},
+                {"source":"orm.query-defaults","name":"query","model":"Child","order":[{"field":"id","desc":true}]}]}});
         Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
     }
 
@@ -187,7 +187,7 @@ mod unset_when_absent {
             {"name":"Child","table":"child","fields":[id, {"name":"owner_id","column":"owner_id","type":"int"}],
              "relations":[{"name":"owner","kind":"one","target":"Owner","from":"owner_id","to":"id","foreign_key":true}]}]});
         if filter_owner {
-            raw["behavior"] = json!({"schema_contract":1,"query_defaults":[{"model":"Owner","filter":{"t":"col","path":[],"name":"active"}}]});
+            raw["behavior"] = json!({"schema_contract":2,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"Owner","filter":{"t":"col","path":[],"name":"active"}}]});
         }
         Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
     }

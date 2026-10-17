@@ -22,39 +22,39 @@ fn main() {
 }
 
 fn policy(mut ir: orm_core::ir::SchemaIr) -> orm_core::ir::SchemaIr {
-    ir.behavior.schema_contract = 1;
-    ir.behavior.query_defaults = orm_client_fixture_defaults();
+    ir.behavior.schema_contract = orm_core::behavior::SCHEMA_CONTRACT;
+    ir.behavior.read_defaults = orm_client_fixture_defaults();
     ir
 }
-fn orm_client_fixture_defaults() -> Vec<orm_core::behavior::QueryDefaults> {
+fn orm_client_fixture_defaults() -> Vec<orm_core::behavior::ReadDefault> {
     vec![
-        orm_core::behavior::QueryDefaults {
+        orm_core::behavior::ReadDefault {
             model: "OrderedAuthor".into(),
-            parent: None,
+            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
             fields: Some(vec!["name".into()]),
-            related: vec![],
+            load: vec![],
             filter: Some(serde_json::json!({"t":"col","path":[],"name":"visible"})),
-            order: vec![orm_core::behavior::OrderKey {
+            order: Some(vec![orm_core::behavior::OrderKey {
                 field: "name".into(),
                 desc: true,
                 nulls: None,
-            }],
+            }]),
         },
-        orm_core::behavior::QueryDefaults {
+        orm_core::behavior::ReadDefault {
             model: "PolicyAuthor".into(),
-            parent: None,
+            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
             fields: Some(vec!["name".into(), "note".into()]),
-            related: vec![],
+            load: vec![],
             filter: Some(serde_json::json!({"t":"col","path":[],"name":"visible"})),
-            order: vec![],
+            order: None,
         },
-        orm_core::behavior::QueryDefaults {
+        orm_core::behavior::ReadDefault {
             model: "PolicyBook".into(),
-            parent: None,
+            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
             fields: Some(vec!["title".into()]),
-            related: vec![vec!["author".into()]],
+            load: vec![vec!["author".into()]],
             filter: None,
-            order: vec![],
+            order: None,
         },
     ]
 }

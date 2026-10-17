@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { define, Registry, SchemaError } from '../../../../languages/js/dist/src/index.js';
+import { define, loads, Registry, SchemaError } from '../../../../languages/js/dist/src/index.js';
 const registry = new Registry();
 const field = { name: 'id', column: 'id', type: 'int', primary_key: true };
-define({ models: [{ name: 'Plain', table: 'plain', fields: [field] }] }, { registry });
+define({ models: [{ name: 'Plain', table: 'plain', fields: [field] }], behavior: {
+  schema_contract: 2, read_defaults: [{ source: 'another-extension', name: 'selection', model: 'Plain', fields: [] }]
+} }, { registry });
 const before = registry.ir();
-assert.throws(() => define({ models: [{ name: 'Bad', table: 'bad', fields: [field] }], behavior: { schema_contract: 1, query_defaults: [{ model: 'Bad', fields: [] }] } }, { registry }), error => error instanceof SchemaError && /query-defaults.*rebuild/.test(error.message));
+assert.throws(() => loads('model Bad {\n id Int @id\n @@query.filter("id > 0")\n}', { registry }),
+  error => error instanceof SchemaError && /@query.filter.*rebuild/.test(error.message));
 assert.deepEqual(registry.ir(), before);
-console.log('Disabled Node atomic definition: passed');
+console.log('Disabled Node syntax/neutral contract: passed');

@@ -27,8 +27,7 @@ pub struct Model {
     pub client_defaults: Vec<(usize, crate::client_default::ClientDefault)>,
     #[cfg(feature = "file-storage")]
     pub file_fields: Vec<crate::file_storage::PreparedFileField>,
-    #[cfg(feature = "query-defaults")]
-    pub query_defaults: crate::selection::PreparedDefaults,
+    pub read_defaults: crate::selection::PreparedDefaults,
     /// What read defaults mean for this model, for codegen and bindings; empty without any default.
     pub read_flags: ReadFlags,
     /// `@timestamps.updated_at` field positions; ORM updates set them.
@@ -79,7 +78,7 @@ impl Model {
         Ok(Model {
             #[cfg(feature = "file-storage")] file_fields: vec![],
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
-            #[cfg(feature = "query-defaults")] query_defaults: Default::default(),
+            read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
             #[cfg(feature = "updated-at")] updated_at: vec![],
             #[cfg(feature = "soft-delete")] soft_delete: None,
@@ -249,7 +248,7 @@ impl Schema {
             models.push(Model {
                 #[cfg(feature = "file-storage")] file_fields: file_fields.next().expect("prepared file model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
-                #[cfg(feature = "query-defaults")] query_defaults: Default::default(),
+                read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
                 #[cfg(feature = "updated-at")] updated_at: vec![],
                 #[cfg(feature = "soft-delete")] soft_delete: None,
@@ -276,10 +275,7 @@ impl Schema {
                 }
             }
         }
-        #[cfg(not(feature = "query-defaults"))]
-        if !ir.behavior.query_defaults.is_empty() { return Err("query defaults require an enabled query-defaults artifact; rebuild".into()); }
-        #[cfg(feature = "query-defaults")]
-        crate::selection::prepare(&mut models, &ir.behavior.query_defaults)?;
+        crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::tracking::prepare(&mut models, &model_index, &ir.behavior)?;
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
