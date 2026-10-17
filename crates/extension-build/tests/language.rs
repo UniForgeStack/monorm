@@ -127,3 +127,21 @@ fn a_section_needs_its_language_and_the_contract() {
     case.patch("Cargo.toml", "language_contract = 1", "language_contract = 2");
     assert!(case.failure().contains("incompatible language contract"));
 }
+
+#[test]
+fn local_modules_reject_language_sections() {
+    for language in ["python", "typescript"] {
+        let case = Case::new(&format!("local-{language}"));
+        let manifest: toml::Value = toml::from_str(&fs::read_to_string(case.fixture.join("Cargo.toml")).unwrap()).unwrap();
+        let mut extension = serde_json::to_value(&manifest["package"]["metadata"]["orm-extension"]).unwrap();
+        extension.as_object_mut().unwrap().remove(if language == "python" { "typescript" } else { "python" });
+        let config = serde_json::json!({"host":case.host,"output":case.base.join("out"),"offline":true,"prepare_only":true,
+            "modules":[{"alias":"local_language","source":case.fixture.join("src/lib.rs"),"manifest":extension}]});
+        let path = case.base.join("config.json");
+        fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_orm-extension-build")).arg(path).output().unwrap();
+        assert!(!result.status.success(), "local language code must not be silently omitted");
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("local module local_language (example.language)") && error.contains(language) && error.contains("language sections are not supported") && error.contains("config.dependencies"), "{error}");
+    }
+}

@@ -102,15 +102,31 @@ test("the user query set class comes first, then the extension classes", () => {
   assert.equal(Post.objects.constructor, Queries);
 });
 
-test("a user query set class shared with a model that has other extensions fails", () => {
-  const p = project();
-  class Queries extends QuerySet<never> {}
-  const { Post, Tag } = build(p.records, code(p), { Post: ["ext.a"] }) as Record<string, any>;
-  useQuerySet(Post, Queries);
-  useQuerySet(Tag, Queries);
-  assert.equal(typeof Post.objects.everything, "function");
-  assert.throws(() => Tag.objects, /Tag: the query set class Queries is shared with a model that has extensions/);
-});
+for (const members of [{ Post: ["ext.a"] }, { Tag: ["ext.a"] }, { Post: ["ext.a"], Tag: ["ext.a", "ext.b"] }]) {
+  test(`a shared user query set keeps each model's extensions: ${JSON.stringify(members)}`, () => {
+    const p = project();
+    const records = [...p.records, record("ext.b", p.hash, { query_set_members: ["chain"], instance_members: [], overrides: ["chain"] })];
+    const extensions = { ...code(p), "ext.b": { module: { queries: mixinB, Instance: class {} }, hash: p.hash, dir: new URL("file:///nowhere/") } };
+    class Parent extends QuerySet<never> {
+      chain(): string[] {
+        // @ts-expect-error the member comes from an extension mixin
+        return ["user", ...(super.chain?.() ?? [])];
+      }
+    }
+    class Queries extends Parent {}
+    const { Post, Tag } = build(records, extensions, members) as Record<string, any>;
+    useQuerySet(Post, () => Queries);
+    useQuerySet(Tag, () => Queries);
+    const expected = (ids: string[] = []) => ["user", ...(ids.includes("ext.b") ? ["b"] : []), ...(ids.includes("ext.a") ? ["a"] : [])];
+    for (const Model of [Post, Tag, Post, Tag]) {
+      assert.deepEqual(Model.objects.chain(), expected(members[Model._meta.name as keyof typeof members]));
+      assert.deepEqual(Model.objects.filter(Model.id.eq(1)).chain(), expected(members[Model._meta.name as keyof typeof members]));
+      assert.equal(typeof Model.objects.everything, members[Model._meta.name as keyof typeof members]?.length ? "function" : "undefined");
+      assert.equal("everything" in Model.objects, Boolean(members[Model._meta.name as keyof typeof members]?.length));
+      assert.ok(Model.objects instanceof Queries);
+    }
+  });
+}
 
 test("an instance override calls super down the chain to the host member", () => {
   const p = project();

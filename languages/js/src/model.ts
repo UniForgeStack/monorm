@@ -157,7 +157,9 @@ export class ModelMeta implements Source {
   querySet: unknown;
   /** @internal The query-set mixins of extensions, dependencies first, applied over `querySet`. */
   extensionMixins: readonly Mixin[] = [];
-  /** @internal The class made from `querySet` and `extensionMixins`, built on first use. */
+  /** @internal The per-model extension query-set class, built on first use. */
+  extensionSet: unknown;
+  /** @internal The user class composed with this model's extensions. */
   composedSet: unknown;
   /** @internal Relation-set classes with the `querySet` methods, by base class. */
   readonly relatedSets = new Map<unknown, unknown>();
@@ -241,6 +243,7 @@ export class ModelMeta implements Source {
   resetQuerySet(querySet: unknown): void {
     this.querySet = querySet;
     this.composedSet = undefined;
+    this.extensionSet = undefined;
     this.rootQuerySet = undefined;
     this.relatedSets.clear();
   }

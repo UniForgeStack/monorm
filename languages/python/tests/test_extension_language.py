@@ -128,6 +128,33 @@ def test_two_mixins_chain_through_super_in_dependency_order(project, monkeypatch
     assert [c.__name__ for c in type(Post.objects).__mro__[:3]] == ["PostQuerySet", "BQuerySet", "AQuerySet"]
 
 
+def test_declared_instance_overrides_call_super_to_the_host(project, monkeypatch):
+    def instance_source(tag):
+        return f'''from orm import QuerySet
+from orm.ext import ModelT
+class AQuerySet(QuerySet[ModelT]):
+    pass
+class AInstance:
+    def to_dict(self):
+        result = super().to_dict()
+        return {{**result, "calls": [*result.get("calls", []), "{tag}"]}}
+'''
+
+    changes = {"query_set_members": [], "instance_members": ["to_dict"], "overrides": ["to_dict"]}
+    modules, _ = install(
+        project, monkeypatch,
+        ("ext.a", "ext_a", {"__init__.py": instance_source("a")}, changes),
+        ("ext.b", "ext_b", {"__init__.py": instance_source("b")}, changes),
+    )
+    out = build(modules, {"Post": ("ext.a", "ext.b"), "Tag": ("ext.a",)})
+    post = object.__new__(out["Post"])
+    post.__dict__.update(id=1, title="hello")
+    tag = object.__new__(out["Tag"])
+    tag.__dict__.update(id=2)
+    assert post.to_dict() == {"id": 1, "title": "hello", "calls": ["a", "b"]}
+    assert tag.to_dict() == {"id": 2, "calls": ["a"]}
+
+
 def test_user_query_set_comes_first(project, monkeypatch):
     modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": BASE}, {}))
 
