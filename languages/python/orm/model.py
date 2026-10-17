@@ -686,11 +686,17 @@ class Model:
         Values may be expressions (``views=Post.views + 1``); the instance is refreshed
         from the returned row, so it shows what the database stored. With
         ``@locking.version``, raises :class:`orm.VersionConflict` when the row has a
-        newer version.
+        newer version. An explicit version field raises :class:`TypeError`; use a
+        query-set update for an intentional override.
         """
         if not values:
             return
         version = self._meta.version_field
+        if version is not None and version in values:
+            raise TypeError(
+                f"{type(self).__name__}.update() cannot set the version field {version}; "
+                f"use {type(self).__name__}.objects.filter(pk=...).update({version}=...) to override it"
+            )
         query = self._version_filter(self._loaded_query(*(() if version is None else (version,))))
         rows = await query.update(**values).returning()
         if not rows:

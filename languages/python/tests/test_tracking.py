@@ -475,3 +475,111 @@ async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect)
     finally:
         await db.drop_tables()
         await db.close()
+
+
+@requires("proxy-models")
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+@pytest.mark.parametrize("operation", ["update", "delete"])
+@pytest.mark.parametrize("mode", [None, "application", "database"])
+async def test_a_stale_proxy_instance_checks_the_loaded_version(dialect, operation, mode):
+    if mode is not None and "soft-delete" not in CAPABILITIES:
+        pytest.skip("requires soft-delete")
+    source = upsert_doc(version=True)
+    if mode is not None:
+        source = source.replace(
+            "  title   String",
+            f'  deleted DateTime? @soft_delete.deleted_at(mode: "{mode}")\n  title   String',
+        )
+    db, models = await connect(
+        dialect,
+        source
+        + """
+model Draft {
+  @@proxy.of(Doc)
+}
+model Review {
+  @@proxy.of(Draft)
+}
+""",
+    )
+    Doc, Review = models["Doc"], models["Review"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1, "title": "original"}])
+        stale = await Review.objects.using(db).get(Review.id == 1)
+        await docs.filter(Doc.id == 1).update(title="other writer")
+        with pytest.raises(orm.VersionConflict):
+            if operation == "update":
+                await stale.update(title="stale writer")
+            else:
+                await stale.delete()
+        stored = await docs.get(Doc.id == 1)
+        assert stored.title == "other writer" and stored.version == 1
+        await stale.refresh()
+        await stale.update(title="fresh writer")
+        assert stale.version == 2
+        await stale.delete()
+        if mode is None:
+            assert await docs.count() == 0
+        else:
+            stored = await docs.get(Doc.id == 1)
+            assert stored.deleted is not None and stored.version == 3
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("optimistic-locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_instance_rejects_an_explicit_version(dialect):
+    db, models = await connect(dialect, upsert_doc(version=True))
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        doc = await docs.insert(id=1, title="original")
+        with pytest.raises(TypeError, match=r"Doc.objects.filter.*update\(version="):
+            await doc.update(title="changed", version=7)
+        stored = await docs.get(Doc.id == 1)
+        assert stored.title == "original" and stored.version == doc.version == 0
+        await docs.filter(Doc.id == 1).update(version=7)
+        assert (await docs.get(Doc.id == 1)).version == 7
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("model-composition")
+@pytest.mark.parametrize(
+    "capability,field,role",
+    [
+        ("updated-at", "changed DateTime @default(now()) @timestamps.updated_at", "@timestamps.updated_at"),
+        ("soft-delete", "deleted DateTime? @soft_delete.deleted_at", "@soft_delete.deleted_at"),
+        ("optimistic-locking", "version Int @default(0) @locking.version", "@locking.version"),
+    ],
+)
+@pytest.mark.parametrize("owner", ["Person", "Employee", "Manager"])
+def test_composed_ownership_chain_rejects_tracking_roles(capability, field, role, owner):
+    if capability not in CAPABILITIES:
+        pytest.skip(f"requires {capability}")
+    source = f"""
+model Person {{
+ id Int @id
+ {field if owner == "Person" else ""}
+}}
+model Employee {{
+ salary Int
+ {field if owner == "Employee" else ""}
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+}}
+model Manager {{
+ level Int
+ {field if owner == "Manager" else ""}
+ @@composition.model(parent: "Employee", parentRef: "employee", childRef: "manager")
+}}
+"""
+    with pytest.raises(orm.SchemaError) as error:
+        orm.loads(source, registry=orm.Registry())
+    message = str(error.value)
+    assert owner in message and field.split()[0] in message and role in message
+    assert "Employee" in message or "Manager" in message

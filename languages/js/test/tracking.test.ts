@@ -300,3 +300,70 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 }
+
+for (const dialect of ["sqlite", "postgres"]) {
+  for (const mode of [null, "application", "database"]) {
+    for (const operation of ["update", "delete"]) {
+      test(`stale proxy instance checks the loaded version (${dialect}, ${operation}, ${mode})`, {
+        skip: !capabilities.includes("proxy-models") || !capabilities.includes("optimistic-locking") || (mode !== null && !capabilities.includes("soft-delete")),
+      }, async () => {
+        const [db, models] = await open(dialect, `
+model Doc {
+ id Int @id
+ title String
+ version Int @default(0) @locking.version
+ ${mode === null ? "" : `deleted DateTime? @soft_delete.deleted_at(mode: "${mode}")`}
+ @@map("tracking_node_proxy_docs")
+}
+model Draft {
+ @@proxy.of(Doc)
+}
+model Review {
+ @@proxy.of(Draft)
+}`);
+        const Doc = models.Doc!, Review = models.Review!, docs = Doc.objects.using(db);
+        try {
+          await docs.insertMany([{ id: 1, title: "original" }]);
+          const stale = await Review.objects.using(db).get(Review.id.eq(1));
+          await docs.filter(Doc.id.eq(1)).update({ title: "other writer" });
+          await assert.rejects(() => operation === "update" ? stale.update({ title: "stale writer" }) : stale.delete(), VersionConflict);
+          const stored = await docs.get(Doc.id.eq(1));
+          assert.equal(stored.title, "other writer");
+          assert.equal(stored.version, 1);
+          await stale.refresh();
+          await stale.update({ title: "fresh writer" });
+          assert.equal(stale.version, 2);
+          await stale.delete();
+          if (mode === null) {
+            assert.equal(await docs.count(), 0);
+          } else {
+            const deleted = await docs.get(Doc.id.eq(1));
+            assert.ok(deleted.deleted !== null);
+            assert.equal(deleted.version, 3);
+          }
+        } finally { await db.dropTables(); await db.close(); }
+      });
+    }
+  }
+
+  test(`instance rejects an explicit version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, `
+model Doc {
+ id Int @id
+ title String
+ version Int @default(0) @locking.version
+ @@map("tracking_node_explicit_docs")
+}`);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      const doc = await docs.insert({ id: 1, title: "original" });
+      await assert.rejects(() => doc.update({ title: "changed", version: 7 }), { name: "TypeError", message: /Doc.objects.filter.*update\(.*version/ });
+      const stored = await docs.get(Doc.id.eq(1));
+      assert.equal(stored.title, "original");
+      assert.equal(stored.version, 0);
+      assert.equal(doc.version, 0);
+      await docs.filter(Doc.id.eq(1)).update({ version: 7 });
+      assert.equal((await docs.get(Doc.id.eq(1))).version, 7);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
