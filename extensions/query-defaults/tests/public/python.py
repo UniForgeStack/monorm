@@ -45,7 +45,8 @@ async def run(provider: str, url: str) -> None:
         try:
             await scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=True)
         except orm.QueryError as e:
-            assert "scope.shop" in str(e), e
+            for text in ("Scoped", 'default "query"', "orm.query-defaults", "scope.shop", 'without_defaults("query")'):
+                assert text in str(e), e
         else:
             raise AssertionError("an upsert with no scope ran")
         with orm.scope(shop=2):
@@ -74,7 +75,8 @@ async def run(provider: str, url: str) -> None:
         try:
             await Scoped.objects.using(db).count()
         except orm.QueryError as e:
-            assert "scope.shop" in str(e), e
+            for text in ("Scoped", 'default "query"', "orm.query-defaults", "scope.shop", 'without_defaults("query")'):
+                assert text in str(e), e
         else:
             raise AssertionError("a read with no scope ran")
         with orm.scope(shop=2):

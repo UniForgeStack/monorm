@@ -12,6 +12,8 @@ pub struct PreparedPart {
     pub identity: DefaultIdentity,
     pub filter: Option<Expr>,
     pub annotate: BTreeMap<String, Expr>,
+    /// Scope names in this entry's filter, collected once during preparation.
+    pub scopes: Vec<String>,
 }
 
 #[derive(Default)]
@@ -83,7 +85,9 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
                 merged.load_owners.push(vec![identity.clone()]);
             }
         }
-        merged.parts.push(PreparedPart { identity, filter, annotate });
+        let mut scopes = vec![];
+        if let Some(filter) = &filter { filter_scopes(filter, &mut scopes); }
+        merged.parts.push(PreparedPart { identity, filter, annotate, scopes });
     }
     fn visit(models: &[Model], flags: &[crate::schema::ReadFlags], idx: usize, stack: &mut Vec<usize>) -> Result<(), String> {
         if stack.contains(&idx) {
@@ -105,6 +109,17 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
         model.read_defaults = merged;
     }
     Ok(())
+}
+
+// Filters have already passed validate_filter, so only its supported nodes can occur.
+fn filter_scopes(expr: &Expr, scopes: &mut Vec<String>) {
+    match expr {
+        Expr::Scope { name } => { if !scopes.contains(name) { scopes.push(name.clone()); } }
+        Expr::Cmp { l, r, .. } => { filter_scopes(l, scopes); filter_scopes(r, scopes); }
+        Expr::And { items } | Expr::Or { items } => for item in items { filter_scopes(item, scopes); },
+        Expr::Not { item } | Expr::IsNull { item, .. } => filter_scopes(item, scopes),
+        _ => {}
+    }
 }
 
 fn validate_filter(model: &Model, filter: &Expr) -> Result<(), String> {

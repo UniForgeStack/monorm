@@ -1428,15 +1428,16 @@ impl<'s> Planner<'s> {
         if let Some(i) = self.params.scope(name) {
             return self.param(i);
         }
-        // Only for the message: `Expr` has no visitor, and its Debug form names each scope node.
-        let node = format!("{:?}", Expr::Scope { name: name.to_owned() });
-        let models: Vec<&str> = self.schema.models.iter()
-            .filter(|m| m.read_defaults.filter.as_ref().is_some_and(|f| str::contains(&format!("{f:?}"), node.as_str())))
-            .map(|m| m.ir.name.as_str())
+        let model = self.model(self.scope().model);
+        let defaults: Vec<_> = model.read_defaults.parts.iter()
+            .filter(|part| part.scopes.iter().any(|scope| scope == name))
+            .map(|part| format!("{} default {:?} from {} (without_defaults({:?}))",
+                model.ir.name, part.identity.name, part.identity.source, part.identity.name))
             .collect();
+        let owner = if defaults.is_empty() { model.ir.name.clone() } else { defaults.join(", ") };
         Err(Error::query(format!(
-            "the default filter of {} reads scope.{name}, which is not set: set it with scope(), or use without_defaults()",
-            models.join(", ")
+            "{owner} reads scope.{name}, which is not set: set it with scope(), or bypass the default; \
+             without_defaults() bypasses all defaults"
         )))
     }
 
@@ -2596,6 +2597,15 @@ impl<'s> Planner<'s> {
     fn with_query_defaults<'q>(&self, q: &'q Select) -> Result<std::borrow::Cow<'q, Select>> {
         let mut q = std::borrow::Cow::Borrowed(q);
         if q.without_defaults { return Ok(q); }
+        for part in &self.model(self.root).read_defaults.parts {
+            for (name, expr) in &part.annotate {
+                // An explicit named selection overrides the default of that name.
+                if q.columns.as_ref().is_some_and(|items| items.iter().any(|item|
+                    matches!(item, SelectItem::Expr { name: Some(n), .. } if n == name))) { continue; }
+                q.to_mut().columns.get_or_insert_with(|| vec![SelectItem::Model])
+                    .push(SelectItem::Expr { expr: expr.clone(), name: Some(name.clone()) });
+            }
+        }
         if q.model_fields.is_none() && self.model(self.root).read_flags.fields.is_some() { q.to_mut().model_fields = self.model(self.root).read_flags.fields.clone(); }
         if !q.without_related && q.columns.is_none() {
             for path in orm_core::selection::expanded_related(self.schema.models.as_slice(), self.root).map_err(query_err)? {

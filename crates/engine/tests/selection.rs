@@ -377,3 +377,89 @@ fn neutral_defaults_apply_to_reads_writes_and_returned_shapes() {
         }
     }
 }
+
+#[test]
+fn scope_errors_identify_the_prepared_default_at_each_consumer() {
+    use orm_engine::plan::plan_prefetch_only;
+    let mut raw = schema(false);
+    raw["models"][0]["relations"] = json!([{"name":"children","kind":"many","target":"Child","from":"id","to":"id"}]);
+    let mut child = raw["models"][0].clone();
+    child["name"] = json!("Child"); child["table"] = json!("child"); child["relations"] = json!([]);
+    raw["models"].as_array_mut().unwrap().push(child);
+    raw["models"][0]["relations"].as_array_mut().unwrap().push(json!({"name":"child","kind":"one","target":"Child","from":"id","to":"id"}));
+    let scoped = json!({"t":"not","item":{"t":"or","items":[
+        {"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"id"},"r":{"t":"scope","name":"tenant"}},
+        {"t":"is_null","item":{"t":"scope","name":"tenant"}}
+    ]}});
+    raw["behavior"] = json!({"schema_contract":2,"read_defaults":[
+        {"source":"example.tenancy","name":"tenant_guard","model":"Child","filter":scoped},
+        {"source":"example.visibility","name":"visible","model":"Child","filter":{"t":"col","path":[],"name":"active"}},
+        {"source":"example.other","name":"unrelated","model":"Selected","filter":scoped}
+    ]});
+    let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
+    let check = |error: orm_engine::Error| {
+        let message = error.to_string();
+        for expected in ["Child", "tenant_guard", "example.tenancy", "scope.tenant", "not set", "without_defaults(\"tenant_guard\")"] {
+            assert!(message.contains(expected), "missing {expected}: {message}");
+        }
+        for unrelated in ["unrelated", "example.other", "visible", "example.visibility"] {
+            assert!(!message.contains(unrelated), "{message}");
+        }
+    };
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let target = Target::new(dialect);
+        for op in [
+            json!({"op":"select","model":"Child"}),
+            json!({"op":"count","model":"Child"}),
+            json!({"op":"update","model":"Child","set":[{"field":"value","value":{"t":"text","value":"new"}}]}),
+            json!({"op":"delete","model":"Child"}),
+            json!({"op":"select","model":"Selected","select_related":[["child"]]}),
+            json!({"op":"select","model":"Selected","filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":["children"],"name":"value"},"r":{"t":"text","value":"x"}}]}),
+        ] {
+            let operation: Operation = serde_json::from_value(op).unwrap();
+            check(Planner::plan(&schema, target, &operation, &NoParams).err().expect("missing scope"));
+        }
+        check(orm_engine::plan::plan_insert(&schema, target, "Child", &["id".into()],
+            vec![vec![Some(1.into())]], Some(orm_engine::plan::OnConflict::Update(vec!["id".into()], None, vec!["id".into()], vec![])),
+            &NoParams, false).err().expect("upsert scope"));
+        let Operation::Select(q) = serde_json::from_value(json!({"op":"select","model":"Selected","prefetch":[{"relation":"children","model":"Child"}]})).unwrap() else { panic!("select") };
+        check(plan_prefetch_only(&schema, target, &q, &NoParams).err().expect("prefetch scope"));
+        let bypass = serde_json::from_value(json!({"op":"select","model":"Child","without_defaults":true})).unwrap();
+        assert!(Planner::plan(&schema, target, &bypass, &NoParams).is_ok());
+    }
+}
+
+#[test]
+fn default_annotations_are_selected_from_every_source_and_respect_bypass() {
+    let mut raw = schema(false);
+    raw["behavior"] = json!({"schema_contract":2,"read_defaults":[
+        {"source":"example.labels","name":"labels","model":"Selected","annotate":{"label":{"t":"text","value":"default label"}}},
+        {"source":"example.metrics","name":"metrics","model":"Selected","annotate":{"score":{"t":"arith","op":"add","l":{"t":"col","path":[],"name":"id"},"r":{"t":"int","value":10}}}}
+    ]});
+    let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        for columns in [None, Some(json!([{"t":"expr","expr":{"t":"col","path":[],"name":"value"}}]))] {
+            for bypass in [false, true] {
+                let mut op = json!({"op":"select","model":"Selected","without_defaults":bypass});
+                if let Some(columns) = &columns { op["columns"] = columns.clone(); }
+                let operation: Operation = serde_json::from_value(op).unwrap();
+                let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() else { panic!("select") };
+                let (sql, values) = orm_engine::db::build(dialect, &plan.stmt);
+                assert_eq!(sql.contains("+ (10)"), !bypass, "{sql}");
+                assert_eq!(format!("{values:?}").contains("default label"), !bypass, "{values:?}");
+                let base = if columns.is_none() { 3 } else { 1 };
+                assert_eq!(plan.types.len(), base + if bypass { 0 } else { 2 });
+                if !bypass {
+                    let Output::Rows { items, .. } = plan.output else { panic!("annotation rows") };
+                    assert_eq!(items, if columns.is_none() { vec![Some(3), None, None] } else { vec![None, None, None] });
+                }
+            }
+        }
+        let operation = serde_json::from_value(json!({"op":"select","model":"Selected","columns":[{"t":"expr","name":"label","expr":{"t":"text","value":"explicit label"}}]})).unwrap();
+        let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() else { panic!("select") };
+        let (_, values) = orm_engine::db::build(dialect, &plan.stmt);
+        assert!(format!("{values:?}").contains("explicit label"));
+        assert!(!format!("{values:?}").contains("default label"));
+        assert_eq!(plan.types.len(), 2);
+    }
+}
