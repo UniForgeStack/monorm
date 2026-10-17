@@ -183,7 +183,9 @@ User.objects.order_by(-User.created_at, User.id)   # -column is column.desc()
 User.objects.all()[10:20]                     # LIMIT 10 OFFSET 10
 async for u in User.objects.filter(...): ...
 
-await qs.first() / qs.last()                  # by ordering, else pk; None if empty
+await qs.first() / qs.last()                  # lazy OneRowQuery; by ordering, else pk; None if empty
+await qs[n] / qs[-1]                         # row n of this slice; [-1] is last()
+qs.first().prepare() / qs.first().inspect()  # prepare a one-row read or inspect its plan
 await qs.get(cond)                            # User | None; rejects multiple matches
 await qs.require().get(cond)                  # User; rejects zero or multiple matches
 await qs.require().first()                    # User; rejects zero matches
@@ -198,6 +200,11 @@ qs.without_defaults()                         # skip the schema query defaults (
 qs.without_related()                          # drop default and explicit relation loading
 qs.model                                      # the model class
 ```
+
+`OneRowQuery` runs afresh on each await; TypeScript reuses the result of its first await.
+Only `-1` or non-negative integer indices are supported; another negative index raises `ValueError`, and a `param()` index raises `QueryError`.
+`last()` (also `[-1]`) raises `ValueError` at the call on a query set with a limit or offset; a `param()` limit before `first()`, `[n]`, `get()` or prepared `first()` / `get()` raises `QueryError`.
+Use a relation's `[n].label(name)` in `load()` to store one row per parent (or `None`); `get().label(name)` raises `TypeError`.
 
 A model with a composite primary key (`@@id([shop, id])`) has a tuple `pk` in key order, `(1, 7)`.
 `in_bulk()` takes and gives these tuples.

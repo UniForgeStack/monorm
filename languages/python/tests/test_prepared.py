@@ -93,8 +93,9 @@ async def test_prepared_limit_offset_and_expressions(clean):
     assert [p.title for p in await page(bump=0, min=0, n=2, skip=2)] == ["a3", "b1"]
     assert [p.title for p in await page(bump=10, min=55, n=10, skip=0)] == ["a_2%", "b1"]
     assert await page.count(bump=0, min=0, n=3, skip=2) == 2
-    # the slots of the prepared query are bound separately from its first() / count()
-    assert (await page.first(bump=0, min=10, n=5, skip=1)).title == "a3"
+    # A one-row query must not silently replace the parameterized limit.
+    with pytest.raises(QueryError, match="param"):
+        await page.first(bump=0, min=10, n=5, skip=1)
     with pytest.raises(QueryError, match="non-negative integer"):
         await page(bump=0, min=0, n=-1, skip=0)
 
