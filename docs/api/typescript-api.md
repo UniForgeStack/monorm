@@ -154,16 +154,21 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 |---|---|
 | `await qs` / `for await (const u of qs)` | `R[]`, cached per query set (below) |
 | `.all()` | `Promise<R[]>`, always a fresh query |
-| `.first()` / `.last()` | `Promise<R \| null>` |
-| `.get(...conditions)` | `Promise<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
-| `.require().get(...)` | `Promise<R>`; throws on zero or multiple matches |
-| `.require().first()` / `.require().last()` | `Promise<R>`; throws on zero matches |
+| `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws on a query set with a limit or an offset |
+| `.at(n)` | `OneRowQuery<R \| null>`: the row at position `n` of the order; `at(-1)` is `last()`, another negative `n` throws |
+| `.get(...conditions)` | `OneRowQuery<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
+| `.require().get(...)` | `OneRowQuery<R>`; throws on zero or multiple matches |
+| `.require().first()` / `.require().last()` / `.require().at(n)` | `OneRowQuery<R>`; throws on zero matches |
 | `.require().all()` | `Promise<R[]>`; throws if the result is empty |
 | `.count()` / `.exists()` | `Promise<number>` / `Promise<boolean>` |
 | `.inBulk(keys?, { field })` | `Promise<Map<key, R>>`; a model with a composite key needs `field` |
 | `.batches(size)` / `.iterate(size)` | async generators that walk the primary key (keyset pagination) |
 | `.paginate({ first, after })` / `.paginate({ last, before })` | one page by keyset: `{ items, hasNext, hasPrevious, nextCursor, previousCursor }` |
 | `.sql()` / `.toString()` | the SQL with values inlined, for reading |
+
+A `OneRowQuery` is lazy: `qs.first()` starts no query until `then`, `catch` or `finally` (an `await`) runs on it, and it runs once.
+Before this, `first()`, `last()` and `get()` started the query at the call; code that calls one and never awaits it no longer queries.
+It has `.prepare()` (the prepared query's `.run(values)` gives the row), `.inspect()` and `.sql()`.
 
 `.require()` clones the query and rejects absent row results with
 `Model.DoesNotExist`. Builders retain the modifier, which also applies when awaiting
