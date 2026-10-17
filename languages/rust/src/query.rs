@@ -1,4 +1,8 @@
-use crate::{value::Values, *};
+use crate::{
+    placeholder::{Cons, Join, Nil, Param, Slot, SlotRef},
+    value::Values,
+    *,
+};
 use orm_core::ir::{self, Expr, Operation};
 use std::{
     future::{Future, IntoFuture},
@@ -93,6 +97,34 @@ impl<M, T, C> Column<M, T, C> {
             tree: Tree::Compare(self.expr(), op, value.encode()),
             _model: PhantomData,
         }
+    }
+    fn cmp_param<S: Slot<Value = T>>(
+        self,
+        _: Param<S>,
+        op: ir::CmpOp,
+    ) -> Predicate<M, Cons<S, Nil>> {
+        Predicate {
+            tree: Tree::Param(self.expr(), op, SlotRef::of::<S>()),
+            _model: PhantomData,
+        }
+    }
+    pub fn eq_param<S: Slot<Value = T>>(self, p: Param<S>) -> Predicate<M, Cons<S, Nil>> {
+        self.cmp_param(p, ir::CmpOp::Eq)
+    }
+    pub fn ne_param<S: Slot<Value = T>>(self, p: Param<S>) -> Predicate<M, Cons<S, Nil>> {
+        self.cmp_param(p, ir::CmpOp::Ne)
+    }
+    pub fn lt_param<S: Slot<Value = T>>(self, p: Param<S>) -> Predicate<M, Cons<S, Nil>> {
+        self.cmp_param(p, ir::CmpOp::Lt)
+    }
+    pub fn le_param<S: Slot<Value = T>>(self, p: Param<S>) -> Predicate<M, Cons<S, Nil>> {
+        self.cmp_param(p, ir::CmpOp::Le)
+    }
+    pub fn gt_param<S: Slot<Value = T>>(self, p: Param<S>) -> Predicate<M, Cons<S, Nil>> {
+        self.cmp_param(p, ir::CmpOp::Gt)
+    }
+    pub fn ge_param<S: Slot<Value = T>>(self, p: Param<S>) -> Predicate<M, Cons<S, Nil>> {
+        self.cmp_param(p, ir::CmpOp::Ge)
     }
     pub fn eq(self, value: T) -> Predicate<M>
     where
@@ -201,6 +233,10 @@ pub enum Tree {
     Or(Vec<Tree>),
     Not(Box<Tree>),
     Nested(String, Vec<Tree>),
+    /// A typed placeholder, replaced by its bound value before planning.
+    Param(Expr, ir::CmpOp, crate::placeholder::SlotRef),
+    /// A scope value for `scope.<name>` defaults, bound at execution.
+    Scope(String, sea_query::Value),
 }
 impl Tree {
     pub(crate) fn erase(self, params: &mut Values) -> Expr {
@@ -210,7 +246,12 @@ impl Tree {
             Expr::Param { i }
         };
         match self {
-            Self::Nested(_, _) => unreachable!("nested filters are erased with their select"),
+            Self::Nested(_, _) | Self::Scope(_, _) => {
+                unreachable!("nested and scope filters are erased with their select")
+            }
+            Self::Param(_, _, slot) => {
+                unreachable!("placeholder {} is bound before planning", slot.name)
+            }
             Self::Expr(e) => e,
             Self::Compare(l, op, v)
                 if v == v.as_null() && matches!(op, ir::CmpOp::Eq | ir::CmpOp::Ne) =>
@@ -242,11 +283,11 @@ impl Tree {
         }
     }
 }
-pub struct Predicate<M> {
-    tree: Tree,
-    _model: PhantomData<M>,
+pub struct Predicate<M, K = crate::placeholder::Nil> {
+    pub(crate) tree: Tree,
+    _model: PhantomData<(M, K)>,
 }
-impl<M> Clone for Predicate<M> {
+impl<M, K> Clone for Predicate<M, K> {
     fn clone(&self) -> Self {
         Self {
             tree: self.tree.clone(),
@@ -254,21 +295,27 @@ impl<M> Clone for Predicate<M> {
         }
     }
 }
-impl<M> Predicate<M> {
-    pub fn and(self, other: Self) -> Self {
-        Self {
+impl<M, K> Predicate<M, K> {
+    pub fn and<K2>(self, other: Predicate<M, K2>) -> Predicate<M, <K as Join<K2>>::Out>
+    where
+        K: Join<K2>,
+    {
+        Predicate {
             tree: Tree::And(vec![self.tree, other.tree]),
             _model: PhantomData,
         }
     }
-    pub fn or(self, other: Self) -> Self {
-        Self {
+    pub fn or<K2>(self, other: Predicate<M, K2>) -> Predicate<M, <K as Join<K2>>::Out>
+    where
+        K: Join<K2>,
+    {
+        Predicate {
             tree: Tree::Or(vec![self.tree, other.tree]),
             _model: PhantomData,
         }
     }
 }
-impl<M> std::ops::Not for Predicate<M> {
+impl<M, K> std::ops::Not for Predicate<M, K> {
     type Output = Self;
     fn not(self) -> Self {
         Self {
@@ -430,6 +477,17 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
     }
     pub fn filter(mut self, p: Predicate<M::Source>) -> Self {
         self.filters.push(p.tree);
+        self
+    }
+    pub(crate) fn push_tree(mut self, tree: Tree) -> Self {
+        self.filters.push(tree);
+        self
+    }
+    /// The value `scope.<name>` reads in default filters for this execution; a later value replaces an earlier one.
+    pub fn scope<T: Codec>(mut self, name: &str, value: T) -> Self {
+        self.filters
+            .retain(|t| !matches!(t, Tree::Scope(n, _) if n == name));
+        self.filters.push(Tree::Scope(name.into(), value.encode()));
         self
     }
     pub fn exclude(self, p: Predicate<M::Source>) -> Self {
@@ -777,6 +835,10 @@ pub(crate) fn erase_filters(select: &mut ir::Select, filters: Vec<Tree>, values:
                 {
                     erase_filters(&mut node.query, children, values);
                 }
+            }
+            Tree::Scope(name, value) => {
+                select.scope.insert(name, values.0.len());
+                values.0.push(value);
             }
             tree => select.filters.push(tree.erase(values)),
         }

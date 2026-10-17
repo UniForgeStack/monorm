@@ -49,6 +49,14 @@ fn orm_client_fixture_defaults() -> Vec<orm_core::behavior::ReadDefault> {
             order: None,
         },
         orm_core::behavior::ReadDefault {
+            model: "ScopedNote".into(),
+            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
+            fields: None,
+            load: vec![],
+            filter: Some(serde_json::json!({"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"shop"},"r":{"t":"scope","name":"shop"}})),
+            order: None,
+        },
+        orm_core::behavior::ReadDefault {
             model: "PolicyBook".into(),
             source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
             fields: Some(vec!["title".into()]),

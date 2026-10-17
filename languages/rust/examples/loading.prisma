@@ -51,3 +51,9 @@ model ProjectionAccount {
  person ProjectionPerson @relation(fields: [person_id], references: [id])
  @@map("rust_projection_accounts")
 }
+model ScopedNote {
+ id Int @id
+ shop Int
+ title String
+ @@map("rust_scoped_notes")
+}
