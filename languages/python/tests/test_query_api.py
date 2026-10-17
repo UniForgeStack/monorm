@@ -740,3 +740,17 @@ async def test_prefetch_rejects_own_column(clean):
     alice, _, _ = await seed()
     with pytest.raises(TypeError, match="own model"):
         await orm.prefetch([alice], User.name)
+
+
+def test_get_cannot_be_labeled_for_loading():
+    with pytest.raises(TypeError, match=r"get\(\) can't be loaded per parent; use \[0\]\.label\(name\)"):
+        User.posts.objects.get().label("unique_post")
+
+
+def test_unlabeled_one_row_load_suggests_label():
+    with pytest.raises(TypeError, match=r"a one-row query in load\(\) needs \.label\(name\)"):
+        User.objects.load(User.posts.objects[0])
+
+
+def test_one_row_repr():
+    assert repr(User.posts.objects[0]).startswith("<OneRowQuery <QuerySet Post")

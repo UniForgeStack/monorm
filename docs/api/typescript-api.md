@@ -154,7 +154,7 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 |---|---|
 | `await qs` / `for await (const u of qs)` | `R[]`, cached per query set (below) |
 | `.all()` | `Promise<R[]>`, always a fresh query |
-| `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws on a query set with a limit or an offset |
+| `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws `RangeError` at the call on a query set with a limit or an offset |
 | `.at(n)` | `OneRowQuery<R \| null>`: the row at position `n` of the order; `at(-1)` is `last()`, another negative `n` throws |
 | `.get(...conditions)` | `OneRowQuery<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
 | `.require().get(...)` | `OneRowQuery<R>`; throws on zero or multiple matches |
@@ -169,6 +169,9 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 A `OneRowQuery` is lazy: `qs.first()` starts no query until `then`, `catch` or `finally` (an `await`) runs on it, and it runs once.
 Before this, `first()`, `last()` and `get()` started the query at the call; code that calls one and never awaits it no longer queries.
 It has `.prepare()` (the prepared query's `.run(values)` gives the row), `.inspect()` and `.sql()`.
+Awaiting the same `OneRowQuery` again reuses its first result; Python runs afresh on each await.
+A `param()` limit before `first()`, `at(n)`, `get()` or prepared `first()` / `get()` raises `QueryError`; `last()` and `at(-1)` reject any limit or offset with `RangeError` at the call.
+A one-row relation load needs `.at(n).label(name)`; `.get().label(name)` throws `TypeError`.
 
 `.require()` clones the query and rejects absent row results with
 `Model.DoesNotExist`. Builders retain the modifier, which also applies when awaiting

@@ -520,6 +520,8 @@ class QuerySet(Generic[M]):
                         f"load() takes a relation query set such as {self._model.__name__}.<relation>.objects, not {item!r}"
                     )
                 self._check_path(item._via)
+            elif isinstance(item, OneRowQuery):
+                raise TypeError("a one-row query in load() needs .label(name)")
             elif isinstance(item, RelationPath):
                 self._check_path(item)
             elif isinstance(item, ColumnRef) and item._root is self._model:
@@ -1088,6 +1090,8 @@ class QuerySet(Generic[M]):
         """Lazy single matching row, or None; multiple matches always raise.
 
         ``require().get()`` also raises ``Model.DoesNotExist`` when absent."""
+        if isinstance(self._limit, Param):
+            raise QueryError("a one-row query can't have a param() limit")
         return OneRowQuery(self.filter(*conditions).limit(2), unique=True)
 
     async def count(self) -> int:
@@ -1373,7 +1377,12 @@ class OneRowQuery(Coroutine[Any, Any, T_co]):
 
     def label(self, name: str) -> QuerySet[Any]:
         """Load one related row per parent into ``name`` (or None when absent)."""
+        if self._unique:
+            raise TypeError("get() can't be loaded per parent; use [0].label(name)")
         return self._qs.label(name)._clone(_one=True)
+
+    def __repr__(self) -> str:
+        return f"<OneRowQuery {self._qs!r}>"
 
     def _result(self, rows: list[Any]) -> T_co:
         if self._unique and len(rows) > 1:
@@ -1448,10 +1457,11 @@ class Prepared(Generic[M]):
             qs = self._qs
             op = "select"
             if kind == "get":
+                if isinstance(qs._limit, Param):
+                    raise QueryError("a one-row query can't have a param() limit")
                 qs = qs.limit(2)
             elif kind == "first":
-                qs = qs._clone(_order=qs._default_order())
-                qs = qs.limit(1) if isinstance(qs._limit, Param) else qs[:1]
+                qs = qs._clone(_order=qs._default_order())[:1]
             elif kind in ("count", "exists"):
                 op = kind
             params = SlotParams()

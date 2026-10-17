@@ -375,8 +375,19 @@ async def test_one_row_index_errors(one_row_topics):
         t[-2]
     with pytest.raises(orm.QueryError, match="param"):
         t[orm.param("index")]
+    limited = t.limit(orm.param("limit"))
     with pytest.raises(orm.QueryError, match="param"):
-        t.limit(orm.param("limit"))[0]
+        limited[0]
+    with pytest.raises(orm.QueryError, match="param"):
+        limited.first()
+    with pytest.raises(orm.QueryError, match="param"):
+        limited.get()
+    with pytest.raises(ValueError, match="limit or offset"):
+        limited.last()
+    with pytest.raises(orm.QueryError, match="param"):
+        await limited.prepare().first(limit=0)
+    with pytest.raises(orm.QueryError, match="param"):
+        await limited.prepare().get(limit=0)
 
 
 async def test_one_row_prepared(one_row_topics, observe_queries):

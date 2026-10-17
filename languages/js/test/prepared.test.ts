@@ -78,7 +78,7 @@ test("prepared LIMIT / OFFSET and expressions", async () => {
   assert.deepEqual((await page.all({ bump: 0, min: 0, n: 2, skip: 2 })).map((p) => p.title), ["a3", "b1"]);
   assert.deepEqual((await page.all({ bump: 10, min: 55, n: 10, skip: 0 })).map((p) => p.title), ["a_2%", "b1"]);
   assert.equal(await page.count({ bump: 0, min: 0, n: 3, skip: 2 }), 2);
-  assert.equal((await page.first({ bump: 0, min: 10, n: 5, skip: 1 }))!.title, "a3");
+  await assert.rejects(page.first({ bump: 0, min: 10, n: 5, skip: 1 }), QueryError);
   await assert.rejects(page.all({ bump: 0, min: 0, n: -1, skip: 0 }), (e: unknown) => e instanceof QueryError && /non-negative integer/.test(e.message));
 });
 

@@ -198,6 +198,23 @@ mod unset_when_absent {
     }
 
     #[test]
+    fn one_row_empty_slice_keeps_zero_limit() {
+        use orm_engine::db;
+        let s = schema(false);
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let q = select(json!({"op":"select","model":"Owner","prefetch":[{
+                "relation":"children","model":"Child","attr":"chosen","one":true,"limit":0,"offset":5
+            }]}));
+            let plans = plan_prefetch_only(&s, Target::new(dialect), &q, &NoParams).unwrap();
+            assert!(!plans[0].many);
+            let (sql, values) = db::build(dialect, &plans[0].statement(vec![vec![1.into()]]));
+            // The upper window bound is offset + 0; PostgreSQL reuses its binding.
+            assert!(sql.contains("\"p\".\"_rn\" >") && sql.contains("\"p\".\"_rn\" <="), "{sql}");
+            assert_eq!(values.last(), Some(&sea_query::Value::BigUnsigned(Some(5))));
+        }
+    }
+
+    #[test]
     fn one_row_offset_uses_a_per_parent_window() {
         use orm_engine::db;
         let s = schema(false);

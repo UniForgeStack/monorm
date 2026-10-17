@@ -838,6 +838,8 @@ async def test_indexed_relation_labels(sqlite):
         ["other", None, "other"],
         [None, None, None],
     ]
+    empty = await Author.objects.using(db).load(Author.books.objects[:3][5].label("outside"))
+    assert all(a.outside is None for a in empty)
     with pytest.raises(TypeError):
         Author.objects.using(db).load(Author.books.objects[0])
     with pytest.raises(orm.QueryError, match="to-many"):
