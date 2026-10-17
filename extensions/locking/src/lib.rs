@@ -20,6 +20,16 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         if ir.behavior.versions.iter().any(|v| v.model == d.model) { return Err(error(d, format!("{} has more than one version field", d.model))); }
         ir.behavior.versions.push(VersionField { model: d.model.clone(), field: name });
     }
+    // Bindings look up roles by logical model name, including proxies that
+    // share the version column of their root storage owner.
+    for proxy in &ir.behavior.proxy_models {
+        if ir.behavior.versions.iter().any(|v| v.model == proxy.model) { continue; }
+        if let Some(source) = ir.behavior.versions.iter().find(|v| v.model == proxy.storage_owner) {
+            if ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == source.field)) {
+                ir.behavior.versions.push(VersionField { model: proxy.model.clone(), field: source.field.clone() });
+            }
+        }
+    }
     Ok(())
 }
 

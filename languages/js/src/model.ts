@@ -599,6 +599,9 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
     return;
   }
   const meta = metaOf(this);
+  if (meta.versionField && Object.hasOwn(values, meta.versionField.name)) {
+    throw new TypeError(`${meta.name}.update() cannot set the version field ${meta.versionField.name}; use ${meta.name}.objects.filter({ pk: ... }).update({ ${meta.versionField.name}: ... }) to override it`);
+  }
   const query = versionFilter(this, loadedQuery(this, meta.versionField ? [meta.versionField.ir] : []));
   const rows = (await query.update(values as never, { returning: true })) as Row[];
   if (!rows.length) {

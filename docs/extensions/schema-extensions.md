@@ -97,8 +97,8 @@ model Book {
 * Migration: a changed trigger body (the depth guard, the version bump) shows in the next migration diff; apply that migration to an existing database.
 * Application mode has no cascade.
 * A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
-  A role on a composed model is rejected at definition.
-  The parent side has a gap: a write to a composed child does not maintain the roles of its parent.
+  Schema definition rejects `updated_at`, soft-delete and version fields anywhere in its ownership chain, including the composed model and every ancestor through the root.
+  The error names the composed model, the owner, the field and its role, because composed writes cannot maintain those roles.
 
 ## Behavior change: upsert
 
@@ -124,8 +124,13 @@ model Doc {
   When no row matches and the row has another version, it raises `orm.VersionConflict` (`VersionConflict` in TypeScript).
   When the row is gone, `update()` raises `DoesNotExist`.
 * The instance must have the version field loaded.
+* Instance `update()` rejects an explicit version field with `TypeError`.
+  Use `Model.objects.filter(pk=...).update(version=...)` in Python or `Model.objects.filter({ pk: ... }).update({ version: ... })` in TypeScript for an intentional query-set override.
+  An explicit upsert update list may also override the version.
 * A query set `update()` does not check the version, as Rails `update_all`.
 * An instance `hard_delete()` has no version check.
+* A proxy inherits its root storage owner's version and soft-delete roles and must keep those fields.
+  Proxy instance `update()` and `delete()` check the loaded version, including proxies of proxies.
 * No DDL.
 
 ```python
