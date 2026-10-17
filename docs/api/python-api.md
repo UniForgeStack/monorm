@@ -300,7 +300,7 @@ SQL text client-side, so the limit doesn't apply to it.)
   A bare path or plain set gives the normal selection united with the columns named beside it. A column beside a set with its own columns is added to that set's columns.
   It gives the related rows their own filters, ordering, slice and `.load(...)` (nested under it).
   As in Django, the rows fill the relation itself, so `user.posts.cached` and `await user.posts` then give the filtered rows; `user.posts.filter(...)` and other new queries still see every post.
-  With `.label("recent")` they go to a plain list attribute (`user.recent`), and the relation stays unloaded; `.label("best", one=True)` stores the first row, or `None`.
+  With `.label("recent")` they go to a plain list attribute (`user.recent`), and the relation stays unloaded; `[0].label("best")` stores the first row, or `None`.
   A path never goes under a label: `User.posts.comments` fills `user.posts`; a labeled query set loads its own items with `.load()`.
   A label that is a field, relation or member of the model, one label for two relations, or two different unlabeled query sets for one relation raise `ValueError`.
 * `.as_prefetch()` loads a to-one relation with an `IN (...)` query instead of a join; the rows are the same.
@@ -461,8 +461,9 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
 * `qs1 | qs2` is one query set with the filter `(filters of qs1) OR (filters of qs2)`; order, loading and `using` come from `qs1`. A relation set on the left gives a plain query set. A custom class takes its state from the left side.
   `qs2` must set nothing but filters, neither may be sliced, and each side has at most one `filter()`/`exclude()` call, else `QueryError`:
   conditions of one call through a to-many relation must hold for one related row, so two calls can't be joined into one.
-* `User.posts.objects.order_by(-Post.views).label("best", one=True)` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.
-  It needs a to-many relation and a label, and takes no slice (it is a limit of one per parent); a slice raises `ValueError`.
+* `User.posts.objects.order_by(-Post.views)[0].label("best")` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.
+  Positions apply per parent; `[-1]` reverses the order. A to-many relation and a label are required.
+  An unlabeled one-row query in `load()` raises `TypeError`; awaiting a relation query outside `load()` also raises `TypeError`.
 * `orm.column(Bundle, "items.product.title")` is the column a dotted path names, the same as `Bundle.items.product.title`.
   Each name before the last is a relation, the last a field; an unknown name raises `LookupError`.
   It is for adapters that map request names to columns (search and ordering filters). It is a function, not `Model.column`, so it can't collide with a field named `column`.

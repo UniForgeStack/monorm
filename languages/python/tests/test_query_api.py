@@ -506,7 +506,7 @@ async def test_load_a_column_through_a_to_many_path(clean, observe_queries):
     assert users[0].name == "Alice"
 
 
-# -- qs1 | qs2, label(one=True), orm.column ----------------------------------------------
+# -- qs1 | qs2, indexed labels, orm.column ----------------------------------------------
 
 
 async def test_or_of_query_sets(clean):
@@ -580,28 +580,40 @@ async def test_or_keeps_the_custom_query_set_class(clean, custom):
 async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
     await seed()
     await User.objects.insert(email="carol@example.com", name="Carol")
-    query = User.objects.order_by(User.id).load(User.posts.objects.order_by(-Post.views).label("best", one=True))
+    query = User.objects.order_by(User.id).load(
+        User.posts.objects.order_by(-Post.views)[0].label("best"),
+        User.posts.objects.order_by(-Post.views)[1].label("second"),
+        User.posts.objects.order_by(-Post.views)[-1].label("last_post"),
+    )
     assert query.inspect() == orm.QueryInspection(
-        2,
+        4,
         True,
         (
             orm.StatementInspection(False, 0, 0, 0, 0),
+            orm.StatementInspection(True, 0, 0, 1, 0),
+            orm.StatementInspection(True, 0, 0, 1, 0),
             orm.StatementInspection(True, 0, 0, 1, 0),
         ),
     )
     with observe_queries(clean) as events:
         users = await query
-    assert len(events) == 2
+    assert len(events) == 4
+    assert [u.second.title if u.second else None for u in users] == ["draft", None, None]
+    assert [u.last_post.title if u.last_post else None for u in users] == ["quiet", "bob", None]
     assert [u.best.title if u.best else None for u in users] == ["hit", "bob", None]
-    with pytest.raises(ValueError, match="slice"):
-        User.objects.load(User.posts.objects[:2].label("x", one=True))
+    with pytest.raises(TypeError):
+        User.objects.load(User.posts.objects[0])
     with pytest.raises(orm.QueryError, match="to-many") as one_error:
-        await Post.objects.load(Post.author.objects.label("writer", one=True))
+        await Post.objects.load(Post.author.objects[0].label("writer"))
     assert "to_attr" not in str(one_error.value)
     with pytest.raises(ValueError, match="field, relation or member"):
         User.objects.load(User.posts.objects.label("name"))
     with pytest.raises(ValueError, match="identifier"):
         User.posts.objects.label("_x")
+    with pytest.raises(TypeError):
+        await User.posts.objects[0]
+    with pytest.raises(TypeError):
+        User.posts.objects.label("old", one=True)
 
 
 async def test_column_from_a_dotted_path(clean):

@@ -4,7 +4,7 @@
  * two types are identical. Never run.
  */
 
-import { describe, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
+import { describe, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
 import { Comment, Post, Priority, Profile, Role, Tag, User } from "../blog/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -152,8 +152,14 @@ export async function loading() {
   void p;
   const top = await User.objects.load(User.posts.objects.load(Post.author).label("top")).all();
   same<(typeof top)[number]["top"][number]["author"]["email"], string>();
-  const best = await User.objects.load(User.posts.objects.label("best", { one: true })).all();
+  const best = await User.objects.load(User.posts.objects.at(0).label("best")).all();
   same<(typeof best)[number]["best"], Post | null>();
+  const second = await User.objects.load(User.posts.objects.at(1).label("second"));
+  same<(typeof second)[number]["second"], Post | null>();
+  // @ts-expect-error label no longer accepts one options
+  User.posts.objects.label("old", { one: true });
+  // @ts-expect-error a one-row query still belongs to its original relation root
+  Post.objects.load(User.posts.objects.at(0).label("wrong"));
   // @ts-expect-error a path from another model
   User.objects.load(Post.author);
   // @ts-expect-error a query set not bound to a relation
@@ -461,6 +467,7 @@ export async function oneRowQueries() {
   if (selectedAt) void selectedAt.title;
   const query = Post.objects.first();
   same<typeof query, OneRowQuery<Post | null>>();
+  same<ReturnType<typeof query.prepare>, PreparedOneRowQuery<Post | null, {}>>();
   const byId = Post.objects.filter(Post.id.eq(param("id"))).first().prepare();
   const prepared = await byId.run({ id: 1n });
   same<typeof prepared, Post | null>();

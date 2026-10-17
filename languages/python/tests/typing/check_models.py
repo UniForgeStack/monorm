@@ -232,6 +232,8 @@ async def errors() -> None:
     await u.update(name=1)  # E: wrong type
     u.posts = []  # E: read-only relation
     User.objects.load(1)  # E: not a column, relation or relation query set
+    User.objects.load(User.posts.objects[0].label("chosen"))
+    User.posts.objects.label("old", one=True)  # E: one-row loads use [n].label()
     func.ntile("2")  # E: buckets are ints
     func.sum(Post.views).over(window(), rows=(None, "x"))  # E: frame bounds are ints
     await Profile.objects.insert(user_id=1, role="boss")  # E: roles are Role members
