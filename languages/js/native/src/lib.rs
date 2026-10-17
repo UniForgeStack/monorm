@@ -353,7 +353,9 @@ fn inspect_insert(env: &Env, schema: &schema::Schema, target: Target, model: &st
         None => Conflict::Nothing { target, filter: opts.filter },
     });
     let values = convert_rows(env, schema, model, fields, rows, true)?;
-    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params(env, params_)?, batch_size.map(|n| n as usize), returning).map_err(engine_err)?;
+    let p = params(env, params_)?;
+    let scoped = orm_engine::params::Scoped { params: &p, scope: &opts.scope };
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning).map_err(engine_err)?;
     let batching = plans.len() > 1;
     inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
 }
@@ -762,6 +764,7 @@ impl Engine {
         conflict_where: Option<String>,
         trace: Option<&Trace>,
         returning: Option<bool>,
+        scope: Option<String>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         let returning = returning.unwrap_or(true);
         protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
@@ -779,7 +782,9 @@ impl Engine {
         });
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
         let p = params(env, params_)?;
-        let plans = exec::plan_inserts(&self.schema, self.target, &model, &fields, values, conflict, &p, batch_size.map(|n| n as usize), returning)
+        let scope = serde_json::from_str(scope.as_deref().unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
+        let scoped = orm_engine::params::Scoped { params: &p, scope: &scope };
+        let plans = exec::plan_inserts(&self.schema, self.target, &model, &fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning)
             .map_err(engine_err)?;
         let target = self.target;
         let conn = self.traced(tx, trace);

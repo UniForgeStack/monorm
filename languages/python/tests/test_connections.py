@@ -508,9 +508,11 @@ def scoped_schema(dialect):
             },
         ],
         "behavior": {
-            "schema_contract": 1,
-            "query_defaults": [
+            "schema_contract": 2,
+            "read_defaults": [
                 {
+                    "source": "orm.query-defaults",
+                    "name": "query",
                     "model": "Order",
                     "filter": {
                         "t": "cmp",
@@ -546,7 +548,10 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
             lambda: orders.filter(Order.total > 0).exists(),
             lambda: Shop.objects.using(sdb).filter(Shop.orders.total > 25).count(),
         ):
-            with pytest.raises(orm.QueryError, match=r"default filter of Order reads scope\.shop"):
+            with pytest.raises(
+                orm.QueryError,
+                match=r'Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop',
+            ):
                 await read()
         assert await orders.without_defaults().count() == 3
         with orm.scope(shop=s1.id):
@@ -596,7 +601,10 @@ async def test_prefetch_applies_scope_values(db, dialect):
         )
         shops = await Shop.objects.using(sdb).order_by(Shop.id).all()
         # Outside a scope the default filter is closed, as for load().
-        with pytest.raises(orm.QueryError, match=r"default filter of Order reads scope\.shop"):
+        with pytest.raises(
+            orm.QueryError,
+            match=r'Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop',
+        ):
             await orm.prefetch(shops, Shop.orders, using=sdb)
         with orm.scope(shop=s1.id):
             await orm.prefetch(shops, Shop.orders, using=sdb)

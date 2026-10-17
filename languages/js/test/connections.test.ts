@@ -402,7 +402,7 @@ function scopedSchema(dialect: string) {
       relations: [{ name: 'orders', kind: 'many', target: 'Order', from: 'id', to: 'shop_id' }] },
     { name: 'Order', table: 's6_js_orders', fields: [field('id', 'int', { primary_key: true, auto_increment: true }), field('shop_id'), field('total')],
       relations: [{ name: 'shop', kind: 'one', target: 'Shop', from: 'shop_id', to: 'id', foreign_key: true, on_delete: 'cascade' }] },
-  ], behavior: { schema_contract: 1, query_defaults: [{ model: 'Order', filter: {
+  ], behavior: { schema_contract: 2, read_defaults: [{ source: "orm.query-defaults", name: "query", model: 'Order', filter: {
     t: 'cmp', op: 'eq', l: { t: 'col', path: [], name: 'shop_id' }, r: { t: 'scope', name: 'shop' } } }] } };
 }
 
@@ -419,13 +419,13 @@ for (const dialect of ['postgres', 'sqlite']) {
       const orders = Order.objects.using(sdb);
       const [o1, , o3] = await orders.insertMany([{ shopId: s1.id, total: 10 }, { shopId: s1.id, total: 20 }, { shopId: s2.id, total: 30 }]).returning();
       for (const read of [() => orders.all(), () => orders.count(), () => Shop.objects.using(sdb).filter(Shop.orders.total.gt(25)).count()]) {
-        await assert.rejects(read(), /default filter of Order reads scope\.shop/);
+        await assert.rejects(read(), /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       }
       assert.equal(await orders.withoutDefaults().count(), 3);
       // A lazy mutation and its inspection use the scope of execution, not construction.
       let deferred!: ReturnType<typeof orders.update>;
       await scope({ shop: s1.id }, async () => { deferred = orders.update({ total: 31 }); });
-      assert.throws(() => deferred.inspect(), /default filter of Order reads scope\.shop/);
+      assert.throws(() => deferred.inspect(), /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       await scope({ shop: s2.id }, async () => {
         deferred.inspect();
         assert.equal(await deferred, 1);
@@ -471,7 +471,7 @@ for (const dialect of ['postgres', 'sqlite']) {
       const shops = await Shop.objects.using(sdb).orderBy('id');
       const totals = () => shops.map((s: any) => s.orders.cached.map((o: any) => o.total).sort());
       // Outside a scope the default filter is closed, as for load().
-      await assert.rejects(prefetch(shops, Shop.orders, { using: sdb }), /default filter of Order reads scope\.shop/);
+      await assert.rejects(prefetch(shops, Shop.orders, { using: sdb }), /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       await scope({ shop: s1.id }, async () => {
         await prefetch(shops, Shop.orders, { using: sdb });
         assert.deepEqual(totals(), [[10, 20], []]);

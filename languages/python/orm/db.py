@@ -280,11 +280,27 @@ class Database:
         returning: bool = True,
     ) -> Any:
         set_json, params = (json.dumps(set_[0]), set_[1]) if set_ is not None else (None, [])
+        scope_json, params = _with_scope("{}", params)
+        scope = json.dumps(json.loads(scope_json).get("scope", {}))
         tx, allowed = self._tx(), allowed_writes()
         wh = None if where is None else json.dumps(where)
         return await self._call(
             lambda t: self._engine.insert(
-                model, fields, rows, conflict, update, set_json, params, tx, db, allowed, batch_size, wh, t, returning
+                model,
+                fields,
+                rows,
+                conflict,
+                update,
+                set_json,
+                params,
+                tx,
+                db,
+                allowed,
+                batch_size,
+                wh,
+                t,
+                returning,
+                scope,
             ),
             ("insert", model, fields, conflict),
         )
@@ -578,7 +594,8 @@ def _with_scope(op: str, params: list[Any], key: str | None = None) -> tuple[str
     if not values:
         return op, params
     index = json.dumps({name: len(params) + i for i, name in enumerate(values)})
-    op = f'{{"{key}":{op},"scope":{index}}}' if key else f'{op[:-1]},"scope":{index}}}'
+    separator = "," if op[1:-1].strip() else ""
+    op = f'{{"{key}":{op},"scope":{index}}}' if key else f'{op[:-1]}{separator}"scope":{index}}}'
     return op, [*params, *values.values()]
 
 

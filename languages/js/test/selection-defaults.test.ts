@@ -16,9 +16,9 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean) {
       ], relations: [{ name: "books", kind: "many", target: "SelectedBook", from: "id", to: "author_id" }] },
       { name: "SelectedBook", table: "selection03_js_books", fields: [field("title"), field("author_id", "int"), field("id", "int", { primary_key: true, auto_increment: true }), field("isbn", "string", { nullable: true })],
         relations: [{ name: "author", kind: "one", target: "SelectedAuthor", from: "author_id", to: "id", foreign_key: true, on_delete: "cascade" }] },
-    ], behavior: defaults ? { schema_contract: 1, query_defaults: [
-      { model: "SelectedAuthor", filter: { t: "col", path: [], name: "visible" }, fields: ["name", "note"] },
-      { model: "SelectedBook", fields: ["title"], related: [["author"]] },
+    ], behavior: defaults ? { schema_contract: 2, read_defaults: [
+      { source: "orm.query-defaults", name: "query", model: "SelectedAuthor", filter: { t: "col", path: [], name: "visible" }, fields: ["name", "note"] },
+      { source: "orm.query-defaults", name: "query", model: "SelectedBook", fields: ["title"], load: [["author"]] },
     ] } : {} } as never, { registry });
   const Author = models["SelectedAuthor"] as any;
   const Book = models["SelectedBook"] as any;

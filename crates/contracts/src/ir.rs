@@ -157,12 +157,18 @@ pub struct SchemaIr {
 impl SchemaIr {
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
     pub fn from_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json).map_err(|e| format!("invalid schema IR: {e}; if another ORM version generated the models, regenerate them"))
+        serde_json::from_str(json).map_err(|e| format!("invalid schema IR: {e}; if another ORM version generated the models, regenerate them and rebuild the native artifact"))
     }
 }
 
 #[cfg(test)]
 mod schema_json {
+    #[test]
+    fn old_query_defaults_require_regeneration_and_rebuild() {
+        let old = r#"{"models":[],"behavior":{"schema_contract":1,"query_defaults":[]}}"#;
+        let error = super::SchemaIr::from_json(old).unwrap_err();
+        assert!(error.contains("query_defaults") && error.contains("regenerate") && error.contains("rebuild"), "{error}");
+    }
     #[test]
     fn an_ir_from_an_older_version_names_the_cure() {
         let old = r#"{"models":[],"behavior":{"proxy_models":[{"model":"A","parent":"U","defaults":{}}]}}"#;

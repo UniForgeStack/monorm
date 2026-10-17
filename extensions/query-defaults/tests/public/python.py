@@ -37,11 +37,46 @@ async def run(provider: str, url: str) -> None:
             raise AssertionError("a selected-out field was loaded")
         full = await Policy.objects.using(db).without_defaults().get(Policy.name == "hidden")
         assert full.bio == "large" and full.active is False
-        await Scoped.objects.using(db).insert_many([{"shop_id": 1}, {"shop_id": 2}])
+        scoped = Scoped.objects.using(db)
+        tenants = await scoped.insert_many([{"shop_id": 1}, {"shop_id": 2}]).returning()
+        first, second = tenants
+        # DO NOTHING and plain INSERT do not need scope; DO UPDATE fails closed.
+        await scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=False)
+        try:
+            await scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=True)
+        except orm.QueryError as e:
+            for text in ("Scoped", 'default "query"', "orm.query-defaults", "scope.shop", 'without_defaults("query")'):
+                assert text in str(e), e
+        else:
+            raise AssertionError("an upsert with no scope ran")
+        with orm.scope(shop=2):
+            blocked = scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=True)
+            blocked.inspect()
+            assert await blocked == 0
+            assert (
+                await scoped.insert_many([{"id": second.pk, "shop_id": 2}]).on_conflict(
+                    Scoped.id, update=True, update_values={"shop_id": 3}
+                )
+                == 1
+            )
+        assert (await scoped.without_defaults().get(Scoped.id == first.pk)).shop_id == 1
+        assert (await scoped.without_defaults().get(Scoped.id == second.pk)).shop_id == 3
+        with orm.scope(shop=3):
+            await scoped.insert(id=second.pk, shop_id=2).on_conflict(Scoped.id, update=True)
+        # Non-scoped defaults also guard the existing row, not EXCLUDED.
+        hidden = await Policy.objects.using(db).without_defaults().get(Policy.name == "hidden")
+        assert (
+            await Policy.objects.using(db)
+            .insert(id=hidden.pk, name="changed", bio="new")
+            .on_conflict(Policy.id, update=True)
+            == 0
+        )
+        assert (await Policy.objects.using(db).without_defaults().get(Policy.id == hidden.pk)).name == "hidden"
         try:
             await Scoped.objects.using(db).count()
         except orm.QueryError as e:
-            assert "scope.shop" in str(e), e
+            for text in ("Scoped", 'default "query"', "orm.query-defaults", "scope.shop", 'without_defaults("query")'):
+                assert text in str(e), e
         else:
             raise AssertionError("a read with no scope ran")
         with orm.scope(shop=2):

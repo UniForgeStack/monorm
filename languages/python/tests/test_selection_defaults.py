@@ -55,14 +55,22 @@ def schema(dialect, defaults=True):
             },
         ],
         "behavior": {
-            "schema_contract": 1,
-            "query_defaults": [
+            "schema_contract": 2,
+            "read_defaults": [
                 {
+                    "source": "orm.query-defaults",
+                    "name": "query",
                     "model": "SelectedAuthor",
                     "filter": {"t": "col", "path": [], "name": "visible"},
                     "fields": ["name", "note"],
                 },
-                {"model": "SelectedBook", "fields": ["title"], "related": [["author"]]},
+                {
+                    "source": "orm.query-defaults",
+                    "name": "query",
+                    "model": "SelectedBook",
+                    "fields": ["title"],
+                    "load": [["author"]],
+                },
             ],
         }
         if defaults
@@ -465,7 +473,12 @@ async def test_a_joined_model_brings_its_related_default():
                 ],
             },
         ],
-        "behavior": {"schema_contract": 1, "query_defaults": [{"model": "JBook", "related": [["author"]]}]},
+        "behavior": {
+            "schema_contract": 2,
+            "read_defaults": [
+                {"source": "orm.query-defaults", "name": "query", "model": "JBook", "load": [["author"]]}
+            ],
+        },
     }
     registry = orm.Registry()
     classes = orm.define(ir, registry=registry)

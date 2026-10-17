@@ -23,8 +23,24 @@ async function run(provider, url) {
     const full = await Policy.objects.using(db).withoutDefaults().get(Policy.name.eq('hidden'));
     assert.equal(full.bio, 'large');
     assert.equal(full.active, false);
-    await Scoped.objects.using(db).insertMany([{ shopId: 1 }, { shopId: 2 }]);
-    await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop/);
+    const scoped = Scoped.objects.using(db);
+    const [first, second] = await scoped.insertMany([{ shopId: 1 }, { shopId: 2 }]).returning();
+    await scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: false });
+    await assert.rejects(scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: true }), /Scoped default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
+    await scope({ shop: 2 }, async () => {
+      scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: true }).inspect();
+      assert.equal(await scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: true }), 0);
+      assert.equal(await scoped.insertMany([{ id: second.pk, shopId: 2 }]).onConflict(Scoped.id, { update: true, updateValues: { shopId: 3 } }), 1);
+    });
+    assert.equal((await scoped.withoutDefaults().get(Scoped.id.eq(first.pk))).shopId, 1);
+    assert.equal((await scoped.withoutDefaults().get(Scoped.id.eq(second.pk))).shopId, 3);
+    await scope({ shop: 3 }, async () => {
+      await scoped.insert({ id: second.pk, shopId: 2 }).onConflict(Scoped.id, { update: true });
+    });
+    const hidden = await Policy.objects.using(db).withoutDefaults().get(Policy.name.eq('hidden'));
+    assert.equal(await Policy.objects.using(db).insert({ id: hidden.pk, name: 'changed', bio: 'new' }).onConflict(Policy.id, { update: true }), 0);
+    assert.equal((await Policy.objects.using(db).withoutDefaults().get(Policy.id.eq(hidden.pk))).name, 'hidden');
+    await assert.rejects(Scoped.objects.using(db).count(), /Scoped default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
     await scope({ shop: 2 }, async () => assert.deepEqual((await Scoped.objects.using(db)).map((r) => r.shopId), [2]));
     await scope({ shop: null }, async () => {
       await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop is None\/null/);

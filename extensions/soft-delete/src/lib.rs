@@ -145,7 +145,7 @@ mod tests {
                     {"name": "author_id", "column": "author_id", "type": "int"}
                 ], "relations": [{"name": "author", "kind": "one", "target": "Author", "from": "author_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}
             ],
-            "behavior": {"schema_contract": 1, "declarations": [at("Author", 3), at("Book", 9), lock("Author"), lock("Book")]}
+            "behavior": {"schema_contract": 2, "declarations": [at("Author", 3), at("Book", 9), lock("Author"), lock("Book")]}
         })).unwrap()
     }
 

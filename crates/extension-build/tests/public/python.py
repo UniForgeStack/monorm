@@ -13,6 +13,16 @@ SCHEMA = json.loads(Path(os.environ["ORM_EXTENSION_TEST_SCHEMA"]).read_text())
 async def check():
     reg = orm.Registry()
     models = orm.define(SCHEMA, registry=reg)
+    stale = json.loads(json.dumps(SCHEMA))
+    stale["behavior"]["read_defaults"] = [
+        {"source": "another-extension", "name": "selection", "model": "NativeUser", "fields": ["username"]}
+    ]
+    try:
+        orm.define(stale, registry=orm.Registry())
+    except orm.SchemaError as error:
+        assert "read-default specialization" in str(error) and "rebuild" in str(error), error
+    else:
+        raise AssertionError("a native specialization accepted changed read defaults")
     User = models["NativeUser"]
     Record = models["NativeRecord"]
     Lowered = models["LoweredUser"]
@@ -63,7 +73,7 @@ async def check():
             {
                 "dialect": SCHEMA["dialect"],
                 "models": [handwritten],
-                "behavior": {"schema_contract": 1, "storage": {"models": [physical]}},
+                "behavior": {"schema_contract": 2, "storage": {"models": [physical]}},
             },
             registry=direct_registry,
         )["LoweredUser"]

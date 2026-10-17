@@ -66,7 +66,7 @@ mod tests {
                 {"name": "id", "column": "id", "type": "int", "primary_key": true},
                 {"name": "changed", "column": "changed_at", "type": ty, "default_now": true}
             ]}],
-            "behavior": {"schema_contract": 1, "declarations": [
+            "behavior": {"schema_contract": 2, "declarations": [
                 {"attribute": "timestamps.updated_at", "model": "Post", "field": "changed", "positional": [], "arguments": arguments, "location": {"file": "schema.prisma", "line": 4, "column": 3}}
             ]}
         })).unwrap()

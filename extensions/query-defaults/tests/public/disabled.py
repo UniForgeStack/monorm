@@ -1,4 +1,4 @@
-"""A build without query-defaults rejects compiled policies and keeps the registry."""
+"""Without the producer, public syntax is rejected; neutral prepared data is accepted."""
 
 import json
 
@@ -14,21 +14,19 @@ plain = {
             "table": "plain",
             "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": True}],
         }
-    ]
+    ],
+    "behavior": {
+        "schema_contract": 2,
+        "read_defaults": [{"source": "another-extension", "name": "selection", "model": "Plain", "fields": []}],
+    },
 }
 orm.define(plain, registry=registry)
 before = registry.ir()
-bad = {
-    "models": [
-        {"name": "Bad", "table": "bad", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": True}]}
-    ],
-    "behavior": {"schema_contract": 1, "query_defaults": [{"model": "Bad", "fields": []}]},
-}
 try:
-    orm.define(bad, registry=registry)
+    orm.loads('model Bad {\n id Int @id\n @@query.filter("id > 0")\n}', registry=registry)
 except orm.SchemaError as error:
-    assert "query-defaults" in str(error) and "rebuild" in str(error)
+    assert "@query.filter" in str(error) and "rebuild" in str(error), error
 else:
-    raise AssertionError("disabled artifact accepted policies")
+    raise AssertionError("disabled artifact accepted @@query syntax")
 assert registry.ir() == before
-print("Disabled Python capability/atomic definition: passed")
+print("Disabled Python syntax/neutral contract: passed")

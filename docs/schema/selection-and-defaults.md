@@ -76,9 +76,10 @@ model User {
 A second copy of the same attribute is an error too.
 
 Build-select the compiler as a dependency with alias `query_defaults`; its
-manifest selects the `query-defaults` host capability. Disabled artifacts reject
-policy metadata during definition with a rebuild instruction. Ordinary explicit
-partial selections remain available in baseline builds.
+manifest selects the `query-defaults` host capability. Without that compiler,
+`@@query.*` declarations fail at definition. The neutral `read_defaults` prepared
+contract is accepted in every build; other extensions can contribute to it.
+Ordinary explicit partial selections remain available in baseline builds.
 
 Options omitted on a child inherit the nearest parent's policy. An explicit filter
 replaces the inherited filter. `parent.default_filter and active == true` composes
@@ -128,7 +129,9 @@ await scope({ shop: shop.id }, async () => { const orders = await Order.objects.
 
 * The frontend sends the scope values as parameters of each statement; the value is bound with the type of the column it is compared with.
 * Closed by default: a read, count, exists, update, delete or `update_many` on a model whose default filter reads `scope.shop` raises `QueryError` when no enclosing `scope()` sets `shop`. Relation hops, prefetches and joined targets of that model check it too.
-  The error names each model whose default filter reads the value.
+  The error names the model, default name and source that read the value, and suggests
+  `without_defaults("<name>")` (named bypass is added in the next refactor step).
+  Until named bypass is available, `without_defaults()` bypasses all defaults.
 * A NULL scope value (`None`, `null`) raises `QueryError` ("scope.shop is None/null") when a default filter reads it, because `shop_id = NULL` would match no rows.
   In TypeScript, the binding rejects `undefined` before any filter reads it ("undefined is not a value").
   `0`, `""` and `false` are valid values.

@@ -557,7 +557,7 @@ export function withScope(json: string, params: unknown[], key?: string): [strin
   }
   const names = Object.keys(values);
   const index = JSON.stringify(Object.fromEntries(names.map((n, i) => [n, params.length + i])));
-  const op = key === undefined ? `${json.slice(0, -1)},"scope":${index}}` : `{"${key}":${json},"scope":${index}}`;
+  const op = key === undefined ? `${json.slice(0, -1)}${json.slice(1, -1).trim() ? "," : ""}"scope":${index}}` : `{"${key}":${json},"scope":${index}}`;
   return [op, [...params, ...names.map((n) => values[n])]];
 }
 

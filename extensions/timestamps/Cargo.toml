@@ -17,7 +17,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 id = "orm.timestamps"
 version = "0.1.0"
 host_contract = 1
-schema_contract = 1
+schema_contract = 2
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema", "updated-at"]

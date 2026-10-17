@@ -33,7 +33,7 @@ mod tests {
                 {"name": "id", "column": "id", "type": "int", "primary_key": true},
                 {"name": "version", "column": "version", "type": ty, "default": 0}
             ]}],
-            "behavior": {"schema_contract": 1, "declarations": [
+            "behavior": {"schema_contract": 2, "declarations": [
                 {"attribute": "locking.version", "model": "Post", "field": "version", "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": 3, "column": 3}}
             ]}
         })).unwrap()
