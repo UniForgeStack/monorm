@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, define, loads, NotLoaded, Registry } from "../src/index.js";
+import { connect, define, IntegrityError, loads, NotLoaded, Registry } from "../src/index.js";
 import { native } from "../src/native.js";
 
 const queryDefaults = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes("query-defaults") ?? false;
@@ -186,37 +186,6 @@ test("schema default order: one source per option", (t) => {
 });
 
 
-test("a missing reference is null only when the engine filtered the join", async (t) => {
-  if (!queryDefaults) {
-    t.skip("needs a native build with the query-defaults feature");
-    return;
-  }
-  const registry = new Registry();
-  const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
-  const models = define({ dialect: "sqlite", models: [
-    { name: "DAuthor", table: "d_authors", fields: [field("id", "int", { primary_key: true }), field("visible", "bool")] },
-    { name: "DBook", table: "d_books", fields: [field("id", "int", { primary_key: true }), field("author_id", "int")],
-      relations: [{ name: "author", kind: "one", target: "DAuthor", from: "author_id", to: "id", foreign_key: true }] },
-  ], behavior: { schema_contract: 1, query_defaults: [{ model: "DAuthor", filter: { t: "col", path: [], name: "visible" } }] } } as never, { registry });
-  const Author = models["DAuthor"] as any;
-  const Book = models["DBook"] as any;
-  const db = await connect("sqlite://:memory:", { registry, default: false });
-  try {
-    await db.createTables();
-    await db.execute("PRAGMA foreign_keys = OFF");
-    await Author.objects.using(db).insert({ id: 1, visible: false });
-    await Book.objects.using(db).insert({ id: 1, authorId: 1 });
-    await Book.objects.using(db).insert({ id: 2, authorId: 99 });
-    const books = Book.objects.using(db).orderBy(Book.id);
-    assert.deepEqual((await books.load(Book.author).all()).map((b: any) => b.author), [null, null]);
-    const [first, second] = await books.withoutDefaults().load(Book.author).all();
-    assert.notEqual(first.author, null);
-    assert.throws(() => second.author, NotLoaded);
-  } finally {
-    await db.close();
-  }
-});
-
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`load() of a path with columns unites the default selection: ${dialect}`, async (t) => {
     if (!queryDefaults) {
@@ -278,11 +247,15 @@ async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean) {
   const db = await connect(url, { registry, default: false });
   await db.dropTables(); await db.createTables();
   if (dialect === "sqlite") await db.execute("PRAGMA foreign_keys = OFF");
-  else await db.execute("ALTER TABLE g2_js_books DROP CONSTRAINT IF EXISTS g2_js_books_author_id_fkey");
+  else {
+    await db.execute("ALTER TABLE g2_js_books DROP CONSTRAINT IF EXISTS g2_js_books_author_id_fkey");
+    await db.execute("ALTER TABLE g2_js_profiles DROP CONSTRAINT IF EXISTS g2_js_profiles_author_id_fkey");
+  }
   const { UAuthor: Author, UBook: Book, UProfile: Profile } = models;
   await Author.objects.using(db).withoutDefaults().insertMany([{ id: 1, name: "ann", active: true }, { id: 2, name: "bob", active: false }, { id: 3, name: "cy", active: true }]);
   // Book 1 has an author, 2 a dangling key, 3 a NULL key, 4 a hidden author.
   await Book.objects.using(db).insertMany([{ id: 1, authorId: 1 }, { id: 2, authorId: 99 }, { id: 3, authorId: null }, { id: 4, authorId: 2 }]);
+  await Profile.objects.using(db).insertMany([{ id: 1, authorId: 1 }, { id: 2, authorId: 99 }, { id: 3, authorId: 2 }]);
   return { db, Author, Book, Profile };
 }
 
@@ -309,7 +282,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
     try {
       const books = await Book.objects.using(db).orderBy(Book.id).load(Book.author.objects.asPrefetch().label("writer")).all();
       assert.equal(books[1].writer, null);
-      const ann = await Author.objects.using(db).orderBy(Author.id).load(Author.profile).first();
+      const ann = await Author.objects.using(db).orderBy(Author.id).load(Author.profile).get(Author.id.eq(3));
       assert.equal(ann.profile, null);
     } finally { await db.dropTables(); await db.close(); }
   });
@@ -323,6 +296,43 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       const bypassed = await Book.objects.using(db).withoutDefaults().orderBy(Book.id).load(Book.author.objects.asPrefetch()).all();
       assert.deepEqual([1, 2].map((i) => reference(bypassed[i])), ["unset", null]);
       assert.equal(reference(bypassed[3]).name, "bob");
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+
+for (const dialect of ["sqlite", "postgres"] as const) {
+  test(`adapter guards for required and nullable dangling keys: ${dialect}`, async () => {
+    const { db, Book, Profile } = await openUnset(dialect, false);
+    try {
+      for (const Model of [Book, Profile]) {
+        for (const path of [Model.author, Model.author.objects.asPrefetch()]) {
+          const row = await Model.objects.using(db).load(path).get(Model.id.eq(2));
+          assert.throws(() => row.author, NotLoaded);
+        }
+      }
+      const required = await Profile.objects.using(db).get(Profile.id.eq(2));
+      await assert.rejects(required.load(Profile.author), IntegrityError);
+      const nullable = await Book.objects.using(db).get(Book.id.eq(2));
+      await nullable.load(Book.author);
+      assert.equal(nullable.author, null); // F2: current behavior pending an owner decision.
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a missing reference is null only when the engine filtered the join: ${dialect}`, async (t) => {
+    if (!queryDefaults) { t.skip("needs a native build with the query-defaults feature"); return; }
+    const { db, Book, Profile } = await openUnset(dialect, true);
+    try {
+      for (const Model of [Book, Profile]) {
+        const rows = Model.objects.using(db).orderBy(Model.id);
+        for (const path of [Model.author, Model.author.objects.asPrefetch()]) {
+          const loaded = await rows.load(path).all();
+          assert.deepEqual(loaded.slice(1).map((row: any) => row.author), Model === Book ? [null, null, null] : [null, null]);
+        }
+        const [first, dangling] = await rows.withoutDefaults().load(Model.author).all();
+        assert.equal(first.author.name, "ann");
+        assert.throws(() => dangling.author, NotLoaded);
+      }
     } finally { await db.dropTables(); await db.close(); }
   });
 }
