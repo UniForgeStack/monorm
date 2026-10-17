@@ -161,6 +161,40 @@ impl<'a, 'py> Builder<'a, 'py> {
         Ok(inst)
     }
 
+    fn clear_absent(&self, parent: &Instance<'py>, attr: &str) -> PyResult<()> {
+        if let Some(markers) = parent.dict.get_item("_reference_absent")? {
+            let markers = markers.cast_into::<PyDict>()?.copy()?;
+            markers.call_method1("pop", (attr, self.py.None()))?;
+            parent.dict.set_item("_reference_absent", markers)?;
+        }
+        Ok(())
+    }
+
+    /// Remember the source key of an unfiltered reference load with no target row.
+    fn mark_absent(&self, parent: &Instance<'py>, attr: &str) -> PyResult<()> {
+        let relation = parent.obj.getattr("_meta")?.getattr("relations")?.get_item(attr)?;
+        let names = relation.getattr("via_fields")?;
+        let internal = parent.dict.get_item("_orm_internal")?;
+        let mut values = Vec::new();
+        for name in names.try_iter()? {
+            let name = name?;
+            let value = match parent.dict.get_item(&name)? {
+                Some(value) => value,
+                None => internal.as_ref().ok_or_else(|| PyTypeError::new_err("missing reference key"))?.get_item(&name)?,
+            };
+            if value.is_none() { return Ok(()); }
+            values.push(value);
+        }
+        // Staged instance loads share side records until they publish; copy before writing.
+        let markers = match parent.dict.get_item("_reference_absent")? {
+            Some(markers) => markers.cast_into::<PyDict>()?.copy()?,
+            None => PyDict::new(self.py),
+        };
+        let key = if values.len() == 1 { values.pop().unwrap() } else { PyTuple::new(self.py, values)?.into_any() };
+        markers.set_item(attr, key)?;
+        parent.dict.set_item("_reference_absent", markers)
+    }
+
     /// One instance per row, `select_related` objects attached.
     fn instances(&self, model: usize, shape: Option<&orm_core::behavior::ResultShape>, joins: &[JoinShape], rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Vec<Instance<'py>>> {
         let mut out = Vec::with_capacity(rows.len());
@@ -177,9 +211,12 @@ impl<'a, 'py> Builder<'a, 'py> {
                     Some(p) => related[p].as_ref(),
                 };
                 if let Some(parent) = parent {
+                    self.clear_absent(parent, &j.attr)?;
                     // A reference with no row and no filter to explain it stays unset.
                     if child.is_some() || !j.unset_when_absent {
                         parent.dict.set_item(&j.attr, child.as_ref().map(|c| &c.obj))?;
+                    } else {
+                        self.mark_absent(parent, &j.attr)?;
                     }
                 }
                 related.push(child);
@@ -284,6 +321,7 @@ impl<'a, 'py> Builder<'a, 'py> {
         }
         let attr = PyString::intern(py, &p.attr);
         for (i, parent) in parents.iter().enumerate() {
+            self.clear_absent(parent, &p.attr)?;
             let key = key_cell(py, parent_rows, i, &p.key_pos, &p.key_type)?;
             let found = if key.is_none(py) { None } else { groups.get_item(&key)? };
             if !p.many {
@@ -298,6 +336,8 @@ impl<'a, 'py> Builder<'a, 'py> {
                 // A key with no row and no filter to explain it stays unset; a NULL key is none.
                 if !(p.unset_when_absent && found.is_none() && !key.is_none(py)) {
                     parent.dict.set_item(&attr, found)?;
+                } else {
+                    self.mark_absent(parent, &p.attr)?;
                 }
                 continue;
             }

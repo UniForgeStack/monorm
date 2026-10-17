@@ -239,9 +239,15 @@ model UProfile {
 }
 `;
 
-async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean) {
+async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean, composite = false) {
   const registry = new Registry();
-  const source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
+  let source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
+  if (composite) {
+    source = source.replace("id Int @id\n  name", "id Int\n  region Int @default(1)\n  @@id([id, region])\n  name")
+      .replace("author_id Int?", "author_region Int? @default(1)\n  author_id Int?")
+      .replace("author_id Int @unique", "author_region Int @default(1)\n  @@unique([author_id, author_region])\n  author_id Int @unique")
+      .replaceAll("fields: [author_id], references: [id]", "fields: [author_id, author_region], references: [id, region]");
+  }
   const models = loads(source, { registry }) as any;
   const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
   const db = await connect(url, { registry, default: false });
@@ -250,6 +256,9 @@ async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean) {
   else {
     await db.execute("ALTER TABLE g2_js_books DROP CONSTRAINT IF EXISTS g2_js_books_author_id_fkey");
     await db.execute("ALTER TABLE g2_js_profiles DROP CONSTRAINT IF EXISTS g2_js_profiles_author_id_fkey");
+  }
+  if (composite && dialect === "postgres") {
+    for (const table of ["g2_js_books", "g2_js_profiles"]) await db.execute(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${table}_author_id_author_region_fkey`);
   }
   const { UAuthor: Author, UBook: Book, UProfile: Profile } = models;
   await Author.objects.using(db).withoutDefaults().insertMany([{ id: 1, name: "ann", active: true }, { id: 2, name: "bob", active: false }, { id: 3, name: "cy", active: true }]);
@@ -332,6 +341,41 @@ for (const dialect of ["sqlite", "postgres"] as const) {
         const [first, dangling] = await rows.withoutDefaults().load(Model.author).all();
         assert.equal(first.author.name, "ann");
         assert.throws(() => dangling.author, NotLoaded);
+      }
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+
+for (const dialect of ["sqlite", "postgres"] as const) for (const composite of [false, true]) for (const filtered of [false, true]) for (const method of ["join", "prefetch", "instance"]) {
+  test(`absent reference message tracks the loaded key: ${dialect} composite=${composite} filtered=${filtered} method=${method}`, async (t) => {
+    if (filtered && !queryDefaults) { t.skip("needs query-defaults"); return; }
+    const { db, Book, Profile } = await openUnset(dialect, filtered, composite);
+    const specific = (error: unknown) => error instanceof NotLoaded && error.message.includes("the key is set and no row of the target has it");
+    const generic = (error: unknown) => error instanceof NotLoaded && !error.message.includes("the key is set and no row of the target has it");
+    try {
+      for (const Model of [Book, Profile]) {
+        let rows = Model.objects.using(db).withoutDefaults();
+        if (method !== "instance") rows = rows.load(method === "join" ? Model.author : Model.author.objects.asPrefetch());
+        const loaded = await rows.get(Model.id.eq(2));
+        if (method === "instance") await loaded.load(Model.author.objects.withoutDefaults().asPrefetch(), { reload: true });
+        assert.throws(() => loaded.author, specific);
+        loaded[composite ? "authorRegion" : "authorId"] = composite ? 2 : 98;
+        assert.throws(() => loaded.author, generic);
+        const row = await Model.objects.using(db).get(Model.id.eq(2));
+        assert.throws(() => row.author, generic);
+        await row.load(Model.author.objects.withoutDefaults().asPrefetch(), { reload: true });
+        assert.throws(() => row.author, specific);
+        await row.update({ authorId: 3 });
+        assert.throws(() => row.author, generic);
+        await row.load(Model.author.objects.asPrefetch(), { reload: true });
+        assert.equal(row.author.name, "cy");
+      }
+      const row = await Book.objects.using(db).withoutDefaults().load(Book.author).get(Book.id.eq(3));
+      assert.equal(row.author, null);
+      if (filtered) {
+        const hidden = await Book.objects.using(db).load(Book.author).get(Book.id.eq(4));
+        assert.equal(hidden.author, null);
       }
     } finally { await db.dropTables(); await db.close(); }
   });

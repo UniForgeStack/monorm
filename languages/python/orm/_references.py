@@ -62,7 +62,10 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
         elif key is None:
             return None
         hint = f"use await obj.load({owner.__name__}.{self.name})"
-        if self.name in data and data[self.name] is None and key is not None:
+        if key is not None and (
+            (self.name in data and data[self.name] is None)
+            or data.get("_reference_absent", {}).get(self.name, _MISSING) == key
+        ):
             raise NotLoaded(
                 f"{owner.__name__}.{self.name} is not loaded: the key is set and no row of the target has it; {hint}"
             )
@@ -150,6 +153,7 @@ async def load_reference(owner: Any, name: str, *, reload: bool = False, filtere
 
     def publish(value: Any) -> None:
         if key_value(owner, source) == key:
+            data.get("_reference_absent", {}).pop(name, None)
             data[name] = value
             data.setdefault("_reference_keys", {})[name] = key
 
@@ -195,5 +199,5 @@ def invalidate_reference(owner: Any, name: str) -> None:
     """Invalidate a selected ordinary/generic reference without cancelling its waiters."""
     data = owner.__dict__
     data.pop(name, None)
-    for storage in ("_reference_keys", "_reference_tokens", "_reference_pending"):
+    for storage in ("_reference_keys", "_reference_tokens", "_reference_pending", "_reference_absent"):
         data.get(storage, {}).pop(name, None)

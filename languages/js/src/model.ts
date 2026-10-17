@@ -7,6 +7,7 @@
  * the same at runtime without a generated file (untyped).
  */
 
+import { isAbsent } from "./reference-absence.js";
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
 import { Column, PATH, RelationPath, and, type Condition, type PathState, type Source } from "./expr.js";
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
@@ -476,7 +477,7 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
         } else if (absent) {
           return null;
         }
-        const dangling = loaded && r.name in loaded && loaded[r.name] === null;
+        const dangling = (loaded && r.name in loaded && loaded[r.name] === null) || isAbsent(this, r.name, key);
         throw new NotLoaded(`${meta.name}.${r.name} is not loaded${dangling ? ": the key is set and no row of the target has it" : ""}; ${loadHint}`);
       };
     }

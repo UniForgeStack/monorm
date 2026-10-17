@@ -1,4 +1,5 @@
 /** Build-selected reference loading adapter. Baseline profiles do not load this module. */
+import { clearAbsent, isAbsent } from "./reference-absence.js";
 import { active as debugging, relationLoad } from "./debug.js";
 import { key } from "./value-key.js";
 import { IntegrityError, NotLoaded } from "./errors.js";
@@ -75,6 +76,7 @@ export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta
   };
   const load = () => coalescedLoad(owner, r.name, [...(key === null ? [key] : parts), db, tx], fetch, (value) => {
     if (sameKey(keyValue(owner, from, host.INTERNAL), key)) {
+      clearAbsent(owner, r.name);
       host.related(owner)[r.name] = value;
       state.keys.set(r.name, key);
     }
@@ -101,6 +103,7 @@ export function coalescedLoad(owner: Row, name: string, context: readonly unknow
 }
 
 export function invalidateReference(owner: Row, name: string): void {
+  clearAbsent(owner, name);
   const state = (owner as ReferenceRow)[REFERENCE_STATE];
   state?.keys.delete(name);
   state?.tokens.delete(name);
@@ -124,7 +127,7 @@ export function getter(meta: ModelMeta, r: RelationMeta, baseline: (this: Row) =
         if (sameKey(targetKey, key) || (targetKey === MISSING && state?.keys.has(r.name) && sameKey(state.keys.get(r.name), key))) return value;
       }
     } else if (key === null) return null;
-    const dangling = loaded && Object.hasOwn(loaded, r.name) && loaded[r.name] === null;
+    const dangling = (loaded && Object.hasOwn(loaded, r.name) && loaded[r.name] === null) || isAbsent(this, r.name, from.length > 1 && key !== null ? key as unknown[] : [key]);
     throw new NotLoaded(`${meta.name}.${r.name} is not loaded${dangling ? ": the key is set and no row of the target has it" : ""}; use await obj.load(${meta.name}.${r.name})`);
   };
 }
