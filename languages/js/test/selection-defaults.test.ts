@@ -53,7 +53,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.throws(() => partial.bio, NotLoaded);
       assert.throws(() => a.load(Author.name, Author.name), TypeError);
       await partial.update({ name: "changed" }); assert.deepEqual(partial.toJSON(), { name: "changed", note: null });
-      await partial.refresh(Author.bio); assert.deepEqual(partial.toJSON(), { name: "changed", note: null, bio: "large" });
+      await partial.load(Author.bio, { reload: true }); assert.deepEqual(partial.toJSON(), { name: "changed", note: null, bio: "large" });
       const names: string[] = [];
       for await (const o of a.load(Author.name).iterate(1)) names.push(o.name);
       assert.deepEqual(names, ["changed", "bob"]);
@@ -91,8 +91,8 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"; available defaults: \["query"\]/);
       assert.equal((await a.load().get()).bio, "large");
       const explicit = await a.load(Author.note, Author.name).get();
-      await explicit.refresh(); assert.deepEqual(explicit.toJSON(), { note: null, name: "visible" });
-      await explicit.refresh(Author.bio); assert.deepEqual(explicit.toJSON(), { name: "visible", note: null, bio: "large" });
+      await explicit.load(Author.note, Author.name, { reload: true }); assert.deepEqual(explicit.toJSON(), { note: null, name: "visible" });
+      await explicit.load(Author.bio, { reload: true }); assert.deepEqual(explicit.toJSON(), { name: "visible", note: null, bio: "large" });
       await partial.update({ name: "changed" }); assert.deepEqual(partial.toJSON(), { name: "changed", note: null });
       const joined = await b.orderBy(Book.id).all();
       assert.equal(joined.length, 2); assert.equal(joined[0].author.name, "changed"); assert.equal(joined[1].author, null);

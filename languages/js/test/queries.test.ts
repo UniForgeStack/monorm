@@ -208,7 +208,7 @@ test("update and delete", async () => {
   assert.equal(await Post.objects.filter(Post.author.name.eq("Alice")).update({ views: Post.views.add(1) }), 2);
   assert.deepEqual((await alice.posts.all()).map((p) => p.views).sort((x, y) => x - y), [6, 51]);
 
-  // Instance update writes only the given fields and refreshes from RETURNING, so a1
+  // Instance update writes only the given fields and fills the instance from RETURNING, so a1
   // (still holding views=5 in memory) picks up the 6 from the bulk update above.
   await a1.update({ title: "renamed" });
   assert.deepEqual([a1.title, a1.views], ["renamed", 6]);
@@ -230,7 +230,7 @@ test("update and delete", async () => {
   assert.equal(await Comment.objects.count(), 0);
 
   await carol.update({ name: "Caroline" });
-  await carol.refresh();
+  await carol.load({ reload: true });
   assert.equal(carol.name, "Caroline");
 });
 
@@ -502,44 +502,70 @@ test("row locks", async () => {
   }
 });
 
-test("refresh with a row lock", async () => {
+test("a bound set locks the row of an object", async () => {
   const { alice, bob } = await seed();
   const db = getDatabase();
   const other = await otherDatabase();
   try {
-    await assert.rejects(alice.refresh({ nowait: true } as never), /lock: true/);
-    await assert.rejects(alice.refresh({ lock: false, exclusive: false } as never), /lock: true/);
-    await assert.rejects(alice.refresh({ lock: true }), TransactionRequired);
-    await assert.rejects(alice.refresh({ lock: true, nowait: true, skipLocked: true } as never), TypeError);
-    assert.equal(await alice.refresh(), true);
+    await assert.rejects(async () => await alice.qs().lock(), TransactionRequired);
     await db.transaction(async () => {
-      assert.equal(await alice.refresh(User.name, { lock: true }), true);
-      // a partial refresh locks the whole row
+      assert.deepEqual(await alice.qs().load(User.name).lock(), [alice]);
+      // a partial read locks the whole row
       await assert.rejects(other.transaction(() => User.objects.using(other).lock({ nowait: true }).get(User.id.eq(alice.id))), LockNotAvailable);
     });
     await db.transaction(async () => {
-      assert.equal(await bob.refresh({ lock: true, exclusive: false }), true);
+      assert.deepEqual(await bob.qs().lock({ exclusive: false }), [bob]);
       await other.transaction(() => User.objects.using(other).lock({ exclusive: false, nowait: true }).get(User.id.eq(bob.id)));
     });
     const copy = await User.objects.using(other).require().get(User.id.eq(alice.id));
     await db.transaction(async () => {
       await User.objects.lock().get(User.id.eq(alice.id));
       await User.objects.filter(User.id.eq(alice.id)).update({ name: "Al" });
-      await assert.rejects(other.transaction(() => copy.refresh({ lock: true, nowait: true })), LockNotAvailable);
-      assert.equal(await other.transaction(() => copy.refresh({ lock: true, skipLocked: true })), false);
+      await assert.rejects(other.transaction(async () => await copy.qs().lock({ nowait: true })), LockNotAvailable);
+      assert.deepEqual(await other.transaction(async () => await copy.qs().lock({ skipLocked: true })), []);
       assert.equal(copy.name, "Alice"); // unchanged
     });
-    assert.equal(await other.transaction(() => copy.refresh({ lock: true, skipLocked: true })), true);
+    assert.deepEqual(await other.transaction(async () => await copy.qs().lock({ skipLocked: true })), [copy]);
     assert.equal(copy.name, "Al");
     await User.objects.filter(User.id.eq(bob.id)).delete();
     await db.transaction(async () => {
-      assert.equal(await bob.refresh({ lock: true, skipLocked: true }), false);
-      await assert.rejects(bob.refresh({ lock: true }), User.DoesNotExist);
+      assert.deepEqual(await bob.qs().lock({ skipLocked: true }), []);
+      assert.deepEqual(await bob.qs().lock(), []);
     });
-    await assert.rejects(bob.refresh(), User.DoesNotExist);
+    await assert.rejects(bob.load({ reload: true }), User.DoesNotExist);
   } finally {
     await other.close();
   }
+});
+
+test("instance update, delete and load each run one statement", async () => {
+  const { alice, bob } = await seed();
+  const db = getDatabase();
+  let n = 0;
+  const off = db.onQuery(() => { n++; });
+  try {
+    await alice.update({ name: "Al" });
+    assert.equal(n, 1);
+    n = 0;
+    await alice.load({ reload: true });
+    assert.equal(n, 1);
+    n = 0;
+    await bob.delete();
+    assert.equal(n, 1);
+  } finally {
+    off();
+  }
+});
+
+test("instance load and update name a missing row; refresh is gone", async () => {
+  const { alice, bob } = await seed();
+  assert.equal("refresh" in alice, false);
+  await User.objects.filter(User.id.eq(bob.id)).delete();
+  await assert.rejects(bob.load({ reload: true }), User.DoesNotExist);
+  await assert.rejects(bob.load(User.name, { reload: true }), User.DoesNotExist);
+  await assert.rejects(bob.update({ name: "x" }), User.DoesNotExist);
+  await bob.delete();
+  assert.equal(bob.name, "Bob");
 });
 
 test("relation equals instance", async () => {
@@ -642,25 +668,13 @@ test("concurrent queries", async () => {
   assert.equal(counts[19], 2);
 });
 
-test("refresh rejects non-plain trailing options", async () => {
+test("load reload overwrites the named columns from the row", async () => {
   const { alice: row } = await seed();
-  for (const invalid of ["name", 42, null, undefined, [], new Date(), Object.create(null), new (class Options {})()]) {
-    await assert.rejects(row.refresh(invalid as never), { name: "TypeError", message: "refresh() takes columns of User" });
-    assert.equal(row.name, "Alice");
-  }
-  assert.equal(await row.refresh(), true);
-  assert.equal(await row.refresh(User.name), true);
-  assert.equal(await row.refresh(User.name, {}), true);
-  assert.equal(await row.refresh({}), true);
-});
-
-test("refresh takes only own columns", async () => {
-  const { alice: row } = await seed();
-  for (const bad of [Post.title, User.posts.views, User.posts, "name"]) {
-    await assert.rejects(row.refresh(bad as never), { name: "TypeError", message: "refresh() takes columns of User" });
-  }
-  await assert.rejects(row.refresh(User.name, User.name), { name: "TypeError", message: "duplicate model field" });
-  assert.equal(await row.refresh(User.name), true);
+  await User.objects.filter(User.id.eq(row.id)).update({ name: "Changed" });
+  assert.equal((await row.load(User.name)).name, "Alice"); // loaded: not read again
+  assert.equal((await row.load(User.name, { reload: true })).name, "Changed");
+  await User.objects.filter(User.id.eq(row.id)).update({ name: "Again" });
+  assert.equal((await row.load({ reload: true })).name, "Again");
 });
 
 test("relation comparison rejects null-prototype objects clearly", () => {

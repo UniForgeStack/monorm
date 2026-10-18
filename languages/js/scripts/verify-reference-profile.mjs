@@ -15,7 +15,7 @@ try {
   assert.equal(typeof child.load, "function");
   assert.equal(child.loadParent, undefined);
   await child.update({ parentId: 1 });
-  await child.refresh();
+  await child.load({ reload: true });
   assert.equal(await child.load(m.Child.parent), child);
   assert.equal(child.parent.id, 1);
   if (!expected) {

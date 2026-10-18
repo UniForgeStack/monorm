@@ -17,7 +17,6 @@ type Host = {
   resolve(db: Database | undefined): Database;
   related(row: object): Record<string, unknown>;
   instanceUpdate(this: Row, values: object): Promise<void>;
-  instanceRefresh(this: Row, ...args: unknown[]): Promise<boolean>;
 };
 const MISSING = Symbol("orm.missingReferenceKey");
 function peekField(row: Row, name: string, internal: symbol): unknown {
@@ -139,9 +138,9 @@ export function install(meta: ModelMeta, proto: Record<string, unknown>, host: H
   const refs = [...meta.relations.values()].filter((r) => r.kind === "belongsTo" || r.kind === "hasOne");
   if (!refs.length) return;
   const dependencies = refs.map((relation) => ({ relation, source: fieldNames(meta, relation.from) }));
-  const invalidate = (row: Row, before: Map<RelationMeta, unknown>, refresh: boolean): void => {
+  const invalidate = (row: Row, before: Map<RelationMeta, unknown>): void => {
     for (const { relation: r, source: from } of dependencies) {
-      if (!(refresh && r.kind === "hasOne") && sameKey(before.get(r), peekKey(row, from, host.INTERNAL))) continue;
+      if (sameKey(before.get(r), peekKey(row, from, host.INTERNAL))) continue;
       const loaded = row[host.RELATED] as Record<string, unknown> | undefined;
       if (loaded) delete loaded[r.name];
       invalidateReference(row, r.name);
@@ -151,12 +150,6 @@ export function install(meta: ModelMeta, proto: Record<string, unknown>, host: H
   Object.defineProperty(proto, "update", { value: async function (this: Row, values: object) {
     const before = keys(this);
     await host.instanceUpdate.call(this, values);
-    invalidate(this, before, false);
-  }});
-  Object.defineProperty(proto, "refresh", { value: async function (this: Row, ...args: unknown[]) {
-    const before = keys(this);
-    if (!(await host.instanceRefresh.apply(this, args))) return false;
-    invalidate(this, before, true);
-    return true;
+    invalidate(this, before);
   }});
 }

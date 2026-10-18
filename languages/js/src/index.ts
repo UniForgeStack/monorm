@@ -46,7 +46,7 @@ export {
 export type { AggregateOptions, CaseDefault, Many, Compat, Operand, OrderOptions } from "./expr.js";
 export { ModelMeta, Registry, column, define, describe, load, loads, registry } from "./model.js";
 export type { FieldInfo, ModelInfo, RelationInfo } from "./model.js";
-export type { Instance, ModelClass, RefreshOptions, Row, SchemaIR } from "./model.js";
+export type { Instance, ModelClass, Row, SchemaIR } from "./model.js";
 export { BoundQuerySet, of } from "./bound.js";
 export { InspectedStatement, InsertMany, InsertOne, ManyRelatedSet, OneRowQuery, Prepared, PreparedOneRowQuery, QuerySet, RelatedSet, UpsertOne, prefetch, useQuerySet } from "./query.js";
 export type { Page, PageOptions } from "./pagination.js";

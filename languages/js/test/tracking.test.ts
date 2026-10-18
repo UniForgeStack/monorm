@@ -40,7 +40,7 @@ model Note {
         await note.update({ changed: OLD });
         assert.equal(note.changed.getTime(), OLD.getTime());
         await db.execute("UPDATE tracking_node_notes SET views = 4 WHERE id = 1");
-        await note.refresh();
+        await note.load({ reload: true });
         assert.equal(note.changed > OLD, mode === "database");
       } finally { await db.dropTables(); await db.close(); }
     });
@@ -110,6 +110,40 @@ model Doc {
       assert.ok(doc.version === 1 && doc.deleted !== null);
       await (doc as SoftDeletable).undelete();
       assert.ok(doc.version === 2 && doc.deleted === null);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an instance reloads and updates its own soft-deleted row (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, versionedSoftDelete);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1 }]);
+      const doc = await docs.get(Doc.id.eq(1));
+      await doc.delete();
+      assert.deepEqual(await doc.qs(), []); // the default hides the row from a bound read
+      await doc.load({ reload: true }); // the instance already holds it: no default applies
+      assert.ok(doc.deleted !== null);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a partial versioned instance updates twice without a conflict (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+    const [db, models] = await open(dialect, `
+model Doc {
+  id      Int    @id
+  title   String
+  version Int    @default(0) @locking.version
+  @@map("tracking_node_partial_docs")
+}`);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1, title: "a" }]);
+      const partial = await docs.load(Doc.title, Doc.version).get(Doc.id.eq(1));
+      await partial.update({ title: "b" });
+      await partial.update({ title: "c" });
+      assert.equal(partial.version, 2);
+      const stale = await docs.get(Doc.id.eq(1));
+      await partial.update({ title: "d" });
+      await assert.rejects(stale.update({ title: "e" }), VersionConflict);
     } finally { await db.dropTables(); await db.close(); }
   });
 
@@ -253,7 +287,7 @@ model Doc {
       await assert.rejects(second.delete(), VersionConflict);
       assert.equal(await docs.update({ title: "d" }), 1);
       assert.equal((await docs.get(Doc.id.eq(1))).version, 2);
-      await second.refresh();
+      await second.load({ reload: true });
       await second.update({ title: "e" });
       assert.equal(second.version, 3);
       await second.delete();
@@ -350,7 +384,7 @@ model Review {
           const stored = await docs.get(Doc.id.eq(1));
           assert.equal(stored.title, "other writer");
           assert.equal(stored.version, 1);
-          await stale.refresh();
+          await stale.load({ reload: true });
           await stale.update({ title: "fresh writer" });
           assert.equal(stale.version, 2);
           await stale.delete();
