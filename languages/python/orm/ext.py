@@ -9,11 +9,20 @@ from .query import M as ModelT
 from .write import Delete
 
 if TYPE_CHECKING:
+    from .model import Model
     from .query import QuerySet
 
 LANGUAGE_CONTRACT = 1
 
-__all__ = ["LANGUAGE_CONTRACT", "ModelLike", "ModelT", "behavior_field", "behavior_records", "hard_delete_statement"]
+__all__ = [
+    "LANGUAGE_CONTRACT",
+    "ModelLike",
+    "ModelT",
+    "behavior_field",
+    "behavior_records",
+    "hard_delete_statement",
+    "row_query",
+]
 
 
 class ModelLike(Protocol):
@@ -37,5 +46,11 @@ def behavior_field(model: Any, record: dict[str, Any]) -> ColumnRef[Any]:
 
 
 def hard_delete_statement(qs: QuerySet[Any]) -> Delete[Any]:
-    """``DELETE`` the matching rows of ``qs`` with the ``"deleted"`` default dropped and the soft-delete rewrite off."""
-    return Delete.build(qs._without_deleted_default(), hard=True)
+    """``DELETE`` the matching rows of ``qs`` with the planner's delete rewrite off."""
+    return Delete.build(qs, hard=True)
+
+
+def row_query(instance: Model) -> QuerySet[Any]:
+    """The query set of the one row of ``instance``: its primary key, no defaults, its database."""
+    query: QuerySet[Any] = instance._row_query()
+    return query

@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, loads, Registry, scope, VersionConflict, type Database, type SoftDeletable } from "../src/index.js";
+import { connect, Registry, scope, VersionConflict, type Database } from "../src/index.js";
 import { native } from "../src/native.js";
+import { loadsSoftDelete } from "./soft-delete-ext.js";
 
 const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
 const OLD = new Date("2000-01-01T00:00:00Z");
+type SoftDeletable = { hardDelete(): Promise<void>; undelete(): Promise<void> };
 type Models = Record<string, { objects: any; [key: string]: any }>;
 
 async function open(dialect: string, source: string): Promise<[Database, Models]> {
   const registry = new Registry();
-  const models = loads((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + source, { registry }) as unknown as Models;
+  const models = await loadsSoftDelete((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + source, { registry }) as unknown as Models;
   const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
   const db = await connect(url, { registry, default: false });
   await db.dropTables();
@@ -256,7 +258,7 @@ model Doc {
       assert.equal(second.version, 3);
       await second.delete();
       await assert.rejects(first.update({ title: "f" }), Doc.DoesNotExist);
-      assert.throws(() => docs.deletedOnly(), /no @soft_delete/);
+      assert.equal(docs.deletedOnly, undefined);
     } finally { await db.dropTables(); await db.close(); }
   });
 

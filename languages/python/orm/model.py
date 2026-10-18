@@ -376,8 +376,6 @@ _RESERVED = {
     "MultipleObjectsReturned",
     "update",
     "delete",
-    "hard_delete",
-    "undelete",
     "refresh",
     "load",
     "to_dict",
@@ -711,7 +709,7 @@ class Model:
         """``DELETE ... WHERE pk = ...``; with ``@soft_delete.deleted_at``, a soft delete
         that refreshes the instance from the returned row. Otherwise the instance keeps
         its last values. With ``@locking.version``, raises :class:`orm.VersionConflict`
-        when the row has a newer version; :meth:`hard_delete` has no version check."""
+        when the row has a newer version; a hard delete has no version check."""
         if self._meta.soft_delete is None:
             if not await self._version_filter(self._row_query()).delete():
                 await self._raise_if_changed()
@@ -723,22 +721,6 @@ class Model:
             await self._raise_if_changed()
             return
         self._replace_from(rows[0])
-
-    async def hard_delete(self) -> None:
-        """``DELETE ... WHERE pk = ...`` also for a soft-delete model. In database mode,
-        the trigger soft-deletes a live row; a soft-deleted row is deleted."""
-        await self._row_query().hard_delete()
-
-    async def undelete(self) -> None:
-        """Clear the soft-delete field of this row and refresh it."""
-        name = self._soft_delete_field()
-        await self.update(**{name: None})
-
-    def _soft_delete_field(self) -> str:
-        name = self._meta.soft_delete
-        if name is None:
-            raise TypeError(f"{type(self).__name__} has no @soft_delete.deleted_at field")
-        return name
 
     def _refresh_fields(self, fields: tuple[ColumnRef[Any], ...]) -> tuple[str, ...]:
         model = type(self)

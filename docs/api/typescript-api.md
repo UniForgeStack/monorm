@@ -498,9 +498,9 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
 * With the column-role extensions (`schema-extensions.md`): `@timestamps.updated_at` and
   `@locking.version` are set on each update; on a `@soft_delete.deleted_at` model,
   `delete()` soft-deletes, and `hardDelete()`, `undelete()`, `allWithDeleted()` and
-  `deletedOnly()` exist (instances: the `SoftDeletable` type). Plain reads hide deleted
-  rows; those methods bypass only the `"deleted"` default, and a to-one reference to the
-  model is `opt` (`T | null`). A stale versioned
+  `deletedOnly()` exist (from the soft-delete extension's generated code). Plain reads hide
+  deleted rows; those methods bypass only the `"deleted"` default, and a to-one reference
+  to the model is `opt` (`T | null`). A stale versioned
   instance write throws `VersionConflict`.
 * `Composed.objects.attach(parentId, values)` adds a composed child to an existing parent
   ([`model-composition.md`](../extensions/model-composition.md)).
