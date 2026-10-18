@@ -1210,24 +1210,28 @@ class QuerySet(Generic[M]):
         """``DELETE`` every matching row also for a model with
         ``@soft_delete.deleted_at``. In database mode, the trigger soft-deletes a live
         row, so this deletes only rows that are already soft-deleted."""
-        return Delete.build(self.without_defaults(), hard=True)
+        return Delete.build(self._without_deleted_default(), hard=True)
 
     def undelete(self) -> Update[M]:
         """Clear the soft-delete field of the matching soft-deleted rows. ``await``
         gives the number of rows restored; ``.returning()`` gives the rows. It drops the
-        schema defaults, like ``all_with_deleted()``."""
+        ``"deleted"`` default, like ``all_with_deleted()``."""
         field = self._soft_delete_ref()
-        return self.without_defaults().filter(field.is_not_null()).update(**{field._field.name: None})
+        return self.without_defaults("deleted").filter(field.is_not_null()).update(**{field._field.name: None})
 
     def all_with_deleted(self) -> Self:
-        """The rows with the soft-deleted ones: the query set without the schema
-        defaults (the ``@@query.filter`` that hides deleted rows)."""
+        """The rows with the soft-deleted ones: ``without_defaults("deleted")``. The
+        other defaults, such as a tenant filter, stay."""
         self._soft_delete_ref()
-        return self.without_defaults()
+        return self.without_defaults("deleted")
 
     def deleted_only(self) -> Self:
-        """Only the soft-deleted rows (without the schema defaults)."""
-        return self.without_defaults().filter(self._soft_delete_ref().is_not_null())
+        """Only the soft-deleted rows; the other defaults stay."""
+        return self.without_defaults("deleted").filter(self._soft_delete_ref().is_not_null())
+
+    def _without_deleted_default(self) -> Self:
+        """``without_defaults("deleted")`` on a soft-delete model; a model without one has no such default."""
+        return self if self._model._meta.soft_delete is None else self.without_defaults("deleted")
 
     def _soft_delete_ref(self) -> ColumnRef[Any]:
         meta = self._model._meta

@@ -1,7 +1,11 @@
 //! `@soft_delete.deleted_at`: the ORM soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too and the soft delete
 //! cascades to soft-delete children. Execution requires the `soft-delete` capability.
-use orm_contracts::{dialect::Dialect, extension::Declaration, ir::{ColType, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{Mode, SoftDelete}};
+use orm_contracts::{dialect::Dialect, extension::{Declaration, ReadDefault}, ir::{ColType, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{Mode, SoftDelete}};
+
+/// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
+const SOURCE: &str = "orm.soft-delete";
+const DEFAULT: &str = "deleted";
 
 fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
     format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
@@ -86,6 +90,12 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             }
         }
     }
+    ir.behavior.read_defaults.retain(|d| d.source != SOURCE);
+    for s in &ir.behavior.soft_delete {
+        let item = serde_json::json!({"t": "col", "path": [], "name": s.field});
+        ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: DEFAULT.into(), model: s.model.clone(),
+            filter: Some(serde_json::json!({"t": "is_null", "item": item, "neg": false})), ..Default::default() });
+    }
     let dialect = ir.dialect;
     for s in ir.behavior.soft_delete.clone().iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
         // Children: soft-delete models with a cascading foreign key to this model.
@@ -163,9 +173,19 @@ mod tests {
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", "database", true), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.soft_delete", "behavior.storage", "models"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.read_defaults", "behavior.soft_delete", "behavior.storage", "models"]);
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", "application", true), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.soft_delete"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.read_defaults", "behavior.soft_delete"]);
+    }
+
+    #[test]
+    fn each_soft_delete_model_gets_a_deleted_read_default() {
+        let mut ir = schema("postgres", "application", true);
+        prepared(&mut ir).unwrap();
+        let defaults: Vec<_> = ir.behavior.read_defaults.iter().map(|d| (d.source.as_str(), d.name.as_str(), d.model.as_str())).collect();
+        assert_eq!(defaults, [("orm.soft-delete", "deleted", "Author"), ("orm.soft-delete", "deleted", "Book")]);
+        let filter = ir.behavior.read_defaults[1].filter.clone().unwrap();
+        assert_eq!(filter, serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted"}, "neg": false}));
     }
 
     #[test]

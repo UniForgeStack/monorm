@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, loads, Registry, VersionConflict, type Database, type SoftDeletable } from "../src/index.js";
+import { connect, loads, Registry, scope, VersionConflict, type Database, type SoftDeletable } from "../src/index.js";
 import { native } from "../src/native.js";
 
 const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
@@ -66,7 +66,7 @@ model Book {
         assert.equal(await authors.filter(Author.id.eq(1)).delete(), 0);
         const [row] = await authors.filter(Author.id.eq(2)).delete({ returning: true });
         assert.ok(row.id === 2 && row.deleted !== null);
-        assert.equal(await authors.count(), 3);
+        assert.equal(await authors.count(), 1);
         assert.deepEqual((await authors.deletedOnly().orderBy(Author.id.asc()).all()).map((a: { id: number }) => a.id), [1, 2]);
         assert.equal(await authors.allWithDeleted().count(), 3);
         const removed = (await models.Book!.objects.using(db).deletedOnly().all()).length;
@@ -75,14 +75,17 @@ model Book {
         const restored = await authors.get(Author.id.eq(1));
         assert.equal(restored.deleted, null);
         await restored.delete();
+        assert.equal(await authors.get(Author.id.eq(1)), null);
+        assert.notEqual((await authors.allWithDeleted().get(Author.id.eq(1))).deleted, null);
         await (restored as SoftDeletable).undelete();
         assert.equal(restored.deleted, null);
         await db.execute("DELETE FROM tracking_node_books");
         await db.execute("DELETE FROM tracking_node_authors WHERE id = 3");
-        assert.equal(await authors.filter(Author.id.eq(3)).count(), mode === "database" ? 1 : 0);
+        assert.equal(await authors.allWithDeleted().filter(Author.id.eq(3)).count(), mode === "database" ? 1 : 0);
+        assert.equal(await authors.filter(Author.id.eq(3)).count(), 0);
         assert.equal(await authors.filter(Author.id.eq(2)).hardDelete(), 1);
         await (restored as SoftDeletable).hardDelete();
-        assert.equal(await authors.filter(Author.id.eq(1)).count(), mode === "database" ? 1 : 0);
+        assert.equal(await authors.allWithDeleted().filter(Author.id.eq(1)).count(), mode === "database" ? 1 : 0);
       } finally { await db.dropTables(); await db.close(); }
     });
   }
@@ -118,21 +121,36 @@ model Doc {
 }`;
   const filteredSkip = { skip: !["soft-delete", "optimistic-locking", "query-defaults"].every((c) => capabilities.includes(c)) };
 
-  test(`undelete and hardDelete ignore the default filter (${dialect})`, filteredSkip, async () => {
-    const [db, models] = await open(dialect, filteredSoftDelete);
+  test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("query-defaults") }, async () => {
+    const [db, models] = await open(dialect, `
+model Doc {
+  id      Int       @id
+  shop    Int
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("tenant", "shop == scope.shop")
+  @@map("tracking_node_tenant_docs")
+}`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
+    const ids = async (qs: any) => (await qs.orderBy(Doc.id.asc()).all()).map((d: { id: number }) => d.id);
     try {
-      await docs.insertMany([{ id: 1 }, { id: 2 }, { id: 3 }]);
-      assert.equal(await docs.filter(Doc.id.eq(1)).delete(), 1);
-      assert.equal(await docs.filter(Doc.id.eq(1)).undelete(), 1);
-      assert.equal(await docs.filter(Doc.id.in([1, 2])).delete(), 2);
-      assert.equal(await docs.undelete(), 2);
-      assert.equal(await docs.count(), 3);
-      await docs.filter(Doc.id.in([1, 2])).delete();
-      assert.equal(await docs.filter(Doc.id.eq(1)).hardDelete(), 1);
-      const doc = await docs.allWithDeleted().get(Doc.id.eq(2));
-      await (doc as SoftDeletable).hardDelete();
-      assert.equal(await docs.allWithDeleted().count(), 1);
+      await docs.insertMany([1, 2, 3, 4].map((id) => ({ id, shop: id < 3 ? 1 : 2 })));
+      await scope({ shop: 2 }, async () => assert.equal(await docs.filter(Doc.id.eq(3)).delete(), 1));
+      await scope({ shop: 1 }, async () => {
+        assert.equal(await docs.filter(Doc.id.eq(1)).delete(), 1);
+        assert.deepEqual(await ids(docs), [2]);
+        assert.deepEqual(await ids(docs.allWithDeleted()), [1, 2]);
+        assert.deepEqual(await ids(docs.deletedOnly()), [1]);
+        assert.equal(await docs.undelete(), 1);
+        assert.equal(await docs.count(), 2);
+        assert.equal(await docs.delete(), 2);
+        assert.equal(await docs.hardDelete(), 2);
+      });
+      const rows = await docs.withoutDefaults().orderBy(Doc.id.asc()).all();
+      assert.deepEqual(rows.map((d: { id: number; deleted: Date | null }) => [d.id, d.deleted !== null]), [[3, true], [4, false]]);
+      const reads = /default "tenant" from orm\.query-defaults .* reads scope\.shop/;
+      for (const statement of [docs.undelete(), docs.hardDelete(), docs.allWithDeleted().count(), docs.deletedOnly().count()]) {
+        await assert.rejects(Promise.resolve(statement), reads);
+      }
     } finally { await db.dropTables(); await db.close(); }
   });
 

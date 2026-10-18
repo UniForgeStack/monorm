@@ -106,7 +106,7 @@ async def test_soft_delete_updates_instead_of_deleting(dialect, mode):
         assert await authors.filter(Author.id == 1).delete() == 0
         (row,) = await authors.filter(Author.id == 2).delete().returning()
         assert row.id == 2 and row.deleted is not None
-        assert await authors.count() == 3
+        assert await authors.count() == 1
         assert [a.id for a in await authors.deleted_only().order_by(Author.id)] == [1, 2]
         assert await authors.all_with_deleted().count() == 3
         removed = [b.id for b in await Book.objects.using(db).deleted_only().order_by(Book.id)]
@@ -115,12 +115,14 @@ async def test_soft_delete_updates_instead_of_deleting(dialect, mode):
         restored = await authors.get(Author.id == 1)
         assert restored.deleted is None
         await restored.delete()
-        assert (await authors.get(Author.id == 1)).deleted is not None
+        assert (await authors.all_with_deleted().get(Author.id == 1)).deleted is not None
+        assert await authors.get(Author.id == 1) is None
         await restored.undelete()
         assert restored.deleted is None
         await db.execute("DELETE FROM tracking_books")
         await db.execute("DELETE FROM tracking_authors WHERE id = 3")
-        assert await authors.filter(Author.id == 3).count() == (1 if mode == "database" else 0)
+        assert await authors.all_with_deleted().filter(Author.id == 3).count() == (1 if mode == "database" else 0)
+        assert await authors.filter(Author.id == 3).count() == 0
         assert await authors.filter(Author.id == 2).hard_delete() == 1
         assert await authors.filter(Author.id == 1).hard_delete() == (0 if mode == "database" else 1)
     finally:
@@ -167,26 +169,48 @@ model Doc {
 """
 
 
+TENANT_SOFT_DELETE = """
+model Doc {
+  id      Int       @id
+  shop    Int
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("tenant", "shop == scope.shop")
+  @@map("tracking_tenant_docs")
+}
+"""
+
+
 @requires("soft-delete")
-@requires("optimistic-locking")
 @requires("query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
-async def test_undelete_and_hard_delete_ignore_the_default_filter(dialect):
-    db, models = await connect(dialect, FILTERED_SOFT_DELETE)
+async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
+    db, models = await connect(dialect, TENANT_SOFT_DELETE)
     Doc = models["Doc"]
     try:
         docs = Doc.objects.using(db)
-        await docs.insert_many([{"id": 1}, {"id": 2}, {"id": 3}])
-        assert await docs.filter(Doc.id == 1).delete() == 1
-        assert await docs.filter(Doc.id == 1).undelete() == 1
-        assert await docs.filter(Doc.id.in_([1, 2])).delete() == 2
-        assert await docs.undelete() == 2
-        assert await docs.count() == 3
-        await docs.filter(Doc.id.in_([1, 2])).delete()
-        assert await docs.filter(Doc.id == 1).hard_delete() == 1
-        (doc,) = await docs.all_with_deleted().filter(Doc.id == 2)
-        await doc.hard_delete()
-        assert await docs.all_with_deleted().count() == 1
+        await docs.insert_many([{"id": i, "shop": 1 if i < 3 else 2} for i in (1, 2, 3, 4)])
+        with orm.scope(shop=2):
+            assert await docs.filter(Doc.id == 3).delete() == 1
+        with orm.scope(shop=1):
+            assert await docs.filter(Doc.id == 1).delete() == 1
+            assert [d.id for d in await docs.order_by(Doc.id)] == [2]
+            assert [d.id for d in await docs.all_with_deleted().order_by(Doc.id)] == [1, 2]
+            assert [d.id for d in await docs.deleted_only()] == [1]
+            assert await docs.undelete() == 1
+            assert await docs.count() == 2
+            assert await docs.delete() == 2
+            assert await docs.hard_delete() == 2
+        # Shop 2's deleted row survived the shop 1 undelete and hard delete.
+        rows = await docs.without_defaults().order_by(Doc.id)
+        assert [(d.id, d.deleted is not None) for d in rows] == [(3, True), (4, False)]
+        for statement in (
+            docs.undelete(),
+            docs.hard_delete(),
+            docs.all_with_deleted().count(),
+            docs.deleted_only().count(),
+        ):
+            with pytest.raises(Exception, match=r'default "tenant" from orm.query-defaults .* reads scope.shop'):
+                await statement
     finally:
         await db.drop_tables()
         await db.close()
