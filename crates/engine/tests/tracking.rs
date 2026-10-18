@@ -167,8 +167,8 @@ fn a_role_with_a_wrong_target_is_rejected_at_definition() {
     {
         cases.push(("soft_delete", json!([{"model":"Post","field":"changed"}]), "wrong type"));
         cases.push(("soft_delete", json!([{"model":"Post","field":"tags"}]), "wrong type"));
-        cases.push(("soft_delete", json!([{"model":"Post","field":"deleted"},{"model":"Post","field":"deleted"}]), "one soft-delete field only"));
-        cases.push(("soft_delete", json!([{"model":"Nope","field":"deleted"}]), "unknown model"));
+        cases.push(("soft_delete", json!([{"model":"Post","field":"deleted"},{"model":"Post","field":"deleted"}]), "default name is set by both"));
+        cases.push(("soft_delete", json!([{"model":"Nope","field":"deleted"}]), "unknown read-default model"));
         cases.push(("soft_delete", json!([{"model":"Post","field":"nope"}]), "nope"));
     }
     #[cfg(feature = "optimistic-locking")]

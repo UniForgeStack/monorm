@@ -357,7 +357,7 @@ model Review {
           if (mode === null) {
             assert.equal(await docs.count(), 0);
           } else {
-            const deleted = await docs.get(Doc.id.eq(1));
+            const deleted = await docs.withoutDefaults("deleted").get(Doc.id.eq(1));
             assert.ok(deleted.deleted !== null);
             assert.equal(deleted.version, 3);
           }
