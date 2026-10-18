@@ -1,5 +1,6 @@
 use crate::{
     placeholder::{Cons, Join, Nil, Param, Slot, SlotRef},
+    subquery::{Reach, Standalone},
     value::Values,
     *,
 };
@@ -81,6 +82,13 @@ impl<M, T, C> Column<M, T, C> {
             name,
             path,
             _type: PhantomData,
+        }
+    }
+    pub(crate) fn outer_ref(&self, id: u64) -> crate::subquery::OuterRef {
+        crate::subquery::OuterRef {
+            id,
+            path: self.path.clone(),
+            name: self.name,
         }
     }
     pub(crate) fn expr(&self) -> Expr {
@@ -237,17 +245,63 @@ pub enum Tree {
     Param(Expr, ir::CmpOp, crate::placeholder::SlotRef),
     /// A scope value for `scope.<name>` defaults, bound at execution.
     Scope(String, sea_query::Value),
+    /// A comparison with a column of an enclosing query, resolved to a depth at erasure.
+    Outer(Expr, ir::CmpOp, crate::subquery::OuterRef),
+}
+/// State of one erasure: the bound values and the enclosing-query handles of the current subquery.
+#[doc(hidden)]
+pub struct Erase<'a> {
+    pub(crate) values: &'a mut Values,
+    pub(crate) scopes: Vec<u64>,
+    pub(crate) error: Option<String>,
+}
+impl<'a> Erase<'a> {
+    pub(crate) fn new(values: &'a mut Values) -> Self {
+        Self {
+            values,
+            scopes: Vec::new(),
+            error: None,
+        }
+    }
+    pub(crate) fn finish(self) -> Result<()> {
+        match self.error {
+            Some(message) => Err(Error::Compatibility(message)),
+            None => Ok(()),
+        }
+    }
 }
 impl Tree {
-    pub(crate) fn erase(self, params: &mut Values) -> Expr {
+    pub(crate) fn erase(self, erase: &mut Erase) -> Expr {
         let mut bind = |v| {
-            let i = params.0.len();
-            params.0.push(v);
+            let i = erase.values.0.len();
+            erase.values.0.push(v);
             Expr::Param { i }
         };
         match self {
             Self::Nested(_, _) | Self::Scope(_, _) => {
                 unreachable!("nested and scope filters are erased with their select")
+            }
+            Self::Outer(l, op, outer) => {
+                let depth = erase
+                    .scopes
+                    .iter()
+                    .rposition(|id| *id == outer.id)
+                    .map(|at| erase.scopes.len() - at);
+                let Some(depth) = depth else {
+                    erase.error.get_or_insert_with(|| {
+                        format!("unresolved outer source for {}", outer.name)
+                    });
+                    return Expr::Const { value: false };
+                };
+                Expr::Cmp {
+                    op,
+                    l: Box::new(l),
+                    r: Box::new(Expr::Outer {
+                        depth,
+                        path: outer.path,
+                        name: outer.name.into(),
+                    }),
+                }
             }
             Self::Param(_, _, slot) => {
                 unreachable!("placeholder {} is bound before planning", slot.name)
@@ -272,22 +326,23 @@ impl Tree {
                 neg: false,
             },
             Self::And(items) => Expr::And {
-                items: items.into_iter().map(|t| t.erase(params)).collect(),
+                items: items.into_iter().map(|t| t.erase(erase)).collect(),
             },
             Self::Or(items) => Expr::Or {
-                items: items.into_iter().map(|t| t.erase(params)).collect(),
+                items: items.into_iter().map(|t| t.erase(erase)).collect(),
             },
             Self::Not(t) => Expr::Not {
-                item: Box::new(t.erase(params)),
+                item: Box::new(t.erase(erase)),
             },
         }
     }
 }
-pub struct Predicate<M, K = crate::placeholder::Nil> {
+/// `K` lists the placeholders; `X` is `Correlated` when the predicate reads an enclosing query.
+pub struct Predicate<M, K = crate::placeholder::Nil, X = Standalone> {
     pub(crate) tree: Tree,
-    _model: PhantomData<(M, K)>,
+    _model: PhantomData<(M, K, X)>,
 }
-impl<M, K> Clone for Predicate<M, K> {
+impl<M, K, X> Clone for Predicate<M, K, X> {
     fn clone(&self) -> Self {
         Self {
             tree: self.tree.clone(),
@@ -295,19 +350,33 @@ impl<M, K> Clone for Predicate<M, K> {
         }
     }
 }
-impl<M, K> Predicate<M, K> {
-    pub fn and<K2>(self, other: Predicate<M, K2>) -> Predicate<M, <K as Join<K2>>::Out>
+impl<M, K, X> Predicate<M, K, X> {
+    pub(crate) fn from_tree(tree: Tree) -> Self {
+        Self {
+            tree,
+            _model: PhantomData,
+        }
+    }
+    pub fn and<K2, X2>(
+        self,
+        other: Predicate<M, K2, X2>,
+    ) -> Predicate<M, <K as Join<K2>>::Out, <X as Reach<X2>>::Out>
     where
         K: Join<K2>,
+        X: Reach<X2>,
     {
         Predicate {
             tree: Tree::And(vec![self.tree, other.tree]),
             _model: PhantomData,
         }
     }
-    pub fn or<K2>(self, other: Predicate<M, K2>) -> Predicate<M, <K as Join<K2>>::Out>
+    pub fn or<K2, X2>(
+        self,
+        other: Predicate<M, K2, X2>,
+    ) -> Predicate<M, <K as Join<K2>>::Out, <X as Reach<X2>>::Out>
     where
         K: Join<K2>,
+        X: Reach<X2>,
     {
         Predicate {
             tree: Tree::Or(vec![self.tree, other.tree]),
@@ -315,7 +384,7 @@ impl<M, K> Predicate<M, K> {
         }
     }
 }
-impl<M, K> std::ops::Not for Predicate<M, K> {
+impl<M, K, X> std::ops::Not for Predicate<M, K, X> {
     type Output = Self;
     fn not(self) -> Self {
         Self {
@@ -330,7 +399,7 @@ pub struct Ordering<M> {
 }
 /// Generated unique lookup token. Runtime get still checks cardinality.
 pub struct Unique<M, V> {
-    fields: &'static [&'static str],
+    pub(crate) fields: &'static [&'static str],
     _type: PhantomData<(M, V)>,
 }
 impl<M, V> Unique<M, V> {
@@ -550,12 +619,18 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
             db,
         }
     }
-    pub(crate) fn erase(self) -> (ir::Select, Values) {
-        let this = self.initialized();
+    pub(crate) fn erase(self) -> Result<(ir::Select, Values)> {
         let mut values = Values::default();
+        let mut erase = Erase::new(&mut values);
+        let select = self.erase_with(&mut erase);
+        erase.finish()?;
+        Ok((select, values))
+    }
+    pub(crate) fn erase_with(self, erase: &mut Erase) -> ir::Select {
+        let this = self.initialized();
         let mut select = this.select;
-        erase_filters(&mut select, this.filters, &mut values);
-        (select, values)
+        erase_filters(&mut select, this.filters, erase);
+        select
     }
 }
 impl<M: Model, R, D> Query<M, R, Unsliced, D> {
@@ -607,7 +682,7 @@ impl<M: Model, R, D> Query<M, R, Unsliced, D> {
             }
             let mut out = std::collections::HashMap::new();
             // Account for parameters already bound by the base query.
-            let (_, base) = self.clone().erase();
+            let (_, base) = self.clone().erase()?;
             let available = db
                 .driver
                 .dialect()
@@ -624,7 +699,7 @@ impl<M: Model, R, D> Query<M, R, Unsliced, D> {
                 let p = Column::<M::Source, V>::generated(key.fields[0], &[])
                     .in_values(chunk.iter().cloned());
                 let query = self.clone().filter(p);
-                let (mut q, params) = query.erase();
+                let (mut q, params) = query.erase()?;
                 if !M::fields().iter().any(|f| f == key.fields[0]) {
                     q.model_helpers.push(key.fields[0].into());
                 }
@@ -647,7 +722,7 @@ pub struct Bound<'a, M: Model, R = Optional, L = Unsliced> {
 }
 impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
     pub async fn all(self) -> Result<Vec<M>> {
-        let (q, p) = self.query.erase();
+        let (q, p) = self.query.erase()?;
         let rows = run_select(self.db, q, p).await?;
         R::collection(decode(self.db, &rows)?)
     }
@@ -666,7 +741,7 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
         self.one(false, true).await
     }
     async fn one(self, last: bool, get: bool) -> Result<R::Single<M>> {
-        let (mut q, p) = self.query.erase();
+        let (mut q, p) = self.query.erase()?;
         if q.order.is_empty() {
             let m = self
                 .db
@@ -715,21 +790,21 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
         R::single(decode(self.db, &rows)?.into_iter().next())
     }
     pub async fn count(self) -> Result<i64> {
-        let (q, p) = self.query.erase();
+        let (q, p) = self.query.erase()?;
         match execute(self.db, Operation::Count(q), p).await? {
             orm_engine::exec::Outcome::Count(n) => Ok(n),
             _ => Err(Error::Decode("unexpected count result".into())),
         }
     }
     pub async fn exists(self) -> Result<bool> {
-        let (q, p) = self.query.erase();
+        let (q, p) = self.query.erase()?;
         match execute(self.db, Operation::Exists(q), p).await? {
             orm_engine::exec::Outcome::Exists(v) => Ok(v),
             _ => Err(Error::Decode("unexpected exists result".into())),
         }
     }
     pub fn statement(self) -> Result<Statement<'a, M, R>> {
-        let (q, p) = self.query.erase();
+        let (q, p) = self.query.erase()?;
         let plan = plan(self.db, Operation::Select(q), &p)?;
         Ok(Statement {
             plan,
@@ -824,7 +899,7 @@ fn decode<M: Model>(db: &Database<M::Schema>, s: &orm_engine::exec::Selected) ->
         .collect()
 }
 
-pub(crate) fn erase_filters(select: &mut ir::Select, filters: Vec<Tree>, values: &mut Values) {
+pub(crate) fn erase_filters(select: &mut ir::Select, filters: Vec<Tree>, erase: &mut Erase) {
     for tree in filters {
         match tree {
             Tree::Nested(attr, children) => {
@@ -833,14 +908,14 @@ pub(crate) fn erase_filters(select: &mut ir::Select, filters: Vec<Tree>, values:
                     .iter_mut()
                     .find(|p| p.attr.as_deref().unwrap_or(&p.relation) == attr)
                 {
-                    erase_filters(&mut node.query, children, values);
+                    erase_filters(&mut node.query, children, erase);
                 }
             }
             Tree::Scope(name, value) => {
-                select.scope.insert(name, values.0.len());
-                values.0.push(value);
+                select.scope.insert(name, erase.values.0.len());
+                erase.values.0.push(value);
             }
-            tree => select.filters.push(tree.erase(values)),
+            tree => select.filters.push(tree.erase(erase)),
         }
     }
 }

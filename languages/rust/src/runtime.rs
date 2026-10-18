@@ -275,7 +275,7 @@ async fn fetch_upgrade<M: Model, R, L, D>(
     db: &Database<M::Schema>,
 ) -> Result<Vec<RowData>> {
     use orm_engine::{exec::Outcome, plan::Output};
-    let (mut q, p) = query.erase();
+    let (mut q, p) = query.erase()?;
     crate::query::validate_views(&db.schema, &q)?;
     let model = db
         .schema

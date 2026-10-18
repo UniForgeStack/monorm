@@ -227,3 +227,16 @@ remain pending. These templates preserve generated shape bounds, named result
 types, and nullable/required result inference. Compiler-cost observations for the
 implemented projection forms are in `bench/projection-results.json`, measured on
 a loaded machine; `bench/projections.py` reproduces warm-dependency type checks.
+
+### Correlated scalar subqueries
+
+`scalar(|a: Parent<Author>| ...)` builds `(SELECT one_column ...)` as a projection item.
+The closure receives a handle for the enclosing query; `a.col(Author::id.column())` is an outer column,
+and `Book::author_id.column().eq_outer(..)` compares with it.
+Each `scalar` call has its own handle, so nested levels, even over one model, resolve to distinct outer depths.
+A predicate that reads an outer column has the `Correlated` type: `Query::filter` and prepared templates reject it,
+and a `Subquery` has no terminals. Only `scalar` or `scalar_checked` embeds it.
+`scalar` needs a proven single row (`limit_one()` or `unique(Key, outer)`).
+`scalar_checked` takes any row count and leaves a second row to the database:
+PostgreSQL fails, SQLite reads the first row. The result is `Option<T>`, `None` when no row matches.
+A subquery filter cannot hold placeholders, and `in`/`exists` subqueries are separate work.

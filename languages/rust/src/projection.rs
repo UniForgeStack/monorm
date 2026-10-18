@@ -15,7 +15,7 @@ use std::{
 pub trait ProjectionItem<S>: Send + Sync + 'static {
     type Value: Send + 'static;
     #[doc(hidden)]
-    fn item(&self) -> ir::SelectItem;
+    fn item(&self, erase: &mut Erase) -> ir::SelectItem;
     #[doc(hidden)]
     fn read(
         &self,
@@ -29,7 +29,7 @@ impl<S: Send + Sync + 'static, T: Codec + Send + Sync + 'static, C: ProjectionCa
     ProjectionItem<S> for Column<S, T, C>
 {
     type Value = C::Value;
-    fn item(&self) -> ir::SelectItem {
+    fn item(&self, _erase: &mut Erase) -> ir::SelectItem {
         ir::SelectItem::Expr {
             expr: self.expr(),
             name: None,
@@ -50,7 +50,7 @@ impl<S: Send + Sync + 'static, T: Codec + Send + Sync + 'static, C: ProjectionCa
 pub trait Projection<S>: Send + Sync + 'static {
     type Row: Send + 'static;
     #[doc(hidden)]
-    fn items(&self) -> Vec<ir::SelectItem>;
+    fn items(&self, erase: &mut Erase) -> Vec<ir::SelectItem>;
     #[doc(hidden)]
     fn read(
         &self,
@@ -63,8 +63,8 @@ impl<S: Send + Sync + 'static, T: Codec + Send + Sync + 'static, C: ProjectionCa
     Projection<S> for Column<S, T, C>
 {
     type Row = (C::Value,);
-    fn items(&self) -> Vec<ir::SelectItem> {
-        vec![self.item()]
+    fn items(&self, erase: &mut Erase) -> Vec<ir::SelectItem> {
+        vec![self.item(erase)]
     }
     fn read(
         &self,
@@ -79,7 +79,7 @@ macro_rules! tuples {
     ($($t:ident:$i:tt),+) => {
         impl<S, $($t:ProjectionItem<S>),+> Projection<S> for ($($t,)+) {
             type Row=($($t::Value,)+);
-            fn items(&self)->Vec<ir::SelectItem> { vec![$(self.$i.item()),+] }
+            fn items(&self,erase:&mut Erase)->Vec<ir::SelectItem> { vec![$(self.$i.item(erase)),+] }
             fn read(&self,schema:&orm_core::schema::Schema,rows:&orm_engine::exec::Selected,row:usize)->Result<Self::Row> { Ok(($(self.$i.read(schema,rows,row,$i)?,)+)) }
         }
     };
@@ -118,8 +118,8 @@ where
     T: Send + 'static,
 {
     type Row = T;
-    fn items(&self) -> Vec<ir::SelectItem> {
-        self.projection.items()
+    fn items(&self, erase: &mut Erase) -> Vec<ir::SelectItem> {
+        self.projection.items(erase)
     }
     fn read(
         &self,
@@ -210,10 +210,13 @@ impl<M: Model, P: Projection<M::Source>, R, L, D> ProjectedQuery<M, P, R, L, D> 
     pub fn using(self, db: &Database<M::Schema>) -> BoundProjection<'_, M, P, R, L, D> {
         BoundProjection { query: self, db }
     }
-    fn erase(self) -> (ir::Select, Values, P) {
-        let (mut q, p) = self.query.erase();
-        q.columns = Some(self.projection.items());
-        (q, p, self.projection)
+    fn erase(self) -> Result<(ir::Select, Values, P)> {
+        let mut values = Values::default();
+        let mut erase = Erase::new(&mut values);
+        let mut q = self.query.erase_with(&mut erase);
+        q.columns = Some(self.projection.items(&mut erase));
+        erase.finish()?;
+        Ok((q, values, self.projection))
     }
 }
 pub struct BoundProjection<'a, M: Model, P, R = Optional, L = Unsliced, D = DefaultSelection> {
@@ -231,7 +234,7 @@ fn decode<S, P: Projection<S>>(
 }
 impl<'a, M: Model, P: Projection<M::Source>, R: Presence, L, D> BoundProjection<'a, M, P, R, L, D> {
     pub async fn all(self) -> Result<Vec<P::Row>> {
-        let (q, p, projection) = self.query.erase();
+        let (q, p, projection) = self.query.erase()?;
         R::collection(decode(
             &self.db.schema,
             &projection,
@@ -239,7 +242,7 @@ impl<'a, M: Model, P: Projection<M::Source>, R: Presence, L, D> BoundProjection<
         )?)
     }
     pub async fn first(self) -> Result<R::Single<P::Row>> {
-        let (mut q, p, projection) = self.query.erase();
+        let (mut q, p, projection) = self.query.erase()?;
         q.limit = Some(ir::Count::Value(match q.limit {
             Some(ir::Count::Value(n)) => n.min(1),
             _ => 1,
@@ -252,7 +255,7 @@ impl<'a, M: Model, P: Projection<M::Source>, R: Presence, L, D> BoundProjection<
         )
     }
     pub fn statement(self) -> Result<ProjectionStatement<'a, M, P, R>> {
-        let (q, p, projection) = self.query.erase();
+        let (q, p, projection) = self.query.erase()?;
         Ok(ProjectionStatement {
             plan: plan(self.db, Operation::Select(q), &p)?,
             db: self.db,
@@ -266,7 +269,7 @@ impl<M: Model, P: ScalarProjection<M::Source>, R: Presence, L, D>
 {
     /// Absence is the outer Option; a nullable SQL value keeps its inner Option.
     pub async fn scalar(self) -> Result<R::Single<P::Value>> {
-        let (mut q, p, projection) = self.query.erase();
+        let (mut q, p, projection) = self.query.erase()?;
         q.limit = Some(ir::Count::Value(match q.limit {
             Some(ir::Count::Value(n)) => n.min(1),
             _ => 1,
@@ -392,7 +395,7 @@ impl<M> Clone for ModelProjection<M> {
 pub fn model<M: Model>() -> ModelProjection<M> {
     ModelProjection(PhantomData)
 }
-fn column_offset(rows: &orm_engine::exec::Selected, item: usize) -> usize {
+pub(crate) fn column_offset(rows: &orm_engine::exec::Selected, item: usize) -> usize {
     match &rows.plan.output {
         orm_engine::plan::Output::Rows { items, .. } => {
             items[..item].iter().map(|width| width.unwrap_or(1)).sum()
@@ -402,7 +405,7 @@ fn column_offset(rows: &orm_engine::exec::Selected, item: usize) -> usize {
 }
 impl<M: Model> ProjectionItem<M::Source> for ModelProjection<M> {
     type Value = M;
-    fn item(&self) -> ir::SelectItem {
+    fn item(&self, _erase: &mut Erase) -> ir::SelectItem {
         ir::SelectItem::Model
     }
     fn read(
@@ -439,8 +442,8 @@ macro_rules! impl_projection_column {
         }
         impl $crate::ProjectionItem<$source> for $token {
             type Value = $value;
-            fn item(&self) -> $crate::ProjectionSelectItem {
-                $crate::ProjectionItem::item(&$crate::Column::<$source, $value>::field($field))
+            fn item(&self, erase: &mut $crate::Erase) -> $crate::ProjectionSelectItem {
+                $crate::ProjectionItem::item(&$crate::Column::<$source, $value>::field($field), erase)
             }
             fn read(
                 &self,
@@ -460,8 +463,8 @@ macro_rules! impl_projection_column {
         }
         impl $crate::Projection<$source> for $token {
             type Row = ($value,);
-            fn items(&self) -> ::std::vec::Vec<$crate::ProjectionSelectItem> {
-                ::std::vec![$crate::ProjectionItem::item(self)]
+            fn items(&self, erase: &mut $crate::Erase) -> ::std::vec::Vec<$crate::ProjectionSelectItem> {
+                ::std::vec![$crate::ProjectionItem::item(self, erase)]
             }
             fn read(
                 &self,
@@ -544,7 +547,7 @@ impl<S, T: text_value::Sealed> TextExpression<S, T> {
 }
 impl<S: 'static, T: Codec + Send + 'static> ProjectionItem<S> for TextExpression<S, T> {
     type Value = T;
-    fn item(&self) -> ir::SelectItem {
+    fn item(&self, _erase: &mut Erase) -> ir::SelectItem {
         ir::SelectItem::Expr {
             expr: self.expr.clone(),
             name: None,
@@ -563,8 +566,8 @@ impl<S: 'static, T: Codec + Send + 'static> ProjectionItem<S> for TextExpression
 }
 impl<S: 'static, T: Codec + Send + 'static> Projection<S> for TextExpression<S, T> {
     type Row = (T,);
-    fn items(&self) -> Vec<ir::SelectItem> {
-        vec![self.item()]
+    fn items(&self, erase: &mut Erase) -> Vec<ir::SelectItem> {
+        vec![self.item(erase)]
     }
     fn read(
         &self,
