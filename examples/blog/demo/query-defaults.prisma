@@ -6,7 +6,7 @@ model Article {
   body       String   @query.selectOut
   visible    Boolean  @default(true)
   created_at DateTime @default(now())
-  @@query.filter("visible == true")
+  @@query.filter("visible", "visible == true")
   @@query.order("-created_at", "id")
   @@map("demo_articles")
 }

@@ -18,6 +18,7 @@ async def run(provider: str, url: str) -> None:
     registry = orm.Registry()
     models = orm.loads(FIXTURE.replace('"sqlite"', f'"{provider}"'), registry=registry)
     Policy, Scoped = models["Policy"], models["Scoped"]
+    Notice, Draft, Archive = models["Notice"], models["Draft"], models["Archive"]
     db = await orm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
@@ -45,7 +46,13 @@ async def run(provider: str, url: str) -> None:
         try:
             await scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=True)
         except orm.QueryError as e:
-            for text in ("Scoped", 'default "query"', "orm.query-defaults", "scope.shop", 'without_defaults("query")'):
+            for text in (
+                "Scoped",
+                'default "tenant"',
+                "orm.query-defaults",
+                "scope.shop",
+                'without_defaults("tenant")',
+            ):
                 assert text in str(e), e
         else:
             raise AssertionError("an upsert with no scope ran")
@@ -75,7 +82,13 @@ async def run(provider: str, url: str) -> None:
         try:
             await Scoped.objects.using(db).count()
         except orm.QueryError as e:
-            for text in ("Scoped", 'default "query"', "orm.query-defaults", "scope.shop", 'without_defaults("query")'):
+            for text in (
+                "Scoped",
+                'default "tenant"',
+                "orm.query-defaults",
+                "scope.shop",
+                'without_defaults("tenant")',
+            ):
                 assert text in str(e), e
         else:
             raise AssertionError("a read with no scope ran")
@@ -97,6 +110,50 @@ async def run(provider: str, url: str) -> None:
                     await Scoped.objects.using(db).count()
                 except Exception as e:
                     assert "is None" not in str(e), e  # a type error is fine; the NULL rejection is not
+        rows = [
+            {"owner": 1, "published": True},
+            {"owner": 1, "published": False},
+            {"owner": 2, "published": True},
+            {"owner": 2, "published": False},
+        ]
+        for model in (Notice, Draft, Archive):
+            await model.objects.using(db).insert_many(rows)
+        notices = Notice.objects.using(db)
+        # Named filters AND; a name bypasses one and keeps the others.
+        assert await notices.count() == 1
+        assert await notices.without_defaults("published").count() == 2
+        assert await notices.without_defaults("mine").count() == 2
+        assert await notices.without_defaults("mine", "published").count() == 4
+        assert await notices.without_defaults().count() == 4
+        assert [
+            (d["name"], d["active"]) for d in notices.without_defaults("mine").current_filter() if d["name"] != "query"
+        ] == [
+            ("mine", False),
+            ("published", True),
+        ]
+        try:
+            await notices.without_defaults("nope").count()
+        except orm.QueryError as e:
+            assert 'unknown default "nope"; available defaults: ["mine", "published", "query"]' in str(e), e
+        else:
+            raise AssertionError("an unknown default name ran")
+        # A child inherits each name; the same name replaces, "none" removes.
+        assert await Draft.objects.using(db).count() == 1
+        assert [(r.owner, r.published) for r in await Draft.objects.using(db)] == [(1, False)]
+        assert await Draft.objects.using(db).without_defaults("mine").count() == 2
+        assert await Archive.objects.using(db).count() == 2
+        assert [d["name"] for d in Archive.objects.current_filter() if d["name"] != "query"] == ["mine"]
+        for source, text in (
+            ('@@query.filter("owner == 1")', 'takes a name and an expression: @@query.filter("<name>", "<expr>")'),
+            ('@@query.filter("query", "owner == 1")', "reserved"),
+            ('@@query.filter("a", "owner == 1")\n @@query.filter("a", "owner == 2")', "is given twice"),
+        ):
+            try:
+                orm.loads(f"model Bad {{\n id Int @id\n owner Int\n {source}\n}}", registry=orm.Registry())
+            except Exception as e:
+                assert text in str(e), e
+            else:
+                raise AssertionError(f"accepted {source}")
     finally:
         await db.drop_tables()
         await db.close()

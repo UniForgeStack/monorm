@@ -161,7 +161,7 @@ model Doc {
   id      Int       @id
   version Int       @default(0) @locking.version
   deleted DateTime? @soft_delete.deleted_at(mode: "application")
-  @@query.filter("deleted == null")
+  @@query.filter("live", "deleted == null")
   @@map("tracking_filtered_docs")
 }
 """
@@ -447,7 +447,7 @@ model PostTag {
   post    Post      @relation(fields: [post_id], references: [id])
   tag     Tag       @relation(fields: [tag_id], references: [id])
   deleted DateTime? @soft_delete.deleted_at(mode: "application")
-  @@query.filter("deleted == null")
+  @@query.filter("live", "deleted == null")
   @@map("tracking_join_post_tags")
 }
 """

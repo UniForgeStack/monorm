@@ -648,7 +648,7 @@ model UProfile {
   @@map("g2_profiles")
 }
 """
-FILTER = '@@query.filter("active == true")'
+FILTER = '@@query.filter("active", "active == true")'
 
 
 async def open_unset(request, dialect, filtered, target_last=False, composite=False):

@@ -9,5 +9,26 @@ model Policy {
 model Scoped {
   id      Int @id @default(autoincrement())
   shop_id Int
-  @@query.filter("shop_id == scope.shop")
+  @@query.filter("tenant", "shop_id == scope.shop")
+}
+model Notice {
+  id        Int     @id @default(autoincrement())
+  owner     Int
+  published Boolean
+  @@query.filter("mine", "owner == 1")
+  @@query.filter("published", "published == true")
+}
+model Draft {
+  id        Int     @id @default(autoincrement())
+  owner     Int
+  published Boolean
+  @@query.parent("Notice")
+  @@query.filter("published", "published == false")
+}
+model Archive {
+  id        Int     @id @default(autoincrement())
+  owner     Int
+  published Boolean
+  @@query.parent("Notice")
+  @@query.filter("published", "none")
 }

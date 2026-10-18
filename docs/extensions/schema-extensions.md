@@ -55,7 +55,7 @@ model Author {
   id         Int       @id
   deleted_at DateTime? @soft_delete.deleted_at
   books      Book[]
-  @@query.filter("deleted_at == null")   // optional: hide deleted rows (orm-query-defaults)
+  @@query.filter("live", "deleted_at == null")   // optional: hide deleted rows (orm-query-defaults)
 }
 model Book {
   id         Int       @id
@@ -77,7 +77,7 @@ model Book {
 * `all_with_deleted()` (`allWithDeleted()`) is `without_defaults()`: it removes the schema default filter that hides deleted rows.
   `deleted_only()` (`deletedOnly()`) gives only the soft-deleted rows.
 * Reads show soft-deleted rows unless the model has a default filter.
-  Select `orm-query-defaults` and add `@@query.filter("deleted_at == null")`.
+  Select `orm-query-defaults` and add `@@query.filter("live", "deleted_at == null")`.
   `without_defaults()` removes every schema default, not only this filter.
 * Database mode adds a `BEFORE DELETE ... FOR EACH ROW WHEN (OLD.deleted_at IS NULL)` trigger.
   It sets the field and cancels the delete (Postgres `RETURN NULL`, SQLite `RAISE(IGNORE)`).

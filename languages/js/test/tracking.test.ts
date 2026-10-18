@@ -113,7 +113,7 @@ model Doc {
   id      Int       @id
   version Int       @default(0) @locking.version
   deleted DateTime? @soft_delete.deleted_at(mode: "application")
-  @@query.filter("deleted == null")
+  @@query.filter("live", "deleted == null")
   @@map("tracking_node_filtered_docs")
 }`;
   const filteredSkip = { skip: !["soft-delete", "optimistic-locking", "query-defaults"].every((c) => capabilities.includes(c)) };

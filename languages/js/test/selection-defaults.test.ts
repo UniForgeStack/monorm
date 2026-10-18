@@ -257,7 +257,7 @@ model UProfile {
 
 async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean, composite = false, targetLast = false) {
   const registry = new Registry();
-  let source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
+  let source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active", "active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
   if (composite) {
     source = source.replace("id Int @id\n  name", "id Int\n  region Int @default(1)\n  @@id([id, region])\n  name")
       .replace("author_id Int?", "author_region Int? @default(1)\n  author_id Int?")

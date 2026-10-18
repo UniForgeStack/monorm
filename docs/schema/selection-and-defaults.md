@@ -45,12 +45,13 @@ model User {
 ```
 
 Each option also has its own attribute.
-One option comes from one place on a model:
+One option comes from one place on a model.
+`@@query.filter("<name>", "<expr>")` adds a named filter; see "Named filters" below:
 
 ```prisma
 model Base {
   id Int @id @default(autoincrement())
-  @@query.filter("id > 0")
+  @@query.filter("positive", "id > 0")
 }
 model Profile {
   id Int @id @default(autoincrement())
@@ -64,7 +65,7 @@ model User {
   bio String @query.selectOut
   profile_id Int @unique
   profile Profile @relation(fields: [profile_id], references: [id])
-  @@query.filter("active == true")
+  @@query.filter("active", "active == true")
   @@query.fields(["id", "name"])
   @@query.related(["profile"])
   @@query.order("-created_at", "id")
@@ -72,8 +73,37 @@ model User {
 }
 ```
 
-`@@query.defaults(filter: ...)` together with `@@query.filter(...)` is an error that names both.
-A second copy of the same attribute is an error too.
+A second copy of `@@query.fields`, `@@query.related`, `@@query.order` or `@@query.parent` is an error.
+
+### Named filters
+
+`@@query.filter("<name>", "<expr>")` adds one filter with a name. A model can have several.
+The filters of a model join with AND, and with the filters of other extensions.
+Each named filter is its own default, so `without_defaults("<name>")` drops that filter only.
+
+```prisma
+model Post {
+  id        Int     @id @default(autoincrement())
+  shop_id   Int
+  published Boolean
+  @@query.filter("tenant", "shop_id == scope.shop")
+  @@query.filter("published", "published == true")
+}
+```
+
+```python
+Post.objects.without_defaults("published")   # still filtered by "tenant"
+Post.objects.without_defaults()              # no default filter
+```
+
+The name is letters, digits and underscores.
+A name is unique on a model. `"query"` is reserved: that entry holds the order, the fields and the related paths,
+and also the filter of `@@query.defaults(filter: ...)`. `without_defaults("query")` drops those with that filter.
+A one-argument `@@query.filter("<expr>")` is a schema error that shows the two-argument form.
+
+A child (`@@query.parent`, a proxy or a composed model) inherits each name of its parent.
+A filter with the same name on the child replaces the inherited one; `parent.default_filter` in it means
+the parent's filter of that name. `@@query.filter("<name>", "none")` removes the inherited name.
 
 Build-select the compiler as a dependency with alias `query_defaults`; its
 manifest selects the `query-defaults` host capability. Without that compiler,
@@ -81,8 +111,8 @@ manifest selects the `query-defaults` host capability. Without that compiler,
 contract is accepted in every build; other extensions can contribute to it.
 Ordinary explicit partial selections remain available in baseline builds.
 
-Options omitted on a child inherit the nearest parent's policy. An explicit filter
-replaces the inherited filter. `parent.default_filter and active == true` composes
+Options omitted on a child inherit the nearest parent's policy. An explicit `filter:` option
+replaces the inherited filter (named filters inherit by name, above). `parent.default_filter and active == true` composes
 it deliberately. A standalone policy may specify `parent: "Base"`; proxy and
 composition declarations supply their parent. `filter: "none"` clears the filter,
 `fields: ["*"]` resets to all fields, and `related: []` clears default loading.
@@ -125,7 +155,7 @@ A filter can read a value that the application sets for the current request or t
 model Order {
   id      Int @id @default(autoincrement())
   shop_id Int
-  @@query.filter("shop_id == scope.shop")
+  @@query.filter("tenant", "shop_id == scope.shop")
 }
 ```
 

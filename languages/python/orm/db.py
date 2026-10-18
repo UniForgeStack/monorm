@@ -588,7 +588,7 @@ async def connect(
 @contextmanager
 def scope(**values: Any) -> Iterator[None]:
     """``with orm.scope(shop=shop.id):`` — the values that ``scope.<name>`` reads in
-    default filters (``@@query.filter("shop_id == scope.shop")``). A query on a model
+    default filters (``@@query.filter("tenant", "shop_id == scope.shop")``). A query on a model
     whose default filter reads a value that no enclosing ``scope()`` sets raises
     ``QueryError``. Inner values replace outer ones; tasks started in the block get them."""
     token = _scope.set({**_scope.get(), **values})
