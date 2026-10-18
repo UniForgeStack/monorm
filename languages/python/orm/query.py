@@ -32,7 +32,7 @@ from . import pagination
 from .fields import BelongsTo, HasMany, ManyToMany, key_items, key_value
 from .pagination import Page
 from .protection import allowed_writes
-from . import debug
+from . import adapters, debug
 from .write import (
     CopyInsert,
     Delete,
@@ -1186,7 +1186,13 @@ class QuerySet(Generic[M]):
         """``UPDATE`` every matching row; values may be expressions, e.g.
         ``views=Post.views + 1``. ``await`` gives the number of rows updated;
         ``await qs.update(...).returning()`` gives the updated rows instead."""
-        return Update.build(self, values)
+        split = adapters.split(self._model, values)
+        if split is None:
+            return Update.build(self, values)
+        checked, pending = split
+        if pending:
+            return adapters.PendingUpdate(self, checked, pending)  # type: ignore[return-value]
+        return Update.build(self, checked)
 
     def update_many(self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None) -> UpdateMany[M]:
         """``UPDATE`` each row to its own values: ``rows`` are dicts with the primary key
@@ -1239,6 +1245,11 @@ class QuerySet(Generic[M]):
         """``INSERT`` one row; ``await`` gives the new instance with database defaults
         (id, timestamps) filled in. Chain ``.on_conflict(...)`` for an upsert."""
         self._standalone()
+        split = adapters.split(self._model, values)
+        if split is not None:
+            values, pending = split
+            if pending:
+                return adapters.PendingInsert(self, values, pending)  # type: ignore[return-value]
         fields, rows, provided = prepare_rows(self._model, [values])
         return InsertOne(self, fields, rows, provided)
 
