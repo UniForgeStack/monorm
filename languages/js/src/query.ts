@@ -5,6 +5,7 @@
 
 import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
+import type { BoundQuerySet } from "./bound.js";
 import { resolve, withScope, type Database } from "./db.js";
 import {
   asCondition,
@@ -199,9 +200,9 @@ type LoadParams<C extends readonly unknown[]> = UnionToIntersection<
   { [K in keyof C]: C[K] extends { readonly "~qs"?: [unknown, unknown, unknown, infer P, unknown, Via] } ? P : {} }[number]
 >;
 /** The names of the root model's own columns among `C`. */
-type RootNames<C extends readonly unknown[]> = { [K in keyof C]: C[K] extends Column<unknown, string, infer N, readonly []> ? N : never }[number];
+export type RootNames<C extends readonly unknown[]> = { [K in keyof C]: C[K] extends Column<unknown, string, infer N, readonly []> ? N : never }[number];
 /** `R` narrowed to the root fields `N` (or widened by them, when `R` is partial already). */
-type Narrow<R, M extends ModelSpec, N> = [N] extends [never]
+export type Narrow<R, M extends ModelSpec, N> = [N] extends [never]
   ? R
   : keyof M["data"] extends keyof R
     ? Fields<R, M["data"], N>
@@ -497,6 +498,10 @@ export type QueriesOf<M extends ModelSpec> = M extends { readonly queries: infer
 export type QuerySetOf<M extends ModelSpec, R = M["row"], S extends string = M["name"], P = {}, X extends string = never, V = null> =
   QuerySet<M, R, S, P, X, V> & QueriesOf<M>;
 
+let makeBound: (qs: QuerySet<ModelSpec>, objs: readonly object[]) => unknown;
+/** @internal bound.ts registers the constructor (it imports this module, not the other way round). */
+export function registerBound(make: typeof makeBound): void { makeBound = make; }
+
 /** @internal The non-null result view of a required query. */
 export interface RequiredQuery { readonly "~required": true }
 export type RequiredResult<Q, R> = Q extends RequiredQuery ? R : R | null;
@@ -778,6 +783,16 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       s.filters.length || s.order.length || s.limit !== undefined || s.offset !== undefined || s.loads?.length || s.modelFields !== undefined
       || s.label !== undefined || s.asPrefetch || s.lock || s.withoutDefaults || s.withoutRelated || s.from || s.joins.length
     );
+  }
+
+  /**
+   * A query set bound to `objs` (one object, or an iterable of objects of this model): it
+   * is filtered to their primary keys and fills them in place. See {@link BoundQuerySet}.
+   * Throws `TypeError` for no objects, objects of another model or without a primary key,
+   * and for a query set with order, slice, joins or a source other than the model's table.
+   */
+  of<B extends M["row"]>(objs: B | Iterable<B>): BoundQuerySet<M, B> {
+    return makeBound(this as never, typeof objs === "object" && objs !== null && Symbol.iterator in objs ? [...(objs as Iterable<B>)] : [objs]) as never;
   }
 
   /** Keep rows matching all `conditions`. */

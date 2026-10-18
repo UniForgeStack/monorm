@@ -16,6 +16,7 @@ import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
 import { applyExtensions, type ExtensionCode, type Mixin } from "./extensions.js";
+import type { BoundQuerySet } from "./bound.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
 /** Where an instance keeps its loaded relations. */
@@ -89,6 +90,8 @@ export interface Instance<M extends ModelSpec> {
   load<const C extends readonly LoadItem<M>[]>(...args: [...items: C, options: { readonly reload?: boolean }]): Promise<InstanceLoaded<M, this, C>>;
   /** The primary key's value. */
   readonly pk: M["pk"];
+  /** A query set bound to this object: reads fill it in place. Same as `Model.objects.of(this)`. */
+  qs(): BoundQuerySet<M, this>;
   /**
    * `UPDATE ... SET <values> WHERE pk = ... RETURNING *`. Values may be expressions
    * (`{ views: Post.views.add(1) }`); the instance is refreshed from the returned row, so
@@ -334,6 +337,7 @@ export class ModelMeta implements Source {
       update: { value: instanceUpdate, writable: true, configurable: true },
       delete: { value: instanceDelete, writable: true },
       load: { value: instanceLoad },
+      qs: { value(this: Row) { return metaOf(this).objects.of(this as never); } },
       refresh: { value: instanceRefresh, writable: true, configurable: true },
       toJSON: {
         value(this: Row) {
@@ -423,7 +427,7 @@ export class ModelMeta implements Source {
 /** Names the runtime gives meaning to on models / instances. */
 const RESERVED = new Set([
   "objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", // models
-  "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then", // instances
+  "pk", "update", "delete", "refresh", "load", "qs", "toJSON", "constructor", "toString", "then", // instances
 ]);
 
 function checkName(model: string, name: string, seen: Map<string, unknown>): void {
@@ -621,6 +625,9 @@ async function instanceDelete(this: Row): Promise<void> {
   }
   replaceFrom(this, rows[0]!);
 }
+
+/** @internal Drops the reference cache of a relation whose key changed (`undefined` without the capability). */
+export const invalidateReference = referenceAdapter?.invalidateReference;
 
 async function instanceLoad(this: Row, ...args: unknown[]): Promise<Row> {
   const last = args.at(-1);
