@@ -46,6 +46,7 @@ async def check() -> None:
     assert_type(User.posts.objects, PostQuerySet)
     assert_type(User.posts.objects.filter(Post.published)[:3].label("top"), PostQuerySet)
     assert_type(await Post.objects.load(Post.title, Post.author.name, Post.comments.objects.as_prefetch()), list[Post])
+    assert_type(await Post.objects.load(func.count(Post.comments).label("n")), list[Post])
     assert_type(User.posts.author.email, ColumnRef[str])
     assert_type(Comment.author_id, ColumnRef[int | None])
     assert_type(User.posts.created_at < yesterday, Condition)
@@ -233,6 +234,7 @@ async def errors() -> None:
     u.posts = []  # E: read-only relation
     User.objects.load(1)  # E: not a column, relation or relation query set
     User.objects.load(User.posts.objects[0].label("chosen"))
+    User.objects.load(func.count(User.posts))  # E: an aggregate in load() needs a label
     User.posts.objects.label("old", one=True)  # E: one-row loads use [n].label()
     func.ntile("2")  # E: buckets are ints
     func.sum(Post.views).over(window(), rows=(None, "x"))  # E: frame bounds are ints

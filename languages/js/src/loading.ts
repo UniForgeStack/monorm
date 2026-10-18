@@ -1,6 +1,6 @@
 /** Additive instance loading through the queryset load vocabulary. */
 import { clearAbsent, copyAbsent, mergeAbsent } from "./reference-absence.js";
-import { Column, PATH, RelationPath } from "./expr.js";
+import { Column, Labeled, PATH, RelationPath } from "./expr.js";
 import { NotLoaded } from "./errors.js";
 import { DB, INTERNAL, RELATED, fieldValue, type ModelMeta, type Row } from "./model.js";
 import { prefetch, QuerySet, type LoadItem, type LoadEntry } from "./query.js";
@@ -32,6 +32,7 @@ function itemPath(item: LoadEntry | LoadItem<ModelSpec>): Column<unknown, string
 }
 
 function itemLoaded(row: Row, item: LoadEntry | LoadItem<ModelSpec>): boolean {
+  if (item instanceof Labeled) return Object.hasOwn(row, item.name);
   const path = itemPath(item);
   const hops = path instanceof Column ? path.path : path[PATH].path;
   return loaded(row, hops, path instanceof Column ? path.field.name : undefined,
@@ -104,16 +105,19 @@ export async function loadInstance(
   // Validate all arguments and relation query options before any I/O.
   const query = (meta.objects.withoutDefaults().load as (...items: readonly LoadItem<ModelSpec>[]) => QuerySet<ModelSpec>)(...requested);
   query.inspect();
-  const own = requested.filter((item): item is Column<unknown, string> => item instanceof Column && !item.path.length
-    && (reload || !Object.hasOwn(owner, item.field.name)));
+  const own = requested.filter((item): item is Column<unknown, string> | Labeled<unknown> =>
+    (item instanceof Column && !item.path.length && (reload || !Object.hasOwn(owner, item.field.name)))
+    || (item instanceof Labeled && (reload || !Object.hasOwn(owner, item.name))));
   if (own.length) {
+    // a labeled aggregate alone must not read every column
+    if (!own.some((i) => i instanceof Column)) own.unshift(...meta.key.map((f) => meta.column(f)));
     const rowQuery = meta.objects.withoutDefaults().using(owner[DB]).filter(meta.keyMatch(meta.key, owner["pk"]) as never);
-    const fresh = await (rowQuery.load as (...items: Column<unknown, string>[]) => QuerySet<ModelSpec>)(...own).require().get() as Row;
+    const fresh = await (rowQuery.load as (...items: (Column<unknown, string> | Labeled<unknown>)[]) => QuerySet<ModelSpec>)(...own).require().get() as Row;
     merge(owner, fresh, reload, invalidate);
   }
   const relations: LoadItem<ModelSpec>[] = [];
   for (const item of requested) {
-    if (item instanceof Column && !item.path.length) continue;
+    if ((item instanceof Column && !item.path.length) || item instanceof Labeled) continue;
     const path = itemPath(item);
     const hops = path instanceof Column ? path.path : path[PATH].path;
     if (!reload && itemLoaded(owner, item)) continue;

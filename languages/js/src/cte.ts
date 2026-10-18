@@ -32,7 +32,7 @@ export class CteColumn<T, N extends string> extends Expression<T, N, {}> {
     readonly cte: Cte<N, unknown, ModelSpec | null>,
     /** The column's name in the CTE (a field's schema name, or a select() key). */
     readonly column: string,
-    readonly label: string,
+    readonly text: string,
   ) {
     super();
   }
@@ -43,7 +43,7 @@ export class CteColumn<T, N extends string> extends Expression<T, N, {}> {
   }
 
   override toString(): string {
-    return `${this.cte.name}.c.${this.label}`;
+    return `${this.cte.name}.c.${this.text}`;
   }
 }
 

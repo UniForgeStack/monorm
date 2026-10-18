@@ -292,7 +292,13 @@ split into several queries; the split is between parents, so ordering and slices
 parent are unaffected. (Django doesn't split: on Postgres it inlines the values into the
 SQL text client-side, so the limit doesn't apply to it.)
 
-`load()` takes columns, relation paths and relation query sets; calls add up.
+`load()` takes columns, relation paths, relation query sets and labeled relation aggregates; calls add up.
+
+* A labeled aggregate, `load(func.count(Post.comments).label("n"))`, stores the value in the attribute `n` of each row, so `post.n` works.
+  It runs in the same statement as the rows, on the model's query set, a relation query set (`User.posts.objects.load(...)`) and instance `load()` (`await post.load(...)`, which reads only the aggregate).
+  Only an aggregate over a relation takes a label here; another expression raises `TypeError` (use `select()`), as does an aggregate without a label.
+  A label that names a field, relation or member of the model, or that another label or relation query set of the same `load()` also uses, raises `ValueError`.
+  `prefetch()` rejects it, and `select()` ignores it. The attribute is not typed statically.
 
 * A column of the model makes its instances partial: they hold the named fields, and, hidden, the primary key and the relation keys. Reading another field raises `NotLoaded`.
   Without a column of the model itself, its instances keep their normal selection: `load(Post.author)` gives whole posts.
