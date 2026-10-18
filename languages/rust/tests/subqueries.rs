@@ -12,7 +12,7 @@ const FIXTURE:&str="DROP TABLE IF EXISTS rust_read_posts; DROP TABLE IF EXISTS r
 macro_rules! exercise {
     ($module:ident,$url:expr,$checked_fails:expr) => {{
         use $module::{Database,Post,User};
-        use orm_client::{scalar,scalar_checked,Error,Parent,Subquery};
+        use orm_client::{exists,in_subquery,not_in_subquery,scalar,scalar_checked,Error,Parent,Subquery};
         let raw=orm_engine::db::connect($url,1).await.unwrap();
         raw.batch(FIXTURE.into()).await.unwrap();raw.close().await;
         let db=Database::connect($url,1).await.unwrap();
@@ -23,7 +23,7 @@ macro_rules! exercise {
             .filter(Post::author_id.column().eq_outer(u.col(User::id.column())))
             .order_by(Post::views.desc()).then_by(Post::id.asc())
             .limit_one().select(Post::title));
-        let rows:Vec<(i32,Option<String>)>=User::objects.order_by(User::id.asc()).select((User::id,best_title)).using(&db).all().await.unwrap();
+        let rows:Vec<(i32,Option<String>)>=User::objects.order_by(User::id.asc()).select((User::id,best_title.clone())).using(&db).all().await.unwrap();
         assert_eq!(rows,vec![(1,s("beta")),(2,s("alpha")),(3,None)]);
 
         // A unique key lookup proves at most one row, and a to-one outer column compares in either direction.
@@ -65,6 +65,72 @@ macro_rules! exercise {
         let stray=scalar(|_:Parent<User>|Subquery::new(Post::objects).filter(leaked.take().unwrap()).limit_one().select(Post::title));
         let err=User::objects.select((User::id,stray)).using(&db).all().await;
         assert!(matches!(&err,Err(Error::Compatibility(m)) if m.contains("unresolved outer source")),"{err:?}");
+
+        // EXISTS reads the enclosing row; `!` negates it; an uncorrelated one is all or nothing.
+        let ids=|rows:Vec<i32>|rows;
+        let has_big_post=||exists(|u:Parent<User>|Subquery::new(Post::objects)
+            .filter(Post::author_id.column().eq_outer(u.col(User::id.column())))
+            .filter(Post::views.ge(20)));
+        let rows:Vec<i32>=User::objects.filter(has_big_post()).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(ids(rows),vec![1,2]);
+        let rows:Vec<i32>=User::objects.filter(!has_big_post()).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![3]);
+        let any_post=|min:i32|exists(|_:Parent<User>|Subquery::new(Post::objects).filter(Post::views.gt(min)));
+        let rows:Vec<i32>=User::objects.filter(any_post(10)).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![1,2,3]);
+        let rows:Vec<i32>=User::objects.filter(any_post(100)).select(User::id).using(&db).scalars().await.unwrap();
+        assert!(rows.is_empty());
+
+        // IN and NOT IN take one column of the subquery, correlated or not.
+        let big_authors=||in_subquery(User::id.column(),|_:Parent<User>|Subquery::new(Post::objects).filter(Post::views.ge(20)).select(Post::author_id));
+        let rows:Vec<i32>=User::objects.filter(big_authors()).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![1,2]);
+        let rows:Vec<i32>=User::objects.filter(not_in_subquery(User::id.column(),|_:Parent<User>|Subquery::new(Post::objects).select(Post::author_id))).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![3]);
+        let twin=in_subquery(User::email.column(),|u:Parent<User>|Subquery::new(User::objects)
+            .filter(User::id.column().ne_outer(u.col(User::id.column()))).select(User::email));
+        let rows:Vec<i32>=User::objects.filter(twin).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![1,3]);
+        // A nullable operand against a nullable column: NULL is never IN, so user 1 drops out.
+        let named=in_subquery(User::nickname.column(),|_:Parent<User>|Subquery::new(User::objects).select(User::nickname));
+        let rows:Vec<i32>=User::objects.filter(named).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![2,3]);
+        // A required operand against a nullable subquery column compares by value.
+        let rows:Vec<i32>=User::objects.filter(in_subquery(User::email.column(),|_:Parent<User>|Subquery::new(User::objects).filter(User::nickname.is_null()).select(User::email))).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![1,3]);
+
+        // Predicates nest, and the innermost one reads the root and its parent.
+        let nested_exists=exists(|u:Parent<User>|Subquery::new(Post::objects)
+            .filter(Post::author_id.column().eq_outer(u.col(User::id.column())))
+            .filter(exists(|p:Parent<Post>|Subquery::new(User::objects)
+                .filter(User::id.column().eq_outer(p.col(Post::author_id.column())))
+                .filter(User::email.column().eq_outer(u.col(User::email.column()))))));
+        let rows:Vec<i32>=User::objects.filter(nested_exists).order_by(User::id.asc()).select(User::id).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![1,2]);
+        let inside_scalar=scalar(|u:Parent<User>|Subquery::new(Post::objects)
+            .filter(exists(|p:Parent<Post>|Subquery::new(User::objects).filter(User::id.column().eq_outer(p.col(Post::author_id.column()))).filter(User::id.column().eq_outer(u.col(User::id.column())))))
+            .order_by(Post::id.asc()).limit_one().select(Post::title));
+        let rows:Vec<Option<String>>=User::objects.order_by(User::id.asc()).select(inside_scalar).using(&db).scalars().await.unwrap();
+        assert_eq!(rows,vec![s("alpha"),s("alpha"),None]);
+
+        // A scalar subquery stays nullable under a required outer terminal; only an absent outer row is an error.
+        let v:Option<String>=User::objects.filter(User::id.eq(3)).require().select(best_title.clone()).using(&db).scalar().await.unwrap();
+        assert_eq!(v,None);
+        let absent=User::objects.filter(User::id.eq(99)).require().select(best_title).using(&db).scalar().await;
+        assert!(absent.is_err());
+
+        // An exists or in predicate with a stray outer source fails at erasure and blocks the statement.
+        let mut stray_pred=None;
+        let _=exists(|u:Parent<User>|{
+            let p=Post::author_id.column().eq_outer(u.col(User::id.column()));
+            stray_pred=Some(p.clone());
+            Subquery::new(Post::objects).filter(p)
+        });
+        let bad=exists(|_:Parent<User>|Subquery::new(Post::objects).filter(stray_pred.take().unwrap()));
+        let q=User::objects.filter(bad);
+        let err=q.clone().select(User::id).using(&db).all().await;
+        assert!(matches!(&err,Err(Error::Compatibility(m)) if m.contains("unresolved outer source")),"{err:?}");
+        assert!(matches!(q.using(&db).statement(),Err(Error::Compatibility(_))));
         db.close().await;
     }};
 }

@@ -166,6 +166,8 @@ pub struct SubSelect<M: Model, P, Card = Unbounded> {
 }
 
 type Build = dyn Fn(&mut Erase) -> ir::Select + Send + Sync;
+#[doc(hidden)]
+pub type BuildSelect = Arc<Build>;
 /// `(SELECT one_column ...)` as a projection item. It is `NULL` when the subquery has no row.
 pub struct ScalarSubquery<M, T> {
     build: Arc<Build>,
@@ -286,4 +288,90 @@ impl<M: Model, T: Codec + Send + 'static> Projection<M::Source> for ScalarSubque
 }
 impl<M: Model, T: Codec + Send + 'static> ScalarProjection<M::Source> for ScalarSubquery<M, T> {
     type Value = T;
+}
+
+fn handle<'a, M: Model>(id: u64) -> Parent<'a, M> {
+    Parent {
+        id,
+        _scope: PhantomData,
+    }
+}
+/// `EXISTS (SELECT ...)` over a subquery that may read the enclosing row.
+/// Annotate the parent: `exists(|u: Parent<User>| ...)`. Negate it with `!`.
+pub fn exists<M, N, Card, F>(build: F) -> Predicate<M::Source>
+where
+    M: Model,
+    N: Model,
+    F: for<'a> FnOnce(Parent<'a, M>) -> Subquery<N, Card>,
+{
+    let id = next_id();
+    let query = build(handle(id)).query;
+    Predicate::from_tree(Tree::Exists(Arc::new(move |erase: &mut Erase| {
+        erase.scopes.push(id);
+        let select = query.clone().erase_with(erase);
+        erase.scopes.pop();
+        select
+    })))
+}
+fn in_tree<M, N, P, Card, T, C, F>(
+    column: Column<M::Source, T, C>,
+    neg: bool,
+    build: F,
+) -> Predicate<M::Source>
+where
+    M: Model,
+    N: Model,
+    P: ScalarProjection<N::Source>,
+    T: Codec,
+    C: ProjectionCardinality<T>,
+    F: for<'a> FnOnce(Parent<'a, M>) -> SubSelect<N, P, Card>,
+{
+    let id = next_id();
+    let SubSelect {
+        query, projection, ..
+    } = build(handle(id));
+    Predicate::from_tree(Tree::InSub(
+        column.expr(),
+        neg,
+        Arc::new(move |erase: &mut Erase| {
+            erase.scopes.push(id);
+            let mut select = query.clone().erase_with(erase);
+            select.columns = Some(projection.items(erase));
+            erase.scopes.pop();
+            select
+        }),
+    ))
+}
+/// `column IN (SELECT one_column ...)`. The subquery column must have the operand's type, and
+/// either side may be nullable.
+pub fn in_subquery<M, N, P, Card, T, C, F>(
+    column: Column<M::Source, T, C>,
+    build: F,
+) -> Predicate<M::Source>
+where
+    M: Model,
+    N: Model,
+    P: ScalarProjection<N::Source>,
+    T: NullableCodec,
+    P::Value: NullableCodec<Nullable = T::Nullable>,
+    C: ProjectionCardinality<T>,
+    F: for<'a> FnOnce(Parent<'a, M>) -> SubSelect<N, P, Card>,
+{
+    in_tree(column, false, build)
+}
+/// `column NOT IN (SELECT one_column ...)`; a NULL in the subquery makes the predicate unknown.
+pub fn not_in_subquery<M, N, P, Card, T, C, F>(
+    column: Column<M::Source, T, C>,
+    build: F,
+) -> Predicate<M::Source>
+where
+    M: Model,
+    N: Model,
+    P: ScalarProjection<N::Source>,
+    T: NullableCodec,
+    P::Value: NullableCodec<Nullable = T::Nullable>,
+    C: ProjectionCardinality<T>,
+    F: for<'a> FnOnce(Parent<'a, M>) -> SubSelect<N, P, Card>,
+{
+    in_tree(column, true, build)
 }
