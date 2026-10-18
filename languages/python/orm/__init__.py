@@ -61,6 +61,8 @@ from .query import (
     PreparedOneRowQuery,
     QuerySet,
     RelatedSet,
+    BoundQuerySet,
+    of,
     prefetch,
     use_query_set,
 )
@@ -94,6 +96,8 @@ __all__ = [
     "OneRowQuery",
     "PreparedOneRowQuery",
     "prefetch",
+    "of",
+    "BoundQuerySet",
     "use_query_set",
     "param",
     "Cte",

@@ -166,7 +166,7 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
     }
     for (const name of [...record.query_set_members, ...record.instance_members]) if (!given.has(name)) given.set(name, id);
     mixins.push(mixin as Mixin);
-    if (record.bound_query_set !== undefined) {
+    if (record.bound_query_set) {
       const boundMixin = code.module[record.bound_query_set];
       if (typeof boundMixin !== "function") throw new TypeError(`extension ${id} has no ${record.bound_query_set}; run \`orm generate\``);
       bound.push(boundMixin as (base: never) => unknown);

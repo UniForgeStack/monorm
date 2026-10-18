@@ -90,7 +90,7 @@ fn python_keyword_methods_fail_before_artifact_generation() {
 
 #[test]
 fn a_language_section_needs_the_contract_and_its_language() {
-    let section = || Some(orm_contracts::extension::LanguageSection { source: "python/x".into(), query_set: "Q".into(), instance: "I".into(), bound_query_set: None, overrides: vec![] });
+    let section = || Some(orm_contracts::extension::LanguageSection { source: "python/x".into(), query_set: "Q".into(), instance: "I".into(), bound_query_set: String::new(), overrides: vec![] });
     let mut m = manifest("a", "a.lower", &[], &[]);
     m.python = section();
     assert!(Composition::resolve(vec![m.clone()]).unwrap_err().contains("language contract"));

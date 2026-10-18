@@ -350,7 +350,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             let mut bound = format!("new (...args: any[]) => BoundQuerySet<{name}BaseSpec>");
             let mut any_bound = false;
             for (i, e) in &exts {
-                if let Some(export) = &e.members.bound_query_set {
+                let export = &e.members.bound_query_set;
+                if !export.is_empty() {
                     bound = format!("ReturnType<typeof _e{i}.{export}<{bound}>>");
                     any_bound = true;
                 }
@@ -431,7 +432,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     if !used_exts.is_empty() {
         types.push("QuerySet");
     }
-    if used_exts.iter().any(|i| options.extensions[*i].members.bound_query_set.is_some()) {
+    if used_exts.iter().any(|i| !options.extensions[*i].members.bound_query_set.is_empty()) {
         types.push("BoundQuerySet");
     }
     types.sort_unstable();

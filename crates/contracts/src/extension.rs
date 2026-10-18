@@ -112,8 +112,8 @@ pub const ASYNC_FIELD_ADAPTER_V1: &str = "async-field-adapter.v1";
 pub const FILE_REFERENCE_ADAPTER: &str = "file-storage.reference.v1";
 
 /// Names the host runtimes give meaning to on models and instances.
-pub const RESERVED_MEMBERS: [&str; 13] =
-    ["objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then"];
+pub const RESERVED_MEMBERS: [&str; 14] =
+    ["objects", "qs", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then"];
 
 /// Reject a file field whose generated Python or TypeScript operations collide with a model member.
 pub fn check_file_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, field: &str) -> Result<(), String> {
@@ -342,11 +342,9 @@ pub struct LanguageSection {
     pub query_set: String,
     /// The export that adds instance members.
     pub instance: String,
-    /// The export that adds the members that are safe on a bound query set ("at most one row per
-    /// bound object"): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript.
-    /// Its members are a subset of the `query_set` members.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bound_query_set: Option<String>,
+    /// Optional export for the bound query set (`orm.of(objs)`): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript, whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
+    #[serde(default)]
+    pub bound_query_set: String,
     /// The host members that the extension replaces; every other name collision is an error.
     #[serde(default)]
     pub overrides: Vec<String>,
@@ -361,13 +359,13 @@ pub struct LanguageMembers {
     pub language: String,
     pub query_set: String,
     pub instance: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bound_query_set: Option<String>,
     /// Member names that the query-set class and the instance class add, sorted.
     pub query_set_members: Vec<String>,
     pub instance_members: Vec<String>,
-    /// The members of the bound query-set class, sorted; a subset of `query_set_members`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The export of the bound query set, empty when the extension has none, and its member names, sorted.
+    #[serde(default)]
+    pub bound_query_set: String,
+    #[serde(default)]
     pub bound_query_set_members: Vec<String>,
     pub overrides: Vec<String>,
     /// SHA-256 of the embedded source files (name, length and content of each, in name order).

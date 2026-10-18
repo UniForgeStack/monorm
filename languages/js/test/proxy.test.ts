@@ -120,7 +120,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.equal(await Draft.objects.using(db).filter(Draft.id.eq(1)).update({ title: "x" }), 1);
       assert.equal(((await Doc.objects.using(db).get(Doc.id.eq(1))) as { version: number }).version, 1);
       assert.equal(await Draft.objects.using(db).filter(Draft.id.eq(2)).delete(), 1);
-      assert.notEqual(((await Doc.objects.using(db).get(Doc.id.eq(2))) as { deleted: unknown }).deleted, null);
+      assert.notEqual(((await Doc.objects.using(db).withoutDefaults("deleted").get(Doc.id.eq(2))) as { deleted: unknown }).deleted, null);
     } finally { await db.dropTables(); await db.close(); }
   });
 }
