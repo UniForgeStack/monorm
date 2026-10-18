@@ -12,6 +12,9 @@ use crate::ir::{
 };
 use crate::migrate::pg::ident;
 
+mod nested;
+use nested::Paths;
+
 /// Reads the named arguments of one attribute, rejecting unknown or repeated ones.
 struct Named<'a> {
     what: String,
@@ -277,13 +280,14 @@ pub struct Lowering<'l> {
 struct Ctx<'l> {
     types: HashMap<String, (String, TypeDef)>,
     enums: HashMap<String, EnumIr>,
+    nested: HashMap<String, crate::ir::TypeIr>,
     proxies: &'l HashSet<String>,
 }
 
 impl Lowering<'_> {
     pub fn lower(&self, items: Vec<Item>) -> Result<SchemaIr> {
         let mut ir = SchemaIr::default();
-        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), proxies: self.proxies };
+        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), proxies: self.proxies };
         for def in ExtensionDef::builtin() {
             for (name, t) in &def.types {
                 ctx.types.insert(name.clone(), (def.name.clone(), t.clone()));
@@ -319,6 +323,7 @@ impl Lowering<'_> {
                 ir.enums.push(lowered);
             }
         }
+        ir.types = nested::declare(&items, &model_names, &mut ctx)?;
         let mut db_names = HashSet::new();
         for e in ir.enums.iter().filter(|e| e.storage == EnumStorage::Native) {
             if !db_names.insert(e.db_name.as_str()) {
@@ -336,20 +341,23 @@ impl Lowering<'_> {
                     datasource_block(&mut ir, *pos, props)?;
                 }
                 Item::Function { pos, name, props } => ir.functions.push(function(*pos, name, props)?),
-                Item::Model(_) | Item::Enum(_) | Item::Import { .. } | Item::Partition { .. } => {}
+                Item::Model(_) | Item::Type(_) | Item::Enum(_) | Item::Import { .. } | Item::Partition { .. } => {}
             }
         }
 
         // fields first (relations need every model's primary key)
         let mut lowered: Vec<ModelIr> = vec![];
+        let mut all_paths: Vec<Paths> = vec![];
         for m in &models {
-            lowered.push(model_fields(m, &model_names, &ctx)?);
+            let (ir, paths) = model_fields(m, &model_names, &ctx, &items)?;
+            lowered.push(ir);
+            all_paths.push(paths);
         }
         let pks: HashMap<String, Option<String>> = lowered
             .iter()
             .map(|m| (m.name.clone(), m.fields.iter().find(|f| f.primary_key).map(|f| f.name.clone())))
             .collect();
-        for (m, decl) in lowered.iter_mut().zip(&models) {
+        for ((m, decl), paths) in lowered.iter_mut().zip(&models).zip(&all_paths) {
             if pks[&m.name].is_none() && !self.deferred_identity.contains(&m.name) {
                 return err(decl.pos, format!("model {} has no @id field", decl.name));
             }
@@ -358,7 +366,7 @@ impl Lowering<'_> {
                 m.relations.push(r);
             }
             for block in &decl.blocks {
-                model_block(m, block)?;
+                model_block(m, &nested::resolve_paths(block, paths, &decl.name)?)?;
             }
         }
         ir.models = lowered;
@@ -511,7 +519,7 @@ fn function(pos: Pos, name: &str, props: &Props) -> Result<FunctionIr> {
     Ok(f)
 }
 
-fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>) -> Result<ModelIr> {
+fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>, items: &[Item]) -> Result<(ModelIr, Paths)> {
     let mut ir = ModelIr {
         partition: None,
         name: m.name.clone(),
@@ -545,6 +553,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         }
     }
     let mut seen = HashSet::new();
+    let mut paths = Paths::new();
     for member in &m.members {
         if !seen.insert(member.name.as_str()) {
             return err(member.pos, format!("{}.{} is declared twice", m.name, member.name));
@@ -552,12 +561,19 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         if models.contains_key(member.ty.name.as_str()) {
             continue;
         }
+        if nested::is_nested(ctx, member) {
+            let x = nested::expand(&ir, m, member, items, ctx)?;
+            ir.fields.extend(x.fields);
+            ir.constraints.extend(x.checks);
+            paths.extend(x.paths);
+            continue;
+        }
         ir.fields.push(field(m, member, ctx)?);
     }
     for a in m.blocks.iter().filter(|a| a.name == "id") {
         composite_id(&mut ir, a)?;
     }
-    Ok(ir)
+    Ok((ir, paths))
 }
 
 /// `@@id([a, b], map: "name")`: marks the fields as the key, in this order.
@@ -632,6 +648,7 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>) -> Result<FieldIr> {
         comment: None,
         requires: vec![],
         hints: BTreeMap::new(),
+        nested: None,
     };
     let resolve = |f: &mut FieldIr, ty: &str, values: &[String]| -> Result<()> {
         let Some((ext, def)) = ctx.types.get(ty) else {
