@@ -40,6 +40,7 @@ kind = "string"
 source = "python/orm_soft_delete"
 query_set = "SoftDeleteQuerySet"
 instance = "SoftDeleteInstance"
+bound_query_set = "SoftDeleteBoundQuerySet"
 
 [package.metadata.orm-extension.typescript]
 source = "typescript/src"

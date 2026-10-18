@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast
 
 from .expr import ColumnRef
 from .query import M as ModelT
-from .write import Delete
+from .write import Delete, Returning
 
 if TYPE_CHECKING:
-    from .query import QuerySet
+    from .query import BoundQuerySet, QuerySet
+
+B = TypeVar("B", bound="BoundQuerySet[Any]")
 
 LANGUAGE_CONTRACT = 1
 
@@ -19,6 +21,8 @@ __all__ = [
     "ModelT",
     "behavior_field",
     "behavior_records",
+    "bound_query",
+    "bound_write",
     "hard_delete_statement",
     "row_query",
 ]
@@ -53,3 +57,17 @@ def row_query(instance: ModelLike) -> QuerySet[Any]:
     """The query set of the one row of ``instance``: its primary key, no defaults, its database."""
     query: QuerySet[Any] = cast(Any, instance)._row_query()
     return query
+
+
+def bound_query(bound: B, change: Callable[[QuerySet[Any]], QuerySet[Any]]) -> B:
+    """``bound`` with ``change`` applied to its inner query set, as ``filter()`` does."""
+    clone: B = bound._clone(change(bound._qs))
+    return clone
+
+
+async def bound_write(
+    bound: BoundQuerySet[ModelT], build: Callable[[QuerySet[ModelT]], Returning[ModelT]]
+) -> list[ModelT]:
+    """Run the ``RETURNING`` write that ``build`` makes of the bound query; fill the objects
+    whose rows it returns and give them in input order."""
+    return await bound._write(build)

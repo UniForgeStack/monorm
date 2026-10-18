@@ -251,6 +251,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let parts: Vec<String> = keys.iter().map(|f| value_type(f)).collect();
             writeln!(body, "    @property\n    def pk(self) -> tuple[{}]: ...\n", parts.join(", ")).unwrap();
         }
+        if exts.iter().any(|(i, _)| !options.extensions[*i].members.bound_query_set.is_empty()) {
+            writeln!(body, "    def qs(self) -> _{name}BoundObjects: ...  # type: ignore[override]\n").unwrap();
+        }
         writeln!(
             body,
             "    async def update(self, **values: Unpack[{name}Update]) -> None: ...  # type: ignore[override]\n"
@@ -397,7 +400,19 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             // the user's class first, then the extensions, last in the chain first, as at runtime
             let user = if query_sets.contains_key(name.as_str()) { format!("_{name}UserObjects, ") } else { String::new() };
             let mixins: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}QuerySet[{name}], ")).collect();
-            writeln!(body, "class _{name}Objects({user}{mixins}{name}QuerySet): ...\n").unwrap();
+            let bound: String = exts
+                .iter()
+                .rev()
+                .filter(|(i, _)| !options.extensions[*i].members.bound_query_set.is_empty())
+                .map(|(i, _)| format!("_ext{i}BoundQuerySet[{name}], "))
+                .collect();
+            if bound.is_empty() {
+                writeln!(body, "class _{name}Objects({user}{mixins}{name}QuerySet): ...\n").unwrap();
+            } else {
+                writeln!(body, "class _{name}Objects({user}{mixins}{name}QuerySet):").unwrap();
+                writeln!(body, "    def of(self, objs: Iterable[{name}] | {name}) -> _{name}BoundObjects: ...\n").unwrap();
+                writeln!(body, "class _{name}BoundObjects({bound}BoundQuerySet[{name}]): ...\n").unwrap();
+            }
         }
     }
 
@@ -446,9 +461,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         let alias = if used_exts.is_empty() || options.model_extensions(ir, model).is_empty() { "Objects" } else { "UserObjects" };
         writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();
     }
+    if used_exts.iter().any(|i| !options.extensions[*i].members.bound_query_set.is_empty()) {
+        pyi.push_str("from orm import BoundQuerySet\n");
+    }
     for i in &used_exts {
         let e = &options.extensions[*i];
-        writeln!(pyi, "from {ext_base}.{} import {} as _ext{i}QuerySet, {} as _ext{i}Instance", e.python_package(), e.members.query_set, e.members.instance).unwrap();
+        let bound = if e.members.bound_query_set.is_empty() { String::new() } else { format!(", {} as _ext{i}BoundQuerySet", e.members.bound_query_set) };
+        writeln!(pyi, "from {ext_base}.{} import {} as _ext{i}QuerySet, {} as _ext{i}Instance{bound}", e.python_package(), e.members.query_set, e.members.instance).unwrap();
     }
     if !query_sets.is_empty() || !used_exts.is_empty() {
         pyi.push('\n');

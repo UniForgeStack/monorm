@@ -342,6 +342,9 @@ pub struct LanguageSection {
     pub query_set: String,
     /// The export that adds instance members.
     pub instance: String,
+    /// Optional export for the bound query set (`orm.of(objs)`): a class or mixin whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
+    #[serde(default)]
+    pub bound_query_set: String,
     /// The host members that the extension replaces; every other name collision is an error.
     #[serde(default)]
     pub overrides: Vec<String>,
@@ -359,6 +362,11 @@ pub struct LanguageMembers {
     /// Member names that the query-set class and the instance class add, sorted.
     pub query_set_members: Vec<String>,
     pub instance_members: Vec<String>,
+    /// The export of the bound query set, empty when the extension has none, and its member names, sorted.
+    #[serde(default)]
+    pub bound_query_set: String,
+    #[serde(default)]
+    pub bound_query_set_members: Vec<String>,
     pub overrides: Vec<String>,
     /// SHA-256 of the embedded source files (name, length and content of each, in name order).
     pub hash: String,

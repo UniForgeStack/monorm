@@ -86,6 +86,32 @@ fn build_embeds_sources_and_records_members() {
     assert!(composition.contains("language_sources") && composition.contains("class TaggedQuerySet") && composition.contains("taggedQuerySet"));
 }
 
+fn with_bound(case: &Case, member: &str) {
+    case.patch("Cargo.toml", "instance = \"TaggedInstance\"\n\n[package.metadata.orm-extension.typescript]", "instance = \"TaggedInstance\"\nbound_query_set = \"TaggedBoundQuerySet\"\n\n[package.metadata.orm-extension.typescript]");
+    case.patch("python/example_language/__init__.py", "from orm import QuerySet\n", "from orm import BoundQuerySet, QuerySet\n");
+    case.patch("python/example_language/__init__.py", "class TaggedInstance:", &format!("class TaggedBoundQuerySet(BoundQuerySet[ModelT]):\n    def {member}(self) -> Self:\n        return self\n\n\nclass TaggedInstance:"));
+}
+
+#[test]
+fn a_bound_query_set_records_its_members() {
+    let case = Case::new("bound");
+    with_bound(&case, "everything");
+    let result = case.build();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let artifact: serde_json::Value = serde_json::from_slice(&fs::read(case.base.join("out/artifact.json")).unwrap()).unwrap();
+    let python = &artifact["language_members"][0];
+    assert_eq!(python["bound_query_set"], "TaggedBoundQuerySet");
+    assert_eq!(python["bound_query_set_members"], serde_json::json!(["everything"]));
+    assert_eq!(artifact["language_members"][1]["bound_query_set_members"], serde_json::json!([]));
+}
+
+#[test]
+fn a_bound_member_must_be_a_query_set_member() {
+    let case = Case::new("bound-unknown");
+    with_bound(&case, "other");
+    assert!(case.failure().contains("bound member other of TaggedBoundQuerySet is not a member of TaggedQuerySet"));
+}
+
 #[test]
 fn a_python_type_error_stops_the_build() {
     let case = Case::new("py-error");

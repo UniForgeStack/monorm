@@ -67,6 +67,8 @@ def record(extension, files, **changes):
         "instance": "AInstance",
         "query_set_members": ["chain", "everything"],
         "instance_members": ["label"],
+        "bound_query_set": "",
+        "bound_query_set_members": [],
         "overrides": [],
         "hash": _extensions._digest([(name, text.encode()) for name, text in files.items()]),
     }
@@ -204,6 +206,50 @@ def test_undeclared_collision_fails_at_define(project, monkeypatch):
     )
     with pytest.raises(TypeError, match=r"Post\.title: .* field or a relation"):
         build(modules, {"Post": ("ext.f",)})
+
+
+BOUND = (
+    BASE
+    + """
+from orm import BoundQuerySet
+
+
+class ABound(BoundQuerySet[ModelT]):
+    def everything(self):
+        return self._clone(self._qs.without_defaults())
+
+    def update(self, **values):
+        return super().update(**values)
+"""
+)
+
+
+def test_a_bound_member_collides_with_a_host_member_unless_overridden(project, monkeypatch):
+    changes = {"bound_query_set": "ABound", "bound_query_set_members": ["everything", "update"]}
+    modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": BOUND}, changes))
+    with pytest.raises(
+        TypeError, match=r"Post\.update: extension ext\.a bound query set member collides with a host member"
+    ):
+        build(modules, {"Post": ("ext.a",)})
+
+
+def test_a_bound_class_is_composed_from_the_extensions(project, monkeypatch):
+    changes = {
+        "bound_query_set": "ABound",
+        "bound_query_set_members": ["everything", "update"],
+        "overrides": ["update"],
+    }
+    modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": BOUND}, changes))
+    out = build(modules, {"Post": ("ext.a",), "Tag": ()})
+    post = object.__new__(out["Post"])
+    post.__dict__.update(id=1, title="hello")
+    bound = out["Post"].objects.of(post)
+    assert [c.__name__ for c in type(bound).__mro__[:3]] == ["PostBoundQuerySet", "ABound", "BoundQuerySet"]
+    assert type(bound.everything()) is type(bound) and type(bound.filter()) is type(bound)
+    tag = object.__new__(out["Tag"])
+    tag.__dict__.update(id=2)
+    assert type(out["Tag"].objects.of(tag)) is orm.BoundQuerySet
+    assert not hasattr(out["Tag"].objects.of(tag), "everything")
 
 
 def test_two_extensions_with_one_name_collide_unless_overridden(project, monkeypatch):

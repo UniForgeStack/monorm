@@ -40,6 +40,7 @@ from .write import (
     Delete,
     InsertMany,
     InsertOne,
+    Returning,
     Update,
     UpdateMany,
     assignments,
@@ -725,7 +726,7 @@ class QuerySet(Generic[M]):
             or self._label is not None
         ):
             raise TypeError("of() takes a query set without order, slice, join, CTE or union state")
-        return BoundQuerySet(items, self)
+        return _bound_class(self._model)(items, self)
 
     # -- CTEs -------------------------------------------------------------------------------
 
@@ -1700,22 +1701,22 @@ class BoundQuerySet(Generic[M]):
         self._qs = qs
         self._explicit_db = explicit_db
 
-    def _clone(self, qs: QuerySet[M], explicit_db: bool | None = None) -> BoundQuerySet[M]:
-        return BoundQuerySet(self._objs, qs, self._explicit_db if explicit_db is None else explicit_db)
+    def _clone(self, qs: QuerySet[M], explicit_db: bool | None = None) -> Self:
+        return type(self)(self._objs, qs, self._explicit_db if explicit_db is None else explicit_db)
 
-    def filter(self, *conditions: ConditionLike) -> BoundQuerySet[M]:
+    def filter(self, *conditions: ConditionLike) -> Self:
         return self._clone(self._qs.filter(*conditions))
 
-    def exclude(self, *conditions: ConditionLike) -> BoundQuerySet[M]:
+    def exclude(self, *conditions: ConditionLike) -> Self:
         return self._clone(self._qs.exclude(*conditions))
 
-    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> BoundQuerySet[M]:
+    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
         return self._clone(self._qs.load(*items))
 
-    def lock(self, exclusive: bool = True, *, nowait: bool = False, skip_locked: bool = False) -> BoundQuerySet[M]:
+    def lock(self, exclusive: bool = True, *, nowait: bool = False, skip_locked: bool = False) -> Self:
         return self._clone(self._qs.lock(exclusive, nowait=nowait, skip_locked=skip_locked))
 
-    def using(self, db: Database | Literal["primary"] | None) -> BoundQuerySet[M]:
+    def using(self, db: Database | Literal["primary"] | None) -> Self:
         """Run on ``db``; ``"primary"`` is the primary of the objects' database."""
         if isinstance(db, str):
             if db != "primary":
@@ -1725,10 +1726,10 @@ class BoundQuerySet(Generic[M]):
             db = resolve(self._qs._db or self._objs[0].__dict__.get("_db")).primary
         return self._clone(self._qs.using(db), explicit_db=db is not None)
 
-    def without_defaults(self, *names: str) -> BoundQuerySet[M]:
+    def without_defaults(self, *names: str) -> Self:
         return self._clone(self._qs.without_defaults(*names))
 
-    def without_related(self) -> BoundQuerySet[M]:
+    def without_related(self) -> Self:
         return self._clone(self._qs.without_related())
 
     def _database(self) -> Database | None:
@@ -1778,6 +1779,27 @@ class BoundQuerySet(Generic[M]):
     def __await__(self) -> Generator[Any, None, list[M]]:
         return self._read().__await__()
 
+    async def _write(self, build: Callable[[QuerySet[M]], Returning[M]]) -> list[M]:
+        """Run the ``RETURNING`` statement that ``build`` makes of the bound query, fill the
+        objects whose rows it returns, and give those objects in input order."""
+        from ._loading import merge
+
+        returned = {row.pk: row for row in await build(self._query())}
+        changed = [o for o in self._objs if o.pk in returned]
+        for o in changed:
+            merge(o, returned[o.pk], True)
+        return changed
+
+    async def update(self, **values: Any) -> list[M]:
+        """``UPDATE`` the rows of the objects, in one statement, and fill the objects from the
+        updated rows. Gives the objects whose rows changed, in input order."""
+        return await self._write(lambda qs: qs.update(**values).returning())
+
+    async def delete(self) -> list[M]:
+        """``DELETE`` the rows of the objects, in one statement (a soft-delete model sets its
+        field instead). Gives the objects whose rows changed, in input order, filled from the rows."""
+        return await self._write(lambda qs: qs.delete().returning())
+
     async def count(self) -> int:
         return await self._query().count()
 
@@ -1809,7 +1831,11 @@ def use_query_set(model: type[M], query_set: type[QuerySet[M]] | str) -> None:
     setattr(model, "objects", _Objects())
 
 
-def use_extensions(model: type[M], query_sets: tuple[type[QuerySet[M]], ...]) -> None:
+def use_extensions(
+    model: type[M],
+    query_sets: tuple[type[QuerySet[M]], ...],
+    bound_sets: tuple[type[BoundQuerySet[M]], ...] = (),
+) -> None:
     """Mix the query-set classes of extensions into ``model.objects`` and its relation sets,
     after a ``use_query_set`` class and before ``QuerySet``. ``query_sets`` are in MRO order
     (the last extension of the chain first). ``define()`` calls this for the generated models."""
@@ -1818,6 +1844,8 @@ def use_extensions(model: type[M], query_sets: tuple[type[QuerySet[M]], ...]) ->
     meta = model._meta
     meta.extension_sets = query_sets
     meta.composed_set = None
+    meta.bound_extension_sets = bound_sets
+    meta.composed_bound = None
     meta.related_sets = {}
     setattr(model, "objects", _Objects())
 
@@ -1830,6 +1858,18 @@ class _Objects:
         qs = _query_set_class(owner)(owner)
         setattr(owner, "objects", qs)
         return qs
+
+
+def _bound_class(model: type[Model]) -> type[BoundQuerySet[Any]]:
+    meta = model._meta
+    if not meta.bound_extension_sets:
+        return BoundQuerySet
+    if meta.composed_bound is None:
+        meta.composed_bound = cast(
+            "type[BoundQuerySet[Any]]",
+            type(f"{model.__name__}BoundQuerySet", (*meta.bound_extension_sets, BoundQuerySet), {}),
+        )
+    return meta.composed_bound
 
 
 def _query_set_class(model: type[Model]) -> type[QuerySet[Any]]:

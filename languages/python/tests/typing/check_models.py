@@ -309,6 +309,12 @@ async def bound_reads(post: Post, posts: list[Post]) -> None:
         Post.objects.of(posts).load(Post.title).lock().without_defaults().without_related(), BoundQuerySet[Post]
     )
     assert_type(await Post.objects.of(posts), list[Post])
+    assert_type(await Post.objects.of(posts).update(title="x"), list[Post])
+    assert_type(await Post.objects.of(posts).delete(), list[Post])
+    assert_type(await post.qs().update(views=1), list[Post])
+    Post.objects.of(posts).update(nope=1)  # E: not a Post field
+    Post.objects.of(posts).hard_delete()  # E: no hard_delete without the soft-delete extension
+    Post.objects.of(posts).undelete()  # E: no undelete without the soft-delete extension
     assert_type(await Post.objects.of(posts).count(), int)
     assert_type(await Post.objects.of(posts).exists(), bool)
     assert_type(Post.objects.of(posts).sql(), str)
