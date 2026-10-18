@@ -12,7 +12,7 @@ import uuid
 from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from . import _extensions, _native
+from . import _capabilities, _extensions, _native
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
 from collections.abc import Sequence
 
@@ -25,7 +25,9 @@ if TYPE_CHECKING:
     from .query import QuerySet
 
 # The native artifact is fixed for the process; read its capabilities once.
-_CAPABILITIES: tuple[str, ...] = tuple(json.loads(_native.native_artifact()).get("capabilities", ()))
+_ARTIFACT: dict[str, Any] = json.loads(_native.native_artifact())
+_CAPABILITIES: tuple[str, ...] = tuple(_ARTIFACT.get("capabilities", ()))
+_capabilities.check_requires(_ARTIFACT)
 # Only a composition artifact (schema transformations) can change an already prepared schema.
 _REPREPARE: bool = (
     "schema-transformations" in _CAPABILITIES

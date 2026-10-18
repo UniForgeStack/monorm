@@ -109,6 +109,7 @@ impl Composition {
             passes: self.pass_ids().into_iter().map(str::to_owned).collect(),
             capabilities: vec!["schema-transformations".into(), "physical-schema".into()],
             extensions: versions.iter().map(|(k,v)| ((*k).clone(), (*v).clone())).collect(),
+            requires: self.manifests.iter().filter(|m| !m.requires.is_empty()).map(|m| (m.id.clone(), m.requires.clone())).collect(),
             exports: self.manifests.iter().flat_map(|m| m.exports.iter().map(|e| e.id.clone())).collect(),
             ..Default::default()
         };

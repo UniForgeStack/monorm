@@ -71,6 +71,8 @@ export {
   VersionConflict,
   WriteProtected,
 } from "./errors.js";
+export { AdapterWriteError, FieldAdapterError, Pending, PreparedWrite, registerFieldAdapter } from "./adapters.js";
+export type { FieldAdapter } from "./adapters.js";
 export { allowWrites } from "./protection.js";
 export * as debug from "./debug.js";
 export { Migration, MigrationError, Migrations, Migrator, Pulled, pull } from "./migrations.js";

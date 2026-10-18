@@ -41,6 +41,7 @@ import { NotLoaded, QueryError, TransactionRequired } from "./errors.js";
 import type { Hop, HopKind, In, ModelSpec, RelationMeta } from "./meta.js";
 import { DB, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
+import { AdaptedInsert, AdaptedUpdate, splitAdapted } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
 import { after, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
@@ -1368,6 +1369,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   update(values: M["update"], options?: { readonly returning?: boolean }): InspectedStatement<number | M["row"][]>;
   update(values: M["update"], options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
     const returning = options.returning ?? false;
+    const adapted = splitAdapted(this.meta, values);
+    if (adapted) return new AdaptedUpdate(this as never, adapted.checked, adapted.pending, returning) as unknown as InspectedStatement<number | M["row"][]>;
     return new InspectedStatement(() => this.updateValues(values, returning), () => {
       const params: unknown[] = [];
       const ir = this.mutationIr("update", params, values);
@@ -1528,6 +1531,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    */
   insert(values: M["insert"]): InsertOne<M> {
     this.assertStandalone();
+    const adapted = splitAdapted(this.meta, values);
+    if (adapted) return new AdaptedInsert(this as never, adapted.checked, adapted.pending) as unknown as InsertOne<M>;
     return new InsertOne((conflict, returning) => this.insertRows([values], conflict, returning, null), (conflict, returning) => this.inspectInsert([values], conflict, returning, null));
   }
 
