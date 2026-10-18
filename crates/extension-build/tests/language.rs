@@ -80,6 +80,9 @@ fn build_embeds_sources_and_records_members() {
     assert_eq!(typescript["language"], "typescript");
     assert_eq!(typescript["query_set_members"], serde_json::json!(["everything"]));
     assert_eq!(typescript["instance_members"], serde_json::json!(["label"]));
+    assert_eq!(typescript["bound_query_set"], "taggedBoundQuerySet");
+    assert_eq!(typescript["bound_query_set_members"], serde_json::json!(["everything"]));
+    assert_eq!(python["bound_query_set_members"], serde_json::json!([]));
     let ts_dir = case.fixture.join("typescript/src");
     assert_eq!(typescript["hash"], sha(&[&ts_dir.join("index.ts")], &ts_dir));
     let composition = fs::read_to_string(case.base.join("out/composition.rs")).unwrap();
@@ -102,7 +105,7 @@ fn a_bound_query_set_records_its_members() {
     let python = &artifact["language_members"][0];
     assert_eq!(python["bound_query_set"], "TaggedBoundQuerySet");
     assert_eq!(python["bound_query_set_members"], serde_json::json!(["everything"]));
-    assert_eq!(artifact["language_members"][1]["bound_query_set_members"], serde_json::json!([]));
+    assert_eq!(artifact["language_members"][1]["bound_query_set"], "taggedBoundQuerySet");
 }
 
 #[test]
@@ -126,6 +129,14 @@ fn a_typescript_type_error_stops_the_build() {
     case.patch("typescript/src/index.ts", "return String(this.pk);", "return 1;");
     let error = case.failure();
     assert!(error.contains("example.language (typescript) tsc: type check failed") && error.contains("TS2322"), "{error}");
+}
+
+#[test]
+fn a_typescript_bound_member_must_be_a_query_set_member() {
+    let case = Case::new("bound-subset");
+    case.patch("typescript/src/index.ts", "  return class TaggedBound extends Base {\n", "  return class TaggedBound extends Base {\n    other(): number {\n      return 1;\n    }\n\n");
+    let error = case.failure();
+    assert!(error.contains("bound member other of taggedBoundQuerySet is not a member of taggedQuerySet"), "{error}");
 }
 
 #[test]

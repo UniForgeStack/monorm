@@ -3,6 +3,8 @@ import type { ModelMeta } from "./model.js";
 import type { ModelSpec } from "./meta.js";
 import { QuerySet } from "./query.js";
 import { rowQuery } from "./model.js";
+import type { BoundQuerySet } from "./bound.js";
+import type { Row } from "./model.js";
 
 export { hardDeleteStatement } from "./query.js";
 
@@ -13,6 +15,17 @@ export const LANGUAGE_CONTRACT = 1;
 
 /** The base of a query-set mixin: a constructor with one rest parameter, as TypeScript requires. */
 export type QuerySetCtor<Q extends QuerySet<ModelSpec> = QuerySet<ModelSpec>> = new (...args: any[]) => Q;
+
+/** The base of a bound-query-set mixin. */
+export type BoundQuerySetCtor = new (...args: any[]) => BoundQuerySet<ModelSpec, unknown>;
+
+/** The model of a bound query set. */
+export const boundMeta: (bound: object) => ModelMeta = ((bound: { meta: ModelMeta }) => bound.meta) as never;
+
+/** Run `op` on the query set of the rows of `bound`, fill its objects from the returned rows and give the changed objects in input order. */
+export function boundWrite<R>(bound: BoundQuerySet<ModelSpec, R>, op: (qs: QuerySet<ModelSpec>) => PromiseLike<unknown>): Promise<R[]> {
+  return (bound as unknown as { write(op: (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>): Promise<R[]> }).write(op as never);
+}
 
 /**
  * The base of an instance class that overrides a host member: `H` types the host members,

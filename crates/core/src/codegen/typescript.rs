@@ -347,7 +347,17 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             for (i, e) in &exts { ctor = format!("ReturnType<typeof _e{i}.{}<{ctor}>>", e.members.query_set); }
             let ext_type = format!("InstanceType<{ctor}>");
             let queries = query_set(name).map_or(ext_type.clone(), |class| format!("{class} & {ext_type}"));
-            writeln!(body, "export interface {name}Spec extends {name}BaseSpec {{\n  readonly queries: {queries};\n}}\n").unwrap();
+            let mut bound = format!("new (...args: any[]) => BoundQuerySet<{name}BaseSpec>");
+            let mut any_bound = false;
+            for (i, e) in &exts {
+                let export = &e.members.bound_query_set;
+                if !export.is_empty() {
+                    bound = format!("ReturnType<typeof _e{i}.{export}<{bound}>>");
+                    any_bound = true;
+                }
+            }
+            let bound_slot = if any_bound { format!("  readonly boundQueries: InstanceType<{bound}>;\n") } else { String::new() };
+            writeln!(body, "export interface {name}Spec extends {name}BaseSpec {{\n  readonly queries: {queries};\n{bound_slot}}}\n").unwrap();
         }
 
         // columns and relation paths: `S` the scopes a column reads (the root model, plus
@@ -421,6 +431,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     }
     if !used_exts.is_empty() {
         types.push("QuerySet");
+    }
+    if used_exts.iter().any(|i| !options.extensions[*i].members.bound_query_set.is_empty()) {
+        types.push("BoundQuerySet");
     }
     types.sort_unstable();
     let imports = types.iter().map(|t| format!("type {t}")).collect::<Vec<_>>().join(", ");

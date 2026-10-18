@@ -22,8 +22,10 @@ interface LanguageRecord {
   readonly language: string;
   readonly query_set: string;
   readonly instance: string;
+  readonly bound_query_set?: string;
   readonly query_set_members: readonly string[];
   readonly instance_members: readonly string[];
+  readonly bound_query_set_members?: readonly string[];
   readonly overrides: readonly string[];
   readonly hash: string;
 }
@@ -141,6 +143,7 @@ function installInstance(meta: ModelMeta, prototype: object): void {
 export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensions: Readonly<Record<string, ExtensionCode>>, hostQuerySetMember: (name: string) => boolean): void {
   const given = new Map<string, string>();
   const mixins: Mixin[] = [];
+  const bound: ((base: never) => unknown)[] = [];
   for (const id of ids) {
     const code = extensions[id];
     if (code === undefined) throw new TypeError(`${meta.name}: extension ${id} is not in the generated extensions`);
@@ -163,8 +166,14 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
     }
     for (const name of [...record.query_set_members, ...record.instance_members]) if (!given.has(name)) given.set(name, id);
     mixins.push(mixin as Mixin);
+    if (record.bound_query_set) {
+      const boundMixin = code.module[record.bound_query_set];
+      if (typeof boundMixin !== "function") throw new TypeError(`extension ${id} has no ${record.bound_query_set}; run \`orm generate\``);
+      bound.push(boundMixin as (base: never) => unknown);
+    }
     installInstance(meta, (instance as { prototype: object }).prototype);
   }
   meta.extensionMixins = mixins;
+  meta.boundMixins = bound;
   meta.resetQuerySet(meta.querySet);
 }

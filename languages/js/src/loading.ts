@@ -59,7 +59,8 @@ function mergeValue(old: unknown, fresh: unknown, reload: boolean, invalidate?: 
   }
   return fresh;
 }
-function merge(row: Row, fresh: Row, reload: boolean, invalidate?: (row: Row, name: string) => void, seen = new Map<Row, Set<Row>>()): void {
+/** @internal */
+export function merge(row: Row, fresh: Row, reload: boolean, invalidate?: (row: Row, name: string) => void, seen = new Map<Row, Set<Row>>()): void {
   if (row === fresh || seen.get(row)?.has(fresh)) return;
   if (!seen.has(row)) seen.set(row, new Set());
   seen.get(row)!.add(fresh);

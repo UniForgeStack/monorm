@@ -4,7 +4,7 @@
  * two types are identical. Never run.
  */
 
-import { describe, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
+import { describe, of, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
 import { Comment, Post, Priority, Profile, Role, Tag, User } from "../blog/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -485,4 +485,82 @@ export async function oneRowQueries() {
   await Post.objects.get(Post.id.eq(param("id"))).prepare().run({ id: 1n });
   // @ts-expect-error at() takes a number
   Post.objects.at("1");
+}
+
+export async function boundReads() {
+  {
+    const posts: Post[] = [];
+    const bound = of(posts);
+    same<Awaited<typeof bound>, Post[]>();
+    same<Awaited<ReturnType<typeof Post.objects.of<Post>>>, Post[]>();
+    const one = await post.qs();
+    same<typeof one, Post[]>();
+    const titled = await bound.load(Post.title);
+    same<(typeof titled)[number]["title"], string>();
+    const withAuthor = await bound.filter(Post.published).load(Post.author);
+    same<(typeof withAuthor)[number]["author"], User>();
+    const counted = await bound.load(func.count(Post.comments).label("n"));
+    same<(typeof counted)[number]["n"], bigint>();
+    same<Awaited<ReturnType<typeof bound.count>>, number>();
+    same<Awaited<ReturnType<typeof bound.exists>>, boolean>();
+    bound.lock().using().withoutDefaults().withoutRelated().sql();
+    // @ts-expect-error a bound set has no ordering
+    bound.orderBy("id");
+    // @ts-expect-error a bound set has no limit
+    bound.limit(1);
+    // @ts-expect-error a bound set has no offset
+    bound.offset(1);
+    // @ts-expect-error a bound set has no first()
+    bound.first();
+    // @ts-expect-error a bound set has no last()
+    bound.last();
+    // @ts-expect-error a bound set has no get()
+    bound.get();
+    // @ts-expect-error a bound set has no at()
+    bound.at(0);
+    // @ts-expect-error a bound set has no paginate()
+    bound.paginate();
+    // @ts-expect-error a bound set has no select()
+    bound.select({});
+    // @ts-expect-error a bound set has no values()
+    bound.values();
+    // @ts-expect-error a bound set has no groupBy()
+    bound.groupBy();
+    // @ts-expect-error a bound set has no distinct()
+    bound.distinct();
+    // @ts-expect-error a bound set has no join()
+    bound.join();
+    // @ts-expect-error a bound set has no insert()
+    bound.insert({});
+    // @ts-expect-error a bound set has no getOrInsert()
+    bound.getOrInsert();
+    // @ts-expect-error a bound set has no inBulk()
+    bound.inBulk([]);
+    // @ts-expect-error a bound set has no prepare()
+    bound.prepare();
+    // @ts-expect-error a bound set has no batches()
+    bound.batches();
+    // @ts-expect-error a bound set has no asPrefetch()
+    bound.asPrefetch();
+    // @ts-expect-error a bound set has no label()
+    bound.label("x");
+    // @ts-expect-error a bound set has no require()
+    bound.require();
+    const updated = await bound.update({ title: "t" });
+    same<typeof updated, Post[]>();
+    const deleted = await bound.filter(Post.published).delete();
+    same<typeof deleted, Post[]>();
+    // @ts-expect-error update() takes the model's update values
+    bound.update({ title: 1 });
+    // @ts-expect-error an unknown field is not an update value
+    bound.update({ nope: 1 });
+    // @ts-expect-error hardDelete() exists only with the extension that adds it
+    bound.hardDelete();
+    // @ts-expect-error undelete() exists only with the extension that adds it
+    bound.undelete();
+    // @ts-expect-error of() takes instances of a model
+    of([1]);
+    // @ts-expect-error a bound set is not async iterable
+    for await (const _ of bound) void _;
+  }
 }

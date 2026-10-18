@@ -342,7 +342,7 @@ pub struct LanguageSection {
     pub query_set: String,
     /// The export that adds instance members.
     pub instance: String,
-    /// Optional export for the bound query set (`orm.of(objs)`): a class or mixin whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
+    /// Optional export for the bound query set (`orm.of(objs)`): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript, whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
     #[serde(default)]
     pub bound_query_set: String,
     /// The host members that the extension replaces; every other name collision is an error.
