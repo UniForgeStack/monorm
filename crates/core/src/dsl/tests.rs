@@ -281,7 +281,7 @@ fn errors_point_at_the_problem() {
         ("enum Role {\n  A\n  @@storage(blob)\n}".into(), "native, text or int"),
         ("model A {\n  id BigInt @id\n  r Role @default(B)\n}\nenum Role {\n  A\n}".into(), "Role has no value B"),
         ("model A {\n  id BigInt @id\n  r Role @db.Text\n}\nenum Role {\n  A\n}".into(), "comes from the enum"),
-        ("type T {\n  a Int\n}".into(), "`type` blocks aren't supported yet"),
+        ("view V {\n  a Int\n}".into(), "`view` blocks aren't supported yet"),
         ("model A {\n  id BigInt[] @id\n}".into(), "an array can't be a primary key"),
         (
             format!("model A {{\n  id BigInt @id\n  b B?\n}}\nmodel B {{\n  id BigInt @id\n  a_id BigInt\n  a A @relation(fields: [a_id], references: [id])\n}}"),
@@ -785,4 +785,121 @@ fn a_changed_primary_key_rebuilds_the_foreign_keys_on_it() {
     let pos = |needle: &str| up.iter().position(|s| s.contains(needle)).unwrap_or_else(|| panic!("{needle}: {up:#?}"));
     assert!(pos("DROP CONSTRAINT \"line_shop_item_id_fkey\"") < pos("DROP CONSTRAINT \"item_pkey\""), "{up:#?}");
     assert!(pos("ADD CONSTRAINT \"item_pkey\" PRIMARY KEY (\"id\", \"shop\")") < pos("ADD CONSTRAINT \"line_item_id_shop_fkey\""), "{up:#?}");
+}
+
+const NESTED: &str = "type Geo {\n  lat Float\n  lng Float?\n}\n\ntype Address {\n  city String\n  geo Geo\n}\n\nmodel Shop {\n  id Int @id\n  address Address\n}\n";
+
+fn nested_sql(src: &str) -> String {
+    let (_, schema) = check(ok(src)).unwrap();
+    crate::migrate::create_all(&schema).unwrap().join("\n")
+}
+
+fn nested_with(block: &str) -> String {
+    NESTED.trim_end().trim_end_matches('}').to_owned() + block + "}\n"
+}
+
+#[test]
+fn a_type_lowers_to_one_column_per_scalar_leaf() {
+    let ir = ok(NESTED);
+    let names: Vec<_> = ir.models[0].fields.iter().map(|f| (f.name.as_str(), f.column.as_str(), f.nullable)).collect();
+    assert_eq!(
+        names,
+        [("id", "id", false), ("address_city", "address_city", false), ("address_geo_lat", "address_geo_lat", false), ("address_geo_lng", "address_geo_lng", true)]
+    );
+    let n = ir.models[0].fields[2].nested.as_ref().unwrap();
+    assert_eq!((n.ty.as_str(), n.field.as_str(), n.path.as_slice()), ("Address", "address", &["geo".to_owned(), "lat".to_owned()][..]));
+    assert_eq!(ir.types.len(), 2);
+}
+
+#[test]
+fn prefix_replaces_the_field_segment_of_the_column_names() {
+    let ir = ok(&NESTED.replace("address Address", "address Address @storage(columns, prefix: \"addr_\")"));
+    let cols: Vec<_> = ir.models[0].fields.iter().map(|f| f.column.as_str()).collect();
+    assert_eq!(cols, ["id", "addr_city", "addr_geo_lat", "addr_geo_lng"]);
+}
+
+#[test]
+fn json_storage_lowers_to_one_json_field() {
+    let ir = ok(&NESTED.replace("address Address", "address Address? @storage(json)"));
+    let f = &ir.models[0].fields[1];
+    assert!(matches!(f.ty, crate::ir::ColType::Json) && f.nullable && f.nested.as_ref().unwrap().path.is_empty());
+    assert_eq!(ir.models[0].fields.len(), 2);
+    assert!(fails(&NESTED.replace("address Address", "address Address @storage(json, prefix: \"a_\")")).contains("prefix:"));
+}
+
+#[test]
+fn a_nullable_field_gets_a_generated_all_null_or_required_set_check() {
+    let sql = nested_sql(&NESTED.replace("address Address", "address Address?"));
+    assert!(
+        sql.contains("CHECK ((\"address_city\" IS NULL AND \"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_city\" IS NOT NULL AND \"address_geo_lat\" IS NOT NULL))"),
+        "{sql}"
+    );
+    assert!(!nested_sql(NESTED).contains("IS NULL AND"));
+}
+
+#[test]
+fn a_nullable_inner_level_gets_its_own_check() {
+    let src = NESTED.replace("geo Geo", "geo Geo?");
+    let sql = nested_sql(&src);
+    assert!(sql.contains("(\"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_geo_lat\" IS NOT NULL)"), "{sql}");
+    let sql = nested_sql(&src.replace("address Address", "address Address?"));
+    assert!(sql.contains("(\"address_city\" IS NULL AND \"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_city\" IS NOT NULL)"), "{sql}");
+}
+
+#[test]
+fn a_nullable_type_without_a_required_subfield_is_an_error_naming_the_fixes() {
+    let src = "type Opt {\n  a Int?\n  b Int?\n}\n\nmodel M {\n  id Int @id\n  x Opt?\n  y Opt?\n}\n";
+    let e = fails(src);
+    for part in ["Opt", "M.x, M.y", "make a subfield of Opt required", "make the field non-null", "@storage(json)"] {
+        assert!(e.to_lowercase().contains(&part.to_lowercase()), "{part}: {e}");
+    }
+    ok(&src.replace("a Int?", "a Int").replace("x Opt?", "x Opt").replace("y Opt?", "y Opt @storage(json)"));
+    // the error comes back after an edit of the type
+    let inner = "type In {\n  a Int?\n}\n\ntype Out {\n  r Int\n  i In?\n}\n\nmodel M {\n  id Int @id\n  o Out\n}\n";
+    assert!(fails(inner).contains("In"));
+    ok(&inner.replace("a Int?", "a Int"));
+}
+
+#[test]
+fn nested_type_errors() {
+    for (src, message) in [
+        ("type Geo {\n  lat Float\n  g Geo?\n}\n\nmodel Shop {\n  id Int @id\n  n Geo\n}\n", "contains itself"),
+        ("type A {\n  b B\n}\n\ntype B {\n  a A\n}\n\nmodel Shop {\n  id Int @id\n  n A\n}\n", "contains itself"),
+        ("type T {\n  id Int @id\n}\n\nmodel Shop {\n  id Int @id\n  t T\n}\n", "no @id"),
+        ("type T {\n  a Int\n}\n\nmodel T {\n  id Int @id\n}\n", "declared twice"),
+        ("type T {\n  a Int\n}\n\nmodel Shop {\n  id Int @id\n  t T[]\n}\n", "@storage(json)"),
+        ("type T {\n  a Int\n}\n\nmodel Shop {\n  id Int @id\n  t_a Int\n  t T\n}\n", "collides"),
+        ("type T {\n  a Int\n}\n\nmodel Shop {\n  id Int @id\n  t T @unique\n}\n", "takes @storage"),
+        ("type T {\n  a Int\n  @@index([a])\n}\n\nmodel Shop {\n  id Int @id\n  t T\n}\n", "unknown attribute @@index"),
+        ("model Other {\n  id Int @id\n}\n\ntype T {\n  o Other\n}\n\nmodel Shop {\n  id Int @id\n  t T\n}\n", "holds no relation"),
+    ] {
+        let e = fails(src);
+        assert!(e.contains(message), "{src}: {e}");
+    }
+    ok("type T {\n  a Int\n}\n\nmodel Shop {\n  id Int @id\n  t T[] @storage(json)\n}\n");
+}
+
+#[test]
+fn index_and_unique_take_subfield_paths() {
+    let sql = nested_sql(&nested_with("  @@index([address.city])\n  @@unique([address.geo.lat, id])\n"));
+    assert!(sql.contains("(\"address_city\")"), "{sql}");
+    assert!(sql.contains("UNIQUE (\"address_geo_lat\", \"id\")"), "{sql}");
+    for (path, message) in [("address.geo", "nested type"), ("address.nope", "no field address.nope")] {
+        let e = fails(&nested_with(&format!("  @@index([{path}])\n")));
+        assert!(e.contains(message), "{path}: {e}");
+    }
+}
+
+#[test]
+fn a_subfield_check_names_its_own_column() {
+    let src = NESTED.replace("lat Float\n", "lat Float @check(\"{} >= -90\")\n");
+    assert!(nested_sql(&src).contains("\"address_geo_lat\" >= -90"));
+}
+
+#[test]
+fn a_list_of_scalars_in_a_type_stays_one_column_and_sqlite_rejects_it() {
+    let src = "type T {\n  tags String[]\n  n Int\n}\n\nmodel Shop {\n  id Int @id\n  t T\n}\n";
+    assert!(nested_sql(src).contains("\"t_tags\" text[]"));
+    let sqlite = format!("datasource db {{\n  provider = \"sqlite\"\n}}\n{src}");
+    assert!(fails(&sqlite).contains("sqlite does not support Arrays"));
 }
