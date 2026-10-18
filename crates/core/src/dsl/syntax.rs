@@ -6,6 +6,7 @@
 //! ```text
 //! file      := item*
 //! item      := "model" IDENT "{" member* "}"
+//!            | "type" IDENT "{" member* "}"         (a nested type; members as in a model)
 //!            | "enum" IDENT "{" (IDENT attr* | "@@" NAME args?)* "}"
 //!            | "datasource" IDENT "{" prop* "}"
 //!            | "generator" IDENT "{" prop* "}"      (read and ignored)
@@ -226,7 +227,7 @@ pub struct Args {
     pub named: Vec<(String, Pos, Value)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attr {
     pub pos: Pos,
     /// `id`, `default`, `db.VarChar`, ...
@@ -276,6 +277,8 @@ pub type Props = Vec<(String, Pos, Value)>;
 #[derive(Debug)]
 pub enum Item {
     Model(ModelDecl),
+    /// `type Name { ... }`: parsed like a model.
+    Type(ModelDecl),
     Enum(EnumDecl),
     Datasource { pos: Pos, props: Props },
     Function { pos: Pos, name: String, props: Props },
@@ -347,9 +350,16 @@ impl Parser<'_> {
                 "model" => {
                     let (_, name) = self.ident("a model name")?;
                     self.in_model = true;
-                    let m = self.model(pos, name)?;
+                    let m = self.model(pos, name, "model")?;
                     self.in_model = false;
                     items.push(Item::Model(m));
+                }
+                "type" => {
+                    let (_, name) = self.ident("a type name")?;
+                    self.in_model = true;
+                    let t = self.model(pos, name, "type")?;
+                    self.in_model = false;
+                    items.push(Item::Type(t));
                 }
                 "datasource" => {
                     self.ident("a datasource name")?;
@@ -405,11 +415,11 @@ impl Parser<'_> {
                     self.in_model = false;
                     items.push(Item::Enum(e));
                 }
-                "type" | "view" => return err(pos, format!("`{keyword}` blocks aren't supported yet")),
+                "view" => return err(pos, "`view` blocks aren't supported yet"),
                 _ => {
                     return err(
                         pos,
-                        format!("expected `model`, `enum`, `datasource`, `generator`, `function` or `import`, found `{keyword}`"),
+                        format!("expected `model`, `type`, `enum`, `datasource`, `generator`, `function` or `import`, found `{keyword}`"),
                     )
                 }
             }
@@ -446,7 +456,7 @@ impl Parser<'_> {
         Ok(Attr { pos, name, args })
     }
 
-    fn model(&mut self, pos: Pos, name: String) -> Result<ModelDecl> {
+    fn model(&mut self, pos: Pos, name: String, kind: &str) -> Result<ModelDecl> {
         self.expect("{")?;
         let (mut members, mut blocks) = (vec![], vec![]);
         let mut last_line = 0;
@@ -455,11 +465,11 @@ impl Parser<'_> {
                 break;
             }
             if self.tok == Tok::Eof {
-                return err(pos, format!("model {name} is not closed with `}}`"));
+                return err(pos, format!("{kind} {name} is not closed with `}}`"));
             }
             let start = self.pos;
             if start.line == last_line {
-                return err(start, format!("model {name}: one field or attribute per line"));
+                return err(start, format!("{kind} {name}: one field or attribute per line"));
             }
             let what = if self.is("@@") {
                 blocks.push(self.attr("@@")?);
@@ -482,7 +492,7 @@ impl Parser<'_> {
             if self.prev_end.line != start.line || self.is("@") {
                 return err(
                     start,
-                    format!("model {name}: {what} must be on one line (put a long trigger body in a `function` block)"),
+                    format!("{kind} {name}: {what} must be on one line (put a long trigger body in a `function` block)"),
                 );
             }
             last_line = start.line;

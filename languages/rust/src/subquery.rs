@@ -47,6 +47,8 @@ pub struct OuterRef {
 type Scope<'a, T> = PhantomData<(&'a (), fn() -> T)>;
 
 /// The enclosing query of a subquery. Its lifetime keeps the handle inside the closure of `scalar`.
+/// A predicate built from it carries no lifetime: one that leaves the closure fails at run time
+/// with `Error::Compatibility` ("unresolved outer source"), not at compile time.
 pub struct Parent<'a, M: Model> {
     id: u64,
     _scope: Scope<'a, M>,
@@ -138,6 +140,7 @@ impl<M: Model, Card> Subquery<M, Card> {
         key: Unique<M::Source, V>,
         outer: OuterColumn<'_, V>,
     ) -> Subquery<M, AtMostOne> {
+        debug_assert_eq!(key.fields.len(), 1, "unique needs a single-field key");
         let field = Expr::Col {
             path: Vec::new(),
             name: key.fields[0].into(),

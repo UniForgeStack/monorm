@@ -62,7 +62,7 @@ fn an_update_sets_updated_at_unless_it_sets_the_field() {
         assert_eq!(statement.matches("\"changed_at\" = ").count(), 1, "{statement}");
     }
     let rows = vec![vec![Value::Int(Some(1)), Value::Int(Some(2))]];
-    let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Postgres), "Post", &["id".into(), "views".into()], rows, &[], &Ints(vec![]), false, None, false).unwrap();
+    let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Postgres), "Post", &["id".into(), "views".into()], rows, &[], &Ints(vec![]), false, None, &Default::default()).unwrap();
     assert!(plan.statements[0].0.contains("\"changed_at\" = "), "{}", plan.statements[0].0);
 }
 
@@ -99,7 +99,7 @@ fn an_update_increments_the_version_unless_it_sets_it() {
         assert_eq!(statement.matches("\"version\" = ").count(), 1, "{statement}");
     }
     let rows = vec![vec![Value::Int(Some(1)), Value::Int(Some(2))]];
-    let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Sqlite), "Post", &["id".into(), "views".into()], rows, &[], &Ints(vec![]), false, None, false).unwrap();
+    let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Sqlite), "Post", &["id".into(), "views".into()], rows, &[], &Ints(vec![]), false, None, &Default::default()).unwrap();
     assert!(plan.statements[0].0.contains("\"version\" = \"posts\".\"version\" + "), "{}", plan.statements[0].0);
 }
 

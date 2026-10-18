@@ -535,6 +535,7 @@ impl<M: Model> Query<M> {
                 having: vec![],
                 distinct: false,
                 distinct_on: vec![],
+                annotations: vec![],
             },
             filters: vec![],
             _type: PhantomData,
@@ -652,7 +653,7 @@ impl<M: Model, R, D> Query<M, R, Unsliced, D> {
         let root_filter_count = |filters: &[Tree]| {
             filters
                 .iter()
-                .filter(|t| !matches!(t, Tree::Nested(..)))
+                .filter(|t| !matches!(t, Tree::Nested(..) | Tree::Scope(..)))
                 .count()
         };
         if !other.select.order.is_empty()
@@ -663,15 +664,29 @@ impl<M: Model, R, D> Query<M, R, Unsliced, D> {
                 "queryset or requires one filter per side and filters only on the right".into(),
             ));
         }
+        // Nested filters and scope values stay at the root: they are not part of the OR group.
         let (mut nested, roots): (Vec<_>, Vec<_>) = self
             .filters
             .into_iter()
-            .partition(|t| matches!(t, Tree::Nested(..)));
-        let right = other
-            .filters
-            .into_iter()
-            .filter(|t| !matches!(t, Tree::Nested(..)))
-            .collect();
+            .partition(|t| matches!(t, Tree::Nested(..) | Tree::Scope(..)));
+        let mut right = Vec::new();
+        for tree in other.filters {
+            match tree {
+                Tree::Nested(..) => {}
+                Tree::Scope(name, value) => {
+                    if nested
+                        .iter()
+                        .any(|t| matches!(t, Tree::Scope(n, _) if *n == name))
+                    {
+                        return Err(Error::Compatibility(format!(
+                            "queryset or: scope {name} is set on both sides"
+                        )));
+                    }
+                    nested.push(Tree::Scope(name, value));
+                }
+                tree => right.push(tree),
+            }
+        }
         nested.push(Tree::Or(vec![Tree::And(roots), Tree::And(right)]));
         self.filters = nested;
         Ok(self)
@@ -922,6 +937,11 @@ pub(crate) fn erase_filters(select: &mut ir::Select, filters: Vec<Tree>, erase: 
                 {
                     erase_filters(&mut node.query, children, erase);
                 }
+            }
+            Tree::Scope(name, _) if !erase.scopes.is_empty() => {
+                erase.error.get_or_insert_with(|| {
+                    format!("scope {name} on a subquery: set scopes on the outer query")
+                });
             }
             Tree::Scope(name, value) => {
                 select.scope.insert(name, erase.values.0.len());

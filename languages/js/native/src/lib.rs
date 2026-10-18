@@ -180,7 +180,7 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
         }
     };
     match output {
-        Output::Instances { model, shape, joins } => {
+        Output::Instances { model, shape, joins, annotations } => {
             js.set(obj, "model", name(*model)?)?;
             js.set(obj, "shape", shape_js(js, shape.as_ref())?)?;
             let arr = js.array_of(joins.iter().map(|j| {
@@ -196,6 +196,13 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
                 Ok(o)
             }))?;
             js.set(obj, "joins", arr)?;
+            let annotated = js.array_of(annotations.iter().map(|a| {
+                let o = js.object()?;
+                js.set(o, "name", js.str(&a.name)?)?;
+                js.set(o, "pos", js.number(a.pos as f64)?)?;
+                Ok(o)
+            }))?;
+            js.set(obj, "annotations", annotated)?;
         }
         Output::Rows { model, items } => {
             js.set(obj, "model", name(*model)?)?;

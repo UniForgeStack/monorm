@@ -169,6 +169,14 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
   /** @internal Phantom: the value type, scopes and params of the expression. */
   declare readonly "~types"?: [T, S, P];
 
+  /** Names a relation aggregate for `load()`: `load(func.count(Post.comments).label("nComments"))` gives `post.nComments`. */
+  label<const N extends string>(name: N): Labeled<T, N, S, P> {
+    if (typeof name !== "string" || !/^[A-Za-z$][\w$]*$/.test(name)) {
+      throw new TypeError(`label ${JSON.stringify(name)} must be an identifier not starting with '_'`);
+    }
+    return new Labeled(this, name);
+  }
+
   // Comparisons ----------------------------------------------------------------------------
 
   eq<N extends string>(value: ParamRef<N>): Condition<S, P & ParamValues<N, In<NonNullable<T>>>>;
@@ -565,7 +573,7 @@ export class Column<T, S extends string = never, N extends string = string, H ex
     readonly root: Source,
     readonly path: readonly string[],
     readonly field: FieldMeta,
-    readonly label: string,
+    readonly text: string,
   ) {
     super();
   }
@@ -575,17 +583,17 @@ export class Column<T, S extends string = never, N extends string = string, H ex
       let hint = `reach it through a relation of ${ctx.root.name} instead`;
       for (let c = ctx.outer; c; c = c.outer) {
         if (c.root === this.root) {
-          hint = `use outer(${this.label}) for a column of the enclosing query`;
+          hint = `use outer(${this.text}) for a column of the enclosing query`;
           break;
         }
       }
-      throw new QueryError(`${this.label} belongs to ${this.root.name}, not to a ${ctx.root.name} query; ${hint}`);
+      throw new QueryError(`${this.text} belongs to ${this.root.name}, not to a ${ctx.root.name} query; ${hint}`);
     }
     return { t: "col", path: [...this.path], name: this.field.ir };
   }
 
   override toString(): string {
-    return this.label;
+    return this.text;
   }
 }
 
@@ -625,7 +633,7 @@ export class Outer<T, S extends string> extends Expression<T, OuterOf<S>, {}> {
         return { t: "outer", depth, path: [...this.column.path], name: this.column.field.ir };
       }
     }
-    throw new QueryError(`outer(${this.column.label}) is not a column of an enclosing query`);
+    throw new QueryError(`outer(${this.column.text}) is not a column of an enclosing query`);
   }
 }
 
@@ -681,6 +689,24 @@ export function exists<X extends string, P>(query: ExistsQuery<X, P>): Condition
 }
 
 // -- functions --------------------------------------------------------------------------------
+
+/** A relation aggregate with a name, for `load()`; build it with `expression.label(name)`. */
+export class Labeled<T, N extends string = string, S extends string = never, P = {}> extends Node {
+  /** @internal Phantom: the value type, the attribute name, scopes and params. */
+  declare readonly "~labeled"?: [T, N, S, P];
+
+  /** @internal */
+  constructor(
+    readonly expr: Expression<T, S, P>,
+    readonly name: N,
+  ) {
+    super();
+  }
+
+  ir(ctx: IRContext): IR {
+    return this.expr.ir(ctx);
+  }
+}
 
 /** A SQL function call; build it with {@link func}. */
 export class Func<T, S extends string = never, P = {}> extends Expression<T, S, P> {

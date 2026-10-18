@@ -27,6 +27,8 @@ export interface NativeInstances {
   readonly shape?: NativeShape;
   readonly model: string;
   readonly joins: readonly { parent: number; attr: string; model: string; start: number; pk: number; filtered: boolean; unsetWhenAbsent: boolean; shape?: NativeShape }[];
+  /** Labeled relation aggregates: the attribute and the column that holds the value. */
+  readonly annotations?: readonly { name: string; pos: number }[];
 }
 
 /** `select()` rows: per item, the width of a model instance or -1 for one value. */

@@ -124,6 +124,59 @@ pub struct EnumIr {
     pub comment: Option<String>,
 }
 
+/// How the values of a nested type are stored.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NestedStorage {
+    /// One column for each scalar leaf.
+    #[default]
+    Columns,
+    /// One JSON column for the whole tree.
+    Json,
+}
+
+/// A `type` block: the shape of a nested value.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct TypeIr {
+    pub name: String,
+    /// Default storage of every model field of this type (`@@storage`).
+    #[serde(default)]
+    pub storage: NestedStorage,
+    pub fields: Vec<TypeFieldIr>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub comment: Option<String>,
+}
+
+/// A subfield of a nested type: a scalar or enum leaf, or another nested type.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct TypeFieldIr {
+    pub name: String,
+    pub nullable: bool,
+    /// A list of the leaf type or of the nested type.
+    #[serde(skip_serializing_if = "crate::ir::is_false", default)]
+    pub list: bool,
+    /// The nested type of this subfield; `leaf` is `None` then.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none", default)]
+    pub type_name: Option<String>,
+    /// A scalar subfield: its column template (`column` is the name segment).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub leaf: Option<FieldIr>,
+}
+
+/// Where a lowered field sits in a nested value.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct NestedIr {
+    /// The nested type of the model field.
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub storage: NestedStorage,
+    /// The model field the value belongs to.
+    pub field: String,
+    /// Subfield names from the model field to this column; empty for a JSON field.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub path: Vec<String>,
+}
+
 #[derive(Deserialize, Serialize, Debug, Default)]
 pub struct SchemaIr {
     /// Frozen storage identities for the complete application schema set.
@@ -137,6 +190,9 @@ pub struct SchemaIr {
     pub partitions: Vec<PartitionIr>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub enums: Vec<EnumIr>,
+    /// Nested types (`type` blocks).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub types: Vec<TypeIr>,
     /// Database extensions the schema needs (`CREATE EXTENSION`), on top of the ones
     /// required implicitly by column types, index methods and operator classes.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -287,6 +343,9 @@ pub struct FieldIr {
     /// Per-language type hints for generated code (`{"python": "list[float]"}`).
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     pub hints: std::collections::BTreeMap<String, String>,
+    /// Set on the columns (or the JSON column) a nested field lowers to.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub nested: Option<NestedIr>,
 }
 
 /// A value the ORM fills into an omitted insert value, before native transforms.
@@ -340,6 +399,7 @@ impl FieldIr {
             comment: None,
             requires: vec![],
             hints: Default::default(),
+            nested: None,
         }
     }
 }
@@ -946,6 +1006,16 @@ pub struct Select {
     pub distinct: bool,
     #[serde(default)]
     pub distinct_on: Vec<Expr>,
+    /// Relation aggregates a model-returning query sets on each object, one column per entry.
+    #[serde(default)]
+    pub annotations: Vec<Annotation>,
+}
+
+/// A labeled relation aggregate of `load()`: `name` is the attribute of the object.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Annotation {
+    pub name: String,
+    pub expr: Expr,
 }
 
 /// A row count (`LIMIT` / `OFFSET`): a number, or a parameter holding one, so one IR

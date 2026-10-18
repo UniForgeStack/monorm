@@ -17,7 +17,7 @@ use orm_core::ir::ValueType;
 use orm_core::schema::Schema;
 use orm_engine::db::{Cell, RowSet};
 use orm_engine::exec::Fetched;
-use orm_engine::plan::{JoinShape, Output};
+use orm_engine::plan::{AnnotationColumn, JoinShape, Output};
 
 struct ModelClass {
     cls: Py<PyType>,
@@ -196,7 +196,7 @@ impl<'a, 'py> Builder<'a, 'py> {
     }
 
     /// One instance per row, `select_related` objects attached.
-    fn instances(&self, model: usize, shape: Option<&orm_core::behavior::ResultShape>, joins: &[JoinShape], rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Vec<Instance<'py>>> {
+    fn instances(&self, model: usize, shape: Option<&orm_core::behavior::ResultShape>, joins: &[JoinShape], annotations: &[AnnotationColumn], rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Vec<Instance<'py>>> {
         let mut out = Vec::with_capacity(rows.len());
         let mut related: Vec<Option<Instance<'py>>> = Vec::with_capacity(joins.len());
         for r in 0..rows.len() {
@@ -221,6 +221,9 @@ impl<'a, 'py> Builder<'a, 'py> {
                 }
                 related.push(child);
             }
+            for a in annotations {
+                root.dict.set_item(&a.name, self.cell(rows, r, a.pos, types[a.pos])?)?;
+            }
             out.push(root);
         }
         Ok(out)
@@ -237,8 +240,8 @@ impl<'a, 'py> Builder<'a, 'py> {
         row_cls: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyList>> {
         match output {
-            Output::Instances { model, shape, joins } => {
-                let objs = self.instances(*model, shape.as_ref(), joins, rows, types)?;
+            Output::Instances { model, shape, joins, annotations } => {
+                let objs = self.instances(*model, shape.as_ref(), joins, annotations, rows, types)?;
                 for f in prefetched {
                     self.attach(&objs, rows, f)?;
                 }
@@ -275,7 +278,7 @@ impl<'a, 'py> Builder<'a, 'py> {
 
     /// Instances of `model` for rows returned by a write (`RETURNING`).
     pub fn model_rows(&self, model: usize, shape: Option<&orm_core::behavior::ResultShape>, rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Bound<'py, PyList>> {
-        PyList::new(self.py, self.instances(model, shape, &[], rows, types)?.into_iter().map(|i| i.obj))
+        PyList::new(self.py, self.instances(model, shape, &[], &[], rows, types)?.into_iter().map(|i| i.obj))
     }
 
     /// Puts the related objects of `prefetched` on `parents`, existing instances whose key
@@ -299,10 +302,10 @@ impl<'a, 'py> Builder<'a, 'py> {
     fn attach(&self, parents: &[Instance<'py>], parent_rows: &dyn RowSet, f: &Fetched) -> PyResult<()> {
         let py = self.py;
         let p = &f.plan;
-        let Output::Instances { model, shape, joins } = &p.output else {
+        let Output::Instances { model, shape, joins, annotations } = &p.output else {
             return Err(PyTypeError::new_err("prefetch rows must be instances"));
         };
-        let children = self.instances(*model, shape.as_ref(), joins, f.rows.as_ref(), &p.types)?;
+        let children = self.instances(*model, shape.as_ref(), joins, annotations, f.rows.as_ref(), &p.types)?;
         for c in &f.children {
             self.attach(&children, f.rows.as_ref(), c)?;
         }
