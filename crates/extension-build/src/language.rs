@@ -176,13 +176,23 @@ pub fn collect(manifest: &Manifest, package: &Path) -> Result<Vec<Embedded>, Str
                 return Err(format!("{}: {language} override {name} is not a member of {} or {}", manifest.id, section.query_set, section.instance));
             }
         }
+        let bound_query_set_members = match &section.bound_query_set {
+            None => vec![],
+            Some(export) => {
+                let bound = members(language, &files, export).map_err(|e| format!("{}: {e}", manifest.id))?;
+                if let Some(name) = bound.iter().find(|n| !query_set_members.contains(n)) {
+                    return Err(format!("{}: {language} bound query-set member {name} of {export} is not a member of {}", manifest.id, section.query_set));
+                }
+                bound
+            }
+        };
         let mut overrides = section.overrides.clone();
         overrides.sort();
         out.push(Embedded {
             members: LanguageMembers {
                 extension: manifest.id.clone(), version: manifest.version.clone(), language: language.into(),
-                query_set: section.query_set.clone(), instance: section.instance.clone(),
-                query_set_members, instance_members, overrides, hash: hash(&files),
+                query_set: section.query_set.clone(), instance: section.instance.clone(), bound_query_set: section.bound_query_set.clone(),
+                query_set_members, instance_members, bound_query_set_members, overrides, hash: hash(&files),
             },
             dir, files,
         });

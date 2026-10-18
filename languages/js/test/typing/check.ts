@@ -546,6 +546,18 @@ export async function boundReads() {
     bound.label("x");
     // @ts-expect-error a bound set has no require()
     bound.require();
+    const updated = await bound.update({ title: "t" });
+    same<typeof updated, Post[]>();
+    const deleted = await bound.filter(Post.published).delete();
+    same<typeof deleted, Post[]>();
+    // @ts-expect-error update() takes the model's update values
+    bound.update({ title: 1 });
+    // @ts-expect-error an unknown field is not an update value
+    bound.update({ nope: 1 });
+    // @ts-expect-error hardDelete() exists only with the extension that adds it
+    bound.hardDelete();
+    // @ts-expect-error undelete() exists only with the extension that adds it
+    bound.undelete();
     // @ts-expect-error of() takes instances of a model
     of([1]);
     // @ts-expect-error a bound set is not async iterable

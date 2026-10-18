@@ -16,7 +16,7 @@ import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
 import { applyExtensions, type ExtensionCode, type Mixin } from "./extensions.js";
-import type { BoundQuerySet } from "./bound.js";
+import type { BoundQuerySetOf } from "./bound.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
 /** Where an instance keeps its loaded relations. */
@@ -91,7 +91,7 @@ export interface Instance<M extends ModelSpec> {
   /** The primary key's value. */
   readonly pk: M["pk"];
   /** A query set bound to this object: reads fill it in place. Same as `Model.objects.of(this)`. */
-  qs(): BoundQuerySet<M, this>;
+  qs(): BoundQuerySetOf<M, this>;
   /**
    * `UPDATE ... SET <values> WHERE pk = ... RETURNING *`. Values may be expressions
    * (`{ views: Post.views.add(1) }`); the instance is refreshed from the returned row, so
@@ -160,6 +160,10 @@ export class ModelMeta implements Source {
   extensionSet: unknown;
   /** @internal The user class composed with this model's extensions. */
   composedSet: unknown;
+  /** @internal The bound-query-set mixins of extensions, dependencies first. */
+  boundMixins: readonly ((base: never) => unknown)[] = [];
+  /** @internal The per-model bound query-set class, built on first use. */
+  boundSet: unknown;
   /** @internal Relation-set classes with the `querySet` methods, by base class. */
   readonly relatedSets = new Map<unknown, unknown>();
   private rootQuerySet: QuerySet<ModelSpec> | undefined;
@@ -243,6 +247,7 @@ export class ModelMeta implements Source {
     this.querySet = querySet;
     this.composedSet = undefined;
     this.extensionSet = undefined;
+    this.boundSet = undefined;
     this.rootQuerySet = undefined;
     this.relatedSets.clear();
   }
@@ -573,7 +578,7 @@ function replaceFrom(o: Row, fresh: Row): void {
   if (fresh[INTERNAL]) o[INTERNAL] = fresh[INTERNAL]; else delete o[INTERNAL];
 }
 
-/** The loaded `@locking.version` value; a versioned write needs it. */
+/** @internal The loaded `@locking.version` value; a versioned write needs it. */
 function loadedVersion(o: Row, version: FieldMeta): unknown {
   const value = Object.hasOwn(o, version.name) ? o[version.name] : (o[INTERNAL] as Record<string, unknown> | undefined)?.[version.name];
   if (value === undefined) throw new NotLoaded(`${metaOf(o).name}.${version.name} was not loaded`);

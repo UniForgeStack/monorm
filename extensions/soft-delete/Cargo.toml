@@ -44,4 +44,5 @@ instance = "SoftDeleteInstance"
 [package.metadata.orm-extension.typescript]
 source = "typescript/src"
 query_set = "softDeleteQuerySet"
+bound_query_set = "softDeleteBoundQuerySet"
 instance = "SoftDeleteInstance"

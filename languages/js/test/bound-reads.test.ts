@@ -169,7 +169,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.throws(() => writer.entries.of(entry), TypeError);
       assert.throws(() => Writer.entries.objects.of(writer), TypeError);
       assert.throws(() => Entry.objects.of(Object.assign(Object.create(Object.getPrototypeOf(entry)), { title: "x" })), TypeError);
-      for (const name of ["orderBy", "first", "get", "limit", "select", "update", "delete", "prepare", "batches"]) {
+      for (const name of ["orderBy", "first", "get", "limit", "select", "prepare", "batches"]) {
         assert.equal((of(entry) as Any)[name], undefined, name);
       }
     } finally {

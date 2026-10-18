@@ -80,6 +80,9 @@ fn build_embeds_sources_and_records_members() {
     assert_eq!(typescript["language"], "typescript");
     assert_eq!(typescript["query_set_members"], serde_json::json!(["everything"]));
     assert_eq!(typescript["instance_members"], serde_json::json!(["label"]));
+    assert_eq!(typescript["bound_query_set"], "taggedBoundQuerySet");
+    assert_eq!(typescript["bound_query_set_members"], serde_json::json!(["everything"]));
+    assert!(python.get("bound_query_set_members").is_none());
     let ts_dir = case.fixture.join("typescript/src");
     assert_eq!(typescript["hash"], sha(&[&ts_dir.join("index.ts")], &ts_dir));
     let composition = fs::read_to_string(case.base.join("out/composition.rs")).unwrap();
@@ -100,6 +103,14 @@ fn a_typescript_type_error_stops_the_build() {
     case.patch("typescript/src/index.ts", "return String(this.pk);", "return 1;");
     let error = case.failure();
     assert!(error.contains("example.language (typescript) tsc: type check failed") && error.contains("TS2322"), "{error}");
+}
+
+#[test]
+fn a_bound_member_must_be_a_query_set_member() {
+    let case = Case::new("bound-subset");
+    case.patch("typescript/src/index.ts", "  return class TaggedBound extends Base {\n", "  return class TaggedBound extends Base {\n    other(): number {\n      return 1;\n    }\n\n");
+    let error = case.failure();
+    assert!(error.contains("bound query-set member other") && error.contains("is not a member of taggedQuerySet"), "{error}");
 }
 
 #[test]

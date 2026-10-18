@@ -5,7 +5,7 @@
 
 import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
-import type { BoundQuerySet } from "./bound.js";
+import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
 import { resolve, withScope, type Database } from "./db.js";
 import {
   asCondition,
@@ -791,7 +791,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * Throws `TypeError` for no objects, objects of another model or without a primary key,
    * and for a query set with order, slice, joins or a source other than the model's table.
    */
-  of<B extends M["row"]>(objs: B | Iterable<B>): BoundQuerySet<M, B> {
+  of<B extends M["row"]>(objs: B | Iterable<B>): BoundQuerySetOf<M, B> {
     return makeBound(this as never, typeof objs === "object" && objs !== null && Symbol.iterator in objs ? [...(objs as Iterable<B>)] : [objs]) as never;
   }
 

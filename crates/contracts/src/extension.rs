@@ -342,6 +342,11 @@ pub struct LanguageSection {
     pub query_set: String,
     /// The export that adds instance members.
     pub instance: String,
+    /// The export that adds the members that are safe on a bound query set ("at most one row per
+    /// bound object"): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript.
+    /// Its members are a subset of the `query_set` members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_query_set: Option<String>,
     /// The host members that the extension replaces; every other name collision is an error.
     #[serde(default)]
     pub overrides: Vec<String>,
@@ -356,9 +361,14 @@ pub struct LanguageMembers {
     pub language: String,
     pub query_set: String,
     pub instance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_query_set: Option<String>,
     /// Member names that the query-set class and the instance class add, sorted.
     pub query_set_members: Vec<String>,
     pub instance_members: Vec<String>,
+    /// The members of the bound query-set class, sorted; a subset of `query_set_members`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bound_query_set_members: Vec<String>,
     pub overrides: Vec<String>,
     /// SHA-256 of the embedded source files (name, length and content of each, in name order).
     pub hash: String,

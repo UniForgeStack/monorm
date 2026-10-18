@@ -29,4 +29,5 @@ instance = "TaggedInstance"
 [package.metadata.orm-extension.typescript]
 source = "typescript/src"
 query_set = "taggedQuerySet"
+bound_query_set = "taggedBoundQuerySet"
 instance = "TaggedInstance"
