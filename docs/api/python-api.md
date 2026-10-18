@@ -1330,6 +1330,20 @@ A package that changes writes and reads from outside the ORM (for example
 * `decode_field(Model, name, decode)` reads the loaded value of a field as
   `decode(value)`. The instance keeps the stored value for writes and filters.
 
+### Side effects before or after a write
+
+The ORM has no write signals and no `before_update` / `after_update` hooks.
+Put each side effect where it belongs:
+
+* A business side effect (send a mail, queue a task, clear a cache): a service function that does the write and then the side effect.
+  Use `db.transaction()` when both must commit together.
+* A rule for every write path, also raw SQL and other clients: a database constraint or trigger.
+* Audit and metrics: `db.on_query(hook)` sees each statement after it ran. It can not change the statement.
+
+A custom query-set class (`--query-set`) can override `update()`, and `post.update()` uses the override because it goes through `Model.objects`.
+This is not a full hook: `update()` gives a lazy `Update` that runs only when awaited, so an "after" step must wrap that object.
+`update_many()`, upserts (`on_conflict`) and raw SQL do not call the override.
+
 ## Model metadata and test factories
 
 The ORM has no factory library. It gives the two things a factory library needs:

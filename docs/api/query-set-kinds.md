@@ -1,6 +1,6 @@
 # Query-set kinds
 
-The Python and TypeScript APIs have four kinds of query set and two related query objects.
+The Python and TypeScript APIs have four kinds of query set and four related query objects.
 Each kind leaves out the methods that do not fit its result.
 "Planned" marks a kind or a change that is not on `main` yet.
 
@@ -14,6 +14,8 @@ Each kind leaves out the methods that do not fit its result.
 | `BoundQuerySet` (planned) | `post.qs()`, `orm.of(posts)` | yes | Fills the same objects in place. |
 | `Select` (not a query set) | `qs.select(...)` | yes | `Row`s, `group_by()`, `having()`, `distinct()`. |
 | One-row query (planned, not a query set) | `first()`, `last()`, `get()`, `qs[n]`, `qs.at(n)` | yes, when awaited | One row or `None`. No query runs until it is awaited; it also works in `load()`, `prepare()` and `inspect()`. |
+| `Prepared` (not a query set) | `qs.prepare()` | yes, per call with values | A read that is built once; each call binds the `orm.param()` values. Python: `await p(**values)`, `.get()`, `.first()`, `.count()`, `.exists()`, `.require()`. TypeScript: `.all(values)` and the same methods. |
+| `PreparedOneRowQuery` (not a query set) | `qs.first().prepare()` and the other one-row queries | yes, per call with values | One row or `None` per call. Python: `await p(**values)`; TypeScript: `.run(values)`. |
 
 ## What each kind leaves out
 
@@ -25,6 +27,7 @@ Each kind leaves out the methods that do not fit its result.
 | `Select` | `from_()`, `iterate()`, `batches()` | Not built. |
 | Relation query set | running alone, writes, `select()`, `paginate()`, `lock()` | It is only an item for `load()`; use `Post.objects` for a standalone query. |
 | `RelatedSet` | `.label()`, `.as_prefetch()` | These belong to `load()` items. |
+| `Prepared` | every builder (`filter()`, `load()`, `order_by()`, slices), writes, `select()`, `paginate()`, `lock()`, `batches()`, `async for` | The query is fixed when it is built; only the `param()` values change. Writes send their rows without an IR, so there is nothing to prepare. |
 | `BoundQuerySet` (planned) | `order_by()`, slices, `[n]`, `first()`, `get()`, `paginate()`, `select()`, `group_by()`, `distinct()`, `join()`, `cte()`, `union()` | Its result is the bound objects, at most one row per object, matched by primary key, in input order. |
 
 The rule for a `BoundQuerySet`: a method is allowed when the query still gives at most one row per bound object.
