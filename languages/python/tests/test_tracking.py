@@ -69,7 +69,7 @@ model Note {{
         await note.update(changed=OLD)
         assert note.changed == OLD
         await db.execute("UPDATE tracking_notes SET views = 4 WHERE id = 1")
-        await note.refresh()
+        await note.load(reload=True)
         assert (as_utc(note.changed) > OLD) is (mode == "database")
     finally:
         await db.drop_tables()
@@ -353,7 +353,7 @@ model Doc {
         assert (await docs.get(Doc.id == 1)).title == "b"
         assert await docs.update(title="d") == 1
         assert (await docs.get(Doc.id == 1)).version == 2
-        await second.refresh()
+        await second.load(reload=True)
         await second.update(title="e")
         assert second.version == 3
         await second.delete()
@@ -540,7 +540,7 @@ model Review {
                 await stale.delete()
         stored = await docs.get(Doc.id == 1)
         assert stored.title == "other writer" and stored.version == 1
-        await stale.refresh()
+        await stale.load(reload=True)
         await stale.update(title="fresh writer")
         assert stale.version == 2
         await stale.delete()

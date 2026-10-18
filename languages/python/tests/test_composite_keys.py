@@ -84,7 +84,8 @@ async def test_crud_by_the_whole_key(models):
     assert [i.title for i in await Item.objects.using(db).order_by(Item.shop, Item.id)] == ["a", "c", "B"]
 
     await db.execute("UPDATE ck_item SET title = 'bb' WHERE shop = 2 AND id = 1")
-    assert await b.refresh() and b.title == "bb"
+    await b.load(reload=True)
+    assert b.title == "bb"
 
     by_key = await Item.objects.using(db).in_bulk([(1, 2), (2, 1)])
     assert sorted(by_key) == [(1, 2), (2, 1)]

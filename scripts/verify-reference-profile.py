@@ -6,7 +6,6 @@ import sys
 
 import orm
 from orm import _native
-from orm.model import Model
 
 expected = sys.argv[1] == "enabled"
 available = "reference-loading" in json.loads(_native.native_artifact())["capabilities"]
@@ -21,7 +20,7 @@ model Child {\n id Int @id\n parent_id Int\n parent Parent @relation(fields: [pa
 )
 assert hasattr(m["Child"], "load")
 assert not hasattr(m["Child"], "load_parent")
-assert (m["Child"]._replace_from is Model._replace_from) is not expected
+assert (type(m["Child"]._meta.relations["parent"]).__name__ == "ReferenceBelongsTo") is expected
 if not expected:
     before = registry.ir()
     try:

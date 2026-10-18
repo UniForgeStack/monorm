@@ -110,7 +110,7 @@ class _DecodedField:
 def decode_field(model: type[Model], name: str, decode: Callable[[Any], Any]) -> None:
     """Read the loaded value of field ``name`` as ``decode(value)``, when it is read.
 
-    Instances keep the stored value, so writes and ``refresh()`` see it unchanged."""
+    Instances keep the stored value, so writes and ``load(reload=True)`` see it unchanged."""
     if name not in model._meta.fields:
         raise TypeError(f"{model._meta.name} has no field {name!r}")
     column = next(vars(cls)[name] for cls in model.__mro__ if name in vars(cls))

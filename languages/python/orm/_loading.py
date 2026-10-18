@@ -108,6 +108,12 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
         data.pop("_orm_internal", None)
 
 
+def _primary(owner: Any) -> Any:
+    from .db import resolve
+
+    return resolve(owner.__dict__.get("_db")).primary
+
+
 async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> None:
     from .model import _peek, _reference_adapter
     from .query import QuerySet, prefetch
@@ -123,12 +129,20 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
         if (isinstance(item, ColumnRef) and not item._path and (reload or item._field.name not in owner.__dict__))
         or (isinstance(item, Labeled) and (reload or item._name not in owner.__dict__))
     ]
+    if own and not any(isinstance(i, ColumnRef) for i in own):
+        # a labeled aggregate alone must not read every column
+        own = [*(getattr(model, f.name) for f in owner._meta.key), *own]
     if own:
-        if not any(isinstance(i, ColumnRef) for i in own):
-            # a labeled aggregate alone must not read every column
-            own = [*(getattr(model, f.name) for f in owner._meta.key), *own]
-        fresh = await owner._row_query().load(*own).require().get()
-        merge(owner, fresh, reload)
+        # Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own load.
+        bound = owner.qs().without_defaults().load(*own)
+        if reload:
+            bound = bound.using("primary")
+        if not await bound:
+            raise owner.DoesNotExist(f"{model.__name__} {owner.pk!r} no longer exists")
+        if reload and _reference_adapter is not None:
+            for name, rel in model._meta.relations.items():
+                if isinstance(rel, HasOne):
+                    _reference_adapter.invalidate_reference(owner, name)
     relations = []
     for item in requested:
         if (isinstance(item, ColumnRef) and not item._path) or isinstance(item, Labeled):
@@ -170,7 +184,7 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
         # A load that leaves a name unset must not keep the old cached value.
         for name in names.values():
             staged.__dict__.pop(name, None)
-        await prefetch([staged], *relations)
+        await prefetch([staged], *relations, using=_primary(owner) if reload else None)
         # Publish only the fetched roots/labels; staging protects the existing cache on failure.
         fresh_relations = object.__new__(model)
         for item in relations:

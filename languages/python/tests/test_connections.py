@@ -307,6 +307,22 @@ async def test_replicas_answer_reads_outside_a_transaction(clean):
     assert [await backends(db, url), await backends(db, url2)] == [0, 0]
 
 
+async def test_instance_reload_reads_the_primary_in_one_statement(clean, observe_queries):
+    db = clean
+    url = await replica_url(db)
+    routed = await orm.connect(db.url, replicas=[url], default=False, max_connections=2)
+    try:
+        user = await User.objects.using(routed).insert(email="p@example.com", name="Primary")
+        await User.objects.using(routed.primary).filter(User.id == user.id).update(name="Newer")
+        for _ in range(3):
+            with observe_queries(routed) as events:
+                assert await user.load(reload=True) is user
+            assert user.name == "Newer"
+            assert len(events) == 1
+    finally:
+        await routed.primary.close()
+
+
 async def test_using_primary_resolves_the_default_database(clean):
     db = clean
     url = await replica_url(db)
@@ -447,9 +463,9 @@ async def test_refresh_reads_the_primary_on_a_database_with_replicas(clean):
     try:
         user = await User.objects.using(routed).insert(email="p@example.com", name="Primary")
         # The replica holds no such row: a replica read would raise DoesNotExist.
-        assert await user.refresh() is True
+        assert await user.load(reload=True) is user
         await User.objects.using(routed).filter(User.id == user.id).update(name="P2")
-        await user.refresh(User.name)
+        await user.load(User.name, reload=True)
         assert user.name == "P2"
     finally:
         await routed.close()

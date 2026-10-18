@@ -93,7 +93,7 @@ async def check():
             assert "all non-null supplied dependencies" in str(e)
         else:
             raise AssertionError("partial record update bypassed dependency validation")
-        await record.refresh()
+        await record.load(reload=True)
         assert record.left == "first" and record.right == "second"
         await record.delete()
         row = await User.objects.insert(username="  alice  ")
@@ -206,7 +206,7 @@ async def check_ownership():
         assert child.name == "Alice" and child.role == "employee"
         assert await Child.objects.using(db).filter(Child.name == "Alice").count() == 1
         assert tuple((await Child.objects.using(db).select(Child.name))[0]) == ("Alice",)
-        await child.refresh()
+        await child.load(reload=True)
         assert child.name == "Alice"
         try:
             await child.update(role="customer")

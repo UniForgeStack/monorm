@@ -109,7 +109,7 @@ async def test_partial_selection(dialect):
             a.load(Author.name, Author.name)
         await partial.update(name="changed")
         assert partial.to_dict() == {"name": "changed", "note": None}
-        await partial.refresh(Author.bio)
+        await partial.load(Author.bio, reload=True)
         assert partial.to_dict() == {"name": "changed", "note": None, "bio": "large"}
         assert [o.name async for batch in a.load(Author.name).batches(1) for o in batch] == ["changed", "bob"]
         assert (await partial.books.using(db).get()).title == "one"
@@ -150,9 +150,9 @@ async def test_selection_defaults(dialect):
         assert full.bio == "large"
         explicit = await a.load(Author.note, Author.name).get()
         assert explicit.to_dict() == {"name": "visible", "note": None}
-        await explicit.refresh()
+        await explicit.load(reload=True)
         assert explicit.to_dict() == {"name": "visible", "note": None}
-        await explicit.refresh(Author.bio)
+        await explicit.load(Author.bio, reload=True)
         assert explicit.to_dict() == {"name": "visible", "note": None, "bio": "large"}
         await partial.update(name="changed")
         assert partial.to_dict() == {"name": "changed", "note": None}
