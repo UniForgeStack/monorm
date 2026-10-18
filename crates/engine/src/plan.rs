@@ -3036,6 +3036,22 @@ pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_
     Ok(serde_json::json!({"order":keys, "filtered":active_filter(schema.model(schema.model_idx(&q.model).map_err(query_err)?), &q.without_defaults).is_some()}))
 }
 
+/// The filter defaults of a select IR document, as `[{source, name, expr, active}]`.
+/// `active` is false for a default the query bypasses; `expr` is the stored IR expression, scope references unresolved.
+/// A select over a CTE reads no defaults, so it gives an empty list.
+pub fn current_filter_json(schema: &Schema, select_json: &str) -> Result<serde_json::Value> {
+    let q: Select = serde_json::from_str(select_json).map_err(|e| Error::query(e.to_string()))?;
+    let model = schema.model(schema.model_idx(&q.model).map_err(query_err)?);
+    validate_bypass(model, &q.without_defaults)?;
+    if q.from.is_some() { return Ok(serde_json::json!([])); }
+    model.read_defaults.parts.iter().filter_map(|p| {
+        let expr = p.filter_json.as_ref()?;
+        Some(Ok(serde_json::json!({
+            "source": p.identity.source, "name": p.identity.name, "expr": expr, "active": !q.without_defaults.skips(&p.identity.name),
+        })))
+    }).collect()
+}
+
 /// The static read flags of each model, `{model: {filtered, fields, related}}`, for bindings.
 pub fn read_flags_json(schema: &Schema) -> serde_json::Value {
     schema.models.iter().map(|m| (m.ir.name.clone(), serde_json::json!({

@@ -103,6 +103,12 @@ named defaults, or all of them with no name. Names add up across calls, and a ca
 bypasses all defaults. A name that the model does not define raises `QueryError`:
 `<Model>: unknown default "<name>"; available defaults: [...]`. A bypassed default drops its
 filter, selection, order and eager loading. In Rust the call is `without_defaults_named(names)`.
+Generated models type the names: a Python `Literal[...]` and a TypeScript string-literal union
+(a model with no defaults keeps `str`).
+
+`current_filter()` (TypeScript `currentFilter()`) lists the default filters of a query set as
+`[{source, name, expr, active}]`. `expr` is the IR expression with scope references unresolved.
+`active` is false for a bypassed default. A query set over a CTE gives `[]`.
 Without names, the call bypasses default
 filters, selections and eager loading, including joined and `IN (...)` loads, while preserving caller filters and explicit
 loading/selection. `without_related()` / `withoutRelated()` clears the default joins and the joins

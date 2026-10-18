@@ -393,6 +393,12 @@ impl JsSchema {
         plan::effective_order_json(&self.inner, &select_json).map(|v| v.to_string()).map_err(engine_err)
     }
 
+    /// The filter defaults of a select IR document (JSON `[{source, name, expr, active}]`).
+    #[napi]
+    pub fn current_filter(&self, select_json: String) -> napi::Result<String> {
+        plan::current_filter_json(&self.inner, &select_json).map(|v| v.to_string()).map_err(engine_err)
+    }
+
     /// Inspect planned templates without executing or collecting statement events.
     #[napi]
     pub fn inspect(&self, env: &Env, op_json: String, params_: Unknown<'_>) -> napi::Result<String> {

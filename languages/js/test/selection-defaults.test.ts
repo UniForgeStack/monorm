@@ -28,6 +28,18 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean) {
   return { db, Author, Book, a: Author.objects.using(db), b: Book.objects.using(db) };
 }
 
+test("currentFilter lists filters with their bypass state", async () => {
+  const { db, Author, Book } = await open("sqlite", true);
+  try {
+    const visible = { t: "col", path: [], name: "visible" };
+    assert.deepEqual(Author.objects.currentFilter(), [{ source: "orm.query-defaults", name: "query", expr: visible, active: true }]);
+    assert.equal(Author.objects.withoutDefaults("query").currentFilter()[0].active, false);
+    assert.equal(Author.objects.withoutDefaults().currentFilter()[0].active, false);
+    assert.deepEqual(Book.objects.currentFilter(), []);
+    assert.throws(() => Author.objects.withoutDefaults("nope").currentFilter(), /unknown default "nope"; available defaults: \["query"\]/);
+  } finally { await db.dropTables(); await db.close(); }
+});
+
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`partial model shapes: ${dialect}`, async () => {
     const { db, Author, Book, a, b } = await open(dialect, false);

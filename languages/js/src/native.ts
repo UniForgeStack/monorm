@@ -81,6 +81,7 @@ export interface NativeSchema extends NativeInspector {
   readFlags(): string;
   /** The engine's default order of a read, JSON `[{field, desc, nulls}]`. */
   effectiveOrder(selectJson: string): string;
+  currentFilter(selectJson: string): string;
   validateInsert(model: string, fields: string[], rows: unknown[][], allowed: readonly string[]): void;
   uniqueRowUpdate(opJson: string, params: unknown[], allowed: readonly string[]): boolean;
   sql(opJson: string, params: unknown[]): string;

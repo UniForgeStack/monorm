@@ -38,7 +38,7 @@ import {
   type Subquery,
 } from "./expr.js";
 import { NotLoaded, QueryError, TransactionRequired } from "./errors.js";
-import type { Hop, HopKind, In, ModelSpec, RelationMeta } from "./meta.js";
+import type { DefaultNames, Hop, HopKind, In, ModelSpec, RelationMeta } from "./meta.js";
 import { DB, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
@@ -614,7 +614,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   onlyFields(names: readonly string[]): this { return this.clone({ modelFields: names }); }
 
   /** Bypass schema filter, selection and loading defaults; keep caller filters. */
-  withoutDefaults(...names: string[]): this {
+  withoutDefaults(...names: DefaultNames<M>[]): this {
     if (!names.length || this.state.withoutDefaults === true) return this.clone({ withoutDefaults: true });
     const previous = Array.isArray(this.state.withoutDefaults) ? this.state.withoutDefaults : [];
     return this.clone({ withoutDefaults: [...new Set([...previous, ...names])] });
@@ -1212,8 +1212,20 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   /** @internal The active default order and filtered flag; the engine needs only the model and the bypass. */
   readDefaults(): { order: { field: string; desc: boolean; nulls: "first" | "last" | null }[]; filtered: boolean } {
-    const select = JSON.stringify({ model: this.meta.name, without_defaults: this.state.withoutDefaults, from: this.state.from ? "cte" : null });
-    return JSON.parse(call(() => this.meta.registry.native().effectiveOrder(select)));
+    return JSON.parse(call(() => this.meta.registry.native().effectiveOrder(this.defaultsSelect())));
+  }
+
+  private defaultsSelect(): string {
+    return JSON.stringify({ model: this.meta.name, without_defaults: this.state.withoutDefaults, from: this.state.from ? "cte" : null });
+  }
+
+  /**
+   * The default filters of this query as `{ source, name, expr, active }`. `active` is false for a
+   * default that `withoutDefaults()` removed. `expr` is the IR expression the default was declared
+   * with; scope values are not filled in.
+   */
+  currentFilter(): { source: string; name: string; expr: unknown; active: boolean }[] {
+    return JSON.parse(call(() => this.meta.registry.native().currentFilter(this.defaultsSelect())));
   }
 
   /** @internal The order of this read: `orderBy()`, else the schema default order, else the pk. */

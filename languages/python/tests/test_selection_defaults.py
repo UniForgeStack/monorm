@@ -199,6 +199,20 @@ async def test_selection_defaults(dialect):
         await db.close()
 
 
+def test_current_filter_lists_filters_with_their_bypass_state():
+    classes = orm.define(schema("sqlite", True), registry=orm.Registry())
+    Author, Book = classes["SelectedAuthor"], classes["SelectedBook"]
+    visible = {"t": "col", "path": [], "name": "visible"}
+    assert Author.objects.current_filter() == [
+        {"source": "orm.query-defaults", "name": "query", "expr": visible, "active": True}
+    ]
+    assert Author.objects.without_defaults("query").current_filter()[0]["active"] is False
+    assert Author.objects.without_defaults().current_filter()[0]["active"] is False
+    assert Book.objects.current_filter() == []
+    with pytest.raises(Exception, match=r'unknown default "nope"; available defaults: \["query"\]'):
+        Author.objects.without_defaults("nope").current_filter()
+
+
 ORDERED = """
 datasource db {
   provider = "sqlite"

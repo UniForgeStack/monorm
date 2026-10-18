@@ -285,6 +285,23 @@ mod unset_when_absent {
         let bypassed = orm_engine::plan::effective_order_json(&s, r#"{"model":"Owner","without_defaults":true}"#).unwrap();
         assert_eq!(bypassed["filtered"], json!(false));
     }
+
+    #[test]
+    fn current_filter_lists_filters_with_their_bypass_state() {
+        let s = schema(true);
+        let all = orm_engine::plan::current_filter_json(&s, r#"{"model":"Owner"}"#).unwrap();
+        let entries = all.as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0]["active"].clone(), entries[0]["source"].is_string(), entries[0]["expr"]["t"].is_string()), (json!(true), true, true));
+        let name = entries[0]["name"].as_str().unwrap().to_string();
+        let named = orm_engine::plan::current_filter_json(&s, &json!({"model":"Owner","without_defaults":[name]}).to_string()).unwrap();
+        assert_eq!(named[0]["active"], json!(false));
+        let bare = orm_engine::plan::current_filter_json(&s, r#"{"model":"Owner","without_defaults":true}"#).unwrap();
+        assert_eq!(bare[0]["active"], json!(false));
+        assert_eq!(orm_engine::plan::current_filter_json(&s, r#"{"model":"Child"}"#).unwrap(), json!([]));
+        let err = orm_engine::plan::current_filter_json(&s, r#"{"model":"Owner","without_defaults":["nope"]}"#).unwrap_err().to_string();
+        assert!(err.contains("unknown default"), "{err}");
+    }
 }
 
 #[test]

@@ -11,6 +11,8 @@ pub struct DefaultIdentity {
 pub struct PreparedPart {
     pub identity: DefaultIdentity,
     pub filter: Option<Expr>,
+    /// The filter as the extension gave it, for `current_filter()`.
+    pub filter_json: Option<serde_json::Value>,
     pub annotate: BTreeMap<String, Expr>,
     /// Scope names in this entry's filter, collected once during preparation.
     pub scopes: Vec<String>,
@@ -26,6 +28,15 @@ pub struct PreparedDefaults {
     pub fields_owner: Option<DefaultIdentity>,
     /// Owners for each path in `Model.read_flags.related`, in the same order.
     pub load_owners: Vec<Vec<DefaultIdentity>>,
+}
+
+impl PreparedDefaults {
+    /// The names `without_defaults()` accepts, once each, in declaration order.
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = vec![];
+        for p in &self.parts { if !names.contains(&p.identity.name.as_str()) { names.push(&p.identity.name); } }
+        names
+    }
 }
 
 fn clash(model: &str, what: &str, first: &DefaultIdentity, second: &DefaultIdentity) -> String {
@@ -87,7 +98,7 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
         }
         let mut scopes = vec![];
         if let Some(filter) = &filter { filter_scopes(filter, &mut scopes); }
-        merged.parts.push(PreparedPart { identity, filter, annotate, scopes });
+        merged.parts.push(PreparedPart { identity, filter, filter_json: d.filter.clone(), annotate, scopes });
     }
     fn visit(models: &[Model], flags: &[crate::schema::ReadFlags], idx: usize, stack: &mut Vec<usize>) -> Result<(), String> {
         if stack.contains(&idx) {

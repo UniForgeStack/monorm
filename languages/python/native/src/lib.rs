@@ -252,6 +252,11 @@ impl PySchema {
         orm_engine::plan::effective_order_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
     }
 
+    /// The filter defaults of a select IR document (JSON `[{source, name, expr, active}]`).
+    fn current_filter(&self, select_json: &str) -> PyResult<String> {
+        orm_engine::plan::current_filter_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
+    }
+
     /// The database schema as a snapshot (JSON), the format migrations store.
     fn snapshot(&self) -> PyResult<String> {
         let s = migrate::snapshot(&self.inner).map_err(schema_err)?;

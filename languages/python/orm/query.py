@@ -986,14 +986,27 @@ class QuerySet(Generic[M]):
 
         return await resolve(self._db)._run(ir, params, row_cls, self._db)
 
+    def _defaults_select(self) -> str:
+        """The select IR the engine needs to answer a defaults question: the model and the bypass."""
+        return json.dumps(
+            {
+                "model": self._model._meta.name,
+                "without_defaults": self._without_defaults,
+                "from": None if self._from is None else "cte",
+            }
+        )
+
     def _read_defaults(self) -> dict[str, Any]:
-        """The active default order and filtered flag; the engine needs only the model and the bypass."""
-        select = {
-            "model": self._model._meta.name,
-            "without_defaults": self._without_defaults,
-            "from": None if self._from is None else "cte",
-        }
-        result: dict[str, Any] = json.loads(self._native().effective_order(json.dumps(select)))
+        """The active default order and filtered flag."""
+        result: dict[str, Any] = json.loads(self._native().effective_order(self._defaults_select()))
+        return result
+
+    def current_filter(self) -> list[dict[str, Any]]:
+        """The default filters of this query as ``{source, name, expr, active}``.
+
+        ``active`` is false for a default that ``without_defaults()`` removed. ``expr`` is the IR
+        expression the default was declared with; scope values are not filled in."""
+        result: list[dict[str, Any]] = json.loads(self._native().current_filter(self._defaults_select()))
         return result
 
     def _default_order(self) -> tuple[Ordering, ...]:
