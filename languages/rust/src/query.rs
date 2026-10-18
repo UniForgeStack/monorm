@@ -516,7 +516,7 @@ impl<M: Model> Query<M> {
                 with_default_fields: false,
                 model_helpers: vec![],
                 scope: std::collections::BTreeMap::new(),
-                without_defaults: false,
+                without_defaults: ir::Bypass::All(false),
                 without_related: false,
                 with: vec![],
                 from: None,

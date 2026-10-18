@@ -197,6 +197,7 @@ qs.sql()                                      # SQL with values inlined, for deb
 qs.limit(n) / qs.offset(n)                    # the same as a slice; takes orm.param()
 qs.load(User.name, User.email)                # partial instances: other fields raise NotLoaded
 qs.without_defaults()                         # skip the schema query defaults (query-defaults extension)
+qs.current_filter()                           # [{source, name, expr, active}] of the default filters
 qs.without_related()                          # drop default and explicit relation loading
 qs.model                                      # the model class
 ```

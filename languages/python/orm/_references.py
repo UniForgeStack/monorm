@@ -124,7 +124,7 @@ def install(model: Any) -> None:
     setattr(model, "refresh", refresh)
 
 
-async def load_reference(owner: Any, name: str, *, reload: bool = False, filtered: bool = False) -> Any:
+async def load_reference(owner: Any, name: str, *, reload: bool = False) -> Any:
     from .db import resolve
 
     from .model import key_match
@@ -145,7 +145,9 @@ async def load_reference(owner: Any, name: str, *, reload: bool = False, filtere
         target = relation.target
         to = relation.to_fields if isinstance(relation, BelongsTo) else relation.via_fields
         match = key_match(target, (), [target._meta.fields[n] for n in to], key)
-        value = None if key is None else await target.objects.using(db).filter(match).first()
+        query = target.objects.using(db).filter(match)
+        filtered = query._read_defaults()["filtered"]
+        value = None if key is None else await query.first()
         nullable = any(owner._meta.fields[n].nullable for n in source)
         if value is None and isinstance(relation, BelongsTo) and not nullable and not filtered:
             raise IntegrityError(f"{owner._meta.name}.{name}: required target {relation.target_name} is missing")

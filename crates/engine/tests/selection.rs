@@ -278,7 +278,29 @@ mod unset_when_absent {
         assert_eq!(flags["Child"]["filtered"], json!(false));
         assert!(flags["Owner"].get("fields").is_some() && flags["Owner"].get("related").is_some());
         let order = orm_engine::plan::effective_order_json(&s, r#"{"model":"Child","order":[{"expr":{"t":"col","path":[],"name":"owner_id"},"desc":true}]}"#).unwrap();
-        assert_eq!(order, json!([{"field":"owner_id","desc":true,"nulls":null}]));
+        // An explicit order is the caller's own; the wrapper reports the default order and the filtered flag.
+        assert_eq!(order, json!({"order":[],"filtered":false}));
+        let owner = orm_engine::plan::effective_order_json(&s, r#"{"model":"Owner"}"#).unwrap();
+        assert_eq!(owner["filtered"], json!(true));
+        let bypassed = orm_engine::plan::effective_order_json(&s, r#"{"model":"Owner","without_defaults":true}"#).unwrap();
+        assert_eq!(bypassed["filtered"], json!(false));
+    }
+
+    #[test]
+    fn current_filter_lists_filters_with_their_bypass_state() {
+        let s = schema(true);
+        let all = orm_engine::plan::current_filter_json(&s, r#"{"model":"Owner"}"#).unwrap();
+        let entries = all.as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0]["active"].clone(), entries[0]["source"].is_string(), entries[0]["expr"]["t"].is_string()), (json!(true), true, true));
+        let name = entries[0]["name"].as_str().unwrap().to_string();
+        let named = orm_engine::plan::current_filter_json(&s, &json!({"model":"Owner","without_defaults":[name]}).to_string()).unwrap();
+        assert_eq!(named[0]["active"], json!(false));
+        let bare = orm_engine::plan::current_filter_json(&s, r#"{"model":"Owner","without_defaults":true}"#).unwrap();
+        assert_eq!(bare[0]["active"], json!(false));
+        assert_eq!(orm_engine::plan::current_filter_json(&s, r#"{"model":"Child"}"#).unwrap(), json!([]));
+        let err = orm_engine::plan::current_filter_json(&s, r#"{"model":"Owner","without_defaults":["nope"]}"#).unwrap_err().to_string();
+        assert!(err.contains("unknown default"), "{err}");
     }
 }
 
@@ -462,4 +484,59 @@ fn default_annotations_are_selected_from_every_source_and_respect_bypass() {
         assert!(!format!("{values:?}").contains("default label"));
         assert_eq!(plan.types.len(), 2);
     }
+}
+
+fn named_schema() -> Schema {
+    let mut raw = schema(false);
+    raw["models"][0]["fields"].as_array_mut().unwrap().push(json!({"name":"tenant","column":"tenant","type":"int"}));
+    raw["behavior"] = json!({"schema_contract":2,"read_defaults":[
+        {"source":"example.active","name":"active","model":"Selected","filter":{"t":"col","path":[],"name":"active"}},
+        {"source":"example.tenant","name":"tenant","model":"Selected","filter":{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"tenant"},"r":{"t":"int","value":7}}},
+        {"source":"example.order","name":"ordered","model":"Selected","order":[{"field":"id","desc":true}],"fields":["value"]}
+    ]});
+    Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
+}
+
+fn select_sql(schema: &Schema, bypass: serde_json::Value) -> String {
+    let operation: Operation = serde_json::from_value(json!({"op":"select","model":"Selected","without_defaults":bypass})).unwrap();
+    let Plan::Select(plan) = Planner::plan(schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() else { panic!("select") };
+    orm_engine::db::build(Dialect::Postgres, &plan.stmt).0
+}
+
+#[test]
+fn bypass_by_name_drops_only_the_named_defaults() {
+    let schema = named_schema();
+    let all = select_sql(&schema, json!(false));
+    assert!(all.contains("\"active\"") && all.contains("\"tenant\" =") && all.contains("ORDER BY"), "{all}");
+    let no_tenant = select_sql(&schema, json!(["tenant"]));
+    assert!(no_tenant.contains("\"active\"") && !no_tenant.contains("\"tenant\" =") && no_tenant.contains("ORDER BY"), "{no_tenant}");
+    let no_active = select_sql(&schema, json!(["active", "tenant"]));
+    assert!(!no_active.contains("WHERE") && no_active.contains("ORDER BY"), "{no_active}");
+    let no_order = select_sql(&schema, json!(["ordered"]));
+    assert!(no_order.contains("\"tenant\" =") && !no_order.contains("ORDER BY") && no_order.contains("\"id\""), "{no_order}");
+    assert!(!select_sql(&schema, json!(true)).contains("WHERE"));
+}
+
+#[test]
+fn bypass_by_name_reaches_updates_deletes_and_joins() {
+    let schema = named_schema();
+    for op in ["update", "delete"] {
+        let mut raw = json!({"op":op,"model":"Selected","without_defaults":["tenant"]});
+        if op == "update" { raw["set"] = json!([{"field":"value","value":{"t":"text","value":"v"}}]); }
+        let operation: Operation = serde_json::from_value(raw).unwrap();
+        let sql = match Planner::plan(&schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() {
+            Plan::Update(stmt, _) => orm_engine::db::build(Dialect::Postgres, &stmt).0,
+            Plan::Delete(stmt, _) => orm_engine::db::build(Dialect::Postgres, &stmt).0,
+            _ => panic!("write"),
+        };
+        assert!(sql.contains("\"active\"") && !sql.contains("\"tenant\" ="), "{sql}");
+    }
+}
+
+#[test]
+fn an_unknown_bypass_name_lists_the_model_defaults() {
+    let schema = named_schema();
+    let operation: Operation = serde_json::from_value(json!({"op":"select","model":"Selected","without_defaults":["tennant"]})).unwrap();
+    let err = Planner::plan(&schema, Target::new(Dialect::Postgres), &operation, &NoParams).err().expect("unknown name").to_string();
+    assert!(err.contains("tennant") && err.contains("tenant") && err.contains("active"), "{err}");
 }

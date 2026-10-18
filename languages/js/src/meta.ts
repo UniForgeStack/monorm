@@ -39,7 +39,12 @@ export interface ModelSpec {
   readonly update: object;
   readonly updateRow: object;
   readonly pk: unknown;
+  /** The names of the model's read defaults, as a string-literal union; generated models set it. */
+  readonly defaults?: string;
 }
+
+/** The names `withoutDefaults()` takes for `M`: its read default names, or any string when `M` lists none. */
+export type DefaultNames<M extends ModelSpec> = M extends { readonly defaults: infer D extends string } ? D : string;
 
 /**
  * One relation hop of a path, for the types of loaded relations: `one` (always there),

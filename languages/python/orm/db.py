@@ -322,13 +322,24 @@ class Database:
         returning: bool,
         batch_size: int | None,
         db: Database | None = None,
-        without_defaults: bool = False,
+        without_defaults: bool | tuple[str, ...] = False,
     ) -> Any:
         filters_json, params = _with_scope(json.dumps(filters), params, key="filters")
         tx, allowed = self._tx(), allowed_writes()
         return await self._call(
             lambda t: self._engine.update_many(
-                model, fields, rows, filters_json, params, returning, batch_size, tx, db, without_defaults, allowed, t
+                model,
+                fields,
+                rows,
+                filters_json,
+                params,
+                returning,
+                batch_size,
+                tx,
+                db,
+                json.dumps(without_defaults),
+                allowed,
+                t,
             ),
             ("update_many", model, fields, filters_json),
         )
@@ -577,7 +588,7 @@ async def connect(
 @contextmanager
 def scope(**values: Any) -> Iterator[None]:
     """``with orm.scope(shop=shop.id):`` — the values that ``scope.<name>`` reads in
-    default filters (``@@query.filter("shop_id == scope.shop")``). A query on a model
+    default filters (``@@query.filter("tenant", "shop_id == scope.shop")``). A query on a model
     whose default filter reads a value that no enclosing ``scope()`` sets raises
     ``QueryError``. Inner values replace outer ones; tasks started in the block get them."""
     token = _scope.set({**_scope.get(), **values})

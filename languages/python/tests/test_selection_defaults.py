@@ -199,6 +199,20 @@ async def test_selection_defaults(dialect):
         await db.close()
 
 
+def test_current_filter_lists_filters_with_their_bypass_state():
+    classes = orm.define(schema("sqlite", True), registry=orm.Registry())
+    Author, Book = classes["SelectedAuthor"], classes["SelectedBook"]
+    visible = {"t": "col", "path": [], "name": "visible"}
+    assert Author.objects.current_filter() == [
+        {"source": "orm.query-defaults", "name": "query", "expr": visible, "active": True}
+    ]
+    assert Author.objects.without_defaults("query").current_filter()[0]["active"] is False
+    assert Author.objects.without_defaults().current_filter()[0]["active"] is False
+    assert Book.objects.current_filter() == []
+    with pytest.raises(Exception, match=r'unknown default "nope"; available defaults: \["query"\]'):
+        Author.objects.without_defaults("nope").current_filter()
+
+
 ORDERED = """
 datasource db {
   provider = "sqlite"
@@ -634,7 +648,7 @@ model UProfile {
   @@map("g2_profiles")
 }
 """
-FILTER = '@@query.filter("active == true")'
+FILTER = '@@query.filter("active", "active == true")'
 
 
 async def open_unset(request, dialect, filtered, target_last=False, composite=False):
@@ -844,6 +858,42 @@ async def test_absent_reference_message_tracks_the_loaded_key(request, dialect, 
         if filtered:
             row = await B.objects.using(db).load(B.author).get(B.id == 4)
             assert row.author is None
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+async def test_unknown_bypass_name_lists_the_defaults_of_the_model():
+    db, Author, _ = await open_db("sqlite", defaults=False)
+    try:
+        qs = Author.objects.using(db)
+        assert qs.without_defaults("a")._without_defaults == ("a",)
+        assert qs.without_defaults("a").without_defaults("b", "a")._without_defaults == ("a", "b")
+        assert qs.without_defaults("a").without_defaults()._without_defaults is True
+        assert qs.without_defaults().without_defaults("a")._without_defaults is True
+        with pytest.raises(orm.QueryError, match=r'unknown default "nope"; available defaults: \[\]'):
+            await qs.without_defaults("nope").count()
+        with pytest.raises(orm.QueryError, match='unknown default "nope"'):
+            await qs.without_defaults("nope").filter(Author.name == "x").update(name="y")
+        with pytest.raises(orm.QueryError, match='unknown default "nope"'):
+            await qs.without_defaults("nope").filter(Author.name == "x").delete()
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_bypass_by_name_keeps_the_other_defaults(dialect):
+    db, Author, Book = await open_db(dialect, defaults=True)
+    a = Author.objects.using(db)
+    try:
+        await a.insert_many([{"name": "visible", "bio": "x"}, {"name": "hidden", "bio": "x", "visible": False}])
+        assert await a.without_defaults("query").count() == 2
+        with pytest.raises(orm.QueryError, match=r'unknown default "nope"; available defaults: \["query"\]'):
+            await a.without_defaults("nope").count()
+        full = await a.without_defaults("query").order_by(Author.id).first()
+        assert full.bio == "x"
     finally:
         await db.drop_tables()
         await db.close()

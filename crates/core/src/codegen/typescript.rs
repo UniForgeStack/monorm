@@ -323,6 +323,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "  readonly row: {name};").unwrap();
         writeln!(body, "  readonly data: {name}Data;").unwrap();
         writeln!(body, "  readonly insert: {name}Insert;").unwrap();
+        let default_names = m.read_defaults.names();
+        if !default_names.is_empty() {
+            writeln!(body, "  readonly defaults: {};", default_names.iter().map(|n| quote(n)).collect::<Vec<_>>().join(" | ")).unwrap();
+        }
         if composed { writeln!(body, "  readonly attach: {name}Attach;").unwrap(); }
         writeln!(body, "  readonly update: {name}Update;").unwrap();
         writeln!(body, "  readonly updateRow: {name}UpdateRow;").unwrap();

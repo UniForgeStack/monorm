@@ -28,6 +28,18 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean) {
   return { db, Author, Book, a: Author.objects.using(db), b: Book.objects.using(db) };
 }
 
+test("currentFilter lists filters with their bypass state", async () => {
+  const { db, Author, Book } = await open("sqlite", true);
+  try {
+    const visible = { t: "col", path: [], name: "visible" };
+    assert.deepEqual(Author.objects.currentFilter(), [{ source: "orm.query-defaults", name: "query", expr: visible, active: true }]);
+    assert.equal(Author.objects.withoutDefaults("query").currentFilter()[0].active, false);
+    assert.equal(Author.objects.withoutDefaults().currentFilter()[0].active, false);
+    assert.deepEqual(Book.objects.currentFilter(), []);
+    assert.throws(() => Author.objects.withoutDefaults("nope").currentFilter(), /unknown default "nope"; available defaults: \["query"\]/);
+  } finally { await db.dropTables(); await db.close(); }
+});
+
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`partial model shapes: ${dialect}`, async () => {
     const { db, Author, Book, a, b } = await open(dialect, false);
@@ -73,6 +85,10 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.equal(await a.count(), 1); assert.equal(await a.exists(), true);
       assert.equal(await a.withoutDefaults().count(), 2);
       assert.equal(await a.withoutDefaults().filter(Author.name.eq("visible")).count(), 1);
+      assert.equal(await a.withoutDefaults("query").count(), 2);
+      assert.equal(await a.withoutDefaults("query").withoutDefaults("query").count(), 2);
+      assert.equal(await a.withoutDefaults("query").withoutDefaults().count(), 2);
+      await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"; available defaults: \["query"\]/);
       assert.equal((await a.load().get()).bio, "large");
       const explicit = await a.load(Author.note, Author.name).get();
       await explicit.refresh(); assert.deepEqual(explicit.toJSON(), { note: null, name: "visible" });
@@ -241,7 +257,7 @@ model UProfile {
 
 async function openUnset(dialect: "sqlite" | "postgres", filtered: boolean, composite = false, targetLast = false) {
   const registry = new Registry();
-  let source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
+  let source = unsetSource.replace("//FILTER", filtered ? '@@query.filter("active", "active == true")' : "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"');
   if (composite) {
     source = source.replace("id Int @id\n  name", "id Int\n  region Int @default(1)\n  @@id([id, region])\n  name")
       .replace("author_id Int?", "author_region Int? @default(1)\n  author_id Int?")
@@ -422,3 +438,11 @@ for (const dialect of ["sqlite", "postgres"] as const) for (const composite of [
     } finally { await db.dropTables(); await db.close(); }
   });
 }
+
+test("withoutDefaults names reach the engine", async () => {
+  const { db, a } = await open("sqlite", false);
+  try {
+    await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"/);
+    assert.equal(await a.withoutDefaults("nope").withoutDefaults().count(), 0);
+  } finally { await db.dropTables(); await db.close(); }
+});

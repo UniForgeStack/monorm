@@ -94,3 +94,20 @@ fn neutral_contract_participates_in_empty_merge_and_rebuild_checks() {
     old["behavior"] = json!({"schema_contract":1,"query_defaults":[]});
     assert!(serde_json::from_value::<SchemaIr>(old).is_err());
 }
+
+#[test]
+fn generated_code_types_the_default_names() {
+    use orm_core::codegen::{python, typescript, Options};
+    let value = raw(json!([
+        entry("tenant-ext", "tenant", json!({"filter":{"t":"col","path":[],"name":"active"}})),
+        entry("visibility-ext", "published", json!({}))
+    ]));
+    let ir: SchemaIr = serde_json::from_value(value.clone()).unwrap();
+    let schema = Schema::from_ir(serde_json::from_value(value).unwrap()).unwrap();
+    let options = Options::default();
+    let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+    assert!(py.stub.contains(r#"def without_defaults(self, *names: Literal["tenant", "published"]) -> Self: ...  # type: ignore[override]"#), "{}", py.stub);
+    assert_eq!(py.stub.matches("def without_defaults").count(), 1, "Owner has no defaults");
+    let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+    assert_eq!(ts.matches(r#"readonly defaults: "tenant" | "published";"#).count(), 1, "{ts}");
+}

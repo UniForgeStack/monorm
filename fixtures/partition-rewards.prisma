@@ -37,7 +37,7 @@ model Reward {
  @@index([shop_id])
  @@check("mode = 'TOTAL' OR target = 'PRODUCT'", name: "reward_mode_total_unless_product")
  @@partition(list: [type])
- @@query.filter("shop_id == scope.shop and deleted_at == null")
+ @@query.filter("tenant", "shop_id == scope.shop and deleted_at == null")
 }
 model PercentageDiscountReward {
  percent Decimal @db.Decimal(5, 2)

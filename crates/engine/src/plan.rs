@@ -26,7 +26,7 @@ use sea_query::{
 use crate::error::{query_err, Error, Result};
 use crate::params::Params;
 use orm_core::ir::{
-    ArithOp, Assignment, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
+    ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
     JsonKey, Prefetch, RelKind, RelationIr, Select, SelectItem, Update, ValueType, When,
 };
 use orm_core::dialect::{Capabilities, Dialect, Target};
@@ -763,7 +763,7 @@ pub struct Planner<'s> {
     allow_unnest: bool,
     target: Target,
     caps: Capabilities,
-    policy_bypass: bool,
+    policy_bypass: Bypass,
     /// Paths of the joins whose ON carries a default filter.
     filtered_joins: Vec<Vec<String>>,
     root_filtered: bool,
@@ -803,7 +803,7 @@ impl<'s> Planner<'s> {
             allow_unnest: false,
             target,
             caps: target.caps,
-            policy_bypass: false,
+            policy_bypass: Bypass::default(),
             filtered_joins: vec![],
             root_filtered: false,
         };
@@ -841,6 +841,12 @@ impl<'s> Planner<'s> {
     }
 
     fn plan_op(schema: &'s Schema, target: Target, op: &Operation, params: &'s dyn Params) -> Result<Plan> {
+        let (model, bypass) = match op {
+            Operation::Select(q) | Operation::Count(q) | Operation::Exists(q) => (&q.model, &q.without_defaults),
+            Operation::Update(q) => (&q.model, &q.without_defaults),
+            Operation::Delete(q) => (&q.model, &q.without_defaults),
+        };
+        validate_named_bypass(schema, model, bypass)?;
         Ok(match op {
             Operation::Select(q) => Plan::Select(plan_select(schema, target, q, params)?),
             Operation::Count(q) | Operation::Exists(q) => {
@@ -950,7 +956,7 @@ impl<'s> Planner<'s> {
 
     /// Takes note of what `q` declares for its expressions: joined CTEs, named windows.
     fn enter(&mut self, q: &Select) -> Result<()> {
-        self.policy_bypass = q.without_defaults;
+        self.policy_bypass = q.without_defaults.clone();
         self.joined.clear();
         for j in &q.joins {
             let idx = self.model_idx(&j.cte)?;
@@ -1132,11 +1138,11 @@ impl<'s> Planner<'s> {
 
     // -- filters ------------------------------------------------------------------------
 
-    fn apply_filters(&mut self, filters: &[Expr], without_defaults: bool) -> Result<Vec<SExpr>> {
-        self.policy_bypass = without_defaults;
+    fn apply_filters(&mut self, filters: &[Expr], without_defaults: &Bypass) -> Result<Vec<SExpr>> {
+        self.policy_bypass = without_defaults.clone();
         let mut out: Vec<SExpr> = filters.iter().map(|f| self.cond(f)).collect::<Result<_>>()?;
-        if !without_defaults {
-            if let Some(filter) = &self.model(self.root).read_defaults.filter { out.push(self.cond(filter)?); self.root_filtered = true; }
+        if let Some(filter) = active_filter(self.model(self.root), without_defaults) {
+            out.push(self.cond(&filter)?); self.root_filtered = true;
         }
         #[cfg(feature = "proxy-models")]
         if let Some(filter) = self.partition_filter(self.root, self.root_alias()) { out.push(filter); }
@@ -1219,8 +1225,8 @@ impl<'s> Planner<'s> {
                     stmt.from_as(table, Alias::new(&alias)).and_where(link);
                 } else if left {
                     // A default in the WHERE would drop the rows that the LEFT JOIN keeps.
-                    let link = match tm.read_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
-                        Some(filter) => link.and(self.target_default(target, &alias, filter)?),
+                    let link = match active_filter(tm, &self.policy_bypass) {
+                        Some(filter) => link.and(self.target_default(target, &alias, &filter)?),
                         None => link,
                     };
                     stmt.join_as(JoinType::LeftJoin, table, Alias::new(&alias), link);
@@ -1245,10 +1251,10 @@ impl<'s> Planner<'s> {
                     stmt.join_as(JoinType::InnerJoin, jtable, Alias::new(&jalias), to_source)
                         .join_as(JoinType::InnerJoin, table, Alias::new(&alias), to_target);
                 }
-                if !self.policy_bypass { if let Some(filter) = &jm.read_defaults.filter { stmt.and_where(self.target_default(self.model_idx(&th.model)?, &jalias, filter)?); } }
+                if let Some(filter) = active_filter(jm, &self.policy_bypass) { stmt.and_where(self.target_default(self.model_idx(&th.model)?, &jalias, &filter)?); }
             }
         }
-        if !self.policy_bypass { if let Some(filter) = &tm.read_defaults.filter { stmt.and_where(self.target_default(target, &alias, filter)?); } }
+        if let Some(filter) = active_filter(tm, &self.policy_bypass) { stmt.and_where(self.target_default(target, &alias, &filter)?); }
         #[cfg(feature = "proxy-models")]
         if let Some(filter) = self.partition_filter(target, &alias) { stmt.and_where(filter); }
         Ok(alias)
@@ -1430,7 +1436,7 @@ impl<'s> Planner<'s> {
         }
         let model = self.model(self.scope().model);
         let defaults: Vec<_> = model.read_defaults.parts.iter()
-            .filter(|part| part.scopes.iter().any(|scope| scope == name))
+            .filter(|part| !self.policy_bypass.skips(&part.identity.name) && part.scopes.iter().any(|scope| scope == name))
             .map(|part| format!("{} default {:?} from {} (without_defaults({:?}))",
                 model.ir.name, part.identity.name, part.identity.source, part.identity.name))
             .collect();
@@ -2466,8 +2472,8 @@ impl<'s> Planner<'s> {
             }
             let new_alias = self.alias("j");
             let on = self.link((&alias, model), rel, (&new_alias, target))?;
-            let on = match self.model(target).read_defaults.filter.as_ref().filter(|_| !self.policy_bypass) {
-                Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(target, &new_alias, filter)?) }
+            let on = match active_filter(self.model(target), &self.policy_bypass) {
+                Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(target, &new_alias, &filter)?) }
                 None => on,
             };
             #[cfg(feature = "proxy-models")]
@@ -2508,7 +2514,7 @@ impl<'s> Planner<'s> {
             let kind = if j.outer { JoinType::LeftJoin } else { JoinType::InnerJoin };
             stmt.join(kind, Alias::new(&j.cte), on);
         }
-        for w in self.apply_filters(&q.filters, q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
             stmt.and_where(w);
         }
         for o in q.order.iter().filter(|_| order) {
@@ -2596,8 +2602,8 @@ impl<'s> Planner<'s> {
     /// `q` with the root and joined query defaults; borrowed when no default applies.
     fn with_query_defaults<'q>(&self, q: &'q Select) -> Result<std::borrow::Cow<'q, Select>> {
         let mut q = std::borrow::Cow::Borrowed(q);
-        if q.without_defaults { return Ok(q); }
-        for part in &self.model(self.root).read_defaults.parts {
+        let bypass = q.without_defaults.clone();
+        for part in self.model(self.root).read_defaults.parts.iter().filter(|p| !bypass.skips(&p.identity.name)) {
             for (name, expr) in &part.annotate {
                 // An explicit named selection overrides the default of that name.
                 if q.columns.as_ref().is_some_and(|items| items.iter().any(|item|
@@ -2606,14 +2612,14 @@ impl<'s> Planner<'s> {
                     .push(SelectItem::Expr { expr: expr.clone(), name: Some(name.clone()) });
             }
         }
-        if q.model_fields.is_none() && self.model(self.root).read_flags.fields.is_some() { q.to_mut().model_fields = self.model(self.root).read_flags.fields.clone(); }
+        if q.model_fields.is_none() { if let Some(fields) = active_fields(self.model(self.root), &q.without_defaults) { q.to_mut().model_fields = Some(fields.to_vec()); } }
         if !q.without_related && q.columns.is_none() {
-            for path in orm_core::selection::expanded_related(self.schema.models.as_slice(), self.root).map_err(query_err)? {
+            for path in active_related(self.schema, self.root, &q.without_defaults)? {
                 if !q.select_related.contains(&path) { q.to_mut().select_related.push(path); }
             }
             for i in 0..q.select_related.len() {
                 let target = self.schema.walk(self.root, &q.select_related[i]).map_err(query_err)?;
-                for suffix in orm_core::selection::expanded_related(self.schema.models.as_slice(), target).map_err(query_err)? {
+                for suffix in active_related(self.schema, target, &q.without_defaults)? {
                     let mut path = q.select_related[i].clone(); path.extend(suffix);
                     if !q.select_related.contains(&path) { q.to_mut().select_related.push(path); }
                 }
@@ -2624,8 +2630,8 @@ impl<'s> Planner<'s> {
 
     /// The default selection of `model` united with `named`; `None` selects the whole model
     /// (the model has no default selection, or `without_defaults` is set).
-    fn united_fields(&self, model: usize, named: &[String], without_defaults: bool) -> Option<Vec<String>> {
-        let defaults = if without_defaults { None } else { self.model(model).read_flags.fields.as_deref() };
+    fn united_fields(&self, model: usize, named: &[String], without_defaults: &Bypass) -> Option<Vec<String>> {
+        let defaults = active_fields(self.model(model), without_defaults);
         let mut fields = defaults?.to_vec();
         for name in named {
             if !fields.iter().any(|f| f == name) { fields.push(name.clone()); }
@@ -2639,7 +2645,7 @@ impl<'s> Planner<'s> {
         let united;
         let q = match &q.model_fields {
             Some(named) if q.with_default_fields && self.root < self.schema.models.len() => {
-                united = Select { model_fields: self.united_fields(self.root, named, q.without_defaults), with_default_fields: false, ..q.clone() };
+                united = Select { model_fields: self.united_fields(self.root, named, &q.without_defaults), with_default_fields: false, ..q.clone() };
                 &united
             }
             _ => q,
@@ -2688,12 +2694,12 @@ impl<'s> Planner<'s> {
                 ),
             };
             let entry = q.related_fields.iter().find(|r| r.path == *path);
-            let united = entry.filter(|r| r.with_default_fields).and_then(|r| self.united_fields(model, &r.fields, q.without_defaults));
+            let united = entry.filter(|r| r.with_default_fields).and_then(|r| self.united_fields(model, &r.fields, &q.without_defaults));
             let named = match entry {
                 Some(r) if r.with_default_fields => united.as_deref(),
                 other => other.map(|r| r.fields.as_slice()),
             };
-            let named = named.or(if q.without_defaults || entry.is_some_and(|r| r.with_default_fields) { None } else { m.read_flags.fields.as_deref() });
+            let named = named.or(if entry.is_some_and(|r| r.with_default_fields) { None } else { active_fields(m, &q.without_defaults) });
             let joined_shape = self.instance_shape(model, named, &[])?;
             let joined_positions = shape_positions(m, joined_shape.as_ref());
             let filtered = self.filtered_joins.contains(path);
@@ -2728,7 +2734,7 @@ impl<'s> Planner<'s> {
         }
         let mut prefetch = vec![];
         for node in &q.prefetch {
-            let mut plan = plan_prefetch(self.schema, self.target, self.params, self.root, node, q.without_defaults)?;
+            let mut plan = plan_prefetch(self.schema, self.target, self.params, self.root, node, &q.without_defaults)?;
             plan.key_pos = plan.key_pos.iter().map(|&k| positions.iter().position(|f| f == k).expect("selected relation helper")).collect();
             prefetch.push(plan);
         }
@@ -2815,8 +2821,8 @@ impl<'s> Planner<'s> {
         }).collect()
     }
 
-    fn return_shape(&self, names: Option<&[String]>, without_defaults: bool) -> Result<Option<orm_core::behavior::ResultShape>> {
-        let names = names.or_else(|| if without_defaults { None } else { self.model(self.root).read_flags.fields.as_deref() });
+    fn return_shape(&self, names: Option<&[String]>, without_defaults: &Bypass) -> Result<Option<orm_core::behavior::ResultShape>> {
+        let names = names.or_else(|| active_fields(self.model(self.root), without_defaults));
         self.instance_shape(self.root, names, &[])
     }
 
@@ -2854,14 +2860,14 @@ impl<'s> Planner<'s> {
         for (column, v) in maintained(root, |name| q.set.iter().any(|a| a.field == name)) {
             stmt.value(Alias::new(column), v);
         }
-        for w in self.apply_filters(&q.filters, q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
             stmt.and_where(w);
         }
         if !q.returning {
             return Ok((stmt, None));
         }
         self.require(self.caps.returning, "update().returning()")?;
-        let shape = self.return_shape(q.model_fields.as_deref(), q.without_defaults)?;
+        let shape = self.return_shape(q.model_fields.as_deref(), &q.without_defaults)?;
         let positions = shape_positions(root, shape.as_ref());
         stmt.returning(Query::returning().exprs(positions.iter().map(|pos| {
             let f = &root.fields()[pos];
@@ -2886,7 +2892,7 @@ impl<'s> Planner<'s> {
         for (column, v) in maintained(root, |_| false) {
             stmt.value(Alias::new(column), v);
         }
-        for w in self.apply_filters(&q.filters, q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
             stmt.and_where(w);
         }
         stmt.and_where(col(root.table(), &field.column).is_null());
@@ -2894,7 +2900,7 @@ impl<'s> Planner<'s> {
             return Ok((stmt, None));
         }
         self.require(self.caps.returning, "delete().returning()")?;
-        let shape = self.return_shape(q.model_fields.as_deref(), q.without_defaults)?;
+        let shape = self.return_shape(q.model_fields.as_deref(), &q.without_defaults)?;
         let positions = shape_positions(root, shape.as_ref());
         stmt.returning(Query::returning().exprs(positions.iter().map(|pos| {
             let f = &root.fields()[pos];
@@ -2911,14 +2917,14 @@ impl<'s> Planner<'s> {
         crate::ownership::require_local_write(root)?;
         let mut stmt = Query::delete();
         stmt.from_table(Alias::new(root.table()));
-        for w in self.apply_filters(&q.filters, q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
             stmt.and_where(w);
         }
         if !q.returning {
             return Ok((stmt, None));
         }
         self.require(self.caps.returning, "delete().returning()")?;
-        let shape = self.return_shape(q.model_fields.as_deref(), q.without_defaults)?;
+        let shape = self.return_shape(q.model_fields.as_deref(), &q.without_defaults)?;
         let positions = shape_positions(root, shape.as_ref());
         stmt.returning(Query::returning().exprs(positions.iter().map(|pos| {
             let f = &root.fields()[pos];
@@ -2952,12 +2958,65 @@ fn order_sql(o: &Order) -> &'static str {
     }
 }
 
+// Names are checked only when given: a select over a CTE model has no schema entry.
+fn validate_named_bypass(schema: &Schema, model: &str, bypass: &Bypass) -> Result<()> {
+    match bypass {
+        Bypass::Names(_) => validate_bypass(schema.model(schema.model_idx(model).map_err(query_err)?), bypass),
+        Bypass::All(_) => Ok(()),
+    }
+}
+
+fn validate_bypass(model: &Model, bypass: &Bypass) -> Result<()> {
+    if let Bypass::Names(names) = bypass {
+        for name in names {
+            if !model.read_defaults.parts.iter().any(|p| p.identity.name == *name) {
+                let available: Vec<_> = model.read_defaults.parts.iter().map(|p| p.identity.name.as_str()).collect();
+                return Err(Error::query(format!("{}: unknown default {name:?}; available defaults: {available:?}", model.ir.name)));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn active_filter(model: &Model, bypass: &Bypass) -> Option<Expr> {
+    let mut filters: Vec<_> = model.read_defaults.parts.iter()
+        .filter(|p| !bypass.skips(&p.identity.name)).filter_map(|p| p.filter.clone()).collect();
+    match filters.len() { 0 => None, 1 => filters.pop(), _ => Some(Expr::And { items: filters }) }
+}
+
+fn active_fields<'a>(model: &'a Model, bypass: &Bypass) -> Option<&'a [String]> {
+    model.read_defaults.fields_owner.as_ref().filter(|o| !bypass.skips(&o.name))
+        .and(model.read_flags.fields.as_deref())
+}
+
+fn active_related(schema: &Schema, root: usize, bypass: &Bypass) -> Result<Vec<Vec<String>>> {
+    fn expand(schema: &Schema, model: usize, prefix: &[String], bypass: &Bypass, out: &mut Vec<Vec<String>>) -> Result<()> {
+        let m = schema.model(model);
+        for (path, owners) in m.read_flags.related.iter().zip(&m.read_defaults.load_owners) {
+            if owners.iter().all(|o| bypass.skips(&o.name)) { continue; }
+            let mut current = model;
+            let mut full = prefix.to_vec();
+            for hop in path {
+                current = schema.model(current).relation(hop).map_err(query_err)?.1;
+                full.push(hop.clone());
+                if !out.contains(&full) { out.push(full.clone()); }
+                expand(schema, current, &full, bypass, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut out = vec![];
+    expand(schema, root, &[], bypass, &mut out)?;
+    Ok(out)
+}
+
 /// The order the engine uses for `q`: its own `order_by()`, else the schema default order
 /// of a model read that no bypass removed. Keyset pagination, `first()` and `last()` ask this.
 pub fn effective_order(schema: &Schema, q: &Select) -> Result<Vec<Order>> {
     if !q.order.is_empty() { return Ok(q.order.clone()); }
-    if !q.without_defaults && q.columns.is_none() && q.from.is_none() {
-        return Ok(schema.model(schema.model_idx(&q.model).map_err(query_err)?).read_defaults.order.clone());
+    if q.columns.is_none() && q.from.is_none() {
+        let m = schema.model(schema.model_idx(&q.model).map_err(query_err)?);
+        if m.read_defaults.order_owner.as_ref().is_some_and(|o| !q.without_defaults.skips(&o.name)) { return Ok(m.read_defaults.order.clone()); }
     }
     Ok(vec![])
 }
@@ -2966,14 +3025,31 @@ pub fn effective_order(schema: &Schema, q: &Select) -> Result<Vec<Order>> {
 /// Default orders are root columns (checked when the schema is prepared).
 pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_json::Value> {
     let q: Select = serde_json::from_str(select_json).map_err(|e| Error::query(e.to_string()))?;
-    let keys = effective_order(schema, &q)?
+    validate_named_bypass(schema, &q.model, &q.without_defaults)?;
+    let keys = if q.order.is_empty() { effective_order(schema, &q)? } else { vec![] }
         .into_iter()
         .map(|o| match o.expr {
             Expr::Col { path, name } if path.is_empty() => Ok(serde_json::json!({"field": name, "desc": o.desc, "nulls": o.nulls})),
             _ => Err(Error::query("a default order is a root column")),
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(serde_json::Value::Array(keys))
+    Ok(serde_json::json!({"order":keys, "filtered":active_filter(schema.model(schema.model_idx(&q.model).map_err(query_err)?), &q.without_defaults).is_some()}))
+}
+
+/// The filter defaults of a select IR document, as `[{source, name, expr, active}]`.
+/// `active` is false for a default the query bypasses; `expr` is the stored IR expression, scope references unresolved.
+/// A select over a CTE reads no defaults, so it gives an empty list.
+pub fn current_filter_json(schema: &Schema, select_json: &str) -> Result<serde_json::Value> {
+    let q: Select = serde_json::from_str(select_json).map_err(|e| Error::query(e.to_string()))?;
+    let model = schema.model(schema.model_idx(&q.model).map_err(query_err)?);
+    validate_bypass(model, &q.without_defaults)?;
+    if q.from.is_some() { return Ok(serde_json::json!([])); }
+    model.read_defaults.parts.iter().filter_map(|p| {
+        let expr = p.filter_json.as_ref()?;
+        Some(Ok(serde_json::json!({
+            "source": p.identity.source, "name": p.identity.name, "expr": expr, "active": !q.without_defaults.skips(&p.identity.name),
+        })))
+    }).collect()
 }
 
 /// The static read flags of each model, `{model: {filtered, fields, related}}`, for bindings.
@@ -3012,7 +3088,7 @@ pub fn plan_prefetch_only(schema: &Schema, target: Target, q: &Select, params: &
     let root = schema.model_idx(&q.model).map_err(query_err)?;
     let scoped = crate::params::Scoped { params, scope: &q.scope };
     let params: &dyn Params = if q.scope.is_empty() { params } else { &scoped };
-    q.prefetch.iter().map(|node| plan_prefetch(schema, target, params, root, node, q.without_defaults)).collect()
+    q.prefetch.iter().map(|node| plan_prefetch(schema, target, params, root, node, &q.without_defaults)).collect()
 }
 
 /// The query loading `node` (a relation of `parent`) for a set of parent keys. A slice
@@ -3024,7 +3100,7 @@ fn plan_prefetch(
     params: &dyn Params,
     parent: usize,
     node: &Prefetch,
-    without_defaults: bool,
+    without_defaults: &Bypass,
 ) -> Result<PrefetchPlan> {
     let pm = schema.model(parent);
     let (rel, child) = pm.relation(&node.relation).map_err(query_err)?;
@@ -3049,7 +3125,8 @@ fn plan_prefetch(
         }
         q.limit = q.limit.or(Some(Count::Value(1)));
     }
-    q.without_defaults |= without_defaults;
+    validate_bypass(cm, &q.without_defaults)?;
+    q.without_defaults.merge(without_defaults);
     let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone() }, desc: false, nulls: None }).collect();
     q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
@@ -3091,9 +3168,7 @@ fn plan_prefetch(
             let (src, dst) = (jm.field(&th.source).map_err(query_err)?, jm.field(&th.target).map_err(query_err)?);
             let jalias = p.alias("m");
             let mut on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to[0]).map_err(query_err)?.column));
-            if !p.policy_bypass {
-                if let Some(filter) = &jm.read_defaults.filter { on = on.and(p.target_default(schema.model_idx(&th.model).map_err(query_err)?, &jalias, filter)?); }
-            }
+            if let Some(filter) = active_filter(jm, &p.policy_bypass) { on = on.and(p.target_default(schema.model_idx(&th.model).map_err(query_err)?, &jalias, &filter)?); }
             plan.stmt.join_as(JoinType::InnerJoin, Alias::new(jm.table()), Alias::new(&jalias), on);
             let k = col(&jalias, &src.column);
             plan.stmt.expr_as(k.clone(), Alias::new("_key"));
@@ -3412,7 +3487,7 @@ pub fn plan_update_many(
     filters: &[Expr],
     params: &dyn Params,
     returning: bool,
-    without_defaults: bool,
+    without_defaults: &Bypass,
 ) -> Result<(Vec<UpdateStatement>, Option<Vec<ValueType>>)> {
     let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
     let m = schema.model(planner.root);
@@ -3431,6 +3506,7 @@ pub fn plan_update_many(
     if returning {
         planner.require(planner.caps.returning, "update_many().returning()")?;
     }
+    validate_bypass(m, without_defaults)?;
     let where_ = planner.apply_filters(filters, without_defaults)?;
     let key_cols: Vec<SExpr> = cols[..width].iter().map(|c| col(&table, &c.column)).collect();
     let mut stmts = vec![];
