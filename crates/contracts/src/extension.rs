@@ -106,6 +106,9 @@ pub struct FileField {
     pub reference_contract: u32,
 }
 
+/// The language capability of the async field adapter pipeline: validate, `await prepare`, SQL, decode.
+pub const ASYNC_FIELD_ADAPTER_V1: &str = "async-field-adapter.v1";
+
 pub const FILE_REFERENCE_ADAPTER: &str = "file-storage.reference.v1";
 
 /// Names the host runtimes give meaning to on models and instances.
@@ -299,6 +302,9 @@ pub struct Manifest {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Language capabilities the extension needs; each language adapter checks them when it loads the artifact.
+    #[serde(default)]
+    pub requires: Vec<String>,
     pub languages: Vec<String>,
     pub databases: Vec<String>,
     #[serde(default)]
@@ -430,6 +436,9 @@ pub struct Artifact {
     #[serde(default)]
     pub capabilities: Vec<String>,
     pub extensions: BTreeMap<String, String>,
+    /// The `requires` list of each selected extension that has one, by extension id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requires: BTreeMap<String, Vec<String>>,
     pub exports: Vec<String>,
     pub specializations: Vec<Specialization>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -438,7 +447,7 @@ pub struct Artifact {
 impl Default for Artifact {
     fn default() -> Self {
         Self { host_contract: HOST_CONTRACT, schema_contract: SCHEMA_CONTRACT,
-            passes: vec![], capabilities: vec![], extensions: BTreeMap::new(), exports: vec![], specializations: vec![], language_members: vec![] }
+            passes: vec![], capabilities: vec![], extensions: BTreeMap::new(), requires: BTreeMap::new(), exports: vec![], specializations: vec![], language_members: vec![] }
     }
 }
 

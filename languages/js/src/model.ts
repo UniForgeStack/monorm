@@ -7,6 +7,7 @@
  * the same at runtime without a generated file (untyped).
  */
 
+import { checkRequires } from "./adapters.js";
 import { isAbsent } from "./reference-absence.js";
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
 import { Column, PATH, RelationPath, and, type Condition, type PathState, type Source } from "./expr.js";
@@ -24,7 +25,9 @@ export const DB: unique symbol = Symbol("orm.db");
 /** Hidden values of a partial instance (identity, relation keys) that adapters read but ordinary property access does not show. */
 export const INTERNAL: unique symbol = Symbol.for("orm.internal");
 // The native artifact is fixed for the process; read its capabilities once.
-const capabilities: readonly string[] = (JSON.parse(native().nativeArtifact()) as { capabilities: string[] }).capabilities;
+const artifact = JSON.parse(native().nativeArtifact()) as { capabilities: string[]; requires?: Record<string, string[]> };
+const capabilities: readonly string[] = artifact.capabilities;
+checkRequires(artifact);
 // Adapter selection happens once; baseline artifacts never import its runtime module.
 const referenceAdapter = capabilities.includes("reference-loading")
   ? await import("./references.js") : undefined;

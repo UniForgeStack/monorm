@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .errors import NotLoaded
-from .expr import ColumnRef, RelationPath
+from .expr import ColumnRef, Labeled, RelationPath
 from .fields import BelongsTo, HasOne
 
 
@@ -34,6 +34,9 @@ def loaded(
 
 def item_loaded(owner: Any, item: Any) -> bool:
     from .query import QuerySet
+
+    if isinstance(item, Labeled):
+        return item._name in owner.__dict__
 
     path = item._via if isinstance(item, QuerySet) else item
     assert path is not None
@@ -116,14 +119,18 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
     own = [
         item
         for item in requested
-        if isinstance(item, ColumnRef) and not item._path and (reload or item._field.name not in owner.__dict__)
+        if (isinstance(item, ColumnRef) and not item._path and (reload or item._field.name not in owner.__dict__))
+        or (isinstance(item, Labeled) and (reload or item._name not in owner.__dict__))
     ]
     if own:
+        if not any(isinstance(i, ColumnRef) for i in own):
+            # a labeled aggregate alone must not read every column
+            own = [*(getattr(model, f.name) for f in owner._meta.key), *own]
         fresh = await owner._row_query().load(*own).require().get()
         merge(owner, fresh, reload)
     relations = []
     for item in requested:
-        if isinstance(item, ColumnRef) and not item._path:
+        if (isinstance(item, ColumnRef) and not item._path) or isinstance(item, Labeled):
             continue
         path = item._via if isinstance(item, QuerySet) else item
         assert isinstance(path, (ColumnRef, RelationPath))

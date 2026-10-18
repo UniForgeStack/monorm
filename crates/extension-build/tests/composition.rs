@@ -6,7 +6,7 @@ fn manifest(id: &str, pass: &str, after: &[&str], effects: &[&str]) -> Manifest 
     Manifest {
         id: id.into(), version: "1.0.0".into(), host_contract: HOST_CONTRACT,
         schema_contract: SCHEMA_CONTRACT, language_contract: None, python: None, typescript: None, dependencies: BTreeMap::new(),
-        capabilities: vec![], languages: vec!["python".into(), "typescript".into()],
+        capabilities: vec![], requires: vec![], languages: vec!["python".into(), "typescript".into()],
         databases: vec!["postgres".into(), "sqlite".into()], attributes: vec![], exports: vec![],
         passes: vec![Pass { id: pass.into(), phase: Phase::Logical, rust: "extension::lower".into(),
             after: after.iter().map(|s| (*s).into()).collect(),
@@ -98,4 +98,19 @@ fn a_language_section_needs_the_contract_and_its_language() {
     assert!(Composition::resolve(vec![m.clone()]).is_ok());
     m.languages = vec!["typescript".into()];
     assert!(Composition::resolve(vec![m]).unwrap_err().contains("requires python in languages"));
+}
+
+#[test]
+fn manifest_requires_reach_the_artifact_by_extension() {
+    let mut a = manifest("a", "a.lower", &[], &["User.name"]);
+    a.requires.push(ASYNC_FIELD_ADAPTER_V1.into());
+    let b = manifest("b", "b.lower", &["a.lower"], &["User.age"]);
+    let artifact = serde_json::to_value(Composition::resolve(vec![a, b]).unwrap().artifact(None)).unwrap();
+    assert_eq!(artifact["requires"], serde_json::json!({"a": ["async-field-adapter.v1"]}));
+}
+
+#[test]
+fn an_artifact_without_requires_keeps_its_old_shape() {
+    let artifact = serde_json::to_value(Composition::resolve(vec![manifest("a", "a.lower", &[], &[])]).unwrap().artifact(None)).unwrap();
+    assert!(artifact.get("requires").is_none());
 }

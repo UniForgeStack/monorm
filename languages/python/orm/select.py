@@ -214,6 +214,7 @@ class Select(Generic[Unpack[Ts]]):
     ) -> tuple[dict[str, Any], IRContext]:
         self._qs._standalone()
         ir, ctx = self._qs._query_ir("select", params, outer, ctes)
+        ir.pop("annotations", None)
         ir["columns"] = [
             {"t": "model"} if isinstance(item, type) else {"t": "expr", "expr": item._ir(ctx), "name": name}
             for item, name in zip(self._items, self._names)
