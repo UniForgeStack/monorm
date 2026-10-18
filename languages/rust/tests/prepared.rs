@@ -51,7 +51,7 @@ macro_rules! exercise {
         assert!(matches!(template.bind(&missing),Err(Error::Compatibility(m)) if m.contains("missing value for parameter hi")));
         let null=Raw(vec![("lo",TypeId::of::<i32>(),orm_client::BindValue::Int(None)),("hi",TypeId::of::<i32>(),lo.clone())]);
         assert!(matches!(template.bind(&null),Err(Error::Engine(e)) if e.to_string().contains("can't be None")));
-        // Scopes bind per execution, not into the template.
+        // A scope value lives in the template; `bind(..)?.scope(..)` replaces it for one execution.
         let notes=ScopedNote::objects.order_by(ScopedNote::id.asc()).prepare();
         let titles=|rows:Vec<ScopedNote>|rows.iter().map(|n|n.title.clone()).collect::<Vec<_>>();
         assert_eq!(titles(notes.clone().scope("shop",1).using(&db).all().await.unwrap()),vec!["a","b"]);
@@ -66,6 +66,19 @@ macro_rules! exercise {
         let bound=ScopedNote::objects.order_by(ScopedNote::id.asc()).prepare().filter(ScopedNote::title.column().eq_param(pick::who()));
         assert_eq!(bound.bind(&pick::Args{who:"b".into()}).unwrap().scope("shop",1).using(&db).all().await.unwrap().len(),1);
         assert_eq!(bound.bind(&pick::Args{who:"b".into()}).unwrap().scope("shop",2).using(&db).all().await.unwrap().len(),0);
+        // A scope entry stays at the root of an `or`: it is no filter, and a right-side scope moves to the root.
+        let note_titles=|rows:Vec<ScopedNote>|rows.iter().map(|n|n.title.clone()).collect::<Vec<_>>();
+        let scoped=||ScopedNote::objects.order_by(ScopedNote::id.asc()).filter(ScopedNote::title.eq("a".to_string())).scope("shop",1);
+        let either=scoped().or(ScopedNote::objects.filter(ScopedNote::title.eq("b".to_string()))).unwrap();
+        assert_eq!(note_titles(either.using(&db).all().await.unwrap()),vec!["a","b"]);
+        let right=ScopedNote::objects.order_by(ScopedNote::id.asc()).filter(ScopedNote::title.eq("a".to_string())).or(ScopedNote::objects.filter(ScopedNote::title.eq("b".to_string())).scope("shop",1)).unwrap();
+        assert_eq!(note_titles(right.using(&db).all().await.unwrap()),vec!["a","b"]);
+        let both=scoped().or(ScopedNote::objects.filter(ScopedNote::title.eq("b".to_string())).scope("shop",2));
+        assert!(matches!(&both,Err(Error::Compatibility(m)) if m.contains("both sides")));
+        // A scope on a subquery is an error, not a dropped value.
+        let inner=orm_client::scalar(|_:orm_client::Parent<User>|orm_client::Subquery::new(ScopedNote::objects.scope("shop",1)).limit_one().select(ScopedNote::title));
+        let err=User::objects.select((User::id,inner)).using(&db).all().await;
+        assert!(matches!(&err,Err(Error::Compatibility(m)) if m.contains("scope shop on a subquery")),"{err:?}");
         db.close().await;
     }};
 }

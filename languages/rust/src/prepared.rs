@@ -6,18 +6,49 @@ use crate::*;
 /// `K` lists the placeholders the template uses; `bind` needs a pack that has all of them.
 pub struct Prepared<Q, K = Nil> {
     query: Q,
+    // The slot check runs when the template changes, not on every `bind`.
+    slots: Option<String>,
     _slots: PhantomData<K>,
 }
 impl<Q: Clone, K> Clone for Prepared<Q, K> {
     fn clone(&self) -> Self {
-        Self::new(self.query.clone())
+        Self {
+            query: self.query.clone(),
+            slots: self.slots.clone(),
+            _slots: PhantomData,
+        }
     }
 }
-impl<Q, K> Prepared<Q, K> {
-    fn new(query: Q) -> Self {
+#[doc(hidden)]
+pub trait Template {
+    fn trees(&mut self) -> &mut Vec<Tree>;
+}
+impl<M: Model, R, L, D> Template for Query<M, R, L, D> {
+    fn trees(&mut self) -> &mut Vec<Tree> {
+        &mut self.filters
+    }
+}
+impl<M: Model, P: Projection<M::Source>, R, L, D> Template for ProjectedQuery<M, P, R, L, D> {
+    fn trees(&mut self) -> &mut Vec<Tree> {
+        self.trees_mut()
+    }
+}
+impl<Q: Template, K> Prepared<Q, K> {
+    fn new(mut query: Q) -> Self {
+        let slots = match check_slots(query.trees(), &mut Vec::new()) {
+            Err(Error::Compatibility(message)) => Some(message),
+            _ => None,
+        };
         Self {
             query,
+            slots,
             _slots: PhantomData,
+        }
+    }
+    fn check(&self) -> Result<()> {
+        match &self.slots {
+            Some(message) => Err(Error::Compatibility(message.clone())),
+            None => Ok(()),
         }
     }
 }
@@ -44,14 +75,14 @@ impl<M: Model, R, L, D, K> Prepared<Query<M, R, L, D>, K> {
     {
         Prepared::new(self.query.push_tree(p.tree))
     }
-    /// Sets a scope value for every execution; `bind(..)?.scope(..)` replaces it for one.
+    /// Stores the value in the template. Call `scope` on the bound query to change it for one execution.
     pub fn scope<T: Codec>(self, name: &str, value: T) -> Self {
         Self::new(self.query.scope(name, value))
     }
     /// Substitutes the pack into a copy of the template. The copy is an ordinary lazy query.
     pub fn bind<A: Pack + Provides<K>>(&self, args: &A) -> Result<Query<M, R, L, D>> {
         let mut query = self.query.clone();
-        check_slots(&query.filters, &mut Vec::new())?;
+        self.check()?;
         substitute(&mut query.filters, &args.values())?;
         Ok(query)
     }
@@ -77,14 +108,14 @@ impl<M: Model, P: Projection<M::Source> + Clone, R, L, D, K>
     {
         Prepared::new(self.query.map_query(|q| q.push_tree(p.tree)))
     }
+    /// Stores the value in the template. Call `scope` on the bound query to change it for one execution.
     pub fn scope<T: Codec>(self, name: &str, value: T) -> Self {
         Self::new(self.query.map_query(|q| q.scope(name, value)))
     }
     pub fn bind<A: Pack + Provides<K>>(&self, args: &A) -> Result<ProjectedQuery<M, P, R, L, D>> {
         let mut query = self.query.clone();
-        let trees = query.trees_mut();
-        check_slots(trees, &mut Vec::new())?;
-        substitute(trees, &args.values())?;
+        self.check()?;
+        substitute(query.trees_mut(), &args.values())?;
         Ok(query)
     }
 }
