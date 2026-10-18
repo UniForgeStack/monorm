@@ -59,7 +59,7 @@ async def test_partition_routes_orm_inserts_and_checks_moves():
         with pytest.raises(orm.IntegrityError):
             await rows[1].update(kind="a")
         await rows[2].update(kind="a")
-        assert await rows[2].refresh()
+        await rows[2].load(reload=True)
         assert rows[2].kind == "a"
         assert await Row.objects.using(db).count() == 3
     finally:
@@ -100,7 +100,7 @@ async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
         with pytest.raises(orm.IntegrityError):
             await Percent.objects.using(db).insert(shop=1, percent=10, kind=models["RewardKind"].FIXED)
         assert await Percent.objects.using(db).without_defaults().update(percent=15) == 1
-        await fixed.refresh()
+        await fixed.load(reload=True)
         assert fixed.amount == 20
         assert await Percent.objects.using(db).without_defaults().delete() == 1
         assert await Reward.objects.using(db).count() == 2

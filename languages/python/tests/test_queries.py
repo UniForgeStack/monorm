@@ -346,7 +346,7 @@ async def test_update_and_delete(clean):
     assert await Comment.objects.count() == 0
 
     await carol.update(name="Caroline")
-    await carol.refresh()
+    await carol.load(reload=True)
     assert carol.name == "Caroline"
 
 
@@ -702,30 +702,25 @@ async def test_row_locks(clean):
             await _in_new_tx(lambda: Post.objects.lock(nowait=True).filter(Post.id == a1.id))
 
 
-async def test_refresh_lock(clean):
+async def test_bound_lock_replaces_refresh_lock(clean):
     alice, bob, _, _ = await seed()
     db = orm.get_database()
-    with pytest.raises(TypeError, match="lock=True"):
-        await alice.refresh(nowait=True)
-    with pytest.raises(TypeError, match="lock=True"):
-        await alice.refresh(exclusive=False)
     with pytest.raises(orm.TransactionRequired):
-        await alice.refresh(lock=True)
+        await alice.qs().lock()
     with pytest.raises(ValueError):
-        await alice.refresh(lock=True, nowait=True, skip_locked=True)
-    assert await alice.refresh() is True
+        await alice.qs().lock(nowait=True, skip_locked=True)
+    assert await alice.load(reload=True) is alice
 
     async with db.transaction():
-        assert await alice.refresh(User.name, lock=True) is True
-        # A partial refresh locks the whole row.
+        assert await alice.qs().load(User.name).lock() == [alice]
         with pytest.raises(orm.LockNotAvailable):
             await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
     await User.objects.filter(User.id == alice.id).update(name="Alicia")
-    await alice.refresh()
+    await alice.load(reload=True)
     assert alice.name == "Alicia"
 
     async with db.transaction():
-        assert await bob.refresh(lock=True, exclusive=False) is True
+        assert await bob.qs().lock(exclusive=False) == [bob]
         assert await _in_new_tx(lambda: User.objects.lock(False, nowait=True).get(User.id == bob.id)) == bob
 
     other = await User.objects.get(User.id == alice.id)
@@ -733,20 +728,18 @@ async def test_refresh_lock(clean):
         await User.objects.lock().get(User.id == alice.id)
         await User.objects.filter(User.id == alice.id).update(name="Al")
         with pytest.raises(orm.LockNotAvailable):
-            await _in_new_tx(lambda: other.refresh(lock=True, nowait=True))
-        assert await _in_new_tx(lambda: other.refresh(lock=True, skip_locked=True)) is False
+            await _in_new_tx(lambda: other.qs().lock(nowait=True))
+        assert await _in_new_tx(lambda: other.qs().lock(skip_locked=True)) == []
         assert other.name == "Alicia"  # unchanged
     async with db.transaction():
-        assert await other.refresh(lock=True, skip_locked=True) is True
+        assert await other.qs().lock(skip_locked=True) == [other]
     assert other.name == "Al"
 
     await User.objects.filter(User.id == bob.id).delete()
     async with db.transaction():
-        assert await bob.refresh(lock=True, skip_locked=True) is False
-        with pytest.raises(User.DoesNotExist):
-            await bob.refresh(lock=True)
+        assert await bob.qs().lock(skip_locked=True) == []
     with pytest.raises(User.DoesNotExist):
-        await bob.refresh()
+        await bob.load(reload=True)
 
 
 async def test_relation_equals_instance(clean):
@@ -843,13 +836,6 @@ async def test_concurrent_queries(clean):
     assert counts[0] == 2 and counts[-1] == 2
 
 
-async def test_refresh_takes_only_own_columns(clean):
+async def test_refresh_is_removed(clean):
     alice, *_ = await seed()
-    for bad in (Post.title, User.posts, "name", User.name + "x"):
-        with pytest.raises(TypeError, match="refresh\\(\\) takes columns of User"):
-            await alice.refresh(bad)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="refresh\\(\\) takes columns of User"):
-        await alice.refresh(User.posts.views)
-    with pytest.raises(TypeError, match="duplicate model field"):
-        await alice.refresh(User.name, User.name)
-    assert await alice.refresh(User.name) is True
+    assert not hasattr(alice, "refresh")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import weakref
-from typing import Any
+from typing import Any, cast
 
 from typing_extensions import Self
 
@@ -16,7 +16,6 @@ from orm.ext import (
     bound_query,
     bound_write,
     hard_delete_statement,
-    row_query,
 )
 
 _FIELDS: weakref.WeakKeyDictionary[type, ColumnRef[Any]] = weakref.WeakKeyDictionary()
@@ -98,7 +97,8 @@ class SoftDeleteInstance:
     async def hard_delete(self: ModelLike) -> None:
         """``DELETE ... WHERE pk = ...`` also for a soft-delete model. In database mode,
         the trigger soft-deletes a live row; a soft-deleted row is deleted."""
-        await hard_delete_statement(row_query(self))
+        bound: SoftDeleteBoundQuerySet[Any] = cast(Any, self.qs().without_defaults())
+        await bound.hard_delete()
 
     async def undelete(self: ModelLike) -> None:
         """Clear the soft-delete field of this row and refresh it."""

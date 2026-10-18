@@ -73,7 +73,6 @@ class ReferenceBelongsTo(BelongsTo[Any, Any]):
 
 
 def install(model: Any) -> None:
-    references = []
     for name, relation in model._meta.relations.items():
         if not isinstance(relation, (BelongsTo, HasOne)):
             continue
@@ -85,43 +84,6 @@ def install(model: Any) -> None:
             setattr(model, name, relation)
         if isinstance(relation, ReferenceBelongsTo):
             relation.optional = any(model._meta.fields[n].nullable for n in relation.via_fields)
-        references.append((name, relation))
-    if not references:
-        return
-    # Capture only relation source keys; ordinary rows keep the baseline method.
-    dependencies = tuple((name, _sources(r)) for name, r in references)
-    sources = tuple(source for _, source in dependencies)
-    reverse_names = tuple(name for name, r in references if isinstance(r, HasOne))
-    replace = model._replace_from
-    if getattr(replace, "_reference_adapter", False):
-        replace = replace._reference_base
-
-    def replace_from(self: Any, fresh: Any) -> None:
-        before = {source: peek_key(self, source) for source in sources}
-        replace(self, fresh)
-        for name, source in dependencies:
-            if before[source] != peek_key(self, source):
-                invalidate_reference(self, name)
-
-    replace_from._reference_adapter = True  # type: ignore[attr-defined]
-    replace_from._reference_base = replace  # type: ignore[attr-defined]
-    setattr(model, "_replace_from", replace_from)
-    baseline_refresh = model.refresh
-    if getattr(baseline_refresh, "_reference_adapter", False):
-        baseline_refresh = baseline_refresh._reference_base
-
-    async def refresh(self: Any, *fields: Any, **options: Any) -> bool:
-        before = {source: peek_key(self, source) for source in sources}
-        if not await baseline_refresh(self, *fields, **options):
-            return False
-        for name, source in dependencies:
-            if name in reverse_names or before[source] != peek_key(self, source):
-                invalidate_reference(self, name)
-        return True
-
-    refresh._reference_adapter = True  # type: ignore[attr-defined]
-    refresh._reference_base = baseline_refresh  # type: ignore[attr-defined]
-    setattr(model, "refresh", refresh)
 
 
 async def load_reference(owner: Any, name: str, *, reload: bool = False) -> Any:

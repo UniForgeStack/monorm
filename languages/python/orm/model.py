@@ -655,46 +655,32 @@ class Model:
     # Each method is one statement on this row (matched by primary key), run on the
     # database the instance was read from.
 
-    def _row_query(self) -> QuerySet[Self]:
-        # Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own write or refresh.
-        query = type(self).objects.without_defaults().using(self.__dict__.get("_db"))
-        return query.filter(key_match(type(self), (), self._meta.key, self.pk))
-
-    def _loaded_query(self, *extra: str) -> QuerySet[Self]:
-        """The row query; a partial instance keeps its public shape plus ``extra``."""
-        query = self._row_query()
+    def _bound(self, *extra: str) -> BoundQuerySet[Self]:
+        """This row as a bound set without query defaults, so a default cannot hide the
+        row from its own write or load. A partial instance keeps its public shape plus ``extra``."""
+        # Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own write or load.
+        bound = self.qs().without_defaults()
         if "_orm_internal" not in self.__dict__:
-            return query
+            return bound
         names = [n for n in self._meta.field_names if n in self.__dict__]
         names.extend(n for n in extra if n not in names)
-        return query._clone(_model_fields=tuple(names))
+        return bound.load(*(ColumnRef(type(self), (), self._meta.fields[n]) for n in names))
 
-    def _replace_from(self, fresh: Model) -> None:
-        for name, relation in self._meta.relations.items():
-            sources = relation.via_fields if isinstance(relation, BelongsTo) else getattr(relation, "from_fields", ())
-            if any(_peek(self, source) != _peek(fresh, source) for source in sources):
-                self.__dict__.pop(name, None)
-        for name in self._meta.field_names:
-            self.__dict__.pop(name, None)
-        self.__dict__.update({n: fresh.__dict__[n] for n in self._meta.field_names if n in fresh.__dict__})
-        if "_orm_internal" in fresh.__dict__:
-            self.__dict__["_orm_internal"] = fresh.__dict__["_orm_internal"]
-        else:
-            self.__dict__.pop("_orm_internal", None)
-
-    def _version_filter(self, query: QuerySet[Self]) -> QuerySet[Self]:
+    def _versioned(self, bound: BoundQuerySet[Self]) -> BoundQuerySet[Self]:
         """With ``@locking.version``, match only the loaded version of the row."""
         name = self._meta.version_field
         if name is None:
-            return query
-        return query.filter(ColumnRef(type(self), (), self._meta.fields[name]) == getattr(self, name))
+            return bound
+        return bound.filter(ColumnRef(type(self), (), self._meta.fields[name]) == getattr(self, name))
 
     async def _raise_if_changed(self) -> None:
         """No row matched a versioned write: raise when the row has another version."""
         name = self._meta.version_field
         if name is not None:
-            changed = self._row_query().filter(
-                ColumnRef(type(self), (), self._meta.fields[name]) != getattr(self, name)
+            changed = (
+                self.qs()
+                .without_defaults()
+                .filter(ColumnRef(type(self), (), self._meta.fields[name]) != getattr(self, name))
             )
             if await changed.exists():
                 raise VersionConflict(f"{type(self).__name__} {self.pk!r} was changed since it was loaded")
@@ -716,75 +702,19 @@ class Model:
                 f"{type(self).__name__}.update() cannot set the version field {version}; "
                 f"use {type(self).__name__}.objects.filter(pk=...).update({version}=...) to override it"
             )
-        query = self._version_filter(self._loaded_query(*(() if version is None else (version,))))
-        rows = await query.update(**values).returning()
-        if not rows:
+        bound = self._versioned(self._bound(*(() if version is None else (version,))))
+        if not await bound.update(**values):
             await self._raise_if_changed()
             raise self.DoesNotExist(f"{type(self).__name__} {self.pk!r} no longer exists")
-        self._replace_from(rows[0])
 
     async def delete(self) -> None:
-        """``DELETE ... WHERE pk = ...``; with ``@soft_delete.deleted_at``, a soft delete
-        that refreshes the instance from the returned row. Otherwise the instance keeps
-        its last values. With ``@locking.version``, raises :class:`orm.VersionConflict`
+        """``DELETE ... WHERE pk = ... RETURNING`` the loaded fields; the instance is filled from
+        the returned row, so a soft delete shows its stored value. With ``@locking.version``, raises :class:`orm.VersionConflict`
         when the row has a newer version; a hard delete has no version check."""
-        if self._meta.soft_delete is None:
-            if not await self._version_filter(self._row_query()).delete():
-                await self._raise_if_changed()
-            return
         version = self._meta.version_field
-        query = self._version_filter(self._loaded_query(*(() if version is None else (version,))))
-        rows = await query.delete().returning()
-        if not rows:
+        bound = self._versioned(self._bound(*(() if version is None else (version,))))
+        if not await bound.delete():
             await self._raise_if_changed()
-            return
-        self._replace_from(rows[0])
-
-    def _refresh_fields(self, fields: tuple[ColumnRef[Any], ...]) -> tuple[str, ...]:
-        model = type(self)
-        names = []
-        for field in fields:
-            if not isinstance(field, ColumnRef) or field._root is not model or field._path:
-                raise TypeError(f"refresh() takes columns of {model.__name__}")
-            names.append(field._field.name)
-        if len(set(names)) != len(names):
-            raise TypeError("duplicate model field")
-        return tuple(names)
-
-    async def refresh(
-        self,
-        *fields: ColumnRef[Any],
-        lock: bool = False,
-        exclusive: bool | None = None,
-        nowait: bool | None = None,
-        skip_locked: bool | None = None,
-    ) -> bool:
-        """Reload column values from the database; ``True`` when it loaded the row.
-
-        ``fields`` are columns of the model; a column of a related model raises ``TypeError``.
-        ``lock=True`` also locks the row until the transaction ends, with the options of
-        :meth:`QuerySet.lock` (``exclusive`` defaults to ``True``). A refresh of some
-        fields still locks the whole row. With ``skip_locked``, a row locked by another
-        transaction (or deleted) gives ``False`` and leaves the instance unchanged; else
-        a missing row raises ``DoesNotExist``.
-
-        The read goes to the primary, also on a database with replicas. ``on_commit``
-        callbacks and ``load_x()`` still read replicas: use ``.using("primary")``.
-        """
-        if not lock and (exclusive is not None or nowait is not None or skip_locked is not None):
-            raise TypeError("refresh() takes exclusive, nowait and skip_locked only with lock=True")
-        requested = self._refresh_fields(fields)
-        query = self._loaded_query(*requested).using("primary")
-        if lock:
-            query = query.lock(exclusive is not False, nowait=bool(nowait), skip_locked=bool(skip_locked))
-        try:
-            fresh = await query.require().get()
-        except self.DoesNotExist:
-            if skip_locked:
-                return False
-            raise
-        self._replace_from(fresh)
-        return True
 
     # -- dunder --------------------------------------------------------------------------
 

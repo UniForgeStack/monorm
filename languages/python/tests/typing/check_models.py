@@ -138,7 +138,7 @@ async def check() -> None:
     assert_type(Post.objects.lock(exclusive=False, skip_locked=True), PostQuerySet)
     assert_type(await Post.objects.lock().get(Post.id == 1), Post | None)
     assert_type(await orm_db().lock("key", nowait=True), bool)
-    assert_type(await post.refresh(Post.title, lock=True, skip_locked=True), bool)
+    assert_type(await post.qs().lock(skip_locked=True), list[Post])
     assert_type(Post.author == alice, Condition)
     assert_type(Post.author != None, Condition)  # noqa: E711
     Comment.objects.filter(Comment.post.author != alice)

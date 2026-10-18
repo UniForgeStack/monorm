@@ -1749,7 +1749,7 @@ class BoundQuerySet(Generic[M]):
 
         meta = self._qs._model._meta
         keys = dict.fromkeys(o.pk for o in self._objs)
-        if len(meta.key) == 1:
+        if len(meta.key) == 1 and len(keys) != 1:
             return meta.pk_ref().in_(list(keys))
         return or_(*(key_match(self._qs._model, (), meta.key, k) for k in keys))
 
@@ -1785,6 +1785,10 @@ class BoundQuerySet(Generic[M]):
         from ._loading import merge
 
         returned = {row.pk: row for row in await build(self._query())}
+        if len(self._objs) == 1 and len(returned) == 1:
+            # a key change returns the row under its new key
+            merge(self._objs[0], next(iter(returned.values())), True)
+            return list(self._objs)
         changed = [o for o in self._objs if o.pk in returned]
         for o in changed:
             merge(o, returned[o.pk], True)

@@ -34,6 +34,8 @@ class ModelLike(Protocol):
     @property
     def pk(self) -> Any: ...
 
+    def qs(self) -> BoundQuerySet[Any]: ...
+
 
 def behavior_records(model: Any, kind: str) -> list[dict[str, Any]]:
     """The prepared behavior records of ``kind`` for ``model`` (a model class or an instance)."""
@@ -55,7 +57,7 @@ def hard_delete_statement(qs: QuerySet[Any]) -> Delete[Any]:
 
 def row_query(instance: ModelLike) -> QuerySet[Any]:
     """The query set of the one row of ``instance``: its primary key, no defaults, its database."""
-    query: QuerySet[Any] = cast(Any, instance)._row_query()
+    query: QuerySet[Any] = cast(Any, instance).qs().without_defaults()._query()
     return query
 
 

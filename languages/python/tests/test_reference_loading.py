@@ -100,7 +100,7 @@ async def test_identity_reload_fk_invalidation_and_counts(references, monkeypatc
     assert (await load_relation(row, "owner")).id == 2
     assert calls == 3
     await m["Required"].objects.using(db).update(owner_id=1)
-    await row.refresh()
+    await row.load(reload=True)
     with pytest.raises(orm.NotLoaded):
         _ = row.owner
     assert (await load_relation(row, "owner")).id == 1
@@ -127,7 +127,7 @@ async def test_cached_absence_refresh_reverse_and_null(references, monkeypatch):
     assert await load_relation(owner, "detail") is None and calls == 1
     await m["Detail"].objects.using(db).insert(id=1, owner_id=1)
     assert await load_relation(owner, "detail") is None
-    await owner.refresh()
+    await owner.load(reload=True)
     with pytest.raises(orm.NotLoaded):
         _ = owner.detail
     assert (await load_relation(owner, "detail")).id == 1 and calls == 2
