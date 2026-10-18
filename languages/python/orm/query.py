@@ -16,7 +16,9 @@ from .expr import (
     Condition,
     ConditionLike,
     Expression,
+    Func,
     IRContext,
+    Labeled,
     Ordering,
     Param,
     RelationPath,
@@ -173,6 +175,18 @@ def _prefetch_tree(model: type[Model], items: Iterable[tuple[tuple[str, ...], _P
     return nodes
 
 
+def _check_annotations(model: type[Model], annotations: list[Labeled[Any]], tree: dict[str, _Node]) -> None:
+    """A label is no field, relation or member of the model, no other label and no relation-set label."""
+    seen: set[str] = set()
+    for item in annotations:
+        name = item._name
+        if name in model._meta.fields or name in model._meta.relations or hasattr(model, name):
+            raise ValueError(f"label {name!r} is a field, relation or member of {model.__name__}")
+        if name in seen or name in tree:
+            raise ValueError(f"load() stores {model.__name__}.{name!r} twice")
+        seen.add(name)
+
+
 def _prefetch_ir(model: type[Model], items: Iterable[tuple[tuple[str, ...], _Prefetch]], params: list[Any]) -> list[IR]:
     out = []
     for node in _prefetch_tree(model, items).values():
@@ -195,8 +209,8 @@ def _prefetch_ir(model: type[Model], items: Iterable[tuple[tuple[str, ...], _Pre
     return out
 
 
-# What load() takes: a column, a relation path or a relation query set (``User.posts.objects``).
-_LoadItem: TypeAlias = "ColumnRef[Any] | RelationPath[Any] | QuerySet[Any]"
+# What load() takes: a column, a relation path, a relation query set (``User.posts.objects``) or a labeled relation aggregate.
+_LoadItem: TypeAlias = "ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]"
 
 
 def _to_many(model: type[Model], hops: tuple[str, ...]) -> bool:
@@ -209,6 +223,8 @@ def _to_many(model: type[Model], hops: tuple[str, ...]) -> bool:
 
 
 def _load_path(item: _LoadItem) -> tuple[str, ...]:
+    if isinstance(item, Labeled):
+        return ()
     if isinstance(item, QuerySet):
         assert item._via is not None
         return item._via._path
@@ -238,6 +254,8 @@ def _derive(
     own: list[str] = []
     groups: dict[str, list[tuple[tuple[str, ...], _LoadItem]]] = {}
     for item in loads:
+        if isinstance(item, Labeled):
+            continue
         if isinstance(item, ColumnRef):
             if not item._path:
                 own.append(item._field.name)
@@ -295,7 +313,7 @@ def _derive(
                 column: ColumnRef[Any] = ColumnRef(target, rest, item._field)
                 if not any(c._path == rest and c._field is item._field for c in inner if isinstance(c, ColumnRef)):
                     inner.append(column)
-            elif rest:
+            elif rest and isinstance(item, RelationPath):
                 inner.append(RelationPath(target, rest, item._target))
         if base is not None and (
             base._filters
@@ -482,7 +500,7 @@ class QuerySet(Generic[M]):
         loads = tuple(i for i in self._loads if not (_load_path(i)[:1] and _load_path(i)[0] in joined))
         return self._clone(_without_related=True, _loads=loads)._derived()
 
-    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any]) -> Self:
+    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
         """Choose what the model instances carry::
 
             Post.objects.load(Post.title)                      # partial posts
@@ -491,6 +509,7 @@ class QuerySet(Generic[M]):
             User.objects.load(User.posts.comments)             # by IN (...) queries
             User.objects.load(User.posts.objects.filter(Post.published).order_by(Post.views.desc())[:3])
             User.objects.load(User.posts.objects[:3].label("top_posts"))
+            Post.objects.load(func.count(Post.comments).label("n_comments"))   # post.n_comments
 
         A column of the model makes its instances partial: they hold the named fields
         (and, hidden, the primary key and relation keys); reading another field raises
@@ -504,6 +523,10 @@ class QuerySet(Generic[M]):
         its own items with ``.load()``, and goes to the relation, or to the plain
         attribute ``.label(name)`` (``[n].label(name)``: one row or ``None``).
         ``.as_prefetch()`` loads a to-one relation by ``IN (...)`` query instead of a join.
+
+        A labeled relation aggregate (``func.count(Post.comments).label("n")``) sets the attribute
+        ``n`` on each object, from a correlated subquery in the same statement. The label must not
+        be a field, relation or member of the model, nor another label of the same ``load()``.
 
         Relation query sets run only inside ``load()``; standalone reads and writes
         raise ``TypeError``. Label a filtered, ordered or sliced set when also loading
@@ -525,6 +548,16 @@ class QuerySet(Generic[M]):
                 self._check_path(item._via)
             elif isinstance(item, OneRowQuery):
                 raise TypeError("a one-row query in load() needs .label(name)")
+            elif isinstance(item, Labeled):
+                inner = item._inner
+                if not isinstance(inner, Func) or inner._rel is None:
+                    raise TypeError("load() takes relation aggregates with a label; use select() for other expressions")
+                self._check_path(inner._rel)
+            elif isinstance(item, Expression) and not isinstance(item, (ColumnRef, RelationPath)):
+                raise TypeError(
+                    f"load() needs a label on {item!r}: {item!r}.label(name); "
+                    "load() takes relation aggregates with a label, use select() for other expressions"
+                )
             elif isinstance(item, RelationPath):
                 self._check_path(item)
             elif isinstance(item, ColumnRef) and item._root is self._model:
@@ -545,8 +578,12 @@ class QuerySet(Generic[M]):
         qs = self._clone(
             _model_fields=model_fields, _related=related, _related_fields=related_fields, _prefetch=prefetch
         )
-        _prefetch_tree(self._model, ((p.path._path, p) for p in prefetch))  # validates
+        tree = _prefetch_tree(self._model, ((p.path._path, p) for p in prefetch))  # validates
+        _check_annotations(self._model, qs._annotations(), tree)
         return qs
+
+    def _annotations(self) -> list[Labeled[Any]]:
+        return [i for i in self._loads if isinstance(i, Labeled)]
 
     def label(self, name: str) -> Self:
         """Store related rows in a plain list attribute; use ``[n].label(name)`` for one row."""
@@ -878,6 +915,10 @@ class QuerySet(Generic[M]):
         top = outer is None and ctes is None
         if self._related and op == "select" and top:
             ir["select_related"] = [list(p) for p in self._related]
+        if op == "select" and top:
+            annotations = self._annotations()
+            if annotations:
+                ir["annotations"] = [{"name": a._name, "expr": a._ir(ctx)} for a in annotations]
         if self._prefetch and op == "select" and top and prefetch:
             ir["prefetch"] = _prefetch_ir(self._model, ((p.path._path, p) for p in self._prefetch), params)
         if self._lock is not None:
@@ -1605,6 +1646,8 @@ async def prefetch(
     if using is None and any(resolve(o.__dict__.get("_db")) is not database for o in objs):
         raise QueryError("prefetch() takes instances from one database; pass using= to read another")
     loads = model.objects.load(*relations)._loads
+    if any(isinstance(i, Labeled) for i in loads):
+        raise TypeError("prefetch() loads relations; a labeled aggregate has nothing to prefetch")
     if any(isinstance(i, ColumnRef) and not i._path for i in loads):
         raise TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load")
     qs = model.objects._clone(_prefetch=_derive(model, loads, by_query=True)[3])
@@ -1769,7 +1812,13 @@ class RelatedSet(QuerySet[M]):
 
     async def _fetch(self) -> list[M]:
         rows = self._instance.__dict__.get(self._relation.name)
-        if rows is not None and self._is_pristine() and not self._prefetch and not self._related:
+        if (
+            rows is not None
+            and self._is_pristine()
+            and not self._prefetch
+            and not self._related
+            and not self._annotations()
+        ):
             return list(rows)
         if debug._scope.get() is not None and self._is_pristine():
             with debug.relation_load(self._relation.model.__name__, self._relation.name, "load"):

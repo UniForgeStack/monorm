@@ -208,6 +208,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   private build(params: unknown[], outer?: IRContext, ctes?: Ctes): [IR, IRContext] {
     this.qs.assertStandalone();
     const [ir, ctx] = this.qs.queryIr("select", params, outer, ctes);
+    delete ir["annotations"];
     ir["columns"] = this.items.map(([name, node]) => (node === null ? { t: "model" } : { t: "expr", expr: node.ir(ctx), name }));
     if (this.state.group.length) {
       ir["group_by"] = this.state.group.map((g) => g.ir(ctx));

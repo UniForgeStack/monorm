@@ -251,7 +251,10 @@ objects without a prototype, get a message naming the expected target model.
 
 ### Loading related objects
 
-`load(...)` takes columns, relation paths and relation query sets, with the rules of Python's `load()` (see [`python-api.md`](python-api.md)); calls add up.
+`load(...)` takes columns, relation paths, relation query sets and labeled relation aggregates, with the rules of Python's `load()` (see [`python-api.md`](python-api.md)); calls add up.
+
+* `load(func.count(Post.comments).label("n"))` stores the aggregate in `post.n`, typed as the aggregate's value (`bigint` for `count`). `Expression.label(name)` takes an identifier that does not start with `_`.
+  A label that names a field, relation or member of the model, or is used twice, throws `QueryError`; a non-aggregate or an expression without a label throws `TypeError`.
 
 * `load(Comment.post.author, Comment.author)` follows to-one relations with
   LEFT JOINs. The row type gains the loaded objects: `c.post.author.name` is a `string`,

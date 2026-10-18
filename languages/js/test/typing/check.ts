@@ -318,6 +318,13 @@ export async function awaiting() {
   same<(typeof cs)[number]["post"]["author"]["name"], string>();
   const rows = await Post.objects.select({ id: Post.id, n: func.count(Post.comments) });
   same<typeof rows, { id: bigint; n: bigint }[]>();
+  const counted = await Post.objects.load(Post.title, func.count(Post.comments).label("n"));
+  same<(typeof counted)[number]["n"], bigint>();
+  same<(typeof counted)[number]["title"], string>();
+  // @ts-expect-error a labeled load adds only its label
+  void counted[0]!.m;
+  // @ts-expect-error load() takes an aggregate with a label, not a bare expression
+  Post.objects.load(func.count(Post.comments));
   const mine = await user.posts.filter(Post.views.gt(1));
   same<typeof mine, Post[]>();
   for await (const p of Post.objects.orderBy(Post.id)) {

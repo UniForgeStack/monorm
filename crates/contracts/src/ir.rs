@@ -1006,6 +1006,16 @@ pub struct Select {
     pub distinct: bool,
     #[serde(default)]
     pub distinct_on: Vec<Expr>,
+    /// Relation aggregates a model-returning query sets on each object, one column per entry.
+    #[serde(default)]
+    pub annotations: Vec<Annotation>,
+}
+
+/// A labeled relation aggregate of `load()`: `name` is the attribute of the object.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Annotation {
+    pub name: String,
+    pub expr: Expr,
 }
 
 /// A row count (`LIMIT` / `OFFSET`): a number, or a parameter holding one, so one IR

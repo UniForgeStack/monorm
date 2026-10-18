@@ -12,7 +12,9 @@ import {
   Condition,
   Ctes,
   Expression,
+  Func,
   IRContext,
+  Labeled,
   Node,
   orderings,
   Ordering,
@@ -180,7 +182,9 @@ type Fields<Row, Data, N> = Omit<Row, Exclude<keyof Data, N>>;
 type PartialLast<H extends readonly Hop[], N extends string> = Last<H> extends Hop<string, HopKind, infer T> ? Fields<T["row"], T["data"], N> : never;
 
 type ItemLoad<I> =
-  I extends Column<unknown, string, infer N, infer H>
+  I extends Labeled<infer T, infer A, string, unknown>
+    ? { readonly [K in A]: T }
+    : I extends Column<unknown, string, infer N, infer H>
     ? H extends readonly [Hop, ...Hop[]]
       ? LoadOf<H, PartialLast<H, N>>
       : {}
@@ -211,6 +215,7 @@ export type InstanceLoaded<M extends ModelSpec, R, C extends readonly unknown[]>
 export type LoadItem<M extends ModelSpec> =
   | Column<unknown, M["name"] | Many, string, readonly Hop[]>
   | RelationPath<ModelSpec, M["name"] | Many, readonly Hop[]>
+  | Labeled<unknown, string, M["name"] | Many, unknown>
   // Compare relation metadata only; result modifiers do not change load eligibility.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `any`, not a contextual type the label literal would widen to
   | Pick<QuerySet<any, any, string, any, never, Via<any, any, any, M["name"] | Many>>, "~qs" | "meta" | "state">;
@@ -281,10 +286,10 @@ export interface PrefetchItem {
 }
 
 /** @internal */
-export type LoadEntry = Column<unknown, string> | RelationPath<ModelSpec, string, readonly Hop[]> | QuerySet<ModelSpec, unknown, string, unknown, never>;
+export type LoadEntry = Column<unknown, string> | RelationPath<ModelSpec, string, readonly Hop[]> | QuerySet<ModelSpec, unknown, string, unknown, never> | Labeled<unknown>;
 
 function loadPath(item: LoadEntry): readonly string[] {
-  return item instanceof Column ? item.path : item instanceof QuerySet ? item.state.via![PATH].path : item[PATH].path;
+  return item instanceof Labeled ? [] : item instanceof Column ? item.path : item instanceof QuerySet ? item.state.via![PATH].path : item[PATH].path;
 }
 
 function toMany(meta: ModelMeta, hops: readonly string[]): boolean {
@@ -321,6 +326,7 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
   const own: string[] = [];
   const groups = new Map<string, LoadEntry[]>();
   for (const item of loads) {
+    if (item instanceof Labeled) continue;
     const hops = loadPath(item);
     if (!hops.length) {
       own.push((item as Column<unknown, string>).field.ir);
@@ -372,10 +378,10 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
         else base = item;
       } else if (item instanceof Column) {
         if (!inner.some((c) => c instanceof Column && c.field === item.field && c.path.join(".") === rest.join("."))) {
-          inner.push(new Column(target, rest, item.field, item.label));
+          inner.push(new Column(target, rest, item.field, item.text));
         }
       } else if (rest.length) {
-        inner.push(restOf(item, target));
+        inner.push(restOf(item as RelationPath<ModelSpec, string, readonly Hop[]>, target));
       }
     }
     if (base && (base.state.filters.length || base.state.order.length || base.state.limit !== undefined || base.state.offset !== undefined || base.state.withoutDefaults)) {
@@ -672,7 +678,15 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     }
     const own: string[] = [];
     for (const item of items) {
-      if (item instanceof QuerySet) {
+      if (item instanceof Labeled) {
+        const inner = item.expr;
+        if (!(inner instanceof Func) || !inner.rel) {
+          throw new TypeError("load() takes relation aggregates with a label; use select() for other expressions");
+        }
+        this.checkPath(inner.rel);
+      } else if (item instanceof Expression && !(item instanceof Column)) {
+        throw new TypeError(`load() needs a label for an expression: ${String(item)}.label(name)`);
+      } else if (item instanceof QuerySet) {
         if (!item.state.via) throw new TypeError(`load() takes a relation query set such as ${this.meta.name}.<relation>.objects, not ${item.meta.name}.objects`);
         this.checkPath(item.state.via);
       } else if (item instanceof OneRowQuery) {
@@ -693,8 +707,26 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   derived(): this {
     const d = derive(this.meta, this.state.loads ?? []);
     const modelFields = d.own.length ? [...new Set(d.own)] : this.state.modelFields;
-    prefetchTree(this.meta, d.prefetch.map((p) => [[...p.path[PATH].path], p])); // validates
+    const tree = prefetchTree(this.meta, d.prefetch.map((p) => [[...p.path[PATH].path], p])); // validates
+    this.checkAnnotations(tree);
     return this.clone({ modelFields, related: d.related, relatedFields: d.relatedFields, prefetch: d.prefetch });
+  }
+
+  /** @internal The labeled aggregates of `load()`. */
+  annotations(): Labeled<unknown>[] {
+    return (this.state.loads ?? []).filter((i): i is Labeled<unknown> => i instanceof Labeled);
+  }
+
+  private checkAnnotations(tree: Map<string, PrefetchNode>): void {
+    const meta = this.meta;
+    const seen = new Set<string>();
+    for (const { name } of this.annotations()) {
+      if (meta.fields.has(name) || meta.relations.has(name) || meta.fieldByIr.has(name) || meta.relationByIr.has(name) || name in meta.Row.prototype) {
+        throw new QueryError(`label ${JSON.stringify(name)} is a field, relation or member of ${meta.name}`);
+      }
+      if (seen.has(name) || tree.has(name)) throw new QueryError(`load() stores ${meta.name}.${JSON.stringify(name)} twice`);
+      seen.add(name);
+    }
   }
 
   /** Stores related rows in a plain array attribute; use `at(n).label(name)` for one row. */
@@ -1036,6 +1068,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       ir["offset"] = s.offset instanceof ParamRef ? s.offset.slot(ctx.params) : ctx.param(s.offset);
     }
     const top = outer === undefined && ctes === undefined;
+    if (op === "select" && top) {
+      const annotations = this.annotations();
+      if (annotations.length) ir["annotations"] = annotations.map((a) => ({ name: a.name, expr: a.ir(ctx) }));
+    }
     if (s.related.length && op === "select" && top) {
       ir["select_related"] = s.related.map((p) => [...p]);
     }
@@ -2162,7 +2198,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
   /** @internal */
   pristine(): boolean {
     const s = this.state;
-    return s.filters.length === this.relation.to.length && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length;
+    return s.filters.length === this.relation.to.length && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length && !this.annotations().length;
   }
 
   /** @internal */
@@ -2241,7 +2277,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
   override async fetch(): Promise<M["row"][]> {
     const rows = loadedRows(this.instance, this.relation);
     const s = this.state;
-    const pristine = s.filters.length === 1 && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length;
+    const pristine = s.filters.length === 1 && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length && !this.annotations().length;
     if (rows !== undefined && pristine) {
       return [...rows] as M["row"][];
     }
@@ -2452,7 +2488,7 @@ export async function prefetch(
   ...relations: readonly (LoadItem<ModelSpec> | { readonly using: Database })[]
 ): Promise<void> {
   const last = relations[relations.length - 1];
-  const using = last !== undefined && !(last instanceof RelationPath) && !(last instanceof Column) && !(last instanceof QuerySet) ? (last as { using: Database }).using : undefined;
+  const using = last !== undefined && !(last instanceof RelationPath) && !(last instanceof Column) && !(last instanceof QuerySet) && !(last instanceof Labeled) ? (last as { using: Database }).using : undefined;
   const paths = using === undefined ? relations : relations.slice(0, -1);
   const objs = [...instances] as Record<PropertyKey, unknown>[];
   if (!objs.length || !paths.length) return;
@@ -2465,6 +2501,9 @@ export async function prefetch(
     throw new QueryError("prefetch() takes instances from one database; pass using= to read another");
   }
   const loads = (meta.objects.load as (...r: unknown[]) => QuerySet<ModelSpec>)(...paths).state.loads ?? [];
+  if (loads.some((i) => i instanceof Labeled)) {
+    throw new TypeError("prefetch() loads relations; a labeled aggregate has nothing to prefetch");
+  }
   if (loads.some((i) => i instanceof Column && !i.path.length)) {
     throw new TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load");
   }

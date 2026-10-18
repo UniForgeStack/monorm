@@ -535,6 +535,7 @@ impl<M: Model> Query<M> {
                 having: vec![],
                 distinct: false,
                 distinct_on: vec![],
+                annotations: vec![],
             },
             filters: vec![],
             _type: PhantomData,
