@@ -22,7 +22,7 @@ from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, Man
 if TYPE_CHECKING:
     from typing_extensions import Self
 
-    from .query import QuerySet
+    from .query import BoundQuerySet, QuerySet
 
 # The native artifact is fixed for the process; read its capabilities once.
 _ARTIFACT: dict[str, Any] = json.loads(_native.native_artifact())
@@ -371,6 +371,7 @@ class Registry:
 _RESERVED = {
     "pk",
     "objects",
+    "qs",
     "_meta",
     "DoesNotExist",
     "MultipleObjectsReturned",
@@ -621,6 +622,10 @@ class Model:
     def to_dict(self) -> dict[str, Any]:
         """Serialize public loaded scalar fields, retaining loaded NULL values."""
         return {n: self.__dict__[n] for n in self._meta.field_names if n in self.__dict__}
+
+    def qs(self) -> BoundQuerySet[Self]:
+        """A query set bound to this object: ``type(self).objects.of(self)``."""
+        return type(self).objects.of(self)
 
     async def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any], reload: bool = False) -> Self:
         """Populate requested fields and relations, preserving loaded values by default.
