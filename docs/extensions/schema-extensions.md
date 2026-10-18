@@ -55,7 +55,6 @@ model Author {
   id         Int       @id
   deleted_at DateTime? @soft_delete.deleted_at
   books      Book[]
-  @@query.filter("live", "deleted_at == null")   // optional: hide deleted rows (orm-query-defaults)
 }
 model Book {
   id         Int       @id
@@ -70,15 +69,17 @@ model Book {
   The count and `RETURNING` are the rows that the call soft-deleted; rows that are already soft-deleted do not count.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
-  On a query set, it drops every default filter, like `all_with_deleted()`.
+  On a query set, it bypasses only the `"deleted"` default, so the other default filters (a tenant filter) still apply.
   An instance `hard_delete()` does not check the version, also with `@locking.version`.
 * `undelete()` on a query set clears the field of the matching soft-deleted rows; on an instance, it clears the field of its row.
-  On a query set, it drops every default filter, like `all_with_deleted()`.
-* `all_with_deleted()` (`allWithDeleted()`) is `without_defaults()`: it removes the schema default filter that hides deleted rows.
-  `deleted_only()` (`deletedOnly()`) gives only the soft-deleted rows.
-* Reads show soft-deleted rows unless the model has a default filter.
-  Select `orm-query-defaults` and add `@@query.filter("live", "deleted_at == null")`.
-  `without_defaults()` removes every schema default, not only this filter.
+  On a query set, it bypasses only the `"deleted"` default, like `all_with_deleted()`.
+* The extension adds the read default `"deleted"` (`deleted_at IS NULL`) to each soft-delete model.
+  Plain reads, counts, relation joins and loads return live rows only.
+* `all_with_deleted()` (`allWithDeleted()`) is `without_defaults("deleted")`: it removes only that default.
+  Other defaults, such as a tenant filter, still apply.
+  A bare `without_defaults()` removes every default.
+  `deleted_only()` (`deletedOnly()`) bypasses `"deleted"` and gives only the soft-deleted rows.
+* An instance method that needs its own row (`save()`, `refresh()`, `delete()`) finds the row even when a default hides it.
 * Database mode adds a `BEFORE DELETE ... FOR EACH ROW WHEN (OLD.deleted_at IS NULL)` trigger.
   It sets the field and cancels the delete (Postgres `RETURN NULL`, SQLite `RAISE(IGNORE)`).
   A raw `DELETE` of a live row soft-deletes it.
@@ -99,6 +100,21 @@ model Book {
 * A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
   Schema definition rejects `updated_at`, soft-delete and version fields anywhere in its ownership chain, including the composed model and every ancestor through the root.
   The error names the composed model, the owner, the field and its role, because composed writes cannot maintain those roles.
+
+### Behavior changes
+
+* Reads hide deleted rows.
+  Before, soft delete hid nothing, and a model needed `@@query.filter("deleted_at == null")`.
+  A model that still has that filter hides deleted rows twice; remove the filter.
+  `get()` returns `None` (`null`) for a deleted row; use `all_with_deleted()` to read it.
+* A to-one reference to a soft-delete model is nullable in the generated types: `Author | None` in Python, an `opt` hop in TypeScript paths.
+  The `"deleted"` default can hide the target row.
+  This is a breaking type change: code that reads `book.author.name` must handle `None`.
+* A many-to-many join model that has a default filter applies it to the link table.
+  When the filter reads `scope.<name>` and the scope is not set, the query fails with an error that names the default.
+  Set the scope with `scope()`, or bypass the default.
+* Query-set `hard_delete()` and `undelete()` keep the other default filters.
+  Before, they dropped all of them, including a tenant filter.
 
 ## Behavior change: upsert
 

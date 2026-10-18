@@ -37,5 +37,5 @@ def behavior_field(model: Any, record: dict[str, Any]) -> ColumnRef[Any]:
 
 
 def hard_delete_statement(qs: QuerySet[Any]) -> Delete[Any]:
-    """``DELETE`` the matching rows of ``qs`` with the schema defaults dropped and the soft-delete rewrite off."""
-    return Delete.build(qs.without_defaults(), hard=True)
+    """``DELETE`` the matching rows of ``qs`` with the ``"deleted"`` default dropped and the soft-delete rewrite off."""
+    return Delete.build(qs._without_deleted_default(), hard=True)

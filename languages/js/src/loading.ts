@@ -103,6 +103,7 @@ export async function loadInstance(
   const meta = metaOf(owner);
   const requested = items.length ? items : meta.fieldList.map((f) => meta.column(f));
   // Validate all arguments and relation query options before any I/O.
+  // Bare bypass on purpose: this only validates the request and runs no query.
   const query = (meta.objects.withoutDefaults().load as (...items: readonly LoadItem<ModelSpec>[]) => QuerySet<ModelSpec>)(...requested);
   query.inspect();
   const own = requested.filter((item): item is Column<unknown, string> | Labeled<unknown> =>
@@ -111,6 +112,7 @@ export async function loadInstance(
   if (own.length) {
     // a labeled aggregate alone must not read every column
     if (!own.some((i) => i instanceof Column)) own.unshift(...meta.key.map((f) => meta.column(f)));
+    // Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own refresh.
     const rowQuery = meta.objects.withoutDefaults().using(owner[DB]).filter(meta.keyMatch(meta.key, owner["pk"]) as never);
     const fresh = await (rowQuery.load as (...items: (Column<unknown, string> | Labeled<unknown>)[]) => QuerySet<ModelSpec>)(...own).require().get() as Row;
     merge(owner, fresh, reload, invalidate);

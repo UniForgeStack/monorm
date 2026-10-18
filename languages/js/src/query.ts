@@ -1494,27 +1494,27 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return hardDeleteStatement(this, options);
   }
 
-  /** Clear the soft-delete field of the matching soft-deleted rows. */
+  /** Clear the soft-delete field of the matching soft-deleted rows. It bypasses the `"deleted"` default only. */
   undelete(): InspectedStatement<number>;
   undelete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
   undelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
     const statement = () => {
       const field = this.softDeleteField();
-      return this.withoutDefaults().filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
+      return this.withoutDefaults("deleted" as never).filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
     };
     return new InspectedStatement(async () => await statement(), () => statement().inspect());
   }
 
-  /** The rows with the soft-deleted ones: the query set without the schema defaults
-   * (the `@@query.filter` that hides deleted rows). */
+  /** The rows with the soft-deleted ones: `withoutDefaults("deleted")`. The other defaults,
+   * such as a tenant filter, stay. */
   allWithDeleted(): this {
     this.softDeleteField();
-    return this.withoutDefaults();
+    return this.withoutDefaults("deleted" as never);
   }
 
-  /** Only the soft-deleted rows (without the schema defaults). */
+  /** Only the soft-deleted rows; the other defaults stay. */
   deletedOnly(): this {
-    return this.withoutDefaults().filter(this.meta.column(this.softDeleteField()).isNotNull() as never) as unknown as this;
+    return this.withoutDefaults("deleted" as never).filter(this.meta.column(this.softDeleteField()).isNotNull() as never) as unknown as this;
   }
 
   private softDeleteField(): ModelMeta["pk"] {
@@ -1622,6 +1622,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
         return [row, true];
       }
       found = await read();
+      // Bare bypass on purpose: it tells a row hidden by a default from a row deleted concurrently.
       if (found === null && (await new QuerySet<M>(this.meta, { ...EMPTY, db: reads.state.db, withoutDefaults: true }).filter(...where).exists())) {
         throw new QueryError(`getOrInsert: a ${this.meta.name} row matching the lookup exists, but the query set's filters hide it`);
       }
@@ -2531,12 +2532,13 @@ Object.defineProperty(RelationPath.prototype, "objects", {
   configurable: true,
 });
 
-/** The `DELETE` of `qs` with the schema defaults dropped and the soft-delete rewrite off. */
+/** The `DELETE` of `qs` with the `"deleted"` default dropped and the soft-delete rewrite off. */
 export function hardDeleteStatement<M extends ModelSpec>(qs: QuerySet<M, any, any, any, any, any>, options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
   const returning = options.returning ?? false;
   const plan = () => {
     const params: unknown[] = [];
-    const ir = { ...qs.withoutDefaults().mutationIr("delete", params), hard: true, returning };
+    const base = qs.meta.softDelete ? qs.withoutDefaults("deleted" as never) : qs;
+    const ir = { ...base.mutationIr("delete", params), hard: true, returning };
     return { ir, params };
   };
   return new InspectedStatement(() => {
