@@ -142,7 +142,8 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
             assert await Fixed.objects.using(db).count() == 1
         # Neither scope nor the deleted-row default remains; storage ownership does.
         assert await Percent.objects.using(db).without_defaults().count() == 2
-        assert await Percent.objects.using(db).deleted_only().without_defaults().count() == 1
+        deleted = Percent.objects.using(db).without_defaults().filter(Percent.deleted.is_not_null())
+        assert await deleted.count() == 1
     finally:
         await db.drop_tables()
         await db.close()

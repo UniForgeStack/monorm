@@ -18,6 +18,7 @@ id = "orm.soft-delete"
 version = "0.1.0"
 host_contract = 1
 schema_contract = 2
+language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema", "soft-delete"]
@@ -34,3 +35,13 @@ name = "soft_delete.deleted_at"
 target = "field"
 [package.metadata.orm-extension.attributes.arguments.mode]
 kind = "string"
+
+[package.metadata.orm-extension.python]
+source = "python/orm_soft_delete"
+query_set = "SoftDeleteQuerySet"
+instance = "SoftDeleteInstance"
+
+[package.metadata.orm-extension.typescript]
+source = "typescript/src"
+query_set = "softDeleteQuerySet"
+instance = "SoftDeleteInstance"

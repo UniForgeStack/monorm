@@ -120,14 +120,6 @@ export type RefreshOptions =
   | { readonly lock?: false; readonly exclusive?: never; readonly nowait?: never; readonly skipLocked?: never }
   | ({ readonly lock: true } & LockOptions & ({ readonly nowait?: false } | { readonly skipLocked?: false }));
 
-/** The instance methods of a model with `@soft_delete.deleted_at`. */
-export interface SoftDeletable {
-  /** `DELETE ... WHERE pk = ...`; in database mode, the trigger soft-deletes a live row. */
-  hardDelete(): Promise<void>;
-  /** Clear the soft-delete field of this row and refresh it. */
-  undelete(): Promise<void>;
-}
-
 export type Row = Record<PropertyKey, unknown> & { [RELATED]?: Record<string, unknown>; [DB]?: Database | undefined };
 
 /** Schema information about one model (`User._meta`). */
@@ -544,7 +536,7 @@ function metaOf(o: Row): ModelMeta {
   return (o.constructor as unknown as { meta: ModelMeta }).meta;
 }
 
-function rowQuery(o: Row): QuerySet<ModelSpec> {
+export function rowQuery(o: Row): QuerySet<ModelSpec> {
   const meta = metaOf(o);
   return meta.objects.withoutDefaults().using(o[DB]).filter(meta.keyMatch(meta.key, o["pk"]) as never) as never;
 }
@@ -627,14 +619,6 @@ async function instanceDelete(this: Row): Promise<void> {
     return;
   }
   replaceFrom(this, rows[0]!);
-}
-
-async function instanceHardDelete(this: Row): Promise<void> {
-  await rowQuery(this).hardDelete();
-}
-
-async function instanceUndelete(this: Row): Promise<void> {
-  await instanceUpdate.call(this, { [metaOf(this).softDelete!.name]: null });
 }
 
 async function instanceLoad(this: Row, ...args: unknown[]): Promise<Row> {
@@ -885,13 +869,6 @@ export function define(
     const role = (key: string) => ((ir.behavior as Record<string, { model: string; field: string }[] | undefined> | undefined)?.[key] ?? []).find((d) => d.model === m.name)?.field;
     meta.versionField = meta.fieldByIr.get(role("versions") ?? "");
     meta.softDelete = meta.fieldByIr.get(role("soft_delete") ?? "");
-    if (meta.softDelete) {
-      for (const name of ["hardDelete", "undelete"]) checkName(m.name, name, meta.fields);
-      Object.defineProperties(meta.Row.prototype, {
-        hardDelete: { value: instanceHardDelete, writable: true },
-        undelete: { value: instanceUndelete, writable: true },
-      });
-    }
     const proxy = ((ir.behavior as { proxy_models?: { model: string; fields?: { field: string; non_null?: boolean }[] }[] } | undefined)?.proxy_models ?? []).find((p) => p.model === m.name);
     meta.narrowed = new Set((proxy?.fields ?? []).filter((f) => f.non_null).map((f) => f.field));
     const computed = new Set(((ir.behavior as { result_fields?: { model: string; field: string }[] } | undefined)?.result_fields ?? []).filter((f) => f.model === m.name).map((f) => f.field));

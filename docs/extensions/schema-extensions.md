@@ -68,6 +68,8 @@ model Book {
 * The field is a nullable `DateTime`. One field for each model.
 * `delete()` on a query set or an instance sends `UPDATE ... SET deleted_at = <now> WHERE ... AND deleted_at IS NULL`, never `DELETE`.
   The count and `RETURNING` are the rows that the call soft-deleted; rows that are already soft-deleted do not count.
+* The members below come from the soft-delete extension's generated code (`orm_ext/orm_soft_delete`, `orm-ext/orm-soft-delete`).
+  A model gets them when it declares `@soft_delete.deleted_at`; other models, and proxy models, do not.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
   On a query set, it drops every default filter, like `all_with_deleted()`.

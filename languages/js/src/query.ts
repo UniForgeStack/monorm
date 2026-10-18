@@ -1461,8 +1461,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   /**
    * `DELETE` every matching row. Gives the number of rows deleted, or with
-   * `{ returning: true }` the deleted rows. A model with `@soft_delete.deleted_at` sets
-   * that field on its live rows instead.
+   * `{ returning: true }` the deleted rows.
    */
   delete(): InspectedStatement<number>;
   delete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
@@ -1481,45 +1480,6 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       const { ir, params } = plan();
       return this.inspectIr(ir, params);
     });
-  }
-
-  /**
-   * `DELETE` every matching row also for a model with `@soft_delete.deleted_at`. In
-   * database mode, the trigger soft-deletes a live row, so this deletes only rows that are
-   * already soft-deleted.
-   */
-  hardDelete(): InspectedStatement<number>;
-  hardDelete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
-  hardDelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
-    return hardDeleteStatement(this, options);
-  }
-
-  /** Clear the soft-delete field of the matching soft-deleted rows. It bypasses the `"deleted"` default only. */
-  undelete(): InspectedStatement<number>;
-  undelete(options: { readonly returning: true }): InspectedStatement<M["row"][]>;
-  undelete(options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
-    const statement = () => {
-      const field = this.softDeleteField();
-      return this.withoutDefaults("deleted" as never).filter(this.meta.column(field).isNotNull() as never).update({ [field.name]: null } as never, options);
-    };
-    return new InspectedStatement(async () => await statement(), () => statement().inspect());
-  }
-
-  /** The rows with the soft-deleted ones: `withoutDefaults("deleted")`. The other defaults,
-   * such as a tenant filter, stay. */
-  allWithDeleted(): this {
-    this.softDeleteField();
-    return this.withoutDefaults("deleted" as never);
-  }
-
-  /** Only the soft-deleted rows; the other defaults stay. */
-  deletedOnly(): this {
-    return this.withoutDefaults("deleted" as never).filter(this.meta.column(this.softDeleteField()).isNotNull() as never) as unknown as this;
-  }
-
-  private softDeleteField(): ModelMeta["pk"] {
-    if (!this.meta.softDelete) throw new TypeError(`${this.meta.name} has no @soft_delete.deleted_at field`);
-    return this.meta.softDelete;
   }
 
   private async write(ir: IR, params: unknown[], returning: boolean): Promise<number | M["row"][]> {
@@ -2531,13 +2491,12 @@ Object.defineProperty(RelationPath.prototype, "objects", {
   configurable: true,
 });
 
-/** The `DELETE` of `qs` with the `"deleted"` default dropped and the soft-delete rewrite off. */
+/** The `DELETE` of `qs` with the planner's delete rewrite off. */
 export function hardDeleteStatement<M extends ModelSpec>(qs: QuerySet<M, any, any, any, any, any>, options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
   const returning = options.returning ?? false;
   const plan = () => {
     const params: unknown[] = [];
-    const base = qs.meta.softDelete ? qs.withoutDefaults("deleted" as never) : qs;
-    const ir = { ...base.mutationIr("delete", params), hard: true, returning };
+    const ir = { ...qs.mutationIr("delete", params), hard: true, returning };
     return { ir, params };
   };
   return new InspectedStatement(() => {

@@ -8,6 +8,7 @@ import pytest
 
 import orm
 from orm import _native
+from soft_delete_ext import loads_soft_delete
 
 CAPABILITIES = set(json.loads(_native.native_artifact())["capabilities"])
 DATABASES = ["sqlite", "postgres"]
@@ -24,7 +25,7 @@ async def connect(dialect: str, source: str) -> tuple[orm.Database, dict]:
     if dialect == "sqlite":
         source = 'datasource db { provider = "sqlite" }\n' + source
     registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    models = loads_soft_delete(source, registry=registry)
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
@@ -358,8 +359,7 @@ model Doc {
         await second.delete()
         with pytest.raises(Doc.DoesNotExist):
             await first.update(title="f")
-        with pytest.raises(TypeError, match="no @soft_delete"):
-            docs.deleted_only()
+        assert not hasattr(docs, "deleted_only")
     finally:
         await db.drop_tables()
         await db.close()

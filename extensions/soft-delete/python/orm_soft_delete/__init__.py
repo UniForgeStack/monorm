@@ -1,0 +1,64 @@
+"""Soft delete language members for models with ``@soft_delete.deleted_at``."""
+
+from __future__ import annotations
+
+import weakref
+from typing import Any
+
+from typing_extensions import Self
+
+from orm import ColumnRef, Delete, QuerySet, Update
+from orm.ext import ModelLike, ModelT, behavior_field, behavior_records, hard_delete_statement, row_query
+
+_FIELDS: weakref.WeakKeyDictionary[type, ColumnRef[Any]] = weakref.WeakKeyDictionary()
+
+
+def _deleted_at(model: Any) -> ColumnRef[Any]:
+    """The soft-delete column of ``model``, found once for each model class."""
+    cls: type = model if isinstance(model, type) else type(model)
+    column = _FIELDS.get(cls)
+    if column is None:
+        records = behavior_records(cls, "soft_delete")
+        if not records:
+            raise TypeError(f"{cls.__name__} has no @soft_delete.deleted_at field")
+        column = _FIELDS[cls] = behavior_field(cls, records[0])
+    return column
+
+
+class SoftDeleteQuerySet(QuerySet[ModelT]):
+    def hard_delete(self) -> Delete[ModelT]:
+        """``DELETE`` every matching row. In database mode, the trigger soft-deletes a live
+        row, so this deletes only rows that are already soft-deleted."""
+        _deleted_at(self._model)
+        return hard_delete_statement(self.without_defaults("deleted"))
+
+    def undelete(self) -> Update[ModelT]:
+        """Clear the soft-delete field of the matching soft-deleted rows. ``await``
+        gives the number of rows restored; ``.returning()`` gives the rows. It drops the
+        ``"deleted"`` default, like ``all_with_deleted()``."""
+        column = _deleted_at(self._model)
+        return self.without_defaults("deleted").filter(column.is_not_null()).update(**{column._field.name: None})
+
+    def all_with_deleted(self) -> Self:
+        """The rows with the soft-deleted ones. The other defaults, such as a tenant filter, stay."""
+        _deleted_at(self._model)
+        return self.without_defaults("deleted")
+
+    def deleted_only(self) -> Self:
+        """Only the soft-deleted rows; the other defaults stay."""
+        return self.without_defaults("deleted").filter(_deleted_at(self._model).is_not_null())
+
+
+class SoftDeleteInstance:
+    async def hard_delete(self: ModelLike) -> None:
+        """``DELETE ... WHERE pk = ...`` also for a soft-delete model. In database mode,
+        the trigger soft-deletes a live row; a soft-deleted row is deleted."""
+        await hard_delete_statement(row_query(self))
+
+    async def undelete(self: ModelLike) -> None:
+        """Clear the soft-delete field of this row and refresh it."""
+        await _update(self, **{_deleted_at(self)._field.name: None})
+
+
+async def _update(instance: Any, **values: Any) -> None:
+    await instance.update(**values)

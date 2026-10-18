@@ -5,6 +5,7 @@ import { connect, loads, Registry, WriteProtected, allowWrites, debug, Inspected
 import { active, capture, internalLoop, record, relationLoad } from "../src/debug.js";
 import { inTransaction } from "../src/db.js";
 import { DATABASE_URL } from "./helpers.js";
+import { hardDeleteStatement } from "../src/ext.js";
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 const source = (provider: string, protectedWrite = false) => `
@@ -34,7 +35,7 @@ const writes: Record<string, (Entry: Any, rows: () => Any) => Promise<unknown>> 
   update: (_Entry, rows) => rows().update({ name: "changed" }, { returning: true }),
   updateMany: (_Entry, rows) => rows().updateMany([{ id: 1, name: "changed" }]),
   delete: (_Entry, rows) => rows().delete({ returning: true }),
-  hardDelete: (_Entry, rows) => rows().hardDelete(),
+  hardDelete: (_Entry, rows) => hardDeleteStatement(rows()),
 };
 for (const [dialect, url] of [["Postgres", DATABASE_URL], ["SQLite", "sqlite://:memory:"]] as const) {
   for (const [method, build] of Object.entries(writes)) {

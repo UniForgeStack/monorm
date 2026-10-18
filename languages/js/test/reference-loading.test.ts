@@ -321,3 +321,8 @@ for (const name of ["byDate", "byDecimal", "byInt"]) {
     }
   });
 }
+
+test("the host does not reserve the soft-delete member names", () => {
+  const models = loads("model Plain {\n id Int @id\n hardDelete String\n undelete String\n}\n", { registry: new Registry() });
+  assert.ok(models.Plain);
+});

@@ -1249,42 +1249,8 @@ class QuerySet(Generic[M]):
 
     def delete(self) -> Delete[M]:
         """``DELETE`` every matching row. ``await`` gives the number of rows deleted;
-        ``await qs.delete().returning()`` gives the deleted rows instead. A model with
-        ``@soft_delete.deleted_at`` sets that field on its live rows instead."""
+        ``await qs.delete().returning()`` gives the deleted rows instead."""
         return Delete.build(self)
-
-    def hard_delete(self) -> Delete[M]:
-        """``DELETE`` every matching row also for a model with
-        ``@soft_delete.deleted_at``. In database mode, the trigger soft-deletes a live
-        row, so this deletes only rows that are already soft-deleted."""
-        return Delete.build(self._without_deleted_default(), hard=True)
-
-    def undelete(self) -> Update[M]:
-        """Clear the soft-delete field of the matching soft-deleted rows. ``await``
-        gives the number of rows restored; ``.returning()`` gives the rows. It drops the
-        ``"deleted"`` default, like ``all_with_deleted()``."""
-        field = self._soft_delete_ref()
-        return self.without_defaults("deleted").filter(field.is_not_null()).update(**{field._field.name: None})
-
-    def all_with_deleted(self) -> Self:
-        """The rows with the soft-deleted ones: ``without_defaults("deleted")``. The
-        other defaults, such as a tenant filter, stay."""
-        self._soft_delete_ref()
-        return self.without_defaults("deleted")
-
-    def deleted_only(self) -> Self:
-        """Only the soft-deleted rows; the other defaults stay."""
-        return self.without_defaults("deleted").filter(self._soft_delete_ref().is_not_null())
-
-    def _without_deleted_default(self) -> Self:
-        """``without_defaults("deleted")`` on a soft-delete model; a model without one has no such default."""
-        return self if self._model._meta.soft_delete is None else self.without_defaults("deleted")
-
-    def _soft_delete_ref(self) -> ColumnRef[Any]:
-        meta = self._model._meta
-        if meta.soft_delete is None:
-            raise TypeError(f"{meta.name} has no @soft_delete.deleted_at field")
-        return ColumnRef(self._model, (), meta.fields[meta.soft_delete])
 
     def insert(self, **values: Any) -> InsertOne[M]:
         """``INSERT`` one row; ``await`` gives the new instance with database defaults

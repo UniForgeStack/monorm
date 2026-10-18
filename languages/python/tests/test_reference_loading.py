@@ -409,3 +409,10 @@ async def test_nested_relation_queryset_labels_are_cached(references, observe_qu
     with observe_queries(db) as queries:
         await owner.load(nested)
     assert not queries
+
+
+def test_the_host_does_not_reserve_the_soft_delete_member_names():
+    models = orm.loads(
+        "model Plain {\n  id Int @id\n  hard_delete String\n  undelete String\n}\n", registry=orm.Registry()
+    )
+    assert {"hard_delete", "undelete"} <= set(models["Plain"].__dict__) | set(dir(models["Plain"]))
