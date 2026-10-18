@@ -1622,6 +1622,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
         return [row, true];
       }
       found = await read();
+      // Bare bypass on purpose: it tells a row hidden by a default from a row deleted concurrently.
       if (found === null && (await new QuerySet<M>(this.meta, { ...EMPTY, db: reads.state.db, withoutDefaults: true }).filter(...where).exists())) {
         throw new QueryError(`getOrInsert: a ${this.meta.name} row matching the lookup exists, but the query set's filters hide it`);
       }

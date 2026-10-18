@@ -114,6 +114,7 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
 
     model = type(owner)
     # Validate the whole request before doing I/O, including relation query options.
+    # Bare bypass on purpose: this only validates the request and runs no query.
     model.objects.without_defaults().load(*items)._select_ir("select", [])
     requested = items or tuple(getattr(model, name) for name in owner._meta.field_names)
     own = [

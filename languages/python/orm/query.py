@@ -1329,6 +1329,7 @@ class QuerySet(Generic[M]):
             if row is not None:
                 return row, True
             found = await read()
+            # Bare bypass on purpose: it tells a row hidden by a default from a row deleted concurrently.
             if (
                 found is None
                 and await QuerySet(self._model)._clone(_db=reads._db, _without_defaults=True).filter(*where).exists()

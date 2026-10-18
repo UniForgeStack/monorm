@@ -546,6 +546,7 @@ function metaOf(o: Row): ModelMeta {
 
 function rowQuery(o: Row): QuerySet<ModelSpec> {
   const meta = metaOf(o);
+  // Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own write or refresh.
   return meta.objects.withoutDefaults().using(o[DB]).filter(meta.keyMatch(meta.key, o["pk"]) as never) as never;
 }
 

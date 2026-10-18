@@ -401,6 +401,38 @@ fn neutral_defaults_apply_to_reads_writes_and_returned_shapes() {
 }
 
 #[test]
+fn a_many_to_many_join_default_fails_closed_without_scope() {
+    struct Tenant;
+    impl orm_engine::Params for Tenant {
+        fn len(&self) -> usize { 1 }
+        fn value(&self, _: usize, _: Option<orm_core::ir::ValueType>) -> orm_engine::Result<sea_query::Value> { Ok(7.into()) }
+        fn text(&self, _: usize) -> orm_engine::Result<String> { unreachable!() }
+        fn count(&self, _: usize) -> orm_engine::Result<u64> { unreachable!() }
+        fn scope(&self, name: &str) -> Option<usize> { (name == "tenant").then_some(0) }
+    }
+    let id = json!({"name":"id","column":"id","type":"big_int","primary_key":true});
+    let raw = json!({"models":[
+        {"name":"Post","table":"posts","fields":[id],
+         "relations":[{"name":"tags","kind":"many","target":"Tag","from":"id","to":"id","through":{"model":"PostTag","source":"post_id","target":"tag_id"}}]},
+        {"name":"Tag","table":"tags","fields":[id, {"name":"name","column":"name","type":"text"}]},
+        {"name":"PostTag","table":"post_tags","fields":[id,
+            {"name":"post_id","column":"post_id","type":"big_int"}, {"name":"tag_id","column":"tag_id","type":"big_int"},
+            {"name":"shop","column":"shop","type":"big_int"}]}
+    ],"behavior":{"schema_contract":2,"read_defaults":[{"source":"example.tenancy","name":"tenant","model":"PostTag",
+        "filter":{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"shop"},"r":{"t":"scope","name":"tenant"}}}]}});
+    let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
+    let target = Target::new(Dialect::Postgres);
+    let filter = json!({"t":"cmp","op":"eq","l":{"t":"col","path":["tags"],"name":"name"},"r":{"t":"text","value":"b"}});
+    let select = |bypass: serde_json::Value| -> Operation {
+        serde_json::from_value(json!({"op":"select","model":"Post","filters":[filter],"without_defaults":bypass})).unwrap()
+    };
+    let error = Planner::plan(&schema, target, &select(json!(false)), &NoParams).err().expect("no scope must fail");
+    for expected in ["PostTag", "tenant", "example.tenancy", "scope.tenant", "not set"] { assert!(error.to_string().contains(expected), "{error}"); }
+    Planner::plan(&schema, target, &select(json!(false)), &Tenant).expect("a scope allows the join");
+    Planner::plan(&schema, target, &select(json!(true)), &NoParams).expect("a bare bypass allows the join");
+}
+
+#[test]
 fn scope_errors_identify_the_prepared_default_at_each_consumer() {
     use orm_engine::plan::plan_prefetch_only;
     let mut raw = schema(false);

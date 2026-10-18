@@ -189,6 +189,23 @@ mod tests {
     }
 
     #[test]
+    fn to_one_references_to_a_soft_delete_model_are_typed_nullable() {
+        use orm_core::codegen::{python, typescript, Options};
+        let mut ir = schema("postgres", "application", true);
+        prepared(&mut ir).unwrap();
+        ir.behavior.declarations.clear();
+        ir.behavior.storage = None;
+        ir.behavior.soft_delete.clear();
+        let value = serde_json::to_value(&ir).unwrap();
+        let ir: orm_core::ir::SchemaIr = serde_json::from_value(value.clone()).unwrap();
+        let core = orm_core::schema::Schema::from_ir(serde_json::from_value(value).unwrap()).unwrap();
+        let py = python::generate_with(&ir, &core, "schema.prisma", &Options::default()).unwrap();
+        assert_eq!(py.stub.matches("author: f.BelongsTo[Author | None,").count(), 2, "{}", py.stub);
+        let ts = typescript::generate_with(&ir, &core, "schema.prisma", "orm", &Options::default()).unwrap();
+        assert_eq!(ts.matches(r#"Hop<"author", "opt", AuthorSpec>], true>"#).count(), 2, "{ts}");
+    }
+
+    #[test]
     fn database_mode_adds_delete_and_cascade_triggers() {
         let mut ir = schema("postgres", "database", true);
         prepared(&mut ir).unwrap();

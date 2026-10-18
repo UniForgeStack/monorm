@@ -640,6 +640,7 @@ class Model:
     # database the instance was read from.
 
     def _row_query(self) -> QuerySet[Self]:
+        # Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own write or refresh.
         query = type(self).objects.without_defaults().using(self.__dict__.get("_db"))
         return query.filter(key_match(type(self), (), self._meta.key, self.pk))
 
