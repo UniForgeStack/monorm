@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from .expr import ColumnRef
 from .query import M as ModelT
 from .write import Delete
 
 if TYPE_CHECKING:
-    from .model import Model
     from .query import QuerySet
 
 LANGUAGE_CONTRACT = 1
@@ -50,7 +49,7 @@ def hard_delete_statement(qs: QuerySet[Any]) -> Delete[Any]:
     return Delete.build(qs, hard=True)
 
 
-def row_query(instance: Model) -> QuerySet[Any]:
+def row_query(instance: ModelLike) -> QuerySet[Any]:
     """The query set of the one row of ``instance``: its primary key, no defaults, its database."""
-    query: QuerySet[Any] = instance._row_query()
+    query: QuerySet[Any] = cast(Any, instance)._row_query()
     return query
