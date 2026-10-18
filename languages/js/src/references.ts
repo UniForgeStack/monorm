@@ -54,7 +54,7 @@ function referenceState(row: Row): ReferenceState {
 
 type ReferenceRow = Row & { [REFERENCE_STATE]?: ReferenceState };
 /** One query per relation/key/context; successful loads enter the ordinary cache. */
-export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta, reload: boolean, host: Host, filtered = targetFiltered(meta, r.target)): Promise<unknown> {
+export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta, reload: boolean, host: Host): Promise<unknown> {
   const from = fieldNames(meta, r.from);
   const key = keyValue(owner, from, host.INTERNAL);
   if (!reload) {
@@ -68,7 +68,9 @@ export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta
   const to = r.to.map((ir) => target.fieldByIr.get(ir)!);
   const parts = to.length === 1 ? [key] : key as unknown[];
   const fetch = async (): Promise<unknown> => {
-    const value = key === null ? null : await target.objects.using(db).filter(...to.map((f, i) => target.column(f).eq(parts[i] as never) as never)).first();
+    const query = target.objects.using(db).filter(...to.map((f, i) => target.column(f).eq(parts[i] as never) as never));
+    const filtered = query.readDefaults().filtered;
+    const value = key === null ? null : await query.first();
     if (value === null && r.kind === "belongsTo" && r.from.every((ir) => !meta.fieldByIr.get(ir)!.nullable) && !filtered) {
       throw new IntegrityError(`${meta.name}.${r.name}: required target ${r.target} is missing`);
     }

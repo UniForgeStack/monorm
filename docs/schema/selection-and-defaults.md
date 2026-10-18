@@ -45,12 +45,13 @@ model User {
 ```
 
 Each option also has its own attribute.
-One option comes from one place on a model:
+One option comes from one place on a model.
+`@@query.filter("<name>", "<expr>")` adds a named filter; see "Named filters" below:
 
 ```prisma
 model Base {
   id Int @id @default(autoincrement())
-  @@query.filter("id > 0")
+  @@query.filter("positive", "id > 0")
 }
 model Profile {
   id Int @id @default(autoincrement())
@@ -64,7 +65,7 @@ model User {
   bio String @query.selectOut
   profile_id Int @unique
   profile Profile @relation(fields: [profile_id], references: [id])
-  @@query.filter("active == true")
+  @@query.filter("active", "active == true")
   @@query.fields(["id", "name"])
   @@query.related(["profile"])
   @@query.order("-created_at", "id")
@@ -72,8 +73,37 @@ model User {
 }
 ```
 
-`@@query.defaults(filter: ...)` together with `@@query.filter(...)` is an error that names both.
-A second copy of the same attribute is an error too.
+A second copy of `@@query.fields`, `@@query.related`, `@@query.order` or `@@query.parent` is an error.
+
+### Named filters
+
+`@@query.filter("<name>", "<expr>")` adds one filter with a name. A model can have several.
+The filters of a model join with AND, and with the filters of other extensions.
+Each named filter is its own default, so `without_defaults("<name>")` drops that filter only.
+
+```prisma
+model Post {
+  id        Int     @id @default(autoincrement())
+  shop_id   Int
+  published Boolean
+  @@query.filter("tenant", "shop_id == scope.shop")
+  @@query.filter("published", "published == true")
+}
+```
+
+```python
+Post.objects.without_defaults("published")   # still filtered by "tenant"
+Post.objects.without_defaults()              # no default filter
+```
+
+The name is letters, digits and underscores.
+A name is unique on a model. `"query"` is reserved: that entry holds the order, the fields and the related paths,
+and also the filter of `@@query.defaults(filter: ...)`. `without_defaults("query")` drops those with that filter.
+A one-argument `@@query.filter("<expr>")` is a schema error that shows the two-argument form.
+
+A child (`@@query.parent`, a proxy or a composed model) inherits each name of its parent.
+A filter with the same name on the child replaces the inherited one; `parent.default_filter` in it means
+the parent's filter of that name. `@@query.filter("<name>", "none")` removes the inherited name.
 
 Build-select the compiler as a dependency with alias `query_defaults`; its
 manifest selects the `query-defaults` host capability. Without that compiler,
@@ -81,8 +111,8 @@ manifest selects the `query-defaults` host capability. Without that compiler,
 contract is accepted in every build; other extensions can contribute to it.
 Ordinary explicit partial selections remain available in baseline builds.
 
-Options omitted on a child inherit the nearest parent's policy. An explicit filter
-replaces the inherited filter. `parent.default_filter and active == true` composes
+Options omitted on a child inherit the nearest parent's policy. An explicit `filter:` option
+replaces the inherited filter (named filters inherit by name, above). `parent.default_filter and active == true` composes
 it deliberately. A standalone policy may specify `parent: "Base"`; proxy and
 composition declarations supply their parent. `filter: "none"` clears the filter,
 `fields: ["*"]` resets to all fields, and `related: []` clears default loading.
@@ -98,7 +128,18 @@ Literal types are checked by the database when the query runs.
 cycles and recursive default loading reject during compilation/definition.
 Related paths use schema names separated by dots and must be to-one references.
 
-Python `without_defaults()` and TypeScript `withoutDefaults()` bypass default
+Python `without_defaults(*names)` and TypeScript `withoutDefaults(...names)` bypass the
+named defaults, or all of them with no name. Names add up across calls, and a call with no name
+bypasses all defaults. A name that the model does not define raises `QueryError`:
+`<Model>: unknown default "<name>"; available defaults: [...]`. A bypassed default drops its
+filter, selection, order and eager loading. In Rust the call is `without_defaults_named(names)`.
+Generated models type the names: a Python `Literal[...]` and a TypeScript string-literal union
+(a model with no defaults keeps `str`).
+
+`current_filter()` (TypeScript `currentFilter()`) lists the default filters of a query set as
+`[{source, name, expr, active}]`. `expr` is the IR expression with scope references unresolved.
+`active` is false for a bypassed default. A query set over a CTE gives `[]`.
+Without names, the call bypasses default
 filters, selections and eager loading, including joined and `IN (...)` loads, while preserving caller filters and explicit
 loading/selection. `without_related()` / `withoutRelated()` clears the default joins and the joins
 `load()` asked for so far (relations loaded by `IN (...)` query stay); later `load()` calls add references.
@@ -114,7 +155,7 @@ A filter can read a value that the application sets for the current request or t
 model Order {
   id      Int @id @default(autoincrement())
   shop_id Int
-  @@query.filter("shop_id == scope.shop")
+  @@query.filter("tenant", "shop_id == scope.shop")
 }
 ```
 
@@ -130,8 +171,7 @@ await scope({ shop: shop.id }, async () => { const orders = await Order.objects.
 * The frontend sends the scope values as parameters of each statement; the value is bound with the type of the column it is compared with.
 * Closed by default: a read, count, exists, update, delete or `update_many` on a model whose default filter reads `scope.shop` raises `QueryError` when no enclosing `scope()` sets `shop`. Relation hops, prefetches and joined targets of that model check it too.
   The error names the model, default name and source that read the value, and suggests
-  `without_defaults("<name>")` (named bypass is added in the next refactor step).
-  Until named bypass is available, `without_defaults()` bypasses all defaults.
+  `without_defaults("<name>")`, which bypasses only that default.
 * A NULL scope value (`None`, `null`) raises `QueryError` ("scope.shop is None/null") when a default filter reads it, because `shop_id = NULL` would match no rows.
   In TypeScript, the binding rejects `undefined` before any filter reads it ("undefined is not a value").
   `0`, `""` and `false` are valid values.

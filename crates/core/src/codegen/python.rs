@@ -355,6 +355,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             }
         }
         writeln!(body, "\nclass {name}QuerySet(QuerySet[{name}]):").unwrap();
+        let default_names = m.read_defaults.names();
+        if !default_names.is_empty() {
+            let literal = default_names.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", ");
+            writeln!(body, "    def without_defaults(self, *names: Literal[{literal}]) -> Self: ...  # type: ignore[override]").unwrap();
+        }
         if composed_names.contains(&&m.ir.name) {
             let key_type = value_type(m.pk_field());
             writeln!(body, "    async def attach(self, parent_id: {key_type}, values: {name}Attach) -> {name}: ...  # type: ignore[override]").unwrap();
@@ -433,7 +438,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
 
     pyi.push_str(
-        "\nfrom typing_extensions import Unpack\n\n\
+        "\nfrom typing_extensions import Self, Unpack\n\n\
          from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, QuerySet, RelationPath, Update, UpdateMany\n\
          from orm import fields as f\n\n",
     );

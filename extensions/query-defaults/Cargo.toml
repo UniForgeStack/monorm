@@ -34,9 +34,12 @@ target = "field"
 [[package.metadata.orm-extension.attributes]]
 name = "query.filter"
 target = "model"
+# `@@query.filter("<name>", "<expr>")`; the compiler rejects a missing expression with the full form.
 [[package.metadata.orm-extension.attributes.positional]]
 kind = "string"
 required = true
+[[package.metadata.orm-extension.attributes.positional]]
+kind = "string"
 [[package.metadata.orm-extension.attributes]]
 name = "query.fields"
 target = "model"

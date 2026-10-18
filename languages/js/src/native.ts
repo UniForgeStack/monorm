@@ -75,7 +75,7 @@ export interface NativeSessionLock {
 export interface NativeInspector {
   inspect(opJson: string, params: unknown[]): string;
   inspectInsert(model: string, fields: string[], rows: unknown[][], options: string, params: unknown[], batchSize: number | null, returning: boolean): string;
-  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: boolean): string;
+  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: string): string;
 }
 
 export interface NativeSchema extends NativeInspector {
@@ -83,6 +83,7 @@ export interface NativeSchema extends NativeInspector {
   readFlags(): string;
   /** The engine's default order of a read, JSON `[{field, desc, nulls}]`. */
   effectiveOrder(selectJson: string): string;
+  currentFilter(selectJson: string): string;
   validateInsert(model: string, fields: string[], rows: unknown[][], allowed: readonly string[]): void;
   uniqueRowUpdate(opJson: string, params: unknown[], allowed: readonly string[]): boolean;
   sql(opJson: string, params: unknown[]): string;
@@ -152,7 +153,7 @@ export interface NativeEngine extends NativeInspector {
     returning: boolean,
     batchSize: number | null,
     tx: NativeTransaction | null,
-    withoutDefaults: boolean,
+    withoutDefaults: string,
     allowed?: readonly string[],
     trace?: NativeTrace | null,
   ): Promise<unknown>;

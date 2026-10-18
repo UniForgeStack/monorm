@@ -247,6 +247,10 @@ pub enum Tree {
     Scope(String, sea_query::Value),
     /// A comparison with a column of an enclosing query, resolved to a depth at erasure.
     Outer(Expr, ir::CmpOp, crate::subquery::OuterRef),
+    /// `item [NOT] IN (SELECT one_column ...)`; the build pushes its own outer scope.
+    InSub(Expr, bool, crate::subquery::BuildSelect),
+    /// `EXISTS (SELECT ...)`.
+    Exists(crate::subquery::BuildSelect),
 }
 /// State of one erasure: the bound values and the enclosing-query handles of the current subquery.
 #[doc(hidden)]
@@ -303,6 +307,14 @@ impl Tree {
                     }),
                 }
             }
+            Self::InSub(item, neg, build) => Expr::InSelect {
+                item: Box::new(item),
+                select: Box::new(build(erase)),
+                neg,
+            },
+            Self::Exists(build) => Expr::Exists {
+                select: Box::new(build(erase)),
+            },
             Self::Param(_, _, slot) => {
                 unreachable!("placeholder {} is bound before planning", slot.name)
             }
@@ -504,7 +516,7 @@ impl<M: Model> Query<M> {
                 with_default_fields: false,
                 model_helpers: vec![],
                 scope: std::collections::BTreeMap::new(),
-                without_defaults: false,
+                without_defaults: ir::Bypass::All(false),
                 without_related: false,
                 with: vec![],
                 from: None,

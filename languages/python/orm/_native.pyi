@@ -54,7 +54,7 @@ class Schema:
         params: list[Any],
         batch_size: int | None = None,
         returning: bool = False,
-        without_defaults: bool = False,
+        without_defaults: str = "false",
     ) -> str: ...
     def __init__(self, schema_json: str, classes: dict[str, type] | None = None) -> None: ...
     def validate_insert(self, model: str, fields: list[str], rows: list[list[Any]], allowed: list[str]) -> None: ...
@@ -62,6 +62,7 @@ class Schema:
     def sql(self, op_json: str, params: list[Any]) -> str: ...
     def read_flags(self) -> str: ...
     def effective_order(self, select_json: str) -> str: ...
+    def current_filter(self, select_json: str) -> str: ...
     def statement(self, op_json: str, params: list[Any]) -> str: ...
     def update_many_sql(
         self,
@@ -117,7 +118,7 @@ class Engine:
         params: list[Any],
         batch_size: int | None = None,
         returning: bool = False,
-        without_defaults: bool = False,
+        without_defaults: str = "false",
     ) -> str: ...
     def prefetch(
         self,
@@ -188,7 +189,7 @@ class Engine:
         batch_size: int | None = None,
         tx: Transaction | None = None,
         db: Any = None,
-        without_defaults: bool = False,
+        without_defaults: str = "false",
         allowed: Sequence[str] = ...,
         trace: Trace | None = None,
     ) -> Awaitable[Any]: ...

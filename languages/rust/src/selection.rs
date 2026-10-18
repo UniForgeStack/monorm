@@ -222,6 +222,21 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
         self.select.without_related = true;
         Query::from_parts(self.select, self.filters)
     }
+    /// Bypass named defaults. Rust has no variadic overloads; the no-argument
+    /// `without_defaults()` keeps its existing full-selection return type.
+    /// Keep the typed scalar projection; default relations become optional to load.
+    pub fn without_defaults_named(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Query<M::WithoutRelated, R, L, D>
+    where
+        M: ResetRelated,
+    {
+        self = self.initialized();
+        self.select.without_defaults.merge(&ir::Bypass::Names(names.into_iter().map(Into::into).collect()));
+        Query::from_parts(self.select, self.filters)
+    }
+
     pub fn without_defaults(
         mut self,
     ) -> Query<<D as BypassDefaults<M>>::Output, R, L, <D as BypassDefaults<M>>::Mode>
@@ -236,7 +251,7 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
             .retain(|p| p.attr.is_some() || !defaults.contains(&p.relation.as_str()));
         self.select.select_related.clear();
         self.select.related_fields.clear();
-        self.select.without_defaults = true;
+        self.select.without_defaults = true.into();
         self.select.without_related = true;
         <D as BypassDefaults<M>>::Output::selection(&mut self.select);
         Query::from_parts(self.select, self.filters)

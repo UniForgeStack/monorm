@@ -23,7 +23,7 @@ plain = {
 orm.define(plain, registry=registry)
 before = registry.ir()
 try:
-    orm.loads('model Bad {\n id Int @id\n @@query.filter("id > 0")\n}', registry=registry)
+    orm.loads('model Bad {\n id Int @id\n @@query.filter("positive", "id > 0")\n}', registry=registry)
 except orm.SchemaError as error:
     assert "@query.filter" in str(error) and "rebuild" in str(error), error
 else:

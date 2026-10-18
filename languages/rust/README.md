@@ -239,4 +239,16 @@ and a `Subquery` has no terminals. Only `scalar` or `scalar_checked` embeds it.
 `scalar` needs a proven single row (`limit_one()` or `unique(Key, outer)`).
 `scalar_checked` takes any row count and leaves a second row to the database:
 PostgreSQL fails, SQLite reads the first row. The result is `Option<T>`, `None` when no row matches.
-A subquery filter cannot hold placeholders, and `in`/`exists` subqueries are separate work.
+A subquery filter cannot hold placeholders.
+The `None` stays under a required outer terminal: `require()` removes only absent outer rows.
+
+### `in` and `exists` subqueries
+
+`exists(|u: Parent<User>| Subquery::new(Post::objects).filter(..))` and
+`in_subquery(User::id.column(), |u: Parent<User>| Subquery::new(..).select(Post::author_id))` return an ordinary
+predicate for the outer model, so `filter`, `and`, `or` and `!` accept it. `not_in_subquery` is `NOT IN`.
+The subquery column must have the operand's type; either side may be `Option`.
+A subquery may be uncorrelated, or read its parent or an enclosing parent (nested closures).
+An outer handle that leaves its closure is a compile error;
+a predicate built for one subquery and used in another fails at execution, preparation or `statement()`
+with `Error::Compatibility` (unresolved outer source).

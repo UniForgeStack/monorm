@@ -16,7 +16,7 @@ from decimal import Decimal
 from enum import IntEnum, StrEnum
 from typing import ClassVar, Literal, NotRequired, Required, TypedDict, overload
 
-from typing_extensions import Unpack
+from typing_extensions import Self, Unpack
 
 from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, QuerySet, RelationPath, Update, UpdateMany
 from orm import fields as f
