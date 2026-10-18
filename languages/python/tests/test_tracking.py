@@ -547,7 +547,7 @@ model Review {
         if mode is None:
             assert await docs.count() == 0
         else:
-            stored = await docs.get(Doc.id == 1)
+            stored = await docs.without_defaults("deleted").get(Doc.id == 1)
             assert stored.deleted is not None and stored.version == 3
     finally:
         await db.drop_tables()

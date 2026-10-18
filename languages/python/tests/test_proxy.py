@@ -253,7 +253,7 @@ async def test_a_proxy_takes_the_roles_of_its_root(dialect):
         assert await Draft.objects.using(db).filter(Draft.id == 1).update(title="x") == 1
         assert (await Doc.objects.using(db).get(Doc.id == 1)).version == 1
         assert await Draft.objects.using(db).filter(Draft.id == 2).delete() == 1
-        row = await Doc.objects.using(db).get(Doc.id == 2)
+        row = await Doc.objects.using(db).without_defaults("deleted").get(Doc.id == 2)
         assert row.deleted is not None
     finally:
         await db.drop_tables()
