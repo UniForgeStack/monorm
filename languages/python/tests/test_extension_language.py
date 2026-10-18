@@ -90,10 +90,15 @@ def project(tmp_path, monkeypatch):
     (tmp_path / "orm_ext").mkdir()
     (tmp_path / "orm_ext" / "__init__.py").write_text("")
     monkeypatch.syspath_prepend(str(tmp_path))
+    # An artifact session can hold the real generated `orm_ext` package; this test needs its own.
+    saved = {n: m for n, m in sys.modules.items() if n == "orm_ext" or n.startswith("orm_ext.")}
+    for name in saved:
+        del sys.modules[name]
     before = set(sys.modules)
     yield tmp_path
     for name in set(sys.modules) - before:
         del sys.modules[name]
+    sys.modules.update(saved)
     importlib.invalidate_caches()
 
 
