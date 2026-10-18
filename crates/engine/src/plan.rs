@@ -49,10 +49,17 @@ pub struct JoinShape {
     pub unset_when_absent: bool,
 }
 
+/// A labeled relation aggregate: the attribute and the column that holds its value.
+pub struct AnnotationColumn {
+    pub name: String,
+    pub pos: usize,
+}
+
 /// How a statement's rows become objects.
 pub enum Output {
-    /// Instances of `model` (its fields first), with `select_related` objects attached.
-    Instances { model: usize, shape: Option<orm_core::behavior::ResultShape>, joins: Vec<JoinShape> },
+    /// Instances of `model` (its fields first), with `select_related` objects attached
+    /// and one attribute per annotation, read from the column at its position.
+    Instances { model: usize, shape: Option<orm_core::behavior::ResultShape>, joins: Vec<JoinShape>, annotations: Vec<AnnotationColumn> },
     /// `select(...)` rows: per item, `Some(width)` for an instance of `model` (taking
     /// that many columns) or `None` for one value.
     Rows { model: usize, items: Vec<Option<usize>> },
@@ -2257,6 +2264,9 @@ impl<'s> Planner<'s> {
         if !q.select_related.is_empty() || !q.prefetch.is_empty() {
             return Err(Error::query("select() can't be combined with load() of relations"));
         }
+        if !q.annotations.is_empty() {
+            return Err(Error::query("select() can't be combined with load() of relation aggregates"));
+        }
         if items.is_empty() {
             return Err(Error::query("select() needs at least one column"));
         }
@@ -2717,9 +2727,15 @@ impl<'s> Planner<'s> {
                 types.push(f.value_type());
             }
         }
+        let annotations = self.annotation_columns(q, &mut stmt, &mut types)?;
         self.base_select(q, &mut stmt, true)?;
         self.declare_windows(q, &mut stmt)?;
         self.apply_joins(&mut stmt);
+        for group in std::mem::take(&mut self.lateral) {
+            if let Some((sub, _)) = group.sub {
+                stmt.join_lateral(JoinType::LeftJoin, sub, Alias::new(&group.alias), SExpr::cust("TRUE"));
+            }
+        }
         if q.order.iter().any(|o| has_window(&o.expr)) && q.lock.is_some() {
             return Err(Error::query("lock() can't be used with window functions"));
         }
@@ -2738,8 +2754,29 @@ impl<'s> Planner<'s> {
             for j in &joins { out.extend(crate::behavior::shape_computations(self.model(j.model).native, j.start, &shape_positions(self.model(j.model), j.shape.as_ref()).to_vec())); }
             out
         };
-        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins }, filtered: self.root_filtered, prefetch,
+        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins, annotations }, filtered: self.root_filtered, prefetch,
             #[cfg(feature = "composition")] computations })
+    }
+
+    /// One select-list column per annotation, after the joined models' columns: a
+    /// correlated subquery, or a column of the shared lateral group.
+    fn annotation_columns(&mut self, q: &Select, stmt: &mut SelectStatement, types: &mut Vec<ValueType>) -> Result<Vec<AnnotationColumn>> {
+        let items: Vec<SelectItem> = q.annotations.iter().map(|a| SelectItem::Expr { expr: a.expr.clone(), name: None }).collect();
+        self.plan_lateral(q, &items, false);
+        let mut out = Vec::with_capacity(q.annotations.len());
+        for a in &q.annotations {
+            if !matches!(&a.expr, Expr::Func { rel: Some(_), .. }) {
+                return Err(Error::query(format!("annotation {} must be a relation aggregate", a.name)));
+            }
+            self.join_paths(&a.expr, "load()")?;
+            types.push(self.expr_type(&a.expr)?);
+            self.lateral_open = true;
+            let e = self.value(&a.expr, Hint::default());
+            self.lateral_open = false;
+            stmt.expr(e?);
+            out.push(AnnotationColumn { name: a.name.clone(), pos: types.len() - 1 });
+        }
+        Ok(out)
     }
 
     fn sliced_inner(&mut self, q: &Select) -> Result<SelectStatement> {

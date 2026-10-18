@@ -235,6 +235,7 @@ fn instances(
         model,
         shape,
         joins,
+        ..
     } = output
     else {
         return Err(Error::Decode("expected model rows".into()));

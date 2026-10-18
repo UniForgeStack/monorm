@@ -75,6 +75,7 @@ export class Builder {
           else markAbsent(parent, rel.name, rel.from.map((ir) => fieldValue(parent, pmeta.fieldByIr.get(ir)!.name)));
         }
       }
+      for (const a of out.annotations ?? []) root[a.name] = values[base + a.pos];
       objs[r] = root;
     }
     return objs;
