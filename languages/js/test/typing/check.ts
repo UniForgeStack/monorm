@@ -127,12 +127,10 @@ export async function filters() {
   Post.objects.filter(Post.objects.select({ n: func.count() }).cte("t").c.n.gt(1));
   // @ts-expect-error nowait and skipLocked exclude each other
   Post.objects.lock({ nowait: true, skipLocked: true });
-  same<Awaited<ReturnType<typeof post.refresh>>, boolean>();
-  void post.refresh(Post.title, { lock: true, exclusive: false, skipLocked: true });
-  // @ts-expect-error lock options need lock: true
-  void post.refresh({ nowait: true });
-  // @ts-expect-error nowait and skipLocked exclude each other
-  void post.refresh({ lock: true, nowait: true, skipLocked: true });
+  // @ts-expect-error refresh() is gone: load({ reload: true }) reads the row again
+  void post.refresh();
+  void post.load(Post.title, { reload: true });
+  same<Awaited<ReturnType<ReturnType<typeof post.qs>["update"]>>, (typeof post)[]>();
   Comment.objects.filter(Comment.post.author.eq(user), Comment.author.ne(null));
   // @ts-expect-error a relation compares with an instance of its target model
   Post.author.eq(post);

@@ -47,7 +47,7 @@ test("partition routes inserts and validates row moves", { skip: !url }, async (
     await assert.rejects(Row.objects.using(db).insert({ kind: "a", amount: null }));
     await assert.rejects(rows[1].update({ kind: "a" }));
     await rows[2].update({ kind: "a" });
-    assert.equal(await rows[2].refresh(), true);
+    await rows[2].load({ reload: true });
     assert.equal(rows[2].kind, "a");
     assert.equal(await Row.objects.using(db).count(), 3);
   } finally {

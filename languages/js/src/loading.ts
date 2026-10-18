@@ -3,6 +3,8 @@ import { clearAbsent, copyAbsent, mergeAbsent } from "./reference-absence.js";
 import { Column, Labeled, PATH, RelationPath } from "./expr.js";
 import { NotLoaded } from "./errors.js";
 import { DB, INTERNAL, RELATED, fieldValue, type ModelMeta, type Row } from "./model.js";
+import { resolve, type Database } from "./db.js";
+import type { BoundQuerySet } from "./bound.js";
 import { prefetch, QuerySet, type LoadItem, type LoadEntry } from "./query.js";
 import type { Hop, ModelSpec } from "./meta.js";
 
@@ -85,7 +87,7 @@ export function merge(row: Row, fresh: Row, reload: boolean, invalidate?: (row: 
   }
   if (fresh[INTERNAL]) {
     const internal = (row[INTERNAL] ??= {}) as Record<string, unknown>;
-    for (const [name, value] of Object.entries(fresh[INTERNAL] as object)) if (!Object.hasOwn(internal, name)) internal[name] = value;
+    for (const [name, value] of Object.entries(fresh[INTERNAL] as object)) if (reload || !Object.hasOwn(internal, name)) internal[name] = value;
   }
   if (meta.fieldList.every((f) => Object.hasOwn(row, f.name))) delete row[INTERNAL];
   mergeAbsent(row, fresh);
@@ -113,10 +115,17 @@ export async function loadInstance(
   if (own.length) {
     // a labeled aggregate alone must not read every column
     if (!own.some((i) => i instanceof Column)) own.unshift(...meta.key.map((f) => meta.column(f)));
-    // Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own refresh.
-    const rowQuery = meta.objects.withoutDefaults().using(owner[DB]).filter(meta.keyMatch(meta.key, owner["pk"]) as never);
-    const fresh = await (rowQuery.load as (...items: (Column<unknown, string> | Labeled<unknown>)[]) => QuerySet<ModelSpec>)(...own).require().get() as Row;
-    merge(owner, fresh, reload, invalidate);
+    // Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own load.
+    // A reload reads the primary, as the removed refresh() did.
+    let bound = (owner["qs"] as () => BoundQuerySet<ModelSpec, Row>)().withoutDefaults();
+    if (reload) bound = bound.using(resolve(owner[DB] as Database | undefined).primary);
+    const rows = await (bound.load as (...items: (Column<unknown, string> | Labeled<unknown>)[]) => BoundQuerySet<ModelSpec, Row>)(...own);
+    if (!rows.length) throw new (meta.model.DoesNotExist)(`${meta.name} ${JSON.stringify(String(owner["pk"]))} no longer exists`);
+    // A reload drops the cached reverse references: the row may have gained or lost its target.
+    if (reload && invalidate) for (const r of meta.relations.values()) if (r.kind === "hasOne") {
+      delete owner[RELATED]?.[r.name];
+      invalidate(owner, r.name);
+    }
   }
   const relations: LoadItem<ModelSpec>[] = [];
   for (const item of requested) {
@@ -154,7 +163,7 @@ export async function loadInstance(
       if (label && hops.length === 1) delete staged[label];
       else delete staged[RELATED]![meta.relationByIr.get(hops[0]!)!.name];
     }
-    await prefetch([staged], ...relations);
+    await prefetch([staged], ...relations, ...(reload ? [{ using: resolve(owner[DB] as Database | undefined).primary }] : []));
     const fresh = Object.create(Object.getPrototypeOf(owner)) as Row;
     fresh[RELATED] = {};
     for (const item of relations) {

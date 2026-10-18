@@ -2,14 +2,10 @@
 import type { ModelMeta } from "./model.js";
 import type { ModelSpec } from "./meta.js";
 import { QuerySet } from "./query.js";
-import { rowQuery } from "./model.js";
 import type { BoundQuerySet } from "./bound.js";
 import type { Row } from "./model.js";
 
 export { hardDeleteStatement } from "./query.js";
-
-/** The query set of the one row of `instance`: its primary key, no defaults, its database. */
-export const rowQueryOf: (instance: object) => QuerySet<ModelSpec> = rowQuery as never;
 
 export const LANGUAGE_CONTRACT = 1;
 

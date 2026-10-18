@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { connect, define, getDatabase, loads, param, prefetch, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
 import { native } from '../src/native.js';
-import { User } from './blog/models.js';
+import { Post, User } from './blog/models.js';
 import { useDatabase, otherDatabase, DATABASE_URL } from './helpers.js';
 
 useDatabase();
@@ -308,16 +308,21 @@ test('db.tenant inside a transaction of another tenant throws', async () => {
   }
 });
 
-test('refresh reads the primary on a database with replicas', async () => {
+test('load reload reads the primary on a database with replicas', async () => {
   const db = getDatabase(), url = await replicaUrl();
   const routed = await connect(db.url, { replicas: [url], default: false, maxConnections: 2 });
   try {
     const user = await User.objects.using(routed).insert({ email: 'p@example.com', name: 'Primary' });
     // The replica holds no such row: a replica read would throw DoesNotExist.
-    assert.equal(await user.refresh(), true);
+    await user.load({ reload: true });
+    assert.equal(user.name, 'Primary');
     await User.objects.using(routed).filter(User.id.eq(user.id)).update({ name: 'P2' });
-    await user.refresh(User.name);
+    await user.load(User.name, { reload: true });
     assert.equal(user.name, 'P2');
+    // the to-many read of a reload goes to the primary too: the replica holds no post
+    await Post.objects.using(routed).insert({ author: user, title: 't', body: 'b' });
+    const loaded = await user.load(User.posts, { reload: true });
+    assert.equal(loaded.posts.cached.length, 1);
   } finally {
     await routed.close();
   }

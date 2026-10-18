@@ -16,7 +16,7 @@ import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
 import { applyExtensions, type ExtensionCode, type Mixin } from "./extensions.js";
-import type { BoundQuerySetOf } from "./bound.js";
+import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
 /** Where an instance keeps its loaded relations. */
@@ -93,35 +93,19 @@ export interface Instance<M extends ModelSpec> {
   /** A query set bound to this object: reads fill it in place. Same as `Model.objects.of(this)`. */
   qs(): BoundQuerySetOf<M, this>;
   /**
-   * `UPDATE ... SET <values> WHERE pk = ... RETURNING *`. Values may be expressions
-   * (`{ views: Post.views.add(1) }`); the instance is refreshed from the returned row, so
+   * `post.qs().withoutDefaults().update(values)` for this object. Values may be expressions
+   * (`{ views: Post.views.add(1) }`); the instance is filled from the returned row, so
    * it shows what the database stored. With `@locking.version`, throws `VersionConflict`
-   * when the row has a newer version.
+   * when the row has a newer version; a missing row throws `DoesNotExist`.
    */
   update(values: M["update"]): Promise<void>;
   /**
-   * `DELETE ... WHERE pk = ...`; with `@soft_delete.deleted_at`, a soft delete that
-   * refreshes the instance from the returned row. Otherwise the instance keeps its last
-   * values. With `@locking.version`, throws `VersionConflict` when the row has a newer
-   * version; `hardDelete()` has no version check.
+   * `post.qs().withoutDefaults().delete()` for this object; the instance is filled from the
+   * returned row (a soft delete shows its marker). With `@locking.version`, throws
+   * `VersionConflict` when the row has a newer version; `hardDelete()` has no version check.
    */
   delete(): Promise<void>;
-  /**
-   * Reload column values from the database; `true` when it loaded the row. Arguments
-   * are columns of the model (a column of a related model throws `TypeError`) followed by an optional plain options object. A trailing
-   * `{ lock: true }` also locks the row until the transaction ends, with the options of
-   * `QuerySet.lock()`; a refresh of some fields still locks the whole row. With
-   * `skipLocked`, a row locked by another transaction (or deleted) gives `false` and
-   * leaves the instance unchanged; else a missing row throws `DoesNotExist`.
-   */
-  refresh(...fields: readonly Column<unknown, string>[]): Promise<boolean>;
-  refresh(...args: [...fields: Column<unknown, string>[], options: RefreshOptions]): Promise<boolean>;
 }
-
-/** The options of `instance.refresh()`: lock options only with `lock: true`. */
-export type RefreshOptions =
-  | { readonly lock?: false; readonly exclusive?: never; readonly nowait?: never; readonly skipLocked?: never }
-  | ({ readonly lock: true } & LockOptions & ({ readonly nowait?: false } | { readonly skipLocked?: false }));
 
 export type Row = Record<PropertyKey, unknown> & { [RELATED]?: Record<string, unknown>; [DB]?: Database | undefined };
 
@@ -343,7 +327,6 @@ export class ModelMeta implements Source {
       delete: { value: instanceDelete, writable: true },
       load: { value: instanceLoad },
       qs: { value(this: Row) { return metaOf(this).objects.of(this as never); } },
-      refresh: { value: instanceRefresh, writable: true, configurable: true },
       toJSON: {
         value(this: Row) {
           const out: Record<string, unknown> = {};
@@ -362,7 +345,7 @@ export class ModelMeta implements Source {
       },
       [Symbol.toStringTag]: { value: meta.name },
     });
-    referenceAdapter?.install(meta, proto, { DB, RELATED, INTERNAL, resolve, related, instanceUpdate, instanceRefresh });
+    referenceAdapter?.install(meta, proto, { DB, RELATED, INTERNAL, resolve, related, instanceUpdate });
     // A plain constructor: V8 gives every instance of a model the same shape.
     const Row = function (this: Row) {} as unknown as new () => Row;
     (Row as unknown as { prototype: object }).prototype = proto;
@@ -545,39 +528,6 @@ function metaOf(o: Row): ModelMeta {
   return (o.constructor as unknown as { meta: ModelMeta }).meta;
 }
 
-export function rowQuery(o: Row): QuerySet<ModelSpec> {
-  const meta = metaOf(o);
-  // Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own write or refresh.
-  return meta.objects.withoutDefaults().using(o[DB]).filter(meta.keyMatch(meta.key, o["pk"]) as never) as never;
-}
-
-function invalidateChangedKeys(o: Row, fresh: Row): void {
-  const meta = metaOf(o);
-  for (const relation of meta.relations.values()) {
-    const sources = relation.from.map((name) => meta.fieldByIr.get(name)!.name);
-    if (sources.some((source) => fieldValue(o, source) !== fieldValue(fresh, source)) && o[RELATED]) delete o[RELATED][relation.name];
-  }
-}
-
-/** The row query; a partial instance keeps its public shape plus `extra`. */
-function loadedQuery(o: Row, extra: readonly string[] = []): QuerySet<ModelSpec> {
-  const query = rowQuery(o);
-  if (!o[INTERNAL]) return query;
-  const loaded = metaOf(o).fieldList.filter((f) => Object.hasOwn(o, f.name)).map((f) => f.ir);
-  return query.onlyFields([...new Set([...loaded, ...extra])]);
-}
-
-function replaceFrom(o: Row, fresh: Row): void {
-  invalidateChangedKeys(o, fresh);
-  const fields = metaOf(o).fieldList;
-  if (!o[INTERNAL] && !fresh[INTERNAL]) {
-    for (const f of fields) o[f.name] = fresh[f.name];
-    return;
-  }
-  for (const f of fields) { delete o[f.name]; if (Object.hasOwn(fresh, f.name)) o[f.name] = fresh[f.name]; }
-  if (fresh[INTERNAL]) o[INTERNAL] = fresh[INTERNAL]; else delete o[INTERNAL];
-}
-
 /** @internal The loaded `@locking.version` value; a versioned write needs it. */
 function loadedVersion(o: Row, version: FieldMeta): unknown {
   const value = Object.hasOwn(o, version.name) ? o[version.name] : (o[INTERNAL] as Record<string, unknown> | undefined)?.[version.name];
@@ -585,17 +535,33 @@ function loadedVersion(o: Row, version: FieldMeta): unknown {
   return value;
 }
 
+/** The bound set of the one row of `o`, with no defaults: a default must not hide a row the instance already holds. */
+function rowBound(o: Row): BoundQuerySet<ModelSpec, Row> {
+  return (o["qs"] as () => BoundQuerySet<ModelSpec, Row>)().withoutDefaults();
+}
+
+/** Run a write on the row of the bound set; the objects are filled from the returned rows. */
+function writeOf(bound: BoundQuerySet<ModelSpec, Row>, op: (qs: QuerySet<ModelSpec>) => unknown, extra: readonly string[]): Promise<Row[]> {
+  return (bound as unknown as { write(op: unknown, extra: readonly string[]): Promise<Row[]> }).write(op, extra);
+}
+
+/** The fields that a write must read back: with `@locking.version`, the version, so the next write sees it. */
+function versionFields(meta: ModelMeta): readonly string[] {
+  return meta.versionField ? [meta.versionField.ir] : [];
+}
+
 /** With `@locking.version`, match only the loaded version of the row. */
-function versionFilter(o: Row, query: QuerySet<ModelSpec>): QuerySet<ModelSpec> {
+function versionBound(o: Row): BoundQuerySet<ModelSpec, Row> {
   const meta = metaOf(o);
-  return meta.versionField ? query.filter(meta.column(meta.versionField).eq(loadedVersion(o, meta.versionField) as never) as never) as never : query;
+  const bound = rowBound(o);
+  return meta.versionField ? bound.filter(meta.column(meta.versionField).eq(loadedVersion(o, meta.versionField) as never) as never) as never : bound;
 }
 
 /** No row matched a versioned write: throw when the row has another version. */
 async function throwIfChanged(o: Row): Promise<void> {
   const meta = metaOf(o);
   if (!meta.versionField) return;
-  const changed = rowQuery(o).filter(meta.column(meta.versionField).ne(loadedVersion(o, meta.versionField) as never) as never);
+  const changed = rowBound(o).filter(meta.column(meta.versionField).ne(loadedVersion(o, meta.versionField) as never) as never);
   if (await changed.exists()) throw new VersionConflict(`${meta.name} ${show(o["pk"])} was changed since it was loaded`);
 }
 
@@ -607,28 +573,16 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
   if (meta.versionField && Object.hasOwn(values, meta.versionField.name)) {
     throw new TypeError(`${meta.name}.update() cannot set the version field ${meta.versionField.name}; use ${meta.name}.objects.filter({ pk: ... }).update({ ${meta.versionField.name}: ... }) to override it`);
   }
-  const query = versionFilter(this, loadedQuery(this, meta.versionField ? [meta.versionField.ir] : []));
-  const rows = (await query.update(values as never, { returning: true })) as Row[];
+  const rows = await writeOf(versionBound(this), (qs) => qs.update(values as never, { returning: true }), versionFields(meta));
   if (!rows.length) {
     await throwIfChanged(this);
     throw new (meta.model.DoesNotExist)(`${meta.name} ${show(this["pk"])} no longer exists`);
   }
-  replaceFrom(this, rows[0]!);
 }
 
 async function instanceDelete(this: Row): Promise<void> {
-  const meta = metaOf(this);
-  if (!meta.softDelete) {
-    if (!(await versionFilter(this, rowQuery(this)).delete())) await throwIfChanged(this);
-    return;
-  }
-  const query = versionFilter(this, loadedQuery(this, meta.versionField ? [meta.versionField.ir] : []));
-  const rows = (await query.delete({ returning: true })) as Row[];
-  if (!rows.length) {
-    await throwIfChanged(this);
-    return;
-  }
-  replaceFrom(this, rows[0]!);
+  const rows = await writeOf(versionBound(this), (qs) => qs.delete({ returning: true }), versionFields(metaOf(this)));
+  if (!rows.length) await throwIfChanged(this);
 }
 
 /** @internal Drops the reference cache of a relation whose key changed (`undefined` without the capability). */
@@ -642,37 +596,8 @@ async function instanceLoad(this: Row, ...args: unknown[]): Promise<Row> {
   const meta = metaOf(this);
   await loadInstance(this, args as LoadItem<ModelSpec>[], options.reload ?? false,
     referenceAdapter ? (owner, name, reload) => referenceAdapter.loadReference(owner, meta, meta.relations.get(name)!, reload,
-      { DB, RELATED, INTERNAL, resolve, related, instanceUpdate, instanceRefresh }) : undefined, referenceAdapter?.invalidateReference);
+      { DB, RELATED, INTERNAL, resolve, related, instanceUpdate }) : undefined, referenceAdapter?.invalidateReference);
   return this;
-}
-
-async function instanceRefresh(this: Row, ...args: unknown[]): Promise<boolean> {
-  const last = args.at(-1);
-  const options = (last !== null && typeof last === "object" && Object.getPrototypeOf(last) === Object.prototype ? args.pop() : {}) as {
-    lock?: boolean; exclusive?: boolean; nowait?: boolean; skipLocked?: boolean;
-  };
-  const fields = args as Column<unknown, string>[];
-  const { lock = false, exclusive, nowait, skipLocked } = options;
-  if (!lock && (exclusive !== undefined || nowait !== undefined || skipLocked !== undefined)) {
-    throw new TypeError("refresh() takes exclusive, nowait and skipLocked only with lock: true");
-  }
-  const meta = metaOf(this);
-  for (const f of fields) {
-    if (!(f instanceof Column) || f.root !== meta || f.path.length) throw new TypeError(`refresh() takes columns of ${meta.name}`);
-  }
-  const requested = fields.map((f) => f.field.ir);
-  if (new Set(requested).size !== requested.length) throw new TypeError("duplicate model field");
-  let query = loadedQuery(this, requested).using("primary");
-  if (lock) query = query.lock({ exclusive: exclusive ?? true, nowait: nowait ?? false, skipLocked: skipLocked ?? false } as never);
-  let fresh: Row;
-  try {
-    fresh = (await query.require().get()) as Row;
-  } catch (e) {
-    if (skipLocked && e instanceof DoesNotExist) return false;
-    throw e;
-  }
-  replaceFrom(this, fresh);
-  return true;
 }
 
 // -- registry -------------------------------------------------------------------------------------

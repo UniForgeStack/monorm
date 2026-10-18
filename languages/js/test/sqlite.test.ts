@@ -325,19 +325,15 @@ test("full-text search on SQLite is an error", async () => {
   } finally { await db.close(); }
 });
 
-test("refresh rejects non-plain trailing options", async () => {
+test("load reload reads the row again", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
     const row = await Author.objects.using(db).insert({ email: "a", name: "Alice" });
-    for (const invalid of ["name", 42, null, undefined, [], new Date(), Object.create(null), new (class Options {})()]) {
-      await assert.rejects(row.refresh(invalid as never), { name: "TypeError", message: "refresh() takes columns of Author" });
-      assert.equal(row.name, "Alice");
-    }
-    assert.equal(await row.refresh(), true);
-    assert.equal(await row.refresh(Author.name), true);
-    assert.equal(await row.refresh(Author.name, {}), true);
-    assert.equal(await row.refresh({}), true);
+    await Author.objects.using(db).filter(Author.id.eq(row.id)).update({ name: "Al" });
+    assert.equal((await row.load({ reload: true })).name, "Al");
+    await Author.objects.using(db).filter(Author.id.eq(row.id)).update({ name: "Ali" });
+    assert.equal((await row.load(Author.name, { reload: true })).name, "Ali");
   } finally {
     await db.close();
   }

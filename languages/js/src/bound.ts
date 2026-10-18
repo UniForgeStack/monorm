@@ -120,21 +120,23 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     return this.write((qs) => qs.delete({ returning: true }) as unknown as PromiseLike<Row[]>);
   }
 
-  /** @internal Run `op` on the query set of the objects' rows and fill the objects from the rows it returns. */
-  async write(op: (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>): Promise<R[]> {
+  /** @internal Run `op` on the query set of the objects' rows and fill the objects from the rows it returns; `extra` fields are read back for a partial object too. */
+  async write(op: (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>, extra: readonly string[] = []): Promise<R[]> {
     const { meta } = this;
     const first = this.distinct();
     let query = this.inner.using(this.database()).filter(this.keyFilter(first) as never);
     if (this.objs.some((o) => o[INTERNAL])) {
       const loaded = new Set<string>();
       for (const o of this.objs) for (const f of meta.fieldList) if (Object.hasOwn(o, f.name)) loaded.add(f.ir);
-      query = query.onlyFields([...loaded]);
+      query = query.onlyFields([...new Set([...loaded, ...extra])]);
     }
     const rows = await op(query);
     const byKey = new Map(rows.map((r) => [rowKey(meta, r), r]));
+    // one object, one row: the write may have changed the key, so the row is matched by the filter
+    const only = this.objs.length === 1 && rows.length === 1 ? rows[0] : undefined;
     const out: Row[] = [];
     for (const o of this.objs) {
-      const row = byKey.get(rowKey(meta, o));
+      const row = only ?? byKey.get(rowKey(meta, o));
       if (row === undefined) continue;
       merge(o, row, true, invalidateReference);
       out.push(o);
@@ -152,7 +154,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     const { meta } = this;
     const values = first.map((o) => o["pk"]);
     return (meta.key.length === 1
-      ? meta.column(meta.key[0]!).in(values as never)
+      ? values.length === 1 ? meta.column(meta.key[0]!).eq(values[0] as never) : meta.column(meta.key[0]!).in(values as never)
       : or(...values.map((v) => meta.keyMatch(meta.key, v)) as [never])) as never;
   }
 

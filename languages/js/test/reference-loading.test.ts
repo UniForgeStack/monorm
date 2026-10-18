@@ -74,7 +74,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.throws(() => row.owner, NotLoaded);
       assert.equal((await loadRelation(row, "owner")).id, 2);
       await Required.objects.using(db).update({ ownerId: 1 });
-      await row.refresh();
+      await row.load({ reload: true });
       assert.throws(() => row.owner, NotLoaded);
       assert.equal((await loadRelation(row, "owner")).id, 1);
       const eager = await Required.objects.using(db).load(Required.owner).get();
@@ -86,7 +86,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.equal(calls, 5);
       await Detail.objects.using(db).insert({ id: 1, ownerId: 1 });
       assert.equal(await loadRelation(owner, "detail"), null);
-      await owner.refresh();
+      await owner.load({ reload: true });
       assert.throws(() => owner.detail, NotLoaded);
       assert.equal((await loadRelation(owner, "detail")).id, 1);
       const optional = await Optional.objects.using(db).insert({ id: 1, ownerId: null });

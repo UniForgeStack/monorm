@@ -6,7 +6,7 @@
 //!
 //! * `User` (instance type): its columns as read-only properties (camelCase), its to-many
 //!   relations as query sets (`posts: RelatedSet<PostSpec, ...>`) and `update()` /
-//!   `delete()` / `refresh()`. To-one relations are absent: a query that loads them
+//!   `delete()` / `qs()`. To-one relations are absent: a query that loads them
 //!   (`load()`) adds them to its rows' type;
 //! * `UserInsert` / `UserUpdate` / `UserUpdateRow`: what `insert()`, `update()` and
 //!   `updateMany()` take (a required foreign key is "the key or the related row");

@@ -1,5 +1,5 @@
 import type { BoundQuerySet, InspectedStatement, ModelSpec, QuerySet } from "orm";
-import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatement, rowQueryOf } from "orm/ext";
+import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatement } from "orm/ext";
 import type { BoundQuerySetCtor, QuerySetCtor } from "orm/ext";
 
 type AnyQuerySet = QuerySet<ModelSpec>;
@@ -89,15 +89,18 @@ export function softDeleteBoundQuerySet<B extends BoundQuerySetCtor>(Base: B) {
   };
 }
 
+type InstanceLike = { readonly pk: unknown; qs(): { withoutDefaults(): { hardDelete(): Promise<unknown> } } };
+
 export class SoftDeleteInstance {
   /** `DELETE ... WHERE pk = ...` also for a soft-delete model; in database mode, the trigger soft-deletes a live row. */
-  async hardDelete(this: { readonly pk: unknown }): Promise<void> {
-    await hardDeleteStatement(rowQueryOf(this));
+  async hardDelete(this: InstanceLike): Promise<void> {
+    // Bare bypass on purpose: the instance already holds this row, so no default may hide it.
+    await this.qs().withoutDefaults().hardDelete();
   }
 
-  /** Clear the soft-delete field of this row and refresh it. */
-  async undelete(this: { readonly pk: unknown }): Promise<void> {
-    const qs = rowQueryOf(this);
-    await (this as any).update({ [deletedAt(qs).name]: null });
+  /** Clear the soft-delete field of this row and fill it from the updated row. */
+  async undelete(this: InstanceLike): Promise<void> {
+    const column = deletedAt({ meta: (this as unknown as { constructor: { meta: AnyQuerySet["meta"] } }).constructor.meta });
+    await (this as any).update({ [column.name]: null });
   }
 }

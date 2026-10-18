@@ -64,7 +64,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       await b.update({ title: "B" });
       assert.deepEqual((await items.orderBy(Item.shop, Item.id).all()).map((i: any) => i.title), ["a", "c", "B"]);
       await db.execute("UPDATE ck_node_item SET title = 'bb' WHERE shop = 2 AND id = 1");
-      assert.equal(await b.refresh(), true);
+      await b.load({ reload: true });
       assert.equal(b.title, "bb");
 
       await items.updateMany([{ shop: 1, id: 1, title: "x" }, { shop: 1, id: 2, title: "y" }]);

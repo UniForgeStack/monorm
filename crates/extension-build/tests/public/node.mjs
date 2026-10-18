@@ -44,7 +44,7 @@ try {
   await lowered.delete();
   const record = await Record.objects.insert({left:"first",right:"second"});
   await assert.rejects(() => record.update({left:"changed"}), /all non-null supplied dependencies/);
-  await record.refresh();
+  await record.load({ reload: true });
   assert.equal(record.left,"first");
   assert.equal(record.right,"second");
   await record.delete();
@@ -100,7 +100,7 @@ try {
   assert.equal(child.role,"employee");
   assert.equal(await Child.objects.using(ownerDb).filter(Child.name.eq("Alice")).count(),1);
   assert.deepEqual(await Child.objects.using(ownerDb).select({name:Child.name}),[{name:"Alice"}]);
-  await child.refresh();
+  await child.load({ reload: true });
   assert.equal(child.name,"Alice");
   await assert.rejects(() => child.update({role:"customer"}),/owner statement sequence/);
 } finally {
