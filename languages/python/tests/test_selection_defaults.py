@@ -151,7 +151,8 @@ async def test_selection_defaults(dialect):
         explicit = await a.load(Author.note, Author.name).get()
         assert explicit.to_dict() == {"name": "visible", "note": None}
         await explicit.load(reload=True)
-        assert explicit.to_dict() == {"name": "visible", "note": None}
+        assert explicit.to_dict() == {"id": 1, "name": "visible", "note": None, "bio": "large", "visible": True}
+        explicit = await a.load(Author.note, Author.name).get()
         await explicit.load(Author.bio, reload=True)
         assert explicit.to_dict() == {"name": "visible", "note": None, "bio": "large"}
         await partial.update(name="changed")
