@@ -60,6 +60,7 @@ def members(
     extensions: list[tuple[str, dict[str, Any]]],
     host_query_set: Callable[[str], bool],
     host_instance: Callable[[str], bool],
+    host_bound: Callable[[str], bool],
 ) -> None:
     """Reject a member name that a host member, a field, a relation or an earlier extension has.
 
@@ -72,6 +73,7 @@ def members(
         for kind, names, host in (
             ("query set", record["query_set_members"], host_query_set),
             ("instance", record["instance_members"], host_instance),
+            ("bound query set", record["bound_query_set_members"], host_bound),
         ):
             for name in names:
                 if name in taken:

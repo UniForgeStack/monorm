@@ -423,6 +423,7 @@ export class ModelMeta implements Source {
 /** Names the runtime gives meaning to on models / instances. */
 const RESERVED = new Set([
   "objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", // models
+  "qs",
   "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then", // instances
 ]);
 

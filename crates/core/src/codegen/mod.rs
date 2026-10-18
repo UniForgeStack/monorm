@@ -206,6 +206,15 @@ mod reference_tests {
         let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
         assert!(py.stub.contains("from app.queries import PostQueries as _PostUserObjects"));
         assert!(py.stub.contains("class _PostObjects(_PostUserObjects, _ext0QuerySet[Post], PostQuerySet): ...") && py.module.contains("from app.orm_ext import example_language"));
+        let mut bound_ext = ext.clone();
+        bound_ext.members.bound_query_set = "TaggedBoundQuerySet".into();
+        bound_ext.members.bound_query_set_members = vec!["tagged".into()];
+        let options = Options { extensions: vec![bound_ext], ..Options::default() };
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.stub.contains("TaggedInstance as _ext0Instance, TaggedBoundQuerySet as _ext0BoundQuerySet"));
+        assert!(py.stub.contains("class _PostBoundObjects(_ext0BoundQuerySet[Post], BoundQuerySet[Post]): ..."));
+        assert!(py.stub.contains("def of(self, objs: Iterable[Post] | Post) -> _PostBoundObjects: ..."));
+        assert!(py.stub.contains("def qs(self) -> _PostBoundObjects: ...") && !py.stub.contains("_UserBoundObjects"));
         let mut ts_ext = ext;
         ts_ext.members.language = "typescript".into();
         ts_ext.members.query_set = "taggedQuerySet".into();

@@ -171,6 +171,14 @@ pub fn collect(manifest: &Manifest, package: &Path) -> Result<Vec<Embedded>, Str
         if files.is_empty() { return Err(format!("{}: {language} source {} has no source files", manifest.id, section.source)); }
         let query_set_members = members(language, &files, &section.query_set).map_err(|e| format!("{}: {e}", manifest.id))?;
         let instance_members = members(language, &files, &section.instance).map_err(|e| format!("{}: {e}", manifest.id))?;
+        let bound_query_set_members = if section.bound_query_set.is_empty() { vec![] } else {
+            members(language, &files, &section.bound_query_set).map_err(|e| format!("{}: {e}", manifest.id))?
+        };
+        for name in &bound_query_set_members {
+            if !query_set_members.contains(name) {
+                return Err(format!("{}: {language} bound member {name} of {} is not a member of {}", manifest.id, section.bound_query_set, section.query_set));
+            }
+        }
         for name in &section.overrides {
             if !query_set_members.contains(name) && !instance_members.contains(name) {
                 return Err(format!("{}: {language} override {name} is not a member of {} or {}", manifest.id, section.query_set, section.instance));
@@ -182,7 +190,7 @@ pub fn collect(manifest: &Manifest, package: &Path) -> Result<Vec<Embedded>, Str
             members: LanguageMembers {
                 extension: manifest.id.clone(), version: manifest.version.clone(), language: language.into(),
                 query_set: section.query_set.clone(), instance: section.instance.clone(),
-                query_set_members, instance_members, overrides, hash: hash(&files),
+                query_set_members, instance_members, bound_query_set: section.bound_query_set.clone(), bound_query_set_members, overrides, hash: hash(&files),
             },
             dir, files,
         });

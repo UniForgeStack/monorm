@@ -8,6 +8,8 @@ from typing import Any, assert_type
 from blog.models import Comment, Post, PostInsert, PostQuerySet, Priority, Profile, Role, Tag, User, UserQuerySet
 
 from orm import (
+    BoundQuerySet,
+    of,
     Case,
     ColumnRef,
     Expression,
@@ -294,3 +296,46 @@ async def required_results() -> None:
 def json_paths(meta: ColumnRef[Any]) -> None:
     """A Json column: a path continues with keys and indexes, ``as_text()`` ends it."""
     assert_type(meta["tags"][0].as_text() == "x", Condition)
+
+
+async def bound_reads(post: Post, posts: list[Post]) -> None:
+    """A bound query set reads and fills the given objects; it has no shape-changing method."""
+    assert_type(Post.objects.of(posts), BoundQuerySet[Post])
+    assert_type(Post.objects.of(post), BoundQuerySet[Post])
+    assert_type(of(posts), BoundQuerySet[Post])
+    assert_type(post.qs(), BoundQuerySet[Post])
+    assert_type(Post.objects.of(posts).filter(Post.id == 1).exclude(Post.id == 2), BoundQuerySet[Post])
+    assert_type(
+        Post.objects.of(posts).load(Post.title).lock().without_defaults().without_related(), BoundQuerySet[Post]
+    )
+    assert_type(await Post.objects.of(posts), list[Post])
+    assert_type(await Post.objects.of(posts).update(title="x"), list[Post])
+    assert_type(await Post.objects.of(posts).delete(), list[Post])
+    assert_type(await post.qs().update(views=1), list[Post])
+    Post.objects.of(posts).update(nope=1)  # E: not a Post field
+    Post.objects.of(posts).hard_delete()  # E: no hard_delete without the soft-delete extension
+    Post.objects.of(posts).undelete()  # E: no undelete without the soft-delete extension
+    assert_type(await Post.objects.of(posts).count(), int)
+    assert_type(await Post.objects.of(posts).exists(), bool)
+    assert_type(Post.objects.of(posts).sql(), str)
+    Post.objects.of(posts).order_by(Post.id)  # E: no order_by on a bound query set
+    Post.objects.of(posts)[:2]  # E: no slice on a bound query set
+    Post.objects.of(posts).limit(1)  # E: no limit on a bound query set
+    Post.objects.of(posts).offset(1)  # E: no offset on a bound query set
+    Post.objects.of(posts).first()  # E: no first on a bound query set
+    Post.objects.of(posts).last()  # E: no last on a bound query set
+    Post.objects.of(posts).get()  # E: no get on a bound query set
+    Post.objects.of(posts).paginate()  # E: no paginate on a bound query set
+    Post.objects.of(posts).select(Post.id)  # E: no select on a bound query set
+    Post.objects.of(posts).group_by(Post.id)  # E: no group_by on a bound query set
+    Post.objects.of(posts).distinct()  # E: no distinct on a bound query set
+    Post.objects.of(posts).join(Post.author)  # E: no join on a bound query set
+    Post.objects.of(posts).cte("c")  # E: no cte on a bound query set
+    Post.objects.of(posts).union(Post.objects)  # E: no union on a bound query set
+    Post.objects.of(posts).insert_many([])  # E: no insert_many on a bound query set
+    Post.objects.of(posts).in_bulk()  # E: no in_bulk on a bound query set
+    Post.objects.of(posts).prepare()  # E: no prepare on a bound query set
+    Post.objects.of(posts).require()  # E: no require on a bound query set
+    Post.objects.of(posts).label("x")  # E: no label on a bound query set
+    async for _ in Post.objects.of(posts):  # E: no async for on a bound query set
+        pass

@@ -40,6 +40,7 @@ from .write import (
     Delete,
     InsertMany,
     InsertOne,
+    Returning,
     Update,
     UpdateMany,
     assignments,
@@ -74,6 +75,8 @@ __all__ = [
     "ManyRelatedSet",
     "Prepared",
     "prefetch",
+    "of",
+    "BoundQuerySet",
     "use_query_set",
     "use_extensions",
 ]
@@ -701,6 +704,29 @@ class QuerySet(Generic[M]):
 
             db = resolve(self._db).primary
         return self._clone(_db=db)
+
+    def of(self, objs: Iterable[M] | M) -> BoundQuerySet[M]:
+        """A query set bound to ``objs`` (one object or an iterable, of this model): awaiting
+        it reads their rows, with this query set's filters, and fills the objects in place."""
+        items = _bound_objects(objs)
+        if type(items[0]) is not self._model:
+            raise TypeError(f"{self._model.__name__}.objects.of() takes {self._model.__name__} objects")
+        self._standalone()
+        if isinstance(self, (RelatedSet, ManyRelatedSet)):
+            raise TypeError("of() takes Model.objects, not a relation query set")
+        if (
+            self._order
+            or self._limit is not None
+            or self._offset is not None
+            or self._from is not None
+            or self._joins
+            or self._required
+            or self._one
+            or self._as_prefetch
+            or self._label is not None
+        ):
+            raise TypeError("of() takes a query set without order, slice, join, CTE or union state")
+        return _bound_class(self._model)(items, self)
 
     # -- CTEs -------------------------------------------------------------------------------
 
@@ -1638,6 +1664,158 @@ async def prefetch(
     await database._engine.prefetch(op, params, keys, rows, objs, database._tx(), db)
 
 
+def _bound_objects(objs: Iterable[M] | M) -> tuple[M, ...]:
+    from .model import _ABSENT, Model, _peek
+
+    items = (objs,) if isinstance(objs, Model) else tuple(objs)
+    if not items:
+        raise TypeError("of() takes at least one object")
+    model = type(items[0])
+    if not isinstance(items[0], Model) or any(type(o) is not model for o in items):
+        raise TypeError("of() takes objects of one model")
+    for o in items:
+        if any(_peek(o, f.name) in (_ABSENT, None) for f in model._meta.key):
+            raise TypeError(f"of() takes objects with a primary key; this {model.__name__} has none")
+    return items
+
+
+def of(objs: Iterable[M] | M) -> BoundQuerySet[M]:
+    """A query set bound to ``objs`` (one object or an iterable, of one model): it reads
+    those rows and fills the objects in place, as ``Model.objects.of(objs)`` does."""
+    items = _bound_objects(objs)
+    return type(items[0]).objects.of(items)
+
+
+class BoundQuerySet(Generic[M]):
+    """A query set filtered to the given objects, which it fills in place when awaited.
+
+    Get one from ``Model.objects.of(objs)``, :func:`orm.of` or ``obj.qs()``. It has no
+    ordering, slicing, ``first()``, ``get()`` or other shape-changing method: an await
+    returns the matched objects in input order and an unmatched object stays unchanged.
+    """
+
+    __slots__ = ("_objs", "_qs", "_explicit_db")
+
+    def __init__(self, objs: tuple[M, ...], qs: QuerySet[M], explicit_db: bool = False) -> None:
+        self._objs = objs
+        self._qs = qs
+        self._explicit_db = explicit_db
+
+    def _clone(self, qs: QuerySet[M], explicit_db: bool | None = None) -> Self:
+        return type(self)(self._objs, qs, self._explicit_db if explicit_db is None else explicit_db)
+
+    def filter(self, *conditions: ConditionLike) -> Self:
+        return self._clone(self._qs.filter(*conditions))
+
+    def exclude(self, *conditions: ConditionLike) -> Self:
+        return self._clone(self._qs.exclude(*conditions))
+
+    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
+        return self._clone(self._qs.load(*items))
+
+    def lock(self, exclusive: bool = True, *, nowait: bool = False, skip_locked: bool = False) -> Self:
+        return self._clone(self._qs.lock(exclusive, nowait=nowait, skip_locked=skip_locked))
+
+    def using(self, db: Database | Literal["primary"] | None) -> Self:
+        """Run on ``db``; ``"primary"`` is the primary of the objects' database."""
+        if isinstance(db, str):
+            if db != "primary":
+                raise ValueError(f'using() takes a Database or "primary", got {db!r}')
+            from .db import resolve
+
+            db = resolve(self._qs._db or self._objs[0].__dict__.get("_db")).primary
+        return self._clone(self._qs.using(db), explicit_db=db is not None)
+
+    def without_defaults(self, *names: str) -> Self:
+        return self._clone(self._qs.without_defaults(*names))
+
+    def without_related(self) -> Self:
+        return self._clone(self._qs.without_related())
+
+    def _database(self) -> Database | None:
+        """The database to read: the one ``using()`` named, else the objects' common one."""
+        from .db import resolve
+
+        if self._explicit_db:
+            return self._qs._db
+        db = self._objs[0].__dict__.get("_db")
+        database = resolve(db)
+        if any(resolve(o.__dict__.get("_db")) is not database for o in self._objs):
+            raise QueryError("of() takes objects from one database; call using() to read another")
+        return db
+
+    def _condition(self) -> Condition:
+        from .model import key_match
+
+        meta = self._qs._model._meta
+        keys = dict.fromkeys(o.pk for o in self._objs)
+        if len(meta.key) == 1:
+            return meta.pk_ref().in_(list(keys))
+        return or_(*(key_match(self._qs._model, (), meta.key, k) for k in keys))
+
+    def _query(self) -> QuerySet[M]:
+        return self._qs.using(self._database()).filter(self._condition())
+
+    async def _read(self) -> list[M]:
+        from ._loading import merge
+
+        loads = self._qs._loads
+        own = any((isinstance(i, ColumnRef) and not i._path) or isinstance(i, Labeled) for i in loads)
+        relation_only = bool(loads) and not own
+        query = self._query()
+        if relation_only:
+            if not self._qs._filters:
+                await prefetch(self._objs, *cast("tuple[Any, ...]", loads), using=self._database())
+                return list(self._objs)
+            query = query._clone(_loads=(), _model_fields=tuple(f.name for f in self._qs._model._meta.key))
+        fresh = {row.pk: row for row in await query._fetch()}
+        matched = [o for o in self._objs if o.pk in fresh]
+        for o in matched:
+            merge(o, fresh[o.pk], True)
+        if relation_only:
+            await prefetch(matched, *cast("tuple[Any, ...]", loads), using=self._database())
+        return matched
+
+    def __await__(self) -> Generator[Any, None, list[M]]:
+        return self._read().__await__()
+
+    async def _write(self, build: Callable[[QuerySet[M]], Returning[M]]) -> list[M]:
+        """Run the ``RETURNING`` statement that ``build`` makes of the bound query, fill the
+        objects whose rows it returns, and give those objects in input order."""
+        from ._loading import merge
+
+        returned = {row.pk: row for row in await build(self._query())}
+        changed = [o for o in self._objs if o.pk in returned]
+        for o in changed:
+            merge(o, returned[o.pk], True)
+        return changed
+
+    async def update(self, **values: Any) -> list[M]:
+        """``UPDATE`` the rows of the objects, in one statement, and fill the objects from the
+        updated rows. Gives the objects whose rows changed, in input order."""
+        return await self._write(lambda qs: qs.update(**values).returning())
+
+    async def delete(self) -> list[M]:
+        """``DELETE`` the rows of the objects, in one statement (a soft-delete model sets its
+        field instead). Gives the objects whose rows changed, in input order, filled from the rows."""
+        return await self._write(lambda qs: qs.delete().returning())
+
+    async def count(self) -> int:
+        return await self._query().count()
+
+    async def exists(self) -> bool:
+        return await self._query().exists()
+
+    def sql(self) -> str:
+        return self._query().sql()
+
+    def inspect(self) -> QueryInspection:
+        return self._query().inspect()
+
+    def __repr__(self) -> str:
+        return f"<BoundQuerySet {self._qs._model.__name__} of {len(self._objs)} objects>"
+
+
 def use_query_set(model: type[M], query_set: type[QuerySet[M]] | str) -> None:
     """Make ``query_set`` (a :class:`QuerySet` subclass, or ``"module:Class"``) the class
     of ``model.objects``, of the query sets built from it and of the model's relation
@@ -1653,7 +1831,11 @@ def use_query_set(model: type[M], query_set: type[QuerySet[M]] | str) -> None:
     setattr(model, "objects", _Objects())
 
 
-def use_extensions(model: type[M], query_sets: tuple[type[QuerySet[M]], ...]) -> None:
+def use_extensions(
+    model: type[M],
+    query_sets: tuple[type[QuerySet[M]], ...],
+    bound_sets: tuple[type[BoundQuerySet[M]], ...] = (),
+) -> None:
     """Mix the query-set classes of extensions into ``model.objects`` and its relation sets,
     after a ``use_query_set`` class and before ``QuerySet``. ``query_sets`` are in MRO order
     (the last extension of the chain first). ``define()`` calls this for the generated models."""
@@ -1662,6 +1844,8 @@ def use_extensions(model: type[M], query_sets: tuple[type[QuerySet[M]], ...]) ->
     meta = model._meta
     meta.extension_sets = query_sets
     meta.composed_set = None
+    meta.bound_extension_sets = bound_sets
+    meta.composed_bound = None
     meta.related_sets = {}
     setattr(model, "objects", _Objects())
 
@@ -1674,6 +1858,18 @@ class _Objects:
         qs = _query_set_class(owner)(owner)
         setattr(owner, "objects", qs)
         return qs
+
+
+def _bound_class(model: type[Model]) -> type[BoundQuerySet[Any]]:
+    meta = model._meta
+    if not meta.bound_extension_sets:
+        return BoundQuerySet
+    if meta.composed_bound is None:
+        meta.composed_bound = cast(
+            "type[BoundQuerySet[Any]]",
+            type(f"{model.__name__}BoundQuerySet", (*meta.bound_extension_sets, BoundQuerySet), {}),
+        )
+    return meta.composed_bound
 
 
 def _query_set_class(model: type[Model]) -> type[QuerySet[Any]]:

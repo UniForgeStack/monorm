@@ -22,7 +22,7 @@ from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, Man
 if TYPE_CHECKING:
     from typing_extensions import Self
 
-    from .query import QuerySet
+    from .query import BoundQuerySet, QuerySet
 
 # The native artifact is fixed for the process; read its capabilities once.
 _ARTIFACT: dict[str, Any] = json.loads(_native.native_artifact())
@@ -117,6 +117,9 @@ class ModelMeta:
         # with `query_set` (built on first use).
         self.extension_sets: tuple[type[QuerySet[Any]], ...] = ()
         self.composed_set: type[QuerySet[Any]] | None = None
+        # The bound-safe query-set classes of extensions (same order) and their composed class.
+        self.bound_extension_sets: tuple[type[BoundQuerySet[Any]], ...] = ()
+        self.composed_bound: type[BoundQuerySet[Any]] | None = None
 
     @property
     def key_names(self) -> tuple[str, ...]:
@@ -371,6 +374,7 @@ class Registry:
 _RESERVED = {
     "pk",
     "objects",
+    "qs",
     "_meta",
     "DoesNotExist",
     "MultipleObjectsReturned",
@@ -460,7 +464,7 @@ def define(
     ``extensions`` maps an extension id to its generated package, and ``members`` maps a model to the
     ids whose query-set and instance classes it gets, dependencies first. Generated modules pass both.
     """
-    from .query import QuerySet, use_extensions
+    from .query import BoundQuerySet, QuerySet, use_extensions
 
     chains: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for model_name, ids in (members or {}).items():
@@ -509,7 +513,12 @@ def define(
         )
         if chain:
             _extensions.members(
-                m["name"], set(ns), chain, lambda n: hasattr(QuerySet, n), lambda n: hasattr(Model, n) or n in _RESERVED
+                m["name"],
+                set(ns),
+                chain,
+                lambda n: hasattr(QuerySet, n),
+                lambda n: hasattr(Model, n) or n in _RESERVED,
+                lambda n: hasattr(BoundQuerySet, n),
             )
         cls: type[Model] = types.new_class(
             m["name"],
@@ -518,7 +527,12 @@ def define(
             lambda body: body.update(ns),
         )
         if classes:
-            use_extensions(cls, tuple(c[0] for c in reversed(classes)))
+            bound = tuple(
+                getattr(extensions[i], r["bound_query_set"])  # type: ignore[index]
+                for i, r in reversed(chain)
+                if r["bound_query_set"]
+            )
+            use_extensions(cls, tuple(c[0] for c in reversed(classes)), bound)
         for method in ir.get("behavior", {}).get("methods", ()):
             if method["model"] == m["name"]:
                 if method["name"] in ns or method["name"] in _RESERVED:
@@ -621,6 +635,10 @@ class Model:
     def to_dict(self) -> dict[str, Any]:
         """Serialize public loaded scalar fields, retaining loaded NULL values."""
         return {n: self.__dict__[n] for n in self._meta.field_names if n in self.__dict__}
+
+    def qs(self) -> BoundQuerySet[Self]:
+        """A query set bound to this object: ``type(self).objects.of(self)``."""
+        return type(self).objects.of(self)
 
     async def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any], reload: bool = False) -> Self:
         """Populate requested fields and relations, preserving loaded values by default.

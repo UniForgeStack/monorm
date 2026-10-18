@@ -28,15 +28,24 @@ model Tag {
 }
 """
 USE = """\
+from typing_extensions import assert_type
+
 from .models import Post, Tag
 
 
-async def go(post: Post) -> None:
+async def go(post: Post, tag: Tag) -> None:
     await Post.objects.deleted_only().all()
     await Post.objects.all_with_deleted().filter(Post.id == 1).all()
     await Post.objects.hard_delete()
     await post.undelete()
     await post.hard_delete()
+    assert_type(await Post.objects.of(post).hard_delete(), list[Post])
+    assert_type(await post.qs().undelete(), list[Post])
+    assert_type(await post.qs().delete(), list[Post])
+    assert_type(await post.qs().all_with_deleted().deleted_only().filter(Post.id == 1).hard_delete(), list[Post])
+    assert_type(await post.qs().deleted_only().undelete(), list[Post])
+    Tag.objects.of(tag).hard_delete()  # E:
+    Tag.objects.of(tag).undelete()  # E:
     Tag.objects.deleted_only()  # E:
     Tag.objects.all_with_deleted()  # E:
     await Tag.objects.hard_delete()  # E:

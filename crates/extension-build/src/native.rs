@@ -182,7 +182,7 @@ pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manife
                 return Err(format!("{}.{}: model method is a Python keyword", spec.model, method.name));
             }
             if method.name.contains("::") || !seen_methods.insert(&method.name) { return Err(format!("invalid or duplicate model method {}", method.name)); }
-            if ["pk", "objects", "_meta", "DoesNotExist", "MultipleObjectsReturned", "update", "delete", "refresh", "toJSON", "constructor", "then", "toString"].contains(&method.name.as_str()) || model.fields.iter().any(|f| f.name == method.name) || model.relations.iter().any(|r| r.name == method.name) {
+            if ["pk", "objects", "qs", "_meta", "DoesNotExist", "MultipleObjectsReturned", "update", "delete", "refresh", "toJSON", "constructor", "then", "toString"].contains(&method.name.as_str()) || model.fields.iter().any(|f| f.name == method.name) || model.relations.iter().any(|r| r.name == method.name) {
                 return Err(format!("{}.{}: model method collision", spec.model, method.name));
             }
             let e = exports.get(method.export.as_str()).ok_or_else(|| format!("missing method export {}", method.export))?;
