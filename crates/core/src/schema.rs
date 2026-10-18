@@ -279,16 +279,21 @@ impl Schema {
         crate::tracking::prepare(&mut models, &model_index, &ir.behavior)?;
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
-        // Composed writes run no column role, so a role there would be silently skipped.
+        // Composed writes cannot maintain column roles on any owner in the chain.
         #[cfg(feature = "composition")]
         for m in models.iter().filter(|m| owner_links.iter().any(|l| l.child == m.owner)) {
-            let roles: &[(&str, bool)] = &[
-                #[cfg(feature = "updated-at")] ("@timestamps.updated_at", !m.updated_at.is_empty()),
-                #[cfg(feature = "soft-delete")] ("@soft_delete.deleted_at", m.soft_delete.is_some()),
-                #[cfg(feature = "optimistic-locking")] ("@locking.version", m.version.is_some()),
-            ];
-            if let Some((role, _)) = roles.iter().find(|(_, declared)| *declared) {
-                return Err(format!("model {}: {role} is not supported on a composed model", m.ir.name));
+            let owners = storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models);
+            let mut current = m.owner;
+            loop {
+                let owner = &owners[current.0].ir.name;
+                let mut roles = ir.behavior.updated_at.iter().map(|r| (&r.model, &r.field, "@timestamps.updated_at"))
+                    .chain(ir.behavior.soft_delete.iter().map(|r| (&r.model, &r.field, "@soft_delete.deleted_at")))
+                    .chain(ir.behavior.versions.iter().map(|r| (&r.model, &r.field, "@locking.version")));
+                if let Some((_, field, role)) = roles.find(|(model, _, _)| *model == owner) {
+                    return Err(format!("model {}: {role} on {owner}.{field} is not supported in a composed model's ownership chain", m.ir.name));
+                }
+                let Some(link) = owner_links.iter().find(|l| l.child == current) else { break };
+                current = link.parent;
             }
         }
         #[cfg(feature = "proxy-models")]

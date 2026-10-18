@@ -141,6 +141,8 @@ pub fn manifests() -> &'static [Manifest] {{ static M: OnceLock<Vec<Manifest>> =
 fn pass_ids() -> &'static [String] {{ static P: OnceLock<Vec<String>> = OnceLock::new(); P.get_or_init(|| serde_json::from_str({ids:?}).expect("generated pass IDs")) }}
 pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> {{
     let manifests = manifests();
+    // The stamp below would otherwise upgrade an IR built under an older contract.
+    if ir.behavior.schema_contract != 0 && ir.behavior.schema_contract != SCHEMA_CONTRACT {{ return Err(format!("schema contract {{}} unavailable (artifact {{}}); rebuild native artifact", ir.behavior.schema_contract, SCHEMA_CONTRACT)); }}
     validate_declarations(ir, manifests, language)?;
     let expected = pass_ids();
     if !ir.behavior.completed_passes.is_empty() && ir.behavior.completed_passes != expected {{ return Err("incompatible lowering state; rebuild schema and native artifact".into()); }}
