@@ -133,7 +133,7 @@ fn filter_scopes(expr: &Expr, scopes: &mut Vec<String>) {
     }
 }
 
-fn validate_filter(model: &Model, filter: &Expr) -> Result<(), String> {
+pub(crate) fn validate_filter(model: &Model, filter: &Expr) -> Result<(), String> {
     match filter {
         Expr::Col { path, name, .. } if path.is_empty() => { model.field(name)?; }
         Expr::Const { .. } | Expr::Int { .. } | Expr::Text { .. } | Expr::Scope { .. } => {}

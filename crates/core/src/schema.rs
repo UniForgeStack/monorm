@@ -39,6 +39,12 @@ pub struct Model {
     /// The `@locking.version` field position; ORM updates increment it.
     #[cfg(feature = "optimistic-locking")]
     pub version: Option<usize>,
+    /// Columns the ORM assigns on writes, from the neutral write records.
+    pub assignments: Vec<crate::writes::PreparedAssignment>,
+    /// The delete rewrite of this model, if an extension asked for one.
+    pub delete_rewrite: Option<crate::writes::PreparedDeleteRewrite>,
+    /// Field positions an instance write must match against the loaded value.
+    pub guards: Vec<usize>,
     #[cfg(feature = "composition")]
     pub native: crate::behavior::NativeModel,
     #[cfg(feature = "composition")]
@@ -80,6 +86,7 @@ impl Model {
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
+            assignments: vec![], delete_rewrite: None, guards: vec![],
             #[cfg(feature = "updated-at")] updated_at: vec![],
             #[cfg(feature = "soft-delete")] soft_delete: None,
             #[cfg(feature = "optimistic-locking")] version: None,
@@ -253,6 +260,7 @@ impl Schema {
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
+                assignments: vec![], delete_rewrite: None, guards: vec![],
                 #[cfg(feature = "updated-at")] updated_at: vec![],
                 #[cfg(feature = "soft-delete")] soft_delete: None,
                 #[cfg(feature = "optimistic-locking")] version: None,
@@ -280,6 +288,7 @@ impl Schema {
         }
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::tracking::prepare(&mut models, &model_index, &ir.behavior)?;
+        crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
         // Composed writes cannot maintain column roles on any owner in the chain.
@@ -299,6 +308,8 @@ impl Schema {
                 current = link.parent;
             }
         }
+        #[cfg(feature = "composition")]
+        crate::writes::reject_composed(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
         #[cfg(feature = "proxy-models")]
         let proxy_models = {
             let mut seen = std::collections::BTreeSet::new();

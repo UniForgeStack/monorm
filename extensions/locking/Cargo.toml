@@ -22,7 +22,7 @@ capabilities = ["optimistic-locking"]
 id = "orm.locking.prepare"
 phase = "behavior"
 rust = "crate::prepare"
-effects = ["behavior.versions"]
+effects = ["behavior.versions", "behavior.write_assignments.locking", "behavior.instance_guards"]
 
 # `version Int @default(0) @locking.version`.
 [[package.metadata.orm-extension.attributes]]

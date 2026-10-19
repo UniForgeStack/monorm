@@ -1,7 +1,7 @@
 //! `@soft_delete.deleted_at`: the ORM soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too and the soft delete
 //! cascades to soft-delete children. Execution requires the `soft-delete` capability.
-use orm_contracts::{dialect::Dialect, extension::{Declaration, ReadDefault}, ir::{ColType, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{Mode, SoftDelete}};
+use orm_contracts::{dialect::Dialect, extension::{Declaration, ReadDefault}, ir::{ColType, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{Mode, SoftDelete}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "orm.soft-delete";
@@ -9,6 +9,34 @@ const DEFAULT: &str = "deleted";
 
 fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
     format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
+}
+
+/// The field a delete-time assignment of this model increments, if any: the version bump of a soft delete.
+fn bumped<'a>(assignments: &'a [WriteAssignment], model: &str) -> Option<&'a str> {
+    assignments.iter().find(|a| a.model == model && a.value == AssignValue::Increment && a.on.contains(&WriteKind::DeleteRewrite)).map(|a| a.field.as_str())
+}
+
+/// A user filter that only repeats the `"deleted"` default hides the rows `all_with_deleted()` and the other members must reach.
+fn repeats_default(filter: &str, field: &str) -> bool {
+    let mut text: String = filter.split_whitespace().collect();
+    while text.starts_with('(') && text.ends_with(')') { text = text[1..text.len() - 1].to_owned(); }
+    text == format!("{field}==null") || text == format!("{field}isnull")
+}
+
+fn reject_leftover_filters(ir: &SchemaIr) -> Result<(), String> {
+    for s in &ir.behavior.soft_delete {
+        for d in ir.behavior.declarations.iter().filter(|d| d.model == s.model && d.field.is_none()) {
+            let filter = match d.attribute.as_str() {
+                "query.filter" => d.positional.get(1).and_then(|v| v.as_str()),
+                "query.defaults" => d.arguments.get("filter").and_then(|v| v.as_str()),
+                _ => None,
+            };
+            if filter.is_some_and(|f| repeats_default(f, &s.field)) {
+                return Err(error(d, format!("{} already hides soft-deleted rows by default; remove this filter, it would also hide them from all_with_deleted(), deleted_only(), undelete() and hard_delete()", s.model)));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ident(s: &str) -> String { format!("\"{}\"", s.replace('"', "\"\"")) }
@@ -96,6 +124,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: DEFAULT.into(), model: s.model.clone(),
             filter: Some(serde_json::json!({"t": "is_null", "item": item, "neg": false})), ..Default::default() });
     }
+    reject_leftover_filters(ir)?;
+    ir.behavior.delete_rewrites.retain(|d| d.source != SOURCE);
+    for s in &ir.behavior.soft_delete {
+        let item = serde_json::json!({"t": "col", "path": [], "name": s.field});
+        ir.behavior.delete_rewrites.push(DeleteRewrite { source: SOURCE.into(), model: s.model.clone(), field: s.field.clone(),
+            guard: serde_json::json!({"t": "is_null", "item": item, "neg": false}) });
+    }
     let dialect = ir.dialect;
     for s in ir.behavior.soft_delete.clone().iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
         // Children: soft-delete models with a cascading foreign key to this model.
@@ -104,15 +139,14 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             let Some(child_field) = ir.behavior.soft_delete.iter().find(|c| c.model == child.name) else { continue };
             for r in child.relations.iter().filter(|r| r.foreign_key && r.target == s.model && r.on_delete == Some(OnDelete::Cascade)) {
                 let keys = r.from.iter().map(|f| Ok(column(child, f)?.to_owned())).collect::<Result<Vec<_>, String>>()?;
-                let version = ir.behavior.declarations.iter().find(|d| d.attribute == "locking.version" && d.model == child.name).and_then(|d| d.field.as_deref())
-                    .map(|f| column(child, f).map(str::to_owned)).transpose()?;
+                let version = bumped(&ir.behavior.write_assignments, &child.name).map(|f| column(child, f).map(str::to_owned)).transpose()?;
                 children.push((child.table.clone(), column(child, &child_field.field)?.to_owned(), version, keys, r.to.clone()));
             }
         }
         let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|st| st.models.iter_mut()));
         for model in models.filter(|m| m.name == s.model) {
-            let version = ir.behavior.declarations.iter().find(|d| d.attribute == "locking.version" && d.model == model.name).and_then(|d| d.field.clone());
-            let mut triggers = vec![delete_trigger(dialect, model, &s.field, version.as_deref())?];
+            let version = bumped(&ir.behavior.write_assignments, &model.name);
+            let mut triggers = vec![delete_trigger(dialect, model, &s.field, version)?];
             if !children.is_empty() {
                 let resolved = children.iter().map(|(t, c, v, keys, to)| {
                     let pairs = keys.iter().zip(to).map(|(k, to)| Ok((k.clone(), column(model, to)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
@@ -134,7 +168,7 @@ mod tests {
     use super::*;
 
     fn schema(dialect: &str, mode: &str, nullable: bool) -> SchemaIr {
-        let lock = |model: &str| serde_json::json!({"attribute": "locking.version", "model": model, "field": "version", "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": 4, "column": 3}});
+        let lock = |model: &str| serde_json::json!({"source": "orm.locking", "model": model, "field": "version", "on": ["update", "upsert", "delete_rewrite"], "value": "increment"});
         let at = |model: &str, line: u32| serde_json::json!({"attribute": "soft_delete.deleted_at", "model": model, "field": "deleted", "positional": [], "arguments": {"mode": mode}, "location": {"file": "schema.prisma", "line": line, "column": 3}});
         serde_json::from_value(serde_json::json!({
             "dialect": dialect,
@@ -155,7 +189,7 @@ mod tests {
                     {"name": "author_id", "column": "author_id", "type": "int"}
                 ], "relations": [{"name": "author", "kind": "one", "target": "Author", "from": "author_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}
             ],
-            "behavior": {"schema_contract": 2, "declarations": [at("Author", 3), at("Book", 9), lock("Author"), lock("Book")]}
+            "behavior": {"schema_contract": 2, "declarations": [at("Author", 3), at("Book", 9)], "write_assignments": [lock("Author"), lock("Book")]}
         })).unwrap()
     }
 
@@ -173,9 +207,9 @@ mod tests {
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", "database", true), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.read_defaults", "behavior.soft_delete", "behavior.storage", "models"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults", "behavior.soft_delete", "behavior.storage", "models"]);
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", "application", true), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.read_defaults", "behavior.soft_delete"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults", "behavior.soft_delete"]);
     }
 
     #[test]
@@ -186,6 +220,61 @@ mod tests {
         assert_eq!(defaults, [("orm.soft-delete", "deleted", "Author"), ("orm.soft-delete", "deleted", "Book")]);
         let filter = ir.behavior.read_defaults[1].filter.clone().unwrap();
         assert_eq!(filter, serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted"}, "neg": false}));
+    }
+
+    #[test]
+    fn each_soft_delete_model_gets_a_delete_rewrite_with_the_default_filter() {
+        for mode in ["application", "database"] {
+            let mut ir = schema("postgres", mode, true);
+            prepared(&mut ir).unwrap();
+            let rewrites: Vec<_> = ir.behavior.delete_rewrites.iter().map(|d| (d.source.as_str(), d.model.as_str(), d.field.as_str())).collect();
+            assert_eq!(rewrites, [("orm.soft-delete", "Author", "deleted"), ("orm.soft-delete", "Book", "deleted")]);
+            assert_eq!(Some(&ir.behavior.delete_rewrites[1].guard), ir.behavior.read_defaults[1].filter.as_ref());
+        }
+    }
+
+    #[test]
+    fn a_proxy_gets_the_delete_rewrite_of_its_root() {
+        let mut ir = schema("postgres", "application", true);
+        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        ir.behavior.lowered_models.push("AuthorView".into());
+        let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        view.name = "AuthorView".into();
+        ir.models.push(view);
+        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default() });
+        prepared(&mut ir).unwrap();
+        assert!(ir.behavior.delete_rewrites.iter().any(|d| d.model == "AuthorView" && d.field == "deleted"));
+    }
+
+    #[test]
+    fn a_leftover_filter_on_the_deleted_field_is_rejected() {
+        let declare = |attribute: &str, positional: serde_json::Value, arguments: serde_json::Value| serde_json::from_value::<orm_contracts::extension::Declaration>(serde_json::json!({
+            "attribute": attribute, "model": "Author", "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 6, "column": 1}})).unwrap();
+        for filter in ["deleted == null", "( deleted==null )", "deleted is null"] {
+            for d in [declare("query.filter", serde_json::json!(["live", filter]), serde_json::json!({})), declare("query.defaults", serde_json::json!([]), serde_json::json!({"filter": filter}))] {
+                let mut ir = schema("postgres", "application", true);
+                ir.behavior.declarations.push(d);
+                let err = prepared(&mut ir).unwrap_err();
+                assert!(err.starts_with("schema.prisma:6:1: @query.") && err.contains("Author already hides soft-deleted rows by default; remove this filter"), "{err}");
+            }
+        }
+        let mut ir = schema("postgres", "application", true);
+        ir.behavior.declarations.push(declare("query.filter", serde_json::json!(["mine", "deleted == null and id > 0"]), serde_json::json!({})));
+        prepared(&mut ir).unwrap();
+    }
+
+    #[test]
+    fn triggers_bump_the_version_the_write_assignments_name_not_a_locking_declaration() {
+        let mut ir = schema("postgres", "database", true);
+        ir.behavior.write_assignments.retain(|a| a.model != "Book");
+        ir.behavior.declarations.push(serde_json::from_value(serde_json::json!({"attribute": "locking.version", "model": "Book", "field": "version", "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": 4, "column": 3}})).unwrap());
+        prepared(&mut ir).unwrap();
+        let cascade = ir.models[0].triggers[1].body.as_deref().unwrap();
+        assert!(!cascade.contains("\"lock\""), "{cascade}");
+        let mut ir = schema("postgres", "database", true);
+        ir.behavior.write_assignments.iter_mut().filter(|a| a.model == "Author").for_each(|a| a.on = vec![WriteKind::Update]);
+        prepared(&mut ir).unwrap();
+        assert!(!ir.models[0].triggers[0].body.as_deref().unwrap().contains("\"rev\""));
     }
 
     #[test]
