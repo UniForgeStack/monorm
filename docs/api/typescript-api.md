@@ -59,6 +59,7 @@ writes one module with the compiled schema and a type for everything:
 * `User` (the value): the model, with `User.objects` (a `QuerySet<User>`), the columns
   (`User.email`, a `Column<string, "User">`), relation paths (`User.posts.views`),
   `User._meta`, `User.DoesNotExist` and `User.MultipleObjectsReturned`.
+  The member `Column.label` is now `Column.text` (and `CteColumn.label` is `CteColumn.text`); `label(name)` on an expression is unchanged.
 * `UserInsert`, `UserUpdate`, `UserUpdateRow`: the shapes `insert()`, `update()` and
   `updateMany()` take. A composed model also gets `UserAttach`
   ([`model-composition.md`](../extensions/model-composition.md)). `UserData`, `UserFields`, `UserPath`,
@@ -286,7 +287,7 @@ objects without a prototype, get a message naming the expected target model.
   A bound load of relations only runs no query for the objects themselves: the keys come from the instances, and every relation loads with an `IN` query.
   A filter or a lock reads the keys first.
   Each of those queries gives a query event.
-  The row type does not change; read the relations as `cached` or cast.
+  The returned array has the loaded type; the variables you hold keep their type.
   See "Bound query sets".
 
 #### Bound query sets
@@ -305,13 +306,17 @@ await post.qs().update({ title: "New" });               // UPDATE ... RETURNING,
 await post.qs().delete();
 ```
 
-* A bound set keeps the rule "at most one row per bound object": `filter()`, `exclude()`, `load()`, `lock()`, `using()`, `withoutDefaults()`, `update()`, `delete()`, `count()` and `exists()` are allowed.
+* A bound set keeps the rule "at most one row per bound object": `filter()`, `exclude()`, `load()`, `lock()`, `using()`, `withoutDefaults()`, `withoutRelated()`, `update()`, `delete()`, `count()`, `exists()`, `sql()` and `inspect()` are allowed, and so are the extension members `hardDelete()` and `undelete()`.
   Ordering, slices, `first()`, `get()` and other shape-changing methods do not exist on it.
 * `post.qs()` applies the query defaults of the model.
   The shortcuts `post.load()`, `post.update()` and `post.delete()` ignore them, as if they ran through `post.qs().withoutDefaults()`.
   So `await post.load({ reload: true })` refreshes a soft-deleted post, and `await post.qs().load()` does not.
   The same holds for `lock()`: use `post.qs().withoutDefaults().lock()` for a soft-deleted row.
 * A plain `await post.qs()` with no `load()` reads the normal selection of the model, so a partial object gets those fields.
+* A read of more than 500 keys runs in chunks of at most 500 keys, one statement for each chunk.
+  The chunks are not one snapshot unless you hold a transaction: use `db.transaction()` when you need one.
+  `sql()` and `inspect()` describe the first chunk.
+* `await post.load({ reload: true })` does not reload a label such as `func.count(Post.comments).label("n")`: the instance does not know the label's expression.
 * The version enters writes only: reads and `lock()` refresh a stale object.
   Bound writes (`update()`, `delete()`) have no version check yet.
 * `post.delete()` always reads `RETURNING`.
@@ -325,6 +330,8 @@ await post.qs().delete();
 | `await post.refresh({ lock: true })` | `await post.qs().lock()` |
 | `await job.refresh({ lock: true, skipLocked: true })` gives `false` | `await job.qs().lock({ skipLocked: true })` gives `[]` |
 | `await prefetch(posts, Post.author)` | `await of(posts).load(Post.author)` |
+
+`refresh()` threw `DoesNotExist` for a row that is not found; `qs().lock()` and the other bound reads give `[]`.
 
 `prefetch()` is removed.
 
