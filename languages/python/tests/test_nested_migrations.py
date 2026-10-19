@@ -108,3 +108,14 @@ def test_a_second_make_on_sqlite_finds_nothing(tmp_path):
     source = 'datasource db { provider = "sqlite" }\n' + V1
     assert Migrations(tmp_path, models(source)).make() is not None
     assert Migrations(tmp_path, models(source)).make() is None
+
+
+def test_adding_a_defaulted_leaf_to_a_nullable_group_fills_only_present_rows(tmp_path):
+    Migrations(tmp_path, models(V1)).make()
+    sql = up(tmp_path, V1.replace("  city String\n", '  city String\n  zip  String @default("0")\n'))
+    add = next(i for i, s in enumerate(sql) if 'ADD COLUMN "address_zip"' in s)
+    assert "DEFAULT" not in sql[add]  # a default would fill the rows whose group is null
+    fill = next(i for i, s in enumerate(sql) if s.startswith('UPDATE "shop" SET "address_zip" = '))
+    assert "'0'" in sql[fill] and '"address_city" IS NOT NULL' in sql[fill]
+    check = next(i for i, s in enumerate(sql) if "ADD CONSTRAINT" in s and '"address_zip" IS NOT NULL' in s)
+    assert add < fill < check

@@ -84,6 +84,8 @@ pub enum Op {
     RenameTable { from: String, to: String },
     RenameColumn { table: String, from: String, to: String },
     AddColumn { table: String, column: Column },
+    /// `UPDATE <table> SET <column> = <value> WHERE <one of the others> IS NOT NULL`.
+    BackfillColumn { table: String, column: String, value: String, others: Vec<String> },
     DropColumn { table: String, column: String },
     AlterColumnType { table: String, column: String, from: String, to: String },
     SetNotNull { table: String, column: String },
@@ -677,13 +679,19 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
     add_fks.extend(deferred.into_iter().map(|(table, fk)| Op::AddConstraint { table, constraint: Constraint::ForeignKey(fk) }));
 
     // -- columns ---------------------------------------------------------------------------
-    let (mut adds, mut alters, mut drops) = (vec![], vec![], vec![]);
+    let (mut adds, mut alters, mut drops, mut backfills) = (vec![], vec![], vec![], vec![]);
     for ((_, n), cols) in pairs.iter().zip(&col_pairs) {
         let table = &n.name;
         for (oc, nc) in cols {
             match (oc, nc) {
                 (None, Some(nc)) => {
                     adds.push(Op::AddColumn { table: table.clone(), column: (*nc).clone() });
+                    if let Some(b) = n.backfill(&nc.name) {
+                        let kept = |c: &String| cols.iter().any(|(o, k)| o.is_some() && k.is_some_and(|k| k.name == *c));
+                        if b.others.iter().any(kept) {
+                            backfills.push(Op::BackfillColumn { table: table.clone(), column: b.column.clone(), value: b.value.clone(), others: b.others.clone() });
+                        }
+                    }
                     if nc.comment.is_some() {
                         comments.push(Op::CommentOnColumn {
                             table: table.clone(),
@@ -730,6 +738,7 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
         }
     }
     ops.extend(adds);
+    ops.extend(backfills);
     ops.extend(alters);
     ops.extend(drops);
 

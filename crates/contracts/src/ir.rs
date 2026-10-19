@@ -178,6 +178,14 @@ pub struct NestedIr {
     /// The model field is a list of the type (`A[]`); only JSON storage holds one.
     #[serde(skip_serializing_if = "is_false", default)]
     pub list: bool,
+    /// A nullable level lies above this leaf. Its column carries no database `DEFAULT`:
+    /// the engine applies the default when the group is set.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub under_null: bool,
+    /// Columns of the other leaves below the nearest nullable level, which has a CHECK. A
+    /// migration that adds this leaf fills its default in the rows where one of them is set.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub present_with: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]

@@ -3459,12 +3459,14 @@ pub fn plan_insert(
         stmt.or_default_values();
     } else {
         stmt.columns(cols.iter().map(|c| Alias::new(&c.column)));
+        let inline = cols.iter().map(|c| nested::leaf_default(c, target.dialect)).collect::<Result<Vec<_>>>()?;
         for (row, forced) in rows.into_iter().zip(forced) {
             if row.len() != cols.len() {
                 return Err(Error::query("insert row length does not match fields"));
             }
-            let values = cols.iter().zip(row).zip(forced).map(|((c, item), forced)| match item {
+            let values = cols.iter().zip(&inline).zip(row).zip(forced).map(|(((c, inline), item), forced)| match item {
                 None if forced => SExpr::cust("NULL"),
+                None if inline.is_some() => SExpr::cust(inline.clone().unwrap_or_default()),
                 None if target.dialect == Dialect::Sqlite => {
                     let default = if c.default_now { "CURRENT_TIMESTAMP".to_owned() }
                     else if let Some(sql) = &c.default_sql { sql.clone() }

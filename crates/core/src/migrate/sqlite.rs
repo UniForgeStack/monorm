@@ -104,11 +104,20 @@ pub fn steps(from: &DbSchema, to: &DbSchema, renames: &Renames) -> Result<Vec<St
         let temp = format!("__orm_new_{}", t.name);
         sql.push(create_table(t, &temp, false));
         if let Some(old) = source(t) {
+            let old_of = |name: &String| old.column(name).map(|_| name.clone()).or_else(|| {
+                renames.columns.get(&(t.name.clone(), name.clone())).filter(|h| old.column(h).is_some() && t.column(h).is_none()).cloned()
+            });
             let values = t.columns.iter().map(|c| {
-                let old_col = old.column(&c.name).map(|_| &c.name).or_else(|| {
-                    renames.columns.get(&(t.name.clone(), c.name.clone())).filter(|h| old.column(h).is_some() && t.column(h).is_none())
-                });
-                match old_col { Some(col) => ident(col), None => c.default.clone().unwrap_or_else(|| "NULL".into()) }
+                match old_of(&c.name) {
+                    Some(col) => ident(&col),
+                    None => match t.backfill(&c.name) {
+                        Some(b) => {
+                            let present = b.others.iter().filter_map(old_of).map(|o| format!("{} IS NOT NULL", ident(&o))).collect::<Vec<_>>().join(" OR ");
+                            if present.is_empty() { "NULL".into() } else { format!("CASE WHEN {present} THEN {} END", b.value) }
+                        }
+                        None => c.default.clone().unwrap_or_else(|| "NULL".into()),
+                    },
+                }
             }).collect::<Vec<_>>().join(", ");
             sql.push(format!("INSERT INTO {} ({}) SELECT {values} FROM {}", ident(&temp), ids(&t.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()), ident(&old.name)));
         }

@@ -488,6 +488,15 @@ impl<'s> Planner<'s> {
     }
 }
 
+/// The default of a leaf under a nullable level, as SQL for an insert that sets the group
+/// and leaves the leaf out: its column has no `DEFAULT`. SQLite spells every default out.
+pub(super) fn leaf_default(c: &FieldIr, dialect: Dialect) -> Result<Option<String>> {
+    if dialect == Dialect::Sqlite || !c.nested.as_ref().is_some_and(|n| n.under_null) {
+        return Ok(None);
+    }
+    orm_core::migrate::model::default_sql(c).map_err(Error::query)
+}
+
 /// An insert writes NULL, not the column default, for each nullable leaf of a `columns`
 /// field whose cells are all unset in a row. Returns the fields with the missing leaf
 /// columns added, and which cells hold that NULL.

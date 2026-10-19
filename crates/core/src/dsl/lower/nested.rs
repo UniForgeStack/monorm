@@ -194,13 +194,13 @@ pub(super) fn expand(m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'
         walk_paths(ctx, ty, &member.name, &mut vec![], &mut paths);
         let mut f = FieldIr::plain(&member.name, ColType::Json);
         f.nullable = optional;
-        f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![], list: member.ty.list });
+        f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![], list: member.ty.list, under_null: false, present_with: vec![] });
         return Ok(Expansion { fields: vec![f], checks: vec![], paths });
     }
     if member.ty.list {
         return err(member.pos, format!("{what}: a list of {} needs @storage(json); columns storage holds no list of a type", ty.name));
     }
-    let mut cx = Columns { ctx, items, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, out: Expansion { fields: vec![], checks: vec![], paths } };
+    let mut cx = Columns { ctx, items, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, out: Expansion { fields: vec![], checks: vec![], paths }, claimed: vec![] };
     cx.level(ty, &mut vec![], &mut vec![], false, optional, member.pos)?;
     Ok(cx.out)
 }
@@ -249,6 +249,8 @@ struct Columns<'a> {
     ty: &'a str,
     prefix: Option<String>,
     out: Expansion,
+    /// Per lowered field: a nullable level has already set its `present_with`.
+    claimed: Vec<bool>,
 }
 
 impl Columns<'_> {
@@ -305,15 +307,32 @@ impl Columns<'_> {
                     l.column = column;
                     l.nullable = leaf.nullable || under_null;
                     if let Some(c) = &l.check {
+                        if !c.contains("{}") {
+                            let at = self.ctx.members[&(ty.name.clone(), f.name.clone())].pos;
+                            return err(at, format!("{}.{}: a @check on a subfield names its column with {{}}, as in @check({{}} > 0); the joined column name changes with prefix: and @map", self.what, names.join(".")));
+                        }
                         l.check = Some(c.replace("{}", &ident(&l.column)));
                     }
-                    l.nested = Some(NestedIr { ty: self.ty.to_owned(), storage: NestedStorage::Columns, field: self.field.to_owned(), path: names.clone(), list: false });
+                    l.nested = Some(NestedIr { ty: self.ty.to_owned(), storage: NestedStorage::Columns, field: self.field.to_owned(), path: names.clone(), list: false, under_null, present_with: vec![] });
                     self.out.paths.insert(dotted, PathTarget::Column(l.name.clone()));
                     self.out.fields.push(l);
                 }
                 (None, None) => unreachable!("a subfield is a leaf or a nested type"),
             }
             names.pop();
+        }
+        if nullable {
+            let last = self.out.fields.len();
+            self.claimed.resize(last, false);
+            if last - first > 1 {
+                for i in first..last {
+                    if !self.claimed[i] {
+                        let others = (first..last).filter(|&j| j != i).map(|j| self.out.fields[j].column.clone()).collect();
+                        self.out.fields[i].nested.as_mut().unwrap().present_with = others;
+                    }
+                }
+            }
+            self.claimed[first..].fill(true);
         }
         if nullable && self.out.fields.len() - first > 1 {
             let leaves: Vec<(&FieldIr, bool)> = self.out.fields[first..]

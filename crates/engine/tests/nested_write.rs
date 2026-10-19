@@ -210,7 +210,15 @@ async fn insert_nulls(dialect: Dialect, conn: Arc<dyn Executor>) {
     conn.batch(sql.clone()).await.map_err(|e| format!("{e}: {sql}")).unwrap();
     let rows = conn.query_text("SELECT id, address_city, address_floor FROM cshop WHERE id >= 10 ORDER BY id".into()).await.unwrap();
     assert_eq!(rows, [[Some("10".to_owned()), None, None], [Some("11".to_owned()), None, None]]);
-    // a group that is set keeps its column defaults for a subfield left out
+    // the column has no database default under a nullable group: the engine writes it
+    if dialect == Dialect::Postgres {
+        let rows = conn
+            .query_text("SELECT column_default FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cshop' AND column_name = 'address_floor'".into())
+            .await
+            .unwrap();
+        assert_eq!(rows, [[None]]);
+    }
+    // a group that is set gets the default of a subfield left out
     let sql = run(
         vec!["id", "address_city", "address_big", "address_open", "address_opened"],
         vec![vec![Some(Value::Int(Some(12))), Some("Nes".into()), Some(Value::BigInt(Some(1))), Some(Value::Bool(Some(true))), Some("2026-02-01T00:00:00Z".into())]],
