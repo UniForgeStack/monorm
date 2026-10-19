@@ -4,13 +4,13 @@ import { mkdtemp, realpath, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pending } from "orm";
-import { LocalStorage, Registry, Reference } from "@orm/storage";
-import { Upload, FileField, FileFieldError, FileNotLoaded, MissingFile } from "../src/index.js";
+import { Operator } from "opendal";
+import { Registry, Reference, Upload, FileField, FileFieldError, FileNotLoaded, MissingFile } from "../src/index.js";
 import { FileAdapter } from "../src/model.js";
 
 async function environment(run: (registry: Registry, field: FileField, root: string) => Promise<void>) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "file-write-")));
-  const registry = new Registry(new Map([["reports", new LocalStorage("reports", root)]]));
+  const registry = new Registry(new Map([["reports", new Operator("fs", { root })]]));
   try { await run(registry, new FileField("file", "reports", true), root); }
   finally { await rm(root, { recursive: true, force: true }); }
 }
@@ -25,7 +25,7 @@ test("validate defers an upload and prepare stores it", () => environment(async 
 }));
 test("references and null validate to stored values; bad ones fail before upload", () => environment(async (registry, field, root) => {
   const adapter = new FileAdapter(field, () => registry);
-  const ref = await registry.resolve(new Reference({ v: 1, storage: "reports", key: "lookup" })).upload(Buffer.from("report"));
+  const ref = await registry.upload("reports", Buffer.from("report"));
   assert.deepEqual(adapter.validate(ref), ref.toJSON());
   assert.equal(adapter.validate(null), null);
   assert.throws(() => new FileAdapter(new FileField("file", "other"), () => registry).validate(ref), FileFieldError);
