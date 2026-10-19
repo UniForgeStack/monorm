@@ -44,7 +44,7 @@ import { NotLoaded, QueryError, TransactionRequired } from "./errors.js";
 import type { DefaultNames, Hop, HopKind, In, ModelSpec, RelationMeta } from "./meta.js";
 import { DB, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
-import { AdaptedInsert, AdaptedUpdate, checkedRows, splitAdapted } from "./adapters.js";
+import { adaptedInsert, adaptedUpdate, checkedRows, splitAdapted } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
 import { after, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
@@ -1442,7 +1442,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   update(values: M["update"], options: { readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
     const returning = options.returning ?? false;
     const adapted = splitAdapted(this.meta, values);
-    if (adapted?.pending.size) return new AdaptedUpdate(this as never, adapted.checked, adapted.pending, returning) as unknown as InspectedStatement<number | M["row"][]>;
+    if (adapted?.pending.size) return adaptedUpdate(InspectedStatement, this as never, adapted.checked, adapted.pending, returning) as InspectedStatement<number | M["row"][]>;
     if (adapted) values = adapted.checked as M["update"];
     return new InspectedStatement(() => this.updateValues(values, returning), () => {
       const params: unknown[] = [];
@@ -1565,7 +1565,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   insert(values: M["insert"]): InsertOne<M> {
     this.assertStandalone();
     const adapted = splitAdapted(this.meta, values);
-    if (adapted?.pending.size) return new AdaptedInsert(this as never, adapted.checked, adapted.pending) as unknown as InsertOne<M>;
+    if (adapted?.pending.size) return adaptedInsert<M>(InsertOne, this as never, adapted.checked, adapted.pending);
     if (adapted) values = adapted.checked as M["insert"];
     return new InsertOne((conflict, returning) => this.insertRows([values], conflict, returning, null), (conflict, returning) => this.inspectInsert([values], conflict, returning, null));
   }
