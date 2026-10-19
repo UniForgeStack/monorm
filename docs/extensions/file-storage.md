@@ -41,8 +41,11 @@ await Report.objects.filter(Report.id == report.id).update(file=Upload(new_data)
 With `orm.loads` (no generated module), install the adapter yourself:
 `orm_file_storage.model.install_model(Report, {"file": FileField("file", "reports", True)}, registry)`.
 
-- `insert` and a unique-row `update` (an equality on the primary key or a unique field) accept `Upload`.
-  `insert_many`, a filtered `update` of many rows, upserts and expressions reject `Upload` before any upload.
+- `insert`, `insert_many`, `update_many` and `update` accept `Upload`.
+  `insert_many` and `update_many` run up to 16 uploads at the same time.
+  A filtered `update` runs one upload and writes the same reference to every matching row, even when no row matches.
+  Upserts, expressions and `insert_many(copy=True)` reject `Upload` before any upload.
+  In a batch, `error.stored` names a value `(row index, field)` in Python and `"<row index>.<field>"` in TypeScript.
 - A failed SQL statement keeps the uploaded files. The error (`AdapterWriteError`) holds the prepared `operation`, and `error.stored` the stored references; retry with `operation.execute()`. The ORM never deletes a stored file.
 - `Reference` values and `None` write as ordinary JSON.
 

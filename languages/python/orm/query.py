@@ -1270,7 +1270,10 @@ class QuerySet(Generic[M]):
         ``batch_size`` rows (by default as many as fit), all in one transaction.
         ``await`` gives the number of rows updated; ``.returning()`` gives the rows."""
         self._standalone()
-        return UpdateMany(self, adapters.split_rows(self._model, rows, "update_many()"), batch_size)
+        checked, pending = adapters.split_rows(self._model, rows)
+        if pending:
+            return adapters.PendingUpdateMany(self, checked, pending, batch_size)
+        return UpdateMany(self, checked, batch_size)
 
     def delete(self) -> Delete[M]:
         """``DELETE`` every matching row. ``await`` gives the number of rows deleted;
@@ -1357,7 +1360,12 @@ class QuerySet(Generic[M]):
         ``copy=True`` loads the rows with Postgres ``COPY`` instead, for large imports:
         ``await`` gives the row count, and ``on_conflict()`` is not available."""
         self._standalone()
-        fields, aligned, provided = prepare_rows(self._model, adapters.split_rows(self._model, rows, "insert_many()"))
+        checked, pending = adapters.split_rows(self._model, rows)
+        if pending:
+            if copy:
+                raise adapters.FieldAdapterError("insert_many(copy=True) takes no value that needs prepare")
+            return adapters.PendingInsertMany(self, checked, pending, batch_size)
+        fields, aligned, provided = prepare_rows(self._model, checked)
         if copy:
             if batch_size is not None:
                 raise TypeError("insert_many(copy=True) takes no batch_size: COPY is one statement")
@@ -2210,8 +2218,11 @@ class ManyRelatedSet(QuerySet[M]):
         from .db import resolve
 
         db = self._db if self._db is not None else self._instance.__dict__.get("_db")
+        insert = QuerySet(self._model).using(db).insert(**values)
+        if isinstance(insert, adapters.PendingInsert):
+            await insert.prepare()  # the uploads run before the transaction opens
         async with resolve(db).transaction(savepoint=False):
-            obj: M = await QuerySet(self._model).using(db).insert(**values)
+            obj: M = await insert
             await self.add(obj)
         return obj
 

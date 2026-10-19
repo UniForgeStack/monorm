@@ -56,8 +56,8 @@ test('reference writes, shared objects, null and explicit opening', () => fixtur
 }));
 
 test('unsupported shapes and invalid ordinary values reject before upload', () => fixture(async ({ Report, storage }) => {
-  for (const run of [() => Report.objects.insertMany([{ id: 1, file: new Upload(Buffer.from('x')) }]),
-    () => Report.objects.update({ file: new Upload(Buffer.from('x')) }),
+  for (const run of [() => Report.objects.insertMany([{ id: 1, file: new Upload(Buffer.from('x')) }], { copy: true }),
+    () => Report.objects.insertMany([{ id: 1, file: new Upload(Buffer.from('x')) }, { id: 'invalid', file: new Upload(Buffer.from('y')) }]),
     () => Report.objects.insert({ id: 1, file: new Upload(Buffer.from('x')) }).onConflict(Report.id, { update: false }),
     () => Report.objects.insert({ id: 'invalid', file: new Upload(Buffer.from('x')) })]) {
     await assert.rejects(async () => run());
@@ -108,16 +108,42 @@ test('outer rollback and savepoint retain successfully uploaded references', () 
   assert.equal((await bytes(storage.open(Reference.fromJSON(nested.operation.stored.file)))).toString(), 'savepoint');
 }));
 
-test('batch writes store references and reject an upload', () => fixture(async ({ Report, storage }) => {
+test('batch writes prepare each upload and a filtered update shares one', () => fixture(async ({ Report, storage }) => {
   const ref = await storage.upload('reports', Buffer.from('report'));
   await Report.objects.insertMany([{ id: 2, file: ref }, { id: 3, file: null }]);
   await Report.objects.updateMany([{ id: 2, file: null }, { id: 3, file: ref }]);
-  const rows = await Report.objects.orderBy(Report.id);
+  let rows = await Report.objects.orderBy(Report.id);
   assert.equal(rows[0].file, null);
   assert.deepEqual(rows[1].file.toJSON(), ref.toJSON());
-  assert.throws(() => Report.objects.insertMany([{ id: 1, file: new Upload(Buffer.from('x')) }]), FieldAdapterError);
-  await assert.rejects(async () => Report.objects.updateMany([{ id: 2, file: new Upload(Buffer.from('x')) }]), FieldAdapterError);
   assert.equal(storage.uploads, 1);
+  const read = async (id) => (await bytes((await Report.objects.filter(Report.id.eq(id)).get()).fileOpen())).toString();
+
+  assert.equal(await Report.objects.insertMany([{ id: 4, file: new Upload(Buffer.from('four')) }, { id: 5, file: new Upload(Buffer.from('five')) }, { id: 6, file: null }]), 3);
+  assert.equal(storage.uploads, 3);
+  assert.deepEqual([await read(4), await read(5)], ['four', 'five']);
+  assert.equal((await Report.objects.filter(Report.id.eq(6)).get()).file, null);
+
+  await Report.objects.updateMany([{ id: 2, file: new Upload(Buffer.from('two')) }, { id: 6, file: new Upload(Buffer.from('six')) }]);
+  assert.equal(storage.uploads, 5);
+  assert.deepEqual([await read(2), await read(6)], ['two', 'six']);
+
+  assert.equal(await Report.objects.filter(Report.id.gt(3)).update({ file: new Upload(Buffer.from('shared')) }), 3);
+  assert.equal(storage.uploads, 6);
+  rows = await Report.objects.filter(Report.id.gt(3)).orderBy(Report.id);
+  assert.deepEqual(rows.map(r => r.file.toJSON()), [rows[0].file.toJSON(), rows[0].file.toJSON(), rows[0].file.toJSON()]);
+  assert.equal(await read(6), 'shared');
+}));
+
+test('a failed bulk insert keeps every upload and retries without one', () => fixture(async ({ Report, storage }) => {
+  await Report.objects.insert({ id: 1, file: null });
+  const statement = Report.objects.insertMany([{ id: 2, file: new Upload(Buffer.from('two')) }, { id: 1, file: new Upload(Buffer.from('one')) }]);
+  await assert.rejects(async () => statement, (error) => { assert.ok(error instanceof AdapterWriteError); return error.operation === statement.operation; });
+  assert.equal(storage.uploads, 2);
+  assert.deepEqual(Object.keys(statement.operation.stored).sort(), ['0.file', '1.file']);
+  await Report.objects.filter(Report.id.eq(1)).delete();
+  assert.equal(await statement.operation.execute(), 2);
+  assert.equal(storage.uploads, 2);
+  assert.equal((await bytes((await Report.objects.filter(Report.id.eq(1)).get()).fileOpen())).toString(), 'one');
 }));
 
 test('the artifact requires the adapter capability', () => {

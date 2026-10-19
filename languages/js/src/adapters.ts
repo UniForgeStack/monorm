@@ -9,7 +9,7 @@
  */
 import { Expression } from "./expr.js";
 import { RESERVED, type ModelMeta, type Row } from "./model.js";
-import type { InsertOne, InspectedStatement, PreparedInsert, PreparedUpdate } from "./query.js";
+import type { BatchOptions, InsertMany, InsertOne, InspectedStatement, PreparedInsert, PreparedUpdate } from "./query.js";
 import type { ModelSpec } from "./meta.js";
 import type { QueryInspection } from "./inspection.js";
 
@@ -38,16 +38,28 @@ export class AdapterWriteError extends Error {
   constructor(readonly operation: PreparedWrite, cause: unknown) {
     super("adapted write failed; inspect error.stored and error.operation", { cause });
   }
+  /** By field. A batch write names a value `<row index>.<field>`. */
   get stored(): Readonly<Record<string, unknown>> { return this.operation.stored; }
 }
 
+/** The `prepare` calls that one batch write runs at the same time, at most. */
+const CONCURRENCY = 16;
+
 type Values = Record<string, unknown>;
-type PendingFields = Map<string, { adapter: FieldAdapter; value: unknown }>;
+/** A batch value also holds its place (`at`). */
+type PendingFields = Map<string, { adapter: FieldAdapter; value: unknown; at?: { row: number; field: string } }>;
+type UpdateManyOptions = { readonly batchSize?: number; readonly returning?: boolean };
 interface AdaptedQuerySet {
   prepareInsert(values: Values): PreparedInsert<ModelSpec>;
   prepareUpdate(values: Values): PreparedUpdate<ModelSpec>;
   insert(values: never): { inspect(): QueryInspection };
   update(values: never, options: { readonly returning: boolean }): { inspect(): QueryInspection };
+  checkInsertRows(rows: readonly object[]): void;
+  insertRows(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null): Promise<unknown[] | number>;
+  inspectInsert(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null): QueryInspection;
+  checkUpdateRows(rows: readonly object[], options: UpdateManyOptions): void;
+  executeUpdateMany(rows: readonly object[], options: UpdateManyOptions): Promise<number | Row[]>;
+  inspectUpdateMany(rows: readonly object[], options: UpdateManyOptions): QueryInspection;
 }
 type Statement<T> = (stored: Values) => Promise<T>;
 
@@ -91,34 +103,62 @@ export function splitAdapted(meta: ModelMeta, values: object): { checked: Values
   return { checked, pending };
 }
 
-/** @internal Validate the adapted values of every row of a batch write. A value that needs `prepare`
- * is not supported in a batch yet: it would store the raw input. */
-export function checkedRows<R extends object>(meta: ModelMeta, rows: readonly R[], statement: string): readonly R[] {
-  if (!ADAPTERS.has(meta)) return rows;
-  return rows.map(row => {
+/** @internal Validate the adapted values of every row of a batch write: the rows that check the
+ * statement, and the pending values by `<row index>.<field>`. */
+export function splitBatch<R extends object>(meta: ModelMeta, rows: readonly R[]): { checked: readonly R[]; pending: PendingFields } {
+  const pending: PendingFields = new Map();
+  if (!ADAPTERS.has(meta)) return { checked: rows, pending };
+  const checked = rows.map((row, index) => {
     const adapted = splitAdapted(meta, row);
     if (adapted === undefined) return row;
-    if (adapted.pending.size > 0) {
-      throw new FieldAdapterError(`${meta.name}.${[...adapted.pending.keys()].join(", ")}: ${statement} takes no value that needs prepare yet`);
-    }
+    for (const [field, value] of adapted.pending) pending.set(`${index}.${field}`, { ...value, at: { row: index, field } });
     return adapted.checked as R;
   });
+  return { checked, pending };
+}
+
+/** Copies of `rows` with the stored values in the place of their placeholders. */
+function fillRows(rows: readonly object[], stored: Values, pending: PendingFields): Values[] {
+  const filled: Values[] = rows.map(row => ({ ...row }));
+  for (const [key, value] of Object.entries(stored)) {
+    const { row, field } = pending.get(key)!.at!;
+    filled[row]![field] = value;
+  }
+  return filled;
 }
 
 /** The `prepare` calls of one statement, run once. A failed `prepare` call is final, because a
- * stream cannot be replayed. */
+ * stream cannot be replayed. With a `limit`, up to `limit` calls run at the same time; after a failure,
+ * the calls that run finish and no new call starts. */
 export class PreparedWrite {
   readonly #pending: PendingFields;
+  readonly #limit: number | undefined;
   readonly #stored: Values = {};
   #state: "new" | "preparing" | "ready" | "failed" = "new";
   #executing = false;
   #statement: Statement<unknown> | undefined;
 
   /** @internal */
-  constructor(pending: PendingFields) { this.#pending = pending; }
+  constructor(pending: PendingFields, limit?: number) {
+    this.#pending = pending;
+    this.#limit = limit;
+  }
 
   /** The stored values that `prepare` produced so far, by field. */
   get stored(): Readonly<Values> { return { ...this.#stored }; }
+
+  /** Run the `prepare` calls without a statement. A later `execute` runs no new call. */
+  async prepare(): Promise<void> {
+    if (this.#executing) throw new FieldAdapterError("adapted write already executing");
+    this.#executing = true;
+    try {
+      await this.#prepare();
+    } catch (error) {
+      throw error instanceof AdapterWriteError ? error : new AdapterWriteError(this, error);
+    } finally {
+      this.#executing = false;
+    }
+  }
 
   /** Run `prepare` once, then `statement(stored)`. Without `statement`, run the last one again. */
   async execute<T>(statement?: Statement<T>): Promise<T> {
@@ -141,18 +181,37 @@ export class PreparedWrite {
     if (this.#state !== "new") throw new FieldAdapterError("prepare is running or failed; its input cannot be replayed");
     this.#state = "preparing";
     try {
-      for (const [name, { adapter, value }] of this.#pending) this.#stored[name] = await adapter.prepare(value);
+      if (this.#limit === undefined) {
+        for (const [name, { adapter, value }] of this.#pending) this.#stored[name] = await adapter.prepare(value);
+      } else await this.#prepareConcurrently(this.#limit);
       this.#state = "ready";
     } catch (error) {
       this.#state = "failed";
       throw error;
     }
   }
+
+  async #prepareConcurrently(limit: number): Promise<void> {
+    const queue = [...this.#pending];
+    const failures: unknown[] = [];
+    const worker = async (): Promise<void> => {
+      for (let next = queue.shift(); next !== undefined && failures.length === 0; next = queue.shift()) {
+        const [name, { adapter, value }] = next;
+        try {
+          this.#stored[name] = await adapter.prepare(value);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
+    if (failures.length > 0) throw failures[0];
+  }
 }
 
 /** @internal `insert(values)` with a value that needs `prepare`. `inspect()` shows the statement over the
  * placeholder values and runs no `prepare` call. */
-export function adaptedInsert<M extends ModelSpec>(Insert: typeof InsertOne, qs: AdaptedQuerySet, checked: Values, pending: PendingFields): InsertOne<M> & { readonly operation: PreparedWrite } {
+export function adaptedInsert<M extends ModelSpec>(Insert: typeof InsertOne, qs: AdaptedQuerySet, checked: Values, pending: PendingFields): InsertOne<M> & { readonly operation: PreparedWrite; prepare(): Promise<void> } {
   const operation = new PreparedWrite(pending);
   const insert = new Insert<M>(async () => {
     // Statement and write protection are checked before the first `prepare` call.
@@ -161,18 +220,47 @@ export function adaptedInsert<M extends ModelSpec>(Insert: typeof InsertOne, qs:
   }, () => qs.insert(checked as never).inspect());
   return Object.assign(insert, {
     operation,
+    /** Run the checks and the `prepare` calls now, so the awaited insert runs no `prepare` call. */
+    async prepare(): Promise<void> {
+      qs.prepareInsert(checked);
+      await operation.prepare();
+    },
     onConflict(): never { throw new FieldAdapterError("a value that needs prepare is unsupported in conflict writes"); },
   });
 }
 
-/** @internal `update(values)` with a value that needs `prepare`, on one unique row. */
+/** @internal `update(values)` with a value that needs `prepare`: one `prepare` call, and the stored value goes to every matching row. */
 export function adaptedUpdate(Statement: typeof InspectedStatement, qs: AdaptedQuerySet, checked: Values, pending: PendingFields, returning: boolean): InspectedStatement<number | Row[]> & { readonly operation: PreparedWrite } {
   const operation = new PreparedWrite(pending);
   const update = new Statement<number | Row[]>(async () => {
     const prepared = qs.prepareUpdate(checked);
-    if (!prepared.unique) throw new FieldAdapterError("an update with a value that needs prepare must target one unique row");
     return (await operation.execute(stored => prepared.execute({ ...checked, ...stored } as never, { returning }))) as number | Row[];
   }, () => qs.update(checked as never, { returning }).inspect());
+  return Object.assign(update, { operation });
+}
+
+/** @internal `insertMany(rows)` with a value that needs `prepare`. `inspect()` shows the statement over the
+ * placeholder values and runs no `prepare` call. */
+export function adaptedInsertMany<M extends ModelSpec>(Insert: typeof InsertMany, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: BatchOptions | undefined): InsertMany<M> & { readonly operation: PreparedWrite } {
+  const batchSize = options?.batchSize ?? null;
+  const operation = new PreparedWrite(pending, CONCURRENCY);
+  const insert = new Insert<M>(async (_conflict, returning) => {
+    qs.checkInsertRows(rows); // write protection runs before the first `prepare` call
+    return operation.execute(stored => qs.insertRows(fillRows(rows, stored, pending), undefined, returning, batchSize));
+  }, (_conflict, returning) => qs.inspectInsert(rows, undefined, returning, batchSize));
+  return Object.assign(insert, {
+    operation,
+    onConflict(): never { throw new FieldAdapterError("a value that needs prepare is unsupported in conflict writes"); },
+  });
+}
+
+/** @internal `updateMany(rows)` with a value that needs `prepare`. */
+export function adaptedUpdateMany(Statement: typeof InspectedStatement, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: UpdateManyOptions): InspectedStatement<number | Row[]> & { readonly operation: PreparedWrite } {
+  const operation = new PreparedWrite(pending, CONCURRENCY);
+  const update = new Statement<number | Row[]>(async () => {
+    qs.checkUpdateRows(rows, options);
+    return operation.execute(stored => qs.executeUpdateMany(fillRows(rows, stored, pending), options));
+  }, () => qs.inspectUpdateMany(rows, options));
   return Object.assign(update, { operation });
 }
 
