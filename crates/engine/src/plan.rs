@@ -923,6 +923,7 @@ impl<'s> Planner<'s> {
                 if let Some(w) = p.with_clause(&q.with)? {
                     stmt.with_cte(w);
                 }
+                within_param_cap(target, &stmt)?;
                 Plan::Update(stmt, types.map(|(types, shape)| (p.root, types, shape)))
             }
             Operation::Delete(q) => {
@@ -937,12 +938,14 @@ impl<'s> Planner<'s> {
                     if let Some(w) = p.with_clause(&q.with)? {
                         stmt.with_cte(w);
                     }
+                    within_param_cap(target, &stmt)?;
                     return Ok(Plan::Update(stmt, types.map(|(types, shape)| (p.root, types, shape))));
                 }
                 let (mut stmt, types) = p.delete(q)?;
                 if let Some(w) = p.with_clause(&q.with)? {
                     stmt.with_cte(w);
                 }
+                within_param_cap(target, &stmt)?;
                 Plan::Delete(stmt, types.map(|(types, shape)| (p.root, types, shape)))
             }
         })
@@ -3061,6 +3064,18 @@ impl<'s> Planner<'s> {
         })));
         Ok((stmt, Some((positions.iter().map(|pos| root.fields()[pos].value_type()).collect(), shape))))
     }
+}
+
+/// A write is one statement, so a key set above the driver's parameter cap cannot run: fail before the driver does.
+fn within_param_cap<S: sea_query::QueryStatementWriter>(target: Target, stmt: &S) -> Result<()> {
+    let n = crate::db::build(target.dialect, stmt).1.len();
+    if n > target.caps.max_params {
+        return Err(Error::query(format!(
+            "this write binds {n} parameters, above the {} the database allows in one statement; split the objects into smaller sets",
+            target.caps.max_params
+        )));
+    }
+    Ok(())
 }
 
 /// `ORDER BY <e> [DESC] [NULLS FIRST|LAST]`.
