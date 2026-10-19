@@ -2,10 +2,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, of, Registry, type Database } from "../src/index.js";
-import { native } from "../src/native.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
+import { artifactCapabilities } from "./artifact-caps.js";
 
-const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
+const capabilities = artifactCapabilities();
 const soft = { skip: !capabilities.includes("soft-delete") };
 type Models = Record<string, any>;
 const bound = (b: unknown): any => b;

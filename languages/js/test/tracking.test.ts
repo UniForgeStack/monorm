@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, of, Registry, scope, VersionConflict, type Database } from "../src/index.js";
-import { native } from "../src/native.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
+import { artifactCapabilities } from "./artifact-caps.js";
 
-const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
+const capabilities = artifactCapabilities();
 const OLD = new Date("2000-01-01T00:00:00Z");
 type SoftDeletable = { hardDelete(): Promise<void>; undelete(): Promise<void> };
 type Models = Record<string, { objects: any; [key: string]: any }>;

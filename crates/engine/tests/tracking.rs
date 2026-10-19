@@ -1,4 +1,4 @@
-//! Column roles of the updated-at, soft-delete and optimistic-locking extensions.
+//! Neutral write records (assignments, delete rewrite, instance guards) in the planner.
 use orm_core::{dialect::{Dialect, Target}, ir::{Operation, ValueType}, schema::Schema};
 use orm_engine::{exec, plan::Planner, Params, Result};
 use sea_query::Value;
@@ -33,22 +33,6 @@ fn sql(schema: &Schema, dialect: Dialect, op: Json) -> String {
 fn update(set: &str) -> Json {
     json!({"op":"update","model":"Post","set":[{"field":set,"value":{"t":"param","i":0}}],
         "filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"id"},"r":{"t":"param","i":0}}]})
-}
-
-#[test]
-fn a_disabled_artifact_rejects_each_role_at_definition() {
-    for (key, value, feature) in [
-        ("updated_at", json!([{"model":"Post","field":"changed"}]), "updated-at"),
-        ("soft_delete", json!([{"model":"Post","field":"deleted"}]), "soft-delete"),
-        ("versions", json!([{"model":"Post","field":"version"}]), "optimistic-locking"),
-    ] {
-        let enabled = match feature { "updated-at" => cfg!(feature = "updated-at"), "soft-delete" => cfg!(feature = "soft-delete"), _ => cfg!(feature = "optimistic-locking") };
-        let result = schema(json!({key: value}));
-        if enabled { assert!(result.is_ok()); } else {
-            let error = result.err().unwrap();
-            assert!(error.contains(feature) && error.contains("rebuild"), "{error}");
-        }
-    }
 }
 
 fn now(field: &str) -> Json {
@@ -146,69 +130,5 @@ fn an_upsert_runs_the_assignments_of_its_kind() {
         let statement = upsert(dialect, &[], set("version"));
         assert_eq!(statement.matches("\"version\" = ").count(), 1, "{statement}");
         assert!(!statement.contains("\"posts\".\"version\" + "), "{statement}");
-    }
-}
-
-#[cfg(feature = "model-composition")]
-#[test]
-fn a_role_on_a_composed_model_is_rejected_at_definition() {
-    let source = |field: &str| format!(r#"
-model Person {{
- id Int @id
- @@map("tracking_people")
-}}
-model Employee {{
- {field}
- @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
- @@map("tracking_employees")
-}}
-"#);
-    let check = |field: &str| orm_core::dsl::compile(&source(field), None).and_then(orm_core::dsl::check).map(|_| ());
-    assert!(check("salary Int").is_ok());
-    #[cfg(feature = "updated-at")]
-    assert!(check("changed DateTime @default(now()) @timestamps.updated_at").unwrap_err().to_string().contains("Employee: @timestamps.updated_at"));
-    #[cfg(feature = "soft-delete")]
-    assert!(check("deleted DateTime? @soft_delete.deleted_at").unwrap_err().to_string().contains("Employee: @soft_delete.deleted_at"));
-    #[cfg(feature = "optimistic-locking")]
-    assert!(check("version Int @default(0) @locking.version").unwrap_err().to_string().contains("Employee: @locking.version"));
-}
-
-#[test]
-fn a_role_with_a_wrong_target_is_rejected_at_definition() {
-    let mut cases: Vec<(&str, Json, &str)> = vec![];
-    #[cfg(feature = "updated-at")]
-    {
-        cases.push(("updated_at", json!([{"model":"Post","field":"views"}]), "wrong type"));
-        cases.push(("updated_at", json!([{"model":"Post","field":"tags"}]), "wrong type"));
-        cases.push(("updated_at", json!([{"model":"Nope","field":"changed"}]), "unknown model"));
-        cases.push(("updated_at", json!([{"model":"Post","field":"nope"}]), "nope"));
-    }
-    #[cfg(feature = "soft-delete")]
-    {
-        cases.push(("soft_delete", json!([{"model":"Post","field":"changed"}]), "wrong type"));
-        cases.push(("soft_delete", json!([{"model":"Post","field":"tags"}]), "wrong type"));
-        cases.push(("soft_delete", json!([{"model":"Post","field":"deleted"},{"model":"Post","field":"deleted"}]), "default name is set by both"));
-        cases.push(("soft_delete", json!([{"model":"Nope","field":"deleted"}]), "unknown read-default model"));
-        cases.push(("soft_delete", json!([{"model":"Post","field":"nope"}]), "nope"));
-    }
-    #[cfg(feature = "optimistic-locking")]
-    {
-        cases.push(("versions", json!([{"model":"Post","field":"changed"}]), "wrong type"));
-        cases.push(("versions", json!([{"model":"Post","field":"tags"}]), "wrong type"));
-        cases.push(("versions", json!([{"model":"Post","field":"version"},{"model":"Post","field":"views"}]), "one version field only"));
-        cases.push(("versions", json!([{"model":"Nope","field":"version"}]), "unknown model"));
-        cases.push(("versions", json!([{"model":"Post","field":"nope"}]), "nope"));
-    }
-    for (key, value, expected) in cases {
-        let ir = json!({"models":[{"name":"Post","table":"posts","fields":[
-            {"name":"id","column":"id","type":"int","primary_key":true},
-            {"name":"views","column":"views","type":"int"},
-            {"name":"tags","column":"tags","type":"int","array":true},
-            {"name":"changed","column":"changed_at","type":"date_time"},
-            {"name":"deleted","column":"deleted_at","type":"date_time","nullable":true},
-            {"name":"version","column":"version","type":"int"}
-        ]}],"behavior":{"schema_contract":2, key: value.clone()}});
-        let error = Schema::from_ir(serde_json::from_value(ir).unwrap()).err().unwrap_or_else(|| panic!("{key} {value} was accepted"));
-        assert!(error.contains(expected), "{key} {value}: {error}");
     }
 }

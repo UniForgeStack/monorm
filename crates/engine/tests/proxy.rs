@@ -86,28 +86,3 @@ fn postgres_proxy_rows_writes_and_public_diagnostics() {
     let url = std::env::var("ORM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
     tokio::runtime::Runtime::new().unwrap().block_on(exercise(&url,Dialect::Postgres));
 }
-
-#[cfg(all(feature = "soft-delete", feature = "optimistic-locking"))]
-#[test]
-fn a_proxy_takes_the_roles_of_its_root() {
-    let source = |proxy: &str| format!(r#"
-model Doc {{
- id Int @id
- version Int @default(0) @locking.version
- deleted DateTime? @soft_delete.deleted_at(mode: "application")
- @@map("proxy_role_docs")
-}}
-model Draft {{
- @@proxy.of(Doc)
-{proxy}
-}}
-"#);
-    let (_, schema) = dsl::check(dsl::compile(&source(""), None).unwrap()).unwrap();
-    let draft = schema.model(schema.model_idx("Draft").unwrap());
-    assert_eq!(draft.soft_delete.map(|p| draft.fields()[p].name.as_str()), Some("deleted"));
-    assert_eq!(draft.version.map(|p| draft.fields()[p].name.as_str()), Some("version"));
-    for field in ["deleted", "version"] {
-        let error = dsl::compile(&source(&format!("@@proxy.fields(exclude: [\"{field}\"])")), None).and_then(dsl::check).err().expect("rejected");
-        assert!(error.to_string().contains("proxy must keep"), "{error}");
-    }
-}

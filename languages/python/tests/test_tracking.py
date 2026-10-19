@@ -1,16 +1,15 @@
 """Run with an artifact that selects the timestamps, soft-delete or locking extension."""
 
-import json
 import os
 from datetime import datetime, timezone
 
 import pytest
 
 import orm
-from orm import _native
 from soft_delete_ext import loads_soft_delete
+from artifact_caps import artifact_capabilities
 
-CAPABILITIES = set(json.loads(_native.native_artifact())["capabilities"])
+CAPABILITIES = set(artifact_capabilities())
 DATABASES = ["sqlite", "postgres"]
 OLD = datetime(2000, 1, 1, tzinfo=timezone.utc)
 

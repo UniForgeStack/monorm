@@ -9,6 +9,8 @@ const DEFAULT = "deleted" as never;
 type RowsOf<T> = T extends QuerySet<infer M, any, any, any, any, any> ? M["row"][] : never;
 type Returning = { readonly returning?: boolean };
 
+const SOURCE = "orm.soft-delete";
+
 // One lookup for each model class, not one for each call.
 const fields = new WeakMap<object, Deleted>();
 
@@ -16,7 +18,7 @@ function deletedAt(qs: { readonly meta: AnyQuerySet["meta"] }): Deleted {
   const meta = qs.meta;
   let field = fields.get(meta);
   if (field === undefined) {
-    const record = behaviorRecords(qs as AnyQuerySet, "soft_delete")[0];
+    const record = behaviorRecords(qs as AnyQuerySet, "delete_rewrites").find((r) => r["source"] === SOURCE);
     if (record === undefined) throw new TypeError(`${meta.name} has no @soft_delete.deleted_at field`);
     field = behaviorField(meta, record);
     fields.set(meta, field);

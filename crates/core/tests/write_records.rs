@@ -64,7 +64,7 @@ fn neutral_rules_reject_bad_records() {
 #[test]
 fn a_composed_chain_rejects_every_write_record() {
     let physical = json!([
-        {"name": "Parent", "table": "parents", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "changed", "column": "changed_at", "type": "date_time"}]},
+        {"name": "Parent", "table": "parents", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "changed", "column": "changed_at", "type": "date_time"}, {"name": "removed", "column": "removed_at", "type": "date_time", "nullable": true}]},
         {"name": "Child", "table": "children", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}],
          "relations": [{"name": "parent", "kind": "one", "target": "Parent", "from": "id", "to": "id", "foreign_key": true}]}
     ]);
@@ -82,4 +82,35 @@ fn a_composed_chain_rejects_every_write_record() {
     parent["model"] = "Parent".into();
     let err = build(json!({"write_assignments": [parent]})).err().unwrap();
     assert!(err.contains("write record from ext-a on Parent.changed is not supported in a composed model's ownership chain"), "{err}");
+    let rewrite = json!({"source": "ext-b", "model": "Parent", "field": "removed", "guard": {"t": "is_null", "item": {"t": "col", "path": [], "name": "removed"}, "neg": false}});
+    let err = build(json!({"delete_rewrites": [rewrite]})).err().unwrap();
+    assert!(err.contains("write record from ext-b on Parent.removed is not supported in a composed model's ownership chain"), "{err}");
+    let err = build(json!({"instance_guards": [{"source": "ext-c", "model": "Parent", "field": "changed"}]})).err().unwrap();
+    assert!(err.contains("write record from ext-c on Parent.changed is not supported in a composed model's ownership chain"), "{err}");
+}
+
+#[cfg(feature = "composition")]
+#[test]
+fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
+    let model = |name: &str, table: &str, parent: Option<(&str, &str)>| {
+        let mut m = json!({"name": name, "table": table, "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}]});
+        if let Some((target, relation)) = parent {
+            m["relations"] = json!([{"name": relation, "kind": "one", "target": target, "from": "id", "to": "id", "foreign_key": true}]);
+        } else {
+            m["fields"].as_array_mut().unwrap().push(json!({"name": "changed", "column": "changed_at", "type": "date_time"}));
+        }
+        m
+    };
+    let models = json!([model("Grand", "grands", None), model("Parent", "parents", Some(("Grand", "grand"))), model("Child", "children", Some(("Parent", "parent")))]);
+    let build = |records: Value| {
+        let mut behavior = json!({"schema_contract": SCHEMA_CONTRACT, "storage": {"models": models},
+            "owner_links": [{"child": "Parent", "parent": "Grand", "child_key": "id", "parent_key": "id"}, {"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
+        behavior.as_object_mut().unwrap().extend(records.as_object().unwrap().clone());
+        Schema::from_ir(serde_json::from_value(json!({"models": models, "behavior": behavior})).unwrap())
+    };
+    assert!(build(json!({})).is_ok());
+    let mut root = assign("changed", "now", json!(["update"]));
+    root["model"] = "Grand".into();
+    let err = build(json!({"write_assignments": [root]})).err().unwrap();
+    assert!(err.contains("a write record from ext-a on Grand.changed is not supported in a composed model's ownership chain"), "{err}");
 }

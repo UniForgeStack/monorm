@@ -2,9 +2,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { allowWrites, connect, loads, Registry, SchemaError, WriteProtected, type Database } from "../src/index.js";
-import { native } from "../src/native.js";
+import { artifactCapabilities } from "./artifact-caps.js";
 
-const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
+const capabilities = artifactCapabilities();
 const source = `datasource db {
   provider = "sqlite"
 }

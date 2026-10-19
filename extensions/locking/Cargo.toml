@@ -16,13 +16,13 @@ host_contract = 1
 schema_contract = 2
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
-capabilities = ["optimistic-locking"]
+capabilities = []
 
 [[package.metadata.orm-extension.passes]]
 id = "orm.locking.prepare"
 phase = "behavior"
 rust = "crate::prepare"
-effects = ["behavior.versions", "behavior.write_assignments.locking", "behavior.instance_guards"]
+effects = ["behavior.write_assignments.locking", "behavior.instance_guards"]
 
 # `version Int @default(0) @locking.version`.
 [[package.metadata.orm-extension.attributes]]

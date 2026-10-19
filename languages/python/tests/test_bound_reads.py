@@ -1,17 +1,16 @@
 """Bound query sets (Model.objects.of, orm.of, obj.qs()): reads that fill the given objects in place."""
 
 import asyncio
-import json
 import os
 
 import pytest
 
 import orm
 from blog.models import Comment, Post, User
-from orm import _native
 from soft_delete_ext import loads_soft_delete
+from artifact_caps import artifact_capabilities
 
-CAPABILITIES = set(json.loads(_native.native_artifact())["capabilities"])
+CAPABILITIES = set(artifact_capabilities())
 
 
 async def seed():

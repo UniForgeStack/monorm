@@ -1,16 +1,15 @@
 """Bound query sets: update() and delete() write the rows of the given objects and fill them in place."""
 
-import json
 import os
 
 import pytest
 
 import orm
 from blog.models import Post, User
-from orm import _native
 from soft_delete_ext import loads_soft_delete
+from artifact_caps import artifact_capabilities
 
-CAPABILITIES = set(json.loads(_native.native_artifact())["capabilities"])
+CAPABILITIES = set(artifact_capabilities())
 
 
 async def seed(count=4):

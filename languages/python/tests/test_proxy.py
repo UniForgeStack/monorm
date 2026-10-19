@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import orm
 from orm import _native
+from artifact_caps import artifact_capabilities
 
 SOURCE = Path(__file__).parents[3].joinpath("fixtures/proxy.prisma").read_text()
 pytestmark = pytest.mark.skipif(
@@ -226,7 +227,7 @@ model Draft {
 
 
 def _has(*names):
-    caps = json.loads(_native.native_artifact())["capabilities"]
+    caps = artifact_capabilities()
     return all(n in caps for n in names)
 
 

@@ -1,13 +1,12 @@
 """`@@protected_write` and `orm.allow_writes`: an application-level write check."""
 
 import asyncio
-import json
 
 import pytest
 import orm
-from orm import _native
+from artifact_caps import artifact_capabilities
 
-CAPABILITIES = json.loads(_native.native_artifact())["capabilities"]
+CAPABILITIES = artifact_capabilities()
 
 SOURCE = """datasource db {
   provider = "sqlite"
