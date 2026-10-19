@@ -34,6 +34,15 @@ async def test_a_bound_update_writes_one_statement_and_fills_in_input_order(clea
     assert [r.title for r in rows] == ["changed", "p1", "changed", "changed"]
 
 
+async def test_a_bound_update_of_a_partial_object_keeps_its_shape(clean):
+    held = await seed()
+    partial = await Post.objects.load(Post.title).get(Post.id == held[0].id)
+    [done] = await orm.of([partial]).update(title="changed")
+    assert done is partial and partial.title == "changed"
+    with pytest.raises(orm.NotLoaded):
+        partial.views
+
+
 async def test_a_bound_update_leaves_out_an_object_with_no_row_and_keeps_the_filters(clean):
     held = await seed()
     await Post.objects.filter(Post.id == held[0].id).delete()

@@ -501,7 +501,7 @@ export async function boundReads() {
     same<(typeof counted)[number]["n"], bigint>();
     same<Awaited<ReturnType<typeof bound.count>>, number>();
     same<Awaited<ReturnType<typeof bound.exists>>, boolean>();
-    bound.lock().using().withoutDefaults().withoutRelated().sql();
+    bound.lock().using().using("primary").withoutDefaults().withoutRelated().sql();
     // @ts-expect-error a bound set has no ordering
     bound.orderBy("id");
     // @ts-expect-error a bound set has no limit
