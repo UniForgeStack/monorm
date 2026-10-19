@@ -118,6 +118,33 @@ pub struct Table {
     pub indexes: Vec<Index>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
+    /// Built from the schema, never stored: it does not take part in a snapshot comparison.
+    #[serde(skip)]
+    pub backfills: Backfills,
+}
+
+/// A default that the database does not carry (`NestedIr::under_null`): a migration that
+/// adds `column` sets it to `value` in each row where one of the `others` is not NULL.
+#[derive(Clone, Debug)]
+pub struct Backfill {
+    pub column: String,
+    pub value: String,
+    pub others: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Backfills(pub Vec<Backfill>);
+
+impl PartialEq for Backfills {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Table {
+    pub fn backfill(&self, column: &str) -> Option<&Backfill> {
+        self.backfills.0.iter().find(|b| b.column == column)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -365,7 +392,7 @@ pub fn quote_literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-fn default_sql(f: &FieldIr) -> Result<Option<String>> {
+pub fn default_sql(f: &FieldIr) -> Result<Option<String>> {
     if f.default_now {
         return Ok(Some("now()".into()));
     }
@@ -518,6 +545,11 @@ impl Builder<'_> {
             if let Some(d) = &default {
                 self.require_expr(d, &format!("default of {t}.{}", f.column));
             }
+            let (default, backfill) = match f.nested.as_ref().filter(|n| n.under_null) {
+                Some(n) => (None, default.filter(|_| !n.present_with.is_empty()).map(|value| Backfill { column: f.column.clone(), value, others: n.present_with.clone() })),
+                None => (default, None),
+            };
+            table.backfills.0.extend(backfill);
             if f.auto_increment && !matches!(f.ty, ColType::BigInt | ColType::Int) {
                 return Err(format!("{}.{}: auto_increment needs an integer field", m.ir.name, f.name));
             }

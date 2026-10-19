@@ -409,3 +409,25 @@ fn relation_map_names_the_foreign_key() {
     let (_, again) = crate::dsl::compile(&pulled.schema, None).and_then(crate::dsl::check).unwrap();
     assert_eq!(snapshot(&again).unwrap(), snap);
 }
+
+#[test]
+fn a_defaulted_leaf_added_under_a_nullable_group_fills_only_present_rows() {
+    let model = |dialect: &str, zip: &str| {
+        let src = format!("datasource db {{\n  provider = \"{dialect}\"\n}}\ntype A {{\n  city String\n{zip}}}\n\nmodel S {{\n  id Int @id\n  a A?\n}}\n");
+        crate::dsl::check(crate::dsl::compile(&src, None).unwrap()).unwrap().1
+    };
+    let zip = "  zip String @default(\"0\")\n";
+    for dialect in ["postgresql", "sqlite"] {
+        let p1 = super::plan(&model(dialect, ""), &DbSchema::default()).unwrap();
+        let v2 = model(dialect, zip);
+        let p2 = super::plan(&v2, &p1.snapshot).unwrap();
+        settled(&v2, &p2);
+        let all = sql(&p2.up).join("\n");
+        assert!(!all.contains("DEFAULT"), "{dialect}: {all}");
+        if dialect == "sqlite" {
+            assert!(all.contains("CASE WHEN \"a_city\" IS NOT NULL THEN '0' END"), "{all}");
+        } else {
+            assert!(all.contains("UPDATE \"s\" SET \"a_zip\" = '0' WHERE \"a_city\" IS NOT NULL"), "{all}");
+        }
+    }
+}

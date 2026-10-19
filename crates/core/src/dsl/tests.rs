@@ -963,6 +963,24 @@ fn a_subfield_check_names_its_own_column() {
 }
 
 #[test]
+fn a_subfield_check_without_a_column_placeholder_is_an_error() {
+    let src = NESTED.replace("lat Float\n", "lat Float @check(\"x > 0\")\n");
+    let e = fails(&src);
+    assert!(e.contains("{}"), "{e}");
+}
+
+#[test]
+fn a_default_under_a_nullable_level_has_no_ddl_default() {
+    let src = "type A {\n  street String @default(\"x\")\n  city String?\n}\n\nmodel S {\n  id Int @id\n  a A?\n  b A\n}\n";
+    let sql = nested_sql(src);
+    assert!(!sql.contains("\"a_street\" varchar DEFAULT"), "{sql}");
+    assert!(sql.contains("\"b_street\" varchar DEFAULT 'x' NOT NULL"), "{sql}");
+    let ir = ok(src);
+    let street = ir.models[0].fields.iter().find(|f| f.column == "a_street").unwrap();
+    assert!(street.default.is_some() && street.nested.as_ref().unwrap().under_null);
+}
+
+#[test]
 fn a_list_of_scalars_in_a_type_stays_one_column_and_sqlite_rejects_it() {
     let src = "type T {\n  tags String[]\n  n Int\n}\n\nmodel Shop {\n  id Int @id\n  t T\n}\n";
     assert!(nested_sql(src).contains("\"t_tags\" text[]"));

@@ -307,6 +307,10 @@ pub fn render(op: &Op, idempotent: bool) -> String {
             format!("{} RENAME COLUMN {} TO {}", alter(table), ident(from), ident(to))
         }
         Op::AddColumn { table, column } => format!("{} ADD COLUMN {}", alter(table), column_def(column)),
+        Op::BackfillColumn { table, column, value, others } => {
+            let present = others.iter().map(|o| format!("{} IS NOT NULL", ident(o))).collect::<Vec<_>>().join(" OR ");
+            format!("UPDATE {} SET {} = {value} WHERE {present}", ident(table), ident(column))
+        }
         Op::DropColumn { table, column } => format!("{} DROP COLUMN {}", alter(table), ident(column)),
         Op::AlterColumnType { table, column, to, .. } => {
             let c = ident(column);
@@ -378,6 +382,7 @@ pub fn summary(op: &Op) -> String {
         Op::RenameTable { from, to } => format!("rename table {from} to {to}"),
         Op::RenameColumn { table, from, to } => format!("rename column {table}.{from} to {to}"),
         Op::AddColumn { table, column } => format!("add column {table}.{}", column.name),
+        Op::BackfillColumn { table, column, .. } => format!("fill {table}.{column} where its group is set"),
         Op::DropColumn { table, column } => format!("drop column {table}.{column}"),
         Op::AlterColumnType { table, column, to, .. } => format!("change type of {table}.{column} to {to}"),
         Op::SetNotNull { table, column } => format!("make {table}.{column} NOT NULL"),
