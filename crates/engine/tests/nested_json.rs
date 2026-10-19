@@ -155,6 +155,18 @@ fn sqlite_subfield_paths() {
 }
 
 #[test]
+fn sqlite_columns_group_subfield_filter_plans_on_every_profile() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let conn: Arc<dyn Executor> = db::connect("sqlite://:memory:", 1).await.unwrap();
+        setup(Dialect::Sqlite, conn.clone()).await;
+        let r = Run { dialect: Dialect::Sqlite, conn, schema: schema(Dialect::Sqlite), model: "CShop" };
+        let q = json!({"filters": [cmp("eq", sub(&["city"]), 0)], "columns": [item(id()), item(sub(&["city"]))]});
+        let rows = r.run(q, vec![json!("Rome")]).await.unwrap();
+        assert_eq!(rows.iter().map(|x| x[1].clone().unwrap()).collect::<Vec<_>>(), ["Rome"]);
+    });
+}
+
+#[test]
 fn postgres_subfield_paths() {
     let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
     tokio::runtime::Runtime::new().unwrap().block_on(async {

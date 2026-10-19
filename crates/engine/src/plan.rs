@@ -2359,12 +2359,15 @@ impl<'s> Planner<'s> {
                     let computed = match expr {
                         Expr::Col { path, name, .. } => {
                             let m = self.model(self.walk(self.root, path)?);
-                            let position = m.field_pos(name).map_err(query_err)?;
-                            if m.native.computed().contains(&position) {
-                                if cte { return Err(Error::query("native computed fields cannot be used in a CTE")); }
-                                computations.push(crate::behavior::Computation { kind: m.native, field: position, column: types.len() - 1, dependency: types.len() - 1 });
-                                true
-                            } else { false }
+                            // A whole columns group has no plain field position: it is never computed.
+                            match m.field_pos(name) {
+                                Ok(position) if m.native.computed().contains(&position) => {
+                                    if cte { return Err(Error::query("native computed fields cannot be used in a CTE")); }
+                                    computations.push(crate::behavior::Computation { kind: m.native, field: position, column: types.len() - 1, dependency: types.len() - 1 });
+                                    true
+                                }
+                                _ => false,
+                            }
                         }
                         _ => false,
                     };
