@@ -361,13 +361,17 @@ await post.qs().update(title="New")                     # UPDATE ... RETURNING, 
 await post.qs().delete()
 ```
 
-* A bound set keeps the rule "at most one row per bound object": `filter()`, `exclude()`, `load()`, `lock()`, `using()`, `without_defaults()`, `update()`, `delete()`, `count()` and `exists()` are allowed.
+* A bound set keeps the rule "at most one row per bound object": `filter()`, `exclude()`, `load()`, `lock()`, `using()`, `without_defaults()`, `without_related()`, `update()`, `delete()`, `count()`, `exists()`, `sql()` and `inspect()` are allowed, and so are the extension members `hard_delete()` and `undelete()`.
   Ordering, slices, `first()`, `get()` and other shape-changing methods do not exist on it.
 * `post.qs()` applies the query defaults of the model.
   The shortcuts `post.load()`, `post.update()` and `post.delete()` ignore them, as if they ran through `post.qs().without_defaults()`.
   So `await post.load(reload=True)` refreshes a soft-deleted post, and `await post.qs().load()` does not.
   The same holds for `lock()`: use `post.qs().without_defaults().lock()` for a soft-deleted row.
 * A plain `await post.qs()` with no `load()` reads the normal selection of the model, so a partial object gets those fields.
+* A read of more than 500 keys runs in chunks of at most 500 keys, one statement for each chunk.
+  The chunks are not one snapshot unless you hold a transaction: use `db.transaction()` when you need one.
+  `sql()` and `inspect()` describe the first chunk.
+* `await post.load(reload=True)` does not reload a label such as `func.count(Post.comments).label("n")`: the instance does not know the label's expression.
 * The version enters writes only: reads and `lock()` refresh a stale object.
   Bound writes (`update()`, `delete()`) have no version check yet.
 
@@ -380,6 +384,8 @@ await post.qs().delete()
 | `await post.refresh(lock=True)` | `await post.qs().lock()` |
 | `await job.refresh(lock=True, skip_locked=True)` gives `False` | `await job.qs().lock(skip_locked=True)` gives `[]` |
 | `await orm.prefetch(posts, Post.author)` | `await orm.of(posts).load(Post.author)` |
+
+`refresh()` raised `DoesNotExist` for a row that is not found; `qs().lock()` and the other bound reads give `[]`.
 
 `orm.prefetch()` is removed.
 

@@ -39,7 +39,7 @@ async def verify():
         await m["Parent"].objects.using(db).insert(id=1)
         child = await m["Child"].objects.using(db).insert(id=1, parent_id=1)
         await child.update(parent_id=1)
-        await child.refresh()
+        await child.load(reload=True)
         assert await child.load(m["Child"].parent) is child
         assert child.parent.id == 1
         if not expected:

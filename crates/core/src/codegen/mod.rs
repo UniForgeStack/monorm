@@ -218,6 +218,7 @@ mod reference_tests {
         let mut ts_ext = ext;
         ts_ext.members.language = "typescript".into();
         ts_ext.members.query_set = "taggedQuerySet".into();
+        ts_ext.members.bound_query_set = "taggedBoundQuerySet".into();
         let options = Options { extensions: vec![ts_ext], ..Options::default() };
         let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
         assert!(ts.contains("import * as _e0 from \"./orm-ext/example-language/index.js\";"));
@@ -225,6 +226,8 @@ mod reference_tests {
         assert!(ts.contains("export interface PostBaseSpec {") && ts.contains("export interface PostSpec extends PostBaseSpec {"));
         assert!(ts.contains("readonly queries: InstanceType<ReturnType<typeof _e0.taggedQuerySet<new (...args: any[]) => QuerySet<PostBaseSpec>>>>;"));
         assert!(ts.contains("export interface UserSpec {") && ts.contains("QueriesOf<PostSpec>"));
+        assert!(ts.contains("readonly boundQueries: InstanceType<ReturnType<typeof _e0.taggedBoundQuerySet<new (...args: any[]) => BoundQuerySet<PostBaseSpec>>>>;"));
+        assert!(ts.lines().find(|l| l.starts_with("import { define")).is_some_and(|l| l.contains("type BoundQuerySet")));
         assert!(ts.contains("extensions: { \"example.language\": { module: _e0, hash: \"abc\", dir: new URL(\"./orm-ext/example-language/\", import.meta.url) } }, members: { \"Post\": [\"example.language\"] }"));
     }
 
