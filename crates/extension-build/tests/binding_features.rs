@@ -15,7 +15,7 @@ fn frontend_preserves_defaults_and_accepts_exact_binding_features() {
     let original = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
     let base = original.join("target/extension-proof-tests").join(format!("binding-features-{}", std::process::id()));
     let host = base.join("host");
-    for component in ["crates/core", "crates/engine", "crates/cli", "crates/contracts", "languages/python/native", "languages/js/native", "extensions/file-storage/reference", "extensions/proxy/runtime", "crates/extension-build/tests/fixtures/rename"] {
+    for component in ["crates/core", "crates/engine", "crates/cli", "crates/contracts", "languages/python/native", "languages/js/native", "extensions/proxy/runtime", "crates/extension-build/tests/fixtures/rename"] {
         copy(&original.join(component), &host.join(component));
     }
     for file in ["Cargo.toml", "Cargo.lock"] { fs::copy(original.join(file), host.join(file)).unwrap(); }

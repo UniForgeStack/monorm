@@ -2,8 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from typing import Any
-from orm_storage import Registry
-from . import FileAdapter, FileField, FileFieldError
+from . import FileAdapter, FileField, FileFieldError, Registry
 from .decoder import prepare_decoder
 
 
@@ -33,13 +32,13 @@ def install_model(model: type[Any], fields: Mapping[str, FileField], registry: R
             reference = _field.reference(vars(self))
             if adapter.registry is None:
                 raise FileFieldError("configure file storage before file operations")
-            return adapter.registry.resolve(reference).signed_url(reference, expires_in=expires_in)
+            return adapter.registry.signed_url(reference, expires_in=expires_in)
 
         def open_file(self: Any, _field: FileField = field) -> Any:
             reference = _field.reference(vars(self))
             if adapter.registry is None:
                 raise FileFieldError("configure file storage before file operations")
-            return adapter.registry.resolve(reference).open(reference)
+            return adapter.registry.open(reference)
 
         methods[name + "_signed_url"] = signed_url
         methods[name + "_open"] = open_file

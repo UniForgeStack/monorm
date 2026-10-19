@@ -16,7 +16,6 @@ fn build_artifact() -> Artifact {
     #[cfg(not(feature = "composition"))]
     let mut artifact = Artifact::default();
     let compiled = [
-        (cfg!(feature = "file-storage"), "file-storage"),
         (cfg!(feature = "reference-loading"), "reference-loading"),
         (cfg!(feature = "model-composition"), "model-composition"),
         (cfg!(feature = "proxy-models"), "proxy-models"),

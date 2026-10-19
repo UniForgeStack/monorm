@@ -5,21 +5,21 @@ import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../languages/js/dist/src/index.js';
-import { LocalStorage, Reference, Registry } from '../../typescript/dist/src/index.js';
-import { Upload, FileField, FileFieldError } from '../typescript/dist/src/index.js';
+import { Reference, Registry, Upload, FileField, FileFieldError } from '../typescript/dist/src/index.js';
 import { checkRequires } from '../../../../languages/js/dist/src/adapters.js';
 import { createRequire } from 'node:module';
 import { installModel } from '../typescript/dist/src/model.js';
 
-class CountingStorage extends LocalStorage {
-  uploads = 0; deletes = 0;
+const { Operator } = createRequire(new URL('../typescript/package.json', import.meta.url))('opendal');
+
+class CountingRegistry extends Registry {
+  uploads = 0;
   upload(...args) { this.uploads++; return super.upload(...args); }
-  delete(...args) { this.deletes++; return super.delete(...args); }
 }
 async function fixture(run, { protectedWrite = false } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'orm-file07-')));
-  const storage = new CountingStorage('reports', root);
-  const providers = new Registry(new Map([['reports', storage]]));
+  const storage = new CountingRegistry(new Map([['reports', new Operator('fs', { root })]]));
+  const providers = storage;
   const url = process.env.FILE_STORAGE_DATABASE_URL ?? 'sqlite://:memory:';
   const ir = {
     dialect: url.startsWith('sqlite:') ? 'sqlite' : 'postgres',
@@ -41,7 +41,7 @@ async function fixture(run, { protectedWrite = false } = {}) {
 async function bytes(stream) { const chunks = []; for await (const chunk of stream) chunks.push(chunk); return Buffer.concat(chunks); }
 
 test('reference writes, shared objects, null and explicit opening', () => fixture(async ({ Report, storage }) => {
-  const ref = await storage.upload(Buffer.from('report'));
+  const ref = await storage.upload('reports', Buffer.from('report'));
   const row = await Report.objects.insert({ id: 1, file: ref });
   await Report.objects.insert({ id: 2, file: ref });
   await Report.objects.insert({ id: 3, file: null });
@@ -52,7 +52,6 @@ test('reference writes, shared objects, null and explicit opening', () => fixtur
   assert.equal((await bytes(row.fileOpen())).toString(), 'report');
   await Report.objects.filter(Report.id.eq(1)).update({ file: null });
   await Report.objects.filter(Report.id.eq(2)).delete();
-  assert.equal(storage.deletes, 0);
   assert.equal((await bytes(storage.open(ref))).toString(), 'report');
 }));
 
@@ -90,7 +89,6 @@ test('SQL failure exposes reference and explicit retry never uploads again', () 
   assert.equal(storage.uploads, 1);
   await Report.objects.filter(Report.id.eq(2)).update({ file: new Upload(Buffer.from('replacement')) });
   assert.equal(storage.uploads, 2);
-  assert.equal(storage.deletes, 0);
   assert.equal((await bytes(storage.open(reference))).toString(), 'generated');
 }));
 
@@ -107,12 +105,11 @@ test('outer rollback and savepoint retain successfully uploaded references', () 
     await assert.rejects(db.transaction(async () => { await nested; throw new Error('savepoint rollback'); }));
   });
   assert.equal(await Report.objects.count(), 1);
-  assert.equal(storage.deletes, 0);
   assert.equal((await bytes(storage.open(Reference.fromJSON(nested.operation.stored.file)))).toString(), 'savepoint');
 }));
 
 test('batch writes store references and reject an upload', () => fixture(async ({ Report, storage }) => {
-  const ref = await storage.upload(Buffer.from('report'));
+  const ref = await storage.upload('reports', Buffer.from('report'));
   await Report.objects.insertMany([{ id: 2, file: ref }, { id: 3, file: null }]);
   await Report.objects.updateMany([{ id: 2, file: null }, { id: 3, file: ref }]);
   const rows = await Report.objects.orderBy(Report.id);

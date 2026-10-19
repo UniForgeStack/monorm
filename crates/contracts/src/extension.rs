@@ -555,11 +555,6 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
 pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), String> {
     validate_field_adapters(ir)?;
     let r = &ir.behavior;
-    for adapter in &r.field_adapters {
-        if adapter.adapter == FILE_REFERENCE_ADAPTER && !artifact.capabilities.iter().any(|c| c == "file-storage") {
-            return Err("file-storage adapter is not compiled into this artifact; rebuild".into());
-        }
-    }
     if (!r.generic_relations.is_empty() || !r.generic_reverse.is_empty()) && !artifact.capabilities.iter().any(|c| c == "generic-relations") {
         return Err("generic relations are not compiled into this artifact; rebuild with generic-relations".into());
     }
@@ -688,7 +683,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
 ];
 
 /// Capabilities that a build selects as the host Cargo feature of the same name.
-pub const HOST_FEATURE_CAPABILITIES: &[&str] = &["file-storage", QUERY_DEFAULTS, "model-composition", "proxy-models", "generic-relations", UPDATED_AT, SOFT_DELETE, OPTIMISTIC_LOCKING];
+pub const HOST_FEATURE_CAPABILITIES: &[&str] = &[QUERY_DEFAULTS, "model-composition", "proxy-models", "generic-relations", UPDATED_AT, SOFT_DELETE, OPTIMISTIC_LOCKING];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
 /// declarations retain their phase state; new declarations are the only pass inputs.

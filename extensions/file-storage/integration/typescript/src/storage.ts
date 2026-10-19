@@ -1,9 +1,9 @@
+/** OpenDAL-backed storage: the reference codec, the operator map and the streaming upload. */
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { mkdir, open, unlink, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import type { Operator } from "opendal";
 
 export const CHUNK_SIZE = 64 * 1024;
+export const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 export class StorageError extends Error {}
 export class CapabilityError extends StorageError {}
 export class SizeLimitError extends StorageError {}
@@ -53,29 +53,14 @@ export class Reference {
     return new Reference(data as ReferenceData);
   }
 }
-export interface UploadRecovery {
-  readonly reference: Reference;
-  readonly uploadId?: string;
-  readonly completionUnknown: boolean;
-  readonly cleanupError?: unknown;
-}
+/** An upload failed. The object may exist at `reference` (the candidate), with no size. */
 export class UploadError extends StorageError {
-  constructor(readonly recovery: UploadRecovery, cause: unknown) {
-    super(`upload failed; recovery key=${recovery.reference.key}`, { cause });
+  constructor(readonly reference: Reference, cause: unknown) {
+    super(`upload failed; candidate key=${reference.key}`, { cause });
   }
 }
 export type Source = Uint8Array | AsyncIterable<Uint8Array>;
 export interface UploadOptions { filename?: string; contentType?: string; maxSize?: number; signal?: AbortSignal }
-export interface Provider {
-  readonly storage: string;
-  upload(source: Source, options?: UploadOptions): Promise<Reference>;
-  open(reference: Reference): AsyncIterable<Uint8Array>;
-  delete(reference: Reference): Promise<void>;
-  signedUrl(reference: Reference, options?: { expiresIn?: number }): Promise<string>;
-}
-export function checkReference(storage: string, reference: Reference): void {
-  if (reference.storage !== storage) throw new StorageError(`reference belongs to ${reference.storage}, not ${storage}`);
-}
 export function checkExpiry(expiresIn: number): void {
   if (!Number.isInteger(expiresIn) || expiresIn < 1 || expiresIn > 604800) throw new RangeError("expiresIn must be an integer from 1 to 604800 seconds");
 }
@@ -107,85 +92,53 @@ export async function* chunks(source: Source, options: UploadOptions = {}): Asyn
     }
   }
 }
-export class LocalStorage implements Provider {
-  readonly root: string;
-  private readonly ready: Promise<void>;
-  constructor(readonly storage: string, root: string,
-    private readonly signer?: (reference: Reference, expiresIn: number) => string | Promise<string>) {
-    new Reference({ v: 1, storage, key: "validation" });
-    this.root = resolve(root);
-    this.ready = mkdir(this.root, { recursive: true }).then(async () => {
-      if (await realpath(this.root) !== this.root) throw new StorageError("local root must use its canonical path");
-    });
+/** The application's map from storage name to OpenDAL operator. The ORM creates no operators. */
+export class Registry {
+  private readonly operators: ReadonlyMap<string, Operator>;
+  constructor(operators: ReadonlyMap<string, Operator>) {
+    for (const name of operators.keys()) new Reference({ v: 1, storage: name, key: "validation" });
+    this.operators = new Map(operators);
   }
-  private path(reference: Reference): string {
-    checkReference(this.storage, reference);
-    if (reference.version !== undefined) throw new CapabilityError("local storage does not support object versions");
-    if (!/^[a-zA-Z0-9_-]+$/.test(reference.key)) throw new StorageError("local keys must be flat safe identifiers");
-    return join(this.root, reference.key);
+  operator(storage: string): Operator {
+    const operator = this.operators.get(storage);
+    if (!operator) throw new StorageError(`unconfigured storage: ${storage}`);
+    return operator;
   }
-  async upload(source: Source, options: UploadOptions = {}): Promise<Reference> {
-    const data: ReferenceData = { v: 1, storage: this.storage, key: randomUUID(),
+  async upload(storage: string, source: Source, options: UploadOptions = {}): Promise<Reference> {
+    const operator = this.operator(storage);
+    const data: ReferenceData = { v: 1, storage, key: randomUUID().replaceAll("-", ""),
       ...(options.filename !== undefined ? { filename: options.filename } : {}),
-      content_type: options.contentType || "application/octet-stream" };
-    const reference = new Reference(data);
-    await this.ready;
-    const path = this.path(reference);
-    const output = await open(path, "wx");
+      content_type: options.contentType || DEFAULT_CONTENT_TYPE };
+    const candidate = new Reference(data);
     let size = 0;
     try {
+      // Never close the writer after an error: closing commits the partial object.
+      const writer = await operator.writer(candidate.key, { contentType: data.content_type });
       for await (const chunk of chunks(source, options)) {
-        let offset = 0;
-        while (offset < chunk.length) {
-          const { bytesWritten } = await output.write(chunk, offset, chunk.length - offset);
-          if (!bytesWritten) throw new StorageError("filesystem write made no progress");
-          offset += bytesWritten;
-        }
+        await writer.write(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
         size += chunk.length;
       }
       options.signal?.throwIfAborted();
-      await output.close();
-      return new Reference({ ...data, size });
+      await writer.close();
+      const version = operator.capability().readWithVersion ? (await operator.stat(candidate.key)).version : undefined;
+      return new Reference({ ...data, ...(version ? { version } : {}), size });
     } catch (error) {
-      await output.close();
-      await unlink(path);
-      throw error;
+      throw new UploadError(candidate, error);
     }
   }
   async *open(reference: Reference): AsyncGenerator<Uint8Array> {
-    await this.ready;
-    const input = await open(this.path(reference), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      while (true) {
-        const chunk = Buffer.allocUnsafe(CHUNK_SIZE);
-        const { bytesRead } = await input.read(chunk, 0, chunk.length, null);
-        if (!bytesRead) break;
-        yield chunk.subarray(0, bytesRead);
-      }
-    } finally { await input.close(); }
-  }
-  async delete(reference: Reference): Promise<void> {
-    await this.ready;
-    try { await unlink(this.path(reference)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const reader = await this.operator(reference.storage).reader(reference.key, reference.version === undefined ? undefined : { version: reference.version });
+    yield* reader.createReadStream() as AsyncIterable<Uint8Array>;
   }
   async signedUrl(reference: Reference, options: { expiresIn?: number } = {}): Promise<string> {
-    this.path(reference);
     const expiry = options.expiresIn ?? 300;
     checkExpiry(expiry);
-    if (!this.signer) throw new CapabilityError("local signed URLs require an application serving/signing mechanism");
-    return this.signer(reference, expiry);
-  }
-}
-export class Registry {
-  private readonly providers: ReadonlyMap<string, Provider>;
-  constructor(providers: ReadonlyMap<string, Provider>) {
-    for (const [name, provider] of providers) if (name !== provider.storage) throw new StorageError("registry identity must match provider identity");
-    this.providers = new Map(providers);
-  }
-  resolve(reference: Reference): Provider {
-    const provider = this.providers.get(reference.storage);
-    if (!provider) throw new StorageError(`unconfigured storage: ${reference.storage}`);
-    return provider;
+    const operator = this.operator(reference.storage);
+    if (!operator.capability().presignRead) throw new CapabilityError(`storage ${reference.storage} does not support signed URLs`);
+    try { return (await operator.presignRead(reference.key, expiry)).url; }
+    catch (error) {
+      if (error instanceof Error && /unsupported/i.test(error.message)) throw new CapabilityError(`storage ${reference.storage} does not support signed URLs`, { cause: error });
+      throw error;
+    }
   }
 }

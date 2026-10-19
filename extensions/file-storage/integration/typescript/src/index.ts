@@ -1,4 +1,6 @@
-import { Reference, Registry, type Source, type UploadOptions } from "@orm/storage";
+import { Reference, Registry, type Source, type UploadOptions } from "./storage.js";
+
+export * from "./storage.js";
 
 export class FileFieldError extends Error {}
 export class FileNotLoaded extends FileFieldError {}
@@ -29,10 +31,10 @@ export class FileField {
   }
   async signedUrl(snapshot: Readonly<Record<string, unknown>>, registry: Registry, options: { expiresIn?: number } = {}): Promise<string> {
     const reference = this.reference(snapshot);
-    return registry.resolve(reference).signedUrl(reference, options);
+    return registry.signedUrl(reference, options);
   }
   open(snapshot: Readonly<Record<string, unknown>>, registry: Registry): AsyncIterable<Uint8Array> {
     const reference = this.reference(snapshot);
-    return registry.resolve(reference).open(reference);
+    return registry.open(reference);
   }
 }

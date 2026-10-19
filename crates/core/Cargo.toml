@@ -17,7 +17,6 @@ toml = "0.8"
 chrono = "0.4"
 uuid = "1"
 bigdecimal = "0.4"
-storage-reference = { path = "../../extensions/file-storage/reference", optional = true }
 
 [features]
 default = ["generate-python", "generate-typescript"]
@@ -25,7 +24,6 @@ generate-rust = []
 generate-python = []
 generate-typescript = []
 composition = []
-file-storage = ["dep:storage-reference"]
 reference-loading = []
 model-composition = ["composition"]
 generic-relations = []

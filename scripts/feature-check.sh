@@ -59,16 +59,13 @@ mkdir -p "$LOGS"
 VENV=$WORK/venv
 if [ ! -x "$VENV/bin/python" ]; then uv venv -q --python "${PYTHON:-python3}" "$VENV" || exit 1; fi
 PY=$VENV/bin/python
-uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/python" -e "$ROOT/extensions/file-storage/integration/python" || exit 1
+uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/integration/python" || exit 1
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 (cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
 
 # Suites that do not depend on an artifact.
-step storage rust-reference sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/extensions/file-storage/reference/Cargo.toml'"
 step storage rust-extension sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/extensions/file-storage/Cargo.toml'"
-step storage python "$PY" -m pytest -q -p no:cacheprovider "$ROOT/extensions/file-storage/python/tests" "$ROOT/extensions/file-storage/integration/python/tests"
-step storage typescript sh -c "cd '$ROOT/extensions/file-storage/typescript' && npm install --no-audit --no-fund -s && npm test"
 step storage typescript-integration sh -c "cd '$ROOT/extensions/file-storage/integration/typescript' && npm install --no-audit --no-fund -s && npm test"
 
 build() {
@@ -117,10 +114,12 @@ for artifact in $ARTIFACTS; do
     step "$artifact" query-defaults-disabled-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs"
   fi
   if has "$artifact" file-storage; then
+    # These tests import `orm.adapters`, which needs a native profile.
+    step "$artifact" storage-python-unit env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" -m pytest -q -p no:cacheprovider "$ROOT/extensions/file-storage/integration/python/tests"
     for url in "sqlite://:memory:" "$ORM_TEST_DATABASE_URL"; do
       db=${url%%:*}
       step "$artifact" "storage-python-$db" env PYTHONPATH="$dir/py" ORM_PROFILE=custom FILE_STORAGE_DATABASE_URL="$url" "$PY" "$ROOT/extensions/file-storage/integration/tests/native_python.py"
-      step "$artifact" "storage-node-$db" env ORM_NATIVE="$dir/orm.node" FILE_STORAGE_DATABASE_URL="$url" sh -c "cd '$ROOT/extensions/file-storage/typescript' && npm run -s build && cd '$ROOT/extensions/file-storage/integration/typescript' && npm run -s build && node --test '$ROOT/extensions/file-storage/integration/tests/native_node.mjs'"
+      step "$artifact" "storage-node-$db" env ORM_NATIVE="$dir/orm.node" FILE_STORAGE_DATABASE_URL="$url" sh -c "cd '$ROOT/extensions/file-storage/integration/typescript' && npm install --no-audit --no-fund -s && npm run -s build && node --test '$ROOT/extensions/file-storage/integration/tests/native_node.mjs'"
     done
   fi
 done

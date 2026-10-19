@@ -1,5 +1,5 @@
-//! Selected durable-reference codec. Preparation resolves schema names once;
-//! providers and async upload execution belong exclusively to the bindings.
+//! File fields declared by the file-storage extension, resolved to positions for the code
+//! generators. The reference codec and the upload belong to the language packages.
 use crate::ir::SchemaIr;
 
 #[derive(Clone, Debug)]
@@ -7,20 +7,6 @@ pub struct PreparedFileField {
     pub position: usize,
     pub storage: String,
     pub nullable: bool,
-}
-
-impl PreparedFileField {
-    pub fn validate(&self, value: &serde_json::Value) -> Result<(), String> {
-        if value.is_null() && self.nullable {
-            return Ok(());
-        }
-        let reference: storage_reference::Reference =
-            serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        if reference.storage() != self.storage {
-            return Err(format!("file reference requires storage {}", self.storage));
-        }
-        Ok(())
-    }
 }
 
 pub fn prepare(ir: &SchemaIr) -> Result<Vec<Vec<PreparedFileField>>, String> {
@@ -68,16 +54,9 @@ mod tests {
     }
 
     #[test]
-    fn definition_resolves_positions_and_validates_wire_without_providers() {
+    fn definition_resolves_positions() {
         let schema = crate::schema::Schema::from_ir(schema()).unwrap();
-        let field = &schema.models[0].file_fields[0];
-        assert_eq!(field.position, 1);
-        for valid in [serde_json::Value::Null, serde_json::json!({"v":1,"storage":"reports","key":"x","version":"object-version"})] {
-            field.validate(&valid).unwrap();
-        }
-        for invalid in [serde_json::json!({"v":2,"storage":"reports","key":"x"}), serde_json::json!({"v":1,"storage":"other","key":"x"}), serde_json::json!({"v":1,"storage":"reports","key":"x","credentials":"secret"})] {
-            assert!(field.validate(&invalid).is_err());
-        }
+        assert_eq!(schema.models[0].file_fields[0].position, 1);
     }
 
     #[test]
@@ -95,7 +74,7 @@ mod tests {
         let ir = crate::dsl::compile("model Plain {\n id Int @id\n data Json?\n}", None).unwrap();
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         assert!(!crate::codegen::python::generate(&ir, &schema, "plain").unwrap().module.contains("orm_file_storage"));
-        assert!(!crate::codegen::typescript::generate(&ir, &schema, "plain", "orm").unwrap().contains("@orm/storage"));
+        assert!(!crate::codegen::typescript::generate(&ir, &schema, "plain", "orm").unwrap().contains("@orm/file-storage"));
     }
 
     #[test]

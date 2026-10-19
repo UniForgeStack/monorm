@@ -2958,17 +2958,6 @@ impl<'s> Planner<'s> {
             return Err(Error::query("update() needs at least one field"));
         }
         let (set, nested) = self.nested_sets(&q.set)?;
-        #[cfg(feature = "file-storage")]
-        for assignment in &set {
-            if root.is_file_field(&assignment.field) {
-                let position = root.field_pos(&assignment.field).map_err(query_err)?;
-                let Expr::Param { i } = assignment.value else {
-                    return Err(Error::query("file-field updates require a durable reference, not an expression"));
-                };
-                let field = root.field(&assignment.field).map_err(query_err)?;
-                crate::file_storage::value(root, position, &self.params.value(self.param(i)?, Some(field.value_type()))?)?;
-            }
-        }
         #[cfg(feature = "composition")]
         for (a, v) in set.iter().zip(self.set_values(&set)?) {
             stmt.value(Alias::new(&root.field(&a.field).map_err(query_err)?.column), v);
@@ -3447,8 +3436,6 @@ pub fn plan_insert(
     let (fields, mut rows) = crate::client_default::fill(m, fields, rows)?;
     let (fields, forced) = nested::null_nested(m, fields.as_ref(), &mut rows);
     let fields: &[String] = &fields;
-    #[cfg(feature = "file-storage")]
-    crate::file_storage::rows(m, fields, &rows)?;
     #[cfg(feature = "composition")]
     crate::ownership::require_local_write(m)?;
     #[cfg(feature = "composition")]
@@ -3554,20 +3541,6 @@ pub fn plan_insert(
                     #[cfg(feature = "composition")]
                     if m.native.computed().contains(&m.field_pos(&a.field).map_err(query_err)?) {
                         return Err(Error::query("computed fields are read-only"));
-                    }
-                    #[cfg(feature = "file-storage")]
-                    {
-                        if m.is_file_field(&a.field) {
-                            let position = m.field_pos(&a.field).map_err(query_err)?;
-                            match &a.value {
-                                Expr::Param { i } => {
-                                    let field = m.field(&a.field).map_err(query_err)?;
-                                    crate::file_storage::value(m, position, &params.value(planner.param(*i)?, Some(field.value_type()))?)?;
-                                }
-                                Expr::Excluded { name } if name == &a.field => {}
-                                _ => return Err(Error::query("file conflict assignment requires a reference or the validated excluded file")),
-                            }
-                        }
                     }
                     let f = m.field(&a.field).map_err(query_err)?;
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;

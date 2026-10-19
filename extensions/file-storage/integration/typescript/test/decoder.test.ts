@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Reference } from "@orm/storage";
+import { Reference } from "../src/index.js";
 import { FileField } from "../src/index.js";
 import { prepareDecoder } from "../src/decoder.js";
 

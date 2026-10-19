@@ -13,13 +13,13 @@
  *
  *     ORM_NATIVE=$PWD/../../target/feature-check/all/orm.node node demo.ts sqlite://:memory:    (an absolute path)
  *
- * The file-storage section also needs `npm install && npm run build` in extensions/file-storage/typescript
- * and extensions/file-storage/integration/typescript. Each section creates its demo_* tables and drops them.
+ * The file-storage section also needs `npm install && npm run build` in extensions/file-storage/integration/typescript. Each section creates its demo_* tables and drops them.
  *
  * The demo loads its schemas at run time (`loads`), so its models are untyped. Generated
  * models (`orm generate typescript`, see examples/blog/models.ts) type every column and row.
  */
 
+import { createRequire } from "node:module";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -175,22 +175,20 @@ async function modelComposition(db: Database, m: Models): Promise<void> {
 }
 
 async function fileStorage(db: Database, m: Models): Promise<void> {
-  // Imported by path: the storage packages are not dependencies of this example.
-  const root = new URL("../../extensions/file-storage/", import.meta.url);
-  let storage: Models, files: Models, model: Models;
+  // Imported by path: the storage package and opendal are not dependencies of this example.
+  const root = new URL("../../extensions/file-storage/integration/typescript/", import.meta.url);
+  let files: Models, model: Models, opendal: Models;
   try {
-    [storage, files, model] = await Promise.all(
-      ["typescript/dist/src/index.js", "integration/typescript/dist/src/index.js", "integration/typescript/dist/src/model.js"]
-        .map((path) => import(new URL(path, root).href)),
-    );
+    [files, model] = await Promise.all(["dist/src/index.js", "dist/src/model.js"].map((path) => import(new URL(path, root).href)));
+    opendal = createRequire(new URL("package.json", root))("opendal");
   } catch {
-    console.log("skipped: run `npm install && npm run build` in extensions/file-storage/typescript and extensions/file-storage/integration/typescript");
+    console.log("skipped: run `npm install && npm run build` in extensions/file-storage/integration/typescript");
     return;
   }
   const { Report } = m;
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "orm-demo-"))); // LocalStorage wants a canonical root
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "orm-demo-"))); // the fs service wants a canonical root
   try {
-    const providers = new storage.Registry(new Map([["reports", new storage.LocalStorage("reports", directory)]]));
+    const providers = new files.Registry(new Map([["reports", new opendal.Operator("fs", { root: directory })]]));
     model.installModel(Report._meta.Row.prototype, new Map([["file", new files.FileField("file", "reports", true)]]), providers, Report._meta);
     await Report.objects.using(db).insert({ id: 1, file: new files.Upload(Buffer.from("quarterly numbers"), { filename: "q3.txt" }) });
     const report = await Report.objects.using(db).require().get(Report.id.eq(1));

@@ -28,7 +28,6 @@ cli = ["dep:orm-cli"]
 generate-python = ["orm-core/generate-python", "orm-cli?/generate-python"]
 generate-typescript = ["orm-core/generate-typescript", "orm-cli?/generate-typescript"]
 composition = ["orm-engine/composition", "orm-core/composition"]
-file-storage = ["orm-engine/file-storage", "orm-core/file-storage"]
 reference-loading = ["orm-core/reference-loading", "orm-cli?/reference-loading"]
 model-composition = ["composition", "orm-core/model-composition", "orm-engine/model-composition"]
 

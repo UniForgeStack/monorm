@@ -1,7 +1,6 @@
 /** Selected model setup, shared by generated and runtime-defined hosts. */
-import { Reference, Registry } from "@orm/storage";
 import { Pending, registerFieldAdapter, type FieldAdapter, type ModelMeta } from "orm";
-import { FileField, FileFieldError, Upload } from "./index.js";
+import { FileField, FileFieldError, Reference, Registry, Upload } from "./index.js";
 import { prepareDecoder } from "./decoder.js";
 
 /** The async field adapter of one file field: `validate` and `prepare` write, `decode` reads. */
@@ -18,13 +17,14 @@ export class FileAdapter implements FieldAdapter {
     return new Pending(value, new Reference({ v: 1, storage: this.field.storage, key: "preflight" }).toJSON());
   }
   async prepare(value: unknown): Promise<unknown> {
-    return (await this.provider().upload((value as Upload).source, (value as Upload).options)).toJSON();
+    return (await this.provider().upload(this.field.storage, (value as Upload).source, (value as Upload).options)).toJSON();
   }
   decode(stored: unknown): Reference | null { return this.field.decode(stored); }
   private provider() {
     const registry = this.registry();
     if (!registry) throw new FileFieldError("configure file storage before preparing uploads");
-    return registry.resolve(new Reference({ v: 1, storage: this.field.storage, key: "validation" }));
+    registry.operator(this.field.storage);
+    return registry;
   }
 }
 
@@ -34,9 +34,9 @@ export class ModelAdapter {
   configure(registry: Registry): void { this.registry = registry; }
   currentRegistry(): Registry | undefined { return this.registry; }
   decoder(publicFields: readonly (readonly [string, number])[]) { return prepareDecoder(this.fields, publicFields); }
-  client(reference: Parameters<Registry["resolve"]>[0]) {
+  client(): Registry {
     if (!this.registry) throw new FileFieldError("configure file storage before file operations");
-    return this.registry.resolve(reference);
+    return this.registry;
   }
 }
 
@@ -46,11 +46,11 @@ export function installModel(prototype: object, fields: ReadonlyMap<string, File
   for (const [name, field] of fields) {
     methods.set(`${name}SignedUrl`, function(options = {}) {
       const reference = field.reference(this);
-      return adapter.client(reference).signedUrl(reference, options);
+      return adapter.client().signedUrl(reference, options);
     });
     methods.set(`${name}Open`, function() {
       const reference = field.reference(this);
-      return adapter.client(reference).open(reference);
+      return adapter.client().open(reference);
     });
   }
   for (const name of methods.keys()) if (name in prototype) throw new FileFieldError(`${name}: file method collision`);

@@ -2,16 +2,24 @@ import tempfile
 import unittest
 from pathlib import Path
 from orm.adapters import Pending
-from orm_storage import LocalStorage, Reference, Registry
-from orm_file_storage import FileAdapter, FileField, FileFieldError, FileNotLoaded, MissingFile, Upload
+from opendal import AsyncOperator
+from orm_file_storage import (
+    FileAdapter,
+    FileField,
+    FileFieldError,
+    FileNotLoaded,
+    MissingFile,
+    Reference,
+    Registry,
+    Upload,
+)
 
 
 class Tests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.provider = LocalStorage("reports", self.directory.name)
-        self.registry = Registry({"reports": self.provider})
+        self.registry = Registry({"reports": AsyncOperator("fs", root=self.directory.name)})
         self.fields = {"file": FileField("file", "reports", True)}
         self.adapter = FileAdapter(self.fields["file"], lambda: self.registry)
 
@@ -29,7 +37,7 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter.decode(data), reference)
 
     async def test_references_and_null_validate_to_stored_values(self):
-        ref = await self.provider.upload(b"report")
+        ref = await self.registry.upload("reports", b"report")
         self.assertEqual(self.adapter.validate(ref), ref.to_dict())
         self.assertEqual(self.adapter.validate(ref.to_dict()), ref.to_dict())
         self.assertIsNone(self.adapter.validate(None))

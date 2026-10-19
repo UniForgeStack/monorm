@@ -25,7 +25,6 @@ pub struct Model {
     pub key: Vec<usize>,
     /// Prepared `@client_default`s by field position.
     pub client_defaults: Vec<(usize, crate::client_default::ClientDefault)>,
-    #[cfg(feature = "file-storage")]
     pub file_fields: Vec<crate::file_storage::PreparedFileField>,
     pub read_defaults: crate::selection::PreparedDefaults,
     /// What read defaults mean for this model, for codegen and bindings; empty without any default.
@@ -82,7 +81,7 @@ impl Model {
             protected_write: false,
         };
         Ok(Model {
-            #[cfg(feature = "file-storage")] file_fields: vec![],
+            file_fields: vec![],
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
@@ -110,12 +109,9 @@ impl Model {
             .ok_or_else(|| format!("model {} has no field {name:?}", self.ir.name))
     }
 
-    /// True if the selected file-storage codec owns the field.
+    /// True if the file-storage extension declares the field.
     pub fn is_file_field(&self, name: &str) -> bool {
-        #[cfg(feature = "file-storage")]
-        { self.file_fields.iter().any(|file| self.fields()[file.position].name == name) }
-        #[cfg(not(feature = "file-storage"))]
-        { let _ = name; false }
+        self.file_fields.iter().any(|file| self.fields()[file.position].name == name)
     }
 
     pub fn field_pos(&self, name: &str) -> Result<usize> {
@@ -201,7 +197,6 @@ impl Schema {
         if model_index.len() != ir.models.len() {
             return Err("duplicate model name in schema".into());
         }
-        #[cfg(feature = "file-storage")]
         let mut file_fields = crate::file_storage::prepare(&ir)?.into_iter();
         let enums = ir.enums;
         let types = ir.types;
@@ -256,7 +251,7 @@ impl Schema {
             }
             let client_defaults = crate::client_default::prepare(&m.name, &m.fields, &enums)?;
             models.push(Model {
-                #[cfg(feature = "file-storage")] file_fields: file_fields.next().expect("prepared file model"),
+                file_fields: file_fields.next().expect("prepared file model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
