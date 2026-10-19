@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar
 
 from .expr import ColumnRef
 from .query import M as ModelT
@@ -24,7 +24,6 @@ __all__ = [
     "bound_query",
     "bound_write",
     "hard_delete_statement",
-    "row_query",
 ]
 
 
@@ -53,12 +52,6 @@ def behavior_field(model: Any, record: dict[str, Any]) -> ColumnRef[Any]:
 def hard_delete_statement(qs: QuerySet[Any]) -> Delete[Any]:
     """``DELETE`` the matching rows of ``qs`` with the planner's delete rewrite off."""
     return Delete.build(qs, hard=True)
-
-
-def row_query(instance: ModelLike) -> QuerySet[Any]:
-    """The query set of the one row of ``instance``: its primary key, no defaults, its database."""
-    query: QuerySet[Any] = cast(Any, instance).qs().without_defaults()._query()
-    return query
 
 
 def bound_query(bound: B, change: Callable[[QuerySet[Any]], QuerySet[Any]]) -> B:

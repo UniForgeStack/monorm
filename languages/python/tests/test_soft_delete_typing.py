@@ -53,7 +53,7 @@ async def go(post: Post, tag: Tag) -> None:
 EXPECTED = {i for i, line in enumerate(USE.splitlines(), 1) if "# E:" in line}
 
 pytestmark = pytest.mark.skipif(
-    "soft-delete" not in CAPABILITIES and "soft_delete" not in CAPABILITIES,
+    "soft-delete" not in CAPABILITIES,
     reason="requires a selected soft-delete native artifact",
 )
 
