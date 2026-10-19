@@ -621,16 +621,16 @@ async def test_prefetch_applies_scope_values(db, dialect):
             orm.QueryError,
             match=r'Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop',
         ):
-            await orm.prefetch(shops, Shop.orders, using=sdb)
+            await orm.of(shops).using(sdb).load(Shop.orders)
         with orm.scope(shop=s1.id):
-            await orm.prefetch(shops, Shop.orders, using=sdb)
+            await orm.of(shops).using(sdb).load(Shop.orders)
             assert [sorted(o.total for o in await s.orders) for s in shops] == [[10, 20], []]
             with orm.scope(shop=s2.id):
-                await orm.prefetch(shops, Shop.orders, using=sdb)
+                await orm.of(shops).using(sdb).load(Shop.orders)
                 assert [sorted(o.total for o in await s.orders) for s in shops] == [[], [30]]
         with orm.scope(shop=None):
             with pytest.raises(orm.QueryError, match=r"scope\.shop is None"):
-                await orm.prefetch(shops, Shop.orders, using=sdb)
+                await orm.of(shops).using(sdb).load(Shop.orders)
             with pytest.raises(orm.QueryError, match=r"scope\.shop is None"):
                 await Shop.objects.using(sdb).load(Shop.orders).all()
     finally:

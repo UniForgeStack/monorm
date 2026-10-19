@@ -84,7 +84,7 @@ Scalar types follow Prisma's choices:
 
 Field names that would clash with the instance API are rejected by the generator.
 The reserved names are `objects`, `_meta`, `DoesNotExist`, `MultipleObjectsReturned`,
-`pk`, `update`, `delete`, `refresh`, `toJSON`, `constructor`, `toString` and `then`.
+`pk`, `update`, `delete`, `refresh`, `load`, `qs`, `toJSON`, `constructor`, `toString` and `then`.
 
 Without code generation, `define(schemaIR)`, `load(path)` or `loads(schemaText)` builds the
 same models at runtime, but untyped. Each takes `{ registry }`: models join the default
@@ -277,13 +277,56 @@ objects without a prototype, get a message naming the expected target model.
 * `const loaded = await post.load(Post.body, Post.author, Post.comments)` fills the existing
   instance and returns it with a type that includes the requested fields and relations.
   It preserves loaded values; a trailing `{ reload: true }` refreshes requested values.
-  `await post.load()` fills all scalar fields. Nested paths and filtered relation querysets
+  `await post.load({ reload: true })` with no items reads all scalar fields, so a partial object becomes full.
+  A reload does not clear a to-one cache, except a hasOne cache.
+  `await post.load()` fills the scalar fields that are missing. Nested paths and filtered relation querysets
   work as on querysets, and collection values remain in `.cached`.
-* `await prefetch(instances, ...items)` loads relations onto instances you already have, with the items of `load()` (no columns of the instances' model), always by `IN` query.
-  Only the prefetch queries run: the keys come from the instances. The instances are of one model and one database; an unset database means the default.
-  Mixed databases throw `QueryError` unless a last `{ using: db }` argument names the database to read.
-  Hooks, trace, `restore_cause` and replica selection (`_reader()`) skip `prefetch()`.
+* `post.load()`, `post.update()` and `post.delete()` run through `post.qs().withoutDefaults()`: they ignore the query defaults of the model.
+* `await of([bundle]).load(...items)` loads relations onto instances you already have, with the items of `load()`.
+  A bound load of relations only runs no query for the objects themselves: the keys come from the instances, and every relation loads with an `IN` query.
+  A filter or a lock reads the keys first.
+  Each of those queries gives a query event.
   The row type does not change; read the relations as `cached` or cast.
+  See "Bound query sets".
+
+#### Bound query sets
+
+`of(objs)`, `Model.objects.of(objs)` and `post.qs()` give a bound query set: a query set filtered to the primary keys of objects you already hold.
+Awaiting it reads those rows, fills the objects in place, and gives the matched objects in input order.
+An object whose row is missing stays unchanged.
+The objects are of one model and one database; `using(db)` names the database to read.
+
+```ts
+await of(posts).load(Post.author, Post.comments);       // relations only: no query for the posts
+await Post.objects.of(posts).filter(Post.views.gte(10)); // a read of the rows, with a filter
+await post.qs().lock();                                 // reload and lock, in a transaction
+await post.qs().using("primary").load(Post.views);      // read the primary
+await post.qs().update({ title: "New" });               // UPDATE ... RETURNING, fills `post`
+await post.qs().delete();
+```
+
+* A bound set keeps the rule "at most one row per bound object": `filter()`, `exclude()`, `load()`, `lock()`, `using()`, `withoutDefaults()`, `update()`, `delete()`, `count()` and `exists()` are allowed.
+  Ordering, slices, `first()`, `get()` and other shape-changing methods do not exist on it.
+* `post.qs()` applies the query defaults of the model.
+  The shortcuts `post.load()`, `post.update()` and `post.delete()` ignore them, as if they ran through `post.qs().withoutDefaults()`.
+  So `await post.load({ reload: true })` refreshes a soft-deleted post, and `await post.qs().load()` does not.
+  The same holds for `lock()`: use `post.qs().withoutDefaults().lock()` for a soft-deleted row.
+* A plain `await post.qs()` with no `load()` reads the normal selection of the model, so a partial object gets those fields.
+* The version enters writes only: reads and `lock()` refresh a stale object.
+  Bound writes (`update()`, `delete()`) have no version check yet.
+* `post.delete()` always reads `RETURNING`.
+
+`refresh()` is removed from instances. Migrate as follows:
+
+| Before | After |
+| --- | --- |
+| `await post.refresh()` | `await post.load({ reload: true })` |
+| `await post.refresh(Post.views)` | `await post.load(Post.views, { reload: true })` |
+| `await post.refresh({ lock: true })` | `await post.qs().lock()` |
+| `await job.refresh({ lock: true, skipLocked: true })` gives `false` | `await job.qs().lock({ skipLocked: true })` gives `[]` |
+| `await prefetch(posts, Post.author)` | `await of(posts).load(Post.author)` |
+
+`prefetch()` is removed.
 
 Related sets: `await user.posts`, `.filter()`, `.count()`, and `.insert({...})`, where the
 key is filled in. Many-to-many sets also have `post.tags.add(tag, ...)`, `.remove()`,
@@ -489,12 +532,10 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
 * `updateMany(rows, { batchSize, returning })` does a bulk update by primary key with
   `UPDATE ... FROM (VALUES ...)`, falling back to `CASE`. All its batches run in one
   transaction.
-* On an instance: `post.update({...})` (refreshed from `RETURNING`), `post.delete()` and
-  `post.refresh(...fields)`. Fields must be model columns; an optional trailing options
-  argument must be a plain object (`Object.prototype`). Strings, arrays, `null`,
-  objects without a prototype and class instances throw `TypeError`.
+* On an instance: `post.update({...})` (refreshed from `RETURNING`) and `post.delete()`.
+  To reload an instance, use `post.load({ reload: true })`.
 * A model with a composite primary key (`@@id([shop, id])`) has an object `pk` keyed by field name, `{ shop: 1, id: 7 }`.
-  Writes, `refresh()`, `updateMany()`, `batches()` and `paginate()` use the whole key.
+  Writes, `load({ reload: true })`, `updateMany()`, `batches()` and `paginate()` use the whole key.
 * With the column-role extensions (`schema-extensions.md`): `@timestamps.updated_at` and
   `@locking.version` are set on each update; on a `@soft_delete.deleted_at` model,
   `delete()` soft-deletes, and `hardDelete()`, `undelete()`, `allWithDeleted()` and
@@ -595,13 +636,11 @@ See `docs/schema/schema.md`, "Protected writes".
 
 * `qs.lock({ exclusive, nowait, skipLocked })` adds `FOR UPDATE` / `FOR SHARE` on the
   model's rows. Setting both `nowait` and `skipLocked` is a type error.
-* `post.refresh(...fields, { lock: true, exclusive, nowait, skipLocked })` reloads the row
-  with the same lock and gives `true`. A refresh of some fields locks the whole row. With
-  `skipLocked`, a row locked elsewhere (or deleted) gives `false` and leaves the
-  instance unchanged; otherwise a missing row throws `DoesNotExist`. Lock options
-  without `lock: true` are a type error and throw `TypeError`. `refresh()` reads the
-  primary, also on a database with replicas; `onCommit` callbacks and `load()` still read
-  replicas (use `.using("primary")`).
+* `post.qs().lock({ exclusive, nowait, skipLocked })` reloads the row with the same lock and gives an array with the instance.
+  It locks the whole row and reads the primary, also on a database with replicas; `onCommit` callbacks and `load()` still read replicas (use `.using("primary")`).
+  A row that is missing, or locked elsewhere with `skipLocked`, gives `[]` and leaves the instance unchanged.
+  `post.qs()` applies the query defaults of the model, so it does not see a soft-deleted row.
+  For that row, use `post.qs().withoutDefaults().lock()`.
 * `db.lock(key, { exclusive, nowait })` takes a transaction-scoped advisory lock. String
   keys hash the way Python's do (BLAKE2b with an 8-byte digest), so both languages lock
   the same name.

@@ -126,12 +126,6 @@ def test_relation_query_set_checks_its_own_labels():
         User.objects.load(User.posts.objects.load(func.count(Post.comments).label("title")))
 
 
-async def test_prefetch_rejects_a_labeled_aggregate(clean):
-    alice, _, _ = await seed()
-    with pytest.raises(TypeError, match="nothing to prefetch"):
-        await orm.prefetch([alice], func.count(User.posts).label("n"))
-
-
 async def test_select_ignores_labeled_loads(clean):
     await seed()
     rows = await Post.objects.load(n_comments()).select(Post.title).order_by(Post.title)

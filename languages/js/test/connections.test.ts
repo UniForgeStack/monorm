@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { connect, define, getDatabase, loads, param, prefetch, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
+import { connect, define, getDatabase, loads, of, param, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
 import { native } from '../src/native.js';
 import { Post, User } from './blog/models.js';
 import { useDatabase, otherDatabase, DATABASE_URL } from './helpers.js';
@@ -476,17 +476,17 @@ for (const dialect of ['postgres', 'sqlite']) {
       const shops = await Shop.objects.using(sdb).orderBy('id');
       const totals = () => shops.map((s: any) => s.orders.cached.map((o: any) => o.total).sort());
       // Outside a scope the default filter is closed, as for load().
-      await assert.rejects(prefetch(shops, Shop.orders, { using: sdb }), /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
+      await assert.rejects(async () => { await of(shops).using(sdb).load(Shop.orders); }, /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       await scope({ shop: s1.id }, async () => {
-        await prefetch(shops, Shop.orders, { using: sdb });
+        await of(shops).using(sdb).load(Shop.orders);
         assert.deepEqual(totals(), [[10, 20], []]);
         await scope({ shop: s2.id }, async () => {
-          await prefetch(shops, Shop.orders, { using: sdb });
+          await of(shops).using(sdb).load(Shop.orders);
           assert.deepEqual(totals(), [[], [30]]);
         });
       });
       await scope({ shop: null }, async () => {
-        await assert.rejects(prefetch(shops, Shop.orders, { using: sdb }), /scope\.shop is None/);
+        await assert.rejects(async () => { await of(shops).using(sdb).load(Shop.orders); }, /scope\.shop is None/);
         await assert.rejects(Shop.objects.using(sdb).load(Shop.orders).all(), /scope\.shop is None/);
       });
     } finally {

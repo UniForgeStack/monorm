@@ -2449,15 +2449,9 @@ for (const cls of [RelatedSet, ManyRelatedSet]) {
 }
 
 /**
- * Loads relations onto instances you already have, as `load()` does for the
- * rows of a query, but always by `IN (...)` query: one query per relation level, and no query for the instances
- * themselves. The instances are of one model and one database (an unset database
- * means the default). Mixed databases throw `QueryError` unless a last `{ using }`
- * argument names the database to read.
- *
- * ```ts
- * await prefetch([bundle], Bundle.items.product, Bundle.versions.objects.orderBy(...).limit(1).label("latest"));
- * ```
+ * The relation-only read of `BoundQuerySet` and `loadInstance`: relations onto
+ * instances you already have, always by `IN (...)` query, with no query for the
+ * instances themselves. Not public: `of(objs).load(...)` is the public form.
  */
 export async function prefetch(
   instances: readonly object[],

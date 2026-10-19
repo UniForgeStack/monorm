@@ -63,7 +63,6 @@ from .query import (
     RelatedSet,
     BoundQuerySet,
     of,
-    prefetch,
     use_query_set,
 )
 from .cte import Cte, CteColumn
@@ -95,7 +94,6 @@ __all__ = [
     "Prepared",
     "OneRowQuery",
     "PreparedOneRowQuery",
-    "prefetch",
     "of",
     "BoundQuerySet",
     "use_query_set",

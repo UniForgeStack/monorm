@@ -32,7 +32,7 @@ Relation paths, target columns, filters, ordering, slices, labels and nested loa
 use the existing queryset load planner. Collection relations remain relation
 querysets: read their prefetched values through `.cached`. Scalar loading reads
 the owner row; relation loading uses the owner's keys without refreshing its
-other scalar fields. For several owners, `prefetch(instances, ...items)` batches
+other scalar fields. For several owners, `of(instances).load(...items)` batches
 relation loading.
 
 The `reference-loading` Cargo feature enables the to-one cache adapter and shared
@@ -58,14 +58,13 @@ query and the other waiters continue. The shared operation completes normally, a
 its exception is always observed. Node uses ordinary promises and has no separate
 cancellation API.
 
-When an instance update or refresh changes a source key, the reference becomes
-invalid. A refresh also makes reverse one-to-one caches invalid, even when the
-source key does not change. Thus a refresh after you insert a target replaces a
+When an instance update or reload changes a source key, the reference becomes
+invalid. A reload also makes reverse one-to-one caches invalid, even when the
+source key does not change. Thus a reload after you insert a target replaces a
 cached absence. A query that started before such a change does not write its stale result to
 the cache.
 A forced load of a bare reference replaces the cached reference and does not change the scalar
-fields of the owner row. Other instances stay as they are until you refresh or
-reload them.
+fields of the owner row. Other instances stay as they are until you reload them.
 
 An adapter reads hidden helper keys: it looks first at the public attribute, then
 at the hidden values. Ordinary attribute access does not show the hidden values.

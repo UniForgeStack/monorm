@@ -74,7 +74,6 @@ __all__ = [
     "RelatedSet",
     "ManyRelatedSet",
     "Prepared",
-    "prefetch",
     "of",
     "BoundQuerySet",
     "use_query_set",
@@ -1620,15 +1619,9 @@ async def prefetch(
     *relations: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any],
     using: Database | None = None,
 ) -> None:
-    """Load relations onto instances you already have, as :meth:`QuerySet.load` does for
-    the rows of a query, but always by ``IN (...)`` query: one query per relation level,
-    and no query for the instances themselves::
-
-        await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.filter(...))
-
-    The instances are of one model and one database (an unset database means the
-    default). Mixed databases raise ``QueryError`` unless ``using`` names the
-    database to read."""
+    """The relation-only read of :class:`BoundQuerySet` and ``load_instance``: ``IN (...)``
+    queries for ``relations`` of ``instances``, and no query for the instances themselves.
+    Not public: ``orm.of(objs).load(...)`` is the public form."""
     from .db import _with_scope, resolve
     from .fields import BelongsTo
 
