@@ -273,7 +273,22 @@ fn row_in(dialect: Dialect, cols: Vec<SExpr>, rows: Vec<Vec<SExpr>>) -> SExpr {
     template(dialect, format!("({}) IN ({list})", slots(1)), exprs)
 }
 
-fn fold(items: Vec<SExpr>, and: bool) -> SExpr {
+/// Most items of one left-deep `AND`/`OR` chain. A longer list nests in groups of this
+/// size, because `sea_query` clones and renders a chain by recursion and its cost grows
+/// without bound near 850 levels.
+const FOLD_FAN_OUT: usize = 256;
+
+fn fold(mut items: Vec<SExpr>, and: bool) -> SExpr {
+    while items.len() > FOLD_FAN_OUT {
+        let mut groups = Vec::with_capacity(items.len().div_ceil(FOLD_FAN_OUT));
+        let mut it = items.into_iter();
+        loop {
+            let group: Vec<SExpr> = it.by_ref().take(FOLD_FAN_OUT).collect();
+            if group.is_empty() { break; }
+            groups.push(fold(group, and));
+        }
+        items = groups;
+    }
     let mut it = items.into_iter();
     match it.next() {
         None => SExpr::cust(if and { "TRUE" } else { "FALSE" }),
