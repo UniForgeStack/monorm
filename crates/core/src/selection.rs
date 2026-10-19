@@ -71,7 +71,7 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
         if let Some(order) = &d.order {
             if let Some(first) = &merged.order_owner { return Err(clash(&d.model, "default order", first, &identity)); }
             for key in order { model.field(&key.field)?; }
-            merged.order = order.iter().map(|k| Order { expr: Expr::Col { path: vec![], name: k.field.clone() }, desc: k.desc, nulls: k.nulls }).collect();
+            merged.order = order.iter().map(|k| Order { expr: Expr::Col { path: vec![], name: k.field.clone(), sub: vec![] }, desc: k.desc, nulls: k.nulls }).collect();
             merged.order_owner = Some(identity.clone());
         }
         let mut annotate = BTreeMap::new();
@@ -135,7 +135,7 @@ fn filter_scopes(expr: &Expr, scopes: &mut Vec<String>) {
 
 fn validate_filter(model: &Model, filter: &Expr) -> Result<(), String> {
     match filter {
-        Expr::Col { path, name } if path.is_empty() => { model.field(name)?; }
+        Expr::Col { path, name, .. } if path.is_empty() => { model.field(name)?; }
         Expr::Const { .. } | Expr::Int { .. } | Expr::Text { .. } | Expr::Scope { .. } => {}
         Expr::Cmp { l, r, .. } => { validate_filter(model, l)?; validate_filter(model, r)?; }
         Expr::And { items } | Expr::Or { items } => for item in items { validate_filter(model, item)?; },

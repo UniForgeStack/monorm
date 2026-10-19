@@ -5,14 +5,15 @@
 //! see plain fields.
 
 use super::*;
+use crate::dialect::Dialect;
 use crate::ir::{NestedIr, NestedStorage, TypeFieldIr, TypeIr};
 
 /// What a dotted subfield path (`address.geo.lat`) names, for index keys.
 pub(super) enum PathTarget {
     /// The lowered field of a scalar leaf on `columns` storage.
     Column(String),
-    /// A subfield of a `json` field.
-    Json,
+    /// A subfield of a `json` field: the field's column, the path inside it and the leaf type.
+    Json { column: String, sub: Vec<String>, leaf: ColType },
     /// A nested type, not a scalar.
     Group,
 }
@@ -177,7 +178,7 @@ pub(super) fn expand(model: &ModelIr, m: &ModelDecl, member: &Member, items: &[I
             return err(member.pos, format!("{what}: prefix: is for columns storage"));
         }
         json_checks(ty, ctx, &what, member.pos)?;
-        walk_paths(ctx, ty, &member.name, &mut paths);
+        walk_paths(ctx, ty, &member.name, &mut vec![], &mut paths);
         let mut f = FieldIr::plain(&member.name, ColType::Json);
         f.nullable = optional;
         f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![] });
@@ -207,18 +208,22 @@ fn json_checks(ty: &TypeIr, ctx: &Ctx<'_>, what: &str, pos: Pos) -> Result<()> {
     Ok(())
 }
 
-fn walk_paths(ctx: &Ctx<'_>, ty: &TypeIr, base: &str, out: &mut Paths) {
+fn walk_paths(ctx: &Ctx<'_>, ty: &TypeIr, base: &str, sub: &mut Vec<String>, out: &mut Paths) {
     for f in &ty.fields {
         let path = format!("{base}.{}", f.name);
+        sub.push(f.name.clone());
         match &f.type_name {
             Some(n) => {
                 out.insert(path.clone(), PathTarget::Group);
-                walk_paths(ctx, &ctx.nested[n], &path, out);
+                walk_paths(ctx, &ctx.nested[n], &path, sub, out);
             }
             None => {
-                out.insert(path, PathTarget::Json);
+                let leaf = if f.list { ColType::Json } else { f.leaf.as_ref().map_or(ColType::Text, |l| l.ty) };
+                let column = base.split('.').next().unwrap_or(base).to_owned();
+                out.insert(path, PathTarget::Json { column, sub: sub.clone(), leaf });
             }
         }
+        sub.pop();
     }
 }
 
@@ -331,31 +336,43 @@ fn leaf_required(ctx: &Ctx<'_>, ty: &TypeIr, path: &[String]) -> bool {
 
 /// Rewrites the dotted subfield paths of an `@@index` or `@@unique` key list to the lowered
 /// field names.
-pub(super) fn resolve_paths(b: &Attr, paths: &Paths, model: &str) -> Result<Attr> {
+pub(super) fn resolve_paths(b: &Attr, paths: &Paths, model: &str, dialect: Dialect) -> Result<Attr> {
     if !matches!(b.name.as_str(), "index" | "unique") {
         return Ok(b.clone());
     }
     let mut out = b.clone();
+    let mut expression = false;
     if let Some((_, Value::List(items))) = out.args.positional.first_mut() {
         for (p, v) in items.iter_mut() {
             let inner = match v {
                 Value::Desc(i) => i.as_mut(),
                 v => v,
             };
-            let Value::Path(path, _) = inner else { continue };
+            let Value::Path(path, key_args) = inner else { continue };
             if path.len() < 2 {
                 continue;
             }
             let dotted = path.join(".");
             match paths.get(&dotted) {
                 Some(PathTarget::Column(name)) => *path = vec![name.clone()],
-                Some(PathTarget::Json) => {
-                    return err(*p, format!("{model}: @@{}: {dotted} is inside a json field; an index on a json subfield isn't supported yet", b.name))
+                Some(PathTarget::Json { column, sub, leaf }) => {
+                    // The planner renders the same text, so the database can use the index for a filter.
+                    let expr = dialect.json_subfield_sql(&ident(column), sub, *leaf);
+                    let mut args = key_args.take().unwrap_or(Args { pos: *p, ..Default::default() });
+                    args.positional.insert(0, (*p, Value::Str(expr)));
+                    expression = true;
+                    *path = vec!["sql".to_owned()];
+                    *key_args = Some(args);
                 }
                 Some(PathTarget::Group) => return err(*p, format!("{model}: @@{}: {dotted} is a nested type, not a scalar; name one of its subfields", b.name)),
                 None => return err(*p, format!("{model}: @@{}: no field {dotted}", b.name)),
             }
         }
+    }
+    // A UNIQUE constraint can't hold an expression; a unique index can.
+    if expression && out.name == "unique" {
+        out.name = "index".to_owned();
+        out.args.named.push(("unique".to_owned(), b.pos, Value::Bool(true)));
     }
     Ok(out)
 }

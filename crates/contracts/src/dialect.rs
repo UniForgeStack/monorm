@@ -144,3 +144,51 @@ impl Capabilities {
         }
     }
 }
+
+impl Dialect {
+    /// SQL for the scalar at `sub` inside the JSON column `column_sql`, typed by the subfield.
+    /// The planner and the `@@index` expression keys both call this, so the text is the same
+    /// and the database can use an expression index for a filter.
+    pub fn json_subfield_sql(self, column_sql: &str, sub: &[String], leaf: crate::ir::ColType) -> String {
+        use crate::ir::ColType as C;
+        let lit = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        match self {
+            Dialect::Postgres => {
+                let mut sql = column_sql.to_owned();
+                let (last, init) = sub.split_last().expect("a subfield path is not empty");
+                for k in init {
+                    sql = format!("{sql} -> {}", lit(k));
+                }
+                let cast = match leaf {
+                    C::Json => return format!("({sql} -> {})", lit(last)),
+                    C::Int => "integer",
+                    C::BigInt => "bigint",
+                    C::Float => "double precision",
+                    C::Bool => "boolean",
+                    C::Decimal => "numeric",
+                    C::Uuid => "uuid",
+                    C::String | C::Text | C::DateTime | C::Date => return format!("(({sql}) ->> {})", lit(last)),
+                };
+                format!("((({sql}) ->> {})::{cast})", lit(last))
+            }
+            Dialect::Sqlite => {
+                let path: std::string::String = sub.iter().map(|k| format!(".\"{}\"", k.replace('"', "\"\""))).collect();
+                let extract = format!("json_extract({column_sql}, '${}')", path.replace('\'', "''"));
+                match leaf {
+                    C::BigInt => format!("CAST({extract} AS INTEGER)"),
+                    _ => extract,
+                }
+            }
+        }
+    }
+
+    /// The type of a JSON subfield expression. Dates stay the text the JSON holds, so text order is
+    /// time order and an index on the expression is immutable.
+    pub fn json_subfield_type(self, leaf: crate::ir::ColType) -> crate::ir::ColType {
+        use crate::ir::ColType as C;
+        match (self, leaf) {
+            (_, C::DateTime | C::Date) | (Dialect::Sqlite, C::Decimal | C::Uuid) => C::Text,
+            (_, t) => t,
+        }
+    }
+}

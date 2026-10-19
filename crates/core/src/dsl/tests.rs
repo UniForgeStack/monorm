@@ -903,3 +903,32 @@ fn a_list_of_scalars_in_a_type_stays_one_column_and_sqlite_rejects_it() {
     let sqlite = format!("datasource db {{\n  provider = \"sqlite\"\n}}\n{src}");
     assert!(fails(&sqlite).contains("sqlite does not support Arrays"));
 }
+
+fn json_index(prefix: &str, block: &str) -> Vec<(Option<String>, Option<String>, bool)> {
+    let src = format!("{prefix}{}", nested_with(block).replace("address Address", "address Address @storage(json)"));
+    let ir = ok(&src);
+    let model = &ir.models[0];
+    model.indexes.iter().flat_map(|i| i.columns.iter()).map(|c| (c.field.clone(), c.expr.clone(), c.desc)).collect()
+}
+
+#[test]
+fn an_index_on_a_json_subfield_is_an_expression_key_with_the_planner_text() {
+    let keys = json_index("", "  @@index([address.geo.lat(sort: Desc)])\n  @@unique([address.city])\n");
+    assert_eq!(
+        keys,
+        [
+            (None, Some("(((\"address\" -> 'geo') ->> 'lat')::double precision)".to_owned()), true),
+            (None, Some("((\"address\") ->> 'city')".to_owned()), false),
+        ]
+    );
+    let sqlite = json_index("datasource db {\n  provider = \"sqlite\"\n}\n", "  @@index([address.geo.lat])\n");
+    assert_eq!(sqlite, [(None, Some("json_extract(\"address\", '$.\"geo\".\"lat\"')".to_owned()), false)]);
+}
+
+#[test]
+fn a_json_subfield_index_builds_a_create_index_on_the_expression() {
+    let src = nested_with("  @@index([address.city])\n  @@unique([address.floor])\n").replace("address Address", "address Address @storage(json)");
+    let sql = nested_sql(&src.replace("  city String\n", "  city String\n  floor Int\n"));
+    assert!(sql.contains("CREATE INDEX") && sql.contains("((\"address\") ->> 'city')"), "{sql}");
+    assert!(sql.contains("CREATE UNIQUE INDEX") && sql.contains("::integer"), "{sql}");
+}

@@ -118,7 +118,7 @@ impl<M: Model, R, L, D> Query<RuntimeRow<M>, R, L, D> {
             .ok_or_else(|| Error::Compatibility("unknown model".into()))?;
         let (path, name) = path(&schema, root, name, false)?;
         self.filters.push(Tree::Compare(
-            ir::Expr::Col { path, name },
+            ir::Expr::Col { path, name, sub: vec![] },
             ir::CmpOp::Eq,
             value.encode(),
         ));
@@ -133,7 +133,7 @@ impl<M: Model, R, L, D> Query<RuntimeRow<M>, R, L, D> {
             .ok_or_else(|| Error::Compatibility("unknown model".into()))?;
         let (path, name) = path(&schema, root, name, true)?;
         self.select.order = vec![ir::Order {
-            expr: ir::Expr::Col { path, name },
+            expr: ir::Expr::Col { path, name, sub: vec![] },
             desc: descending,
             nulls: None,
         }];

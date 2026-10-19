@@ -95,6 +95,7 @@ impl<M, T, C> Column<M, T, C> {
         Expr::Col {
             path: self.path.clone(),
             name: self.name.into(),
+            sub: vec![],
         }
     }
     fn cmp(self, value: T, op: ir::CmpOp) -> Predicate<M>
@@ -444,6 +445,7 @@ impl<M, V: KeyValues> Unique<M, V> {
                     Expr::Col {
                         path: vec![],
                         name: (*name).into(),
+                        sub: vec![],
                     },
                     ir::CmpOp::Eq,
                     v,
@@ -784,6 +786,7 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
                         expr: Expr::Col {
                             path: vec![],
                             name: m.fields()[pos].name.clone(),
+                            sub: vec![],
                         },
                         desc: false,
                         nulls: None,
