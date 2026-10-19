@@ -887,6 +887,64 @@ fn nested_type_errors() {
     ok("type T {\n  a Int\n}\n\nmodel Shop {\n  id Int @id\n  t T[] @storage(json)\n}\n");
 }
 
+const COLLIDE: &str = "type T {\n  a Int\n}\n\n";
+
+#[test]
+fn a_field_that_collides_with_a_group_column_is_an_error() {
+    let model = |fields: &str| format!("{COLLIDE}model Shop {{\n  id Int @id\n{fields}}}\n");
+    let e = fails(&model("  t T\n  x Int @map(\"t_a\")\n"));
+    assert!(e.contains("8:3") && e.contains("column t_a") && e.contains("@map"), "{e}");
+    let e = fails(&model("  t T\n  t_a Int\n"));
+    assert!(e.contains("8:3") && e.contains("rename a field"), "{e}");
+    let geo = "type Geo {\n  lat Float\n}\n\nmodel Shop {\n  id Int @id\n  geo_lat Float @map(\"gl\")\n  geo Geo\n}\n";
+    let e = fails(geo);
+    assert!(e.contains("8:3") && e.contains("rename a field") && !e.contains("prefix"), "{e}");
+}
+
+#[test]
+fn a_map_on_a_group_subfield_replaces_its_segment() {
+    let ir = ok("type G {\n  lat Float\n}\n\ntype A {\n  geo G @map(\"g\")\n}\n\nmodel Shop {\n  id Int @id\n  a A\n}\n");
+    assert_eq!(ir.models[0].fields[1].column, "a_g_lat");
+    assert_eq!(ir.models[0].fields[1].name, "a_geo_lat");
+    let e = fails("type G {\n  lat Float\n}\n\ntype A {\n  geo G @unique\n}\n\nmodel Shop {\n  id Int @id\n  a A\n}\n");
+    assert!(e.contains("takes only @map"), "{e}");
+}
+
+#[test]
+fn the_null_rule_error_points_at_the_subfield() {
+    let src = "type Geo {\n  lat Float?\n}\n\ntype Address {\n  city String\n  geo Geo?\n}\n\nmodel Shop {\n  id Int @id\n  address Address\n}\n";
+    let e = fails(src);
+    assert!(e.contains("7:3") && e.contains("Shop.address.geo"), "{e}");
+}
+
+#[test]
+fn a_nullable_level_with_one_leaf_has_no_check() {
+    let sql = nested_sql("type A {\n  x Int\n}\n\nmodel Shop {\n  id Int @id\n  a A?\n}\n");
+    assert!(sql.contains("\"a_x\" integer"), "{sql}");
+    assert!(!sql.contains("CHECK"), "{sql}");
+}
+
+#[test]
+fn a_leaf_name_joins_three_type_levels() {
+    let ir = ok("type C {\n  z Int\n}\n\ntype B {\n  c C\n}\n\ntype A {\n  b B\n}\n\nmodel Shop {\n  id Int @id\n  a A\n}\n");
+    let f = &ir.models[0].fields[1];
+    assert_eq!((f.name.as_str(), f.column.as_str()), ("a_b_c_z", "a_b_c_z"));
+    assert_eq!(f.nested.as_ref().unwrap().path, ["b", "c", "z"]);
+}
+
+#[test]
+fn an_enum_in_a_type_lowers_to_an_enum_leaf() {
+    let ir = ok("enum Kind {\n  home\n  work\n  @@storage(text)\n}\n\ntype A {\n  kind Kind\n}\n\nmodel Shop {\n  id Int @id\n  a A\n}\n");
+    let f = &ir.models[0].fields[1];
+    assert_eq!((f.name.as_str(), f.enum_name.as_deref()), ("a_kind", Some("Kind")));
+}
+
+#[test]
+fn autoincrement_inside_a_type_is_an_error() {
+    let e = fails("type A {\n  n Int @default(autoincrement())\n}\n\nmodel Shop {\n  id Int @id\n  a A\n}\n");
+    assert!(e.contains("autoincrement"), "{e}");
+}
+
 #[test]
 fn index_and_unique_take_subfield_paths() {
     let sql = nested_sql(&nested_with("  @@index([address.city])\n  @@unique([address.geo.lat, id])\n"));

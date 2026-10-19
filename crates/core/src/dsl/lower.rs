@@ -281,13 +281,15 @@ struct Ctx<'l> {
     types: HashMap<String, (String, TypeDef)>,
     enums: HashMap<String, EnumIr>,
     nested: HashMap<String, crate::ir::TypeIr>,
+    /// Position and `@map` of each type member, by type and subfield name; `TypeFieldIr` holds neither.
+    members: HashMap<(String, String), nested::TypeMember>,
     proxies: &'l HashSet<String>,
 }
 
 impl Lowering<'_> {
     pub fn lower(&self, items: Vec<Item>) -> Result<SchemaIr> {
         let mut ir = SchemaIr::default();
-        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), proxies: self.proxies };
+        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), proxies: self.proxies };
         for def in ExtensionDef::builtin() {
             for (name, t) in &def.types {
                 ctx.types.insert(name.clone(), (def.name.clone(), t.clone()));
@@ -554,6 +556,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
     }
     let mut seen = HashSet::new();
     let mut paths = Paths::new();
+    let mut origins: Vec<&Member> = vec![];
     for member in &m.members {
         if !seen.insert(member.name.as_str()) {
             return err(member.pos, format!("{}.{} is declared twice", m.name, member.name));
@@ -562,18 +565,43 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
             continue;
         }
         if nested::is_nested(ctx, member) {
-            let x = nested::expand(&ir, m, member, items, ctx)?;
-            ir.fields.extend(x.fields);
-            ir.constraints.extend(x.checks);
-            paths.extend(x.paths);
+            let expansion = nested::expand(m, member, items, ctx)?;
+            origins.extend(expansion.fields.iter().map(|_| member));
+            ir.fields.extend(expansion.fields);
+            ir.constraints.extend(expansion.checks);
+            paths.extend(expansion.paths);
             continue;
         }
         ir.fields.push(field(m, member, ctx)?);
+        origins.push(member);
     }
+    check_collisions(&ir, &origins)?;
     for a in m.blocks.iter().filter(|a| a.name == "id") {
         composite_id(&mut ir, a)?;
     }
     Ok((ir, paths))
+}
+
+/// No two fields of a model share a name or a column. `origins` holds the member that made each field.
+fn check_collisions(ir: &ModelIr, origins: &[&Member]) -> Result<()> {
+    let (mut names, mut columns): (HashMap<&str, usize>, HashMap<&str, usize>) = (HashMap::new(), HashMap::new());
+    for (i, f) in ir.fields.iter().enumerate() {
+        let what = format!("{}.{}", ir.name, origins[i].name);
+        if let Some(&j) = names.get(f.name.as_str()) {
+            let other = &ir.fields[j];
+            return err(origins[i].pos, format!("{what}: field {} collides with the field {} of {}; rename a field", f.name, other.name, origins[j].name));
+        }
+        if let Some(&j) = columns.get(f.column.as_str()) {
+            let other = &ir.fields[j];
+            return err(
+                origins[i].pos,
+                format!("{what}: column {} of the field {} collides with the field {} of {}; set @storage(columns, prefix: \"...\") or @map", f.column, f.name, other.name, origins[j].name),
+            );
+        }
+        names.insert(&f.name, i);
+        columns.insert(&f.column, i);
+    }
+    Ok(())
 }
 
 /// `@@id([a, b], map: "name")`: marks the fields as the key, in this order.

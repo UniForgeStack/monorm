@@ -18,6 +18,12 @@ pub(super) enum PathTarget {
     Group,
 }
 
+/// The position and `@map` of one member of a type.
+pub(super) struct TypeMember {
+    pub pos: Pos,
+    pub map: Option<String>,
+}
+
 pub(super) type Paths = HashMap<String, PathTarget>;
 
 pub(super) struct Expansion {
@@ -34,7 +40,7 @@ fn storage_of(pos: Pos, v: &Value, what: &str) -> Result<NestedStorage> {
     }
 }
 
-/// Collects and checks the `type` blocks. `taken` says whether a model or enum has the name.
+/// Collects and checks the `type` blocks. `models` holds the model names; a type name must not repeat a model, enum or type.
 pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &mut Ctx<'_>) -> Result<Vec<TypeIr>> {
     let decls: Vec<&ModelDecl> = items.iter().filter_map(|i| if let Item::Type(t) = i { Some(t) } else { None }).collect();
     let mut names: HashSet<&str> = HashSet::new();
@@ -72,13 +78,20 @@ pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &
                 if !args.positional.is_empty() || !args.named.is_empty() {
                     return err(args.pos, format!("{what}: {name} takes no arguments"));
                 }
-                if let Some(a) = member.attrs.first() {
-                    return err(a.pos, format!("{what}: a nested type takes no attributes; put @@storage on {name}"));
+                let mut map = None;
+                for a in &member.attrs {
+                    match (a.name.as_str(), a.args.positional.as_slice()) {
+                        ("map", [(_, Value::Str(s))]) if a.args.named.is_empty() => map = Some(s.clone()),
+                        ("map", _) => return err(a.pos, format!("{what}: @map(\"...\") takes one string")),
+                        _ => return err(a.pos, format!("{what}: a nested type takes only @map; put @@storage on {name}")),
+                    }
                 }
+                ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map });
                 fields.push(TypeFieldIr { name: member.name.clone(), nullable: *optional, list: *list, type_name: Some(name.clone()), leaf: None });
                 continue;
             }
-            if items.iter().any(|i| matches!(i, Item::Model(m) if m.name == *name)) {
+            ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map: None });
+            if models.contains_key(name.as_str()) {
                 return err(*pos, format!("{what}: a type holds no relation; {name} is a model"));
             }
             let leaf = field(t, member, ctx)?;
@@ -94,10 +107,10 @@ pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &
     }
     for t in &out {
         let mut stack = vec![t.name.as_str()];
-        cycle(&out, t, &mut stack).map_err(|chain| super::super::syntax::Error {
-            pos: decls.iter().find(|d| d.name == t.name).map(|d| d.pos).unwrap_or_default(),
-            msg: format!("type {} contains itself: {}", t.name, chain.join(" -> ")),
-        })?;
+        if let Err(chain) = cycle(&out, t, &mut stack) {
+            let pos = decls.iter().find(|d| d.name == t.name).map(|d| d.pos).unwrap_or_default();
+            return err(pos, format!("type {} contains itself: {}", t.name, chain.join(" -> ")));
+        }
     }
     for t in &out {
         ctx.nested.insert(t.name.clone(), t.clone());
@@ -151,7 +164,7 @@ pub(super) fn is_nested(ctx: &Ctx<'_>, member: &Member) -> bool {
 }
 
 /// Lowers a model field whose type is a nested type.
-pub(super) fn expand(model: &ModelIr, m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'_>) -> Result<Expansion> {
+pub(super) fn expand(m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'_>) -> Result<Expansion> {
     let what = format!("{}.{}", m.name, member.name);
     let ty = &ctx.nested[&member.ty.name];
     if !member.ty.args.positional.is_empty() || !member.ty.args.named.is_empty() {
@@ -187,8 +200,8 @@ pub(super) fn expand(model: &ModelIr, m: &ModelDecl, member: &Member, items: &[I
     if member.ty.list {
         return err(member.pos, format!("{what}: a list of {} needs @storage(json); columns storage holds no list of a type", ty.name));
     }
-    let mut cx = Columns { ctx, items, model, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, out: Expansion { fields: vec![], checks: vec![], paths } };
-    cx.level(ty, &mut vec![], &mut vec![], false, optional)?;
+    let mut cx = Columns { ctx, items, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, out: Expansion { fields: vec![], checks: vec![], paths } };
+    cx.level(ty, &mut vec![], &mut vec![], false, optional, member.pos)?;
     Ok(cx.out)
 }
 
@@ -230,7 +243,6 @@ fn walk_paths(ctx: &Ctx<'_>, ty: &TypeIr, base: &str, sub: &mut Vec<String>, out
 struct Columns<'a> {
     ctx: &'a Ctx<'a>,
     items: &'a [Item],
-    model: &'a ModelIr,
     what: &'a str,
     pos: Pos,
     field: &'a str,
@@ -249,11 +261,11 @@ impl Columns<'_> {
 
     /// One level of the tree. `names` are the subfield names down to here, `segments` the
     /// column name parts; `under_null` says a nullable level is above.
-    fn level(&mut self, ty: &TypeIr, names: &mut Vec<String>, segments: &mut Vec<String>, under_null: bool, nullable: bool) -> Result<()> {
+    fn level(&mut self, ty: &TypeIr, names: &mut Vec<String>, segments: &mut Vec<String>, under_null: bool, nullable: bool, at_pos: Pos) -> Result<()> {
         if nullable && !required_bearing(self.ctx, &ty.name) {
             let at = if names.is_empty() { self.what.to_owned() } else { format!("{}.{}", self.what, names.join(".")) };
             return err(
-                self.pos,
+                at_pos,
                 format!(
                     "{at}: {t} has no required subfield, so a null value and an object with every subfield null are the same row; \
                      used by {users}. Make a subfield of {t} required, make the field non-null, or use @storage(json) on the field",
@@ -273,9 +285,11 @@ impl Columns<'_> {
                         return err(self.pos, format!("{}.{}: a list of {n} needs @storage(json); columns storage holds no list of a type", self.what, names.join(".")));
                     }
                     self.out.paths.insert(dotted, PathTarget::Group);
-                    segments.push(f.name.clone());
+                    let member = &self.ctx.members[&(ty.name.clone(), f.name.clone())];
+                    let (sub_pos, segment) = (member.pos, member.map.clone().unwrap_or_else(|| f.name.clone()));
+                    segments.push(segment);
                     let inner = self.ctx.nested[n].clone();
-                    self.level(&inner, names, segments, under_null, f.nullable)?;
+                    self.level(&inner, names, segments, under_null, f.nullable, sub_pos)?;
                     segments.pop();
                 }
                 (None, Some(leaf)) => {
@@ -294,14 +308,6 @@ impl Columns<'_> {
                         l.check = Some(c.replace("{}", &ident(&l.column)));
                     }
                     l.nested = Some(NestedIr { ty: self.ty.to_owned(), storage: NestedStorage::Columns, field: self.field.to_owned(), path: names.clone(), list: false });
-                    for other in self.model.fields.iter().chain(self.out.fields.iter()) {
-                        if other.name == l.name || other.column == l.column {
-                            return err(
-                                self.pos,
-                                format!("{}: column {} of {} collides with the field {}; use @storage(columns, prefix: \"...\") or @map", self.what, l.column, dotted, other.name),
-                            );
-                        }
-                    }
                     self.out.paths.insert(dotted, PathTarget::Column(l.name.clone()));
                     self.out.fields.push(l);
                 }
@@ -309,7 +315,7 @@ impl Columns<'_> {
             }
             names.pop();
         }
-        if nullable {
+        if nullable && self.out.fields.len() - first > 1 {
             let leaves: Vec<(&FieldIr, bool)> = self.out.fields[first..]
                 .iter()
                 .map(|f| {
