@@ -9,7 +9,7 @@ import pytest
 import orm
 from orm import _native
 from orm.hooks import prepare_update
-from blog.models import User
+from blog.models import Post, User
 
 SQLITE = 'datasource db { provider = "sqlite" }\nmodel Item {\n  id Int @id @default(autoincrement())\n}\n'
 
@@ -319,6 +319,22 @@ async def test_instance_reload_reads_the_primary_in_one_statement(clean, observe
                 assert await user.load(reload=True) is user
             assert user.name == "Newer"
             assert len(events) == 1
+    finally:
+        await routed.primary.close()
+
+
+async def test_instance_reload_reads_the_primary_for_to_one_and_to_many(clean):
+    db = clean
+    url = await replica_url(db)
+    routed = await orm.connect(db.url, replicas=[url], default=False, max_connections=2)
+    try:
+        user = await User.objects.using(routed).insert(email="p@example.com", name="Primary")
+        post = await Post.objects.using(routed).insert(author=user, title="t", body="b")
+        # The replica holds user 1 as "Replica" and no post: a replica read gives the wrong row.
+        await post.load(Post.author, reload=True)
+        assert post.author.name == "Primary"
+        await user.load(User.posts, reload=True)
+        assert [p.title for p in user.posts.cached] == ["t"]
     finally:
         await routed.primary.close()
 

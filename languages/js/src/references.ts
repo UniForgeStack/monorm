@@ -61,7 +61,8 @@ export async function loadReference(owner: Row, meta: ModelMeta, r: RelationMeta
     catch (error) { if (!(error instanceof NotLoaded)) throw error; }
   }
   const state = referenceState(owner);
-  const db = host.resolve(owner[host.DB] as Database | undefined);
+  const resolved = host.resolve(owner[host.DB] as Database | undefined);
+  const db = reload ? resolved.primary : resolved;
   const tx = db.tx();
   const target = meta.registry.get(r.target);
   const to = r.to.map((ir) => target.fieldByIr.get(ir)!);

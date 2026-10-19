@@ -328,6 +328,20 @@ test('load reload reads the primary on a database with replicas', async () => {
   }
 });
 
+test('a to-one reload reads the primary on a database with replicas', async () => {
+  const db = getDatabase(), url = await replicaUrl();
+  const routed = await connect(db.url, { replicas: [url], default: false, maxConnections: 2 });
+  try {
+    const user = await User.objects.using(routed).insert({ email: 'p@example.com', name: 'Primary' });
+    const post = await Post.objects.using(routed).insert({ author: user, title: 't', body: 'b' });
+    // The replica holds user 1 as "Replica": a replica read gives the wrong row.
+    const loaded = await post.load(Post.author, { reload: true });
+    assert.equal(loaded.author.name, 'Primary');
+  } finally {
+    await routed.close();
+  }
+});
+
 test('tenant ids are checked', async () => {
   const db = getDatabase();
   for (const bad of [true, null, NaN, Infinity]) {
