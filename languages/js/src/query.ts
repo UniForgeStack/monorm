@@ -238,9 +238,9 @@ export interface LockOptions {
  * `update: false` keeps the existing row (`DO NOTHING`). `update: true` updates it:
  * `updateFields` copy the proposed values, `updateValues` set plain values or
  * expressions such as `{ views: Post.views.add(excluded(Post.views)) }`. With neither,
- * every field given to the insert except the conflict columns is overwritten, but not the
- * version field. The update also sets `updated_at` and adds `version = version + 1`
- * unless the call sets them.
+ * every field given to the insert except the conflict columns is overwritten, but not a
+ * field whose write assignment drops it from the upsert. The update also runs the upsert
+ * write assignments of the model unless the call sets their fields.
  */
 export interface OnConflictOptions<M extends ModelSpec, U extends boolean = boolean> {
   readonly update: U;
@@ -1695,7 +1695,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
           o.updateFields !== undefined
             ? ownFields(this.meta, o.updateFields, "updateFields")
             : o.updateValues === undefined
-              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f) && f !== this.meta.versionField?.ir)
+              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f) && !this.meta.upsertDrop.has(f))
               : [];
         if (o.updateValues !== undefined) {
           const items = assignments(this.meta, o.updateValues, new IRContext(this.meta, params));
