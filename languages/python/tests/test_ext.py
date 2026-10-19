@@ -10,10 +10,15 @@ def test_the_hard_delete_statement_is_a_hard_delete_of_the_query_set():
     assert ext.hard_delete_statement(qs).inspect() == Delete.build(qs, hard=True).inspect()
 
 
-def test_the_row_query_of_an_instance_matches_its_primary_key():
-    row = User.__new__(User)
-    row.__dict__["id"] = 7
-    assert ext.row_query(row).inspect() == User.objects.without_defaults().filter(User.id == 7).inspect()
+def test_every_exported_name_exists_and_the_dead_row_query_is_gone():
+    assert all(hasattr(ext, name) for name in ext.__all__)
+    assert not hasattr(ext, "row_query")
+
+
+def test_behavior_field_takes_the_ir_field_name():
+    record = {"model": "User", "field": "created_at"}
+    assert ext.behavior_field(User, record)._field.name == "created_at"
+    assert ext.behavior_field(User.__new__(User), record)._field.name == "created_at"
 
 
 def test_behavior_lookup_is_empty_without_records():

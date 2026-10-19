@@ -18,6 +18,7 @@ from orm.ext import (
     hard_delete_statement,
 )
 
+_DEFAULT = "deleted"
 _FIELDS: weakref.WeakKeyDictionary[type, ColumnRef[Any]] = weakref.WeakKeyDictionary()
 
 
@@ -38,23 +39,23 @@ class SoftDeleteQuerySet(QuerySet[ModelT]):
         """``DELETE`` every matching row. In database mode, the trigger soft-deletes a live
         row, so this deletes only rows that are already soft-deleted."""
         _deleted_at(self._model)
-        return hard_delete_statement(self.without_defaults("deleted"))
+        return hard_delete_statement(self.without_defaults(_DEFAULT))
 
     def undelete(self) -> Update[ModelT]:
         """Clear the soft-delete field of the matching soft-deleted rows. ``await``
         gives the number of rows restored; ``.returning()`` gives the rows. It drops the
         ``"deleted"`` default, like ``all_with_deleted()``."""
         column = _deleted_at(self._model)
-        return self.without_defaults("deleted").filter(column.is_not_null()).update(**{column._field.name: None})
+        return self.without_defaults(_DEFAULT).filter(column.is_not_null()).update(**{column._field.name: None})
 
     def all_with_deleted(self) -> Self:
         """The rows with the soft-deleted ones. The other defaults, such as a tenant filter, stay."""
         _deleted_at(self._model)
-        return self.without_defaults("deleted")
+        return self.without_defaults(_DEFAULT)
 
     def deleted_only(self) -> Self:
         """Only the soft-deleted rows; the other defaults stay."""
-        return self.without_defaults("deleted").filter(_deleted_at(self._model).is_not_null())
+        return self.without_defaults(_DEFAULT).filter(_deleted_at(self._model).is_not_null())
 
 
 class SoftDeleteBoundQuerySet(BoundQuerySet[ModelT]):
@@ -66,7 +67,7 @@ class SoftDeleteBoundQuerySet(BoundQuerySet[ModelT]):
         """``DELETE`` the rows of the objects, also a live one in application mode. The
         objects whose rows were deleted are filled from them, in input order."""
         _deleted_at(self._qs._model)
-        return await bound_write(self, lambda qs: hard_delete_statement(qs.without_defaults("deleted")).returning())
+        return await bound_write(self, lambda qs: hard_delete_statement(qs.without_defaults(_DEFAULT)).returning())
 
     async def undelete(self) -> list[ModelT]:
         """Clear the soft-delete field of the soft-deleted rows of the objects; gives the
@@ -75,7 +76,7 @@ class SoftDeleteBoundQuerySet(BoundQuerySet[ModelT]):
         return await bound_write(
             self,
             lambda qs: (
-                qs.without_defaults("deleted")
+                qs.without_defaults(_DEFAULT)
                 .filter(column.is_not_null())
                 .update(**{column._field.name: None})
                 .returning()
@@ -85,12 +86,12 @@ class SoftDeleteBoundQuerySet(BoundQuerySet[ModelT]):
     def all_with_deleted(self) -> Self:
         """The objects' rows with the soft-deleted ones. The other defaults stay."""
         _deleted_at(self._qs._model)
-        return bound_query(self, lambda qs: qs.without_defaults("deleted"))
+        return bound_query(self, lambda qs: qs.without_defaults(_DEFAULT))
 
     def deleted_only(self) -> Self:
         """Only the soft-deleted rows of the objects; the other defaults stay."""
         column = _deleted_at(self._qs._model)
-        return bound_query(self, lambda qs: qs.without_defaults("deleted").filter(column.is_not_null()))
+        return bound_query(self, lambda qs: qs.without_defaults(_DEFAULT).filter(column.is_not_null()))
 
 
 class SoftDeleteInstance:
@@ -102,8 +103,4 @@ class SoftDeleteInstance:
 
     async def undelete(self: ModelLike) -> None:
         """Clear the soft-delete field of this row and refresh it."""
-        await _update(self, **{_deleted_at(self)._field.name: None})
-
-
-async def _update(instance: Any, **values: Any) -> None:
-    await instance.update(**values)
+        await cast(Any, self).update(**{_deleted_at(self)._field.name: None})
