@@ -699,7 +699,8 @@ pub enum ArithOp {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Expr {
     /// A field reached from the query's root model through `path` (relation names).
-    Col { path: Vec<String>, name: String },
+    /// With `sub`, a subfield of a nested `json` field: `address.geo.lat` is `name: "address"`, `sub: ["geo", "lat"]`.
+    Col { path: Vec<String>, name: String, #[serde(default)] sub: Vec<String> },
     Param { i: usize },
     Const { value: bool },
     Cmp { op: CmpOp, l: Box<Expr>, r: Box<Expr> },

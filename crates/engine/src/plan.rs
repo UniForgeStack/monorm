@@ -27,7 +27,7 @@ use crate::error::{query_err, Error, Result};
 use crate::params::Params;
 use orm_core::ir::{
     ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
-    JsonKey, Prefetch, RelKind, RelationIr, Select, SelectItem, Update, ValueType, When,
+    JsonKey, NestedStorage, Prefetch, RelKind, RelationIr, Select, SelectItem, Update, ValueType, When,
 };
 use orm_core::dialect::{Capabilities, Dialect, Target};
 use orm_core::schema::{Model, Schema};
@@ -330,6 +330,12 @@ fn has_local_aggregate(cut: &Cut, e: &Expr) -> bool {
 /// Where a path below the current scope stops being read per row of this query: a filter
 /// of an aggregate that follows to-one hops only is an `EXISTS` at this level, so only the
 /// path up to its last to-many hop belongs to the relation the aggregate runs over.
+/// A column, or a typed path into a `json` field (see `Planner::sub_ref`).
+enum SubRef<'s> {
+    Column(&'s FieldIr),
+    Json { field: &'s FieldIr, leaf: ColType, ty: ValueType },
+}
+
 struct Cut<'a> {
     schema: &'a Schema,
     model: usize,
@@ -1512,10 +1518,11 @@ impl<'s> Planner<'s> {
 
     fn hint_of(&self, e: &Expr) -> Hint<'s> {
         match e {
-            Expr::Col { path, name } => {
-                let field = self.walk(self.root, path).ok().and_then(|m| self.model(m).field(name).ok());
-                Hint { ty: field.map(|f| f.value_type()), field }
-            }
+            Expr::Col { path, name, sub } => match self.walk(self.root, path).and_then(|m| self.sub_ref(m, name, sub)) {
+                Ok(SubRef::Column(f)) => Hint { ty: Some(f.value_type()), field: Some(f) },
+                Ok(SubRef::Json { ty, .. }) => Hint { ty: Some(ty), field: None },
+                Err(_) => Hint::default(),
+            },
             Expr::Excluded { name } => {
                 let field = self.model(self.root).field(name).ok();
                 Hint { ty: field.map(|f| f.value_type()), field }
@@ -1573,7 +1580,7 @@ impl<'s> Planner<'s> {
 
     fn value(&mut self, e: &Expr, hint: Hint<'s>) -> Result<SExpr> {
         Ok(match e {
-            Expr::Col { path, name } => {
+            Expr::Col { path, name, sub } => {
                 #[cfg(feature = "composition")]
                 {
                     let m = self.model(self.walk(self.root, path)?);
@@ -1581,7 +1588,13 @@ impl<'s> Planner<'s> {
                         return Err(Error::query("native computed fields cannot be filtered, ordered, aggregated, or used in expressions"));
                     }
                 }
-                self.resolve(path, name)?
+                match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
+                    SubRef::Column(f) => self.resolve(path, &f.name)?,
+                    SubRef::Json { field, leaf, .. } => {
+                        let sql = self.target.dialect.json_subfield_sql("$1", sub, leaf);
+                        template(self.target.dialect, sql, vec![self.resolve(path, &field.name)?])
+                    }
+                }
             },
             Expr::Param { i } => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
             Expr::Scope { name } => {
@@ -1770,10 +1783,10 @@ impl<'s> Planner<'s> {
     fn expr_type(&self, e: &Expr) -> Result<ValueType> {
         let scalar = ValueType::scalar;
         Ok(match e {
-            Expr::Col { path, name } => {
-                let m = self.walk(self.root, path)?;
-                self.model(m).field(name).map_err(query_err)?.value_type()
-            }
+            Expr::Col { path, name, sub } => match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
+                SubRef::Column(f) => f.value_type(),
+                SubRef::Json { ty, .. } => ty,
+            },
             Expr::Outer { depth, path, name } => self.outer_field(*depth, path, name)?.1.value_type(),
             Expr::CteCol { cte, name } => {
                 self.model(self.model_idx(cte)?).field(name).map_err(query_err)?.value_type()
@@ -2179,7 +2192,7 @@ impl<'s> Planner<'s> {
             if let Some((prev, target, path)) = tail {
                 let (rel, _) = self.model(prev).relation(path.last().map_or("", |s| s)).map_err(query_err)?;
                 if rel.kind == RelKind::One && rel.through.is_none() {
-                    let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone() };
+                    let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone(), sub: vec![] };
                     return self.call("count", &[pk], false, c.filter, &[]);
                 }
             }
@@ -2321,7 +2334,7 @@ impl<'s> Planner<'s> {
                     self.lateral_open = true;
                     #[cfg(feature = "composition")]
                     let computed = match expr {
-                        Expr::Col { path, name } => {
+                        Expr::Col { path, name, .. } => {
                             let m = self.model(self.walk(self.root, path)?);
                             let position = m.field_pos(name).map_err(query_err)?;
                             if m.native.computed().contains(&position) {
@@ -2333,7 +2346,7 @@ impl<'s> Planner<'s> {
                         _ => false,
                     };
                     #[cfg(feature = "composition")]
-                    let e = if computed { match expr { Expr::Col { path, name } => self.resolve(path, name), _ => unreachable!() } } else { self.value(expr, Hint::default()) };
+                    let e = if computed { match expr { Expr::Col { path, name, .. } => self.resolve(path, name), _ => unreachable!() } } else { self.value(expr, Hint::default()) };
                     #[cfg(not(feature = "composition"))]
                     let e = self.value(expr, Hint::default());
                     self.allow_window = false;
@@ -2341,7 +2354,7 @@ impl<'s> Planner<'s> {
                     self.lateral_open = false;
                     let mut e = e?;
                     let read_sql = match expr {
-                        Expr::Col { path, name } => {
+                        Expr::Col { path, name, sub } if sub.is_empty() => {
                             let m = self.walk(self.root, path)?;
                             self.model(m).field(name).map_err(query_err)?.read_sql.as_ref()
                         }
@@ -2375,9 +2388,12 @@ impl<'s> Planner<'s> {
             self.require(self.caps.distinct_on, "distinct(on=...)")?;
             let mut cols = vec![];
             for e in &q.distinct_on {
-                let Expr::Col { path, name } = e else {
+                let Expr::Col { path, name, sub } = e else {
                     return Err(Error::query("distinct(on=...) takes columns"));
                 };
+                if !sub.is_empty() {
+                    return Err(Error::query("distinct(on=...) takes columns, not a subfield; use distinct() on a select of the subfield"));
+                }
                 self.join_paths(e, "distinct(on=...)")?;
                 #[cfg(feature = "composition")]
                 self.reject_computed(self.model(self.walk(self.root, path)?), name)?;
@@ -2432,6 +2448,39 @@ impl<'s> Planner<'s> {
             })?;
         }
         Ok(())
+    }
+
+    /// What `name` with `sub` names in model `m`: a column, or a typed path into a `json` field.
+    fn sub_ref(&self, m: usize, name: &str, sub: &[String]) -> Result<SubRef<'s>> {
+        let model = self.model(m);
+        if sub.is_empty() {
+            return Ok(SubRef::Column(model.field(name).map_err(query_err)?));
+        }
+        let dotted = format!("{}.{name}.{}", model.ir.name, sub.join("."));
+        let json = model.field(name).ok().and_then(|f| f.nested.as_ref().filter(|n| n.storage == NestedStorage::Json && n.path.is_empty()).map(|n| (f, n)));
+        let Some((field, nested)) = json else {
+            let col = model.fields().iter().find(|f| f.nested.as_ref().is_some_and(|n| n.field == name && n.path == sub));
+            return col.map(SubRef::Column).ok_or_else(|| Error::query(format!("{dotted} is not a subfield of a nested type")));
+        };
+        let find = |t: &str| self.schema.types.iter().find(|ty| ty.name == t);
+        let mut ty = find(&nested.ty).ok_or_else(|| Error::query(format!("{dotted}: unknown type {}", nested.ty)))?;
+        for (i, k) in sub.iter().enumerate() {
+            let tf = ty.fields.iter().find(|f| &f.name == k).ok_or_else(|| Error::query(format!("{dotted}: {} has no subfield {k}", ty.name)))?;
+            let last = i + 1 == sub.len();
+            match (&tf.type_name, &tf.leaf) {
+                (Some(_), _) if tf.list => return Err(Error::query(format!("{dotted}: {k} is a list; a subfield path can't go through or end at one yet"))),
+                (Some(t), _) if !last => ty = find(t).ok_or_else(|| Error::query(format!("{dotted}: unknown type {t}")))?,
+                (Some(_), _) => return Err(Error::query(format!("{dotted} is a nested type, not a scalar; name one of its subfields"))),
+                (None, Some(_)) if !last => return Err(Error::query(format!("{dotted}: {k} is a scalar and has no subfields"))),
+                (None, Some(l)) => {
+                    let leaf = if tf.list { ColType::Json } else { l.ty };
+                    let ty = ValueType::scalar(self.target.dialect.json_subfield_type(leaf));
+                    return Ok(SubRef::Json { field, leaf, ty });
+                }
+                (None, None) => unreachable!("a subfield is a leaf or a nested type"),
+            }
+        }
+        unreachable!("a subfield path is not empty")
     }
 
     fn resolve_parts(&self, path: &[String], name: &str) -> Result<(String, String)> {
@@ -3066,7 +3115,7 @@ pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_
     let keys = if q.order.is_empty() { effective_order(schema, &q)? } else { vec![] }
         .into_iter()
         .map(|o| match o.expr {
-            Expr::Col { path, name } if path.is_empty() => Ok(serde_json::json!({"field": name, "desc": o.desc, "nulls": o.nulls})),
+            Expr::Col { path, name, sub } if path.is_empty() && sub.is_empty() => Ok(serde_json::json!({"field": name, "desc": o.desc, "nulls": o.nulls})),
             _ => Err(Error::query("a default order is a root column")),
         })
         .collect::<Result<Vec<_>>>()?;
@@ -3164,7 +3213,7 @@ fn plan_prefetch(
     }
     validate_bypass(cm, &q.without_defaults)?;
     q.without_defaults.merge(without_defaults);
-    let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone() }, desc: false, nulls: None }).collect();
+    let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone(), sub: vec![] }, desc: false, nulls: None }).collect();
     q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
     let slice = match sliced {
@@ -3655,10 +3704,10 @@ pub fn unique_row_update(schema: &Schema, target: Target, op: &Operation, params
             }
             Expr::Cmp { op: CmpOp::Eq, l, r } => {
                 for (column, parameter) in [(l, r), (r, l)] {
-                    let (Expr::Col { path, name }, Expr::Param { i }) = (column.as_ref(), parameter.as_ref()) else { continue };
+                    let (Expr::Col { path, name, sub }, Expr::Param { i }) = (column.as_ref(), parameter.as_ref()) else { continue };
                     let Ok(pos) = model.field_pos(name) else { continue };
                     let field = &model.fields()[pos];
-                    if !path.is_empty() || !(field.primary_key || field.unique) || *i >= params.len() { continue; }
+                    if !path.is_empty() || !sub.is_empty() || !(field.primary_key || field.unique) || *i >= params.len() { continue; }
                     let value = params.value(*i, Some(field.value_type()))?;
                     if value != value.as_null() { out.push(pos); }
                 }

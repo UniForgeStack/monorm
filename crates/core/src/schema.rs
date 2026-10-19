@@ -142,6 +142,8 @@ pub struct Schema {
     pub dialect: crate::dialect::Dialect,
     pub models: Vec<Model>,
     pub enums: Vec<EnumIr>,
+    /// Nested types (`type` blocks), for the shape of a `json` field.
+    pub types: Vec<crate::ir::TypeIr>,
     pub identities: Option<crate::identity::IdentityManifest>,
     pub extensions: Vec<ExtensionIr>,
     pub functions: Vec<FunctionIr>,
@@ -173,7 +175,7 @@ impl Schema {
         let storage = match ir.behavior.storage.take() {
             Some(storage) => {
                 let physical = serde_json::from_value(serde_json::json!({
-                    "models": storage.models, "enums": ir.enums, "dialect": ir.dialect,
+                    "models": storage.models, "enums": ir.enums, "types": ir.types, "dialect": ir.dialect,
                     "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities, "partitions": ir.partitions,
                 })).map_err(|e| e.to_string())?;
                 Some(Box::new(Self::from_ir_impl(physical, false)?))
@@ -195,6 +197,7 @@ impl Schema {
         #[cfg(feature = "file-storage")]
         let mut file_fields = crate::file_storage::prepare(&ir)?.into_iter();
         let enums = ir.enums;
+        let types = ir.types;
         let mut models = Vec::with_capacity(ir.models.len());
         for mut m in ir.models {
             for f in &mut m.fields {
@@ -325,6 +328,7 @@ impl Schema {
             dialect: ir.dialect,
             models,
             enums,
+            types,
             identities: ir.identities,
             extensions: ir.extensions,
             functions: ir.functions,

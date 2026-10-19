@@ -144,6 +144,7 @@ impl<M: Model, Card> Subquery<M, Card> {
         let field = Expr::Col {
             path: Vec::new(),
             name: key.fields[0].into(),
+            sub: vec![],
         };
         self.query = self
             .query
