@@ -12,7 +12,7 @@ The ORM never deletes a prepared object. If the SQL fails, the error holds the p
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
@@ -109,6 +109,24 @@ def split(model: type[Model], values: Mapping[str, Any]) -> tuple[dict[str, Any]
             result = result.placeholder
         checked[name] = result
     return checked, pending
+
+
+def split_rows(model: type[Model], rows: Iterable[Mapping[str, Any]], statement: str) -> list[Mapping[str, Any]]:
+    """Validate the adapted values of every row of a batch write. A value that needs ``prepare`` is not
+    supported in a batch yet: it would store the raw input."""
+    out: list[Mapping[str, Any]] = []
+    for row in rows:
+        split_row = split(model, row)
+        if split_row is None:
+            out.append(row)
+            continue
+        checked, pending = split_row
+        if pending:
+            raise FieldAdapterError(
+                f"{model.__name__}.{', '.join(pending)}: {statement} takes no value that needs prepare yet"
+            )
+        out.append(checked)
+    return out
 
 
 class AdapterWriteError(Exception):

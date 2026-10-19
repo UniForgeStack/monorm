@@ -80,6 +80,20 @@ export function splitAdapted(meta: ModelMeta, values: object): { checked: Values
   return { checked, pending };
 }
 
+/** @internal Validate the adapted values of every row of a batch write. A value that needs `prepare`
+ * is not supported in a batch yet: it would store the raw input. */
+export function checkedRows<R extends object>(meta: ModelMeta, rows: readonly R[], statement: string): readonly R[] {
+  if (!ADAPTERS.has(meta)) return rows;
+  return rows.map(row => {
+    const adapted = splitAdapted(meta, row);
+    if (adapted === undefined) return row;
+    if (adapted.pending.size > 0) {
+      throw new FieldAdapterError(`${meta.name}.${[...adapted.pending.keys()].join(", ")}: ${statement} takes no value that needs prepare yet`);
+    }
+    return adapted.checked as R;
+  });
+}
+
 /** The `prepare` calls of one statement, run once. A failed `prepare` call is final, because a
  * stream cannot be replayed. */
 export class PreparedWrite {

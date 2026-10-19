@@ -6,7 +6,7 @@ import os
 from tempfile import TemporaryDirectory
 import unittest
 import orm
-from orm.adapters import AdapterWriteCancelled, AdapterWriteError
+from orm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError
 from orm_file_storage import FileField, FileFieldError, Upload
 from orm_file_storage.model import install_model
 from orm_storage import LocalStorage, Reference, Registry
@@ -79,12 +79,18 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
                 call()
         self.assertEqual(self.storage.uploads, 0)
 
-    @unittest.skip("insert_many and update_many join the adapter pipeline in a later step")
-    async def test_bulk_writes_adapt_file_values(self):
+    async def test_bulk_writes_store_references_and_reject_an_upload(self):
         reference = await self.storage.upload(b"report")
         await self.Report.objects.insert_many([{"id": 2, "file": reference}, {"id": 3, "file": None}])
-        with self.assertRaises(FileFieldError):
+        await self.Report.objects.update_many([{"id": 2, "file": None}, {"id": 3, "file": reference}])
+        rows = {r.id: r for r in await self.Report.objects.order_by(self.Report.id)}
+        self.assertIsNone(rows[2].file)
+        self.assertEqual(rows[3].file, reference)
+        with self.assertRaises(FieldAdapterError):
             self.Report.objects.insert_many([{"id": 1, "file": Upload(b"x")}])
+        with self.assertRaises(FieldAdapterError):
+            self.Report.objects.update_many([{"id": 2, "file": Upload(b"x")}])
+        self.assertEqual(self.storage.uploads, 1)
 
     async def test_sql_failure_retry_keeps_reference_and_unique_update(self):
         await self.Report.objects.insert(id=1, file=None)

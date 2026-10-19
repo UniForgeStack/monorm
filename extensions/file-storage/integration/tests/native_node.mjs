@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AdapterWriteError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../languages/js/dist/src/index.js';
+import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../languages/js/dist/src/index.js';
 import { LocalStorage, Reference, Registry } from '../../typescript/dist/src/index.js';
 import { Upload, FileField, FileFieldError } from '../typescript/dist/src/index.js';
 import { checkRequires } from '../../../../languages/js/dist/src/adapters.js';
@@ -111,7 +111,17 @@ test('outer rollback and savepoint retain successfully uploaded references', () 
   assert.equal((await bytes(storage.open(Reference.fromJSON(nested.operation.stored.file)))).toString(), 'savepoint');
 }));
 
-test('insertMany and updateMany adapt file values', { skip: 'join the adapter pipeline in a later step' }, () => {});
+test('batch writes store references and reject an upload', () => fixture(async ({ Report, storage }) => {
+  const ref = await storage.upload(Buffer.from('report'));
+  await Report.objects.insertMany([{ id: 2, file: ref }, { id: 3, file: null }]);
+  await Report.objects.updateMany([{ id: 2, file: null }, { id: 3, file: ref }]);
+  const rows = await Report.objects.orderBy(Report.id);
+  assert.equal(rows[0].file, null);
+  assert.deepEqual(rows[1].file.toJSON(), ref.toJSON());
+  assert.throws(() => Report.objects.insertMany([{ id: 1, file: new Upload(Buffer.from('x')) }]), FieldAdapterError);
+  await assert.rejects(async () => Report.objects.updateMany([{ id: 2, file: new Upload(Buffer.from('x')) }]), FieldAdapterError);
+  assert.equal(storage.uploads, 1);
+}));
 
 test('the artifact requires the adapter capability', () => {
   const artifact = JSON.parse(createRequire(import.meta.url)(process.env.ORM_NATIVE).nativeArtifact());

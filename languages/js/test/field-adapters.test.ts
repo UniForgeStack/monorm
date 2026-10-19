@@ -165,3 +165,40 @@ test("a missing language capability fails the load, naming the extension", () =>
   checkRequires({ requires: { "file-storage": ["async-field-adapter.v1"] } });
   checkRequires({});
 });
+
+test("batch writes store checked values and reject a pending value", async () => {
+  const { db, Doc, body, objects } = await open();
+  try {
+    await objects.insertMany([{ id: 1, title: "a", body: { stored: 1 } }, { id: 2, title: "b", body: null }]);
+    assert.deepEqual(((await objects.filter(Doc.id.eq(1)).get()) as Row)["body"], ["body", { stored: 1 }]);
+    assert.equal(((await objects.filter(Doc.id.eq(2)).get()) as Row)["body"], null);
+    await objects.updateMany([{ id: 1, body: null }, { id: 2, body: { stored: 2 } }]);
+    assert.equal(((await objects.filter(Doc.id.eq(1)).get()) as Row)["body"], null);
+    assert.deepEqual(((await objects.filter(Doc.id.eq(2)).get()) as Row)["body"], ["body", { stored: 2 }]);
+    assert.throws(() => objects.insertMany([{ id: 3, title: "c", body: { stored: 3 } }, { id: 4, title: "d", body: "upload" }]), /insertMany\(\).*needs prepare/);
+    await assert.rejects(Promise.resolve().then(() => objects.updateMany([{ id: 1, body: "upload" }])), /updateMany\(\).*needs prepare/);
+    assert.equal(await objects.count(), 2);
+    assert.deepEqual(body.calls, []);
+  } finally { await db.close(); }
+});
+
+test("a filtered update and an upsert take null or a stored value", async () => {
+  const { db, Doc, body, objects } = await open();
+  try {
+    await objects.insert({ id: 1, title: "a", body: { stored: 1 } });
+    await objects.insert({ id: 2, title: "b", body: { stored: 2 } });
+    assert.equal(await objects.filter(Doc.id.gt(0)).update({ body: null }), 2);
+    assert.equal(((await objects.filter(Doc.id.eq(1)).get()) as Row)["body"], null);
+    await objects.filter(Doc.id.gt(0)).update({ body: { stored: 9 } });
+    assert.deepEqual(((await objects.filter(Doc.id.eq(2)).get()) as Row)["body"], ["body", { stored: 9 }]);
+    await objects.insert({ id: 1, title: "again", body: null }).onConflict(Doc.id, { update: true });
+    assert.equal(((await objects.filter(Doc.id.eq(1)).get()) as Row)["title"], "again");
+    const [row, created] = await objects.getOrInsert({ id: 3 }, { defaults: { title: "c", body: { stored: 5 } } });
+    assert.ok(created);
+    assert.deepEqual(row["body"], ["body", { stored: 5 }]);
+    const [nullRow, nullCreated] = await objects.getOrInsert({ id: 4 }, { defaults: { title: "d", body: null } });
+    assert.ok(nullCreated);
+    assert.equal(nullRow["body"], null);
+    assert.deepEqual(body.calls, []);
+  } finally { await db.close(); }
+});
