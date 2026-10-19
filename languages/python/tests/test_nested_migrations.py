@@ -88,3 +88,23 @@ def test_a_second_make_after_a_nested_change_finds_nothing(tmp_path):
 def test_a_null_field_without_a_required_subfield_is_a_schema_error():
     with pytest.raises(SchemaError, match="no required subfield"):
         models("type T {\n  a Int?\n}\n\nmodel M {\n  id Int @id\n  t T?\n}\n")
+
+
+def test_a_second_make_after_a_removed_subfield_finds_nothing(tmp_path):
+    Migrations(tmp_path, models(V1)).make()
+    changed = V1.replace("  lng Float?\n", "")
+    assert Migrations(tmp_path, models(changed)).make() is not None
+    assert Migrations(tmp_path, models(changed)).make() is None
+
+
+def test_a_second_make_after_a_check_change_finds_nothing(tmp_path):
+    Migrations(tmp_path, models(V1)).make()
+    changed = V1.replace("  lat Float\n", "  lat Float?\n")  # only the generated check changes
+    assert Migrations(tmp_path, models(changed)).make() is not None
+    assert Migrations(tmp_path, models(changed)).make() is None
+
+
+def test_a_second_make_on_sqlite_finds_nothing(tmp_path):
+    source = 'datasource db { provider = "sqlite" }\n' + V1
+    assert Migrations(tmp_path, models(source)).make() is not None
+    assert Migrations(tmp_path, models(source)).make() is None
