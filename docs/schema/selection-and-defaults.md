@@ -10,13 +10,13 @@ row.note                     # None is a loaded SQL NULL
 row.bio                      # raises orm.NotLoaded
 row.pk                       # identity remains available internally
 row.to_dict()                # public loaded scalar fields only
-await row.refresh()          # preserves the public selection
-await row.refresh(User.bio)   # expands it with an explicit field
+await row.load(reload=True)  # reads all scalar fields: the partial row becomes full
+await row.load(User.bio, reload=True)  # reads that field
 await row.update(name="new") # preserves the public selection
 ```
 
 TypeScript uses the same `load(User.name, User.note)` syntax, `NotLoaded`,
-`toJSON()`, and `refresh(...columns)`. Explicit refresh columns add to the
+`toJSON()`, and `load(...columns, { reload: true })`. Explicit reload columns add to the
 current projection. Its partial result type has only the loaded fields
 (`Pick<UserData, "name" | "note"> & Instance<UserSpec>`); methods and `pk` remain available.
 Python returns the generated model class; field annotations describe a loaded
@@ -209,8 +209,10 @@ the filtered view, not evidence that the physical row is absent.
 
 UPDATE/DELETE `returning` uses the query's scalar selection, including schema
 defaults. It returns the actual written row even when the mutation leaves the
-filter. Instance update/delete/refresh use internal identity and bypass defaults;
-instance update and refresh fetch only the instance's public fields and helpers.
+filter. Instance update, delete and load use internal identity and bypass defaults (they run through `qs().without_defaults()`);
+instance update fetches only the instance's public fields and helpers.
+`post.qs()` itself applies the defaults.
+A plain `await post.qs()` with no `load()` reads the normal selection, so a partial object gets those fields.
 Insert and bulk-update returning retain their existing complete-row result contract.
 
 Internally, `ResultShape` maps logical `FieldId`s to actual row slots and marks

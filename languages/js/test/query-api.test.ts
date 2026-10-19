@@ -1,10 +1,10 @@
-/** Query-set API: query-set classes, prefetch on loaded instances, columns through to-one
+/** Query-set API: query-set classes, bound relation loads on loaded instances, columns through to-one
  * `load()` paths, OR of query sets, single-row labels, column paths and model metadata. */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, Registry, connect, getDatabase, loads, column, describe, prefetch, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
+import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, Registry, connect, getDatabase, loads, column, describe, of, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
 import { Comment, Post, PostTag, Profile, Tag, User, type PostSpec, type TagSpec } from "./blog/models.js";
 import { useDatabase } from "./helpers.js";
 
@@ -90,13 +90,13 @@ test("a query-set class is checked", () => {
   assert.equal(Post.objects.constructor, QuerySet);
 });
 
-// -- prefetch on loaded instances -------------------------------------------------------------
+// -- bound relation loads on loaded instances -------------------------------------------------------------
 
-test("prefetch onto loaded instances", async () => {
+test("bound load onto loaded instances", async () => {
   const { posts: rows } = await seed();
   await Comment.objects.insertMany([{ post: rows[1]!, body: "a" }, { post: rows[1]!, body: "b" }]);
   const users = await User.objects.orderBy("id");
-  await prefetch(users, User.posts.comments, User.posts.objects.filter(Post.published.eq(true)).slice(0, 1).label("top"));
+  await of(users).load(User.posts.comments, User.posts.objects.filter(Post.published.eq(true)).slice(0, 1).label("top"));
   type Loaded = { posts: { cached: { title: string; comments: { cached: { body: string }[] } }[] }; top: { title: string }[] };
   const loaded = users as unknown as Loaded[];
   assert.deepEqual(loaded[0]!.posts.cached.map((p) => p.title), ["draft", "hit", "quiet"]);
@@ -104,26 +104,30 @@ test("prefetch onto loaded instances", async () => {
   assert.deepEqual(loaded.map((u) => u.top.map((p) => p.title)), [["hit"], ["bob"]]);
 });
 
-test("prefetch reads keys from the instances, to-one and many-to-many", async () => {
+test("bound load reads keys from the instances, to-one and many-to-many", async () => {
   const { posts: rows } = await seed();
   await Comment.objects.insertMany([{ post: rows[0]!, body: "a" }, { post: rows[3]!, body: "b" }]);
   const comments = await Comment.objects.orderBy("id");
   await Comment.objects.delete(); // the instances' own rows are not read again
-  await prefetch(comments, Comment.post.author);
+  await of(comments).load(Comment.post.author);
   const loaded = comments as unknown as { post: { title: string; author: { name: string } } }[];
   assert.deepEqual(loaded.map((c) => [c.post.title, c.post.author.name]), [["draft", "Alice"], ["bob", "Bob"]]);
   const tags = await Tag.objects.insertMany([{ name: "a" }, { name: "b" }]).returning();
   await rows[0]!.tags.add(...tags);
   const posts = await Post.objects.orderBy("id");
-  await prefetch(posts, Post.tags);
+  await of(posts).load(Post.tags);
   assert.deepEqual((posts[0]!.tags as unknown as { cached: { name: string }[] }).cached.map((t) => t.name), ["a", "b"]);
 });
 
-test("prefetch checks its input", async () => {
+test("orm.prefetch is removed", async () => {
+  assert.equal("prefetch" in (await import("../src/index.js")), false);
+});
+
+test("bound load checks its input", async () => {
   const { alice, posts: rows } = await seed();
-  await prefetch([], User.posts);
-  await assert.rejects(prefetch([alice, rows[0]!], User.posts), /one model/);
-  await assert.rejects(prefetch([alice], Post.author as never), /does not start at User|User has no relation/);
+  assert.throws(() => of([]), { name: "TypeError", message: /at least one object/ });
+  await assert.rejects(async () => { await (of as (o: unknown[]) => { load(...i: unknown[]): unknown })([alice, rows[0]!]).load(User.posts); }, /one model/);
+  await assert.rejects(async () => { await of([alice]).load(Post.author as never); }, /does not start at User|User has no relation/);
 });
 
 async function prefetchDatabases() {
@@ -160,11 +164,11 @@ model Book {
   }
 }
 
-test("prefetch refuses instances from two databases", async () => {
+test("bound load refuses instances from two databases", async () => {
   const { Author, objs, close } = await prefetchDatabases();
   try {
-    await assert.rejects(prefetch(objs, Author.books), {
-      name: "QueryError", message: "prefetch() takes instances from one database; pass using= to read another",
+    await assert.rejects(async () => { await of(objs).load(Author.books); }, {
+      name: "QueryError", message: "of() takes objects from one database; pass using() to read another",
     });
     for (const obj of objs) assert.throws(() => obj.books.cached, NotLoaded);
   } finally {
@@ -172,27 +176,27 @@ test("prefetch refuses instances from two databases", async () => {
   }
 });
 
-test("prefetch with using reads that database", async () => {
+test("bound load with using reads that database", async () => {
   const { Author, d2, objs, close } = await prefetchDatabases();
   try {
-    await prefetch(objs, Author.books, { using: d2 });
+    await of(objs).using(d2).load(Author.books);
     assert.deepEqual(objs.map((obj) => obj.books.cached.map((b: any) => b.title)), [["B-d2"], [], ["B-d2"]]);
   } finally {
     await close();
   }
 });
 
-test("prefetch accepts instances from one database", async () => {
+test("bound load accepts instances from one database", async () => {
   const { Author, objs, close } = await prefetchDatabases();
   try {
-    await prefetch(objs.slice(1), Author.books);
+    await of(objs.slice(1)).load(Author.books);
     assert.deepEqual(objs.slice(1).map((obj) => obj.books.cached.map((b: any) => b.title)), [[], ["B-d2"]]);
     const { alice, bob } = await seed();
-    await prefetch([alice, bob], User.posts);
+    await of([alice, bob]).load(User.posts);
     const titles = (obj: User) => (obj.posts as unknown as { cached: Post[] }).cached.map((p) => p.title);
     assert.deepEqual(titles(alice), ["draft", "hit", "quiet"]);
     const explicit = await User.objects.using(getDatabase()).require().get(User.id.eq(alice.id));
-    await prefetch([bob, explicit], User.posts);
+    await of([bob, explicit]).load(User.posts);
     assert.deepEqual(titles(explicit), ["draft", "hit", "quiet"]);
   } finally {
     await close();
@@ -453,13 +457,6 @@ for (const Invalid of [InvalidRelatedQueries, InvalidManyRelatedQueries]) {
     assert.throws(() => useQuerySet(Post, Invalid), { name: "TypeError", message: /extends QuerySet/ });
   });
 }
-
-test("prefetch rejects a column of the instances' own model", async () => {
-  const { alice } = await seed();
-  await assert.rejects(prefetch([alice], User.name), {
-    name: "TypeError", message: /own model has nothing to load/,
-  });
-});
 
 test("column() rejects an unknown own field", () => {
   assert.throws(() => column(Post, "nope"), { name: "TypeError", message: /Post has no field "nope"/ });

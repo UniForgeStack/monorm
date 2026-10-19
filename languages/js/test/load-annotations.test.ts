@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { QueryError, Registry, connect, func, loads, prefetch } from "../src/index.js";
+import { QueryError, Registry, connect, func, loads } from "../src/index.js";
 import { Comment, Post, User } from "./blog/models.js";
 import { useDatabase } from "./helpers.js";
 
@@ -125,11 +125,6 @@ test("a label must be unique among loads", () => {
 
 test("a relation query set checks its own labels", () => {
   assert.throws(() => User.objects.load(User.posts.objects.load(func.count(Post.comments).label("title"))), /is a field, relation or member/);
-});
-
-test("prefetch rejects a labeled aggregate", async () => {
-  const { alice } = await seed();
-  await assert.rejects(prefetch([alice], func.count(User.posts).label("n") as Dynamic), { name: "TypeError", message: /nothing to prefetch/ });
 });
 
 test("select ignores labeled loads", async () => {

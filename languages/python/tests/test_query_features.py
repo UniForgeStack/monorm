@@ -1262,7 +1262,7 @@ async def test_load_plain_path_and_query_and_without_related(clean):
     with pytest.raises(TypeError):
         await bound
     users = await User.objects.order_by(User.id)
-    await orm.prefetch(users, User.posts, bound)
+    await orm.of(users).load(User.posts, bound)
     assert [len(u.posts.cached) for u in users] == [3, 1, 0]
 
 

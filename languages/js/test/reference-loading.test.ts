@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, loads, prefetch, Decimal, Registry, IntegrityError, NotLoaded, type Database } from "../src/index.js";
+import { connect, loads, of, Decimal, Registry, IntegrityError, NotLoaded, type Database } from "../src/index.js";
 import { INTERNAL, RELATED } from "../src/model.js";
 import { QuerySet } from "../src/query.js";
 import { DATABASE_URL } from "./helpers.js";
@@ -297,7 +297,7 @@ model KChild {
  @@map("ref04k_children")
 }`;
 for (const name of ["byDate", "byDecimal", "byInt"]) {
-  test(`${name}: a to-one reference key returns the parent after load() and prefetch()`, async () => {
+  test(`${name}: a to-one reference key returns the parent after load() and a bound load`, async () => {
     const registry = new Registry();
     const m = loads(keySource, { registry }) as Dynamic;
     const db = await connect(DATABASE_URL, { registry, default: false });
@@ -313,7 +313,7 @@ for (const name of ["byDate", "byDecimal", "byInt"]) {
       await loaded.load(KChild[name]);
       assert.equal(loaded[name].id, 1);
       const rows = await KChild.objects.using(db).all();
-      await prefetch(rows, KChild[name], { using: db });
+      await of(rows).using(db).load(KChild[name]);
       assert.equal(rows[0][name].id, 1);
     } finally {
       await db.dropTables();

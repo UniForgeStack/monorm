@@ -71,7 +71,7 @@ async def test_relation_sets_have_the_custom_methods(clean, custom):
     assert isinstance(posts[1].tags, orm.ManyRelatedSet)
 
 
-async def test_prefetch_query_set_uses_custom_methods(clean, custom):
+async def test_bound_load_query_set_uses_custom_methods(clean, custom):
     await seed()
     users = await User.objects.order_by(User.name).load(User.posts.objects.published())
     assert [[p.title for p in u.posts.cached] for u in users] == [["hit", "quiet"], ["bob"]]
@@ -203,10 +203,10 @@ def test_cli_query_set_flag_overrides_config(tmp_path, monkeypatch):
     assert "from other import Queries as _BookObjects" in (tmp_path / "models.pyi").read_text()
 
 
-# -- prefetch on loaded instances (F10) -----------------------------------------------------
+# -- bound relation loads on loaded instances (F10) -----------------------------------------------------
 
 
-async def test_prefetch_onto_loaded_instances(clean):
+async def test_bound_load_onto_loaded_instances(clean):
     alice, bob, posts = await seed()
     await Comment.objects.insert_many([{"post": posts[1], "body": "a"}, {"post": posts[1], "body": "b"}])
     users = await User.objects.order_by(User.id)
@@ -217,14 +217,14 @@ async def test_prefetch_onto_loaded_instances(clean):
     assert [s.has_batching for s in result.statements] == [False, True, True, True]
     assert all(s.joins_count == 0 for s in result.statements)
     assert sum(s.uncorrelated_count for s in result.statements) == 1
-    await orm.prefetch(users, User.posts.comments, top)
+    await orm.of(users).load(User.posts.comments, top)
     assert [p.title for p in users[0].posts.cached] == ["draft", "hit", "quiet"]
     assert [c.body for c in users[0].posts.cached[1].comments.cached] == ["a", "b"]
     assert users[0].posts.cached[0].author is users[0]
     assert [[p.title for p in u.top] for u in users] == [["hit"], ["bob"]]
 
 
-async def test_prefetch_to_one_and_many_to_many(clean):
+async def test_bound_load_to_one_and_many_to_many(clean):
     _, _, posts = await seed()
     tags = await Tag.objects.insert_many([{"name": "a"}, {"name": "b"}]).returning()
     await posts[0].tags.add(*tags)
@@ -238,27 +238,32 @@ async def test_prefetch_to_one_and_many_to_many(clean):
             orm.StatementInspection(True, 1, 0, 0, 0),
         ),
     )
-    await orm.prefetch(loaded, Post.author, Post.tags)
+    await orm.of(loaded).load(Post.author, Post.tags)
     assert [p.author.name for p in loaded] == ["Alice", "Alice", "Alice", "Bob"]
     assert [t.name for t in loaded[0].tags.cached] == ["a", "b"] and loaded[1].tags.cached == []
 
 
-async def test_prefetch_reads_keys_from_the_instances(clean):
+async def test_bound_load_reads_keys_from_the_instances(clean):
     _, _, posts = await seed()
     await Comment.objects.insert_many([{"post": posts[0], "body": "a"}, {"post": posts[3], "body": "b"}])
     comments = await Comment.objects.order_by(Comment.id)
     await Comment.objects.delete()  # the instances' own rows are not read again
-    await orm.prefetch(comments, Comment.post.author)
+    await orm.of(comments).load(Comment.post.author)
     assert [(c.post.title, c.post.author.name) for c in comments] == [("draft", "Alice"), ("bob", "Bob")]
 
 
-async def test_prefetch_checks_its_input(clean):
+def test_orm_prefetch_is_removed():
+    assert not hasattr(orm, "prefetch") and "prefetch" not in orm.__all__
+
+
+async def test_bound_load_checks_its_input(clean):
     alice, _, posts = await seed()
-    await orm.prefetch([], User.posts)
+    with pytest.raises(TypeError, match="at least one object"):
+        orm.of([]).load(User.posts)
     with pytest.raises(TypeError, match="one model"):
-        await orm.prefetch([alice, posts[0]], User.posts)
+        await orm.of([alice, posts[0]]).load(User.posts)
     with pytest.raises(ValueError, match="does not start at User"):
-        await orm.prefetch([alice], Post.author)
+        await orm.of([alice]).load(Post.author)
 
 
 DECIMAL_KEYS = """datasource db { provider = "postgres" }
@@ -295,17 +300,17 @@ async def decimal_keys():
         await db.close()
 
 
-async def test_prefetch_decimal_key_to_many(decimal_keys):
+async def test_bound_load_decimal_key_to_many(decimal_keys):
     parent, _, db = decimal_keys
     decs = await parent.objects.using(db).order_by(parent.id)
-    await orm.prefetch(decs, parent.kids, using=db)
+    await orm.of(decs).using(db).load(parent.kids)
     assert [len(d.kids.cached) for d in decs] == [2, 0]  # the child column has scale 4
 
 
-async def test_prefetch_decimal_key_to_one(decimal_keys):
+async def test_bound_load_decimal_key_to_one(decimal_keys):
     _, kid, db = decimal_keys
     kids = await kid.objects.using(db).order_by(kid.id)
-    await orm.prefetch(kids, kid.dec, using=db)
+    await orm.of(kids).using(db).load(kid.dec)
     assert [k.dec.id for k in kids] == [Decimal("1.50")] * 2
 
 
@@ -344,34 +349,32 @@ model Book {
         await d2.close()
 
 
-async def test_prefetch_refuses_instances_from_two_databases(prefetch_databases):
+async def test_bound_load_refuses_instances_from_two_databases(prefetch_databases):
     Author, _, objs = prefetch_databases
-    with pytest.raises(
-        orm.QueryError, match=r"prefetch\(\) takes instances from one database; pass using= to read another"
-    ):
-        await orm.prefetch(objs, Author.books)
+    with pytest.raises(orm.QueryError, match=r"of\(\) takes objects from one database; call using\(\) to read another"):
+        await orm.of(objs).load(Author.books)
     # Rejection must leave every relation unloaded.
     for obj in objs:
         with pytest.raises(orm.NotLoaded):
             obj.books.cached
 
 
-async def test_prefetch_with_using_reads_that_database(prefetch_databases):
+async def test_bound_load_with_using_reads_that_database(prefetch_databases):
     Author, d2, objs = prefetch_databases
-    await orm.prefetch(objs, Author.books, using=d2)
+    await orm.of(objs).using(d2).load(Author.books)
     assert [[b.title for b in obj.books.cached] for obj in objs] == [["B-d2"], [], ["B-d2"]]
 
 
-async def test_prefetch_accepts_instances_from_one_database(clean, prefetch_databases):
+async def test_bound_load_accepts_instances_from_one_database(clean, prefetch_databases):
     Author, _, objs = prefetch_databases
-    await orm.prefetch(objs[1:], Author.books)
+    await orm.of(objs[1:]).load(Author.books)
     assert [[b.title for b in obj.books.cached] for obj in objs[1:]] == [[], ["B-d2"]]
     alice, bob, _ = await seed()
-    await orm.prefetch([alice, bob], User.posts)
+    await orm.of([alice, bob]).load(User.posts)
     assert [p.title for p in alice.posts.cached] == ["draft", "hit", "quiet"]
     # Implicit default and explicit default resolve to the same database.
     explicit = await User.objects.using(clean).require().get(User.id == alice.id)
-    await orm.prefetch([bob, explicit], User.posts)
+    await orm.of([bob, explicit]).load(User.posts)
     assert [p.title for p in explicit.posts.cached] == ["draft", "hit", "quiet"]
 
 
@@ -577,7 +580,7 @@ async def test_or_keeps_the_custom_query_set_class(clean, custom):
     assert sorted(p.title for p in await qs.popular(60)) == ["bob", "hit"]
 
 
-async def test_prefetch_one_stores_a_row_or_none(clean, observe_queries):
+async def test_bound_load_one_stores_a_row_or_none(clean, observe_queries):
     await seed()
     await User.objects.insert(email="carol@example.com", name="Carol")
     query = User.objects.order_by(User.id).load(
@@ -687,7 +690,7 @@ def test_query_set_class_rejects_relation_subclasses(base):
         use_query_set(Post, RelationQueries)
 
 
-async def test_prefetch_rejects_a_model_subclass(clean):
+async def test_bound_load_rejects_a_model_subclass(clean):
     alice, _, _ = await seed()
 
     class SpecialUser(User, registry=orm.Registry()):
@@ -696,7 +699,7 @@ async def test_prefetch_rejects_a_model_subclass(clean):
     special = object.__new__(SpecialUser)
     special.__dict__.update(alice.__dict__)
     with pytest.raises(TypeError, match="one model"):
-        await orm.prefetch([alice, special], User.posts)
+        await orm.of([alice, special]).load(User.posts)
 
 
 def test_column_rejects_unknown_own_field():
@@ -734,12 +737,6 @@ async def test_or_with_unfiltered_left_returns_all_rows(clean):
 def test_describe_optional_belongs_to_is_nullable():
     relations = {r["name"]: r for r in orm.describe(Comment)["relations"]}
     assert relations["author"]["nullable"] is True
-
-
-async def test_prefetch_rejects_own_column(clean):
-    alice, _, _ = await seed()
-    with pytest.raises(TypeError, match="own model"):
-        await orm.prefetch([alice], User.name)
 
 
 def test_get_cannot_be_labeled_for_loading():

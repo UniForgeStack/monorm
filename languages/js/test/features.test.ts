@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { NotLoaded, QueryError, connect, exists, func, getDatabase, outer, prefetch, window } from "../src/index.js";
+import { NotLoaded, QueryError, connect, exists, func, getDatabase, of, outer, window } from "../src/index.js";
 import { DB } from "../src/model.js";
 import { Comment, Post, User } from "./blog/models.js";
 import { DATABASE_URL, useDatabase } from "./helpers.js";
@@ -701,6 +701,6 @@ test("load combines plain paths and sets; withoutRelated keeps IN loads and root
   // @ts-expect-error bound query sets cannot be awaited directly
   await assert.rejects(async () => { await bound; }, TypeError);
   const users = await User.objects.orderBy(User.id);
-  await prefetch(users, User.posts, bound);
+  await of(users).load(User.posts, bound);
   assert.deepEqual(await Promise.all(users.map(async (u) => (await u.posts).length)), [3, 1, 0]);
 });

@@ -298,7 +298,7 @@ SQL text client-side, so the limit doesn't apply to it.)
   It runs in the same statement as the rows, on the model's query set, a relation query set (`User.posts.objects.load(...)`) and instance `load()` (`await post.load(...)`, which reads only the aggregate).
   Only an aggregate over a relation takes a label here; another expression raises `TypeError` (use `select()`), as does an aggregate without a label.
   A label that names a field, relation or member of the model, or that another label or relation query set of the same `load()` also uses, raises `ValueError`.
-  `prefetch()` rejects it, and `select()` ignores it. The attribute is not typed statically.
+  `select()` ignores it. The attribute is not typed statically.
 
 * A column of the model makes its instances partial: they hold the named fields, and, hidden, the primary key and the relation keys. Reading another field raises `NotLoaded`.
   Without a column of the model itself, its instances keep their normal selection: `load(Post.author)` gives whole posts.
@@ -327,20 +327,61 @@ SQL text client-side, so the limit doesn't apply to it.)
 **One instance.** `await post.load(Post.body, Post.author, Post.comments)` accepts the
 same arguments as queryset `load()`, fills the existing instance, and returns it.
 It preserves loaded fields and skips loaded values. `reload=True` refreshes the
-requested values; `await post.load()` fills all scalar fields. Nested paths and
+requested values. `await post.load(reload=True)` with no items reads all scalar fields, so a partial object becomes full.
+`await post.load()` fills the scalar fields that are missing. Nested paths and
 filtered relation querysets work too. Collection values remain in `.cached`.
+`post.load()`, `post.update()` and `post.delete()` run through `post.qs().without_defaults()`: they ignore the query defaults of the model.
 
-**Instances you already have.** `await orm.prefetch(instances, *items)` loads relations onto them, as `load()` does for the rows of a query (Django's `prefetch_related_objects`):
+**Instances you already have.** `await orm.of(instances).load(*items)` loads relations onto them, as `load()` does for the rows of a query:
 
 ```python
 bundle = await Bundle.objects.require().get(Bundle.id == 1)
-await orm.prefetch([bundle], Bundle.items.product, Bundle.versions.objects.order_by(-Version.id)[:1].label("latest"))
+await orm.of([bundle]).load(Bundle.items.product, Bundle.versions.objects.order_by(-Version.id)[:1].label("latest"))
 ```
 
-It takes the items of `load()` except columns of the instances' model, and loads every relation with an `IN (...)` query. Only those queries run: the keys come from the instances, so their own rows are not read again.
-The instances are of one model and one database; an unset database means the default.
-Mixed databases raise `QueryError` unless `using=db` names the database to read.
-Hooks, trace, `restore_cause` and replica selection (`_reader()`) skip `orm.prefetch()`.
+A bound load of relations only runs no query for the objects themselves: the keys come from the instances, and every relation loads with an `IN (...)` query.
+A filter or a lock reads the keys first.
+See "Bound query sets" for the rest.
+Each of those queries gives a query event.
+
+### Bound query sets
+
+`orm.of(objs)`, `Model.objects.of(objs)` and `post.qs()` give a bound query set: a query set filtered to the primary keys of objects you already hold.
+Awaiting it reads those rows, fills the objects in place, and gives the matched objects in input order.
+An object whose row is missing stays unchanged.
+The objects are of one model and one database; `using(db)` names the database to read.
+
+```python
+await orm.of(posts).load(Post.author, Post.comments)    # relations only: no query for the posts
+await Post.objects.of(posts).filter(Post.views > 10)    # a read of the rows, with a filter
+async with db.transaction():
+    await post.qs().lock()                              # reload and lock
+    await post.qs().using("primary").load(Post.views, reload=True)
+await post.qs().update(title="New")                     # UPDATE ... RETURNING, fills `post`
+await post.qs().delete()
+```
+
+* A bound set keeps the rule "at most one row per bound object": `filter()`, `exclude()`, `load()`, `lock()`, `using()`, `without_defaults()`, `update()`, `delete()`, `count()` and `exists()` are allowed.
+  Ordering, slices, `first()`, `get()` and other shape-changing methods do not exist on it.
+* `post.qs()` applies the query defaults of the model.
+  The shortcuts `post.load()`, `post.update()` and `post.delete()` ignore them, as if they ran through `post.qs().without_defaults()`.
+  So `await post.load(reload=True)` refreshes a soft-deleted post, and `await post.qs().load()` does not.
+  The same holds for `lock()`: use `post.qs().without_defaults().lock()` for a soft-deleted row.
+* A plain `await post.qs()` with no `load()` reads the normal selection of the model, so a partial object gets those fields.
+* The version enters writes only: reads and `lock()` refresh a stale object.
+  Bound writes (`update()`, `delete()`) have no version check yet.
+
+`refresh()` is removed from instances. Migrate as follows:
+
+| Before | After |
+| --- | --- |
+| `await post.refresh()` | `await post.load(reload=True)` |
+| `await post.refresh(Post.views)` | `await post.load(Post.views, reload=True)` |
+| `await post.refresh(lock=True)` | `await post.qs().lock()` |
+| `await job.refresh(lock=True, skip_locked=True)` gives `False` | `await job.qs().lock(skip_locked=True)` gives `[]` |
+| `await orm.prefetch(posts, Post.author)` | `await orm.of(posts).load(Post.author)` |
+
+`orm.prefetch()` is removed.
 
 ### One-to-one and many-to-many
 
@@ -875,12 +916,13 @@ posts = await Post.objects.update_many(rows, batch_size=1000).returning()
 # One row, by primary key
 await post.update(title="New", views=Post.views + 1)   # UPDATE ... RETURNING; refreshes `post`
 await post.delete()
-await post.refresh()
-await post.refresh(Post.views)                   # some fields
+await post.load(reload=True)                     # all scalar fields
+await post.load(Post.views, reload=True)         # some fields
 ```
 
-`refresh()` takes columns of the model only (`Post.views`, not `Post.author.name`), else `TypeError`.
-`refresh()` reads the primary, also on a database with replicas.
+`load(reload=True)` reads the primary, also on a database with replicas.
+`post.delete()` always reads `RETURNING`.
+`refresh()` is removed and its name stays reserved.
 `on_commit` callbacks and `load_x()` still read replicas: use `.using("primary")` there.
 
 * `insert(...)` gives the instance. `insert_many(...)` and every insert with
@@ -1130,8 +1172,8 @@ async with db.transaction():
     await Post.objects.filter(...).lock(exclusive=False)                     # FOR SHARE
     todo = await Post.objects.filter(~Post.published).lock(skip_locked=True).limit(10)
     await Post.objects.lock(nowait=True).get(...)       # raises orm.LockNotAvailable if locked
-    await post.refresh(lock=True)                       # reload and lock this row
-    if not await job.refresh(lock=True, skip_locked=True):  # False: another worker has it
+    await post.qs().lock()                              # reload and lock this row
+    if not await job.qs().lock(skip_locked=True):       # []: another worker has it
         ...
     await db.lock("import:42")                          # advisory lock on a name, not a row
     got = await db.lock(42, exclusive=False, nowait=True)   # False instead of waiting
@@ -1143,11 +1185,10 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
 * `lock(exclusive=True, *, nowait=False, skip_locked=False)`: `exclusive` is
   `FOR UPDATE`, otherwise `FOR SHARE`. Only the model's own rows are locked
   (`FOR ... OF <table>`), never rows joined by `load()`.
-* `instance.refresh(*fields, lock=False, exclusive=True, nowait=False, skip_locked=False)`: `fields` are columns of the model, else `TypeError`.
-  reloads the row with the query set's `lock()` options and returns `True`. A refresh of
-  some fields locks the whole row. With `skip_locked`, a row locked elsewhere (or
-  deleted) gives `False` and leaves the instance unchanged; otherwise a missing row
-  raises `DoesNotExist`. The lock options without `lock=True` raise `TypeError`.
+* `post.qs().lock(exclusive=True, *, nowait=False, skip_locked=False)` reloads the row with the options of the query set's `lock()` and gives a list with the instance.
+  It locks the whole row. A row that is missing, or locked elsewhere with `skip_locked`, gives `[]` and leaves the instance unchanged.
+  `post.qs()` applies the query defaults of the model, so it does not see a soft-deleted row.
+  For that row, use `post.qs().without_defaults().lock()`.
 * Row locks and `db.lock(key)` without `session=True` are held until the transaction
   ends, so they raise `orm.TransactionRequired` outside `db.transaction()`. `count()` / `exists()` /
   `update()` / `delete()` on a locked query set raise `QueryError` (writes lock the rows
@@ -1292,7 +1333,6 @@ remove = db.on_query(log_slow)
   The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
   `db.lock(..., nowait=True)` gives `rows` 1 when it got the lock and 0 when it did not.
 * Each call to the database gives one event per statement: the prefetch queries that `load()` runs, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
-  `orm.prefetch()` gives no events.
   A call keeps its events until it ends, so a call with many statements holds them all in memory (the review reported 200k events at about +113 MB; not measured here).
   Reads sent to a replica and the lock and unlock of `db.lock(..., session=True)` give events too.
   `COMMIT`, `ROLLBACK` and the `set_config` statements of `db.tenant()` give no event.

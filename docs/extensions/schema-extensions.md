@@ -81,7 +81,8 @@ model Book {
   Other defaults, such as a tenant filter, still apply.
   A bare `without_defaults()` removes every default.
   `deleted_only()` (`deletedOnly()`) bypasses `"deleted"` and gives only the soft-deleted rows.
-* An instance method that needs its own row (`save()`, `refresh()`, `delete()`) finds the row even when a default hides it.
+* An instance method that needs its own row (`update()`, `load()`, `delete()`) finds the row even when a default hides it.
+  `post.qs()` applies the defaults: use `post.qs().without_defaults()` for a soft-deleted row.
 * Database mode adds a `BEFORE DELETE ... FOR EACH ROW WHEN (OLD.deleted_at IS NULL)` trigger.
   It sets the field and cancels the delete (Postgres `RETURN NULL`, SQLite `RAISE(IGNORE)`).
   A raw `DELETE` of a live row soft-deletes it.
@@ -142,6 +143,8 @@ model Doc {
   When no row matches and the row has another version, it raises `orm.VersionConflict` (`VersionConflict` in TypeScript).
   When the row is gone, `update()` raises `DoesNotExist`.
 * The instance must have the version field loaded.
+* The version enters writes only: a read or `lock()` through `post.qs()` refreshes a stale object.
+  Bound writes (`post.qs().update()`, `orm.of(posts).delete()`) have no version check yet.
 * Instance `update()` rejects an explicit version field with `TypeError`.
   Use `Model.objects.filter(pk=...).update(version=...)` in Python or `Model.objects.filter({ pk: ... }).update({ version: ... })` in TypeScript for an intentional query-set override.
   An explicit upsert update list may also override the version.
@@ -156,5 +159,5 @@ doc = await Doc.objects.get(Doc.id == 1)
 try:
     await doc.update(title="new")
 except orm.VersionConflict:
-    await doc.refresh()          # load the other writer's change, then decide
+    await doc.load(reload=True)  # load the other writer's change, then decide
 ```

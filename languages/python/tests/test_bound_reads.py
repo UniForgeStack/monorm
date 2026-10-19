@@ -122,7 +122,7 @@ async def test_a_relation_only_load_runs_no_root_query(clean, db, observe_querie
     alice, posts = await seed()
     await Comment.objects.insert_many([{"post": posts[0], "body": "a"}, {"post": posts[1], "body": "b"}])
     held = await stale(posts)
-    with observe_queries(db) as events:  # orm.prefetch() gives no events: a root query would show
+    with observe_queries(db) as events:  # a root query would show
         result = await Post.objects.of(held).load(Post.comments)
     assert events == [] and result == held
     assert [len(p.comments.cached) for p in held] == [1, 1, 0, 0]

@@ -48,7 +48,7 @@ export { ModelMeta, Registry, column, define, describe, load, loads, registry } 
 export type { FieldInfo, ModelInfo, RelationInfo } from "./model.js";
 export type { Instance, ModelClass, Row, SchemaIR } from "./model.js";
 export { BoundQuerySet, of } from "./bound.js";
-export { InspectedStatement, InsertMany, InsertOne, ManyRelatedSet, OneRowQuery, Prepared, PreparedOneRowQuery, QuerySet, RelatedSet, UpsertOne, prefetch, useQuerySet } from "./query.js";
+export { InspectedStatement, InsertMany, InsertOne, ManyRelatedSet, OneRowQuery, Prepared, PreparedOneRowQuery, QuerySet, RelatedSet, UpsertOne, useQuerySet } from "./query.js";
 export type { Page, PageOptions } from "./pagination.js";
 export type { AddOptions, BatchOptions, CopyOptions, FieldOrder, LoadAll, LoadItem, LoadOf, LockOptions, OnConflictOptions, PreparedInsert, PreparedUpdate, QueriesOf, QuerySetOf, Simplify, Via } from "./query.js";
 export { Select } from "./select.js";
