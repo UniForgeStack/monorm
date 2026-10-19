@@ -366,7 +366,7 @@ impl Lowering<'_> {
                 m.relations.push(r);
             }
             for block in &decl.blocks {
-                model_block(m, &nested::resolve_paths(block, paths, &decl.name)?)?;
+                model_block(m, &nested::resolve_paths(block, paths, &decl.name, ir.dialect)?)?;
             }
         }
         ir.models = lowered;

@@ -2,7 +2,7 @@
 //! for `json` and `columns` storage, on PostgreSQL and SQLite.
 use std::sync::Arc;
 use orm_core::{dialect::{Dialect, Target}, dsl, ir::{ColType, Operation, ValueType}, migrate, schema::Schema};
-use orm_engine::{db::{self, Executor}, exec, plan::Planner, Params, Result};
+use orm_engine::{db::{self, Executor}, exec, introspect, plan::Planner, Params, Result};
 use sea_query::Value;
 use serde_json::{json, Value as J};
 
@@ -169,5 +169,50 @@ fn postgres_subfield_paths() {
         let r = Run { dialect: Dialect::Postgres, conn: conn.clone(), schema: schema(Dialect::Postgres), model: "JShop" };
         assert_eq!(r.ids(json!({"order":[desc(sub(&["rent"]))]}), vec![]).await, ["3", "1", "2"]);
         conn.batch("SET search_path TO public; DROP SCHEMA nested_json_paths CASCADE".into()).await.unwrap();
+    });
+}
+
+const INDEXED: &str = "type Geo {\n  lat Float\n  lng Float?\n}\n\n\
+    type Address {\n  city String\n  floor Int\n  geo Geo\n}\n\n\
+    model Shop {\n  id Int @id\n  address Address @storage(json)\n  @@index([address.geo.lat], name: \"shop_lat\")\n  @@unique([address.city], name: \"shop_city\")\n  @@index([address.floor(sort: Desc)], name: \"shop_floor\")\n}\n";
+
+#[test]
+fn postgres_expression_indexes_serve_subfield_filters_and_round_trip() {
+    let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let conn: Arc<dyn Executor> = db::connect(&url, 1).await.unwrap();
+        conn.batch("DROP SCHEMA IF EXISTS nested_json_index CASCADE; CREATE SCHEMA nested_json_index; SET search_path TO nested_json_index, public".into()).await.unwrap();
+        let s = dsl::check(dsl::compile(INDEXED, None).unwrap()).unwrap().1;
+        let snapshot = migrate::snapshot(&s).unwrap();
+        for sql in migrate::create_statements(&snapshot) { conn.batch(sql).await.unwrap(); }
+        let rows: Vec<String> = (1..=2000).map(|i| format!("({i}, '{{\"city\": \"c{i}\", \"floor\": {}, \"geo\": {{\"lat\": {i}.5}}}}')", i % 50)).collect();
+        conn.batch(format!("INSERT INTO shop (id, address) VALUES {}; ANALYZE shop", rows.join(", "))).await.unwrap();
+        let r = Run { dialect: Dialect::Postgres, conn: conn.clone(), schema: dsl::check(dsl::compile(INDEXED, None).unwrap()).unwrap().1, model: "Shop" };
+        let target = Target::new(Dialect::Postgres);
+        let explain = |filters: Vec<J>, lits: Vec<J>| {
+            let op: Operation = serde_json::from_value(json!({"op":"select","model":"Shop","columns":[item(id())],"filters":filters})).unwrap();
+            let sql = exec::sql(target, &Planner::plan(&s, target, &op, &Lits(lits)).unwrap());
+            let conn = conn.clone();
+            async move {
+                conn.batch("SET enable_seqscan = off".into()).await.unwrap();
+                let plan = conn.query_text(format!("EXPLAIN {sql}")).await.unwrap();
+                plan.iter().map(|r| r[0].clone().unwrap()).collect::<Vec<_>>().join("\n")
+            }
+        };
+        assert!(explain(vec![cmp("eq", sub(&["geo", "lat"]), 0)], vec![json!(7.5)]).await.contains("shop_lat"));
+        assert!(explain(vec![cmp("eq", sub(&["city"]), 0)], vec![json!("c9")]).await.contains("shop_city"));
+        assert!(explain(vec![cmp("eq", sub(&["floor"]), 0)], vec![json!(3)]).await.contains("shop_floor"));
+        // a filter on a subfield without an index scans the table
+        assert!(!explain(vec![cmp("eq", sub(&["geo", "lng"]), 0)], vec![json!(1.0)]).await.contains("Index"));
+        assert_eq!(r.ids(json!({"filters":[cmp("eq", sub(&["geo", "lat"]), 0)]}), vec![json!(7.5)]).await, ["7"]);
+        // the unique index rejects a second row with the same city
+        assert!(conn.batch("INSERT INTO shop (id, address) VALUES (5000, '{\"city\": \"c9\", \"floor\": 1, \"geo\": {\"lat\": 1}}')".into()).await.is_err());
+        // the expression text reads back without a difference
+        let live = introspect::introspect(&*conn).await.unwrap();
+        let shadow = introspect::materialize(&*conn, &snapshot).await.unwrap();
+        let drift = introspect::differences(&live.schema, &shadow.schema);
+        assert!(drift.is_empty(), "{drift:?}");
+        assert!(migrate::plan(&s, &snapshot).unwrap().up.is_empty());
+        conn.batch("SET search_path TO public; DROP SCHEMA nested_json_index CASCADE".into()).await.unwrap();
     });
 }
