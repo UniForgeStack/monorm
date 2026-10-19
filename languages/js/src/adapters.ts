@@ -8,9 +8,10 @@
  * `async-field-adapter.v1` capability.
  */
 import { Expression } from "./expr.js";
-import type { ModelMeta, Row } from "./model.js";
-import type { PreparedInsert, PreparedUpdate } from "./query.js";
+import { RESERVED, type ModelMeta, type Row } from "./model.js";
+import type { InsertOne, InspectedStatement, PreparedInsert, PreparedUpdate } from "./query.js";
 import type { ModelSpec } from "./meta.js";
+import type { QueryInspection } from "./inspection.js";
 
 /** What `validate` returns for a value that needs `prepare`. `placeholder` is a stored value of
  * the right type that checks the statement before any `prepare` call; it is never written. */
@@ -45,16 +46,26 @@ type PendingFields = Map<string, { adapter: FieldAdapter; value: unknown }>;
 interface AdaptedQuerySet {
   prepareInsert(values: Values): PreparedInsert<ModelSpec>;
   prepareUpdate(values: Values): PreparedUpdate<ModelSpec>;
+  insert(values: never): { inspect(): QueryInspection };
+  update(values: never, options: { readonly returning: boolean }): { inspect(): QueryInspection };
 }
 type Statement<T> = (stored: Values) => Promise<T>;
 
 const ADAPTERS = new WeakMap<ModelMeta, Map<string, FieldAdapter>>();
 
-/** Adapt `meta.field`: its writes run the pipeline and its loaded value reads through `decode`. */
-export function registerFieldAdapter(meta: ModelMeta, field: string, adapter: FieldAdapter): void {
+/** Adapt `meta.field`: its writes run the pipeline and its loaded value reads through `decode`.
+ * `methods` become instance methods; a name that a model member already uses throws `FieldAdapterError`. */
+export function registerFieldAdapter(meta: ModelMeta, field: string, adapter: FieldAdapter, methods: Readonly<Record<string, (this: Row, ...args: never[]) => unknown>> = {}): void {
   const registered = ADAPTERS.get(meta) ?? new Map<string, FieldAdapter>();
   if (registered.has(field)) throw new FieldAdapterError(`${meta.name}.${field} already has a field adapter`);
   if (!meta.fieldList.some(f => f.name === field)) throw new FieldAdapterError(`${meta.name} has no field ${field}`);
+  const prototype = meta.Row.prototype as object;
+  for (const name of Object.keys(methods)) {
+    if (RESERVED.has(name) || name in prototype || meta.fieldList.some(f => f.name === name) || meta.relations.has(name)) {
+      throw new FieldAdapterError(`${meta.name}.${name}: adapter method collides with a model member`);
+    }
+  }
+  for (const [name, value] of Object.entries(methods)) Object.defineProperty(prototype, name, { value, configurable: true, writable: true });
   ADAPTERS.set(meta, registered);
   registered.set(field, adapter);
   meta.addRowDecoder((row: Row) => { if (Object.hasOwn(row, field)) row[field] = adapter.decode(row[field]); });
@@ -139,47 +150,43 @@ export class PreparedWrite {
   }
 }
 
-/** The thenable of an adapted write: it runs once, on the first `then`. A rejected write gives a
- * rejected promise. `operation` keeps the stored values for a retry. */
-abstract class AdaptedWrite<T> implements PromiseLike<T> {
-  readonly operation: PreparedWrite;
-  #started: Promise<T> | undefined;
-  constructor(pending: PendingFields) { this.operation = new PreparedWrite(pending); }
-  protected abstract run(): Promise<T>;
-  then<A = T, B = never>(onfulfilled?: ((value: T) => A | PromiseLike<A>) | null, onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<A | B> {
-    return (this.#started ??= this.run()).then(onfulfilled, onrejected);
-  }
-  catch<B = never>(onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<T | B> { return this.then(undefined, onrejected); }
-  finally(onfinally?: (() => void) | null): Promise<T> { return this.then().finally(onfinally); }
-}
-
-/** @internal `insert(values)` with a value that needs `prepare`. */
-export class AdaptedInsert extends AdaptedWrite<Row> {
-  constructor(private readonly qs: AdaptedQuerySet, private readonly checked: Values, pending: PendingFields) { super(pending); }
-  onConflict(): never { throw new FieldAdapterError("a value that needs prepare is unsupported in conflict writes"); }
-  protected async run(): Promise<Row> {
+/** @internal `insert(values)` with a value that needs `prepare`. `inspect()` shows the statement over the
+ * placeholder values and runs no `prepare` call. */
+export function adaptedInsert<M extends ModelSpec>(Insert: typeof InsertOne, qs: AdaptedQuerySet, checked: Values, pending: PendingFields): InsertOne<M> & { readonly operation: PreparedWrite } {
+  const operation = new PreparedWrite(pending);
+  const insert = new Insert<M>(async () => {
     // Statement and write protection are checked before the first `prepare` call.
-    const prepared = this.qs.prepareInsert(this.checked);
-    return (await this.operation.execute(stored => prepared.execute({ ...this.checked, ...stored } as never))) as Row;
-  }
+    const prepared = qs.prepareInsert(checked);
+    return [await operation.execute(stored => prepared.execute({ ...checked, ...stored } as never))];
+  }, () => qs.insert(checked as never).inspect());
+  return Object.assign(insert, {
+    operation,
+    onConflict(): never { throw new FieldAdapterError("a value that needs prepare is unsupported in conflict writes"); },
+  });
 }
 
 /** @internal `update(values)` with a value that needs `prepare`, on one unique row. */
-export class AdaptedUpdate extends AdaptedWrite<number | Row[]> {
-  constructor(private readonly qs: AdaptedQuerySet, private readonly checked: Values, pending: PendingFields, private readonly returning: boolean) { super(pending); }
-  protected async run(): Promise<number | Row[]> {
-    const prepared = this.qs.prepareUpdate(this.checked);
+export function adaptedUpdate(Statement: typeof InspectedStatement, qs: AdaptedQuerySet, checked: Values, pending: PendingFields, returning: boolean): InspectedStatement<number | Row[]> & { readonly operation: PreparedWrite } {
+  const operation = new PreparedWrite(pending);
+  const update = new Statement<number | Row[]>(async () => {
+    const prepared = qs.prepareUpdate(checked);
     if (!prepared.unique) throw new FieldAdapterError("an update with a value that needs prepare must target one unique row");
-    return (await this.operation.execute(stored => prepared.execute({ ...this.checked, ...stored } as never, { returning: this.returning }))) as number | Row[];
-  }
+    return (await operation.execute(stored => prepared.execute({ ...checked, ...stored } as never, { returning }))) as number | Row[];
+  }, () => qs.update(checked as never, { returning }).inspect());
+  return Object.assign(update, { operation });
 }
 
 /** @internal The capability this language adapter provides. */
 export const LANGUAGE_CAPABILITIES: ReadonlySet<string> = new Set(["async-field-adapter.v1"]);
 
+const malformedRequires = "incompatible orm native artifact; its requires list is malformed";
+
 /** @internal Fail when an extension of the artifact requires a capability that this language adapter lacks. */
 export function checkRequires(artifact: { readonly requires?: Readonly<Record<string, readonly string[]>> }, declared: ReadonlySet<string> = LANGUAGE_CAPABILITIES): void {
-  for (const [extension, capabilities] of Object.entries(artifact.requires ?? {})) {
+  const requires: unknown = artifact.requires ?? {};
+  if (typeof requires !== "object" || requires === null || Array.isArray(requires)) throw new TypeError(malformedRequires);
+  for (const [extension, capabilities] of Object.entries(requires as Record<string, readonly string[]>)) {
+    if (!Array.isArray(capabilities)) throw new TypeError(malformedRequires);
     for (const capability of capabilities) {
       if (!declared.has(capability)) {
         throw new TypeError(`extension ${extension} requires the capability ${capability}, which this orm language adapter does not provide; upgrade orm or rebuild the artifact`);

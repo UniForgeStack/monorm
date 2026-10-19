@@ -266,3 +266,43 @@ async def test_a_filtered_update_and_an_upsert_take_null_or_a_stored_value():
         assert body.calls == []
     finally:
         await db.close()
+
+
+class Exits(Counting):
+    async def prepare(self, value):
+        raise SystemExit(3)
+
+
+async def test_prepare_system_exit_is_not_wrapped():
+    db, models, _ = await setup(body=Exits("body"))
+    try:
+        pending = models["Doc"].objects.using(db).insert(id=1, title="a", body="file")
+        with pytest.raises(SystemExit):
+            await pending
+        with pytest.raises(FieldAdapterError, match="failed"):
+            await pending.operation.prepare()
+    finally:
+        await db.close()
+
+
+async def test_a_method_named_like_a_reserved_member_is_rejected():
+    registry = orm.Registry()
+    models = orm.loads(SCHEMA, registry=registry)
+    for name in ("refresh", "_orm_internal"):
+        with pytest.raises(FieldAdapterError, match="collides"):
+            register_field_adapter(models["Doc"], "body", Counting("body"), {name: lambda self: None})
+
+
+async def test_inspect_on_an_adapted_write_shows_the_placeholder_and_calls_no_prepare():
+    db, models, body = await setup()
+    try:
+        objects = models["Doc"].objects.using(db)
+        insert = objects.insert(id=1, title="a", body="file")
+        assert len(insert.inspect().statements) == 1
+        update = objects.filter(models["Doc"].id == 1).update(body="file")
+        assert len(update.inspect().statements) == 1
+        assert len(update.returning().inspect().statements) == 1
+        assert body.calls == []
+        insert._used = update._used = True
+    finally:
+        await db.close()

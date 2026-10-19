@@ -1257,7 +1257,7 @@ class QuerySet(Generic[M]):
             return Update.build(self, values)
         checked, pending = split
         if pending:
-            return adapters.PendingUpdate(self, checked, pending)  # type: ignore[return-value]
+            return adapters.PendingUpdate(self, checked, pending)
         return Update.build(self, checked)
 
     def update_many(self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None) -> UpdateMany[M]:
@@ -1285,7 +1285,7 @@ class QuerySet(Generic[M]):
         if split is not None:
             values, pending = split
             if pending:
-                return adapters.PendingInsert(self, values, pending)  # type: ignore[return-value]
+                return adapters.PendingInsert(self, values, pending)
         fields, rows, provided = prepare_rows(self._model, [values])
         return InsertOne(self, fields, rows, provided)
 

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AdapterWriteError, FieldAdapterError, Pending, allowWrites, connect, loads, registerFieldAdapter, Registry, type Row } from "../src/index.js";
 import { checkRequires } from "../src/adapters.js";
+import type { ModelMeta } from "../src/model.js";
+
+interface DocModel { readonly _meta: ModelMeta }
 
 const source = `datasource db { provider = "sqlite" }
 model Doc {
@@ -166,6 +169,11 @@ test("a missing language capability fails the load, naming the extension", () =>
   checkRequires({});
 });
 
+test("a malformed requires value fails the load with a clear error", () => {
+  assert.throws(() => checkRequires({ requires: { ext: "async-field-adapter.v1" } } as never), /requires list is malformed/);
+  assert.throws(() => checkRequires({ requires: ["async-field-adapter.v1"] } as never), /requires list is malformed/);
+});
+
 test("batch writes store checked values and reject a pending value", async () => {
   const { db, Doc, body, objects } = await open();
   try {
@@ -200,5 +208,35 @@ test("a filtered update and an upsert take null or a stored value", async () => 
     assert.ok(nullCreated);
     assert.equal(nullRow["body"], null);
     assert.deepEqual(body.calls, []);
+  } finally { await db.close(); }
+});
+
+test("a method that collides with a model member is rejected", async () => {
+  const { db, Doc } = await open();
+  try {
+    for (const name of ["title", "refresh", "update", "toString"]) {
+      assert.throws(() => registerFieldAdapter((Doc as DocModel)._meta, "extra", new Counting("x"), { [name]() { return 1; } }), /collides with a model member/);
+    }
+  } finally { await db.close(); }
+});
+
+test("adapter methods are installed on the model", async () => {
+  const { db, Doc, objects } = await open();
+  try {
+    registerFieldAdapter((Doc as DocModel)._meta, "extra", new Counting("x"), { extraOpen() { return "ok"; } });
+    const row = await objects.insert({ id: 1, title: "a" }) as Row & { extraOpen(): string };
+    assert.equal(row.extraOpen(), "ok");
+  } finally { await db.close(); }
+});
+
+test("inspect on an adapted write shows the placeholder statement and calls no prepare", async () => {
+  const { db, Doc, body, objects } = await open();
+  try {
+    const insert = objects.insert({ id: 1, title: "a", body: "file" });
+    assert.equal(insert.inspect().statements.length, 1);
+    const update = objects.filter(Doc.id.eq(1)).update({ body: "file" });
+    assert.equal(update.inspect().statements.length, 1);
+    assert.deepEqual(body.calls, []);
+    assert.ok(insert.operation && update.operation);
   } finally { await db.close(); }
 });
