@@ -78,12 +78,19 @@ pub struct Requirements {
     pub soft_delete: Vec<crate::tracking::SoftDelete>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<crate::tracking::VersionField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_assignments: Vec<crate::writes::WriteAssignment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delete_rewrites: Vec<crate::writes::DeleteRewrite>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instance_guards: Vec<crate::writes::InstanceGuard>,
 }
 impl Requirements {
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
-            && self.updated_at.is_empty() && self.soft_delete.is_empty() && self.versions.is_empty() && self.schema_contract == 0
+            && self.updated_at.is_empty() && self.soft_delete.is_empty() && self.versions.is_empty()
+            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.schema_contract == 0
     }
 }
 
@@ -759,6 +766,9 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.updated_at.extend(n.updated_at);
     c.soft_delete.extend(n.soft_delete);
     c.versions.extend(n.versions);
+    c.write_assignments.extend(n.write_assignments);
+    c.delete_rewrites.extend(n.delete_rewrites);
+    c.instance_guards.extend(n.instance_guards);
     for (id, version) in n.extensions {
         if c.extensions.get(&id).is_some_and(|v| v != &version) { return Err(format!("incompatible extension {id}; rebuild dependent schemas together")); }
         c.extensions.insert(id, version);
@@ -888,6 +898,25 @@ mod tests {
         ir.behavior.declarations[0].field = field;
         let error = validate_declarations(&ir, std::slice::from_ref(&manifest), None).unwrap_err();
         assert!(error.contains("invalid declaration target: it is a model attribute; write @@app.trim in the model block"), "{error}");
+    }
+
+    #[test]
+    fn write_records_merge_count_and_reject_unknown_keys() {
+        use crate::writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind};
+        let record = WriteAssignment { source: "a".into(), model: "User".into(), field: "n".into(), on: vec![WriteKind::Update], value: AssignValue::Increment, upsert: UpsertDefault::Drop };
+        let mut first = schema(crate::dialect::Dialect::Sqlite);
+        first.behavior.write_assignments.push(record.clone());
+        let mut second = schema(crate::dialect::Dialect::Sqlite);
+        second.behavior.declarations.clear();
+        second.behavior.delete_rewrites.push(crate::writes::DeleteRewrite { source: "b".into(), model: "User".into(), field: "d".into(), guard: serde_json::json!({"t": "is_null"}) });
+        second.behavior.instance_guards.push(crate::writes::InstanceGuard { source: "a".into(), model: "User".into(), field: "n".into() });
+        let merged = merge_definition(first, second).unwrap().behavior;
+        assert_eq!((merged.write_assignments.len(), merged.delete_rewrites.len(), merged.instance_guards.len()), (1, 1, 1));
+        assert!(!merged.is_empty());
+        let mut value = serde_json::to_value(&record).unwrap();
+        value["role"] = "x".into();
+        assert!(serde_json::from_value::<WriteAssignment>(value).unwrap_err().to_string().contains("unknown field"));
+        assert_eq!(serde_json::from_value::<WriteAssignment>(serde_json::json!({"source": "a", "model": "U", "field": "f", "on": ["upsert"], "value": "now"})).unwrap().upsert, UpsertDefault::Drop);
     }
 
     #[test]
