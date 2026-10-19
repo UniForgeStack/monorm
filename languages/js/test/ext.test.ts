@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { connect } from "../src/index.js";
 import { hardDeleteStatement, LANGUAGE_CONTRACT } from "../src/ext.js";
-import { User } from "./blog/models.js";
+import { Author, sqliteRegistry } from "./sqlite/models.js";
 
-test("the hard-delete statement is a delete of the query set", () => {
-  const qs = User.objects.filter(User.id.eq(1n));
-  assert.deepEqual(hardDeleteStatement(qs).inspect(), hardDeleteStatement(qs, { returning: false }).inspect());
+test("the hard-delete statement is a delete of the query set", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const authors = Author.objects.using(db);
+    await authors.insertMany([1, 2, 3].map((n) => ({ email: `a${n}`, name: `A${n}` })));
+    assert.equal(await hardDeleteStatement(authors.filter(Author.email.eq("a1"))), 1);
+    const [gone] = (await hardDeleteStatement(authors.filter(Author.email.eq("a2")), { returning: true })) as { email: string }[];
+    assert.equal(gone!.email, "a2");
+    assert.deepEqual((await authors.all()).map((a) => a.email), ["a3"]);
+  } finally {
+    await db.close();
+  }
   assert.equal(LANGUAGE_CONTRACT, 1);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, Registry, scope, VersionConflict, type Database } from "../src/index.js";
+import { connect, of, Registry, scope, VersionConflict, type Database } from "../src/index.js";
 import { native } from "../src/native.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
 
@@ -198,6 +198,35 @@ model Doc {
       const doc = await docs.get(Doc.id.eq(1));
       assert.equal(await docs.filter(Doc.id.eq(1)).delete(), 1);
       await assert.rejects(doc.update({ deleted: null }), VersionConflict);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`the soft-delete members work on a two-word field (${dialect})`, { skip: !capabilities.includes("soft-delete") }, async () => {
+    const [db, models] = await open(dialect, `
+model Page {
+  id         Int       @id
+  deleted_at DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_node_two_word_pages")
+}`);
+    const Page = models.Page!, pages = Page.objects.using(db);
+    const ids = async (qs: any) => (await qs.orderBy(Page.id.asc()).all()).map((p: { id: number }) => p.id);
+    try {
+      await pages.insertMany([1, 2, 3, 4].map((id) => ({ id })));
+      assert.equal(await pages.filter(Page.id.lt(4)).delete(), 3);
+      assert.deepEqual(await ids(pages.deletedOnly()), [1, 2, 3]);
+      assert.deepEqual(await ids(pages.allWithDeleted()), [1, 2, 3, 4]);
+      assert.equal(await pages.filter(Page.id.eq(1)).undelete(), 1);
+      const [back] = await pages.filter(Page.id.eq(2)).undelete({ returning: true });
+      assert.ok(back.id === 2 && back.deletedAt === null);
+      const held = await pages.deletedOnly().all();
+      assert.equal((await (of(held) as any).hardDelete()).length, 1);
+      const gone = await pages.allWithDeleted().get(Page.id.eq(4));
+      await gone.delete();
+      assert.notEqual(gone.deletedAt, null);
+      await (gone as SoftDeletable).undelete();
+      assert.equal(gone.deletedAt, null);
+      await (gone as SoftDeletable).hardDelete();
+      assert.deepEqual(await ids(pages.allWithDeleted()), [1, 2]);
     } finally { await db.dropTables(); await db.close(); }
   });
 

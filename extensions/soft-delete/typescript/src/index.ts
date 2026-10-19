@@ -3,7 +3,9 @@ import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatem
 import type { BoundQuerySetCtor, QuerySetCtor } from "orm/ext";
 
 type AnyQuerySet = QuerySet<ModelSpec>;
-type Deleted = { readonly column: ReturnType<typeof behaviorField>; readonly name: string };
+type Deleted = ReturnType<typeof behaviorField>;
+
+const DEFAULT = "deleted" as never;
 type RowsOf<T> = T extends QuerySet<infer M, any, any, any, any, any> ? M["row"][] : never;
 type Returning = { readonly returning?: boolean };
 
@@ -12,14 +14,14 @@ const fields = new WeakMap<object, Deleted>();
 
 function deletedAt(qs: { readonly meta: AnyQuerySet["meta"] }): Deleted {
   const meta = qs.meta;
-  let column = fields.get(meta);
-  if (column === undefined) {
+  let field = fields.get(meta);
+  if (field === undefined) {
     const record = behaviorRecords(qs as AnyQuerySet, "soft_delete")[0];
     if (record === undefined) throw new TypeError(`${meta.name} has no @soft_delete.deleted_at field`);
-    column = { column: behaviorField(meta, record), name: meta.fields.get(String(record["field"]))!.name };
-    fields.set(meta, column);
+    field = behaviorField(meta, record);
+    fields.set(meta, field);
   }
-  return column;
+  return field;
 }
 
 export function softDeleteQuerySet<B extends QuerySetCtor>(Base: B) {
@@ -33,7 +35,7 @@ export function softDeleteQuerySet<B extends QuerySetCtor>(Base: B) {
     hardDelete<T extends AnyQuerySet>(this: T, options: { readonly returning: true }): InspectedStatement<RowsOf<T>>;
     hardDelete<T extends AnyQuerySet>(this: T, options: Returning = {}): InspectedStatement<any> {
       deletedAt(this);
-      return hardDeleteStatement(this.withoutDefaults("deleted" as never), options);
+      return hardDeleteStatement(this.withoutDefaults(DEFAULT), options);
     }
 
     /** Clear the soft-delete field of the matching soft-deleted rows. It bypasses the `"deleted"` default only. */
@@ -41,18 +43,18 @@ export function softDeleteQuerySet<B extends QuerySetCtor>(Base: B) {
     undelete<T extends AnyQuerySet>(this: T, options: { readonly returning: true }): InspectedStatement<RowsOf<T>>;
     undelete<T extends AnyQuerySet>(this: T, options: Returning = {}): InspectedStatement<any> {
       const column = deletedAt(this);
-      return this.withoutDefaults("deleted" as never).filter(column.column.isNotNull() as never).update({ [column.name]: null } as never, options) as never;
+      return this.withoutDefaults(DEFAULT).filter(column.column.isNotNull() as never).update({ [column.name]: null } as never, options) as never;
     }
 
     /** The rows with the soft-deleted ones. The other defaults, such as a tenant filter, stay. */
     allWithDeleted<T extends AnyQuerySet>(this: T): T {
       deletedAt(this);
-      return this.withoutDefaults("deleted" as never) as T;
+      return this.withoutDefaults(DEFAULT) as T;
     }
 
     /** Only the soft-deleted rows; the other defaults stay. */
     deletedOnly<T extends AnyQuerySet>(this: T): T {
-      return this.withoutDefaults("deleted" as never).filter(deletedAt(this).column.isNotNull() as never) as unknown as T;
+      return this.withoutDefaults(DEFAULT).filter(deletedAt(this).column.isNotNull() as never) as unknown as T;
     }
   };
 }
@@ -66,25 +68,25 @@ export function softDeleteBoundQuerySet<B extends BoundQuerySetCtor>(Base: B) {
     /** `DELETE` the rows of the objects also for a soft-delete model. Gives the objects whose row was deleted. */
     hardDelete<T extends AnyBound>(this: T): Promise<ObjectsOf<T>> {
       deletedAt({ meta: boundMeta(this) });
-      return boundWrite(this.withoutDefaults("deleted"), (qs) => hardDeleteStatement(qs, { returning: true })) as never;
+      return boundWrite(this.withoutDefaults(DEFAULT), (qs) => hardDeleteStatement(qs, { returning: true })) as never;
     }
 
     /** Clear the soft-delete field of the soft-deleted rows of the objects, filling the objects. */
     undelete<T extends AnyBound>(this: T): Promise<ObjectsOf<T>> {
       const column = deletedAt({ meta: boundMeta(this) });
-      const rows = this.withoutDefaults("deleted").filter(column.column.isNotNull() as never);
+      const rows = this.withoutDefaults(DEFAULT).filter(column.column.isNotNull() as never);
       return boundWrite(rows, (qs) => qs.update({ [column.name]: null } as never, { returning: true })) as never;
     }
 
     /** The objects' rows with the soft-deleted ones. The other defaults stay. */
     allWithDeleted<T extends AnyBound>(this: T): T {
       deletedAt({ meta: boundMeta(this) });
-      return this.withoutDefaults("deleted") as T;
+      return this.withoutDefaults(DEFAULT) as T;
     }
 
     /** Only the soft-deleted rows of the objects. */
     deletedOnly<T extends AnyBound>(this: T): T {
-      return this.withoutDefaults("deleted").filter(deletedAt({ meta: boundMeta(this) }).column.isNotNull() as never) as T;
+      return this.withoutDefaults(DEFAULT).filter(deletedAt({ meta: boundMeta(this) }).column.isNotNull() as never) as T;
     }
   };
 }

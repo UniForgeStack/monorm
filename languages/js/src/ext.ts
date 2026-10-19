@@ -35,9 +35,9 @@ export function behaviorRecords(qs: QuerySet<ModelSpec>, kind: string): readonly
   return meta.registry.behaviorRecords(kind, meta.name);
 }
 
-/** The column that a behavior record names in its `field` key. */
-export function behaviorField(meta: ModelMeta, record: Readonly<Record<string, unknown>>): ReturnType<ModelMeta["column"]> {
-  const field = meta.fields.get(String(record["field"]));
+/** The field that a behavior record names in its `field` key (an IR name): its language name and its column. */
+export function behaviorField(meta: ModelMeta, record: Readonly<Record<string, unknown>>): { readonly name: string; readonly column: ReturnType<ModelMeta["column"]> } {
+  const field = meta.fieldByIr.get(String(record["field"]));
   if (field === undefined) throw new TypeError(`${meta.name} has no field ${String(record["field"])}`);
-  return meta.column(field);
+  return { name: field.name, column: meta.column(field) };
 }
