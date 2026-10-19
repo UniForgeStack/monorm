@@ -1,5 +1,6 @@
 """Bound query sets (Model.objects.of, orm.of, obj.qs()): reads that fill the given objects in place."""
 
+import asyncio
 import json
 import os
 
@@ -285,3 +286,43 @@ async def test_a_soft_deleted_object_is_not_refreshed_unless_the_default_is_bypa
     finally:
         await db.drop_tables()
         await db.close()
+
+
+async def test_a_large_bound_read_runs_in_chunks_of_500_keys(clean, db, observe_queries):
+    alice = await User.objects.insert(email="alice@example.com", name="Alice")
+    await Post.objects.insert_many([{"author": alice, "title": f"p{i}", "body": "b"} for i in range(1200)])
+    held = await Post.objects.order_by(Post.id)
+    await Post.objects.update(title="changed")
+    wanted = list(reversed(held))
+    with observe_queries(db) as events:
+        result = await Post.objects.of(wanted)
+        assert await Post.objects.of(wanted).count() == 1200
+        assert await Post.objects.of(wanted).exists()
+    assert len(events) == 3 + 3 + 1
+    assert result == wanted and all(a is b for a, b in zip(result, wanted))
+    assert {p.title for p in held} == {"changed"}
+    with observe_queries(db) as events:
+        assert len(await Post.objects.of(wanted).filter(Post.id > 0).load(Post.comments)) == 1200
+    assert len([e for e in events if "comments" not in e.sql.lower()]) == 3
+    assert Post.objects.of(wanted).sql().rsplit("IN (", 1)[1].count(",") == 499
+
+
+async def test_a_large_composite_key_bound_read_does_not_hang(db, observe_queries):
+    source = "model Cell {\n  a Int\n  b Int\n  v Int @default(0)\n  @@id([a, b])\n}\n"
+    registry = orm.Registry()
+    Cell = orm.loads(source, registry=registry)["Cell"]
+    other = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    try:
+        await other.drop_tables()
+        await other.create_tables()
+        await Cell.objects.using(other).insert_many([{"a": i, "b": 1} for i in range(1200)])
+        held = await Cell.objects.using(other).order_by(Cell.a)
+        await Cell.objects.using(other).update(v=7)
+        with observe_queries(other) as events:
+            assert await asyncio.wait_for(Cell.objects.of(held).using(other), 60) == held
+            assert await Cell.objects.of(held).using(other).count() == 1200
+        assert len(events) == 10
+        assert {c.v for c in held} == {7}
+    finally:
+        await other.drop_tables()
+        await other.close()

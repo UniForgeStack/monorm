@@ -9,6 +9,10 @@ import type { QueryInspection } from "./inspection.js";
 import { key } from "./value-key.js";
 import type { ModelSpec } from "./meta.js";
 
+/** Keys in one read statement: a large set stays under the parameter cap and the expression depth limit.
+ * A composite key takes half, as its OR of ANDs is two levels deep per key and SQLite stops at depth 1000. */
+const BOUND_KEY_CHUNK = 500;
+
 type Cond<M extends ModelSpec> = Expression<boolean | null, Allowed<M["name"]>, unknown>;
 
 /** The methods that a model's bound-safe extension mixins add, from `M["boundQueries"]`. */
@@ -80,23 +84,26 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
   }
 
   /** How many of the objects' rows match. */
-  count(): Promise<number> {
-    return this.keyed().count() as Promise<number>;
+  async count(): Promise<number> {
+    let total = 0;
+    for (const qs of this.readQueries()) total += (await qs.count()) as number;
+    return total;
   }
 
   /** Whether at least one of the objects' rows matches. */
-  exists(): Promise<boolean> {
-    return this.keyed().exists() as Promise<boolean>;
+  async exists(): Promise<boolean> {
+    for (const qs of this.readQueries()) if (await qs.exists()) return true;
+    return false;
   }
 
-  /** The SQL of the root read. */
+  /** The SQL of the first statement of the root read. */
   sql(): string {
-    return this.keyed().sql();
+    return this.readQueries()[0]!.sql();
   }
 
-  /** The SQL and plan of the root read. */
+  /** The SQL and plan of the first statement of the root read. */
   inspect(): QueryInspection {
-    return this.keyed().inspect();
+    return this.readQueries()[0]!.inspect();
   }
 
   then<A = R[], B = never>(onfulfilled?: ((rows: R[]) => A | PromiseLike<A>) | null, onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<A | B> {
@@ -158,9 +165,14 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
       : or(...values.map((v) => meta.keyMatch(meta.key, v)) as [never])) as never;
   }
 
-  /** The inner query set with the key filter of the distinct objects. */
-  private keyed(): QuerySet<ModelSpec> {
-    return this.inner.using(this.database()).filter(this.keyFilter(this.distinct()) as never);
+  /** The inner query sets of a read, one for each chunk of the distinct keys. */
+  private readQueries(): QuerySet<ModelSpec>[] {
+    const base = this.inner.using(this.database());
+    const first = this.distinct();
+    const out: QuerySet<ModelSpec>[] = [];
+    const size = this.meta.key.length === 1 ? BOUND_KEY_CHUNK : BOUND_KEY_CHUNK / 2;
+    for (let i = 0; i < first.length; i += size) out.push(base.filter(this.keyFilter(first.slice(i, i + size)) as never));
+    return out;
   }
 
   private database(): Database {
@@ -183,8 +195,10 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
       await prefetch(objs, ...this.items, { using: db });
       return [...objs] as R[];
     }
-    const fresh = (await (this.keyed() as unknown as { fetch(): Promise<Row[]> }).fetch());
-    const byKey = new Map(fresh.map((r) => [rowKey(meta, r), r]));
+    const byKey = new Map<string, Row>();
+    for (const qs of this.readQueries()) {
+      for (const r of await (qs as unknown as { fetch(): Promise<Row[]> }).fetch()) byKey.set(rowKey(meta, r), r);
+    }
     const out: Row[] = [];
     for (const o of objs) {
       const row = byKey.get(rowKey(meta, o));

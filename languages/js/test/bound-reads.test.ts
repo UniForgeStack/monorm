@@ -94,6 +94,32 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
+  test(`a large read runs in chunks of 500 single keys or 250 composite keys (${provider})`, { skip: !url }, async () => {
+    const { db, Entry, Part, count } = await setup();
+    try {
+      await Entry.objects.using(db).insertMany(Array.from({ length: 1200 }, (_, i) => ({ id: 1000 + i, writerId: 1, title: `t${i}` })));
+      await Part.objects.using(db).insertMany(Array.from({ length: 1200 }, (_, i) => ({ shop: 5, id: i, label: `l${i}` })));
+      const entries = (await Entry.objects.using(db).filter(Entry.id.gte(1000)).orderBy("id")).reverse();
+      const parts = await Part.objects.using(db).filter(Part.shop.eq(5)).orderBy("id");
+      await Entry.objects.using(db).filter(Entry.id.gte(1000)).update({ title: "changed" });
+      await Part.objects.using(db).filter(Part.shop.eq(5)).update({ label: "changed" });
+      for (const held of [entries, parts]) {
+        const model = held === entries ? Entry : Part;
+        const reads = held === entries ? 3 : 5;
+        const before = count();
+        const got = await model.objects.of(held);
+        assert.equal(count() - before, reads);
+        assert.ok(got.length === 1200 && got.every((o: Any, i: number) => o === held[i]));
+        assert.ok(held.every((o: Any) => (o.title ?? o.label) === "changed"));
+        assert.equal(await model.objects.of(held).count(), 1200);
+        assert.equal(await model.objects.of(held).exists(), true);
+        assert.equal(count() - before, reads * 2 + 1);
+      }
+    } finally {
+      await db.close();
+    }
+  });
+
   test(`load(column) refreshes the named fields and keeps the others (${provider})`, { skip: !url }, async () => {
     const { db, Entry } = await setup();
     try {
