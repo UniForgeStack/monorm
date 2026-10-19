@@ -43,7 +43,7 @@ With `orm.loads` (no generated module), install the adapter yourself:
 
 - `insert`, `insert_many`, `update_many` and `update` accept `Upload`.
   `insert_many` and `update_many` run up to 16 uploads at the same time.
-  A filtered `update` runs one upload and writes the same reference to every matching row, even when no row matches.
+  A filtered `update` runs one upload and writes the same reference to every matching row. It uploads one object even when no row matches.
   Upserts, expressions and `insert_many(copy=True)` reject `Upload` before any upload.
   In a batch, `error.stored` names a value `(row index, field)` in Python and `"<row index>.<field>"` in TypeScript.
 - A failed SQL statement keeps the uploaded files. The error (`AdapterWriteError`) holds the prepared `operation`, and `error.stored` the stored references; retry with `operation.execute()`. The ORM never deletes a stored file.

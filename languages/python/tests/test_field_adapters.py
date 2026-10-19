@@ -5,7 +5,7 @@ import asyncio
 import pytest
 import orm
 from orm import _capabilities
-from orm.adapters import AdapterWriteError, FieldAdapterError, Pending, register_field_adapter
+from orm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError, Pending, register_field_adapter
 
 SCHEMA = """datasource db { provider = "sqlite" }
 model Doc {
@@ -361,6 +361,45 @@ async def test_a_failed_batch_insert_retries_without_a_new_prepare():
         await db.close()
 
 
+class OneShot:
+    """A source that one ``prepare`` call reads empty after the first."""
+
+    def __init__(self, data):
+        self.data = data
+
+    def read(self):
+        data, self.data = self.data, b""
+        return data
+
+
+class Streams(Counting):
+    def validate(self, value):
+        if isinstance(value, OneShot):
+            return Pending(value, {"placeholder": True})
+        return super().validate(value)
+
+    async def prepare(self, value):
+        if isinstance(value, OneShot):
+            self.calls.append(value)
+            return {"tag": self.tag, "size": len(value.read())}
+        return await super().prepare(value)
+
+
+async def test_one_object_in_several_rows_prepares_once():
+    body = Streams("body")
+    db, models, _ = await setup(body=body)
+    try:
+        objects = models["Doc"].objects.using(db)
+        source = OneShot(b"hello")
+        await objects.insert_many([{"id": n, "title": "t", "body": source} for n in (1, 2, 3)])
+        assert len(body.calls) == 1
+        assert [r.body for r in await objects.all()] == [("body", {"tag": "body", "size": 5})] * 3
+        await objects.update_many([{"id": n, "body": OneShot(b"hi")} for n in (1, 2)])
+        assert len(body.calls) == 3
+    finally:
+        await db.close()
+
+
 async def test_batch_validation_and_protection_run_before_any_prepare():
     db, models, body = await setup()
     try:
@@ -370,6 +409,9 @@ async def test_batch_validation_and_protection_run_before_any_prepare():
             objects.insert_many([{"id": 1, "title": "a", "body": "ok"}, {"id": 2, "title": "b", "body": 3}])
         with pytest.raises(TypeError, match="unsupported value 3"):
             objects.update_many([{"id": 1, "body": "ok"}, {"id": 2, "body": 3}])
+        with pytest.raises(TypeError, match="not an instance of"):
+            await objects.update_many([{"id": 1, "title": "ok", "body": "aa"}, {"id": 2, "title": 5, "body": "bb"}])
+        assert body.calls == []
         with pytest.raises(ValueError, match="title is required"):
             objects.insert_many([{"id": 1, "body": "ok"}])
         insert = Locked.objects.using(db).insert_many([{"id": 1, "body": "file"}])
@@ -410,6 +452,49 @@ async def test_inspect_on_an_adapted_batch_shows_the_placeholder_and_calls_no_pr
         update = objects.update_many([{"id": 1, "body": "file"}])
         assert len(update.inspect().statements) == 1
         assert body.calls == []
+    finally:
+        await db.close()
+
+
+async def test_a_failed_batch_update_retries_without_a_new_prepare():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        objects = Doc.objects.using(db)
+        await objects.insert(id=1, title="a")
+        await db.execute("DROP TABLE Doc")
+        with pytest.raises(AdapterWriteError) as caught:
+            await objects.update_many([{"id": 1, "body": "one"}, {"id": 2, "body": "two"}])
+        assert sorted(body.calls) == ["one", "two"]
+        assert set(caught.value.stored) == {(0, "body"), (1, "body")}
+        await db.create_tables()
+        await objects.insert(id=1, title="a")
+        assert await caught.value.operation.execute() == 1
+        assert sorted(body.calls) == ["one", "two"]
+        assert (await objects.get(Doc.id == 1)).body == stored("body", "one")
+    finally:
+        await db.close()
+
+
+class Cancelling(Counting):
+    async def prepare(self, value):
+        if value == "cancel":
+            raise asyncio.CancelledError
+        await asyncio.sleep(0.05)
+        return await super().prepare(value)
+
+
+async def test_a_prepare_call_that_raises_cancelled_leaves_no_call_running():
+    body = Cancelling("body")
+    db, models, _ = await setup(body=body)
+    try:
+        objects = models["Doc"].objects.using(db)
+        with pytest.raises(AdapterWriteCancelled) as caught:
+            await objects.insert_many([{"id": 1, "title": "a", "body": "cancel"}, {"id": 2, "title": "b", "body": "slow"}])
+        seen = dict(caught.value.stored)
+        await asyncio.sleep(0.1)
+        assert dict(caught.value.stored) == seen
+        assert (1, "body") not in seen
     finally:
         await db.close()
 
@@ -465,6 +550,38 @@ async def test_a_related_insert_on_a_many_to_many_prepares_before_the_transactio
         assert icon.calls == ["file", "file"]
         assert await Post.objects.using(db).count() == 1
         assert [t.id for t in await post.tags.all()] == [1]
+    finally:
+        await db.close()
+
+
+class StreamsInTransaction(Streams):
+    def __init__(self, tag, db):
+        super().__init__(tag)
+        self.db, self.inside = db, []
+
+    async def prepare(self, value):
+        self.inside.append(self.db._tx() is not None)
+        return await super().prepare(value)
+
+
+async def test_through_defaults_prepare_once_before_the_transaction():
+    registry = orm.Registry()
+    models = orm.loads(M2M_SCHEMA.replace("  tag_id  Int\n", "  tag_id  Int\n  file    Json?\n"), registry=registry)
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        Post, Tag, PostTag = models["Post"], models["Tag"], models["PostTag"]
+        file = StreamsInTransaction("file", db)
+        register_field_adapter(PostTag, "file", file)
+        await Tag.objects.using(db).insert_many([{"id": n, "name": str(n)} for n in (1, 2, 3, 4)])
+        post = await Post.objects.using(db).insert(id=1)
+        await post.tags.set([1, 2, 3], through_defaults={"file": OneShot(b"hello")})
+        assert len(file.calls) == 1 and file.inside == [False]
+        links = await PostTag.objects.using(db).all()
+        assert [link.file for link in links] == [("file", {"tag": "file", "size": 5})] * 3
+        await post.tags.add(4, through_defaults={"file": OneShot(b"hi")})
+        assert len(file.calls) == 2 and file.inside == [False, False]
+        assert (await PostTag.objects.using(db).get(PostTag.tag_id == 4)).file == ("file", {"tag": "file", "size": 2})
     finally:
         await db.close()
 

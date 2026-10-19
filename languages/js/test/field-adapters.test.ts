@@ -36,12 +36,11 @@ class Counting {
   decode(stored: unknown) { return stored === null ? null : [this.tag, stored]; }
 }
 
-async function open(extra?: Counting) {
+async function open(extra?: Counting, body: Counting = new Counting("body")) {
   const registry = new Registry();
   const models = loads(source, { registry }) as Record<string, any>;
   const db = await connect("sqlite://:memory:", { registry, default: false });
   await db.createTables();
-  const body = new Counting("body");
   registerFieldAdapter(models.Doc._meta, "body", body);
   if (extra) registerFieldAdapter(models.Doc._meta, "extra", extra);
   const locked = new Counting("locked");
@@ -299,6 +298,70 @@ test("a failed batch insert retries without a new prepare", async () => {
   } finally { await db.close(); }
 });
 
+/** A source that one `prepare` call reads empty after the first. */
+class OneShot {
+  constructor(public data: string) {}
+  read(): string { const data = this.data; this.data = ""; return data; }
+}
+
+class Streams extends Counting {
+  override validate(value: unknown) {
+    return value instanceof OneShot ? new Pending(value, { placeholder: true }) : super.validate(value);
+  }
+  override async prepare(value: unknown): Promise<any> {
+    if (!(value instanceof OneShot)) return super.prepare(value);
+    this.calls.push(value);
+    return { tag: this.tag, size: value.read().length };
+  }
+}
+
+test("one object in several rows prepares once", async () => {
+  const streams = new Streams("body");
+  const { db, objects } = await open(undefined, streams);
+  try {
+    const shared = new OneShot("hello");
+    await objects.insertMany([1, 2, 3].map(id => ({ id, title: "t", body: shared })));
+    assert.equal(streams.calls.length, 1);
+    assert.deepEqual(((await objects.all()) as Row[]).map(r => r["body"]), Array(3).fill(["body", { tag: "body", size: 5 }]));
+    await objects.updateMany([1, 2].map(id => ({ id, body: new OneShot("hi") })));
+    assert.equal(streams.calls.length, 3);
+  } finally { await db.close(); }
+});
+
+test("updateMany validates every row before any prepare", async () => {
+  const { db, body, objects } = await open();
+  try {
+    await assert.rejects(async () => objects.updateMany([{ id: 1, title: "ok", body: "aa" }, { id: 2, title: 5, body: "bb" }]));
+    assert.deepEqual(body.calls, []);
+  } finally { await db.close(); }
+});
+
+test("insertMany with a bad batchSize fails before any prepare", async () => {
+  const { db, body, objects } = await open();
+  try {
+    await assert.rejects(async () => objects.insertMany([{ id: 1, title: "a", body: "one" }], { batchSize: 0 }), /batchSize/);
+    assert.deepEqual(body.calls, []);
+  } finally { await db.close(); }
+});
+
+test("a failed batch update retries without a new prepare", async () => {
+  const { db, Doc, body, objects } = await open();
+  try {
+    await objects.insert({ id: 1, title: "a" });
+    await db.execute("DROP TABLE Doc");
+    let failure: AdapterWriteError | undefined;
+    await objects.updateMany([{ id: 1, body: "one" }, { id: 2, body: "two" }]).then(undefined, (e: unknown) => { failure = e as AdapterWriteError; });
+    assert.ok(failure instanceof AdapterWriteError);
+    assert.deepEqual([...body.calls].sort(), ["one", "two"]);
+    assert.deepEqual(Object.keys(failure.stored).sort(), ["0.body", "1.body"]);
+    await db.createTables();
+    await objects.insert({ id: 1, title: "a" });
+    assert.equal(await failure.operation.execute(), 1);
+    assert.deepEqual([...body.calls].sort(), ["one", "two"]);
+    assert.deepEqual(((await objects.filter(Doc.id.eq(1)).get()) as Row)["body"], stored("body", "one"));
+  } finally { await db.close(); }
+});
+
 test("batch validation and protection run before any prepare", async () => {
   const { db, Locked, locked, body, objects } = await open();
   try {
@@ -372,6 +435,29 @@ test("a related insert on a many-to-many prepares before the transaction", async
     assert.deepEqual(icon.calls, ["file", "file"]);
     assert.equal(await models.Post.objects.using(db).count(), 1);
     assert.deepEqual((await post.tags.fetch()).map((t: Row) => t["id"]), [1]);
+  } finally { await db.close(); }
+});
+
+test("through defaults prepare once, before the transaction, for every join row", async () => {
+  const registry = new Registry();
+  const models = loads(m2mSource.replace("  tag_id Int\n", "  tag_id Int\n  file Json?\n"), { registry }) as Record<string, any>;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    const inside: boolean[] = [];
+    const file = new Streams("file");
+    const prepare = file.prepare.bind(file);
+    file.prepare = async (value: unknown) => { inside.push(db.tx() !== null); return prepare(value); };
+    registerFieldAdapter(models.PostTag._meta, "file", file);
+    await models.Tag.objects.using(db).insertMany([1, 2, 3, 4].map(id => ({ id, name: String(id) })));
+    const post = await models.Post.objects.using(db).insert({ id: 1 });
+    await post.tags.set([1, 2, 3], { throughDefaults: { file: new OneShot("hello") } });
+    assert.equal(file.calls.length, 1);
+    assert.deepEqual(inside, [false]);
+    const links = (await models.PostTag.objects.using(db).all()) as Row[];
+    assert.deepEqual(links.map(l => l["file"]), Array(3).fill(["file", { tag: "file", size: 5 }]));
+    await post.tags.add(4, { throughDefaults: { file: new OneShot("hi") } });
+    assert.deepEqual(inside, [false, false]);
   } finally { await db.close(); }
 });
 

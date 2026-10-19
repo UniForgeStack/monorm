@@ -2160,6 +2160,9 @@ class ManyRelatedSet(QuerySet[M]):
         keys = self._target_keys(objs)
         if not keys:
             return
+        await self._add(keys, await adapters.prepare_values(self._relation.through, extra))
+
+    async def _add(self, keys: list[Any], extra: Mapping[str, Any]) -> None:
         col = self._target_col()
         have = set(await self._links().filter(col.in_(keys)).select(col).scalars())
         link = {self._relation.source: self._key}
@@ -2204,14 +2207,18 @@ class ManyRelatedSet(QuerySet[M]):
         one, a failure marks it (no savepoint), so wrap the call in a nested ``transaction()`` to recover."""
         from .db import resolve
 
-        self._through_defaults(through_defaults)
+        extra = self._through_defaults(through_defaults)
         keys = self._target_keys(objs)
         col = self._target_col()
+        # Uploads run before the transaction opens, so none holds it; one call stores one value in every row.
+        if keys:
+            extra = await adapters.prepare_values(self._relation.through, extra)
         async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(
             savepoint=False
         ):
             await self._links().filter(col.not_in(keys)).delete()
-            await self.add(*keys, through_defaults=through_defaults)
+            if keys:
+                await self._add(keys, extra)
 
     async def insert(self, **values: Any) -> M:  # type: ignore[override]
         """Insert a related row and link it, in one transaction (see ``set()`` inside one)."""
@@ -2220,7 +2227,7 @@ class ManyRelatedSet(QuerySet[M]):
         db = self._db if self._db is not None else self._instance.__dict__.get("_db")
         insert = QuerySet(self._model).using(db).insert(**values)
         if isinstance(insert, adapters.PendingInsert):
-            await insert.prepare()  # the uploads run before the transaction opens
+            await insert.prepare()  # keeps the upload I/O out of the transaction
         async with resolve(db).transaction(savepoint=False):
             obj: M = await insert
             await self.add(obj)

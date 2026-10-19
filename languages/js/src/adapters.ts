@@ -54,7 +54,7 @@ interface AdaptedQuerySet {
   prepareUpdate(values: Values): PreparedUpdate<ModelSpec>;
   insert(values: never): { inspect(): QueryInspection };
   update(values: never, options: { readonly returning: boolean }): { inspect(): QueryInspection };
-  checkInsertRows(rows: readonly object[]): void;
+  checkInsertRows(rows: readonly object[], batchSize: number | null): void;
   insertRows(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null): Promise<unknown[] | number>;
   inspectInsert(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null): QueryInspection;
   checkUpdateRows(rows: readonly object[], options: UpdateManyOptions): void;
@@ -117,6 +117,16 @@ export function splitBatch<R extends object>(meta: ModelMeta, rows: readonly R[]
   return { checked, pending };
 }
 
+/** @internal Run the `prepare` calls of the adapted `values` once. Return `values` with the stored
+ * values in place of the pending ones. */
+export async function prepareValues(meta: ModelMeta, values: Values): Promise<Values> {
+  const adapted = splitAdapted(meta, values);
+  if (adapted === undefined || adapted.pending.size === 0) return { ...values };
+  const operation = new PreparedWrite(adapted.pending);
+  await operation.prepare();
+  return { ...values, ...operation.stored };
+}
+
 /** Copies of `rows` with the stored values in the place of their placeholders. */
 function fillRows(rows: readonly object[], stored: Values, pending: PendingFields): Values[] {
   const filled: Values[] = rows.map(row => ({ ...row }));
@@ -131,7 +141,8 @@ function fillRows(rows: readonly object[], stored: Values, pending: PendingField
  * stream cannot be replayed. With a `limit`, up to `limit` calls run at the same time; after a failure,
  * the calls that run finish and no new call starts. */
 export class PreparedWrite {
-  readonly #pending: PendingFields;
+  // One object in several slots (a shared one-shot stream) prepares once.
+  readonly #groups: { adapter: FieldAdapter; value: unknown; keys: string[] }[] = [];
   readonly #limit: number | undefined;
   readonly #stored: Values = {};
   #state: "new" | "preparing" | "ready" | "failed" = "new";
@@ -140,11 +151,21 @@ export class PreparedWrite {
 
   /** @internal */
   constructor(pending: PendingFields, limit?: number) {
-    this.#pending = pending;
+    const shared = new Map<FieldAdapter, Map<object, string[]>>();
+    for (const [key, { adapter, value }] of pending) {
+      const byValue = value !== null && (typeof value === "object" || typeof value === "function") ? (shared.get(adapter) ?? shared.set(adapter, new Map()).get(adapter)!) : undefined;
+      const keys = byValue?.get(value as object);
+      if (keys !== undefined) keys.push(key);
+      else {
+        const group = { adapter, value, keys: [key] };
+        this.#groups.push(group);
+        byValue?.set(value as object, group.keys);
+      }
+    }
     this.#limit = limit;
   }
 
-  /** The stored values that `prepare` produced so far, by field. */
+  /** The stored values that `prepare` produced so far, by field. A batch write names a value `<row index>.<field>`. */
   get stored(): Readonly<Values> { return { ...this.#stored }; }
 
   /** Run the `prepare` calls without a statement. A later `execute` runs no new call. */
@@ -182,7 +203,7 @@ export class PreparedWrite {
     this.#state = "preparing";
     try {
       if (this.#limit === undefined) {
-        for (const [name, { adapter, value }] of this.#pending) this.#stored[name] = await adapter.prepare(value);
+        for (const group of this.#groups) this.#store(group, await group.adapter.prepare(group.value));
       } else await this.#prepareConcurrently(this.#limit);
       this.#state = "ready";
     } catch (error) {
@@ -191,14 +212,17 @@ export class PreparedWrite {
     }
   }
 
+  #store(group: { keys: string[] }, stored: unknown): void {
+    for (const key of group.keys) this.#stored[key] = stored;
+  }
+
   async #prepareConcurrently(limit: number): Promise<void> {
-    const queue = [...this.#pending];
+    const queue = [...this.#groups];
     const failures: unknown[] = [];
     const worker = async (): Promise<void> => {
       for (let next = queue.shift(); next !== undefined && failures.length === 0; next = queue.shift()) {
-        const [name, { adapter, value }] = next;
         try {
-          this.#stored[name] = await adapter.prepare(value);
+          this.#store(next, await next.adapter.prepare(next.value));
         } catch (error) {
           failures.push(error);
         }
@@ -245,7 +269,7 @@ export function adaptedInsertMany<M extends ModelSpec>(Insert: typeof InsertMany
   const batchSize = options?.batchSize ?? null;
   const operation = new PreparedWrite(pending, CONCURRENCY);
   const insert = new Insert<M>(async (_conflict, returning) => {
-    qs.checkInsertRows(rows); // write protection runs before the first `prepare` call
+    qs.checkInsertRows(rows, batchSize); // write protection runs before the first `prepare` call
     return operation.execute(stored => qs.insertRows(fillRows(rows, stored, pending), undefined, returning, batchSize));
   }, (_conflict, returning) => qs.inspectInsert(rows, undefined, returning, batchSize));
   return Object.assign(insert, {
