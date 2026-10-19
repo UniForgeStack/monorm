@@ -147,15 +147,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  const filteredSoftDelete = `
-model Doc {
-  id      Int       @id
-  version Int       @default(0) @locking.version
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
-  @@query.filter("live", "deleted == null")
-  @@map("tracking_node_filtered_docs")
-}`;
-  const filteredSkip = { skip: !["soft-delete", "optimistic-locking", "query-defaults"].every((c) => capabilities.includes(c)) };
+  const versionedSkip = { skip: !["soft-delete", "optimistic-locking"].every((c) => capabilities.includes(c)) };
 
   test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("query-defaults") }, async () => {
     const [db, models] = await open(dialect, `
@@ -190,8 +182,66 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an instance update after a query-set soft delete throws VersionConflict (${dialect})`, filteredSkip, async () => {
-    const [db, models] = await open(dialect, filteredSoftDelete);
+  test(`an upsert onto a soft-deleted row changes nothing (${dialect})`, { skip: !capabilities.includes("soft-delete") }, async () => {
+    const [db, models] = await open(dialect, `
+model Doc {
+  id      Int       @id
+  title   String
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_node_upsert_soft_docs")
+}`);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1, title: "a" }]);
+      await docs.filter(Doc.id.eq(1)).delete();
+      await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      const [row] = await docs.withoutDefaults().filter(Doc.id.eq(1)).all();
+      assert.ok(row.title === "a" && row.deleted !== null);
+      assert.equal(await docs.count(), 0);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !["soft-delete", "query-defaults"].every((c) => capabilities.includes(c)) }, async () => {
+    await assert.rejects(open(dialect, `
+model Doc {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted", "id > 0")
+  @@map("tracking_node_clash_docs")
+}`), /default name is set by both orm\.soft-delete default "deleted" and orm\.query-defaults default "deleted"/);
+  });
+
+  test(`a reference to a soft-deleted row loads null (${dialect})`, { skip: !capabilities.includes("soft-delete") }, async () => {
+    const [db, models] = await open(dialect, `
+model Author {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  books   Book[]
+  @@map("tracking_node_ref_authors")
+}
+model Book {
+  id        Int    @id
+  author_id Int
+  author    Author @relation(fields: [author_id], references: [id])
+  @@map("tracking_node_ref_books")
+}`);
+    const Author = models.Author!, Book = models.Book!;
+    try {
+      await Author.objects.using(db).insertMany([{ id: 1 }, { id: 2 }]);
+      await Book.objects.using(db).insertMany([{ id: 1, authorId: 1 }, { id: 2, authorId: 2 }]);
+      assert.equal(await Author.objects.using(db).filter(Author.id.eq(2)).delete(), 1);
+      const joined = await Book.objects.using(db).load(Book.author).orderBy(Book.id.asc()).all();
+      assert.deepEqual(joined.map((b: any) => b.author?.id ?? null), [1, null]);
+      for (const [id, expected] of [[1, 1], [2, null]] as const) {
+        const book = await Book.objects.using(db).get(Book.id.eq(id));
+        await book.load(Book.author);
+        assert.equal(book.author?.id ?? null, expected);
+      }
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`an instance update after a query-set soft delete throws VersionConflict (${dialect})`, versionedSkip, async () => {
+    const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
       await docs.insertMany([{ id: 1 }]);
