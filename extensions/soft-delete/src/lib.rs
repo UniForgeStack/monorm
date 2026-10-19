@@ -1,11 +1,38 @@
 //! `@soft_delete.deleted_at`: the ORM soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too and the soft delete
-//! cascades to soft-delete children. Execution requires the `soft-delete` capability.
-use orm_contracts::{dialect::Dialect, extension::{Declaration, ReadDefault}, ir::{ColType, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{Mode, SoftDelete}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
+//! cascades to soft-delete children.
+use orm_contracts::{dialect::Dialect, extension::{Declaration, ReadDefault}, ir::{ColType, ModelIr, OnDelete, SchemaIr, TriggerIr}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "orm.soft-delete";
 const DEFAULT: &str = "deleted";
+
+/// Who keeps the column current for writers outside the ORM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// A row trigger, so every writer gets the behavior.
+    Database,
+    /// The ORM only; no DDL.
+    Application,
+}
+
+impl Mode {
+    fn parse(value: Option<&serde_json::Value>) -> Result<Self, String> {
+        match value.map(|v| v.as_str()) {
+            None | Some(Some("database")) => Ok(Self::Database),
+            Some(Some("application")) => Ok(Self::Application),
+            _ => Err("mode must be \"database\" or \"application\"".into()),
+        }
+    }
+}
+
+/// A soft-delete field: declared on a model, or copied to a proxy of its storage owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SoftDelete {
+    model: String,
+    field: String,
+    mode: Mode,
+}
 
 fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
     format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
@@ -23,8 +50,8 @@ fn repeats_default(filter: &str, field: &str) -> bool {
     text == format!("{field}==null") || text == format!("{field}isnull")
 }
 
-fn reject_leftover_filters(ir: &SchemaIr) -> Result<(), String> {
-    for s in &ir.behavior.soft_delete {
+fn reject_leftover_filters(ir: &SchemaIr, roles: &[SoftDelete]) -> Result<(), String> {
+    for s in roles {
         for d in ir.behavior.declarations.iter().filter(|d| d.model == s.model && d.field.is_none()) {
             let filter = match d.attribute.as_str() {
                 "query.filter" => d.positional.get(1).and_then(|v| v.as_str()),
@@ -96,6 +123,9 @@ fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute.starts_with("soft_delete.")).cloned().collect();
+    // Models of an earlier batch keep their records; only the models of this batch need a mode.
+    let mut roles: Vec<SoftDelete> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE)
+        .map(|d| SoftDelete { model: d.model.clone(), field: d.field.clone(), mode: Mode::Application }).collect();
     let mut added = vec![];
     for d in &declarations {
         if d.attribute != "soft_delete.deleted_at" { return Err(error(d, "unknown soft_delete attribute")); }
@@ -104,39 +134,40 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let model = ir.models.iter().find(|m| m.name == d.model).ok_or_else(|| error(d, "unknown model"))?;
         let field = model.fields.iter().find(|f| f.name == name).ok_or_else(|| error(d, "unknown field"))?;
         if field.ty != ColType::DateTime || field.array || !field.nullable { return Err(error(d, format!("{}.{name} must be a nullable DateTime field", d.model))); }
-        if ir.behavior.soft_delete.iter().any(|s| s.model == d.model) { return Err(error(d, format!("{} has more than one soft-delete field", d.model))); }
-        ir.behavior.soft_delete.push(SoftDelete { model: d.model.clone(), field: name, mode });
+        if roles.iter().any(|s| s.model == d.model) { return Err(error(d, format!("{} has more than one soft-delete field", d.model))); }
+        roles.push(SoftDelete { model: d.model.clone(), field: name, mode });
         added.push(d.model.clone());
     }
-    // The role follows shared storage; logical proxy rows need the same ORM
+    // A proxy follows the shared storage of its root; its logical rows need the same ORM
     // update on delete. Database triggers are generated only for declarations.
     for proxy in &ir.behavior.proxy_models {
-        if ir.behavior.soft_delete.iter().any(|s| s.model == proxy.model) { continue; }
-        if let Some(source) = ir.behavior.soft_delete.iter().find(|s| s.model == proxy.storage_owner) {
-            if ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == source.field)) {
-                ir.behavior.soft_delete.push(SoftDelete { model: proxy.model.clone(), field: source.field.clone(), mode: source.mode });
+        if roles.iter().any(|s| s.model == proxy.model) { continue; }
+        if let Some(source) = roles.iter().find(|s| s.model == proxy.storage_owner) {
+            if !ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == source.field)) {
+                return Err(format!("{}: proxy must keep the soft-delete field {}", proxy.model, source.field));
             }
+            roles.push(SoftDelete { model: proxy.model.clone(), field: source.field.clone(), mode: source.mode });
         }
     }
     ir.behavior.read_defaults.retain(|d| d.source != SOURCE);
-    for s in &ir.behavior.soft_delete {
+    for s in &roles {
         let item = serde_json::json!({"t": "col", "path": [], "name": s.field});
         ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: DEFAULT.into(), model: s.model.clone(),
             filter: Some(serde_json::json!({"t": "is_null", "item": item, "neg": false})), ..Default::default() });
     }
-    reject_leftover_filters(ir)?;
+    reject_leftover_filters(ir, &roles)?;
     ir.behavior.delete_rewrites.retain(|d| d.source != SOURCE);
-    for s in &ir.behavior.soft_delete {
+    for s in &roles {
         let item = serde_json::json!({"t": "col", "path": [], "name": s.field});
         ir.behavior.delete_rewrites.push(DeleteRewrite { source: SOURCE.into(), model: s.model.clone(), field: s.field.clone(),
             guard: serde_json::json!({"t": "is_null", "item": item, "neg": false}) });
     }
     let dialect = ir.dialect;
-    for s in ir.behavior.soft_delete.clone().iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
+    for s in roles.iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
         // Children: soft-delete models with a cascading foreign key to this model.
         let mut children = vec![];
         for child in &ir.models {
-            let Some(child_field) = ir.behavior.soft_delete.iter().find(|c| c.model == child.name) else { continue };
+            let Some(child_field) = roles.iter().find(|c| c.model == child.name) else { continue };
             for r in child.relations.iter().filter(|r| r.foreign_key && r.target == s.model && r.on_delete == Some(OnDelete::Cascade)) {
                 let keys = r.from.iter().map(|f| Ok(column(child, f)?.to_owned())).collect::<Result<Vec<_>, String>>()?;
                 let version = bumped(&ir.behavior.write_assignments, &child.name).map(|f| column(child, f).map(str::to_owned)).transpose()?;
@@ -207,9 +238,9 @@ mod tests {
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", "database", true), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults", "behavior.soft_delete", "behavior.storage", "models"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults", "behavior.storage", "models"]);
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", "application", true), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults", "behavior.soft_delete"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults"]);
     }
 
     #[test]
@@ -244,6 +275,27 @@ mod tests {
         ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default() });
         prepared(&mut ir).unwrap();
         assert!(ir.behavior.delete_rewrites.iter().any(|d| d.model == "AuthorView" && d.field == "deleted"));
+    }
+
+    #[test]
+    fn a_model_has_one_soft_delete_field() {
+        let mut ir = schema("postgres", "application", true);
+        let again = ir.behavior.declarations[0].clone();
+        ir.behavior.declarations.push(again);
+        assert_eq!(prepared(&mut ir).unwrap_err(), "schema.prisma:3:3: @soft_delete.deleted_at: Author has more than one soft-delete field");
+    }
+
+    #[test]
+    fn a_proxy_must_keep_the_soft_delete_field() {
+        let mut ir = schema("postgres", "application", true);
+        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        ir.behavior.lowered_models.push("AuthorView".into());
+        let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        view.name = "AuthorView".into();
+        view.fields.retain(|f| f.name != "deleted");
+        ir.models.push(view);
+        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default() });
+        assert_eq!(prepared(&mut ir).unwrap_err(), "AuthorView: proxy must keep the soft-delete field deleted");
     }
 
     #[test]
@@ -284,7 +336,6 @@ mod tests {
         prepared(&mut ir).unwrap();
         ir.behavior.declarations.clear();
         ir.behavior.storage = None;
-        ir.behavior.soft_delete.clear();
         let value = serde_json::to_value(&ir).unwrap();
         let ir: orm_core::ir::SchemaIr = serde_json::from_value(value.clone()).unwrap();
         let core = orm_core::schema::Schema::from_ir(serde_json::from_value(value).unwrap()).unwrap();
@@ -298,7 +349,7 @@ mod tests {
     fn database_mode_adds_delete_and_cascade_triggers() {
         let mut ir = schema("postgres", "database", true);
         prepared(&mut ir).unwrap();
-        assert_eq!(ir.behavior.soft_delete[1], SoftDelete { model: "Book".into(), field: "deleted".into(), mode: Mode::Database });
+        assert_eq!(ir.behavior.delete_rewrites[1].model, "Book");
         for author in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
             let names: Vec<_> = author.triggers.iter().map(|t| t.name.as_str()).collect();
             assert_eq!(names, ["soft_delete", "soft_delete_cascade"]);
@@ -317,7 +368,7 @@ mod tests {
     fn application_mode_adds_no_ddl() {
         let mut ir = schema("sqlite", "application", true);
         prepared(&mut ir).unwrap();
-        assert_eq!(ir.behavior.soft_delete.len(), 2);
+        assert_eq!(ir.behavior.delete_rewrites.len(), 2);
         assert!(ir.behavior.storage.as_ref().unwrap().models.iter().all(|m| m.triggers.is_empty()));
     }
 
@@ -334,9 +385,8 @@ mod tests {
                 model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default()
             });
             prepared(&mut ir).unwrap();
-            let role = ir.behavior.soft_delete.iter().find(|s| s.model == "AuthorView").expect("proxy inherits root soft delete");
-            assert_eq!(role.field, "deleted");
-            assert_eq!(role.mode, Mode::parse(Some(&serde_json::json!(mode))).unwrap());
+            let rewrite = ir.behavior.delete_rewrites.iter().find(|d| d.model == "AuthorView").expect("proxy inherits root soft delete");
+            assert_eq!(rewrite.field, "deleted");
             assert!(ir.models[3].triggers.is_empty());
             assert_eq!(ir.behavior.storage.as_ref().unwrap().models.iter().filter(|m| m.table == "authors").count(), 1);
         }

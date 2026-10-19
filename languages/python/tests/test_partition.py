@@ -4,6 +4,7 @@ import pytest
 
 import orm
 from conftest import DATABASE_URL
+from artifact_caps import artifact_capabilities
 
 SOURCE = """
 model PartitionRow {
@@ -72,7 +73,7 @@ async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
     from pathlib import Path
     from orm import _native
 
-    if "proxy-models" not in json.loads(_native.native_artifact())["capabilities"]:
+    if "proxy-models" not in artifact_capabilities():
         pytest.skip("requires proxy native artifact")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
     registry = orm.Registry()
@@ -116,7 +117,7 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
     from pathlib import Path
     from orm import _native
 
-    capabilities = json.loads(_native.native_artifact())["capabilities"]
+    capabilities = artifact_capabilities()
     if not {"proxy-models", "query-defaults", "soft-delete"}.issubset(capabilities):
         pytest.skip("requires combined proxy, query-defaults and soft-delete artifact")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
@@ -153,7 +154,7 @@ async def test_multi_value_proxy_partition_requires_a_key_and_owns_only_its_valu
     import json
     from orm import _native
 
-    if "proxy-models" not in json.loads(_native.native_artifact())["capabilities"]:
+    if "proxy-models" not in artifact_capabilities():
         pytest.skip("requires proxy native artifact")
     source = """
 model Item {
@@ -204,7 +205,7 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
     from orm import _native
 
     if not {"proxy-models", "query-defaults", "soft-delete"}.issubset(
-        json.loads(_native.native_artifact())["capabilities"]
+        artifact_capabilities()
     ):
         pytest.skip("requires combined proxy, query-defaults and soft-delete artifact")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-rewards.prisma").read_text()

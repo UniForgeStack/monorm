@@ -50,6 +50,12 @@ fn conflicts_name_both_sources_and_entries_even_for_empty_owned_lists() {
 }
 
 #[test]
+fn a_default_on_an_unknown_model_is_rejected() {
+    let error = prepare(json!([entry("ext", "name", json!({"model":"Nope"}))])).err().unwrap();
+    assert!(error.contains("unknown read-default model Nope"), "{error}");
+}
+
+#[test]
 fn neutral_defaults_validate_once_without_the_extension() {
     for extra in [
         json!({"filter":{"t":"col","path":[],"name":"missing"}}),

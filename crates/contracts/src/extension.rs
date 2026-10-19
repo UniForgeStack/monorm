@@ -73,12 +73,6 @@ pub struct Requirements {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_fields: Vec<FileField>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub updated_at: Vec<crate::tracking::UpdatedAt>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub soft_delete: Vec<crate::tracking::SoftDelete>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub versions: Vec<crate::tracking::VersionField>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_assignments: Vec<crate::writes::WriteAssignment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delete_rewrites: Vec<crate::writes::DeleteRewrite>,
@@ -89,7 +83,6 @@ impl Requirements {
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
-            && self.updated_at.is_empty() && self.soft_delete.is_empty() && self.versions.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.schema_contract == 0
     }
 }
@@ -671,19 +664,15 @@ pub fn capture_storage(ir: &mut SchemaIr) -> Result<(), String> {
 
 /// The capability, and Cargo feature, of compiled query defaults.
 pub const QUERY_DEFAULTS: &str = "query-defaults";
-/// Capabilities, and Cargo features, of the column roles in [`crate::tracking`].
-pub const UPDATED_AT: &str = "updated-at";
-pub const SOFT_DELETE: &str = "soft-delete";
-pub const OPTIMISTIC_LOCKING: &str = "optimistic-locking";
 
 pub const HOST_CAPABILITIES: &[&str] = &[
     "schema-transformations", "physical-schema", "native-string-values",
     "native-string-records", "native-string-results", "file-storage", QUERY_DEFAULTS,
-    "model-composition", "proxy-models", "generic-relations", UPDATED_AT, SOFT_DELETE, OPTIMISTIC_LOCKING,
+    "model-composition", "proxy-models", "generic-relations",
 ];
 
 /// Capabilities that a build selects as the host Cargo feature of the same name.
-pub const HOST_FEATURE_CAPABILITIES: &[&str] = &[QUERY_DEFAULTS, "model-composition", "proxy-models", "generic-relations", UPDATED_AT, SOFT_DELETE, OPTIMISTIC_LOCKING];
+pub const HOST_FEATURE_CAPABILITIES: &[&str] = &[QUERY_DEFAULTS, "model-composition", "proxy-models", "generic-relations"];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
 /// declarations retain their phase state; new declarations are the only pass inputs.
@@ -758,9 +747,6 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.owner_links.extend(n.owner_links);
     c.field_adapters.extend(n.field_adapters);
     c.file_fields.extend(n.file_fields);
-    c.updated_at.extend(n.updated_at);
-    c.soft_delete.extend(n.soft_delete);
-    c.versions.extend(n.versions);
     c.write_assignments.extend(n.write_assignments);
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
@@ -837,6 +823,12 @@ mod tests {
             location: SourceLocation { file: "schema.prisma".into(), line: 3, column: 7 }, lowered: false,
         });
         ir
+    }
+
+    #[test]
+    fn an_attribute_without_its_extension_asks_for_a_rebuild() {
+        let error = validate_declarations(&schema(crate::dialect::Dialect::Sqlite), &[], None).unwrap_err();
+        assert_eq!(error, "schema.prisma:3:7: @app.trim: not compiled into this artifact; rebuild with its extension");
     }
 
     #[test]

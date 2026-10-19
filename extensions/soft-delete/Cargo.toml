@@ -21,14 +21,14 @@ schema_contract = 2
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
-capabilities = ["schema-transformations", "physical-schema", "soft-delete"]
+capabilities = ["schema-transformations", "physical-schema"]
 
 [[package.metadata.orm-extension.passes]]
 id = "orm.soft-delete.prepare"
 phase = "behavior"
 rust = "crate::prepare"
 after = ["orm.locking.prepare", "orm.timestamps.prepare"]
-effects = ["behavior.soft_delete", "behavior.read_defaults", "behavior.delete_rewrites", "storage.soft_delete_triggers"]
+effects = ["behavior.read_defaults", "behavior.delete_rewrites", "storage.soft_delete_triggers"]
 
 # `deleted_at DateTime? @soft_delete.deleted_at(mode: "application")`.
 [[package.metadata.orm-extension.attributes]]

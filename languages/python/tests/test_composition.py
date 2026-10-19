@@ -6,6 +6,7 @@ import os
 import pytest
 import orm
 from orm import _native
+from artifact_caps import artifact_capabilities
 
 pytestmark = pytest.mark.skipif(
     "model-composition" not in json.loads(_native.native_artifact())["capabilities"],
@@ -195,7 +196,7 @@ async def test_composed_writes_read_the_scope(provider):
     ],
 )
 def test_a_role_on_a_composed_model_is_rejected(field, capability):
-    if capability not in json.loads(_native.native_artifact())["capabilities"]:
+    if capability not in artifact_capabilities():
         pytest.skip(f"requires a {capability} native artifact")
     source = f"""
 model Person {{

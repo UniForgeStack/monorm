@@ -3,7 +3,6 @@
 Runs with an artifact that selects the soft-delete extension.
 """
 
-import json
 import re
 import shutil
 import subprocess
@@ -12,10 +11,11 @@ from pathlib import Path
 
 import pytest
 
+from artifact_caps import artifact_capabilities
 from orm import _native
 
 ROOT = Path(__file__).resolve().parents[3]
-CAPABILITIES = set(json.loads(_native.native_artifact())["capabilities"])
+CAPABILITIES = set(artifact_capabilities())
 SCHEMA = """\
 model Post {
   id      Int       @id

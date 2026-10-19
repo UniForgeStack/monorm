@@ -4,7 +4,7 @@
 #   ORM_TEST_DATABASE_URL=postgres://... scripts/feature-check.sh [artifact...]
 #
 # Artifacts: proxy-models query-defaults model-composition file-storage generic-relations
-# updated-at soft-delete optimistic-locking all
+# tracking (timestamps, soft-delete, locking) all
 # (default: every one). Each artifact selects only extension crates; the manifests turn on
 # the host Cargo features, so no cargo command here passes --features.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
@@ -18,7 +18,7 @@ export ORM_TEST_DATABASE_URL
 # Not CARGO_TARGET_DIR: sccache hashes every CARGO_* variable, and a per-checkout path would block cache hits.
 TARGET=$WORK/target
 mkdir -p "$WORK/.cargo" && printf '[build]\ntarget-dir = "%s"\n' "$TARGET" >"$WORK/.cargo/config.toml"
-ARTIFACTS=${*:-proxy-models query-defaults model-composition file-storage generic-relations updated-at soft-delete optimistic-locking all}
+ARTIFACTS=${*:-proxy-models query-defaults model-composition file-storage generic-relations tracking all}
 LOGS=$WORK/logs
 MATRIX=$WORK/matrix.txt
 case "$(uname -s)" in
@@ -34,15 +34,14 @@ dependency() {
     model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}' ;;
     file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}' ;;
     generic-relations) echo '"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}' ;;
-    updated-at) echo '"timestamps":{"package":"orm-timestamps","path":"'"$ROOT"'/extensions/timestamps"}' ;;
-    soft-delete) echo '"soft_delete":{"package":"orm-soft-delete","path":"'"$ROOT"'/extensions/soft-delete"}' ;;
-    optimistic-locking) echo '"locking":{"package":"orm-locking","path":"'"$ROOT"'/extensions/locking"}' ;;
+    tracking) echo '"timestamps":{"package":"orm-timestamps","path":"'"$ROOT"'/extensions/timestamps"},"soft_delete":{"package":"orm-soft-delete","path":"'"$ROOT"'/extensions/soft-delete"},"locking":{"package":"orm-locking","path":"'"$ROOT"'/extensions/locking"}' ;;
     *) echo "unknown feature $1" >&2; return 1 ;;
   esac
 }
-FEATURES="proxy-models query-defaults model-composition file-storage generic-relations updated-at soft-delete optimistic-locking"
-# file-storage is an extension artifact with no host capability.
+FEATURES="proxy-models query-defaults model-composition file-storage generic-relations tracking"
+# file-storage and tracking are extension artifacts with no host capability.
 HOST_FEATURES=${FEATURES/file-storage /}
+HOST_FEATURES=${HOST_FEATURES/ tracking/}
 features_of() { if [ "$1" = all ]; then echo "$FEATURES"; else echo "$1"; fi; }
 has() { case " $(features_of "$1") " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -87,7 +86,7 @@ build() {
 # The loaded artifacts report exactly the selected host features.
 capabilities() {
   local artifact=$1 dir=$WORK/$1 expected actual_py actual_node
-  expected=$(for f in $(features_of "$artifact"); do [ "$f" = file-storage ] || echo "$f"; done | sort | tr '\n' ' ' | sed 's/ $//')
+  expected=$(for f in $(features_of "$artifact"); do [ "$f" = file-storage ] || [ "$f" = tracking ] || echo "$f"; done | sort | tr '\n' ' ' | sed 's/ $//')
   actual_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.native_artifact())['capabilities']) & set('$HOST_FEATURES'.split()))))")
   actual_node=$(node -e "const a = JSON.parse(require(process.argv[1]).nativeArtifact()); console.log(a.capabilities.filter(c => '$HOST_FEATURES'.split(' ').includes(c)).sort().join(' '))" "$dir/orm.node")
   # The embedded build record names the same Cargo features.

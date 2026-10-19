@@ -29,15 +29,6 @@ pub struct Model {
     pub read_defaults: crate::selection::PreparedDefaults,
     /// What read defaults mean for this model, for codegen and bindings; empty without any default.
     pub read_flags: ReadFlags,
-    /// `@timestamps.updated_at` field positions; ORM updates set them.
-    #[cfg(feature = "updated-at")]
-    pub updated_at: Vec<usize>,
-    /// The `@soft_delete.deleted_at` field position; ORM deletes set it.
-    #[cfg(feature = "soft-delete")]
-    pub soft_delete: Option<usize>,
-    /// The `@locking.version` field position; ORM updates increment it.
-    #[cfg(feature = "optimistic-locking")]
-    pub version: Option<usize>,
     /// Columns the ORM assigns on writes, from the neutral write records.
     pub assignments: Vec<crate::writes::PreparedAssignment>,
     /// The delete rewrite of this model, if an extension asked for one.
@@ -86,9 +77,6 @@ impl Model {
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
             assignments: vec![], delete_rewrite: None, guards: vec![],
-            #[cfg(feature = "updated-at")] updated_at: vec![],
-            #[cfg(feature = "soft-delete")] soft_delete: None,
-            #[cfg(feature = "optimistic-locking")] version: None,
             #[cfg(feature = "composition")] native: crate::behavior::NativeModel::None,
             #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
             #[cfg(feature = "composition")] resolved_fields: vec![] })
@@ -256,9 +244,6 @@ impl Schema {
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
                 assignments: vec![], delete_rewrite: None, guards: vec![],
-                #[cfg(feature = "updated-at")] updated_at: vec![],
-                #[cfg(feature = "soft-delete")] soft_delete: None,
-                #[cfg(feature = "optimistic-locking")] version: None,
                 #[cfg(feature = "composition")] native: native.next().expect("prepared model"),
                 #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
             #[cfg(feature = "composition")] resolved_fields: vec![] });
@@ -282,27 +267,9 @@ impl Schema {
             }
         }
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
-        crate::tracking::prepare(&mut models, &model_index, &ir.behavior)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
-        // Composed writes cannot maintain column roles on any owner in the chain.
-        #[cfg(feature = "composition")]
-        for m in models.iter().filter(|m| owner_links.iter().any(|l| l.child == m.owner)) {
-            let owners = storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models);
-            let mut current = m.owner;
-            loop {
-                let owner = &owners[current.0].ir.name;
-                let mut roles = ir.behavior.updated_at.iter().map(|r| (&r.model, &r.field, "@timestamps.updated_at"))
-                    .chain(ir.behavior.soft_delete.iter().map(|r| (&r.model, &r.field, "@soft_delete.deleted_at")))
-                    .chain(ir.behavior.versions.iter().map(|r| (&r.model, &r.field, "@locking.version")));
-                if let Some((_, field, role)) = roles.find(|(model, _, _)| *model == owner) {
-                    return Err(format!("model {}: {role} on {owner}.{field} is not supported in a composed model's ownership chain", m.ir.name));
-                }
-                let Some(link) = owner_links.iter().find(|l| l.child == current) else { break };
-                current = link.parent;
-            }
-        }
         #[cfg(feature = "composition")]
         crate::writes::reject_composed(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
         #[cfg(feature = "proxy-models")]
@@ -325,7 +292,6 @@ impl Schema {
                     return Err(format!("{}: proxy must share its root storage owner", proxy.model));
                 }
             }
-            crate::tracking::inherit_proxy_roles(&mut models, &model_index, &ir.behavior.proxy_models)?;
             models.iter().map(|m| crate::proxy::prepare(&m.ir.name, m.fields(), &enums,
                 ir.behavior.proxy_models.iter().find(|p| p.model == m.ir.name))).collect::<Result<Vec<_>>>()?
         };

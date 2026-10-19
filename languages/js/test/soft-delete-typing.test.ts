@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import ts from "typescript";
 import { native } from "../src/native.js";
+import { artifactCapabilities } from "./artifact-caps.js";
 
-const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
+const capabilities = artifactCapabilities();
 const SCHEMA = `model Post {
   id         Int       @id
   title      String

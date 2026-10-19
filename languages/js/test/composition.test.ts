@@ -2,9 +2,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, IntegrityError, TransactionAborted, loads, Registry, type InspectedStatement } from "../src/index.js";
-import { native } from "../src/native.js";
+import { artifactCapabilities } from "./artifact-caps.js";
 
-const enabled = (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("model-composition");
+const enabled = (artifactCapabilities()).includes("model-composition");
 const source = `
 model Person {
  id Int @id @default(autoincrement())
@@ -131,7 +131,7 @@ for (const provider of ["sqlite", "postgresql"]) {
   });
 }
 
-const capabilities = JSON.parse(native().nativeArtifact()).capabilities as string[];
+const capabilities = artifactCapabilities();
 for (const [field, capability] of [
   ["version Int @default(0) @locking.version", "optimistic-locking"],
   ["deleted DateTime? @soft_delete.deleted_at", "soft-delete"],

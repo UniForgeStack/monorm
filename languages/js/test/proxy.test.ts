@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import { connect, loads, Registry } from "../src/index.js";
 import { native } from "../src/native.js";
+import { artifactCapabilities } from "./artifact-caps.js";
 
 const source = readFileSync(resolve(process.cwd(), "../../fixtures/proxy.prisma"), "utf8").replaceAll("proxy_05_", "proxy_05_node_");
 const enabled = (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("proxy-models");
@@ -104,7 +105,7 @@ model Draft {
   @@proxy.of(Doc)
 }
 `;
-const caps = JSON.parse(native().nativeArtifact()).capabilities as string[];
+const caps = artifactCapabilities();
 const rolesEnabled = ["proxy-models", "soft-delete", "optimistic-locking"].every((c) => caps.includes(c));
 for (const dialect of ["sqlite", "postgres"]) {
   test(`a proxy takes the roles of its root (${dialect})`, { skip: !rolesEnabled }, async () => {

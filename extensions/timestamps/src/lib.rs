@@ -1,8 +1,27 @@
 //! `@timestamps.updated_at`: the ORM sets the field on each update. Database mode adds a
-//! row trigger so other writers set it too. Execution requires the `updated-at` capability.
-use orm_contracts::{dialect::Dialect, extension::Declaration, ir::{ColType, ModelIr, SchemaIr, TriggerIr}, tracking::{Mode, UpdatedAt}, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
+//! row trigger so other writers set it too.
+use orm_contracts::{dialect::Dialect, extension::Declaration, ir::{ColType, ModelIr, SchemaIr, TriggerIr}, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
 
 const SOURCE: &str = "orm.timestamps";
+
+/// Who keeps the column current for writers outside the ORM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// A row trigger, so every writer gets the behavior.
+    Database,
+    /// The ORM only; no DDL.
+    Application,
+}
+
+impl Mode {
+    fn parse(value: Option<&serde_json::Value>) -> Result<Self, String> {
+        match value.map(|v| v.as_str()) {
+            None | Some(Some("database")) => Ok(Self::Database),
+            Some(Some("application")) => Ok(Self::Application),
+            _ => Err("mode must be \"database\" or \"application\"".into()),
+        }
+    }
+}
 
 fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
     format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
@@ -41,7 +60,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let model = ir.models.iter().find(|m| m.name == d.model).ok_or_else(|| error(d, "unknown model"))?;
         let field = model.fields.iter().find(|f| f.name == name).ok_or_else(|| error(d, "unknown field"))?;
         if field.ty != ColType::DateTime || field.array { return Err(error(d, format!("{}.{name} must be a DateTime field", d.model))); }
-        if ir.behavior.updated_at.iter().any(|u| u.model == d.model && u.field == name) { return Err(error(d, "is given twice")); }
+        if ir.behavior.write_assignments.iter().any(|a| a.source == SOURCE && a.model == d.model && a.field == name) { return Err(error(d, "is given twice")); }
         if mode == Mode::Database {
             let column = field.column.clone();
             let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
@@ -66,7 +85,6 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             ir.behavior.write_assignments.push(WriteAssignment { source: SOURCE.into(), model, field: name.clone(),
                 on: vec![WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite], value: AssignValue::Now, upsert: UpsertDefault::Drop });
         }
-        ir.behavior.updated_at.push(UpdatedAt { model: d.model.clone(), field: name, mode });
     }
     Ok(())
 }
@@ -97,16 +115,16 @@ mod tests {
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", None, "date_time"), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.storage", "behavior.updated_at", "behavior.write_assignments", "models"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.storage", "behavior.write_assignments", "models"]);
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", Some("application"), "date_time"), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.updated_at", "behavior.write_assignments"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.write_assignments"]);
     }
 
     #[test]
     fn database_mode_adds_the_trigger_to_logical_and_physical_models() {
         let mut ir = schema("postgres", None, "date_time");
         prepared(&mut ir).unwrap();
-        assert_eq!(ir.behavior.updated_at, [UpdatedAt { model: "Post".into(), field: "changed".into(), mode: Mode::Database }]);
+        assert_eq!(ir.behavior.write_assignments.len(), 1);
         for model in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
             let t = &model.triggers[0];
             assert_eq!((t.name.as_str(), t.body.as_deref()), ("updated_at_changed_at", Some("BEGIN NEW.\"changed_at\" := now(); RETURN NEW; END;")));
@@ -174,7 +192,6 @@ mod tests {
     fn application_mode_adds_no_ddl() {
         let mut ir = schema("sqlite", Some("application"), "date_time");
         prepared(&mut ir).unwrap();
-        assert_eq!(ir.behavior.updated_at[0].mode, Mode::Application);
         assert!(ir.models[0].triggers.is_empty() && ir.behavior.storage.as_ref().unwrap().models[0].triggers.is_empty());
     }
 

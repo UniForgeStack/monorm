@@ -19,6 +19,7 @@ from orm.ext import (
 )
 
 _DEFAULT = "deleted"
+_SOURCE = "orm.soft-delete"
 _FIELDS: weakref.WeakKeyDictionary[type, ColumnRef[Any]] = weakref.WeakKeyDictionary()
 
 
@@ -27,7 +28,7 @@ def _deleted_at(model: Any) -> ColumnRef[Any]:
     cls: type = model if isinstance(model, type) else type(model)
     column = _FIELDS.get(cls)
     if column is None:
-        records = behavior_records(cls, "soft_delete")
+        records = [r for r in behavior_records(cls, "delete_rewrites") if r["source"] == _SOURCE]
         if not records:
             raise TypeError(f"{cls.__name__} has no @soft_delete.deleted_at field")
         column = _FIELDS[cls] = behavior_field(cls, records[0])

@@ -1,6 +1,6 @@
 //! `@locking.version`: ORM updates increment the field, and instance writes check it.
-//! No DDL. Execution requires the `optimistic-locking` capability.
-use orm_contracts::{extension::Declaration, ir::{ColType, SchemaIr}, tracking::VersionField, writes::{AssignValue, InstanceGuard, UpsertDefault, WriteAssignment, WriteKind}};
+//! No DDL.
+use orm_contracts::{extension::Declaration, ir::{ColType, SchemaIr}, writes::{AssignValue, InstanceGuard, UpsertDefault, WriteAssignment, WriteKind}};
 
 const SOURCE: &str = "orm.locking";
 
@@ -9,7 +9,8 @@ fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
 }
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
-    let first = ir.behavior.versions.len();
+    // The (model, field) pairs this pass finds: declared models, then proxies that share the column.
+    let mut versions: Vec<(String, String)> = vec![];
     let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute.starts_with("locking.")).cloned().collect();
     for d in &declarations {
         if d.attribute != "locking.version" { return Err(error(d, "unknown locking attribute")); }
@@ -20,23 +21,23 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             return Err(error(d, format!("{}.{name} must be a required Int or BigInt field", d.model)));
         }
         if model.primary_key.contains(&name) { return Err(error(d, format!("{}.{name} must not be part of the @@id", d.model))); }
-        if ir.behavior.versions.iter().any(|v| v.model == d.model) { return Err(error(d, format!("{} has more than one version field", d.model))); }
-        ir.behavior.versions.push(VersionField { model: d.model.clone(), field: name });
+        if versions.iter().any(|(m, _)| *m == d.model) { return Err(error(d, format!("{} has more than one version field", d.model))); }
+        versions.push((d.model.clone(), name));
     }
-    // Bindings look up roles by logical model name, including proxies that
-    // share the version column of their root storage owner.
+    // A proxy that keeps the field takes the records of its root storage owner.
     for proxy in &ir.behavior.proxy_models {
-        if ir.behavior.versions.iter().any(|v| v.model == proxy.model) { continue; }
-        if let Some(source) = ir.behavior.versions.iter().find(|v| v.model == proxy.storage_owner) {
-            if ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == source.field)) {
-                ir.behavior.versions.push(VersionField { model: proxy.model.clone(), field: source.field.clone() });
+        if versions.iter().any(|(m, _)| *m == proxy.model) { continue; }
+        if let Some((_, source)) = versions.iter().find(|(m, _)| *m == proxy.storage_owner) {
+            if !ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == *source)) {
+                return Err(format!("{}: proxy must keep the version field {source}", proxy.model));
             }
+            versions.push((proxy.model.clone(), source.clone()));
         }
     }
-    for v in &ir.behavior.versions[first..] {
-        ir.behavior.write_assignments.push(WriteAssignment { source: SOURCE.into(), model: v.model.clone(), field: v.field.clone(),
+    for (model, field) in versions {
+        ir.behavior.write_assignments.push(WriteAssignment { source: SOURCE.into(), model: model.clone(), field: field.clone(),
             on: vec![WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite], value: AssignValue::Increment, upsert: UpsertDefault::Drop });
-        ir.behavior.instance_guards.push(InstanceGuard { source: SOURCE.into(), model: v.model.clone(), field: v.field.clone() });
+        ir.behavior.instance_guards.push(InstanceGuard { source: SOURCE.into(), model, field });
     }
     Ok(())
 }
@@ -60,10 +61,10 @@ mod tests {
     #[test]
     fn preparation_records_the_version_field_once_and_adds_no_ddl() {
         let effects = orm_contracts::extension::pass_effects(&schema("int"), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.instance_guards", "behavior.versions", "behavior.write_assignments"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.instance_guards", "behavior.write_assignments"]);
         let mut ir = schema("big_int");
         prepare(&mut ir).unwrap();
-        assert_eq!(ir.behavior.versions, [VersionField { model: "Post".into(), field: "version".into() }]);
+        assert_eq!(ir.behavior.instance_guards, [InstanceGuard { source: "orm.locking".into(), model: "Post".into(), field: "version".into() }]);
     }
 
     #[test]
@@ -88,6 +89,25 @@ mod tests {
         let models: Vec<_> = ir.behavior.write_assignments.iter().map(|a| a.model.as_str()).collect();
         assert_eq!(models, ["Post", "PostView"]);
         assert_eq!(ir.behavior.instance_guards.iter().map(|g| g.model.as_str()).collect::<Vec<_>>(), ["Post", "PostView"]);
+    }
+
+    #[test]
+    fn a_proxy_must_keep_the_version_field() {
+        let mut ir = schema("int");
+        let mut view: orm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        view.name = "PostView".into();
+        view.fields.retain(|f| f.name != "version");
+        ir.models.push(view);
+        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+        assert_eq!(prepare(&mut ir).unwrap_err(), "PostView: proxy must keep the version field version");
+    }
+
+    #[test]
+    fn a_model_has_one_version_field() {
+        let mut ir = schema("int");
+        let again = ir.behavior.declarations[0].clone();
+        ir.behavior.declarations.push(again);
+        assert_eq!(prepare(&mut ir).unwrap_err(), "schema.prisma:3:3: @locking.version: Post has more than one version field");
     }
 
     #[test]
