@@ -181,7 +181,7 @@ pub(super) fn expand(model: &ModelIr, m: &ModelDecl, member: &Member, items: &[I
         walk_paths(ctx, ty, &member.name, &mut vec![], &mut paths);
         let mut f = FieldIr::plain(&member.name, ColType::Json);
         f.nullable = optional;
-        f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![] });
+        f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![], list: member.ty.list });
         return Ok(Expansion { fields: vec![f], checks: vec![], paths });
     }
     if member.ty.list {
@@ -293,7 +293,7 @@ impl Columns<'_> {
                     if let Some(c) = &l.check {
                         l.check = Some(c.replace("{}", &ident(&l.column)));
                     }
-                    l.nested = Some(NestedIr { ty: self.ty.to_owned(), storage: NestedStorage::Columns, field: self.field.to_owned(), path: names.clone() });
+                    l.nested = Some(NestedIr { ty: self.ty.to_owned(), storage: NestedStorage::Columns, field: self.field.to_owned(), path: names.clone(), list: false });
                     for other in self.model.fields.iter().chain(self.out.fields.iter()) {
                         if other.name == l.name || other.column == l.column {
                             return err(

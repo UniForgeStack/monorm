@@ -175,6 +175,9 @@ pub struct NestedIr {
     /// Subfield names from the model field to this column; empty for a JSON field.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub path: Vec<String>,
+    /// The model field is a list of the type (`A[]`); only JSON storage holds one.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub list: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -703,6 +706,12 @@ pub enum Expr {
     Col { path: Vec<String>, name: String, #[serde(default)] sub: Vec<String> },
     Param { i: usize },
     Const { value: bool },
+    /// SQL `NULL`; as a whole nested field, every leaf is null.
+    Null,
+    /// A value of a nested type: its subfields by name. A subfield left out is null.
+    /// Compared with a nested field it is the `AND` of the subfield comparisons;
+    /// assigned to one it replaces the whole value.
+    Object { fields: Vec<ObjectField> },
     Cmp { op: CmpOp, l: Box<Expr>, r: Box<Expr> },
     Arith { op: ArithOp, l: Box<Expr>, r: Box<Expr> },
     And { items: Vec<Expr> },
@@ -784,6 +793,13 @@ pub enum Expr {
         #[serde(default)]
         frame: Option<Frame>,
     },
+}
+
+/// One subfield of an `Expr::Object`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ObjectField {
+    pub name: String,
+    pub value: Expr,
 }
 
 /// One `WHEN <cond> THEN <value>` branch of `Expr::Case`.
@@ -1050,6 +1066,9 @@ pub struct Lock {
 #[derive(Deserialize, Debug, Clone)]
 pub struct Assignment {
     pub field: String,
+    /// With `sub`, only that subfield (or nested subfield group) of the nested field `field` changes.
+    #[serde(default)]
+    pub sub: Vec<String>,
     pub value: Expr,
 }
 

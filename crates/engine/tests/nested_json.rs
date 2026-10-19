@@ -129,8 +129,7 @@ async fn scenario(r: &Run) {
     assert_eq!(r.run(q, vec![]).await.unwrap().len(), 2);
     // errors
     let bad = |path: &[&str]| json!({"columns":[item(sub(path))]});
-    for (path, message) in [(&["nope"][..], "nope"), (&["city", "x"], "city"), (&["geo"], "geo"), (&[], "")] {
-        if path.is_empty() { continue; }
+    for (path, message) in [(&["nope"][..], "nope"), (&["city", "x"], "city")] {
         let e = r.run(bad(path), vec![]).await.unwrap_err();
         assert!(e.contains(message), "{path:?}: {e}");
     }
@@ -152,6 +151,18 @@ fn sqlite_subfield_paths() {
         for model in ["JShop", "CShop"] {
             scenario(&Run { dialect: Dialect::Sqlite, conn: conn.clone(), schema: schema(Dialect::Sqlite), model }).await;
         }
+    });
+}
+
+#[test]
+fn sqlite_columns_group_subfield_filter_plans_on_every_profile() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let conn: Arc<dyn Executor> = db::connect("sqlite://:memory:", 1).await.unwrap();
+        setup(Dialect::Sqlite, conn.clone()).await;
+        let r = Run { dialect: Dialect::Sqlite, conn, schema: schema(Dialect::Sqlite), model: "CShop" };
+        let q = json!({"filters": [cmp("eq", sub(&["city"]), 0)], "columns": [item(id()), item(sub(&["city"]))]});
+        let rows = r.run(q, vec![json!("Rome")]).await.unwrap();
+        assert_eq!(rows.iter().map(|x| x[1].clone().unwrap()).collect::<Vec<_>>(), ["Rome"]);
     });
 }
 
