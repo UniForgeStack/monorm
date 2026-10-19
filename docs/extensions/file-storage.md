@@ -42,7 +42,7 @@ With `orm.loads` (no generated module), install the adapter yourself:
 
 - `insert` and a unique-row `update` (an equality on the primary key or a unique field) accept `Upload`.
   `insert_many`, a filtered `update` of many rows, upserts and expressions reject `Upload` before any upload.
-- A failed SQL statement keeps the uploaded files. The error (`FileWriteError`) holds the prepared `operation`; retry with `operation.execute(...)`. The ORM never deletes a stored file.
+- A failed SQL statement keeps the uploaded files. The error (`AdapterWriteError`) holds the prepared `operation`, and `error.stored` the stored references; retry with `operation.execute()`. The ORM never deletes a stored file.
 - `Reference` values and `None` write as ordinary JSON.
 
 The storage packages, S3 setup, recovery and the TypeScript API are in [extensions/file-storage/README.md](../../extensions/file-storage/README.md) and [extensions/file-storage/integration/README.md](../../extensions/file-storage/integration/README.md).

@@ -3,12 +3,13 @@
 `python/` and `typescript/` contain separately packaged selected binding helpers.
 They depend on the independent storage package. They do not import ORM internals,
 provider SDKs, or install a runtime native callback registry. They use only the
-public ORM hooks: Python `orm.hooks` (`prepare_insert`, `prepare_update`,
-`decode_field`) and TypeScript `QuerySet.prepareInsert`, `QuerySet.prepareUpdate`
-and `ModelMeta.addRowDecoder`. The engine proves a unique-row update.
+public async field adapter API: Python `orm.adapters.register_field_adapter`
+and TypeScript `registerFieldAdapter` from `orm`. The extension requires the
+`async-field-adapter.v1` capability.
 
-`install_model` / `installModel` decode loaded file fields to `Reference` and route
-`Upload` writes through `PreparedFileWrite`. Annotated file fields need a native
+`install_model` / `installModel` register one `FileAdapter` per file field: its
+`validate` checks an `Upload` or a `Reference` without I/O, `prepare` uploads, and
+`decode` turns a loaded field into a `Reference`. Annotated file fields need a native
 artifact built with the `file-storage` feature; selecting `../orm-extension/` in
 `orm-extension-build` turns it on. Installing these helpers alone does not.
 
@@ -26,51 +27,23 @@ logical storage identity/reference contract metadata. It rejects non-scalar JSON
 database-defaulted/key fields and generated member collisions. Credentials and
 configured providers belong to the application's Registry.
 
-## Prepared operation
+## Write failures
 
-```python
-from orm_file_storage import FileField, PreparedFileWrite, Upload
-
-operation = PreparedFileWrite(
-    {"file": Upload(report_bytes, filename="report.xlsx")},
-    {"file": FileField("file", "reports")},
-    storage_registry,
-)
-report = await operation.execute(lambda values: Report.objects.insert(**values))
-# operation.references remains inspectable after the enclosing transaction fails.
-```
-
-```typescript
-import { FileField, PreparedFileWrite, Upload } from "@orm/file-storage";
-
-const operation = new PreparedFileWrite(
-  { file: new Upload(reportBytes, { filename: "report.xlsx" }) },
-  new Map([["file", new FileField("file", "reports")]]),
-  storageRegistry,
-);
-const report = await operation.execute(values => Report.objects.insert(values));
-```
-
-These examples persist ordinary JSON explicitly. With `install_model` /
-`installModel`, `insert` and unique-row `update` also take `Upload` directly
-(see "Selected native model integration"). Deferred Upload construction makes no I/O calls. All input and
-write-shape checks precede uploads. The trusted adapter must prove a unique-row
-update before passing `unique_update`; an arbitrary filter is insufficient.
+`insert` and a unique-row `update` take `Upload` directly. Deferred Upload
+construction makes no I/O calls. All input and write-shape checks precede uploads.
 Bulk, multi-row update, upsert, conflict-ignore and expression shapes reject Upload
 before provider I/O. Existing Reference/null values retain normal SQL semantics.
 
-`.prepare()` uploads once and returns JSON inputs; `.execute(statement)` passes
-those inputs to an awaited statement. A failed/cancelled preparation is terminal,
-so consumed sources are never automatically replayed. Completed preparations can
-be reused for explicit SQL retries without another upload. Concurrent execution
-of the same operation is rejected. There is no automatic SQL retry loop.
+A failed or cancelled upload is terminal, so consumed sources are never
+automatically replayed. A completed upload is reused for explicit SQL retries
+with `operation.execute()`, without another upload. There is no automatic SQL
+retry loop.
 
-`references` retains completed uploaded references, including when a later upload
-fails. `recovery` retains S3 incomplete/uncertain upload details. FileWriteError
-retains `operation` and original failure as cause. Python cancellation remains an
-asyncio.CancelledError subclass (FileWriteCancelled), also retaining the operation.
-TypeScript failures/cancellation use FileWriteError with the original AbortError
-or statement failure in cause.
+`AdapterWriteError` retains `operation` (`operation.stored` holds the completed
+references, also when a later upload fails) and the original failure as cause; an
+`UploadError` cause carries `recovery` with S3 incomplete/uncertain upload details.
+Python cancellation is `AdapterWriteCancelled`, an `asyncio.CancelledError`
+subclass that also retains the operation.
 
 The operation remains caller-owned after statement success: outer transaction
 failure, rollback, savepoint rollback or uncertain acknowledgement never triggers

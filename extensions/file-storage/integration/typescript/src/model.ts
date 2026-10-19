@@ -1,17 +1,38 @@
 /** Selected model setup, shared by generated and runtime-defined hosts. */
-import { Registry } from "@orm/storage";
-import { FileField, FileFieldError, PreparedFileWrite } from "./index.js";
-import { installQueries, type HostModel } from "./orm.js";
+import { Reference, Registry } from "@orm/storage";
+import { Pending, registerFieldAdapter, type FieldAdapter, type ModelMeta } from "orm";
+import { FileField, FileFieldError, Upload } from "./index.js";
 import { prepareDecoder } from "./decoder.js";
+
+/** The async field adapter of one file field: `validate` and `prepare` write, `decode` reads. */
+export class FileAdapter implements FieldAdapter {
+  constructor(readonly field: FileField, private readonly registry: () => Registry | undefined) {}
+  validate(value: unknown): unknown {
+    if (!(value instanceof Upload)) return this.field.decode(value)?.toJSON() ?? null;
+    new Reference({ v: 1, storage: this.field.storage, key: "validation",
+      ...(value.options.filename !== undefined ? { filename: value.options.filename } : {}),
+      ...(value.options.contentType !== undefined ? { content_type: value.options.contentType } : {}) });
+    const limit = value.options.maxSize ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new FileFieldError("maxSize must be a nonnegative safe integer");
+    this.provider();
+    return new Pending(value, new Reference({ v: 1, storage: this.field.storage, key: "preflight" }).toJSON());
+  }
+  async prepare(value: unknown): Promise<unknown> {
+    return (await this.provider().upload((value as Upload).source, (value as Upload).options)).toJSON();
+  }
+  decode(stored: unknown): Reference | null { return this.field.decode(stored); }
+  private provider() {
+    const registry = this.registry();
+    if (!registry) throw new FileFieldError("configure file storage before preparing uploads");
+    return registry.resolve(new Reference({ v: 1, storage: this.field.storage, key: "validation" }));
+  }
+}
 
 export class ModelAdapter {
   readonly fields: ReadonlyMap<string, FileField>;
   constructor(fields: ReadonlyMap<string, FileField>, private registry?: Registry) { this.fields = new Map(fields); }
   configure(registry: Registry): void { this.registry = registry; }
-  prepareWrite(values: Readonly<Record<string, unknown>>, shape: string): PreparedFileWrite {
-    if (!this.registry) throw new FileFieldError("configure file storage before preparing uploads");
-    return new PreparedFileWrite(values, this.fields, this.registry, { shape });
-  }
+  currentRegistry(): Registry | undefined { return this.registry; }
   decoder(publicFields: readonly (readonly [string, number])[]) { return prepareDecoder(this.fields, publicFields); }
   client(reference: Parameters<Registry["resolve"]>[0]) {
     if (!this.registry) throw new FileFieldError("configure file storage before file operations");
@@ -19,7 +40,7 @@ export class ModelAdapter {
   }
 }
 
-export function installModel(prototype: object, fields: ReadonlyMap<string, FileField>, registry?: Registry, host?: HostModel): ModelAdapter {
+export function installModel(prototype: object, fields: ReadonlyMap<string, FileField>, registry?: Registry, host?: ModelMeta): ModelAdapter {
   const adapter = new ModelAdapter(fields, registry);
   const methods = new Map<string, (this: Record<string, unknown>, options?: { expiresIn?: number }) => unknown>();
   for (const [name, field] of fields) {
@@ -34,18 +55,6 @@ export function installModel(prototype: object, fields: ReadonlyMap<string, File
   }
   for (const name of methods.keys()) if (name in prototype) throw new FileFieldError(`${name}: file method collision`);
   for (const [name, value] of methods) Object.defineProperty(prototype, name, { value });
-  if (host) {
-    installInstances(host, adapter);
-    installQueries(host, adapter);
-  }
+  if (host) for (const [name, field] of fields) registerFieldAdapter(host, name, new FileAdapter(field, () => adapter.currentRegistry()));
   return adapter;
-}
-
-// Loaded file fields read as a Reference: the host runs the decoder once per materialized row, without I/O.
-function installInstances(meta: HostModel, adapter: ModelAdapter): void {
-  const fields = [...adapter.fields];
-  meta.addRowDecoder(row => {
-    // A partial row has only its loaded fields as own properties.
-    for (const [name, field] of fields) if (Object.hasOwn(row, name)) row[name] = field.decode(row[name]);
-  });
 }

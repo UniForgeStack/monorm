@@ -3,7 +3,7 @@
 from collections.abc import Mapping, Sequence
 from typing import Any
 from orm_storage import Registry
-from . import FileField, FileFieldError, PreparedFileWrite
+from . import FileAdapter, FileField, FileFieldError
 from .decoder import prepare_decoder
 
 
@@ -15,11 +15,6 @@ class ModelAdapter:
     def configure(self, registry: Registry) -> None:
         self.registry = registry
 
-    def prepare_write(self, values: Mapping[str, Any], *, shape: str) -> PreparedFileWrite:
-        if self.registry is None:
-            raise FileFieldError("configure file storage before preparing uploads")
-        return PreparedFileWrite(values, self.fields, self.registry, shape=shape)
-
     def decoder(self, public: Sequence[tuple[str, int]]) -> Any:
         return prepare_decoder(self.fields, public)
 
@@ -27,8 +22,8 @@ class ModelAdapter:
 def install_model(model: type[Any], fields: Mapping[str, FileField], registry: Registry | None = None) -> ModelAdapter:
     """Called once at definition after selected artifact validation, before publish.
 
-    It uses the public ``orm.hooks``: ``decode_field`` for loaded file fields, and
-    ``prepare_insert`` and ``prepare_update`` in the file statements.
+    Each file field registers as an async field adapter, which runs the upload before the SQL
+    and decodes a loaded field to a ``Reference``.
     """
     adapter = ModelAdapter(fields, registry)
     methods: dict[str, Any] = {}
@@ -55,12 +50,8 @@ def install_model(model: type[Any], fields: Mapping[str, FileField], registry: R
     for name, method in methods.items():
         setattr(model, name, method)
     if hasattr(model, "_meta"):
-        from orm.hooks import decode_field
+        from orm.adapters import register_field_adapter
 
         for name, field in fields.items():
-            # A loaded file field reads as a Reference, without I/O.
-            decode_field(model, name, field.decode)
-        from .orm import install_queries
-
-        install_queries(model, adapter)
+            register_field_adapter(model, name, FileAdapter(field, lambda: adapter.registry))
     return adapter

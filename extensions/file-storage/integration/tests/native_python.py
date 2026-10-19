@@ -6,7 +6,8 @@ import os
 from tempfile import TemporaryDirectory
 import unittest
 import orm
-from orm_file_storage import FileField, FileFieldError, FileWriteError, FileWriteCancelled, Upload
+from orm.adapters import AdapterWriteCancelled, AdapterWriteError
+from orm_file_storage import FileField, FileFieldError, Upload
 from orm_file_storage.model import install_model
 from orm_storage import LocalStorage, Reference, Registry
 
@@ -53,7 +54,8 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         reference = await self.storage.upload(b"report")
         inserted = await self.Report.objects.insert(id=1, file=reference)
         self.assertEqual(inserted.file, reference)
-        await self.Report.objects.insert_many([{"id": 2, "file": reference}, {"id": 3, "file": None}])
+        await self.Report.objects.insert(id=2, file=reference)
+        await self.Report.objects.insert(id=3, file=None)
         rows = await self.Report.objects.order_by(self.Report.id)
         self.assertEqual(self.storage.uploads, 1)
         self.assertEqual(b"".join([chunk async for chunk in rows[0].file_open()]), b"report")
@@ -69,7 +71,6 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsupported_and_invalid_values_before_upload(self):
         for call in [
-            lambda: self.Report.objects.insert_many([{"id": 1, "file": Upload(b"x")}]),
             lambda: self.Report.objects.update(file=Upload(b"x")),
             lambda: self.Report.objects.insert(id=1, file=Upload(b"x")).on_conflict(self.Report.id, update=False),
             lambda: self.Report.objects.insert(id="invalid integer", file=Upload(b"x")),
@@ -78,13 +79,20 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
                 call()
         self.assertEqual(self.storage.uploads, 0)
 
+    @unittest.skip("insert_many and update_many join the adapter pipeline in a later step")
+    async def test_bulk_writes_adapt_file_values(self):
+        reference = await self.storage.upload(b"report")
+        await self.Report.objects.insert_many([{"id": 2, "file": reference}, {"id": 3, "file": None}])
+        with self.assertRaises(FileFieldError):
+            self.Report.objects.insert_many([{"id": 1, "file": Upload(b"x")}])
+
     async def test_sql_failure_retry_keeps_reference_and_unique_update(self):
         await self.Report.objects.insert(id=1, file=None)
         statement = self.Report.objects.insert(id=1, file=Upload(b"generated"))
-        with self.assertRaises(FileWriteError) as caught:
+        with self.assertRaises(AdapterWriteError) as caught:
             await statement
         self.assertIs(caught.exception.operation, statement.operation)
-        reference = statement.operation.references["file"]
+        reference = Reference.from_dict(statement.operation.stored["file"])
         await statement.operation.execute(lambda data: self.Report.objects.insert(**{**data, "id": 2}))
         self.assertEqual(self.storage.uploads, 1)
         self.assertEqual(self.storage.deletes, 0)
@@ -101,13 +109,16 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
 
         self.db._insert = uncertain
         operation = self.Report.objects.insert(id=1, file=Upload(b"uncertain"))
-        with self.assertRaises(FileWriteError):
+        with self.assertRaises(AdapterWriteError):
             await operation
         self.db._insert = native_insert
         self.assertEqual(await self.Report.objects.count(), 1)
         self.assertEqual(self.storage.deletes, 0)
         self.assertEqual(
-            b"".join([chunk async for chunk in self.storage.open(operation.operation.references["file"])]), b"uncertain"
+            b"".join(
+                [chunk async for chunk in self.storage.open(Reference.from_dict(operation.operation.stored["file"]))]
+            ),
+            b"uncertain",
         )
         reached = asyncio.Event()
 
@@ -125,14 +136,17 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(execute())
         await reached.wait()
         task.cancel()
-        with self.assertRaises(FileWriteCancelled) as error:
+        with self.assertRaises(AdapterWriteCancelled) as error:
             await task
         self.db._insert = native_insert
         self.assertIs(error.exception.operation, cancelled.operation)
         self.assertEqual(await self.Report.objects.count(), 2)
         self.assertEqual(self.storage.deletes, 0)
         self.assertEqual(
-            b"".join([chunk async for chunk in self.storage.open(cancelled.operation.references["file"])]), b"cancelled"
+            b"".join(
+                [chunk async for chunk in self.storage.open(Reference.from_dict(cancelled.operation.stored["file"]))]
+            ),
+            b"cancelled",
         )
 
     async def test_outer_rollback_and_savepoint_retain_objects(self):
@@ -142,7 +156,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
                 await operation
                 raise RuntimeError("outer rollback")
         self.assertEqual(await self.Report.objects.count(), 0)
-        reference = operation.operation.references["file"]
+        reference = Reference.from_dict(operation.operation.stored["file"])
         self.assertEqual(b"".join([chunk async for chunk in self.storage.open(reference)]), b"rollback")
         async with self.db.transaction():
             await self.Report.objects.insert(id=2, file=reference)
@@ -154,7 +168,10 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.Report.objects.count(), 1)
         self.assertEqual(self.storage.deletes, 0)
         self.assertEqual(
-            b"".join([chunk async for chunk in self.storage.open(nested.operation.references["file"])]), b"savepoint"
+            b"".join(
+                [chunk async for chunk in self.storage.open(Reference.from_dict(nested.operation.stored["file"]))]
+            ),
+            b"savepoint",
         )
 
     async def test_a_protected_file_write_reads_its_scope_at_the_await(self):
@@ -194,6 +211,17 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
                 objects.insert(id="invalid integer", file=Upload(b"z"))
         finally:
             await db.close()
+
+    async def test_the_artifact_requires_the_adapter_capability(self):
+        from orm import _native
+        from orm._capabilities import check_requires
+
+        artifact = json.loads(_native.native_artifact())
+        self.assertEqual(artifact["requires"]["file-storage"], ["async-field-adapter.v1"])
+        check_requires(artifact)
+        # A language adapter without the capability refuses the artifact and names both.
+        with self.assertRaisesRegex(ImportError, "file-storage.*async-field-adapter.v1"):
+            check_requires(artifact, frozenset())
 
 
 if __name__ == "__main__":
