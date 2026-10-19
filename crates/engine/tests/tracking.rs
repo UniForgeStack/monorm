@@ -51,10 +51,19 @@ fn a_disabled_artifact_rejects_each_role_at_definition() {
     }
 }
 
-#[cfg(feature = "updated-at")]
+fn now(field: &str) -> Json {
+    json!({"source":"test.a","model":"Post","field":field,"on":["update","upsert","delete_rewrite"],"value":"now"})
+}
+fn increment(field: &str) -> Json {
+    json!({"source":"test.b","model":"Post","field":field,"on":["update","upsert","delete_rewrite"],"value":"increment"})
+}
+fn rewrite() -> Json {
+    json!({"source":"test.c","model":"Post","field":"deleted","guard":{"t":"is_null","item":{"t":"col","path":[],"name":"deleted"},"neg":false}})
+}
+
 #[test]
-fn an_update_sets_updated_at_unless_it_sets_the_field() {
-    let schema = schema(json!({"updated_at":[{"model":"Post","field":"changed","mode":"database"}]})).unwrap();
+fn an_update_sets_a_now_assignment_unless_it_sets_the_field() {
+    let schema = schema(json!({"write_assignments":[now("changed")]})).unwrap();
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
         let statement = sql(&schema, dialect, update("views"));
         assert!(statement.contains("\"views\" = ") && statement.contains("\"changed_at\" = "), "{statement}");
@@ -66,10 +75,17 @@ fn an_update_sets_updated_at_unless_it_sets_the_field() {
     assert!(plan.statements[0].0.contains("\"changed_at\" = "), "{}", plan.statements[0].0);
 }
 
-#[cfg(feature = "soft-delete")]
 #[test]
-fn a_delete_of_a_soft_delete_model_is_an_update_of_live_rows() {
-    let schema = schema(json!({"soft_delete":[{"model":"Post","field":"deleted"}]})).unwrap();
+fn an_assignment_applies_only_to_its_statement_kinds() {
+    let record = json!({"source":"test.a","model":"Post","field":"changed","on":["upsert"],"value":"now"});
+    let schema = schema(json!({"write_assignments":[record]})).unwrap();
+    let statement = sql(&schema, Dialect::Postgres, update("views"));
+    assert!(!statement.contains("changed_at"), "{statement}");
+}
+
+#[test]
+fn a_delete_rewrite_makes_a_delete_an_update_of_guarded_rows() {
+    let schema = schema(json!({"delete_rewrites":[rewrite()]})).unwrap();
     let filter = json!([{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"id"},"r":{"t":"param","i":0}}]);
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
         let statement = sql(&schema, dialect, json!({"op":"delete","model":"Post","filters":filter,"returning":true}));
@@ -80,18 +96,23 @@ fn a_delete_of_a_soft_delete_model_is_an_update_of_live_rows() {
     }
 }
 
-#[cfg(all(feature = "soft-delete", feature = "updated-at", feature = "optimistic-locking"))]
 #[test]
-fn a_soft_delete_also_maintains_updated_at_and_the_version() {
-    let schema = schema(json!({"soft_delete":[{"model":"Post","field":"deleted"}],"updated_at":[{"model":"Post","field":"changed"}],"versions":[{"model":"Post","field":"version"}]})).unwrap();
+fn a_delete_without_a_rewrite_deletes_rows() {
+    let schema = schema(json!({"write_assignments":[now("changed")]})).unwrap();
+    let statement = sql(&schema, Dialect::Postgres, json!({"op":"delete","model":"Post"}));
+    assert!(statement.starts_with("DELETE FROM \"posts\""), "{statement}");
+}
+
+#[test]
+fn a_delete_rewrite_runs_the_assignments_of_its_kind() {
+    let schema = schema(json!({"delete_rewrites":[rewrite()],"write_assignments":[now("changed"), increment("version")]})).unwrap();
     let statement = sql(&schema, Dialect::Postgres, json!({"op":"delete","model":"Post"}));
     assert!(statement.contains("\"changed_at\" = ") && statement.contains("\"version\" = \"posts\".\"version\" + "), "{statement}");
 }
 
-#[cfg(feature = "optimistic-locking")]
 #[test]
-fn an_update_increments_the_version_unless_it_sets_it() {
-    let schema = schema(json!({"versions":[{"model":"Post","field":"version"}]})).unwrap();
+fn an_update_increments_an_increment_assignment_unless_it_sets_it() {
+    let schema = schema(json!({"write_assignments":[increment("version")]})).unwrap();
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
         let statement = sql(&schema, dialect, update("views"));
         assert!(statement.contains("\"version\" = \"posts\".\"version\" + "), "{statement}");
@@ -103,10 +124,9 @@ fn an_update_increments_the_version_unless_it_sets_it() {
     assert!(plan.statements[0].0.contains("\"version\" = \"posts\".\"version\" + "), "{}", plan.statements[0].0);
 }
 
-#[cfg(all(feature = "updated-at", feature = "optimistic-locking"))]
 #[test]
-fn an_upsert_maintains_the_version_and_updated_at() {
-    let schema = schema(json!({"updated_at":[{"model":"Post","field":"changed"}],"versions":[{"model":"Post","field":"version"}]})).unwrap();
+fn an_upsert_runs_the_assignments_of_its_kind() {
+    let schema = schema(json!({"write_assignments":[now("changed"), increment("version")]})).unwrap();
     let set = |field: &str| vec![serde_json::from_value(json!({"field":field,"value":{"t":"param","i":0}})).unwrap()];
     let upsert = |dialect, update: &[&str], set| {
         let target = Target::new(dialect);

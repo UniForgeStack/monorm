@@ -31,6 +31,7 @@ use orm_core::ir::{
 };
 use orm_core::dialect::{Capabilities, Dialect, Target};
 use orm_core::schema::{Model, Schema};
+use orm_core::writes::{AssignValue, WriteKind as AssignKind};
 
 mod nested;
 
@@ -916,9 +917,8 @@ impl<'s> Planner<'s> {
                 }
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
-                #[cfg(feature = "soft-delete")]
-                if let Some(position) = p.model(p.root).soft_delete.filter(|_| !q.hard) {
-                    let (mut stmt, types) = p.soft_delete(q, position)?;
+                if let Some(rewrite) = p.model(p.root).delete_rewrite.clone().filter(|_| !q.hard) {
+                    let (mut stmt, types) = p.delete_rewrite(q, &rewrite)?;
                     if let Some(w) = p.with_clause(&q.with)? {
                         stmt.with_cte(w);
                     }
@@ -2971,8 +2971,7 @@ impl<'s> Planner<'s> {
         for (column, v) in nested {
             stmt.value(Alias::new(column), v);
         }
-        #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
-        for (column, v) in maintained(root, |name| q.set.iter().any(|a| a.field == name)) {
+        for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name)) {
             stmt.value(Alias::new(column), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults)? {
@@ -2993,24 +2992,22 @@ impl<'s> Planner<'s> {
         Ok((stmt, Some((positions.iter().map(|pos| root.fields()[pos].value_type()).collect(), shape))))
     }
 
-    /// A delete of a soft-delete model: `UPDATE ... SET <field> = <now> WHERE ... AND <field> IS NULL`.
-    #[cfg(feature = "soft-delete")]
-    fn soft_delete(&mut self, q: &Delete, position: usize) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
+    /// A delete of a model with a delete rewrite: `UPDATE ... SET <field> = <now> WHERE ... AND <guard>`.
+    fn delete_rewrite(&mut self, q: &Delete, rewrite: &orm_core::writes::PreparedDeleteRewrite) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
         let root = self.model(self.root);
         #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
-        let field = &root.fields()[position];
+        let field = &root.fields()[rewrite.field];
         let mut stmt = Query::update();
         stmt.table(Alias::new(root.table()));
         stmt.value(Alias::new(&field.column), bind(crate::client_default::now(field.ty), Some(field)));
-        #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
-        for (column, v) in maintained(root, |_| false) {
+        for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false) {
             stmt.value(Alias::new(column), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults)? {
             stmt.and_where(w);
         }
-        stmt.and_where(col(root.table(), &field.column).is_null());
+        stmt.and_where(self.cond(&rewrite.guard)?);
         if !q.returning {
             return Ok((stmt, None));
         }
@@ -3546,8 +3543,7 @@ pub fn plan_insert(
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
                     clause.value(Alias::new(&f.column), v);
                 }
-                #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
-                for (column, expr) in maintained(m, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name)) {
+                for (column, expr) in maintained(m, AssignKind::Upsert, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name)) {
                     clause.value(Alias::new(column), expr);
                 }
                 clause.to_owned()
@@ -3638,8 +3634,7 @@ pub fn plan_update_many(
                 _ => stmt.and_where(row_in(target.dialect, key_cols.clone(), chunk.iter().map(|r| r.iter().zip(&cols).take(width).map(|(v, c)| bind(v.clone(), Some(c))).collect()).collect())),
             };
         }
-        #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
-        for (column, v) in maintained(m, |name| fields.iter().skip(width).any(|f| f == name)) {
+        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name)) {
             stmt.value(Alias::new(column), v);
         }
         for w in &where_ {
@@ -3656,20 +3651,18 @@ pub fn plan_update_many(
     Ok((stmts, returning.then(|| m.fields().iter().map(|f| f.value_type()).collect())))
 }
 
-/// Assignments the ORM adds to each update of `m` unless `is_set(field)`: the current time
-/// for `updated_at` fields and `version + 1` for the version field.
-#[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
-pub(crate) fn maintained<'m>(m: &'m Model, is_set: impl Fn(&str) -> bool) -> Vec<(&'m str, SExpr)> {
+/// Assignments that extensions registered for `kind` and the caller does not set: the current
+/// time or `column + 1`.
+pub(crate) fn maintained(m: &Model, kind: AssignKind, is_set: impl Fn(&str) -> bool) -> Vec<(&str, SExpr)> {
     let mut out = vec![];
-    #[cfg(feature = "updated-at")]
-    for &p in &m.updated_at {
-        let f = &m.fields()[p];
-        if !is_set(&f.name) { out.push((f.column.as_str(), bind(crate::client_default::now(f.ty), Some(f)))); }
-    }
-    #[cfg(feature = "optimistic-locking")]
-    if let Some(p) = m.version {
-        let f = &m.fields()[p];
-        if !is_set(&f.name) { out.push((f.column.as_str(), col(m.table(), &f.column).add(1))); }
+    for a in m.assignments.iter().filter(|a| a.applies_to(kind)) {
+        let f = &m.fields()[a.field];
+        if is_set(&f.name) { continue; }
+        let v = match a.value {
+            AssignValue::Now => bind(crate::client_default::now(f.ty), Some(f)),
+            AssignValue::Increment => col(m.table(), &f.column).add(1),
+        };
+        out.push((f.column.as_str(), v));
     }
     out
 }

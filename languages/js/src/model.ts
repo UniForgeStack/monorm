@@ -114,10 +114,10 @@ export class ModelMeta implements Source {
   declare attachInputFields?: readonly FieldMeta[];
   /** The engine's read flag: reads of this model are filtered by default; set once by `define()`. */
   filtered = false;
-  /** The `@soft_delete.deleted_at` field: `delete()` sets it; set once by `define()`. */
-  softDelete: FieldMeta | undefined;
-  /** The `@locking.version` field: instance writes check it; set once by `define()`. */
-  versionField: FieldMeta | undefined;
+  /** Fields whose loaded value an instance update or delete must match (`instance_guards`); set once by `define()`. */
+  guards: readonly FieldMeta[] = [];
+  /** IR names of fields that the default `onConflict` update list leaves out (`write_assignments`); set once by `define()`. */
+  upsertDrop: ReadonlySet<string> = new Set();
   /** IR names of fields that a proxy declares non-null over a nullable stored column. */
   narrowed: ReadonlySet<string> = new Set();
   readonly fields = new Map<string, FieldMeta>();
@@ -545,24 +545,26 @@ function writeOf(bound: BoundQuerySet<ModelSpec, Row>, op: (qs: QuerySet<ModelSp
   return (bound as unknown as { write(op: unknown, extra: readonly string[]): Promise<Row[]> }).write(op, extra);
 }
 
-/** The fields that a write must read back: with `@locking.version`, the version, so the next write sees it. */
+/** The fields that a write must read back: the guard fields, so the next write sees their values. */
 function versionFields(meta: ModelMeta): readonly string[] {
-  return meta.versionField ? [meta.versionField.ir] : [];
+  return meta.guards.map((f) => f.ir);
 }
 
-/** With `@locking.version`, match only the loaded version of the row. */
+/** With instance guards, match only the loaded values of the row. */
 function versionBound(o: Row): BoundQuerySet<ModelSpec, Row> {
   const meta = metaOf(o);
-  const bound = rowBound(o);
-  return meta.versionField ? bound.filter(meta.column(meta.versionField).eq(loadedVersion(o, meta.versionField) as never) as never) as never : bound;
+  let bound = rowBound(o);
+  for (const f of meta.guards) bound = bound.filter(meta.column(f).eq(loadedVersion(o, f) as never) as never) as never;
+  return bound;
 }
 
-/** No row matched a versioned write: throw when the row has another version. */
+/** No row matched a guarded write: throw when the row has other guard values. */
 async function throwIfChanged(o: Row): Promise<void> {
   const meta = metaOf(o);
-  if (!meta.versionField) return;
-  const changed = rowBound(o).filter(meta.column(meta.versionField).ne(loadedVersion(o, meta.versionField) as never) as never);
-  if (await changed.exists()) throw new VersionConflict(`${meta.name} ${show(o["pk"])} was changed since it was loaded`);
+  for (const f of meta.guards) {
+    const changed = rowBound(o).filter(meta.column(f).ne(loadedVersion(o, f) as never) as never);
+    if (await changed.exists()) throw new VersionConflict(`${meta.name} ${show(o["pk"])} was changed since it was loaded`);
+  }
 }
 
 async function instanceUpdate(this: Row, values: object): Promise<void> {
@@ -570,8 +572,10 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
     return;
   }
   const meta = metaOf(this);
-  if (meta.versionField && Object.hasOwn(values, meta.versionField.name)) {
-    throw new TypeError(`${meta.name}.update() cannot set the version field ${meta.versionField.name}; use ${meta.name}.objects.filter({ pk: ... }).update({ ${meta.versionField.name}: ... }) to override it`);
+  for (const f of meta.guards) {
+    if (Object.hasOwn(values, f.name)) {
+      throw new TypeError(`${meta.name}.update() cannot set the version field ${f.name}; use ${meta.name}.objects.filter({ pk: ... }).update({ ${f.name}: ... }) to override it`);
+    }
   }
   const rows = await writeOf(versionBound(this), (qs) => qs.update(values as never, { returning: true }), versionFields(meta));
   if (!rows.length) {
@@ -804,9 +808,9 @@ export function define(
       continue;
     }
     const meta = new ModelMeta(m, reg);
-    const role = (key: string) => ((ir.behavior as Record<string, { model: string; field: string }[] | undefined> | undefined)?.[key] ?? []).find((d) => d.model === m.name)?.field;
-    meta.versionField = meta.fieldByIr.get(role("versions") ?? "");
-    meta.softDelete = meta.fieldByIr.get(role("soft_delete") ?? "");
+    const records = (key: string) => ((ir.behavior as Record<string, { model: string; field: string }[] | undefined> | undefined)?.[key] ?? []).filter((d) => d.model === m.name);
+    meta.guards = [...new Set(records("instance_guards").map((d) => d.field))].flatMap((f) => meta.fieldByIr.get(f) ?? []);
+    meta.upsertDrop = new Set((records("write_assignments") as unknown as { field: string; on: string[]; upsert?: string }[]).filter((d) => (d.upsert ?? "drop") === "drop" && d.on.includes("upsert")).map((d) => d.field));
     const proxy = ((ir.behavior as { proxy_models?: { model: string; fields?: { field: string; non_null?: boolean }[] }[] } | undefined)?.proxy_models ?? []).find((p) => p.model === m.name);
     meta.narrowed = new Set((proxy?.fields ?? []).filter((f) => f.non_null).map((f) => f.field));
     const computed = new Set(((ir.behavior as { result_fields?: { model: string; field: string }[] } | undefined)?.result_fields ?? []).filter((f) => f.model === m.name).map((f) => f.field));

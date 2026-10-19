@@ -278,7 +278,7 @@ class _Insert:
             fields = [
                 f
                 for f in self._fields
-                if f in self._provided and f not in target and f not in key and f != model._meta.version_field
+                if f in self._provided and f not in target and f not in key and f not in model._meta.upsert_drop
             ]
         if update_values is not None:
             set_ = (assignments(model, update_values, IRContext(model, params)), params)
@@ -395,9 +395,9 @@ class InsertOne(_Insert, Generic[M]):
         ``update=False`` keeps the existing row (``DO NOTHING``). ``update=True`` updates
         it: ``update_fields`` copy the new values, ``update_values`` set values or
         expressions such as ``{"views": Post.views + excluded(Post.views)}``. With
-        neither, every given field except the conflict columns is overwritten, but not the
-        version field. The update also sets ``updated_at`` and adds ``version = version + 1``
-        unless the call sets them. ``await`` gives the affected-row count; ``.returning()`` the row."""
+        neither, every given field except the conflict columns is overwritten, but not a
+        field whose write assignment drops it from the upsert. The update also runs the upsert
+        write assignments of the model unless the call sets their fields. ``await`` gives the affected-row count; ``.returning()`` the row."""
         return self._with_conflict(UpsertOne, columns, where, update, update_fields, update_values)  # type: ignore[no-any-return]
 
     def __await__(self) -> Generator[Any, None, M]:

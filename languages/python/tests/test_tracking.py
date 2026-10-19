@@ -410,6 +410,22 @@ async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
         await db.close()
 
 
+@requires("updated-at")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_the_default_upsert_update_list_drops_updated_at(dialect):
+    db, models = await connect(dialect, upsert_doc("application"))
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", changed=OLD)
+        await docs.insert(id=1, title="b", changed=OLD).on_conflict(Doc.id, update=True)
+        row = await docs.get(Doc.id == 1)
+        assert row.title == "b" and as_utc(row.changed) > OLD
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 @requires("optimistic-locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_update_true_upsert_does_not_reset_the_version(dialect):

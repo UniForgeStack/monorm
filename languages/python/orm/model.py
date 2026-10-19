@@ -103,10 +103,10 @@ class ModelMeta:
         self.input_fields: dict[str, Field[Any]] = self.fields
         # The engine says a default read of this model can hide rows.
         self.filtered: bool = False
-        # The `@soft_delete.deleted_at` field name: `delete()` sets it.
-        self.soft_delete: str | None = None
-        # The `@locking.version` field name: instance writes check it.
-        self.version_field: str | None = None
+        # Fields whose loaded value an instance update or delete must match (`instance_guards`).
+        self.guards: tuple[str, ...] = ()
+        # Fields that the default `on_conflict(update=True)` list leaves out (`write_assignments`).
+        self.upsert_drop: frozenset[str] = frozenset()
         # Fields that a proxy declares non-null over a nullable stored column.
         self.narrowed: frozenset[str] = frozenset()
         # The class of `objects` (`use_query_set`): `None` for QuerySet, or a "module:Class"
@@ -322,11 +322,13 @@ class Registry:
             meta.schema_ir = ir
             meta.filtered = read_flags[meta.name]["filtered"]
             behavior = prepared.get("behavior", {})
-            meta.soft_delete = next(
-                (d["field"] for d in behavior.get("soft_delete", ()) if d["model"] == meta.name), None
+            meta.guards = tuple(
+                dict.fromkeys(d["field"] for d in behavior.get("instance_guards", ()) if d["model"] == meta.name)
             )
-            meta.version_field = next(
-                (d["field"] for d in behavior.get("versions", ()) if d["model"] == meta.name), None
+            meta.upsert_drop = frozenset(
+                d["field"]
+                for d in behavior.get("write_assignments", ())
+                if d["model"] == meta.name and d["upsert"] == "drop" and "upsert" in d["on"]
             )
             proxy: dict[str, Any] = next(
                 (p for p in prepared.get("behavior", {}).get("proxy_models", ()) if p["model"] == meta.name), {}
@@ -667,16 +669,14 @@ class Model:
         return bound.load(*(ColumnRef(type(self), (), self._meta.fields[n]) for n in names))
 
     def _versioned(self, bound: BoundQuerySet[Self]) -> BoundQuerySet[Self]:
-        """With ``@locking.version``, match only the loaded version of the row."""
-        name = self._meta.version_field
-        if name is None:
-            return bound
-        return bound.filter(ColumnRef(type(self), (), self._meta.fields[name]) == getattr(self, name))
+        """With instance guards, match only the loaded values of the row."""
+        for name in self._meta.guards:
+            bound = bound.filter(ColumnRef(type(self), (), self._meta.fields[name]) == getattr(self, name))
+        return bound
 
     async def _raise_if_changed(self) -> None:
-        """No row matched a versioned write: raise when the row has another version."""
-        name = self._meta.version_field
-        if name is not None:
+        """No row matched a guarded write: raise when the row has other guard values."""
+        for name in self._meta.guards:
             changed = (
                 self.qs()
                 .without_defaults()
@@ -696,13 +696,13 @@ class Model:
         """
         if not values:
             return
-        version = self._meta.version_field
-        if version is not None and version in values:
-            raise TypeError(
-                f"{type(self).__name__}.update() cannot set the version field {version}; "
-                f"use {type(self).__name__}.objects.filter(pk=...).update({version}=...) to override it"
-            )
-        bound = self._versioned(self._bound(*(() if version is None else (version,))))
+        for guard in self._meta.guards:
+            if guard in values:
+                raise TypeError(
+                    f"{type(self).__name__}.update() cannot set the version field {guard}; "
+                    f"use {type(self).__name__}.objects.filter(pk=...).update({guard}=...) to override it"
+                )
+        bound = self._versioned(self._bound(*self._meta.guards))
         if not await bound.update(**values):
             await self._raise_if_changed()
             raise self.DoesNotExist(f"{type(self).__name__} {self.pk!r} no longer exists")
@@ -711,8 +711,7 @@ class Model:
         """``DELETE ... WHERE pk = ... RETURNING`` the loaded fields; the instance is filled from
         the returned row, so a soft delete shows its stored value. With ``@locking.version``, raises :class:`orm.VersionConflict`
         when the row has a newer version; a hard delete has no version check."""
-        version = self._meta.version_field
-        bound = self._versioned(self._bound(*(() if version is None else (version,))))
+        bound = self._versioned(self._bound(*self._meta.guards))
         if not await bound.delete():
             await self._raise_if_changed()
 

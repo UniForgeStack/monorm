@@ -412,6 +412,17 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  test(`the default upsert update list drops updated_at (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc({ mode: "application" }));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a", changed: OLD });
+      await docs.insert({ id: 1, title: "b", changed: OLD }).onConflict(Doc.id, { update: true });
+      const row = await docs.get(Doc.id.eq(1));
+      assert.ok(row.title === "b" && row.changed > OLD);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`an update: true upsert does not reset the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ version: true }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
