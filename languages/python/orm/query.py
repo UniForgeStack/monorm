@@ -1766,7 +1766,7 @@ class BoundQuerySet(Generic[M]):
         loads = self._qs._loads
         own = any((isinstance(i, ColumnRef) and not i._path) or isinstance(i, Labeled) for i in loads)
         relation_only = bool(loads) and not own
-        if relation_only and not self._qs._filters:
+        if relation_only and not self._qs._filters and self._qs._lock is None:
             await prefetch(self._objs, *cast("tuple[Any, ...]", loads), using=self._database())
             return list(self._objs)
         fresh: dict[Any, M] = {}
@@ -1789,7 +1789,12 @@ class BoundQuerySet(Generic[M]):
         objects whose rows it returns, and give those objects in input order."""
         from ._loading import merge
 
-        returned = {row.pk: row for row in await build(self._query())}
+        query = self._query()
+        if any("_orm_internal" in o.__dict__ for o in self._objs):
+            meta = self._qs._model._meta
+            held = [n for n in meta.field_names if any(n in o.__dict__ for o in self._objs)]
+            query = query.load(*(ColumnRef(self._qs._model, (), meta.fields[n]) for n in held))
+        returned = {row.pk: row for row in await build(query)}
         if len(self._objs) == 1 and len(returned) == 1:
             # a key change returns the row under its new key
             merge(self._objs[0], next(iter(returned.values())), True)

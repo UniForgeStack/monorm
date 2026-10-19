@@ -181,6 +181,18 @@ async def test_lock_needs_a_transaction_and_locks_the_rows(clean, db):
         Post.objects.of(held).lock(nowait=True, skip_locked=True)
 
 
+async def test_a_relation_only_read_with_a_lock_reads_the_keys_with_for_update(clean, db):
+    if "postgres" not in os.environ["ORM_TEST_DATABASE_URL"]:
+        pytest.skip("FOR UPDATE needs Postgres")
+    _, posts = await seed()
+    held = await Post.objects.filter(Post.id.in_([p.id for p in posts]))
+    events: list[orm.QueryEvent] = []
+    db.on_query(events.append)
+    async with db.transaction():
+        await orm.of(held).lock().load(Post.comments)
+    assert any("FOR UPDATE" in e.sql for e in events)
+
+
 async def test_using_names_the_database_to_read(clean, db):
     _, posts = await seed()
     held = await stale(posts)

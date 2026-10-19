@@ -157,6 +157,35 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
+  test(`a filter on a relation-only load reads the key fields and keeps a partial object's shape (${provider})`, { skip: !url }, async () => {
+    const { db, Entry } = await setup();
+    try {
+      const partial = await Entry.objects.using(db).load(Entry.id, Entry.title).get(Entry.id.eq(1));
+      await Entry.objects.using(db).filter(Entry.id.eq(1)).update({ title: "changed" });
+      const [got] = await of([partial]).filter(Entry.live.eq(true)).load(Entry.writer);
+      assert.equal(got, partial);
+      assert.equal(partial.title, "a");
+      assert.throws(() => partial.views, /not loaded/i);
+      assert.equal(partial.writer.name, "ann");
+    } finally {
+      await db.close();
+    }
+  });
+
+  test(`using("primary") reads the primary of the objects' database (${provider})`, { skip: !url }, async () => {
+    const { db, Entry, count } = await setup();
+    try {
+      const entries = await Entry.objects.using(db).orderBy("id");
+      await Entry.objects.using(db).filter(Entry.id.eq(1)).update({ title: "changed" });
+      const before = count();
+      assert.equal((await of(entries).using("primary")).length, 3);
+      assert.equal(count() - before, 1);
+      assert.equal(entries[0].title, "changed");
+    } finally {
+      await db.close();
+    }
+  });
+
   test(`a mixed load fills columns and relations (${provider})`, { skip: !url }, async () => {
     const { db, Entry } = await setup();
     try {

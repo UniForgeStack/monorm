@@ -69,8 +69,8 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
   }
 
   /** Read from `db` instead of the database of the objects. */
-  using(db?: Database): BoundQuerySetOf<M, R> {
-    return this.next(this.inner.using(db));
+  using(db?: Database | "primary"): BoundQuerySetOf<M, R> {
+    return this.next(this.inner.using(db === "primary" ? this.database().primary : db));
   }
 
   /** Skip the model's query defaults (all, or the named ones). */
@@ -137,10 +137,15 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
       for (const o of this.objs) for (const f of meta.fieldList) if (Object.hasOwn(o, f.name)) loaded.add(f.ir);
       query = query.onlyFields([...new Set([...loaded, ...extra])]);
     }
-    const rows = await op(query);
-    const byKey = new Map(rows.map((r) => [rowKey(meta, r), r]));
     // one object, one row: the write may have changed the key, so the row is matched by the filter
-    const only = this.objs.length === 1 && rows.length === 1 ? rows[0] : undefined;
+    return this.fill(await op(query), true);
+  }
+
+  /** Merge each row into the object of its key and give the filled objects in input order. */
+  private fill(rows: readonly Row[], singleRow = false): R[] {
+    const { meta } = this;
+    const byKey = new Map(rows.map((r) => [rowKey(meta, r), r]));
+    const only = singleRow && this.objs.length === 1 && rows.length === 1 ? rows[0] : undefined;
     const out: Row[] = [];
     for (const o of this.objs) {
       const row = only ?? byKey.get(rowKey(meta, o));
@@ -190,23 +195,22 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     const st = this.inner.state;
     const db = this.database();
     const loads = st.loads ?? [];
-    // no root column to read: the keys come from the objects, as prefetch() does
-    if (loads.length && !st.filters.length && st.lock === undefined && !loads.some((i) => i instanceof Labeled || (i instanceof Column && !i.path.length))) {
+    const relationOnly = loads.length > 0 && !loads.some((i) => i instanceof Labeled || (i instanceof Column && !i.path.length));
+    // no root column to read: the keys come from the objects
+    if (relationOnly && !st.filters.length && st.lock === undefined) {
       await prefetch(objs, ...this.items, { using: db });
       return [...objs] as R[];
     }
-    const byKey = new Map<string, Row>();
-    for (const qs of this.readQueries()) {
-      for (const r of await (qs as unknown as { fetch(): Promise<Row[]> }).fetch()) byKey.set(rowKey(meta, r), r);
+    const keys = meta.key.map((f) => f.ir);
+    const rows: Row[] = [];
+    for (let qs of this.readQueries()) {
+      // a filter or a lock reads the key fields only, so a partial object keeps its shape
+      if (relationOnly) qs = (qs as unknown as { clone(c: object): QuerySet<ModelSpec> }).clone({ loads: [] }).derived().onlyFields(keys);
+      rows.push(...await (qs as unknown as { fetch(): Promise<Row[]> }).fetch());
     }
-    const out: Row[] = [];
-    for (const o of objs) {
-      const row = byKey.get(rowKey(meta, o));
-      if (row === undefined) continue;
-      merge(o, row, true, invalidateReference);
-      out.push(o);
-    }
-    return out as R[];
+    const matched = this.fill(rows);
+    if (relationOnly) await prefetch(matched as object[], ...this.items, { using: db });
+    return matched;
   }
 }
 
