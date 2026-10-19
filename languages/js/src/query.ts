@@ -44,7 +44,7 @@ import { NotLoaded, QueryError, TransactionRequired } from "./errors.js";
 import type { DefaultNames, Hop, HopKind, In, ModelSpec, RelationMeta } from "./meta.js";
 import { DB, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
-import { adaptedInsert, adaptedUpdate, checkedRows, splitAdapted } from "./adapters.js";
+import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, splitAdapted, splitBatch } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
 import { after, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
@@ -1516,12 +1516,26 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   updateMany(rows: readonly M["updateRow"][], options?: { readonly batchSize?: number; readonly returning?: false }): InspectedStatement<number>;
   updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning: true }): InspectedStatement<M["row"][]>;
   updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean } = {}): InspectedStatement<number | M["row"][]> {
-    return new InspectedStatement(() => this.executeUpdateMany(rows, options), () => {
-      const { prepared, batchSize, returning, params, ir } = this.updateManyPlan(rows, options);
-      if (ir === null) return emptyInspection();
-      const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
-      return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, JSON.stringify(this.state.withoutDefaults))));
-    });
+    const { checked, pending } = splitBatch(this.meta, rows);
+    if (pending.size) return adaptedUpdateMany(InspectedStatement, this as never, checked, pending, options) as InspectedStatement<number | M["row"][]>;
+    return new InspectedStatement(() => this.executeUpdateMany(checked, options), () => this.inspectUpdateMany(checked, options));
+  }
+
+  /** @internal */
+  inspectUpdateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean }): QueryInspection {
+    const { prepared, batchSize, returning, params, ir } = this.updateManyPlan(rows, options);
+    if (ir === null) return emptyInspection();
+    const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
+    return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, JSON.stringify(this.state.withoutDefaults))));
+  }
+
+  /** @internal Checks `updateMany(rows)`, write protection too, before a `prepare` call. */
+  checkUpdateRows(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean }): void {
+    this.updateManyPlan(rows, options);
+    const first = rows[0] as object | undefined;
+    if (first === undefined) return;
+    const key = new Set<string>(this.meta.key.map((f) => f.name));
+    this.prepareUpdate(Object.fromEntries(Object.entries(first).filter(([name]) => !key.has(name))) as M["update"]);
   }
 
   private updateManyPlan(rows: readonly M["updateRow"][], options: { readonly batchSize?: number; readonly returning?: boolean }) {
@@ -1530,7 +1544,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       throw new RangeError("batchSize must be at least 1");
     }
     this.mutationIr("update", []); // refuses sliced and locked query sets
-    const prepared = prepareUpdateRows(this.meta, checkedRows(this.meta, rows, "updateMany()"));
+    const prepared = prepareUpdateRows(this.meta, rows);
     if (!prepared.rows.length) {
       return { prepared, batchSize, returning, params: [], ir: null };
     }
@@ -1542,7 +1556,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return { prepared, batchSize, returning, params, ir };
   }
 
-  private async executeUpdateMany(
+  /** @internal */
+  async executeUpdateMany(
     rows: readonly M["updateRow"][],
     options: { readonly batchSize?: number; readonly returning?: boolean } = {},
   ): Promise<number | M["row"][]> {
@@ -1625,10 +1640,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   insertMany(rows: readonly M["insert"][], options: CopyOptions): Promise<number>;
   insertMany(rows: readonly M["insert"][], options?: BatchOptions | CopyOptions): InsertMany<M> | Promise<number> {
     this.assertStandalone();
-    rows = checkedRows(this.meta, rows, "insertMany()");
+    const { checked, pending } = splitBatch(this.meta, rows);
+    rows = checked;
     if (options && "copy" in options && options.copy) {
+      if (pending.size) throw new FieldAdapterError("insertMany(rows, { copy: true }) takes no value that needs prepare");
       return this.copyRows(rows, options);
     }
+    if (pending.size) return adaptedInsertMany<M>(InsertMany, this as never, rows, pending, options as BatchOptions | undefined);
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
     return new InsertMany((conflict, returning) => this.insertRows(rows, conflict, returning, batchSize), (conflict, returning) => this.inspectInsert(rows, conflict, returning, batchSize));
   }
@@ -1655,6 +1673,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const prepared = prepareRows(this.meta, [values]);
     call(() => this.meta.registry.native().validateInsert(this.meta.name, prepared.fields, prepared.rows, allowedWrites()));
     return { execute: async (data = values) => ((await this.insertRows([data], undefined, true, null)) as M["row"][])[0]! };
+  }
+
+  /** @internal Checks `insertMany(rows)`, write protection too, without SQL or I/O. */
+  checkInsertRows(rows: readonly M["insert"][]): void {
+    this.db();
+    const prepared = prepareRows(this.meta, rows);
+    call(() => this.meta.registry.native().validateInsert(this.meta.name, prepared.fields, prepared.rows, allowedWrites()));
   }
 
   /** @internal */
@@ -2412,8 +2437,10 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
         throw new TypeError(`${this.relation.name}.insert(...).onConflict() isn't supported; upsert with ${this.meta.name}.objects, then add()`);
       }
       const db = resolve(this.state.db ?? (this.instance[DB] as Database | undefined));
+      const insert = new QuerySet<M>(this.meta).using(this.state.db ?? (this.instance[DB] as Database | undefined)).insert(values);
+      if ("operation" in insert) await (insert as unknown as { prepare(): Promise<void> }).prepare(); // the uploads run before the transaction opens
       return db.transaction(async () => {
-        const obj = await new QuerySet<M>(this.meta).using(this.state.db ?? (this.instance[DB] as Database | undefined)).insert(values);
+        const obj = await insert;
         await this.add(obj as never);
         return [obj];
       }, { savepoint: false });

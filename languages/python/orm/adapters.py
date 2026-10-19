@@ -20,8 +20,8 @@ from weakref import WeakKeyDictionary
 
 from .expr import Expression
 from .hooks import PreparedInsert, PreparedUpdate, decode_field, prepare_insert, prepare_update
-from .protection import allow_writes
-from .write import InsertOne, Returning, Update, prepare_rows
+from .protection import allow_writes, allowed_writes
+from .write import InsertMany, InsertOne, Returning, Update, UpdateMany, prepare_rows
 
 if TYPE_CHECKING:
     from .model import Model
@@ -38,6 +38,7 @@ __all__ = [
 ]
 
 _T = TypeVar("_T")
+CONCURRENCY = 16
 V_co = TypeVar("V_co", covariant=True)
 S = TypeVar("S")
 
@@ -75,6 +76,7 @@ class FieldAdapter(Protocol[V_co, S]):
 
 _ADAPTERS: WeakKeyDictionary[type, dict[str, FieldAdapter[Any, Any]]] = WeakKeyDictionary()
 _Pending = dict[str, tuple[FieldAdapter[Any, Any], Any]]
+_BatchPending = dict[tuple[int, str], tuple[FieldAdapter[Any, Any], Any]]
 
 
 def register_field_adapter(
@@ -119,22 +121,28 @@ def split(model: type[Model], values: Mapping[str, Any]) -> tuple[dict[str, Any]
     return checked, pending
 
 
-def split_rows(model: type[Model], rows: Iterable[Mapping[str, Any]], statement: str) -> list[Mapping[str, Any]]:
-    """Validate the adapted values of every row of a batch write. A value that needs ``prepare`` is not
-    supported in a batch yet: it would store the raw input."""
+def split_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], _BatchPending]:
+    """Validate the adapted values of every row of a batch write. Return the rows that check the
+    statement, and the pending values by ``(row index, field)``."""
     out: list[Mapping[str, Any]] = []
-    for row in rows:
+    pending: _BatchPending = {}
+    for index, row in enumerate(rows):
         split_row = split(model, row)
         if split_row is None:
             out.append(row)
             continue
-        checked, pending = split_row
-        if pending:
-            raise FieldAdapterError(
-                f"{model.__name__}.{', '.join(pending)}: {statement} takes no value that needs prepare yet"
-            )
+        checked, row_pending = split_row
         out.append(checked)
-    return out
+        for name, item in row_pending.items():
+            pending[(index, name)] = item
+    return out, pending
+
+
+def _fill_rows(rows: Iterable[Mapping[str, Any]], stored: Mapping[tuple[int, str], Any]) -> list[dict[str, Any]]:
+    filled = [dict(row) for row in rows]
+    for (index, name), value in stored.items():
+        filled[index][name] = value
+    return filled
 
 
 class _WriteFailure(BaseException):
@@ -145,7 +153,7 @@ class _WriteFailure(BaseException):
         self.operation = operation
 
     @property
-    def stored(self) -> Mapping[str, Any]:
+    def stored(self) -> Mapping[Any, Any]:
         return self.operation.stored
 
 
@@ -164,29 +172,37 @@ class AdapterWriteCancelled(_WriteFailure, asyncio.CancelledError):
 
 class PreparedWrite:
     """The ``prepare`` calls of one statement, run once. A failed or cancelled ``prepare`` call is final,
-    because a stream cannot be replayed."""
+    because a stream cannot be replayed.
 
-    def __init__(self, pending: _Pending):
+    A single write keys its values by field and runs the calls in order. A batch write keys them by
+    ``(row index, field)`` and runs up to ``limit`` calls at once; after a failure it starts no new
+    call, and ``stored`` holds the values of the calls that finished."""
+
+    def __init__(self, pending: Mapping[Any, tuple[FieldAdapter[Any, Any], Any]], limit: int | None = None):
         self._pending = dict(pending)
-        self._stored: dict[str, Any] = {}
+        self._limit = limit
+        self._stored: dict[Any, Any] = {}
         self._state: Literal["new", "preparing", "ready", "failed"] = "new"
         self._executing = False
-        self._statement: Callable[[Mapping[str, Any]], Awaitable[Any]] | None = None
+        self._statement: Callable[[Mapping[Any, Any]], Awaitable[Any]] | None = None
 
     @property
-    def stored(self) -> Mapping[str, Any]:
-        """The stored values that ``prepare`` produced so far, by field."""
+    def stored(self) -> Mapping[Any, Any]:
+        """The stored values that ``prepare`` produced so far, by field (batch: by row index and field)."""
         return MappingProxyType(self._stored)
 
-    async def prepare(self) -> Mapping[str, Any]:
+    async def prepare(self) -> Mapping[Any, Any]:
         if self._state == "ready":
             return self.stored
         if self._state != "new":
             raise FieldAdapterError("prepare is running or failed; its input cannot be replayed")
         self._state = "preparing"
         try:
-            for name, (adapter, value) in self._pending.items():
-                self._stored[name] = await adapter.prepare(value)
+            if self._limit is None:
+                for name, (adapter, value) in self._pending.items():
+                    self._stored[name] = await adapter.prepare(value)
+            else:
+                await self._prepare_concurrently(self._limit)
             self._state = "ready"
             return self.stored
         except BaseException as error:
@@ -197,7 +213,26 @@ class PreparedWrite:
                 raise AdapterWriteError(self) from error
             raise
 
-    async def execute(self, statement: Callable[[Mapping[str, Any]], Awaitable[_T]] | None = None) -> _T:
+    async def _prepare_concurrently(self, limit: int) -> None:
+        slots = asyncio.Semaphore(limit)
+        failure: list[BaseException] = []
+
+        async def one(key: Any, adapter: FieldAdapter[Any, Any], value: Any) -> None:
+            async with slots:
+                if failure:
+                    return
+                try:
+                    self._stored[key] = await adapter.prepare(value)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as error:
+                    failure.append(error)
+
+        await asyncio.gather(*(one(key, adapter, value) for key, (adapter, value) in self._pending.items()))
+        if failure:
+            raise failure[0]
+
+    async def execute(self, statement: Callable[[Mapping[Any, Any]], Awaitable[_T]] | None = None) -> _T:
         """Run ``prepare`` once, then ``statement(stored)``. Without ``statement``, run the last one again."""
         if statement is not None:
             self._statement = statement
@@ -253,19 +288,24 @@ class PendingInsert(_AdaptedWrite, InsertOne[Any]):
         self._used = True
         raise FieldAdapterError("a value that needs prepare is unsupported in conflict writes")
 
+    async def prepare(self) -> None:
+        """Check write protection, then run the ``prepare`` calls now. ``await`` then runs the SQL only."""
+        prepare_insert(self.qs, self.checked)
+        await self.operation.prepare()
+
     async def run(self) -> Any:
         prepared: PreparedInsert[Any] = prepare_insert(self.qs, self.checked)
         return await self.operation.execute(lambda stored: prepared.execute({**self.checked, **stored}))
 
 
 class PendingUpdate(_AdaptedWrite, Update[Any]):
-    """The unique-row update of a value that needs ``prepare``; ``returning()`` gives the rows."""
+    """The update of a value that needs ``prepare``: one ``prepare`` call, and the stored value goes to
+    every matching row. ``returning()`` gives the rows."""
 
     def __init__(self, qs: QuerySet[Any], checked: dict[str, Any], pending: _Pending):
         self.qs, self.checked = qs, checked
         with allow_writes(qs.model):
-            if not prepare_update(qs, checked).unique:
-                raise FieldAdapterError("an update with a value that needs prepare must target one unique row")
+            prepare_update(qs, checked)
         self.operation = PreparedWrite(pending)
         params: list[Any] = []
         super().__init__(qs, qs._mutation_ir("update", params, checked), params)
@@ -293,3 +333,59 @@ class PendingReturning(Returning[Any]):
     def __await__(self) -> Generator[Any, None, Any]:
         self._used = True
         return self._update.run(returning=True).__await__()
+
+
+class PendingInsertMany(InsertMany[Any]):
+    """``insert_many`` with values that need ``prepare``: the calls run in parallel (up to
+    :data:`CONCURRENCY`), then one insert stores the stored values. ``inspect()`` shows the statement over
+    the placeholder values and runs no ``prepare`` call."""
+
+    def __init__(
+        self, qs: QuerySet[Any], rows: list[Mapping[str, Any]], pending: _BatchPending, batch_size: int | None
+    ):
+        self.rows = rows
+        self.operation = PreparedWrite(pending, CONCURRENCY)
+        super().__init__(qs, *prepare_rows(qs.model, rows), batch_size=batch_size)
+
+    def on_conflict(self, *columns: Any, **options: Any) -> Any:
+        self._used = True
+        raise FieldAdapterError("a value that needs prepare is unsupported in conflict writes")
+
+    async def _execute(self, returning: bool) -> Any:
+        model = self._qs.model
+        model._meta.registry.native().validate_insert(
+            model._meta.name, self._fields, self._rows, list(allowed_writes())
+        )
+
+        def statement(stored: Mapping[Any, Any]) -> Awaitable[Any]:
+            fields, aligned, provided = prepare_rows(model, _fill_rows(self.rows, stored))
+            insert: InsertMany[Any] = InsertMany(self._qs, fields, aligned, provided, batch_size=self._batch_size)
+            insert._used = True
+            return insert._execute(returning)
+
+        return await self.operation.execute(statement)
+
+
+class PendingUpdateMany(UpdateMany[Any]):
+    """``update_many`` with values that need ``prepare``: the calls run in parallel (up to
+    :data:`CONCURRENCY`), then the update stores the stored values."""
+
+    def __init__(
+        self, qs: QuerySet[Any], rows: list[Mapping[str, Any]], pending: _BatchPending, batch_size: int | None
+    ):
+        self.rows = rows
+        self.operation = PreparedWrite(pending, CONCURRENCY)
+        super().__init__(qs, rows, batch_size)
+
+    async def _run(self, returning: bool) -> Any:
+        key = self._qs.model._meta.key_names
+        if self._rows:
+            with_values = {name: value for name, value in self.rows[0].items() if name not in key}
+            prepare_update(self._qs, with_values)
+
+        def statement(stored: Mapping[Any, Any]) -> Awaitable[Any]:
+            update = UpdateMany(self._qs, _fill_rows(self.rows, stored), self._batch_size)
+            update._used = True
+            return update._run(returning)
+
+        return await self.operation.execute(statement)

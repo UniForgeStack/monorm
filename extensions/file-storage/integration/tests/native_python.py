@@ -65,26 +65,58 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsupported_and_invalid_values_before_upload(self):
         for call in [
-            lambda: self.Report.objects.update(file=Upload(b"x")),
             lambda: self.Report.objects.insert(id=1, file=Upload(b"x")).on_conflict(self.Report.id, update=False),
+            lambda: self.Report.objects.insert_many([{"id": 1, "file": Upload(b"x")}], copy=True),
+            lambda: self.Report.objects.insert_many([{"id": 1, "file": Upload(b"x")}, {"id": "invalid integer", "file": Upload(b"y")}]),
             lambda: self.Report.objects.insert(id="invalid integer", file=Upload(b"x")),
         ]:
             with self.assertRaises((FileFieldError, ValueError, TypeError)):
-                call()
+                await call()
         self.assertEqual(self.storage.uploads, 0)
 
-    async def test_bulk_writes_store_references_and_reject_an_upload(self):
+    async def test_bulk_writes_prepare_each_upload_and_a_filtered_update_shares_one(self):
         reference = await self.storage.upload("reports", b"report")
         await self.Report.objects.insert_many([{"id": 2, "file": reference}, {"id": 3, "file": None}])
         await self.Report.objects.update_many([{"id": 2, "file": None}, {"id": 3, "file": reference}])
         rows = {r.id: r for r in await self.Report.objects.order_by(self.Report.id)}
         self.assertIsNone(rows[2].file)
         self.assertEqual(rows[3].file, reference)
-        with self.assertRaises(FieldAdapterError):
-            self.Report.objects.insert_many([{"id": 1, "file": Upload(b"x")}])
-        with self.assertRaises(FieldAdapterError):
-            self.Report.objects.update_many([{"id": 2, "file": Upload(b"x")}])
         self.assertEqual(self.storage.uploads, 1)
+
+        rows_in = [{"id": 4, "file": Upload(b"four")}, {"id": 5, "file": Upload(b"five")}, {"id": 6, "file": None}]
+        self.assertEqual(await self.Report.objects.insert_many(rows_in), 3)
+        self.assertEqual(self.storage.uploads, 3)
+        rows = {r.id: r for r in await self.Report.objects.order_by(self.Report.id)}
+        self.assertEqual(b"".join([chunk async for chunk in rows[4].file_open()]), b"four")
+        self.assertEqual(b"".join([chunk async for chunk in rows[5].file_open()]), b"five")
+        self.assertIsNone(rows[6].file)
+
+        await self.Report.objects.update_many([{"id": 2, "file": Upload(b"two")}, {"id": 6, "file": Upload(b"six")}])
+        self.assertEqual(self.storage.uploads, 5)
+        rows = {r.id: r for r in await self.Report.objects.order_by(self.Report.id)}
+        self.assertEqual(b"".join([chunk async for chunk in rows[2].file_open()]), b"two")
+        self.assertEqual(b"".join([chunk async for chunk in rows[6].file_open()]), b"six")
+
+        self.assertEqual(await self.Report.objects.filter(self.Report.id > 3).update(file=Upload(b"shared")), 3)
+        self.assertEqual(self.storage.uploads, 6)
+        rows = {r.id: r for r in await self.Report.objects.order_by(self.Report.id)}
+        self.assertEqual(rows[4].file, rows[5].file)
+        self.assertEqual(rows[5].file, rows[6].file)
+        self.assertEqual(b"".join([chunk async for chunk in rows[6].file_open()]), b"shared")
+
+    async def test_a_failed_bulk_insert_keeps_every_upload_and_retries_without_one(self):
+        await self.Report.objects.insert(id=1, file=None)
+        statement = self.Report.objects.insert_many([{"id": 2, "file": Upload(b"two")}, {"id": 1, "file": Upload(b"one")}])
+        with self.assertRaises(AdapterWriteError) as caught:
+            await statement
+        self.assertIs(caught.exception.operation, statement.operation)
+        self.assertEqual(self.storage.uploads, 2)
+        self.assertEqual(set(caught.exception.stored), {(0, "file"), (1, "file")})
+        await self.Report.objects.filter(self.Report.id == 1).delete()
+        self.assertEqual(await statement.operation.execute(), 2)
+        self.assertEqual(self.storage.uploads, 2)
+        rows = {r.id: r for r in await self.Report.objects.order_by(self.Report.id)}
+        self.assertEqual(b"".join([chunk async for chunk in rows[1].file_open()]), b"one")
 
     async def test_sql_failure_retry_keeps_reference_and_unique_update(self):
         await self.Report.objects.insert(id=1, file=None)

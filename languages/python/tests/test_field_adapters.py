@@ -1,5 +1,7 @@
 """The async field adapter pipeline (`orm.adapters`): validate, ``await prepare``, SQL, decode."""
 
+import asyncio
+
 import pytest
 import orm
 from orm import _capabilities
@@ -129,7 +131,7 @@ async def test_an_expression_for_an_adapted_field_is_rejected_before_prepare():
         await db.close()
 
 
-async def test_unique_update_prepares_once_and_a_filtered_update_is_rejected():
+async def test_unique_update_prepares_once():
     db, models, body = await setup()
     try:
         Doc = models["Doc"]
@@ -137,11 +139,24 @@ async def test_unique_update_prepares_once_and_a_filtered_update_is_rejected():
         await objects.insert_many([{"id": 1, "title": "a"}, {"id": 2, "title": "a"}])
         assert await objects.filter(Doc.id == 1).update(body="new") == 1
         assert body.calls == ["new"]
-        with pytest.raises(FieldAdapterError, match="unique row"):
-            objects.filter(Doc.title == "a").update(body="shared")
-        assert body.calls == ["new"]
         rows = await objects.filter(Doc.id == 2).update(body="again").returning()
         assert [r.body for r in rows] == [("body", {"tag": "body", "value": "again"})]
+    finally:
+        await db.close()
+
+
+async def test_a_filtered_update_prepares_once_and_writes_the_same_value_to_every_row():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        objects = Doc.objects.using(db)
+        await objects.insert_many([{"id": 1, "title": "a"}, {"id": 2, "title": "a"}, {"id": 3, "title": "b"}])
+        assert await objects.filter(Doc.title == "a").update(body="shared") == 2
+        assert body.calls == ["shared"]
+        shared = ("body", {"tag": "body", "value": "shared"})
+        assert [r.body for r in await objects.order_by(Doc.id).all()] == [shared, shared, None]
+        rows = await objects.filter(Doc.title == "b").update(body="other").returning()
+        assert [r.id for r in rows] == [3] and body.calls == ["shared", "other"]
     finally:
         await db.close()
 
@@ -221,7 +236,7 @@ def test_a_missing_language_capability_fails_the_load_naming_the_extension():
         _capabilities.check_requires(artifact, frozenset())
 
 
-async def test_batch_writes_store_checked_values_and_reject_a_pending_value():
+async def test_batch_writes_store_checked_values_without_a_prepare_call():
     db, models, body = await setup()
     try:
         Doc = models["Doc"]
@@ -234,14 +249,222 @@ async def test_batch_writes_store_checked_values_and_reject_a_pending_value():
         await objects.update_many([{"id": 1, "body": None}, {"id": 2, "body": {"stored": 2}}])
         assert (await objects.get(Doc.id == 1)).body is None
         assert (await objects.get(Doc.id == 2)).body == ("body", {"stored": 2})
-        with pytest.raises(FieldAdapterError, match="insert_many.*needs prepare"):
-            objects.insert_many(
-                [{"id": 3, "title": "c", "body": {"stored": 3}}, {"id": 4, "title": "d", "body": "upload"}]
-            )
-        with pytest.raises(FieldAdapterError, match="update_many.*needs prepare"):
-            objects.update_many([{"id": 1, "body": "upload"}])
-        assert await objects.count() == 2
         assert body.calls == []
+    finally:
+        await db.close()
+
+
+def stored(tag, value):
+    return (tag, {"tag": tag, "value": value})
+
+
+async def test_insert_many_prepares_each_pending_value_and_keeps_the_others():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        objects = Doc.objects.using(db)
+        rows = [
+            {"id": 1, "title": "a", "body": "one"},
+            {"id": 2, "title": "b", "body": {"stored": 2}},
+            {"id": 3, "title": "c", "body": "three"},
+            {"id": 4, "title": "d"},
+        ]
+        assert await objects.insert_many(rows) == 4
+        assert sorted(body.calls) == ["one", "three"]
+        got = {r.id: r.body for r in await objects.all()}
+        assert got == {1: stored("body", "one"), 2: ("body", {"stored": 2}), 3: stored("body", "three"), 4: None}
+        news = await objects.insert_many([{"id": 5, "title": "e", "body": "five"}]).returning()
+        assert [(r.id, r.body) for r in news] == [(5, stored("body", "five"))]
+        assert rows[0]["body"] == "one"
+    finally:
+        await db.close()
+
+
+async def test_update_many_prepares_each_pending_value():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        objects = Doc.objects.using(db)
+        await objects.insert_many([{"id": 1, "title": "a"}, {"id": 2, "title": "b"}, {"id": 3, "title": "c"}])
+        assert await objects.update_many([{"id": 1, "body": "one"}, {"id": 2, "body": {"stored": 2}}]) == 2
+        assert body.calls == ["one"]
+        done = await objects.update_many([{"id": 2, "body": "two"}, {"id": 3, "body": "three"}]).returning()
+        assert sorted(body.calls) == ["one", "three", "two"]
+        assert {r.id: r.body for r in done} == {2: stored("body", "two"), 3: stored("body", "three")}
+        assert (await objects.get(Doc.id == 1)).body == stored("body", "one")
+    finally:
+        await db.close()
+
+
+class Parallel(Counting):
+    def __init__(self, tag):
+        super().__init__(tag)
+        self.running = self.peak = 0
+
+    async def prepare(self, value):
+        self.running += 1
+        self.peak = max(self.peak, self.running)
+        await asyncio.sleep(0.01)
+        self.running -= 1
+        return await super().prepare(value)
+
+
+async def test_batch_prepare_calls_run_in_parallel_up_to_the_limit():
+    body = Parallel("body")
+    db, models, _ = await setup(body=body)
+    try:
+        objects = models["Doc"].objects.using(db)
+        await objects.insert_many([{"id": n, "title": "t", "body": f"f{n}"} for n in range(1, 41)])
+        assert len(body.calls) == 40
+        assert body.peak == 16
+        body.peak = 0
+        await objects.update_many([{"id": n, "body": f"g{n}"} for n in range(1, 41)])
+        assert body.peak == 16
+    finally:
+        await db.close()
+
+
+async def test_a_failed_batch_prepare_lists_the_finished_values_and_writes_nothing():
+    body = Counting("body", fail_on="bad")
+    db, models, _ = await setup(body=body)
+    try:
+        objects = models["Doc"].objects.using(db)
+        rows = [{"id": 1, "title": "a", "body": "good"}, {"id": 2, "title": "b", "body": "bad"}]
+        with pytest.raises(AdapterWriteError) as caught:
+            await objects.insert_many(rows)
+        assert caught.value.stored == {(0, "body"): {"tag": "body", "value": "good"}}
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert await objects.count() == 0
+        await objects.insert_many([{"id": 1, "title": "a"}, {"id": 2, "title": "b"}])
+        with pytest.raises(AdapterWriteError):
+            await objects.update_many([{"id": 1, "body": "bad"}, {"id": 2, "body": "good"}])
+        assert [r.body for r in await objects.order_by(models["Doc"].id).all()] == [None, None]
+    finally:
+        await db.close()
+
+
+async def test_a_failed_batch_insert_retries_without_a_new_prepare():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        objects = Doc.objects.using(db)
+        await objects.insert(id=2, title="taken")
+        with pytest.raises(AdapterWriteError) as caught:
+            await objects.insert_many([{"id": 1, "title": "a", "body": "one"}, {"id": 2, "title": "b", "body": "two"}])
+        assert sorted(body.calls) == ["one", "two"]
+        assert set(caught.value.stored) == {(0, "body"), (1, "body")}
+        await objects.filter(Doc.id == 2).delete()
+        assert await caught.value.operation.execute() == 2
+        assert sorted(body.calls) == ["one", "two"]
+        assert (await objects.get(Doc.id == 2)).body == stored("body", "two")
+    finally:
+        await db.close()
+
+
+async def test_batch_validation_and_protection_run_before_any_prepare():
+    db, models, body = await setup()
+    try:
+        Doc, Locked = models["Doc"], models["Locked"]
+        objects = Doc.objects.using(db)
+        with pytest.raises(TypeError, match="unsupported value 3"):
+            objects.insert_many([{"id": 1, "title": "a", "body": "ok"}, {"id": 2, "title": "b", "body": 3}])
+        with pytest.raises(TypeError, match="unsupported value 3"):
+            objects.update_many([{"id": 1, "body": "ok"}, {"id": 2, "body": 3}])
+        with pytest.raises(ValueError, match="title is required"):
+            objects.insert_many([{"id": 1, "body": "ok"}])
+        insert = Locked.objects.using(db).insert_many([{"id": 1, "body": "file"}])
+        with pytest.raises(orm.WriteProtected):
+            await insert
+        assert insert.operation.stored == {}
+        update = Locked.objects.using(db).update_many([{"id": 1, "body": "file"}])
+        with pytest.raises(orm.WriteProtected):
+            await update
+        assert update.operation.stored == {}
+        assert body.calls == []
+        with orm.allow_writes(Locked):
+            assert await Locked.objects.using(db).insert_many([{"id": 1, "body": "file"}]) == 1
+    finally:
+        await db.close()
+
+
+async def test_a_pending_batch_value_is_rejected_in_a_conflict_write_and_in_copy():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        insert = Doc.objects.using(db).insert_many([{"id": 1, "title": "a", "body": "file"}])
+        with pytest.raises(FieldAdapterError, match="conflict"):
+            insert.on_conflict(Doc.id, update=True)
+        with pytest.raises(FieldAdapterError, match="copy"):
+            Doc.objects.using(db).insert_many([{"id": 1, "title": "a", "body": "file"}], copy=True)
+        assert body.calls == []
+    finally:
+        await db.close()
+
+
+async def test_inspect_on_an_adapted_batch_shows_the_placeholder_and_calls_no_prepare():
+    db, models, body = await setup()
+    try:
+        objects = models["Doc"].objects.using(db)
+        insert = objects.insert_many([{"id": 1, "title": "a", "body": "file"}])
+        assert len(insert.inspect().statements) == 1
+        update = objects.update_many([{"id": 1, "body": "file"}])
+        assert len(update.inspect().statements) == 1
+        assert body.calls == []
+    finally:
+        await db.close()
+
+
+M2M_SCHEMA = """datasource db { provider = "sqlite" }
+model Post {
+  id   Int   @id
+  tags Tag[] @relation(through: PostTag, through_fields: [post, tag])
+}
+model Tag {
+  id    Int    @id
+  name  String
+  icon  Json?
+  posts Post[] @relation(through: PostTag, through_fields: [tag, post])
+}
+model PostTag {
+  id      Int  @id @default(autoincrement())
+  post_id Int
+  tag_id  Int
+  post    Post @relation(fields: [post_id], references: [id])
+  tag     Tag  @relation(fields: [tag_id], references: [id])
+}"""
+
+
+class InTransaction(Counting):
+    """Records whether ``prepare`` ran inside a transaction of ``db``."""
+
+    def __init__(self, tag, db):
+        super().__init__(tag)
+        self.db, self.inside = db, []
+
+    async def prepare(self, value):
+        self.inside.append(self.db._tx() is not None)
+        return await super().prepare(value)
+
+
+async def test_a_related_insert_on_a_many_to_many_prepares_before_the_transaction():
+    registry = orm.Registry()
+    models = orm.loads(M2M_SCHEMA, registry=registry)
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        Post, Tag = models["Post"], models["Tag"]
+        icon = InTransaction("icon", db)
+        register_field_adapter(Tag, "icon", icon)
+        post = await Post.objects.using(db).insert(id=1)
+        tag = await post.tags.insert(id=1, name="a", icon="file")
+        assert icon.inside == [False]
+        assert tag.icon == stored("icon", "file")
+        assert [t.id for t in await post.tags.all()] == [1]
+        with pytest.raises(AdapterWriteError):
+            await post.tags.insert(id=1, name="again", icon="file")
+        assert icon.calls == ["file", "file"]
+        assert await Post.objects.using(db).count() == 1
+        assert [t.id for t in await post.tags.all()] == [1]
     finally:
         await db.close()
 

@@ -31,10 +31,11 @@ configured providers belong to the application's Registry.
 
 ## Write failures
 
-`insert` and a unique-row `update` take `Upload` directly. Deferred Upload
-construction makes no I/O calls. All input and write-shape checks precede uploads.
-Bulk, multi-row update, upsert, conflict-ignore and expression shapes reject Upload
-before provider I/O. Existing Reference/null values retain normal SQL semantics.
+`insert`, `insert_many`, `update_many` and `update` take `Upload` directly. Deferred
+Upload construction makes no I/O calls. All input and write-shape checks precede uploads.
+A batch uploads up to 16 values at once. A filtered `update` uploads once and writes
+the same reference to every matching row. Upsert, conflict-ignore, expression and
+`insert_many(copy=True)` shapes reject Upload before provider I/O. Existing Reference/null values retain normal SQL semantics.
 
 A failed or cancelled upload is terminal, so consumed sources are never
 automatically replayed. A completed upload is reused for explicit SQL retries
@@ -72,11 +73,10 @@ Python imports `orm_file_storage.model.install_model`; TypeScript imports
 `installModel` from `@orm/file-storage/model`. Generated modules expose
 `configure_file_storage(registry)` / `configureFileStorage(registry)` for the
 application's storage Registry. Methods delegate signing/opening explicitly;
-reference-only writes normalize without uploading. Generated single insert and
-unique-row update wrappers prepare Upload outside native SQL execution and retain
-completed references after SQL failure. Unique updates require a direct equality
-on a prepared primary-key/unique field, possibly within AND; arbitrary OR, bulk,
-conflict and expression uploads reject before I/O.
+reference-only writes normalize without uploading. Insert, bulk and
+update wrappers prepare Upload outside native SQL execution and retain
+completed references after SQL failure. Conflict, expression and copy uploads
+reject before I/O.
 
 Python retains the prepared operation on the selected statement's `operation`.
 TypeScript's selected query exposes `prepareFileInsert(values)` returning
