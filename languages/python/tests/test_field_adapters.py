@@ -219,3 +219,50 @@ def test_a_missing_language_capability_fails_the_load_naming_the_extension():
     _capabilities.check_requires({})
     with pytest.raises(ImportError, match="file-storage requires the capability async-field-adapter.v1"):
         _capabilities.check_requires(artifact, frozenset())
+
+
+async def test_batch_writes_store_checked_values_and_reject_a_pending_value():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        objects = Doc.objects.using(db)
+        await objects.insert_many(
+            [{"id": 1, "title": "a", "body": {"stored": 1}}, {"id": 2, "title": "b", "body": None}]
+        )
+        assert (await objects.get(Doc.id == 1)).body == ("body", {"stored": 1})
+        assert (await objects.get(Doc.id == 2)).body is None
+        await objects.update_many([{"id": 1, "body": None}, {"id": 2, "body": {"stored": 2}}])
+        assert (await objects.get(Doc.id == 1)).body is None
+        assert (await objects.get(Doc.id == 2)).body == ("body", {"stored": 2})
+        with pytest.raises(FieldAdapterError, match="insert_many.*needs prepare"):
+            objects.insert_many(
+                [{"id": 3, "title": "c", "body": {"stored": 3}}, {"id": 4, "title": "d", "body": "upload"}]
+            )
+        with pytest.raises(FieldAdapterError, match="update_many.*needs prepare"):
+            objects.update_many([{"id": 1, "body": "upload"}])
+        assert await objects.count() == 2
+        assert body.calls == []
+    finally:
+        await db.close()
+
+
+async def test_a_filtered_update_and_an_upsert_take_null_or_a_stored_value():
+    db, models, body = await setup()
+    try:
+        Doc = models["Doc"]
+        objects = Doc.objects.using(db)
+        await objects.insert(id=1, title="a", body={"stored": 1})
+        await objects.insert(id=2, title="b", body={"stored": 2})
+        assert await objects.filter(Doc.id > 0).update(body=None) == 2
+        assert (await objects.get(Doc.id == 1)).body is None
+        await objects.filter(Doc.id > 0).update(body={"stored": 9})
+        assert (await objects.get(Doc.id == 2)).body == ("body", {"stored": 9})
+        await objects.insert(id=1, title="again", body=None).on_conflict(Doc.id, update=True)
+        assert (await objects.get(Doc.id == 1)).title == "again"
+        row, created = await objects.get_or_insert({"title": "c", "body": {"stored": 5}}, id=3)
+        assert created and row.body == ("body", {"stored": 5})
+        row, created = await objects.get_or_insert({"title": "d", "body": None}, id=4)
+        assert created and row.body is None
+        assert body.calls == []
+    finally:
+        await db.close()

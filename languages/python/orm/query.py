@@ -1270,7 +1270,7 @@ class QuerySet(Generic[M]):
         ``batch_size`` rows (by default as many as fit), all in one transaction.
         ``await`` gives the number of rows updated; ``.returning()`` gives the rows."""
         self._standalone()
-        return UpdateMany(self, rows, batch_size)
+        return UpdateMany(self, adapters.split_rows(self._model, rows, "update_many()"), batch_size)
 
     def delete(self) -> Delete[M]:
         """``DELETE`` every matching row. ``await`` gives the number of rows deleted;
@@ -1357,7 +1357,7 @@ class QuerySet(Generic[M]):
         ``copy=True`` loads the rows with Postgres ``COPY`` instead, for large imports:
         ``await`` gives the row count, and ``on_conflict()`` is not available."""
         self._standalone()
-        fields, aligned, provided = prepare_rows(self._model, rows)
+        fields, aligned, provided = prepare_rows(self._model, adapters.split_rows(self._model, rows, "insert_many()"))
         if copy:
             if batch_size is not None:
                 raise TypeError("insert_many(copy=True) takes no batch_size: COPY is one statement")

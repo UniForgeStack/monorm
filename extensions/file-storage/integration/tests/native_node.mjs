@@ -4,9 +4,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../languages/js/dist/src/index.js';
+import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../languages/js/dist/src/index.js';
 import { LocalStorage, Reference, Registry } from '../../typescript/dist/src/index.js';
-import { Upload, FileField, FileWriteError, FileFieldError } from '../typescript/dist/src/index.js';
+import { Upload, FileField, FileFieldError } from '../typescript/dist/src/index.js';
+import { checkRequires } from '../../../../languages/js/dist/src/adapters.js';
+import { createRequire } from 'node:module';
 import { installModel } from '../typescript/dist/src/model.js';
 
 class CountingStorage extends LocalStorage {
@@ -41,7 +43,8 @@ async function bytes(stream) { const chunks = []; for await (const chunk of stre
 test('reference writes, shared objects, null and explicit opening', () => fixture(async ({ Report, storage }) => {
   const ref = await storage.upload(Buffer.from('report'));
   const row = await Report.objects.insert({ id: 1, file: ref });
-  await Report.objects.insertMany([{ id: 2, file: ref }, { id: 3, file: null }]);
+  await Report.objects.insert({ id: 2, file: ref });
+  await Report.objects.insert({ id: 3, file: null });
   assert.equal(storage.uploads, 1);
   assert.ok(row.file instanceof Reference);
   const rows = await Report.objects.orderBy(Report.id);
@@ -80,9 +83,9 @@ test('SQL failure exposes reference and explicit retry never uploads again', () 
   await Report.objects.insert({ id: 1, file: null });
   let operation;
   try { await Report.objects.insert({ id: 1, file: new Upload(Buffer.from('generated')) }); }
-  catch (error) { assert.ok(error instanceof FileWriteError); operation = error.operation; }
+  catch (error) { assert.ok(error instanceof AdapterWriteError); operation = error.operation; }
   assert.ok(operation);
-  const reference = operation.references.get('file');
+  const reference = Reference.fromJSON(operation.stored.file);
   await operation.execute(data => Report.objects.insert({ ...data, id: 2 }));
   assert.equal(storage.uploads, 1);
   await Report.objects.filter(Report.id.eq(2)).update({ file: new Upload(Buffer.from('replacement')) });
@@ -92,18 +95,38 @@ test('SQL failure exposes reference and explicit retry never uploads again', () 
 }));
 
 test('outer rollback and savepoint retain successfully uploaded references', () => fixture(async ({ Report, db, storage }) => {
-  const retained = Report.objects.prepareFileInsert({ id: 1, file: new Upload(Buffer.from('rollback')) });
-  await assert.rejects(db.transaction(async () => { await retained.execute(); throw new Error('outer rollback'); }));
+  const retained = Report.objects.insert({ id: 1, file: new Upload(Buffer.from('rollback')) });
+  await assert.rejects(db.transaction(async () => { await retained; throw new Error('outer rollback'); }));
   assert.equal(await Report.objects.count(), 0);
-  const ref = retained.operation.references.get('file');
+  const ref = Reference.fromJSON(retained.operation.stored.file);
   assert.equal((await bytes(storage.open(ref))).toString(), 'rollback');
   let nested;
   await db.transaction(async () => {
     await Report.objects.insert({ id: 2, file: ref });
-    nested = Report.objects.prepareFileInsert({ id: 3, file: new Upload(Buffer.from('savepoint')) });
-    await assert.rejects(db.transaction(async () => { await nested.execute(); throw new Error('savepoint rollback'); }));
+    nested = Report.objects.insert({ id: 3, file: new Upload(Buffer.from('savepoint')) });
+    await assert.rejects(db.transaction(async () => { await nested; throw new Error('savepoint rollback'); }));
   });
   assert.equal(await Report.objects.count(), 1);
   assert.equal(storage.deletes, 0);
-  assert.equal((await bytes(storage.open(nested.operation.references.get('file')))).toString(), 'savepoint');
+  assert.equal((await bytes(storage.open(Reference.fromJSON(nested.operation.stored.file)))).toString(), 'savepoint');
 }));
+
+test('batch writes store references and reject an upload', () => fixture(async ({ Report, storage }) => {
+  const ref = await storage.upload(Buffer.from('report'));
+  await Report.objects.insertMany([{ id: 2, file: ref }, { id: 3, file: null }]);
+  await Report.objects.updateMany([{ id: 2, file: null }, { id: 3, file: ref }]);
+  const rows = await Report.objects.orderBy(Report.id);
+  assert.equal(rows[0].file, null);
+  assert.deepEqual(rows[1].file.toJSON(), ref.toJSON());
+  assert.throws(() => Report.objects.insertMany([{ id: 1, file: new Upload(Buffer.from('x')) }]), FieldAdapterError);
+  await assert.rejects(async () => Report.objects.updateMany([{ id: 2, file: new Upload(Buffer.from('x')) }]), FieldAdapterError);
+  assert.equal(storage.uploads, 1);
+}));
+
+test('the artifact requires the adapter capability', () => {
+  const artifact = JSON.parse(createRequire(import.meta.url)(process.env.ORM_NATIVE).nativeArtifact());
+  assert.deepEqual(artifact.requires['file-storage'], ['async-field-adapter.v1']);
+  checkRequires(artifact);
+  // A language adapter without the capability refuses the artifact and names both.
+  assert.throws(() => checkRequires(artifact, new Set()), /file-storage.*async-field-adapter\.v1/);
+});
