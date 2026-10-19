@@ -14,10 +14,11 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from . import _capabilities, _extensions, _native
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from .expr import ColumnRef, Condition, RelationPath, and_
 from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, ManyToMany, Relation, String, key_items
+from .nested import NestedGroup, NestedJson, NestedType, _Access, build_types, leaf_names
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -91,16 +92,24 @@ class ModelMeta:
         self.attach_fields: dict[str, Field[Any]] | None = None
         self.fields: dict[str, Field[Any]] = {}
         self.relations: dict[str, Relation[Any, Any]] = {}
+        # Nested-type fields: a JSON one is also in `fields`, a `columns` one has leaf fields there.
+        self.nested: dict[str, _Access] = {}
         for klass in reversed(model.__mro__):
             for attr, value in vars(klass).items():
                 if isinstance(value, Field):
                     self.fields[attr] = value
                 elif isinstance(value, Relation):
                     self.relations[attr] = value
+                if isinstance(value, _Access):
+                    self.nested[attr] = value
         self.key: tuple[Field[Any], ...] = _key_fields(self.name, self.fields, key)
         # Row tuples from the engine follow this order.
         self.field_names: tuple[str, ...] = tuple(self.fields)
         self.input_fields: dict[str, Field[Any]] = self.fields
+        self.leaf_group: dict[str, str] = {}
+        self.public_names: tuple[str, ...] = self.field_names
+        self.decoders: tuple[tuple[str, tuple[str, ...], Any], ...] = ()
+        self.index_nested()
         # The engine says a default read of this model can hide rows.
         self.filtered: bool = False
         # Fields whose loaded value an instance update or delete must match (`instance_guards`).
@@ -120,6 +129,28 @@ class ModelMeta:
         # The bound-safe query-set classes of extensions (same order) and their composed class.
         self.bound_extension_sets: tuple[type[BoundQuerySet[Any]], ...] = ()
         self.composed_bound: type[BoundQuerySet[Any]] | None = None
+
+    def index_nested(self) -> None:
+        """The leaf-to-group map, the instance attribute names and the row decoders; run again when ``fields`` changes."""
+        groups = {n: g for n, g in self.nested.items() if not isinstance(g, Field)}
+        groups.update({n: f for n, f in self.fields.items() if isinstance(f, _Access)})
+        self.nested = groups
+        self.leaf_group = {n: g.name for g in groups.values() if g.storage == "columns" for n in g.leaf_names}  # type: ignore[attr-defined]
+        names: list[str] = []
+        for n in self.field_names:
+            g = self.leaf_group.get(n, n)
+            if g not in names:
+                names.append(g)
+        self.public_names = tuple(names)
+        self.decoders = tuple(g.decoder() for g in groups.values())  # type: ignore[attr-defined]
+
+    def expand(self, names: Iterable[str]) -> list[str]:
+        """Engine field names for instance attribute names: a ``columns`` group gives its leaves."""
+        out: list[str] = []
+        for n in names:
+            g = self.nested.get(n)
+            out.extend(g.leaf_names if g is not None and g.storage == "columns" else (n,))  # type: ignore[attr-defined]
+        return out
 
     @property
     def key_names(self) -> tuple[str, ...]:
@@ -335,6 +366,7 @@ class Registry:
             )
             meta.narrowed = frozenset(f["field"] for f in proxy.get("fields", ()) if f.get("non_null"))
             meta.field_names = tuple(fields)
+            meta.index_nested()
             pk_ir = next(f for f in ir["fields"] if f["name"] == meta.key[0].name)
             meta.attach_fields = (
                 {
@@ -396,7 +428,7 @@ def _default_registry() -> Registry:
     return registry
 
 
-def _field(ir: dict[str, Any]) -> Field[Any]:
+def _field(ir: dict[str, Any], nested_types: dict[str, NestedType] | None = None) -> Field[Any]:
     kwargs: dict[str, Any] = {
         "primary_key": ir.get("primary_key", False),
         "auto_increment": ir.get("auto_increment", False),
@@ -411,6 +443,9 @@ def _field(ir: dict[str, Any]) -> Field[Any]:
         kwargs["default"] = ir["default"]
     if "client_default" in ir:
         kwargs["client_default"] = ir["client_default"]
+    nested = ir.get("nested")
+    if nested is not None and nested["storage"] == "json" and nested_types is not None:
+        return NestedJson(ir, nested_types[nested["type"]], **kwargs)
     if ir.get("array"):
         return Array(ir["type"], enum=ir.get("enum"), **kwargs)
     if "enum" in ir:
@@ -486,6 +521,7 @@ def define(
         prepared_json = _native.prepare_schema(json.dumps(schema), context)
     ir: dict[str, Any] = json.loads(prepared_json)
     reg = destination._candidate()
+    nested_types: dict[str, NestedType] = {}
     dialect = ir.get("dialect", "postgres")
     if reg._dialect is not None and reg._dialect != dialect:
         raise TypeError("schemas in one registry must target the same database")
@@ -496,6 +532,9 @@ def define(
         cls_e = cls_e or _enum(e, module)
         reg.register_enum(e, cls_e)
         out[e["name"]] = cls_e
+    if ir.get("types"):
+        nested_types = build_types(ir["types"], reg._enums, module)
+        out.update({n: t.cls for n, t in nested_types.items()})
     for m in ir["models"]:
         if m["name"] in destination._models:
             if m != destination._models[m["name"]]._meta.ir():
@@ -503,7 +542,13 @@ def define(
                     f"extension changed existing model {m['name']}; define dependent schemas together in a new registry"
                 )
             continue
-        ns: dict[str, Any] = {f["name"]: _field(f) for f in m["fields"]}
+        ns: dict[str, Any] = {f["name"]: _field(f, nested_types) for f in m["fields"]}
+        for group, leaves in leaf_names(m).items():
+            if group in ns:
+                raise TypeError(f"{m['name']}.{group}: nested field collides with a field")
+            first = next(f["nested"] for f in m["fields"] if f["name"] == leaves[0][0])
+            under = all(f["nested"]["under_null"] for f in m["fields"] if f["name"] in dict(leaves))
+            ns[group] = NestedGroup(group, nested_types[first["type"]], under, tuple(leaves))
         ns.update({r["name"]: _relation(r) for r in m.get("relations", ())})
         if module is not None:
             ns["__module__"] = module
@@ -636,7 +681,7 @@ class Model:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize public loaded scalar fields, retaining loaded NULL values."""
-        return {n: self.__dict__[n] for n in self._meta.field_names if n in self.__dict__}
+        return {n: self.__dict__[n] for n in self._meta.public_names if n in self.__dict__}
 
     def qs(self) -> BoundQuerySet[Self]:
         """A query set bound to this object: ``type(self).objects.of(self)``."""
@@ -664,9 +709,9 @@ class Model:
         bound = self.qs().without_defaults()
         if "_orm_internal" not in self.__dict__:
             return bound
-        names = [n for n in self._meta.field_names if n in self.__dict__]
+        names = [n for n in self._meta.public_names if n in self.__dict__]
         names.extend(n for n in extra if n not in names)
-        return bound.load(*(ColumnRef(type(self), (), self._meta.fields[n]) for n in names))
+        return bound.load(*(ColumnRef(type(self), (), self._meta.fields[n]) for n in self._meta.expand(names)))
 
     def _versioned(self, bound: BoundQuerySet[Self]) -> BoundQuerySet[Self]:
         """With instance guards, match only the loaded values of the row."""
@@ -730,7 +775,7 @@ class Model:
 
     def __repr__(self) -> str:
         d = self.__dict__
-        shown = ", ".join(f"{n}={d[n]!r}" for n in self._meta.field_names if n in d)
+        shown = ", ".join(f"{n}={d[n]!r}" for n in self._meta.public_names if n in d)
         return f"{type(self).__name__}({shown})"
 
 

@@ -64,6 +64,16 @@ def _link(rel: BelongsTo[Any, Any], value: Any) -> dict[str, Any]:
     return {via: _key_of(value, to) for via, to in zip(rel.via_fields, rel.to_fields, strict=True)}
 
 
+def _nested_values(meta: Any, key: str, value: Any) -> dict[str, Any] | None:
+    """The engine fields a nested value ``key=value`` sets; None when ``key`` is not nested.
+    A leaf name of a columns group is rejected: the group is the only way to write it."""
+    if (group := meta.nested.get(key)) is not None:
+        return dict(group.insert_values(value))
+    if (owner := meta.leaf_group.get(key)) is not None:
+        raise TypeError(f"{meta.name}.{key} is a part of {owner!r}; set {owner!r} instead")
+    return None
+
+
 def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple[list[str], list[list[Any]], set[str]]:
     """Validates rows and aligns them on one column list.
 
@@ -83,7 +93,9 @@ def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple
                 raise TypeError(
                     f"{key}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value"
                 )
-            if key in meta.input_fields:
+            if (nested := _nested_values(meta, key, value)) is not None:
+                values.update(nested)
+            elif key in meta.input_fields:
                 values[key] = value
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
                 values.update(_link(rel, value))
@@ -96,7 +108,7 @@ def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple
             if callable(field.default):
                 values[name] = field.default()
             elif not (field.has_insert_default or field.nullable):
-                raise ValueError(f"{meta.name}.{name} is required")
+                raise ValueError(f"{meta.name}.{meta.leaf_group.get(name, name)} is required")
         normalized.append(values)
     fields = [n for n in meta.field_names if any(n in v for v in normalized)]
     aligned = [[v.get(n, _native.DEFAULT) for n in fields] for v in normalized]
@@ -143,7 +155,9 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
         for key, value in row.items():
             if isinstance(value, Expression):
                 raise TypeError(f"{meta.name}.{key}: update_many takes plain values, not expressions")
-            if key in meta.input_fields:
+            if (nested := _nested_values(meta, key, value)) is not None:
+                values.update(nested)
+            elif key in meta.input_fields:
                 values[key] = value
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
                 values.update(_link(rel, value))
@@ -176,6 +190,11 @@ def assignments(model: type[Model], values: Mapping[str, Any], ctx: IRContext) -
     meta = model._meta
     out = []
     for name, value in values.items():
+        if (group := meta.nested.get(name)) is not None:
+            out.extend(group.assignments(value, ctx))
+            continue
+        if (owner := meta.leaf_group.get(name)) is not None:
+            raise TypeError(f"{meta.name}.{name} is a part of {owner!r}; set {owner!r} instead")
         rel = meta.relations.get(name)
         for name, value in (_link(rel, value) if isinstance(rel, BelongsTo) else {name: value}).items():
             if name not in meta.input_fields:

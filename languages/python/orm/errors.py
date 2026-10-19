@@ -27,6 +27,7 @@ __all__ = [
     "TransactionRequired",
     "WriteProtected",
     "VersionConflict",
+    "DecodeError",
 ]
 
 
@@ -62,3 +63,15 @@ class TransactionRequired(ORMError, RuntimeError):
 class VersionConflict(ORMError):
     """An instance ``update()`` or ``delete()`` found a newer ``@locking.version`` of
     its row: another writer changed the row after it was loaded."""
+
+
+class DecodeError(ORMError, ValueError):
+    """A stored nested value does not match its type: ``model``, ``field`` and ``path``
+    (the subfield names from the field down) say where."""
+
+    def __init__(self, model: str, field: str, path: tuple[str, ...], message: str) -> None:
+        self.model = model
+        self.field = field
+        self.path = path
+        self.message = message
+        super().__init__(f"{model}.{'.'.join((field, *path))}: {message}")

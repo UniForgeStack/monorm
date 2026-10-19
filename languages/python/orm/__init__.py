@@ -13,6 +13,7 @@ from . import debug, fields, otel
 from .db import Database, QueryEvent, connect, get_database, scope
 from .errors import (
     DatabaseError,
+    DecodeError,
     DoesNotExist,
     IntegrityError,
     LockNotAvailable,
@@ -141,6 +142,7 @@ __all__ = [
     "SchemaError",
     "DoesNotExist",
     "MultipleObjectsReturned",
+    "DecodeError",
     "NotLoaded",
     "VersionConflict",
     "NotConnected",

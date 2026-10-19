@@ -7,17 +7,19 @@ from typing import Any
 from .errors import NotLoaded
 from .expr import ColumnRef, Labeled, RelationPath
 from .fields import BelongsTo, HasOne
+from .nested import NestedRef
 
 
 def loaded(
     owner: Any, path: tuple[str, ...], field: str | None = None, *, label: str | None = None, query: Any = None
 ) -> bool:
     if not path and query is not None:
-        names = query._model_fields if query._model_fields is not None else owner._meta.field_names
-        return all(n in owner.__dict__ for n in names) and all(item_loaded(owner, i) for i in query._loads)
+        names = query._model_fields if query._model_fields is not None else owner._meta.public_names
+        groups = owner._meta.leaf_group
+        return all(groups.get(n, n) in owner.__dict__ for n in names) and all(item_loaded(owner, i) for i in query._loads)
     if not path:
         return (
-            field in owner.__dict__ if field is not None else all(n in owner.__dict__ for n in owner._meta.field_names)
+            field in owner.__dict__ if field is not None else all(n in owner.__dict__ for n in owner._meta.public_names)
         )
     name, *rest = path
     relation = owner._meta.relations[name]
@@ -43,7 +45,7 @@ def item_loaded(owner: Any, item: Any) -> bool:
     return loaded(
         owner,
         path._path,
-        path._field.name if isinstance(path, ColumnRef) else None,
+        (path._group.name if isinstance(path, NestedRef) else path._field.name) if isinstance(path, ColumnRef) else None,
         label=item._label if isinstance(item, QuerySet) else None,
         query=item if isinstance(item, QuerySet) else None,
     )
@@ -114,7 +116,7 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
                 _drop_relations(owner, name)
                 internal[name] = value
             internal.setdefault(name, value)
-    if all(n in data for n in owner._meta.field_names):
+    if all(n in data for n in owner._meta.public_names):
         data.pop("_orm_internal", None)
 
 
@@ -132,7 +134,7 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
     # Validate the whole request before doing I/O, including relation query options.
     # Bare bypass on purpose: this only validates the request and runs no query.
     model.objects.without_defaults().load(*items)._select_ir("select", [])
-    requested = items or tuple(getattr(model, name) for name in owner._meta.field_names)
+    requested = items or tuple(getattr(model, name) for name in owner._meta.public_names)
     own = [
         item
         for item in requested
