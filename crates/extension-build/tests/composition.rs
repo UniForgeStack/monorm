@@ -31,14 +31,21 @@ fn invalid_combinations_fail_before_build() {
     let b = manifest("b", "b.lower", &[], &["User.name"]);
     let err = Composition::resolve(vec![a.clone(), b]).unwrap_err();
     assert!(err.contains("a.lower") && err.contains("b.lower") && err.contains("User.name"));
-    let missing = manifest("c", "c.lower", &["missing"], &[]);
-    assert!(Composition::resolve(vec![missing]).unwrap_err().contains("missing"));
     let cycle_a = manifest("a", "a.lower", &["b.lower"], &[]);
     let cycle_b = manifest("b", "b.lower", &["a.lower"], &[]);
     assert!(Composition::resolve(vec![cycle_a, cycle_b]).unwrap_err().contains("cycle"));
     let mut incompatible = a;
     incompatible.dependencies.insert("missing".into(), "^1".into());
     assert!(Composition::resolve(vec![incompatible]).unwrap_err().contains("missing"));
+}
+
+#[test]
+fn an_after_pass_that_is_not_selected_orders_nothing() {
+    let alone = manifest("c", "c.lower", &["missing.lower"], &[]);
+    assert_eq!(Composition::resolve(vec![alone.clone()]).unwrap().pass_ids(), vec!["c.lower"]);
+    let first = manifest("a", "a.lower", &[], &[]);
+    let late = manifest("b", "b.lower", &["missing.lower", "a.lower"], &[]);
+    assert_eq!(Composition::resolve(vec![late, first, alone]).unwrap().pass_ids(), vec!["a.lower", "b.lower", "c.lower"]);
 }
 
 #[test]

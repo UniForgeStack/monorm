@@ -79,16 +79,18 @@ impl Composition {
             }
         }
         for p in passes.values() {
+            // An `after` pass that no selected extension provides is skipped: it orders only passes that are present.
             for id in &p.after {
-                let dependency = passes.get(id).ok_or_else(|| format!("{}: missing pass dependency {id}", p.id))?;
+                let Some(dependency) = passes.get(id) else { continue };
                 if dependency.phase > p.phase { return Err(format!("{} depends on later phase {id}", p.id)); }
             }
         }
+        let present: BTreeSet<String> = passes.keys().cloned().collect();
         let mut ordered = vec![];
         let mut complete = BTreeSet::new();
         while !passes.is_empty() {
             let earliest = passes.values().map(|p| p.phase).min().unwrap();
-            let next = passes.values().find(|p| p.phase == earliest && p.after.iter().all(|id| complete.contains(id))).map(|p| p.id.clone());
+            let next = passes.values().find(|p| p.phase == earliest && p.after.iter().all(|id| complete.contains(id) || !present.contains(id))).map(|p| p.id.clone());
             let Some(next) = next else { return Err(format!("pass dependency cycle: {:?}", passes.keys().collect::<Vec<_>>())); };
             complete.insert(next.clone());
             ordered.push(passes.remove(&next).unwrap());

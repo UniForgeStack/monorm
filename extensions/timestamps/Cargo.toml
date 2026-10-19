@@ -26,7 +26,7 @@ capabilities = ["schema-transformations", "physical-schema", "updated-at"]
 id = "orm.timestamps.prepare"
 phase = "behavior"
 rust = "crate::prepare"
-effects = ["behavior.updated_at", "storage.updated_at_triggers"]
+effects = ["behavior.updated_at", "behavior.write_assignments.timestamps", "storage.updated_at_triggers"]
 
 # `updated_at DateTime @timestamps.updated_at(mode: "application")`.
 [[package.metadata.orm-extension.attributes]]

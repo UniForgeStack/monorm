@@ -1,6 +1,8 @@
 //! `@timestamps.updated_at`: the ORM sets the field on each update. Database mode adds a
 //! row trigger so other writers set it too. Execution requires the `updated-at` capability.
-use orm_contracts::{dialect::Dialect, extension::Declaration, ir::{ColType, ModelIr, SchemaIr, TriggerIr}, tracking::{Mode, UpdatedAt}};
+use orm_contracts::{dialect::Dialect, extension::Declaration, ir::{ColType, ModelIr, SchemaIr, TriggerIr}, tracking::{Mode, UpdatedAt}, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
+
+const SOURCE: &str = "orm.timestamps";
 
 fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
     format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
@@ -49,6 +51,21 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 model.triggers.push(trigger);
             }
         }
+        // A proxy that shares the table but hides the field would leave the column unset on its writes.
+        let proxies: Vec<String> = ir.behavior.proxy_models.iter().filter(|p| p.storage_owner == d.model).map(|p| p.model.clone()).collect();
+        let mut targets = vec![d.model.clone()];
+        if mode == Mode::Application {
+            for proxy in proxies {
+                if !ir.models.iter().find(|m| m.name == proxy).is_some_and(|m| m.fields.iter().any(|f| f.name == name)) {
+                    return Err(error(d, format!("{proxy} excludes {name}, so its writes cannot set it; keep the field in the proxy or use mode \"database\"")));
+                }
+                targets.push(proxy);
+            }
+        }
+        for model in targets {
+            ir.behavior.write_assignments.push(WriteAssignment { source: SOURCE.into(), model, field: name.clone(),
+                on: vec![WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite], value: AssignValue::Now, upsert: UpsertDefault::Drop });
+        }
         ir.behavior.updated_at.push(UpdatedAt { model: d.model.clone(), field: name, mode });
     }
     Ok(())
@@ -80,9 +97,9 @@ mod tests {
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", None, "date_time"), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.storage", "behavior.updated_at", "models"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.storage", "behavior.updated_at", "behavior.write_assignments", "models"]);
         let effects = orm_contracts::extension::pass_effects(&schema("postgres", Some("application"), "date_time"), prepare).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.updated_at"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.updated_at", "behavior.write_assignments"]);
     }
 
     #[test]
@@ -111,6 +128,46 @@ mod tests {
         prepared(&mut ir).unwrap();
         let t = &ir.behavior.storage.as_ref().unwrap().models[0].triggers[0];
         assert_eq!(t.body.as_deref(), Some("UPDATE \"posts\" SET \"changed_at\" = strftime('%Y-%m-%d %H:%M:%f','now') WHERE \"shop\" = NEW.\"shop\" AND \"id\" = NEW.\"id\""));
+    }
+
+    fn with_proxy(mode: &str, keeps_field: bool) -> SchemaIr {
+        let mut ir = schema("postgres", Some(mode), "date_time");
+        let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        view.name = "PostView".into();
+        if !keeps_field { view.fields.retain(|f| f.name != "changed"); }
+        ir.models.push(view);
+        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+        ir
+    }
+
+    #[test]
+    fn the_field_is_assigned_on_updates_upserts_and_delete_rewrites() {
+        for mode in ["application", "database"] {
+            let mut ir = schema("postgres", Some(mode), "date_time");
+            prepared(&mut ir).unwrap();
+            let a = &ir.behavior.write_assignments;
+            assert_eq!(a.len(), 1);
+            assert_eq!((a[0].source.as_str(), a[0].model.as_str(), a[0].field.as_str(), a[0].value, a[0].upsert), ("orm.timestamps", "Post", "changed", AssignValue::Now, UpsertDefault::Drop));
+            assert_eq!(a[0].on, [WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite]);
+        }
+    }
+
+    #[test]
+    fn application_mode_copies_the_assignment_to_each_proxy() {
+        let mut ir = with_proxy("application", true);
+        prepared(&mut ir).unwrap();
+        let models: Vec<_> = ir.behavior.write_assignments.iter().map(|a| a.model.as_str()).collect();
+        assert_eq!(models, ["Post", "PostView"]);
+        let mut ir = with_proxy("database", true);
+        prepared(&mut ir).unwrap();
+        assert_eq!(ir.behavior.write_assignments.len(), 1);
+    }
+
+    #[test]
+    fn application_mode_rejects_a_proxy_that_excludes_the_field() {
+        let err = prepared(&mut with_proxy("application", false)).unwrap_err();
+        assert!(err.starts_with("schema.prisma:4:3: @timestamps.updated_at: PostView excludes changed"), "{err}");
+        prepared(&mut with_proxy("database", false)).unwrap();
     }
 
     #[test]
