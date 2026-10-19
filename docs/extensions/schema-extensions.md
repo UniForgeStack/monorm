@@ -108,7 +108,7 @@ model Book {
 
 * Reads hide deleted rows.
   Before, soft delete hid nothing, and a model needed `@@query.filter("deleted_at == null")`.
-  A model that still has that filter hides deleted rows twice; remove the filter.
+  Remove that filter: while it stays, `all_with_deleted()`, `deleted_only()`, `undelete()` and `hard_delete()` cannot see deleted rows.
   `get()` returns `None` (`null`) for a deleted row; use `all_with_deleted()` to read it.
 * A to-one reference to a soft-delete model is nullable in the generated types: `Author | None` in Python, an `opt` hop in TypeScript paths.
   The `"deleted"` default can hide the target row.
@@ -118,6 +118,9 @@ model Book {
   Set the scope with `scope()`, or bypass the default.
 * Query-set `hard_delete()` and `undelete()` keep the other default filters.
   Before, they dropped all of them, including a tenant filter.
+* An upsert (`on_conflict(update=True)`) whose key a soft-deleted row holds changes nothing: the conflict blocks the insert, the `"deleted"` default blocks the update.
+  Undelete the row first, or hard-delete it.
+* No changelog file exists, so this list is the record.
 
 ## Behavior change: upsert
 

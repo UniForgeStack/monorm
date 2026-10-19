@@ -159,17 +159,6 @@ async def test_a_soft_deleted_instance_can_be_undeleted(dialect):
         await db.close()
 
 
-FILTERED_SOFT_DELETE = """
-model Doc {
-  id      Int       @id
-  version Int       @default(0) @locking.version
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
-  @@query.filter("live", "deleted == null")
-  @@map("tracking_filtered_docs")
-}
-"""
-
-
 TENANT_SOFT_DELETE = """
 model Doc {
   id      Int       @id
@@ -222,7 +211,7 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
 @requires("query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
-    db, models = await connect(dialect, FILTERED_SOFT_DELETE)
+    db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
     Doc = models["Doc"]
     try:
         docs = Doc.objects.using(db)
@@ -471,7 +460,6 @@ model PostTag {
   post    Post      @relation(fields: [post_id], references: [id])
   tag     Tag       @relation(fields: [tag_id], references: [id])
   deleted DateTime? @soft_delete.deleted_at(mode: "application")
-  @@query.filter("live", "deleted == null")
   @@map("tracking_join_post_tags")
 }
 """
@@ -607,3 +595,85 @@ model Manager {{
     message = str(error.value)
     assert owner in message and field.split()[0] in message and role in message
     assert "Employee" in message or "Manager" in message
+
+
+UPSERT_SOFT_DELETE = """
+model Doc {
+  id      Int       @id
+  title   String
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_upsert_soft_docs")
+}
+"""
+
+
+@requires("soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_upsert_onto_a_soft_deleted_row_changes_nothing(dialect):
+    db, models = await connect(dialect, UPSERT_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1, "title": "a"}])
+        await docs.filter(Doc.id == 1).delete()
+        await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        (row,) = await docs.without_defaults().filter(Doc.id == 1)
+        assert row.title == "a" and row.deleted is not None
+        assert await docs.count() == 0
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+CLASHING_DEFAULT = """
+model Doc {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("deleted", "id > 0")
+  @@map("tracking_clash_docs")
+}
+"""
+
+
+@requires("soft-delete")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_user_default_named_deleted_clashes_with_the_soft_delete_default(dialect):
+    with pytest.raises(Exception, match=r'default name is set by both orm\.soft-delete default "deleted" and orm\.query-defaults default "deleted"'):
+        await connect(dialect, CLASHING_DEFAULT)
+
+
+REFERENCE_TO_SOFT_DELETED = """
+model Author {
+  id      Int       @id
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  books   Book[]
+  @@map("tracking_ref_authors")
+}
+model Book {
+  id        Int    @id
+  author_id Int
+  author    Author @relation(fields: [author_id], references: [id])
+  @@map("tracking_ref_books")
+}
+"""
+
+
+@requires("soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_reference_to_a_soft_deleted_row_loads_none(dialect):
+    db, models = await connect(dialect, REFERENCE_TO_SOFT_DELETED)
+    Author, Book = models["Author"], models["Book"]
+    try:
+        await Author.objects.using(db).insert_many([{"id": 1}, {"id": 2}])
+        await Book.objects.using(db).insert_many([{"id": 1, "author_id": 1}, {"id": 2, "author_id": 2}])
+        assert await Author.objects.using(db).filter(Author.id == 2).delete() == 1
+        joined = await Book.objects.using(db).load(Book.author).order_by(Book.id)
+        assert [b.author.id if b.author else None for b in joined] == [1, None]
+        for book_id, expected in ((1, 1), (2, None)):
+            book = await Book.objects.using(db).get(Book.id == book_id)
+            await book.load(Book.author)
+            assert (book.author.id if book.author else None) == expected
+    finally:
+        await db.drop_tables()
+        await db.close()
