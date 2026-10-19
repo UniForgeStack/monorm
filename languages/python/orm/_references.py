@@ -101,6 +101,8 @@ async def load_reference(owner: Any, name: str, *, reload: bool = False) -> Any:
         except NotLoaded:
             pass
     db = resolve(data.get("_db"))
+    if reload:
+        db = db.primary
     context = (key, db, db._tx())
 
     async def fetch() -> Any:
