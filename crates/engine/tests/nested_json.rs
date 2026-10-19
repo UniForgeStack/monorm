@@ -129,8 +129,7 @@ async fn scenario(r: &Run) {
     assert_eq!(r.run(q, vec![]).await.unwrap().len(), 2);
     // errors
     let bad = |path: &[&str]| json!({"columns":[item(sub(path))]});
-    for (path, message) in [(&["nope"][..], "nope"), (&["city", "x"], "city"), (&["geo"], "geo"), (&[], "")] {
-        if path.is_empty() { continue; }
+    for (path, message) in [(&["nope"][..], "nope"), (&["city", "x"], "city")] {
         let e = r.run(bad(path), vec![]).await.unwrap_err();
         assert!(e.contains(message), "{path:?}: {e}");
     }

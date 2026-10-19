@@ -828,6 +828,14 @@ fn json_storage_lowers_to_one_json_field() {
 }
 
 #[test]
+fn json_lowering_marks_a_list_of_a_type() {
+    let list = |src: &str| ok(src).models[0].fields[1].nested.clone().unwrap().list;
+    assert!(list(&NESTED.replace("address Address", "address Address[] @storage(json)")));
+    assert!(!list(&NESTED.replace("address Address", "address Address @storage(json)")));
+    assert!(!ok(&NESTED).models[0].fields[1].nested.clone().unwrap().list);
+}
+
+#[test]
 fn a_nullable_field_gets_a_generated_all_null_or_required_set_check() {
     let sql = nested_sql(&NESTED.replace("address Address", "address Address?"));
     assert!(

@@ -32,6 +32,8 @@ use orm_core::ir::{
 use orm_core::dialect::{Capabilities, Dialect, Target};
 use orm_core::schema::{Model, Schema};
 
+mod nested;
+
 /// A `select_related` object inside each row: its columns start at `start` and it is
 /// attached to the root object (`parent` None) or to an earlier join's object.
 pub struct JoinShape {
@@ -333,7 +335,10 @@ fn has_local_aggregate(cut: &Cut, e: &Expr) -> bool {
 /// A column, or a typed path into a `json` field (see `Planner::sub_ref`).
 enum SubRef<'s> {
     Column(&'s FieldIr),
-    Json { field: &'s FieldIr, leaf: ColType, ty: ValueType },
+    /// `group`: the path ends at a nested type, so the value is a JSON object.
+    Json { field: &'s FieldIr, leaf: ColType, ty: ValueType, group: bool },
+    /// A nested type on `columns` storage: the object is built from its leaf columns.
+    Group(nested::Group<'s>),
 }
 
 struct Cut<'a> {
@@ -605,7 +610,13 @@ fn relation_aggregates(cut: &Cut, e: &Expr, out: &mut Vec<Vec<String>>) {
 fn col_paths<'e>(e: &'e Expr, out: &mut Vec<&'e [String]>, has_not: &mut bool) {
     match e {
         Expr::Col { path, .. } => out.push(path),
-        Expr::Param { .. }
+        Expr::Object { fields } => {
+            for f in fields {
+                col_paths(&f.value, out, has_not);
+            }
+        }
+        Expr::Null
+        | Expr::Param { .. }
         | Expr::Scope { .. }
         | Expr::Const { .. }
         | Expr::Excluded { .. }
@@ -1300,6 +1311,9 @@ impl<'s> Planner<'s> {
     }
 
     fn cond(&mut self, e: &Expr) -> Result<SExpr> {
+        if let Some(rewritten) = self.whole_field(e)? {
+            return self.cond(&rewritten);
+        }
         match e {
             Expr::And { items } | Expr::Or { items } => {
                 let is_and = matches!(e, Expr::And { .. });
@@ -1521,6 +1535,7 @@ impl<'s> Planner<'s> {
             Expr::Col { path, name, sub } => match self.walk(self.root, path).and_then(|m| self.sub_ref(m, name, sub)) {
                 Ok(SubRef::Column(f)) => Hint { ty: Some(f.value_type()), field: Some(f) },
                 Ok(SubRef::Json { ty, .. }) => Hint { ty: Some(ty), field: None },
+                Ok(SubRef::Group(_)) => Hint::ty(ColType::Json),
                 Err(_) => Hint::default(),
             },
             Expr::Excluded { name } => {
@@ -1584,18 +1599,23 @@ impl<'s> Planner<'s> {
                 #[cfg(feature = "composition")]
                 {
                     let m = self.model(self.walk(self.root, path)?);
-                    if m.native.computed().contains(&m.field_pos(name).map_err(query_err)?) {
+                    if m.field_pos(name).is_ok_and(|p| m.native.computed().contains(&p)) {
                         return Err(Error::query("native computed fields cannot be filtered, ordered, aggregated, or used in expressions"));
                     }
                 }
                 match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
                     SubRef::Column(f) => self.resolve(path, &f.name)?,
-                    SubRef::Json { field, leaf, .. } => {
+                    SubRef::Json { field, leaf, group, .. } => {
                         let sql = self.target.dialect.json_subfield_sql("$1", sub, leaf);
+                        // A stored JSON null is no value: a group reads as SQL NULL then.
+                        let sql = if group && self.target.dialect == Dialect::Postgres { format!("NULLIF({sql}, 'null'::jsonb)") } else { sql };
                         template(self.target.dialect, sql, vec![self.resolve(path, &field.name)?])
                     }
+                    SubRef::Group(g) => self.assemble(path, &g)?,
                 }
             },
+            Expr::Null => SExpr::cust("NULL"),
+            Expr::Object { .. } => return Err(Error::query("an object value only compares with, or is assigned to, a nested field")),
             Expr::Param { i } => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
             Expr::Scope { name } => {
                 let value = self.params.value(self.scope_param(name)?, hint.ty)?;
@@ -1786,7 +1806,10 @@ impl<'s> Planner<'s> {
             Expr::Col { path, name, sub } => match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
                 SubRef::Column(f) => f.value_type(),
                 SubRef::Json { ty, .. } => ty,
+                SubRef::Group(_) => scalar(ColType::Json),
             },
+            Expr::Null => scalar(ColType::Json),
+            Expr::Object { .. } => scalar(ColType::Json),
             Expr::Outer { depth, path, name } => self.outer_field(*depth, path, name)?.1.value_type(),
             Expr::CteCol { cte, name } => {
                 self.model(self.model_idx(cte)?).field(name).map_err(query_err)?.value_type()
@@ -2356,7 +2379,7 @@ impl<'s> Planner<'s> {
                     let read_sql = match expr {
                         Expr::Col { path, name, sub } if sub.is_empty() => {
                             let m = self.walk(self.root, path)?;
-                            self.model(m).field(name).map_err(query_err)?.read_sql.as_ref()
+                            self.model(m).field(name).ok().and_then(|f| f.read_sql.as_ref())
                         }
                         Expr::CteCol { cte, name } => {
                             self.model(self.model_idx(cte)?).field(name).map_err(query_err)?.read_sql.as_ref()
@@ -2454,14 +2477,23 @@ impl<'s> Planner<'s> {
     fn sub_ref(&self, m: usize, name: &str, sub: &[String]) -> Result<SubRef<'s>> {
         let model = self.model(m);
         if sub.is_empty() {
-            return Ok(SubRef::Column(model.field(name).map_err(query_err)?));
+            return match model.field(name) {
+                Ok(f) => Ok(SubRef::Column(f)),
+                Err(e) => self.group(model, name, sub).map(SubRef::Group).ok_or_else(|| query_err(e)),
+            };
         }
         let dotted = format!("{}.{name}.{}", model.ir.name, sub.join("."));
         let json = model.field(name).ok().and_then(|f| f.nested.as_ref().filter(|n| n.storage == NestedStorage::Json && n.path.is_empty()).map(|n| (f, n)));
         let Some((field, nested)) = json else {
             let col = model.fields().iter().find(|f| f.nested.as_ref().is_some_and(|n| n.field == name && n.path == sub));
-            return col.map(SubRef::Column).ok_or_else(|| Error::query(format!("{dotted} is not a subfield of a nested type")));
+            return match col {
+                Some(f) => Ok(SubRef::Column(f)),
+                None => self.group(model, name, sub).map(SubRef::Group).ok_or_else(|| Error::query(format!("{dotted} is not a subfield of a nested type"))),
+            };
         };
+        if nested.list {
+            return Err(Error::query(format!("{dotted}: {name} is a list; a subfield path can't go through one yet")));
+        }
         let find = |t: &str| self.schema.types.iter().find(|ty| ty.name == t);
         let mut ty = find(&nested.ty).ok_or_else(|| Error::query(format!("{dotted}: unknown type {}", nested.ty)))?;
         for (i, k) in sub.iter().enumerate() {
@@ -2470,12 +2502,12 @@ impl<'s> Planner<'s> {
             match (&tf.type_name, &tf.leaf) {
                 (Some(_), _) if tf.list => return Err(Error::query(format!("{dotted}: {k} is a list; a subfield path can't go through or end at one yet"))),
                 (Some(t), _) if !last => ty = find(t).ok_or_else(|| Error::query(format!("{dotted}: unknown type {t}")))?,
-                (Some(_), _) => return Err(Error::query(format!("{dotted} is a nested type, not a scalar; name one of its subfields"))),
+                (Some(_), _) => return Ok(SubRef::Json { field, leaf: ColType::Json, ty: ValueType::scalar(ColType::Json), group: true }),
                 (None, Some(_)) if !last => return Err(Error::query(format!("{dotted}: {k} is a scalar and has no subfields"))),
                 (None, Some(l)) => {
                     let leaf = if tf.list { ColType::Json } else { l.ty };
                     let ty = ValueType::scalar(self.target.dialect.json_subfield_type(leaf));
-                    return Ok(SubRef::Json { field, leaf, ty });
+                    return Ok(SubRef::Json { field, leaf, ty, group: false });
                 }
                 (None, None) => unreachable!("a subfield is a leaf or a nested type"),
             }
@@ -2577,6 +2609,7 @@ impl<'s> Planner<'s> {
             stmt.and_where(w);
         }
         for o in q.order.iter().filter(|_| order) {
+            self.reject_whole_nested(&o.expr)?;
             let (mut paths, mut has_not) = (vec![], false);
             col_paths(&o.expr, &mut paths, &mut has_not);
             for p in paths.into_iter().filter(|p| !p.is_empty()) {
@@ -2878,18 +2911,18 @@ impl<'s> Planner<'s> {
         let root = self.model(self.root);
         let positions = q.set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<Vec<_>>>()?;
         if positions.iter().collect::<std::collections::BTreeSet<_>>().len() != positions.len() { return Err(Error::query("duplicate update field")); }
-        self.set_values(q)
+        self.set_values(&q.set)
     }
 
     /// `SET` values in `q.set` order, after the model's native field and record checks.
     #[cfg(feature = "composition")]
-    fn set_values(&mut self, q: &Update) -> Result<Vec<SExpr>> {
+    fn set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
         let root = self.model(self.root);
-        let positions: Vec<_> = q.set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<_>>()?;
+        let positions: Vec<_> = set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<_>>()?;
         if positions.iter().any(|p| root.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
         let map = if root.native.has_records() { crate::behavior::input_map(root.fields().len(), &positions)? } else { vec![] };
-        let mut values = Vec::with_capacity(q.set.len());
-        for (a, &position) in q.set.iter().zip(&positions) {
+        let mut values = Vec::with_capacity(set.len());
+        for (a, &position) in set.iter().zip(&positions) {
             let f = &root.fields()[position];
             values.push(if let Expr::Param { i } = &a.value {
                 let mut value = self.params.value(self.param(*i)?, Some(f.value_type()))?;
@@ -2901,7 +2934,7 @@ impl<'s> Planner<'s> {
             });
         }
         crate::behavior::record(root.native, &map, values.as_slice())?;
-        q.set.iter().zip(values).map(|(a, value)| {
+        set.iter().zip(values).map(|(a, value)| {
             let f = root.field(&a.field).map_err(query_err)?;
             match value { Some(value) => Ok(bind(value, Some(f))), None => self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) }) }
         }).collect()
@@ -2921,8 +2954,9 @@ impl<'s> Planner<'s> {
         if q.set.is_empty() {
             return Err(Error::query("update() needs at least one field"));
         }
+        let (set, nested) = self.nested_sets(&q.set)?;
         #[cfg(feature = "file-storage")]
-        for assignment in &q.set {
+        for assignment in &set {
             if root.is_file_field(&assignment.field) {
                 let position = root.field_pos(&assignment.field).map_err(query_err)?;
                 let Expr::Param { i } = assignment.value else {
@@ -2933,14 +2967,17 @@ impl<'s> Planner<'s> {
             }
         }
         #[cfg(feature = "composition")]
-        for (a, v) in q.set.iter().zip(self.set_values(q)?) {
+        for (a, v) in set.iter().zip(self.set_values(&set)?) {
             stmt.value(Alias::new(&root.field(&a.field).map_err(query_err)?.column), v);
         }
         #[cfg(not(feature = "composition"))]
-        for a in &q.set {
+        for a in &set {
             let f = root.field(&a.field).map_err(query_err)?;
             let v = self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
             stmt.value(Alias::new(&f.column), v);
+        }
+        for (column, v) in nested {
+            stmt.value(Alias::new(column), v);
         }
         #[cfg(any(feature = "updated-at", feature = "optimistic-locking"))]
         for (column, v) in maintained(root, |name| q.set.iter().any(|a| a.field == name)) {
@@ -3404,8 +3441,9 @@ pub fn plan_insert(
     crate::db::require_dialect(target.dialect)?;
     let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);
-    let (fields, rows) = crate::client_default::fill(m, fields, rows)?;
-    let fields = fields.as_ref();
+    let (fields, mut rows) = crate::client_default::fill(m, fields, rows)?;
+    let (fields, forced) = nested::null_nested(m, fields.as_ref(), &mut rows);
+    let fields: &[String] = &fields;
     #[cfg(feature = "file-storage")]
     crate::file_storage::rows(m, fields, &rows)?;
     #[cfg(feature = "composition")]
@@ -3434,11 +3472,12 @@ pub fn plan_insert(
         stmt.or_default_values();
     } else {
         stmt.columns(cols.iter().map(|c| Alias::new(&c.column)));
-        for row in rows {
+        for (row, forced) in rows.into_iter().zip(forced) {
             if row.len() != cols.len() {
                 return Err(Error::query("insert row length does not match fields"));
             }
-            let values = cols.iter().zip(row).map(|(c, item)| match item {
+            let values = cols.iter().zip(row).zip(forced).map(|((c, item), forced)| match item {
+                None if forced => SExpr::cust("NULL"),
                 None if target.dialect == Dialect::Sqlite => {
                     let default = if c.default_now { "CURRENT_TIMESTAMP".to_owned() }
                     else if let Some(sql) = &c.default_sql { sql.clone() }
