@@ -1,14 +1,14 @@
 # Column-role extensions: `updated_at`, soft delete, optimistic locking
 
 Three build-time extensions give a column a role that the ORM keeps on writes.
-Each one is a crate in `extensions/` with a host capability and Cargo feature of the same name.
+Each one is a crate in `extensions/`; the host has no code for the roles, and the crate pushes neutral write records.
 Select the crate in the `orm-extension-build` configuration (see `build-time-extensions.md`); do not set the feature by hand.
 
-| Crate | Capability | Attribute |
+| Crate | Extension id | Attribute |
 |---|---|---|
-| `orm-timestamps` (`extensions/timestamps`) | `updated-at` | `@timestamps.updated_at(mode:)` |
-| `orm-soft-delete` (`extensions/soft-delete`) | `soft-delete` | `@soft_delete.deleted_at(mode:)` |
-| `orm-locking` (`extensions/locking`) | `optimistic-locking` | `@locking.version` |
+| `orm-timestamps` (`extensions/timestamps`) | `orm.timestamps` | `@timestamps.updated_at(mode:)` |
+| `orm-soft-delete` (`extensions/soft-delete`) | `orm.soft-delete` | `@soft_delete.deleted_at(mode:)` |
+| `orm-locking` (`extensions/locking`) | `orm.locking` | `@locking.version` |
 
 You declare the column; the attribute gives it the role.
 A build without the extension has no engine code for the role, and a schema with its attribute fails with "rebuild".
