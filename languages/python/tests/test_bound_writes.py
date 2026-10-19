@@ -154,3 +154,13 @@ async def test_a_bound_hard_delete_removes_the_rows_and_gives_the_objects(docs):
     assert held[0].deleted is not None and held[2].deleted is None
     assert [d.id for d in await Doc.objects.using(db).all_with_deleted().order_by(Doc.id)] == [2, 4]
     assert await Doc.objects.of(held).using(db).all_with_deleted() == [held[1], held[3]]
+
+
+async def test_a_bound_update_of_two_objects_cannot_assign_a_key_field(clean):
+    held = await seed(3)
+    with pytest.raises(TypeError, match="key field"):
+        await Post.objects.of(held[:2]).update(id=Post.id + 100)
+    assert [p.id for p in await Post.objects.order_by(Post.id)] == [p.id for p in held]
+    assert await Post.objects.of([held[2], held[2]]).update(views=1) == [held[2], held[2]]
+    [moved] = await Post.objects.of([held[0]]).update(id=Post.id + 100)
+    assert moved is held[0] and moved.id >= 100

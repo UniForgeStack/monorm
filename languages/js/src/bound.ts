@@ -115,7 +115,11 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
    * the updated objects in input order.
    */
   async update(values: M["update"]): Promise<R[]> {
-    if (!Object.keys(values as object).length) return [];
+    const names = Object.keys(values as object);
+    if (!names.length) return [];
+    if (this.distinct().length > 1 && this.meta.key.some((f) => names.includes(f.name))) {
+      throw new TypeError("a bound update of 2 or more objects cannot assign a key field: the rows cannot be matched to the objects afterwards");
+    }
     return this.write((qs) => qs.update(values as never, { returning: true }) as unknown as PromiseLike<Row[]>);
   }
 

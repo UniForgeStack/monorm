@@ -65,6 +65,18 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  test(`bound update of two objects cannot assign a key field (${dialect})`, async () => {
+    const [db, { Note }] = await open(dialect, plain);
+    try {
+      const notes = await Note.objects.using(db).insertMany([1, 2, 3].map((id: number) => ({ id, title: `t${id}` }))).returning();
+      await assert.rejects(of([notes[0], notes[1]]).update({ id: Note.id.add(100) }), { name: "TypeError", message: /key field/ });
+      assert.deepEqual((await Note.objects.using(db).orderBy(Note.id)).map((n: any) => n.id), [1, 2, 3]);
+      const [moved] = await of([notes[2]]).update({ id: 103 });
+      assert.equal(moved, notes[2]);
+      assert.equal(moved.id, 103);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`bound delete gives the objects whose row was deleted (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {

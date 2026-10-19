@@ -316,7 +316,7 @@ await post.qs().delete();
 * A read of more than 500 keys runs in chunks of at most 500 keys, one statement for each chunk.
   The chunks are not one snapshot unless you hold a transaction: use `db.transaction()` when you need one.
   `sql()` and `inspect()` describe the first chunk.
-* A bound write (`update()`, `delete()`) is one statement: above the parameter cap of the database (32,766 on SQLite, 65,535 on PostgreSQL) it raises `QueryError` before it runs, so split a very large set.
+* A bound write (`update()`, `delete()`) is one statement: above the parameter cap of the database (32,766 on SQLite, 65,535 on PostgreSQL) it raises `QueryError` before it runs, so split a very large set. An update that assigns a key field of 2 or more distinct objects raises `TypeError` before it runs: the rows cannot be matched back to the objects. One object may change its key.
 * `await post.load({ reload: true })` does not reload a label such as `func.count(Post.comments).label("n")`: the instance does not know the label's expression.
 * The version enters writes only: reads and `lock()` refresh a stale object.
   Bound writes (`update()`, `delete()`) have no version check yet.
