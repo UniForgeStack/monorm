@@ -124,6 +124,27 @@ async def test_partial_selection(dialect):
         await db.close()
 
 
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_an_update_of_a_hidden_key_drops_the_cached_relation(dialect):
+    db, Author, Book = await open_db(dialect, defaults=False)
+    a, b = Author.objects.using(db), Book.objects.using(db)
+    try:
+        await a.insert_many([{"name": "ann", "bio": "x"}, {"name": "bob", "bio": "x"}])
+        authors = await a.order_by(Author.id)
+        await b.insert(title="one", author_id=authors[0].pk)
+        book = await b.load(Book.title, Book.author).get()
+        assert book.author.name == "ann"
+        with pytest.raises(orm.NotLoaded):
+            book.author_id
+        await book.update(author_id=authors[1].pk)
+        with pytest.raises(orm.NotLoaded):
+            book.author
+        assert (await book.load(Book.author)).author.name == "bob"
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_selection_defaults(dialect):

@@ -65,6 +65,21 @@ for (const dialect of ["sqlite", "postgres"] as const) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  test(`an update of a hidden key drops the cached relation: ${dialect}`, async () => {
+    const { db, Author, Book, a, b } = await open(dialect, false);
+    try {
+      await a.insertMany([{ name: "ann", bio: "x" }, { name: "bob", bio: "x" }]);
+      const authors = await a.orderBy(Author.id);
+      await b.insert({ title: "one", authorId: authors[0].pk });
+      const book = await b.load(Book.title, Book.author).get();
+      assert.equal(book.author.name, "ann");
+      assert.throws(() => book.authorId, NotLoaded);
+      await book.update({ authorId: authors[1].pk });
+      assert.throws(() => book.author, NotLoaded);
+      assert.equal((await book.load(Book.author)).author.name, "bob");
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`schema query defaults: ${dialect}`, async (t) => {
     if (!queryDefaults) {
       t.skip("needs a native build with the query-defaults feature");

@@ -49,6 +49,19 @@ def item_loaded(owner: Any, item: Any) -> bool:
     )
 
 
+def _drop_relations(owner: Any, field: str) -> None:
+    """Forget the cached relations that read the changed key ``field``."""
+    from .model import _reference_adapter
+
+    for rel_name, rel in owner._meta.relations.items():
+        sources = rel.via_fields if isinstance(rel, BelongsTo) else getattr(rel, "from_fields", ())
+        if field in sources:
+            if _reference_adapter is not None:
+                _reference_adapter.invalidate_reference(owner, rel_name)
+            else:
+                owner.__dict__.pop(rel_name, None)
+
+
 def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | None = None) -> None:
     """Preserve existing objects and columns while filling a fetched shape."""
     from .model import Model, _reference_adapter
@@ -87,13 +100,7 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
             data[name] = rows
         elif reload or name not in data:
             if name in owner._meta.fields and data.get(name, data.get("_orm_internal", {}).get(name)) != value:
-                for rel_name, rel in owner._meta.relations.items():
-                    sources = rel.via_fields if isinstance(rel, BelongsTo) else getattr(rel, "from_fields", ())
-                    if name in sources:
-                        if _reference_adapter is not None:
-                            _reference_adapter.invalidate_reference(owner, rel_name)
-                        else:
-                            data.pop(rel_name, None)
+                _drop_relations(owner, name)
             data[name] = value
     for name in owner._meta.relations:
         if name in fresh.__dict__:
@@ -103,6 +110,9 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
     if "_orm_internal" in fresh.__dict__:
         internal = data.setdefault("_orm_internal", {})
         for name, value in fresh.__dict__["_orm_internal"].items():
+            if reload and name in internal and name not in data and internal[name] != value:
+                _drop_relations(owner, name)
+                internal[name] = value
             internal.setdefault(name, value)
     if all(n in data for n in owner._meta.field_names):
         data.pop("_orm_internal", None)
