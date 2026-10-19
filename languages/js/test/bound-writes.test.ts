@@ -29,6 +29,17 @@ model Note {
   @@map("bw_note")
 }`;
 
+test("a bound write above the parameter cap is a QueryError (sqlite)", async () => {
+  const [db, { Note }] = await open("sqlite", plain);
+  try {
+    const rows = Array.from({ length: 33_000 }, (_, i) => ({ id: i + 1, title: "t" }));
+    const notes = await Note.objects.using(db).insertMany(rows).returning();
+    await assert.rejects(of(notes).delete(), { name: "QueryError", message: /parameters/ });
+    await assert.rejects(of(notes).update({ views: 1 }), { name: "QueryError", message: /parameters/ });
+    assert.equal(await Note.objects.using(db).count(), 33_000);
+  } finally { await db.dropTables(); await db.close(); }
+});
+
 for (const dialect of ["sqlite", "postgres"]) {
   test(`bound update fills the objects and gives them in input order (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);

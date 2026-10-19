@@ -79,6 +79,16 @@ async def test_a_bound_write_checks_the_database_and_the_input(clean):
     assert not hasattr(Post.objects.of(held), "undelete")
 
 
+async def test_a_bound_write_above_the_parameter_cap_is_a_query_error(clean):
+    alice = await User.objects.insert(email="alice@example.com", name="Alice")
+    rows = [{"author": alice, "title": "p", "body": "b"} for _ in range(65_600)]
+    held = await Post.objects.insert_many(rows).returning()
+    for write in (lambda s: s.delete(), lambda s: s.update(title="x")):
+        with pytest.raises(orm.QueryError, match="parameters"):
+            await write(Post.objects.of(held))
+    assert await Post.objects.count() == 65_600
+
+
 SOURCE = (
     'model Doc {\n  id Int @id\n  title String\n  deleted DateTime? @soft_delete.deleted_at(mode: "application")\n}\n'
 )
