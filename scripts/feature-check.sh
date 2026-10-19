@@ -41,6 +41,8 @@ dependency() {
   esac
 }
 FEATURES="proxy-models query-defaults model-composition file-storage generic-relations updated-at soft-delete optimistic-locking"
+# file-storage is an extension artifact with no host capability.
+HOST_FEATURES=${FEATURES/file-storage /}
 features_of() { if [ "$1" = all ]; then echo "$FEATURES"; else echo "$1"; fi; }
 has() { case " $(features_of "$1") " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -85,14 +87,14 @@ build() {
 # The loaded artifacts report exactly the selected host features.
 capabilities() {
   local artifact=$1 dir=$WORK/$1 expected actual_py actual_node
-  expected=$(for f in $(features_of "$artifact"); do echo "$f"; done | sort | tr '\n' ' ')
-  actual_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.native_artifact())['capabilities']) & set('$FEATURES'.split()))))")
-  actual_node=$(node -e "const a = JSON.parse(require(process.argv[1]).nativeArtifact()); console.log(a.capabilities.filter(c => '$FEATURES'.split(' ').includes(c)).sort().join(' '))" "$dir/orm.node")
+  expected=$(for f in $(features_of "$artifact"); do [ "$f" = file-storage ] || echo "$f"; done | sort | tr '\n' ' ' | sed 's/ $//')
+  actual_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.native_artifact())['capabilities']) & set('$HOST_FEATURES'.split()))))")
+  actual_node=$(node -e "const a = JSON.parse(require(process.argv[1]).nativeArtifact()); console.log(a.capabilities.filter(c => '$HOST_FEATURES'.split(' ').includes(c)).sort().join(' '))" "$dir/orm.node")
   # The embedded build record names the same Cargo features.
-  built_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.profile_metadata())['build']['features']) & set('$FEATURES'.split()))))")
-  built_node=$(node -e "const b = JSON.parse(require(process.argv[1]).profileMetadata()).build; console.log(b.features.filter(f => '$FEATURES'.split(' ').includes(f)).sort().join(' '))" "$dir/orm.node")
+  built_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.profile_metadata())['build']['features']) & set('$HOST_FEATURES'.split()))))")
+  built_node=$(node -e "const b = JSON.parse(require(process.argv[1]).profileMetadata()).build; console.log(b.features.filter(f => '$HOST_FEATURES'.split(' ').includes(f)).sort().join(' '))" "$dir/orm.node")
   echo "expected: $expected"; echo "python:   $actual_py (build: $built_py)"; echo "node:     $actual_node (build: $built_node)"
-  [ "$actual_py " = "$expected" ] && [ "$actual_node " = "$expected" ] && [ "$built_py " = "$expected" ] && [ "$built_node " = "$expected" ]
+  [ "$actual_py" = "$expected" ] && [ "$actual_node" = "$expected" ] && [ "$built_py" = "$expected" ] && [ "$built_node" = "$expected" ]
 }
 
 for artifact in $ARTIFACTS; do
