@@ -1,8 +1,10 @@
 # File-field binding preparation
 
 `python/` and `typescript/` contain separately packaged selected binding helpers.
-They depend on the independent storage package. They do not import ORM internals,
-provider SDKs, or install a runtime native callback registry. They use only the
+They depend on `opendal`, not on the project's storage library. They keep the Reference
+codec v1, `Upload`, the `Registry` (storage name to OpenDAL operator), `max_size` while
+streaming and the upload error with the candidate reference. They do not import ORM
+internals or install a runtime native callback registry. They use only the
 public async field adapter API: Python `orm.adapters.register_field_adapter`
 and TypeScript `registerFieldAdapter` from `orm`. The extension requires the
 `async-field-adapter.v1` capability.

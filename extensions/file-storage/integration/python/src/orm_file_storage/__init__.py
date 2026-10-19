@@ -1,11 +1,11 @@
-"""Selected file-field binding helpers. No native/provider callback registry."""
+"""Selected file-field binding helpers over OpenDAL. No native/provider callback registry."""
 
 from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from orm.adapters import Pending
-from orm_storage import Reference, Registry, Source, MAX_SIZE
+from .storage import MAX_SIZE, CapabilityError, Reference, Registry, SizeLimitError, Source, StorageError, UploadError
 
 
 class FileFieldError(ValueError):
@@ -67,11 +67,11 @@ class FileField:
 
     async def signed_url(self, snapshot: Mapping[str, Any], registry: Registry, *, expires_in: int = 300) -> str:
         reference = self.reference(snapshot)
-        return await registry.resolve(reference).signed_url(reference, expires_in=expires_in)
+        return await registry.signed_url(reference, expires_in=expires_in)
 
     def open(self, snapshot: Mapping[str, Any], registry: Registry) -> AsyncIterator[bytes]:
         reference = self.reference(snapshot)
-        return registry.resolve(reference).open(reference)
+        return registry.open(reference)
 
 
 class FileAdapter:
@@ -86,13 +86,16 @@ class FileAdapter:
             reference = self.field.decode(value)
             return None if reference is None else reference.to_dict()
         Reference(self.field.storage, "validation", filename=value.filename, content_type=value.content_type)
-        self._resolve().resolve(Reference(self.field.storage, "validation"))
+        self._resolve().operator(self.field.storage)
         return Pending(value, Reference(self.field.storage, "preflight").to_dict())
 
     async def prepare(self, value: Upload) -> Any:
-        provider = self._resolve().resolve(Reference(self.field.storage, "validation"))
-        reference = await provider.upload(
-            value.source, filename=value.filename, content_type=value.content_type, max_size=value.max_size
+        reference = await self._resolve().upload(
+            self.field.storage,
+            value.source,
+            filename=value.filename,
+            content_type=value.content_type,
+            max_size=value.max_size,
         )
         return reference.to_dict()
 
@@ -104,3 +107,19 @@ class FileAdapter:
         if registry is None:
             raise FileFieldError("configure file storage before preparing uploads")
         return registry
+
+
+__all__ = [
+    "CapabilityError",
+    "FileAdapter",
+    "FileField",
+    "FileFieldError",
+    "FileNotLoaded",
+    "MissingFile",
+    "Reference",
+    "Registry",
+    "SizeLimitError",
+    "StorageError",
+    "Upload",
+    "UploadError",
+]

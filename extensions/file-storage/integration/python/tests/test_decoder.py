@@ -1,7 +1,6 @@
 import unittest
-from orm_file_storage import FileField
+from orm_file_storage import FileField, Reference
 from orm_file_storage.decoder import prepare_decoder
-from orm_storage import Reference
 
 
 class DecoderTest(unittest.TestCase):

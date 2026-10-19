@@ -7,29 +7,24 @@ from tempfile import TemporaryDirectory
 import unittest
 import orm
 from orm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError
-from orm_file_storage import FileField, FileFieldError, Upload
+import opendal
+from orm_file_storage import FileField, FileFieldError, Reference, Registry, Upload
 from orm_file_storage.model import install_model
-from orm_storage import LocalStorage, Reference, Registry
 
 
-class CountingStorage(LocalStorage):
+class CountingRegistry(Registry):
     uploads = 0
-    deletes = 0
 
     async def upload(self, *args, **kwargs):
         self.uploads += 1
         return await super().upload(*args, **kwargs)
 
-    async def delete(self, reference):
-        self.deletes += 1
-        return await super().delete(reference)
-
 
 class NativeFileTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = TemporaryDirectory()
-        self.storage = CountingStorage("reports", self.directory.name)
-        self.registry = Registry({"reports": self.storage})
+        self.storage = CountingRegistry({"reports": opendal.AsyncOperator("fs", root=self.directory.name)})
+        self.registry = self.storage
         self.url = os.environ.get("FILE_STORAGE_DATABASE_URL", "sqlite://:memory:")
         ir = json.loads(orm._native.compile_schema("model FileReport07 {\n id Int @id\n file Json?\n}", None))
         ir["dialect"] = "sqlite" if self.url.startswith("sqlite:") else "postgres"
@@ -51,7 +46,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         self.directory.cleanup()
 
     async def test_reference_shared_null_and_explicit_operations(self):
-        reference = await self.storage.upload(b"report")
+        reference = await self.storage.upload("reports", b"report")
         inserted = await self.Report.objects.insert(id=1, file=reference)
         self.assertEqual(inserted.file, reference)
         await self.Report.objects.insert(id=2, file=reference)
@@ -61,7 +56,6 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b"".join([chunk async for chunk in rows[0].file_open()]), b"report")
         await self.Report.objects.filter(self.Report.id == 1).update(file=None)
         await self.Report.objects.filter(self.Report.id == 2).delete()
-        self.assertEqual(self.storage.deletes, 0)
         self.assertEqual(b"".join([chunk async for chunk in self.storage.open(reference)]), b"report")
         with self.assertRaises(FileFieldError):
             rows[2].file_open()
@@ -80,7 +74,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.storage.uploads, 0)
 
     async def test_bulk_writes_store_references_and_reject_an_upload(self):
-        reference = await self.storage.upload(b"report")
+        reference = await self.storage.upload("reports", b"report")
         await self.Report.objects.insert_many([{"id": 2, "file": reference}, {"id": 3, "file": None}])
         await self.Report.objects.update_many([{"id": 2, "file": None}, {"id": 3, "file": reference}])
         rows = {r.id: r for r in await self.Report.objects.order_by(self.Report.id)}
@@ -101,7 +95,6 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         reference = Reference.from_dict(statement.operation.stored["file"])
         await statement.operation.execute(lambda data: self.Report.objects.insert(**{**data, "id": 2}))
         self.assertEqual(self.storage.uploads, 1)
-        self.assertEqual(self.storage.deletes, 0)
         await self.Report.objects.filter(self.Report.id == 2).update(file=Upload(b"replacement"))
         self.assertEqual(self.storage.uploads, 2)
         self.assertEqual(b"".join([chunk async for chunk in self.storage.open(reference)]), b"generated")
@@ -119,7 +112,6 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
             await operation
         self.db._insert = native_insert
         self.assertEqual(await self.Report.objects.count(), 1)
-        self.assertEqual(self.storage.deletes, 0)
         self.assertEqual(
             b"".join(
                 [chunk async for chunk in self.storage.open(Reference.from_dict(operation.operation.stored["file"]))]
@@ -147,7 +139,6 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         self.db._insert = native_insert
         self.assertIs(error.exception.operation, cancelled.operation)
         self.assertEqual(await self.Report.objects.count(), 2)
-        self.assertEqual(self.storage.deletes, 0)
         self.assertEqual(
             b"".join(
                 [chunk async for chunk in self.storage.open(Reference.from_dict(cancelled.operation.stored["file"]))]
@@ -172,7 +163,6 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
                     await nested
                     raise RuntimeError("savepoint rollback")
         self.assertEqual(await self.Report.objects.count(), 1)
-        self.assertEqual(self.storage.deletes, 0)
         self.assertEqual(
             b"".join(
                 [chunk async for chunk in self.storage.open(Reference.from_dict(nested.operation.stored["file"]))]
