@@ -2,7 +2,7 @@
 name = "orm-file-storage-extension"
 version = "0.1.0"
 edition = "2021"
-description = "Selected ORM schema adapter for independent storage references"
+description = "Selected ORM schema adapter for OpenDAL storage references"
 
 [workspace]
 

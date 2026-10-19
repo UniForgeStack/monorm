@@ -200,7 +200,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         let exts = options.model_extensions(ir, name);
         let instances: String = exts.iter().rev().map(|(i, e)| format!(", _e{i}.{}", e.members.instance)).collect();
         writeln!(body, "export interface {name} extends {name}Data, Instance<{name}Spec>{instances} {{").unwrap();
-        #[cfg(feature = "file-storage")]
         for file in &m.file_fields {
             let field = camel(&m.fields()[file.position].name);
             writeln!(body, "  {field}SignedUrl(options?: {{ expiresIn?: number }}): Promise<string>;\n  {field}Open(): AsyncIterable<Uint8Array>;").unwrap();
@@ -463,9 +462,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     writeln!(out, "const models = define(SCHEMA, {{ requiredCapabilities: [\"reference-loading\"]{} }});\n", if ext_options.is_empty() { String::new() } else { format!(", {ext_options}") }).unwrap();
     #[cfg(not(feature = "reference-loading"))]
     if ext_options.is_empty() { writeln!(out, "const models = define(SCHEMA);\n").unwrap(); } else { writeln!(out, "const models = define(SCHEMA, {{ {ext_options} }});\n").unwrap(); }
-    #[cfg(feature = "file-storage")]
     if !ir.behavior.file_fields.is_empty() {
-        out.push_str("import { type Reference, type Registry as StorageRegistry } from \"@orm/storage\";\nimport { FileField, type Upload } from \"@orm/file-storage\";\nimport { installModel } from \"@orm/file-storage/model\";\n");
+        out.push_str("import { FileField, type Reference, type Registry as StorageRegistry, type Upload } from \"@orm/file-storage\";\nimport { installModel } from \"@orm/file-storage/model\";\n");
         let mut adapters = Vec::new();
         for m in &schema.models {
             if m.file_fields.is_empty() { continue; }

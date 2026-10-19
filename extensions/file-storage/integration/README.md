@@ -12,8 +12,8 @@ and TypeScript `registerFieldAdapter` from `orm`. The extension requires the
 `install_model` / `installModel` register one `FileAdapter` per file field: its
 `validate` checks an `Upload` or a `Reference` without I/O, `prepare` uploads, and
 `decode` turns a loaded field into a `Reference`. Annotated file fields need a native
-artifact built with the `file-storage` feature; selecting `../orm-extension/` in
-`orm-extension-build` turns it on. Installing these helpers alone does not.
+artifact that selects this extension in `orm-extension-build` (the manifest requires
+`async-field-adapter.v1`). Installing these helpers alone does not.
 
 Declare a file field (see also [docs/extensions/file-storage.md](../../../docs/extensions/file-storage.md)):
 
@@ -43,7 +43,7 @@ retry loop.
 
 `AdapterWriteError` retains `operation` (`operation.stored` holds the completed
 references, also when a later upload fails) and the original failure as cause; an
-`UploadError` cause carries `recovery` with S3 incomplete/uncertain upload details.
+`UploadError` cause carries `recovery` with the candidate reference and the storage error.
 Python cancellation is `AdapterWriteCancelled`, an `asyncio.CancelledError`
 subclass that also retains the operation.
 

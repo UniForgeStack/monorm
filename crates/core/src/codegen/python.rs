@@ -151,7 +151,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     writeln!(py, "_models = define(_SCHEMA, module=__name__, required_capabilities=(\"reference-loading\",){ext_kwargs})").unwrap();
     #[cfg(not(feature = "reference-loading"))]
     writeln!(py, "_models = define(_SCHEMA, module=__name__{ext_kwargs})").unwrap();
-    #[cfg(feature = "file-storage")]
     if !ir.behavior.file_fields.is_empty() {
         py.push_str("from orm_file_storage import FileField as _FileField\nfrom orm_file_storage.model import install_model as _install_file_model\n\n_FILE_ADAPTERS = []\n");
         for m in &schema.models {
@@ -217,7 +216,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let output = if method.output.is_some() { "str" } else { "None" };
             writeln!(body, "    @staticmethod\n    def {}(value: str) -> {output}: ...", method.name).unwrap();
         }
-        #[cfg(feature = "file-storage")]
         for file in &m.file_fields {
             let field = &m.fields()[file.position].name;
             writeln!(body, "    async def {field}_signed_url(self, *, expires_in: int = 300) -> str: ...\n    def {field}_open(self) -> AsyncIterator[bytes]: ...").unwrap();
@@ -472,9 +470,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     if !query_sets.is_empty() || !used_exts.is_empty() {
         pyi.push('\n');
     }
-    #[cfg(feature = "file-storage")]
     if !ir.behavior.file_fields.is_empty() {
-        pyi.push_str("from collections.abc import AsyncIterator\nfrom orm_storage import Reference, Registry as StorageRegistry\nfrom orm_file_storage import Upload\n\ndef configure_file_storage(registry: StorageRegistry) -> None: ...\n\n");
+        pyi.push_str("from collections.abc import AsyncIterator\nfrom orm_file_storage import Reference, Registry as StorageRegistry, Upload\n\ndef configure_file_storage(registry: StorageRegistry) -> None: ...\n\n");
     }
     pyi.push_str(&body);
     writeln!(pyi, "__all__ = [\n{all}]").unwrap();

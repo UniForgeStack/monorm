@@ -17,7 +17,6 @@ from orm_file_storage import (
     Registry,
     SizeLimitError,
     StorageError,
-    Upload,
     UploadError,
 )
 from orm_file_storage.storage import CHUNK_SIZE
@@ -244,7 +243,8 @@ class MemoryUsageTest(unittest.TestCase):
         # Python allocation tracing cannot see OpenDAL's Rust allocations, so measure the process peak RSS.
         script = textwrap.dedent(
             """
-            import asyncio, resource, sys, tempfile
+            import asyncio, json, resource, sys, tempfile
+            sys.path[:] = json.loads(sys.argv[1])
             from opendal import AsyncOperator
             from orm_file_storage import Registry
 
@@ -265,7 +265,9 @@ class MemoryUsageTest(unittest.TestCase):
             asyncio.run(main())
             """
         )
-        result = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, check=True)
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", script, json.dumps(sys.path)], capture_output=True, text=True, check=True
+        )
         self.assertLess(int(result.stdout), 32 * 1024 * 1024)
 
 

@@ -37,8 +37,6 @@ pub mod ownership;
 #[cfg(feature = "model-composition")]
 pub mod composed;
 
-#[cfg(feature = "file-storage")]
-pub mod file_storage;
 
 /// Database backends compiled into this engine, independent of installed packages.
 pub fn compiled_backends() -> Vec<&'static str> {
