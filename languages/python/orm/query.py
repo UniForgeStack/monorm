@@ -1815,6 +1815,9 @@ class BoundQuerySet(Generic[M]):
     async def update(self, **values: Any) -> list[M]:
         """``UPDATE`` the rows of the objects, in one statement, and fill the objects from the
         updated rows. Gives the objects whose rows changed, in input order."""
+        key_names = {f.name for f in self._qs._model._meta.key}
+        if len(self._keys()) > 1 and key_names & values.keys():
+            raise TypeError("a bound update of 2 or more objects cannot assign a key field: the rows cannot be matched to the objects afterwards")
         return await self._write(lambda qs: qs.update(**values).returning())
 
     async def delete(self) -> list[M]:
