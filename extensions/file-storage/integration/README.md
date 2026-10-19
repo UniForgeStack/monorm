@@ -35,7 +35,8 @@ configured providers belong to the application's Registry.
 Upload construction makes no I/O calls. All input and write-shape checks precede uploads.
 A batch uploads up to 16 values at once. A filtered `update` uploads once and writes
 the same reference to every matching row. Upsert, conflict-ignore, expression and
-`insert_many(copy=True)` shapes reject Upload before provider I/O. Existing Reference/null values retain normal SQL semantics.
+`insert_many(copy=True)` shapes reject Upload before provider I/O.
+Existing Reference/null values retain normal SQL semantics.
 
 A failed or cancelled upload is terminal, so consumed sources are never
 automatically replayed. A completed upload is reused for explicit SQL retries

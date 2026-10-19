@@ -121,6 +121,17 @@ def split(model: type[Model], values: Mapping[str, Any]) -> tuple[dict[str, Any]
     return checked, pending
 
 
+async def prepare_values(model: type[Model], values: Mapping[str, Any]) -> dict[str, Any]:
+    """Run the ``prepare`` calls of the adapted ``values`` once. Return ``values`` with the stored
+    values in place of the pending ones."""
+    split_values = split(model, values)
+    if split_values is None or not split_values[1]:
+        return dict(values)
+    operation = PreparedWrite(split_values[1])
+    await operation.prepare()
+    return {**values, **operation.stored}
+
+
 def split_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], _BatchPending]:
     """Validate the adapted values of every row of a batch write. Return the rows that check the
     statement, and the pending values by ``(row index, field)``."""
@@ -180,6 +191,12 @@ class PreparedWrite:
 
     def __init__(self, pending: Mapping[Any, tuple[FieldAdapter[Any, Any], Any]], limit: int | None = None):
         self._pending = dict(pending)
+        # One object in several slots (a shared one-shot stream) prepares once.
+        groups: dict[tuple[int, int] | Any, tuple[FieldAdapter[Any, Any], Any, list[Any]]] = {}
+        for key, (adapter, value) in self._pending.items():
+            scalar = value is None or isinstance(value, (str, bytes, int, float))  # equal scalars are not one object
+            groups.setdefault(key if scalar else (id(adapter), id(value)), (adapter, value, []))[2].append(key)
+        self._groups = list(groups.values())
         self._limit = limit
         self._stored: dict[Any, Any] = {}
         self._state: Literal["new", "preparing", "ready", "failed"] = "new"
@@ -199,8 +216,10 @@ class PreparedWrite:
         self._state = "preparing"
         try:
             if self._limit is None:
-                for name, (adapter, value) in self._pending.items():
-                    self._stored[name] = await adapter.prepare(value)
+                for adapter, value, keys in self._groups:
+                    stored = await adapter.prepare(value)
+                    for key in keys:
+                        self._stored[key] = stored
             else:
                 await self._prepare_concurrently(self._limit)
             self._state = "ready"
@@ -217,18 +236,19 @@ class PreparedWrite:
         slots = asyncio.Semaphore(limit)
         failure: list[BaseException] = []
 
-        async def one(key: Any, adapter: FieldAdapter[Any, Any], value: Any) -> None:
+        async def one(adapter: FieldAdapter[Any, Any], value: Any, keys: list[Any]) -> None:
             async with slots:
                 if failure:
                     return
                 try:
-                    self._stored[key] = await adapter.prepare(value)
-                except asyncio.CancelledError:
-                    raise
-                except BaseException as error:
+                    stored = await adapter.prepare(value)
+                except BaseException as error:  # a CancelledError raised by one call is a failure too
                     failure.append(error)
+                    return
+                for key in keys:
+                    self._stored[key] = stored
 
-        await asyncio.gather(*(one(key, adapter, value) for key, (adapter, value) in self._pending.items()))
+        await asyncio.gather(*(one(adapter, value, keys) for adapter, value, keys in self._groups))
         if failure:
             raise failure[0]
 
@@ -382,6 +402,7 @@ class PendingUpdateMany(UpdateMany[Any]):
         if self._rows:
             with_values = {name: value for name, value in self.rows[0].items() if name not in key}
             prepare_update(self._qs, with_values)
+        self._inspect_returning(False)  # rejects a bad row or a CTE before any upload
 
         def statement(stored: Mapping[Any, Any]) -> Awaitable[Any]:
             update = UpdateMany(self._qs, _fill_rows(self.rows, stored), self._batch_size)
