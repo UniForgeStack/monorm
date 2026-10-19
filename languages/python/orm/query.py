@@ -1737,17 +1737,28 @@ class BoundQuerySet(Generic[M]):
             raise QueryError("of() takes objects from one database; call using() to read another")
         return db
 
-    def _condition(self) -> Condition:
+    def _keys(self) -> list[Any]:
+        return list(dict.fromkeys(o.pk for o in self._objs))
+
+    def _condition(self, keys: list[Any]) -> Condition:
         from .model import key_match
 
         meta = self._qs._model._meta
-        keys = dict.fromkeys(o.pk for o in self._objs)
         if len(meta.key) == 1 and len(keys) != 1:
-            return meta.pk_ref().in_(list(keys))
+            return meta.pk_ref().in_(keys)
         return or_(*(key_match(self._qs._model, (), meta.key, k) for k in keys))
 
     def _query(self) -> QuerySet[M]:
-        return self._qs.using(self._database()).filter(self._condition())
+        """The query of all the keys, for a write: one statement."""
+        return self._qs.using(self._database()).filter(self._condition(self._keys()))
+
+    def _read_queries(self) -> list[QuerySet[M]]:
+        """The queries of a read: at most ``IN_BULK_KEY_CHUNK`` keys each, half that for a
+        composite key, whose OR of ANDs is two levels deep per key (SQLite stops at depth 1000)."""
+        base = self._qs.using(self._database())
+        keys = self._keys()
+        size = IN_BULK_KEY_CHUNK if len(self._qs._model._meta.key) == 1 else IN_BULK_KEY_CHUNK // 2
+        return [base.filter(self._condition(keys[i : i + size])) for i in range(0, len(keys), size)]
 
     async def _read(self) -> list[M]:
         from ._loading import merge
@@ -1755,13 +1766,14 @@ class BoundQuerySet(Generic[M]):
         loads = self._qs._loads
         own = any((isinstance(i, ColumnRef) and not i._path) or isinstance(i, Labeled) for i in loads)
         relation_only = bool(loads) and not own
-        query = self._query()
-        if relation_only:
-            if not self._qs._filters:
-                await prefetch(self._objs, *cast("tuple[Any, ...]", loads), using=self._database())
-                return list(self._objs)
-            query = query._clone(_loads=(), _model_fields=tuple(f.name for f in self._qs._model._meta.key))
-        fresh = {row.pk: row for row in await query._fetch()}
+        if relation_only and not self._qs._filters:
+            await prefetch(self._objs, *cast("tuple[Any, ...]", loads), using=self._database())
+            return list(self._objs)
+        fresh: dict[Any, M] = {}
+        for query in self._read_queries():
+            if relation_only:
+                query = query._clone(_loads=(), _model_fields=tuple(f.name for f in self._qs._model._meta.key))
+            fresh.update((row.pk, row) for row in await query._fetch())
         matched = [o for o in self._objs if o.pk in fresh]
         for o in matched:
             merge(o, fresh[o.pk], True)
@@ -1798,16 +1810,20 @@ class BoundQuerySet(Generic[M]):
         return await self._write(lambda qs: qs.delete().returning())
 
     async def count(self) -> int:
-        return await self._query().count()
+        return sum([await query.count() for query in self._read_queries()])
 
     async def exists(self) -> bool:
-        return await self._query().exists()
+        for query in self._read_queries():
+            if await query.exists():
+                return True
+        return False
 
     def sql(self) -> str:
-        return self._query().sql()
+        """The SQL of the first statement of a read."""
+        return self._read_queries()[0].sql()
 
     def inspect(self) -> QueryInspection:
-        return self._query().inspect()
+        return self._read_queries()[0].inspect()
 
     def __repr__(self) -> str:
         return f"<BoundQuerySet {self._qs._model.__name__} of {len(self._objs)} objects>"
