@@ -2183,18 +2183,50 @@ class ManyRelatedSet(QuerySet[M]):
         self._instance.__dict__.pop(self._relation.name, None)
 
     async def add(self, *objs: Any, through_defaults: Mapping[str, Any] | None = None) -> None:
-        """Link the given instances (or keys); links that exist are left alone.
+        """Link the given instances (or keys); links that exist are left alone, and a link
+        that a delete rewrite hid (a soft-deleted one) is restored.
         ``through_defaults`` sets other fields of the new join rows
         (``post.tags.add(tag, through_defaults={"position": 1})``)."""
+        from .db import resolve
+
         extra = self._through_defaults(through_defaults)
         keys = self._target_keys(objs)
         if not keys:
             return
-        await self._add(keys, await adapters.prepare_values(self._relation.through, extra))
+        # Uploads run before the transaction opens, so none holds it.
+        extra = await adapters.prepare_values(self._relation.through, extra)
+        if self._hidden_links() is None:
+            await self._add(keys, extra)
+            return
+        async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(
+            savepoint=False
+        ):
+            await self._add(keys, extra)
+
+    def _hidden_links(self) -> tuple[ColumnRef[Any], tuple[str, ...]] | None:
+        """The delete-rewrite field of the join model and the names of the read defaults that hide
+        its rewritten rows, from the neutral behavior records; ``None`` when no rewrite applies."""
+        from .ext import behavior_records
+
+        join = self._relation.through
+        rewrites = behavior_records(join, "delete_rewrites")
+        if not rewrites:
+            return None
+        rewrite = rewrites[0]
+        names = tuple(d["name"] for d in behavior_records(join, "read_defaults") if d["source"] == rewrite["source"])
+        return ColumnRef(join, (), join._meta.fields[rewrite["field"]]), names
 
     async def _add(self, keys: list[Any], extra: Mapping[str, Any]) -> None:
         col = self._target_col()
-        have = set(await self._links().filter(col.in_(keys)).select(col).scalars())
+        links = self._links()
+        hidden = self._hidden_links()
+        if hidden is not None:
+            field, names = hidden
+            links = links.without_defaults(*names)
+            gone = set(await links.filter(col.in_(keys), field.is_not_null()).select(col).scalars())
+            if gone:
+                await links.filter(col.in_(list(gone)), field.is_not_null()).update(**{field._field.name: None})
+        have = set(await links.filter(col.in_(keys)).select(col).scalars())
         link = {self._relation.source: self._key}
         rows = [{**extra, **link, self._relation.target_field: k} for k in keys if k not in have]
         if rows:

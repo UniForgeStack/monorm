@@ -277,6 +277,7 @@ class Database:
         where: dict[str, Any] | None = None,
         *,
         returning: bool = True,
+        without_defaults: bool | tuple[str, ...] = False,
     ) -> Any:
         set_json, params = (json.dumps(set_[0]), set_[1]) if set_ is not None else (None, [])
         scope_json, params = _with_scope("{}", params)
@@ -300,6 +301,7 @@ class Database:
                 t,
                 returning,
                 scope,
+                json.dumps(without_defaults),
             ),
             ("insert", model, fields, conflict),
         )

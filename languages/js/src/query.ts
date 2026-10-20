@@ -1759,7 +1759,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   protected inspectInsert(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null): QueryInspection {
     const { prepared, conflict, update, set, params, conflictWhere, scope } = this.insertPlan(rows, onConflict, batchSize);
     if (!prepared.rows.length) return emptyInspection();
-    const options = JSON.stringify({ conflict, update, set: set ? JSON.parse(set) : [], filter: conflictWhere ? JSON.parse(conflictWhere) : null, scope });
+    const options = JSON.stringify({ conflict, update, set: set ? JSON.parse(set) : [], filter: conflictWhere ? JSON.parse(conflictWhere) : null, scope, without_defaults: this.state.withoutDefaults });
     return call(() => inspection(inspector(this.meta, this.state.db).inspectInsert(this.meta.name, prepared.fields, prepared.rows, options, params, batchSize, returning)));
   }
 
@@ -1769,7 +1769,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (!prepared.rows.length) return returning ? [] : 0;
     const db = this.db();
     const res = await db_wait(db, (tx, allowed, trace) =>
-      db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictWhere, trace, returning, JSON.stringify(scope)),
+      db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictWhere, trace, returning, JSON.stringify(scope), JSON.stringify(this.state.withoutDefaults)),
       ["insert", this.meta.name, prepared.fields, conflict],
     );
     return returning ? (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][]) : (res as number);
@@ -2387,13 +2387,37 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     if (!keys.length) {
       return;
     }
-    await this.addLinks(keys, await prepareValues(this.through, extra));
+    // Uploads run before the transaction opens, so none holds it.
+    const prepared = await prepareValues(this.through, extra);
+    if (!this.hiddenLinks()) {
+      await this.addLinks(keys, prepared);
+      return;
+    }
+    await resolve(this.state.db ?? (this.instance[DB] as Database | undefined)).transaction(() => this.addLinks(keys, prepared), { savepoint: false });
+  }
+
+  /** The delete-rewrite field of the join model and the names of the read defaults that hide its rewritten rows, from the neutral behavior records. */
+  private hiddenLinks(): { field: Column<unknown, string>; names: string[] } | undefined {
+    const join = this.through;
+    const [rewrite] = join.registry.behaviorRecords("delete_rewrites", join.name);
+    if (!rewrite) return undefined;
+    const names = join.registry.behaviorRecords("read_defaults", join.name).filter((d) => d["source"] === rewrite["source"]).map((d) => d["name"] as string);
+    return { field: join.column(join.fieldByIr.get(rewrite["field"] as string)!), names };
   }
 
   private async addLinks(keys: readonly unknown[], extra: Record<string, unknown>): Promise<void> {
     const col = this.targetColumn();
     const join = this.through;
-    const have = (await this.links().filter(col.in(keys as never) as never).all()) as Record<string, unknown>[];
+    let links = this.links();
+    const hidden = this.hiddenLinks();
+    if (hidden) {
+      links = links.withoutDefaults(...(hidden.names as never[]));
+      const gone = (await links.filter(col.in(keys as never) as never, hidden.field.isNotNull() as never).all()) as Record<string, unknown>[];
+      if (gone.length) {
+        await links.filter(col.in(gone.map((r) => r[col.field.name]) as never) as never, hidden.field.isNotNull() as never).update({ [hidden.field.field.name]: null } as never);
+      }
+    }
+    const have = (await links.filter(col.in(keys as never) as never).all()) as Record<string, unknown>[];
     const known = new Set(have.map((r) => String(r[col.field.name])));
     const source = join.fieldByIr.get(this.relation.through!.source)!.name;
     const rows = keys.filter((k) => !known.has(String(k))).map((k) => ({ ...extra, [source]: this.key(), [col.field.name]: k }));
