@@ -34,7 +34,7 @@ async fn exercise(url: &str, dialect: Dialect) {
     for statement in orm_core::migrate::create_all(&schema).unwrap() { conn.batch(statement).await.unwrap(); }
     let types: Vec<ValueType> = schema.model(schema.model_idx("Item").unwrap()).fields().iter().map(|f| f.value_type()).collect();
     let insert = |fields: &[&str], rows: Vec<Vec<Option<Value>>>, conflict| {
-        exec::plan_insert(&schema, target, "Item", &fields.iter().map(|f| f.to_string()).collect::<Vec<_>>(), rows, conflict, &NoParams).unwrap()
+        exec::plan_insert(&schema, target, "Item", &fields.iter().map(|f| f.to_string()).collect::<Vec<_>>(), rows, conflict, &NoParams, &Default::default()).unwrap()
     };
     // Bulk insert: every omitted value gets its own client default, explicit values win.
     let explicit = "0192f7e2-0000-7000-8000-000000000001";

@@ -3456,10 +3456,12 @@ pub fn plan_insert(
     on_conflict: Option<OnConflict>,
     params: &dyn Params,
     returning: bool,
+    without_defaults: &Bypass,
 ) -> Result<(InsertStatement, Vec<ValueType>)> {
     crate::db::require_dialect(target.dialect)?;
     let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);
+    validate_bypass(m, without_defaults)?;
     let (fields, mut rows) = crate::client_default::fill(m, fields, rows)?;
     let (fields, forced) = nested::null_nested(m, fields.as_ref(), &mut rows);
     let fields: &[String] = &fields;
@@ -3562,9 +3564,11 @@ pub fn plan_insert(
                 clause.update_columns(columns(&update)?);
                 let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
                 planner.allow_excluded = true;
+                // The INSERT names the partition table, so the existing row is read through it.
+                planner.scopes[0].alias = table.into();
                 // Defaults constrain the existing row, independently of the index predicate.
-                if let Some(filter) = &m.read_defaults.filter {
-                    clause.action_and_where(planner.cond(filter)?);
+                if let Some(filter) = active_filter(m, without_defaults) {
+                    clause.action_and_where(planner.cond(&filter)?);
                 }
                 for a in &set {
                     #[cfg(feature = "composition")]

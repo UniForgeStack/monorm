@@ -203,7 +203,7 @@ async fn insert_nulls(dialect: Dialect, conn: Arc<dyn Executor>) {
     let target = Target::new(dialect);
     let run = |fields: Vec<&str>, rows: Vec<Vec<Option<Value>>>| {
         let fields: Vec<String> = fields.into_iter().map(String::from).collect();
-        let (stmt, types) = plan_insert(&s, target, "CShop", &fields, rows, None, &Lits(vec![]), false).unwrap();
+        let (stmt, types) = plan_insert(&s, target, "CShop", &fields, rows, None, &Lits(vec![]), false, &Default::default()).unwrap();
         exec::sql(target, &Plan::Insert(stmt, Some((0, types))))
     };
     let sql = run(vec!["id"], vec![vec![Some(Value::Int(Some(10)))], vec![Some(Value::Int(Some(11)))]]);

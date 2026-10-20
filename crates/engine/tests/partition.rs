@@ -150,11 +150,32 @@ model Child {
             assert!(sql.contains(" IN ('percent')"), "{sql}");
         }
         let (insert, _) = plan::plan_insert(&s, target, model, &["shop".into(), "percent".into()],
-            vec![vec![Some(1.into()), Some(10.into())]], None, &NoParams, true).unwrap();
+            vec![vec![Some(1.into()), Some(10.into())]], None, &NoParams, true, &Default::default()).unwrap();
         let sql = insert.to_string(sea_query::PostgresQueryBuilder);
         assert!(sql.starts_with("INSERT INTO \"partition_proxy_percent\""), "{sql}");
         assert!(sql.contains("'percent'"), "{sql}");
     }
+}
+
+#[cfg(feature = "proxy-models")]
+#[test]
+fn proxy_partition_upsert_reads_the_existing_row_through_the_partition_table() {
+    use orm_core::dialect::{Dialect, Target};
+    use orm_engine::{db, params::NoParams, plan::{self, OnConflict}};
+    let source = "model Reward {\n id Int @default(autoincrement())\n kind String\n shop Int\n @@id([id, kind])\n @@partition(list: [kind])\n}\nmodel PercentageReward {\n @@proxy.of(Reward)\n @@partition.values([\"percent\"])\n @@map(\"partition_proxy_percent\")\n}\n";
+    let (mut ir, _) = dsl::check(dsl::compile(source, None).unwrap()).unwrap();
+    ir.behavior.read_defaults.push(serde_json::from_value(serde_json::json!({
+        "source":"orm.query-defaults","name":"shop","model":"PercentageReward",
+        "filter":{"t":"cmp","op":"gt","l":{"t":"col","path":[],"name":"shop"},"r":{"t":"int","value":0}}
+    })).unwrap());
+    let s = orm_core::schema::Schema::from_ir(ir).unwrap();
+    let target = Target::new(Dialect::Postgres);
+    let (stmt, _) = plan::plan_insert(&s, target, "PercentageReward", &["id".into(), "shop".into()],
+        vec![vec![Some(1.into()), Some(10.into())]],
+        Some(OnConflict::Update(vec!["id".into(), "kind".into()], None, vec!["shop".into()], vec![])), &NoParams, false, &Default::default()).unwrap();
+    let sql = db::build(target.dialect, &stmt).0;
+    let (_, action) = sql.split_once(" DO UPDATE SET ").unwrap();
+    assert!(action.contains("WHERE \"partition_proxy_percent\".\"shop\" > "), "{sql}");
 }
 
 #[cfg(feature = "proxy-models")]

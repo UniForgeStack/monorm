@@ -57,17 +57,17 @@ async fn exercise(url: &str, dialect: Dialect) {
     let warnings = warnings.finish();
     assert_eq!(warnings.len(), 1); assert_eq!(warnings[0].category, Category::EnumSubset);
     // Omission uses proxy client defaults, explicit values (including NULL) win.
-    let insert = exec::plan_insert(&schema,target,"Active",&["id".into()],vec![vec![Some(4.into())]],None,&NoParams).unwrap();
+    let insert = exec::plan_insert(&schema,target,"Active",&["id".into()],vec![vec![Some(4.into())]],None,&NoParams,&Default::default()).unwrap();
     let inserted = exec::run(conn.as_ref(),target,insert).await.unwrap();
     let Outcome::Rows { rows, .. } = &inserted else { panic!() };
     assert_eq!(rows.cell(0,1,ValueType::scalar(ColType::String)).unwrap(),Cell::Text("client"));
     assert_eq!(rows.cell(0,2,ValueType::scalar(ColType::String)).unwrap(),Cell::Text("active"));
     assert!(proxy::diagnostics(&schema.proxy_models,&inserted).unwrap().is_empty());
-    let insert = exec::plan_insert(&schema,target,"Active",&["id".into(),"name".into(),"status".into()],vec![vec![Some(5.into()),Some(sea_query::Value::String(None)),Some("old".into())]],None,&NoParams).unwrap();
+    let insert = exec::plan_insert(&schema,target,"Active",&["id".into(),"name".into(),"status".into()],vec![vec![Some(5.into()),Some(sea_query::Value::String(None)),Some("old".into())]],None,&NoParams,&Default::default()).unwrap();
     let inserted = exec::run(conn.as_ref(),target,insert).await.unwrap();
     assert_eq!(proxy::diagnostics(&schema.proxy_models,&inserted).unwrap().len(),2);
     // The root still uses the physical server default and accepts nullable name.
-    let insert = exec::plan_insert(&schema,target,"User",&["id".into()],vec![vec![Some(6.into())]],None,&NoParams).unwrap();
+    let insert = exec::plan_insert(&schema,target,"User",&["id".into()],vec![vec![Some(6.into())]],None,&NoParams,&Default::default()).unwrap();
     let inserted = exec::run(conn.as_ref(),target,insert).await.unwrap();
     let Outcome::Rows { rows, .. } = &inserted else { panic!() };
     assert_eq!(rows.cell(0,1,ValueType::scalar(ColType::String)).unwrap(),Cell::Null);

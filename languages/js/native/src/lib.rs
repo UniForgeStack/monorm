@@ -362,7 +362,7 @@ fn inspect_insert(env: &Env, schema: &schema::Schema, target: Target, model: &st
     let values = convert_rows(env, schema, model, fields, rows, true)?;
     let p = params(env, params_)?;
     let scoped = orm_engine::params::Scoped { params: &p, scope: &opts.scope };
-    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning).map_err(engine_err)?;
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, &opts.without_defaults).map_err(engine_err)?;
     let batching = plans.len() > 1;
     inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
 }
@@ -432,7 +432,7 @@ impl JsSchema {
     pub fn validate_insert(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, allowed: Vec<String>) -> napi::Result<()> {
         protect::ensure_writable(&self.inner, &model, &allowed).map_err(engine_err)?;
         let values = convert_rows(env, &self.inner, &model, &fields, rows, true)?;
-        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), &model, &fields, values, None, &orm_engine::NoParams).map_err(engine_err)?;
+        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), &model, &fields, values, None, &orm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
         Ok(())
     }
 
@@ -758,7 +758,8 @@ impl Engine {
     /// `{"field", "value"}` IR, parameters in `params`), or are skipped if `update` is
     /// null. `conflictWhere` (condition IR, parameters in `params`) is the predicate of a
     /// partial unique index. Rows beyond the parameter limit, or beyond `batchSize`, go to further
-    /// statements in one transaction (inside `tx` when given).
+    /// statements in one transaction (inside `tx` when given). `withoutDefaults` (JSON:
+    /// `false`, `true` or a list of names) skips defaults of the model in the DO UPDATE condition.
     #[napi(ts_return_type = "Promise<unknown>")]
     #[allow(clippy::too_many_arguments)]
     pub fn insert<'env>(
@@ -778,8 +779,10 @@ impl Engine {
         trace: Option<&Trace>,
         returning: Option<bool>,
         scope: Option<String>,
+        without_defaults: Option<String>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         let returning = returning.unwrap_or(true);
+        let without_defaults: ir::Bypass = serde_json::from_str(without_defaults.as_deref().unwrap_or("false")).map_err(|e| query_err(format!("invalid bypass: {e}")))?;
         protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let set: Vec<ir::Assignment> = match set {
             Some(json) => serde_json::from_str(&json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
@@ -797,7 +800,7 @@ impl Engine {
         let p = params(env, params_)?;
         let scope = serde_json::from_str(scope.as_deref().unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
         let scoped = orm_engine::params::Scoped { params: &p, scope: &scope };
-        let plans = exec::plan_inserts(&self.schema, self.target, &model, &fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning)
+        let plans = exec::plan_inserts(&self.schema, self.target, &model, &fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, &without_defaults)
             .map_err(engine_err)?;
         let target = self.target;
         let conn = self.traced(tx, trace);

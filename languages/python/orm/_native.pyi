@@ -157,6 +157,7 @@ class Engine:
         trace: Trace | None = None,
         returning: bool = True,
         scope: str | None = None,
+        without_defaults: str = "false",
     ) -> Awaitable[Any]: ...
     def copy_insert(
         self,

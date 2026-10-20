@@ -49,6 +49,7 @@ async fn check(url: &str) {
         ]],
         None,
         &NoParams,
+        &Default::default(),
     )
     .unwrap();
     let Outcome::Rows { rows, types, .. } = exec::run(db.as_ref(), target, plan).await.unwrap()
@@ -138,6 +139,7 @@ async fn check(url: &str) {
             vec![vec![Some(name.into()), Some(salary.into()), Some(level.into())]],
             None,
             &NoParams,
+            &Default::default(),
         )
         .unwrap();
         assert!(exec::run(db.as_ref(), target, plan).await.is_err());
@@ -165,6 +167,7 @@ async fn check(url: &str) {
         ]],
         None,
         &NoParams,
+        &Default::default(),
     )
     .unwrap();
     let outer = db.begin().await.unwrap();
@@ -218,6 +221,7 @@ async fn check(url: &str) {
         ]],
         None,
         &NoParams,
+        &Default::default(),
     )
     .unwrap();
     let Outcome::Rows { rows, types, .. } = exec::run(db.as_ref(), target, explicit).await.unwrap()

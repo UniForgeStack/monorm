@@ -353,7 +353,9 @@ pub enum Conflict {
 }
 
 /// `INSERT ... RETURNING` every column. `rows` hold a value per field (`None`: the
-/// column's default), converted by [`field_types`].
+/// column's default), converted by [`field_types`]. `without_defaults` names the read
+/// defaults an upsert's DO UPDATE condition skips (an unknown name is an error).
+#[allow(clippy::too_many_arguments)]
 pub fn plan_insert(
     schema: &Schema,
     target: Target,
@@ -362,8 +364,9 @@ pub fn plan_insert(
     rows: Vec<Vec<Option<Value>>>,
     conflict: Option<Conflict>,
     params: &dyn Params,
+    without_defaults: &ir::Bypass,
 ) -> Result<Plan> {
-    plan_insert_with(schema, target, model, fields, rows, conflict, params, true)
+    plan_insert_with(schema, target, model, fields, rows, conflict, params, true, without_defaults)
 }
 
 /// [`plan_insert`]; without `returning` the insert gives the affected-row count. A
@@ -378,6 +381,7 @@ fn plan_insert_with(
     conflict: Option<Conflict>,
     params: &dyn Params,
     returning: bool,
+    without_defaults: &ir::Bypass,
 ) -> Result<Plan> {
     #[cfg(feature = "model-composition")]
     if crate::composed::is_composed(schema, model)? {
@@ -390,7 +394,7 @@ fn plan_insert_with(
         Conflict::Update { target, filter, update, set } => plan::OnConflict::Update(target, filter, update, set),
     });
     let (stmt, types): (InsertStatement, _) =
-        plan::plan_insert(schema, target, model, fields, rows, on_conflict, params, returning)?;
+        plan::plan_insert(schema, target, model, fields, rows, on_conflict, params, returning, without_defaults)?;
     Ok(Plan::Insert(stmt, returning.then_some((model_idx, types))))
 }
 
@@ -409,13 +413,14 @@ pub fn plan_inserts(
     params: &dyn Params,
     batch_size: Option<usize>,
     returning: bool,
+    without_defaults: &ir::Bypass,
 ) -> Result<Vec<Plan>> {
     if batch_size == Some(0) {
         return Err(Error::query("batch_size must be at least 1"));
     }
     #[cfg(feature = "model-composition")]
     if crate::composed::is_composed(schema, model)? {
-        return Ok(vec![plan_insert_with(schema, target, model, fields, rows, conflict, params, returning)?]);
+        return Ok(vec![plan_insert_with(schema, target, model, fields, rows, conflict, params, returning, without_defaults)?]);
     }
     let m = schema.model(schema.model_idx(model).map_err(query_err)?);
     // Client defaults can add columns, so the row width is known only after them.
@@ -434,13 +439,13 @@ pub fn plan_inserts(
     }
     let chunk = chunk.max(1);
     if rows.len() <= chunk {
-        return Ok(vec![plan_insert_with(schema, target, model, &fields, rows, conflict, params, returning)?]);
+        return Ok(vec![plan_insert_with(schema, target, model, &fields, rows, conflict, params, returning, without_defaults)?]);
     }
     let mut plans = Vec::with_capacity(rows.len().div_ceil(chunk));
     while !rows.is_empty() {
         let rest = rows.split_off(chunk.min(rows.len()));
         let conflict = conflict.clone();
-        plans.push(plan_insert_with(schema, target, model, &fields, std::mem::replace(&mut rows, rest), conflict, params, returning)?);
+        plans.push(plan_insert_with(schema, target, model, &fields, std::mem::replace(&mut rows, rest), conflict, params, returning, without_defaults)?);
     }
     Ok(plans)
 }

@@ -117,7 +117,7 @@ fn an_upsert_runs_the_assignments_of_its_kind() {
         let conflict = exec::Conflict::Update { target: vec!["id".into()], filter: None, update: update.iter().map(|f| f.to_string()).collect(), set };
         let fields: Vec<String> = ["id", "views"].iter().map(|f| f.to_string()).collect();
         let rows = vec![vec![Some(Value::Int(Some(1))), Some(Value::Int(Some(2)))]];
-        exec::statement(target, &exec::plan_insert(&schema, target, "Post", &fields, rows, Some(conflict), &Ints(vec![7])).unwrap())
+        exec::statement(target, &exec::plan_insert(&schema, target, "Post", &fields, rows, Some(conflict), &Ints(vec![7]), &Default::default()).unwrap())
     };
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
         for statement in [upsert(dialect, &["views"], vec![]), upsert(dialect, &[], set("views"))] {
