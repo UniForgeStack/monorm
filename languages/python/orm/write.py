@@ -323,6 +323,7 @@ class _Insert:
             "update": self._update,
             "set": self._set[0] if self._set else [],
             "filter": self._where,
+            "without_defaults": self._qs._without_defaults,
         }
         from .db import _with_scope
 
@@ -356,6 +357,7 @@ class _Insert:
             self._batch_size,
             self._where,
             returning=returning,
+            without_defaults=self._qs._without_defaults,
         )
 
     def __del__(self) -> None:

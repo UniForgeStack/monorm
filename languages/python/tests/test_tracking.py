@@ -639,6 +639,54 @@ async def test_an_upsert_onto_a_soft_deleted_row_changes_nothing(dialect):
         await db.close()
 
 
+@requires("orm.soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_query_set_bypass_lets_an_upsert_update_a_soft_deleted_row(dialect):
+    db, models = await connect(dialect, UPSERT_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1, "title": "a"}])
+        await docs.filter(Doc.id == 1).delete()
+        await docs.without_defaults("deleted").insert(id=1, title="b").on_conflict(Doc.id, update=True)
+        (row,) = await docs.without_defaults().filter(Doc.id == 1)
+        assert row.title == "b" and row.deleted is not None
+        with pytest.raises(orm.QueryError, match='unknown default "nope"'):
+            await docs.without_defaults("nope").insert(id=2, title="c")
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("orm.soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+@pytest.mark.parametrize("mode", ["application", "database"])
+async def test_add_restores_a_soft_deleted_link_and_inserts_the_missing_ones(dialect, mode):
+    source = FILTERED_JOIN_MODEL.replace('mode: "application"', f'mode: "{mode}"').replace(
+        "model PostTag {\n  id      Int ", "model PostTag {\n  id      Int @default(autoincrement()) "
+    )
+    db, models = await connect(dialect, source)
+    Post, Tag, PostTag = models["Post"], models["Tag"], models["PostTag"]
+    try:
+        await Post.objects.using(db).insert_many([{"id": 1}, {"id": 2}])
+        await Tag.objects.using(db).insert_many([{"id": i, "name": str(i)} for i in (1, 2, 3)])
+        post = await Post.objects.using(db).get(Post.id == 1)
+        await post.tags.add(1, 2)
+        await post.tags.remove(2)
+        assert [t.id for t in await post.tags.order_by(Tag.id)] == [1]
+        await post.tags.add(1, 2, 3)
+        assert [t.id for t in await post.tags.order_by(Tag.id)] == [1, 2, 3]
+        links = await PostTag.objects.using(db).without_defaults().order_by(PostTag.tag_id)
+        assert [(link.tag_id, link.deleted) for link in links] == [(1, None), (2, None), (3, None)]
+        await post.tags.set([2])
+        await post.tags.set([1, 2])
+        links = await PostTag.objects.using(db).without_defaults().order_by(PostTag.tag_id)
+        assert [(link.tag_id, link.deleted is None) for link in links] == [(1, True), (2, True), (3, False)]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 CLASHING_DEFAULT = """
 model Doc {
   id      Int       @id

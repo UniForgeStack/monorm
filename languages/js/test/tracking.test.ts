@@ -201,6 +201,68 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  test(`a query-set bypass lets an upsert update a soft-deleted row (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+    const [db, models] = await open(dialect, `
+model Doc {
+  id      Int       @id
+  title   String
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@map("tracking_node_upsert_bypass_docs")
+}`);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1, title: "a" }]);
+      await docs.filter(Doc.id.eq(1)).delete();
+      await docs.withoutDefaults("deleted").insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
+      const [row] = await docs.withoutDefaults().filter(Doc.id.eq(1)).all();
+      assert.ok(row.title === "b" && row.deleted !== null);
+      await assert.rejects(Promise.resolve(docs.withoutDefaults("nope").insert({ id: 2, title: "c" })), /unknown default "nope"/);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  for (const mode of ["application", "database"]) {
+    test(`add restores a soft-deleted link and inserts the missing ones (${dialect}, ${mode})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+      const [db, models] = await open(dialect, `
+model Post {
+  id   Int   @id
+  tags Tag[] @relation(through: PostTag, through_fields: [post, tag])
+  @@map("tracking_node_join_posts")
+}
+model Tag {
+  id    Int    @id
+  name  String
+  posts Post[] @relation(through: PostTag, through_fields: [tag, post])
+  @@map("tracking_node_join_tags")
+}
+model PostTag {
+  id      Int       @id @default(autoincrement())
+  post_id Int
+  tag_id  Int
+  post    Post      @relation(fields: [post_id], references: [id])
+  tag     Tag       @relation(fields: [tag_id], references: [id])
+  deleted DateTime? @soft_delete.deleted_at(mode: "${mode}")
+  @@map("tracking_node_join_post_tags")
+}`);
+      const { Post, Tag, PostTag } = models as Models & Record<string, any>;
+      try {
+        await Post.objects.using(db).insertMany([{ id: 1 }, { id: 2 }]);
+        await Tag.objects.using(db).insertMany([1, 2, 3].map((id) => ({ id, name: String(id) })));
+        const post = await Post.objects.using(db).get(Post.id.eq(1));
+        const tagIds = async () => (await post.tags.orderBy(Tag.id).all()).map((t: { id: number }) => t.id);
+        await post.tags.add(1, 2);
+        await post.tags.remove(2);
+        assert.deepEqual(await tagIds(), [1]);
+        await post.tags.add(1, 2, 3);
+        assert.deepEqual(await tagIds(), [1, 2, 3]);
+        const links = async () => (await PostTag.objects.using(db).withoutDefaults().orderBy(PostTag.tagId).all()).map((l: { tagId: number; deleted: Date | null }) => [l.tagId, l.deleted === null]);
+        assert.deepEqual(await links(), [[1, true], [2, true], [3, true]]);
+        await post.tags.set([2]);
+        await post.tags.set([1, 2]);
+        assert.deepEqual(await links(), [[1, true], [2, true], [3, false]]);
+      } finally { await db.dropTables(); await db.close(); }
+    });
+  }
+
   test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !capabilities.includes("query-defaults") }, async () => {
     await assert.rejects(open(dialect, `
 model Doc {
