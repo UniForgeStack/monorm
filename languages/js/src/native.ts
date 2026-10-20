@@ -125,7 +125,7 @@ export interface NativePrefetched {
 
 export interface NativeEngine extends NativeInspector {
   run(opJson: string, params: unknown[], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<unknown>;
-  prefetch(opJson: string, params: unknown[], keys: string[], rows: unknown[][], tx: NativeTransaction | null): Promise<NativePrefetched>;
+  prefetch(opJson: string, params: unknown[], keys: string[], rows: unknown[][], tx: NativeTransaction | null, trace?: NativeTrace | null): Promise<NativePrefetched>;
   insert(
     model: string,
     fields: string[],

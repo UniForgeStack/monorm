@@ -129,6 +129,7 @@ class Engine:
         parents: list[Any],
         tx: Transaction | None = None,
         db: Any = None,
+        trace: Trace | None = None,
     ) -> Awaitable[None]: ...
     def run(
         self,

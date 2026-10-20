@@ -80,6 +80,19 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
+  test(`a relation-only read gives its statements to onQuery (${provider})`, { skip: !url }, async () => {
+    const { db, Entry } = await setup();
+    try {
+      const held = await Entry.objects.using(db).orderBy("id");
+      const seen: string[] = [];
+      db.onQuery((e: Any) => { seen.push(e.sql); });
+      await of(held).load(Entry.writer);
+      assert.ok(seen.length >= 1);
+    } finally {
+      await db.close();
+    }
+  });
+
   test(`filter ANDs with the key filter; count and exists (${provider})`, { skip: !url }, async () => {
     const { db, Entry } = await setup();
     try {
@@ -146,7 +159,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       engine.prefetch = (...args: unknown[]) => { prefetches++; return run(...args); };
       const before = count();
       const got = await of(entries).load(Entry.writer);
-      assert.equal(count() - before, 0);
+      assert.equal(count() - before, 1);
       assert.equal(prefetches, 1);
       assert.deepEqual(got.map((e: Any) => e.writer.name), ["ann", "ann", "bo"]);
       await of(writers).load(Writer.entries);

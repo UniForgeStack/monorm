@@ -496,7 +496,7 @@ impl Engine {
     /// Loads the prefetches of a select IR onto `parents`, instances the caller has, with
     /// only the prefetch queries: `keys` names the root fields they read, `rows` holds
     /// those values per parent. Related instances get `db` as `_db`.
-    #[pyo3(signature = (op_json, params, keys, rows, parents, tx = None, db = None))]
+    #[pyo3(signature = (op_json, params, keys, rows, parents, tx = None, db = None, trace = None))]
     #[allow(clippy::too_many_arguments)]
     fn prefetch<'py>(
         &self,
@@ -508,6 +508,7 @@ impl Engine {
         parents: Vec<Bound<'py, PyAny>>,
         tx: Option<&Bound<'py, Transaction>>,
         db: Option<Bound<'py, PyAny>>,
+        trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let Operation::Select(q) = parse_op(op_json).map_err(engine_err)? else {
             return Err(query_err("prefetch() takes a select".into()));
@@ -516,7 +517,7 @@ impl Engine {
         let plans = plan::plan_prefetch_only(&self.schema, target, &q, &PyParams(&params)).map_err(engine_err)?;
         let values = key_rows(&self.schema, &q.model, &keys, rows.len(), |r, i, ty| py_to_value(&rows[r][i], Some(ty)))?;
         let parents: Vec<Py<PyAny>> = parents.into_iter().map(Bound::unbind).collect();
-        let conn = self.conn(tx);
+        let conn = self.traced(tx, trace);
         let classes = self.classes.clone();
         let db = db.map(Bound::unbind);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
