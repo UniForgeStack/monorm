@@ -2,6 +2,7 @@
 
 import datetime as dt
 import importlib
+import json
 import pickle
 import shutil
 from pathlib import Path
@@ -12,7 +13,7 @@ from decimal import Decimal
 import pytest
 
 import orm
-from orm import DecodeError
+from orm import DecodeError, _native
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -338,6 +339,17 @@ model Wallet {
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "nested"
 
 
+def test_a_re_prepared_registry_keeps_its_nested_types(monkeypatch):
+    monkeypatch.setattr("orm.model._REPREPARE", True)  # what a composition artifact does
+    registry = orm.Registry()
+    orm.loads(SCHEMA, registry=registry)
+    assert [t["name"] for t in registry.ir()["types"]] == ["Geo", "Address"]
+
+
+@pytest.mark.skipif(
+    bool(json.loads(_native.native_artifact())["extensions"]),
+    reason="the checked-in models are the default profile's; an extension artifact embeds its passes",
+)
 def test_example_models_are_current(tmp_path, monkeypatch):
     shutil.copy(EXAMPLE / "schema.prisma", tmp_path / "schema.prisma")
     monkeypatch.chdir(tmp_path)
