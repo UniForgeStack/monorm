@@ -1,6 +1,10 @@
 """Nested types through the Python API: the same scenario on JSON and columns storage, PostgreSQL and SQLite."""
 
 import datetime as dt
+import importlib
+import pickle
+import shutil
+from pathlib import Path
 import os
 import copy
 from decimal import Decimal
@@ -329,3 +333,32 @@ model Wallet {
     assert nt.from_json({**out, "at": "2024-01-02T03:04:05Z"}, "Wallet", "money").at == WHEN
     with pytest.raises(DecodeError, match="amount"):
         nt.from_json({**out, "amount": "abc"}, "Wallet", "money")
+
+
+EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "nested"
+
+
+def test_example_models_are_current(tmp_path, monkeypatch):
+    shutil.copy(EXAMPLE / "schema.prisma", tmp_path / "schema.prisma")
+    monkeypatch.chdir(tmp_path)
+    assert orm._native.cli(["generate", "python", "-o", "models.py"]) == 0
+    for name in ("models.py", "models.pyi"):
+        assert (tmp_path / name).read_text() == (EXAMPLE / name).read_text(), f"run `python -m orm generate` in {EXAMPLE}"
+
+
+def test_generated_value_classes(monkeypatch):
+    monkeypatch.syspath_prepend(str(EXAMPLE.parent))
+    models = importlib.import_module("nested.models")
+    address = models.Address(city="Oslo", big=1, opened=WHEN, geo=models.Geo(lat=1.5))
+    assert address.floor == 7 and address.geo.lat == 1.5 and address.geo.lng is None
+    assert models.Address.__module__ == "nested.models"
+    assert pickle.loads(pickle.dumps(address)) == address
+    assert models.Shop.address.geo.lat._select_name() == "address_geo_lat"
+    assert models.AddressInput is dict and models.AddressPatch is dict
+
+
+def test_nested_types_in_a_non_empty_registry():
+    registry = orm.Registry()
+    orm.loads(SQLITE + "model Plain { id Int @id }", registry=registry)
+    classes = orm.loads(SQLITE + SCHEMA, registry=registry)
+    assert classes["CShop"].address.city._select_name() == "address_city"

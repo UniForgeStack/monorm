@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr};
+use crate::ir::{ColType, EnumStorage, FieldIr, NestedStorage, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
 use crate::schema::{Model, Schema};
 
 pub struct Generated {
@@ -95,6 +95,115 @@ fn file_value_type(m: &Model, f: &FieldIr) -> String {
     value_type(f)
 }
 
+/// A nested field of a model: the `columns` group of its leaf fields, or the one `json` field.
+struct Group<'a> {
+    name: &'a str,
+    ty: &'a str,
+    nullable: bool,
+}
+
+/// The nested fields of `m`, in field order. Their leaf fields stay out of every public shape.
+fn groups<'a>(m: &'a Model) -> Vec<Group<'a>> {
+    let mut out: Vec<Group<'a>> = vec![];
+    for f in m.fields() {
+        let Some(n) = &f.nested else { continue };
+        let under = n.storage == NestedStorage::Columns && n.under_null;
+        match out.iter_mut().find(|g| g.name == n.field) {
+            Some(g) => g.nullable &= under,
+            None => out.push(Group { name: &n.field, ty: &n.ty, nullable: if n.storage == NestedStorage::Json { f.nullable } else { under } }),
+        }
+    }
+    out
+}
+
+fn type_of<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a TypeIr> {
+    ir.types.iter().find(|t| t.name == name)
+}
+
+fn sub_has_default(sf: &TypeFieldIr) -> bool {
+    sf.leaf.as_ref().is_some_and(|l| has_server_value(l) || l.client_default.is_some())
+}
+
+/// Whether a value of `name` needs at least one subfield from the caller.
+fn type_requires(ir: &SchemaIr, name: &str) -> bool {
+    type_of(ir, name).is_some_and(|t| {
+        t.fields.iter().any(|sf| {
+            !sf.nullable && !sf.list && !sub_has_default(sf) && sf.type_name.as_deref().is_none_or(|n| type_requires(ir, n))
+        })
+    })
+}
+
+fn sub_element(sf: &TypeFieldIr) -> String {
+    match (&sf.type_name, &sf.leaf) {
+        (Some(n), _) => n.clone(),
+        (_, Some(l)) => element_type(l),
+        _ => "Any".into(),
+    }
+}
+
+fn or_none(t: String, nullable: bool) -> String {
+    if nullable { format!("{t} | None") } else { t }
+}
+
+/// The type of a subfield on a value class.
+fn sub_value(sf: &TypeFieldIr) -> String {
+    let t = sub_element(sf);
+    or_none(if sf.list { format!("tuple[{t}, ...]") } else { t }, sf.nullable)
+}
+
+/// What a caller may give for a subfield; `patch` leaves a list out (it cannot be assigned part by part).
+fn sub_input(sf: &TypeFieldIr, patch: bool) -> Option<String> {
+    let t = sub_element(sf);
+    let one = match &sf.type_name {
+        Some(n) => format!("{n} | {n}{}", if patch { "Patch" } else { "Input" }),
+        None => t,
+    };
+    if sf.list {
+        return if patch { None } else { Some(or_none(format!("Sequence[{one}]"), sf.nullable)) };
+    }
+    Some(or_none(one, sf.nullable))
+}
+
+/// The value class, input shapes and reference class of one `type` block.
+fn write_type(body: &mut String, ir: &SchemaIr, t: &TypeIr) {
+    let name = &t.name;
+    writeln!(body, "{}\n", section(name)).unwrap();
+    writeln!(body, "class {name}(NestedValue):").unwrap();
+    for sf in &t.fields {
+        writeln!(body, "    @property\n    def {}(self) -> {}: ...", sf.name, sub_value(sf)).unwrap();
+    }
+    let mut params: Vec<String> = vec![];
+    for sf in &t.fields {
+        let optional = sf.nullable || sub_has_default(sf) || sf.type_name.as_deref().is_some_and(|n| !type_requires(ir, n));
+        let one = sub_input(sf, false).unwrap_or_default();
+        params.push(if optional { format!("{}: {one} = ...", sf.name) } else { format!("{}: {one}", sf.name) });
+    }
+    writeln!(body, "    def __init__(self, *, {}) -> None: ...\n", params.join(", ")).unwrap();
+    writeln!(body, "class {name}Input(TypedDict):").unwrap();
+    for sf in &t.fields {
+        let optional = sf.nullable || sub_has_default(sf) || sf.type_name.as_deref().is_some_and(|n| !type_requires(ir, n));
+        let one = sub_input(sf, false).unwrap_or_default();
+        writeln!(body, "    {}: {}", sf.name, if optional { format!("NotRequired[{one}]") } else { one }).unwrap();
+    }
+    writeln!(body, "\nclass {name}Patch(TypedDict, total=False):").unwrap();
+    let mut any = false;
+    for sf in &t.fields {
+        if let Some(one) = sub_input(sf, true) {
+            writeln!(body, "    {}: {one}", sf.name).unwrap();
+            any = true;
+        }
+    }
+    if !any { writeln!(body, "    pass").unwrap(); }
+    writeln!(body, "\nclass _{name}Ref(NestedRef):").unwrap();
+    for sf in &t.fields {
+        match &sf.type_name {
+            Some(n) => writeln!(body, "    {}: _{n}Ref", sf.name).unwrap(),
+            None => writeln!(body, "    {}: ColumnRef[{}]", sf.name, sub_value(sf)).unwrap(),
+        }
+    }
+    body.push('\n');
+}
+
 fn has_server_value(f: &FieldIr) -> bool {
     f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some() || f.hints.get("composition.key-default").is_some_and(|v| v == "true")
 }
@@ -115,6 +224,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     let names: Vec<&str> = schema.models.iter().map(|m| m.ir.name.as_str()).collect();
     let enums: Vec<&str> = schema.enums.iter().map(|e| e.name.as_str()).collect();
     let mut exported: Vec<String> = enums.iter().map(|n| n.to_string()).collect();
+    let type_names: Vec<&str> = ir.types.iter().map(|t| t.name.as_str()).collect();
+    exported.extend(type_names.iter().flat_map(|n| [n.to_string(), format!("{n}Input"), format!("{n}Patch")]));
     exported.extend(names.iter().map(|n| n.to_string()));
     exported.extend(names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]));
     exported.extend(names.iter().map(|n| format!("{n}QuerySet")));
@@ -163,8 +274,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         py.push_str("\ndef configure_file_storage(registry):\n    for adapter in _FILE_ADAPTERS:\n        adapter.configure(registry)\n\n");
     }
-    for n in enums.iter().chain(&names) {
+    for n in enums.iter().chain(&type_names).chain(&names) {
         writeln!(py, "{n} = _models[\"{n}\"]").unwrap();
+    }
+    if !type_names.is_empty() {
+        let dicts: Vec<String> = type_names.iter().flat_map(|n| [format!("{n}Input"), format!("{n}Patch")]).collect();
+        writeln!(py, "{} = dict", dicts.join(" = ")).unwrap();
     }
     if !query_sets.is_empty() {
         py.push_str("\n# The user's query-set classes, imported on first use of `Model.objects`.\n");
@@ -195,6 +310,16 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             }
         }
     }
+    for t in &ir.types {
+        for sf in &t.fields {
+            let word = sub_element(sf);
+            for (w, import) in [("datetime", "datetime"), ("date", "date"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")] {
+                if word.split(|c: char| !c.is_alphanumeric() && c != '_').any(|x| x == w) {
+                    used.insert(import);
+                }
+            }
+        }
+    }
     let mut body = String::new();
     for e in &schema.enums {
         writeln!(body, "{}\n", section(&e.name)).unwrap();
@@ -206,8 +331,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         body.push('\n');
     }
+    for t in &ir.types {
+        write_type(&mut body, ir, t);
+    }
     for m in &schema.models {
         let name = &m.ir.name;
+        let groups = groups(m);
         writeln!(body, "{}\n", section(name)).unwrap();
         let exts = options.model_extensions(ir, name);
         let instances: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}Instance, ")).collect();
@@ -220,8 +349,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let field = &m.fields()[file.position].name;
             writeln!(body, "    async def {field}_signed_url(self, *, expires_in: int = 300) -> str: ...\n    def {field}_open(self) -> AsyncIterator[bytes]: ...").unwrap();
         }
-        for f in m.fields() {
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             writeln!(body, "    {}: f.{}[{}]", f.name, field_class(f), file_value_type(m, f)).unwrap();
+        }
+        for g in &groups {
+            writeln!(body, "    {}: f.Nested[{}, _{}Ref]", g.name, or_none(g.ty.to_owned(), g.nullable), g.ty).unwrap();
         }
         if !m.ir.relations.is_empty() {
             body.push('\n');
@@ -259,8 +391,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         .unwrap();
 
         writeln!(body, "class _{name}Path(RelationPath[{name}]):").unwrap();
-        for f in m.fields() {
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             writeln!(body, "    {}: ColumnRef[{}]", f.name, file_value_type(m, f)).unwrap();
+        }
+        for g in &groups {
+            writeln!(body, "    {}: _{}Ref", g.name, g.ty).unwrap();
         }
         for r in &m.ir.relations {
             writeln!(body, "    {}: _{}Path", r.name, r.target).unwrap();
@@ -275,7 +410,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         // a relation of several key fields is listed once, after its last one
         let last = |r: &RelationIr, field: &str| r.from.last().is_some_and(|f| f == field);
         writeln!(body, "class {name}Insert(TypedDict):").unwrap();
-        for (position, f) in m.fields().iter().enumerate() {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
@@ -295,6 +430,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                 None => writeln!(body, "    {}: {t}", f.name).unwrap(),
             }
         }
+        for g in &groups {
+            let t = or_none(format!("{} | {}Input", g.ty, g.ty), g.nullable);
+            if g.nullable || !type_requires(ir, g.ty) { writeln!(body, "    {}: NotRequired[{t}]", g.name).unwrap(); } else { writeln!(body, "    {}: {t}", g.name).unwrap(); }
+        }
         if composed_names.contains(&&m.ir.name) {
             writeln!(body, "\nclass {name}Attach(TypedDict):").unwrap();
             let local: Vec<_> = m.fields().iter().filter(|f| f.hints.get("composition.local").is_some_and(|v| v == "true")).collect();
@@ -306,7 +445,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             }
         }
         writeln!(body, "\nclass {name}Update(TypedDict, total=False):").unwrap();
-        for (position, f) in m.fields().iter().enumerate() {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
@@ -325,9 +464,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                 writeln!(body, "    {}: {target}", r.name).unwrap();
             }
         }
+        for g in &groups {
+            writeln!(body, "    {}: {}", g.name, or_none(format!("{} | {}Patch", g.ty, g.ty), g.nullable)).unwrap();
+        }
         // update_many rows: the primary key plus plain values (no expressions)
         writeln!(body, "\nclass {name}UpdateRow(TypedDict, total=False):").unwrap();
-        for (position, f) in m.fields().iter().enumerate() {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
@@ -343,9 +485,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                 writeln!(body, "    {}: {target}", r.name).unwrap();
             }
         }
+        for g in &groups {
+            writeln!(body, "    {}: {}", g.name, or_none(format!("{} | {}Input", g.ty, g.ty), g.nullable)).unwrap();
+        }
         // get_or_insert lookup and defaults: plain values, none required
         writeln!(body, "\nclass {name}Lookup(TypedDict, total=False):").unwrap();
-        for (position, f) in m.fields().iter().enumerate() {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
@@ -354,6 +499,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             if let Some(r) = belongs(&f.name).filter(|r| last(r, &f.name)) {
                 writeln!(body, "    {}: {}", r.name, r.target).unwrap();
             }
+        }
+        for g in &groups {
+            writeln!(body, "    {}: {}", g.name, or_none(format!("{} | {}Input", g.ty, g.ty), g.nullable)).unwrap();
         }
         writeln!(body, "\nclass {name}QuerySet(QuerySet[{name}]):").unwrap();
         let default_names = m.read_defaults.names();
@@ -427,7 +575,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          #     shapes accepted by insert / update / update_many / get_or_insert;\n\
          #   * a query set class (`UserQuerySet`): typed `insert()`, `insert_many()`,\n\
          #     `get_or_insert()`, `update()`, `update_many()`.\n\n\
-         from collections.abc import Iterable\n",
+         from collections.abc import Iterable, Sequence\n",
     );
     let dt: Vec<&str> = ["date", "datetime"].into_iter().filter(|d| used.contains(d)).collect();
     if !dt.is_empty() {
@@ -452,7 +600,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
 
     pyi.push_str(
         "\nfrom typing_extensions import Self, Unpack\n\n\
-         from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, QuerySet, RelationPath, Update, UpdateMany\n\
+         from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, NestedRef, NestedValue, QuerySet, RelationPath, Update, UpdateMany\n\
          from orm import fields as f\n\n",
     );
     for (model, (module, class)) in &query_sets {
@@ -482,6 +630,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
 /// the same generated runtime by path, so even circular relations share classes.
 pub fn facade(unit: &crate::dsl::SchemaUnit, shared_path: &str, stub_import: &str, schema: &Schema) -> Generated {
     let mut names = unit.enums.clone();
+    for name in &unit.types {
+        names.extend([name.clone(), format!("{name}Input"), format!("{name}Patch")]);
+    }
     for name in &unit.models {
         names.extend([name.clone(), format!("{name}Insert"), format!("{name}Update"), format!("{name}UpdateRow"), format!("{name}QuerySet")]);
         if schema.models.iter().any(|m| m.ir.name == *name && m.pk_field().hints.get("composition.child").is_some_and(|v| v == "true")) { names.push(format!("{name}Attach")); }

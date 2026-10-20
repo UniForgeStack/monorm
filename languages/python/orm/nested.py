@@ -357,11 +357,13 @@ class NestedValue:
             object.__setattr__(self, k, v)
         return self
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        raise AttributeError(f"{type(self).__name__} values are immutable")
+    if not TYPE_CHECKING:  # type checkers see the stub's read-only properties instead
 
-    def __delattr__(self, name: str) -> None:
-        raise AttributeError(f"{type(self).__name__} values are immutable")
+        def __setattr__(self, name: str, value: Any) -> None:
+            raise AttributeError(f"{type(self).__name__} values are immutable")
+
+        def __delattr__(self, name: str) -> None:
+            raise AttributeError(f"{type(self).__name__} values are immutable")
 
     def _items(self) -> tuple[tuple[str, Any], ...]:
         return tuple((s.name, getattr(self, s.name)) for s in type(self)._type.subs)
@@ -700,13 +702,15 @@ class NestedRef(ColumnRef[Any]):
             return [name for name, _ in group.leaves]
         return [group.name]
 
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_") or not self._whole:
-            raise AttributeError(name)
-        nt = self._type_here()
-        if name not in nt.by_name:
-            raise AttributeError(f"{nt.name} has no subfield {name!r}; it has {', '.join(nt.by_name)}")
-        return NestedRef(self._root, self._path, self._group, (*self._sub, name))
+    if not TYPE_CHECKING:  # type checkers see the stub's subfield attributes instead
+
+        def __getattr__(self, name: str) -> Any:
+            if name.startswith("_") or not self._whole:
+                raise AttributeError(name)
+            nt = self._type_here()
+            if name not in nt.by_name:
+                raise AttributeError(f"{nt.name} has no subfield {name!r}; it has {', '.join(nt.by_name)}")
+            return NestedRef(self._root, self._path, self._group, (*self._sub, name))
 
     def __getitem__(self, name: Any) -> Any:
         if not isinstance(name, str) or not self._whole or name not in self._type_here().by_name:

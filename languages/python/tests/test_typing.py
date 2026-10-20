@@ -12,29 +12,34 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-CHECK = ROOT / "languages/python/tests/typing" / "check_models.py"
-EXPECTED = {i for i, line in enumerate(CHECK.read_text().splitlines(), 1) if "# E:" in line}
+CHECKS = [ROOT / "languages/python/tests/typing" / name for name in ("check_models.py", "check_nested.py")]
 
 
 def error_lines(output: str, pattern: str) -> set[int]:
     return {int(m.group(1)) for m in re.finditer(pattern, output, re.M)}
 
 
-def test_mypy():
+def expected(check: Path) -> set[int]:
+    return {i for i, line in enumerate(check.read_text().splitlines(), 1) if "# E:" in line}
+
+
+@pytest.mark.parametrize("check", CHECKS, ids=lambda c: c.stem)
+def test_mypy(check):
     pytest.importorskip("mypy")
     out = subprocess.run(
-        [sys.executable, "-m", "mypy", "--strict", "--no-incremental", str(CHECK)],
+        [sys.executable, "-m", "mypy", "--strict", "--no-incremental", str(check)],
         capture_output=True,
         text=True,
         env={"MYPYPATH": f"{ROOT / 'languages/python'}:{ROOT / 'examples'}", "PATH": ""},
         cwd=ROOT,
     ).stdout
-    assert error_lines(out, r"check_models\.py:(\d+): error") == EXPECTED, out
+    assert error_lines(out, rf"{check.name}:(\d+): error") == expected(check), out
 
 
-def test_pyright():
+@pytest.mark.parametrize("check", CHECKS, ids=lambda c: c.stem)
+def test_pyright(check):
     exe = shutil.which("pyright")
     if exe is None:
         pytest.skip("pyright not installed")
-    out = subprocess.run([exe, str(CHECK)], capture_output=True, text=True, cwd=CHECK.parent).stdout
-    assert error_lines(out, r"check_models\.py:(\d+):\d+ - error") == EXPECTED, out
+    out = subprocess.run([exe, str(check)], capture_output=True, text=True, cwd=check.parent).stdout
+    assert error_lines(out, rf"{check.name}:(\d+):\d+ - error") == expected(check), out

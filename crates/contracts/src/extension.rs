@@ -704,6 +704,12 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
             if known != &e { return Err(format!("an enum named {} is already registered", e.name)); }
         } else { context.enums.push(e); }
     }
+    for t in incoming.types.drain(..) {
+        if let Some(known) = context.types.iter().find(|k| k.name == t.name) {
+            let same = serde_json::to_value(known).map_err(|e| e.to_string())? == serde_json::to_value(&t).map_err(|e| e.to_string())?;
+            if !same { return Err(format!("a type named {} is already registered", t.name)); }
+        } else { context.types.push(t); }
+    }
     fn append<T: Serialize>(target: &mut Vec<T>, incoming: Vec<T>) -> Result<(), String> {
         for value in incoming {
             let encoded = serde_json::to_value(&value).map_err(|e| e.to_string())?;
