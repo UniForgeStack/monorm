@@ -120,8 +120,8 @@ model Doc {
       await docs.insertMany([{ id: 1 }]);
       const doc = await docs.get(Doc.id.eq(1));
       await doc.delete();
-      assert.deepEqual(await doc.qs(), []); // the default hides the row from a bound read
-      await doc.load({ reload: true }); // the instance already holds it: no default applies
+      assert.equal((await doc.qs()).length, 1); // qs() applies no root default
+      await doc.load({ reload: true });
       assert.ok(doc.deleted !== null);
     } finally { await db.dropTables(); await db.close(); }
   });
