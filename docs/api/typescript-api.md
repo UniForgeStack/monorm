@@ -591,7 +591,8 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   `@locking.version` are set on each update; on a `@soft_delete.deleted_at` model,
   `delete()` soft-deletes, and `hardDelete()`, `undelete()`, `allWithDeleted()` and
   `deletedOnly()` exist (from the soft-delete extension's generated code). Plain reads hide
-  deleted rows; those methods bypass only the `"deleted"` default, and a to-one reference
+  deleted rows; those methods bypass only the `"deleted"` default (on a query set, `withoutDefaults("deleted")` does the same; a bare
+  `withoutDefaults()` drops all defaults, a tenant filter too, and an instance `hardDelete()` uses it), and a to-one reference
   to the model is `opt` (`T | null`). A stale versioned
   instance write throws `VersionConflict`.
 * `Composed.objects.attach(parentId, values)` adds a composed child to an existing parent

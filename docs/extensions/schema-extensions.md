@@ -72,6 +72,7 @@ model Book {
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
   On a query set, it bypasses only the `"deleted"` default, so the other default filters (a tenant filter) still apply.
+  An instance `hard_delete()` uses a bare bypass, so it drops all defaults: a tenant filter and its scope check too. It deletes the row it holds.
   An instance `hard_delete()` does not check the version, also with `@locking.version`.
 * `undelete()` on a query set clears the field of the matching soft-deleted rows; on an instance, it clears the field of its row.
   On a query set, it bypasses only the `"deleted"` default, like `all_with_deleted()`.
@@ -79,7 +80,7 @@ model Book {
   Plain reads, counts, relation joins and loads return live rows only.
 * `all_with_deleted()` (`allWithDeleted()`) is `without_defaults("deleted")`: it removes only that default.
   Other defaults, such as a tenant filter, still apply.
-  A bare `without_defaults()` removes every default.
+  A bare `without_defaults()` removes every default, a tenant filter too: to bypass only the soft-delete default on a query set, name it, `without_defaults("deleted")` (`withoutDefaults("deleted")`).
   `deleted_only()` (`deletedOnly()`) bypasses `"deleted"` and gives only the soft-deleted rows.
 * An instance method that needs its own row (`update()`, `load()`, `delete()`) finds the row even when a default hides it.
   `post.qs()` and `of(objs)` also apply no default to their own rows.

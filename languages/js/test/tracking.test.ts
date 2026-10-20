@@ -182,6 +182,26 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  test(`an instance hardDelete also drops the tenant filter (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !capabilities.includes("query-defaults") }, async () => {
+    const [db, models] = await open(dialect, `
+model Doc {
+  id      Int       @id
+  shop    Int
+  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@query.filter("tenant", "shop == scope.shop")
+  @@map("tracking_node_tenant_hard_docs")
+}`);
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insertMany([{ id: 1, shop: 1 }, { id: 2, shop: 2 }]);
+      const doc = await scope({ shop: 2 }, async () => docs.get(Doc.id.eq(2)));
+      // The instance uses a bare bypass: no scope is set, and the shop 2 row is gone.
+      await (doc as SoftDeletable).hardDelete();
+      const rows = await docs.withoutDefaults().all();
+      assert.deepEqual(rows.map((d: { id: number }) => d.id), [1]);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`an upsert onto a soft-deleted row changes nothing (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
