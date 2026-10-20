@@ -7,9 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import ts from "typescript";
 import { native } from "../src/native.js";
-import { artifactCapabilities } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const capabilities = artifactCapabilities();
 const SCHEMA = `model Post {
   id         Int       @id
   title      String
@@ -53,7 +52,7 @@ export async function go() {
 `;
 const EXPECTED = USE.split("\n").flatMap((line, i) => (line.includes("// E:") ? [i + 1] : []));
 
-test("the generated soft-delete members type-check on the soft-delete model only", { skip: !capabilities.includes("soft-delete") }, async () => {
+test("the generated soft-delete members type-check on the soft-delete model only", { skip: !hasExtension("orm.soft-delete") }, async () => {
   const root = mkdtempSync(join(tmpdir(), "orm-sd-typing-"));
   writeFileSync(join(root, "schema.prisma"), SCHEMA);
   const exit = await native().cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"]);

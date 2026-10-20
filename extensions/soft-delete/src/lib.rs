@@ -123,7 +123,7 @@ fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute.starts_with("soft_delete.")).cloned().collect();
-    // Models of an earlier batch keep their records; only the models of this batch need a mode.
+    // Models of an earlier batch keep their records; their mode is unknown (Application is a placeholder), and only the models of this batch use it.
     let mut roles: Vec<SoftDelete> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE)
         .map(|d| SoftDelete { model: d.model.clone(), field: d.field.clone(), mode: Mode::Application }).collect();
     let mut added = vec![];

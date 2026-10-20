@@ -95,14 +95,14 @@ export interface Instance<M extends ModelSpec> {
   /**
    * `post.qs().withoutDefaults().update(values)` for this object. Values may be expressions
    * (`{ views: Post.views.add(1) }`); the instance is filled from the returned row, so
-   * it shows what the database stored. With `@locking.version`, throws `VersionConflict`
-   * when the row has a newer version; a missing row throws `DoesNotExist`.
+   * it shows what the database stored. With an instance guard field, throws `VersionConflict`
+   * when the row has a newer value; a missing row throws `DoesNotExist`.
    */
   update(values: M["update"]): Promise<void>;
   /**
    * `post.qs().withoutDefaults().delete()` for this object; the instance is filled from the
-   * returned row (a soft delete shows its marker). With `@locking.version`, throws
-   * `VersionConflict` when the row has a newer version; `hardDelete()` has no version check.
+   * returned row (a delete rewrite shows its stored value). With an instance guard field, throws
+   * `VersionConflict` when the row has a newer value.
    */
   delete(): Promise<void>;
 }
@@ -528,7 +528,7 @@ function metaOf(o: Row): ModelMeta {
   return (o.constructor as unknown as { meta: ModelMeta }).meta;
 }
 
-/** @internal The loaded `@locking.version` value; a versioned write needs it. */
+/** @internal The loaded value of an instance guard field; a guarded write needs it. */
 function loadedVersion(o: Row, version: FieldMeta): unknown {
   const value = Object.hasOwn(o, version.name) ? o[version.name] : (o[INTERNAL] as Record<string, unknown> | undefined)?.[version.name];
   if (value === undefined) throw new NotLoaded(`${metaOf(o).name}.${version.name} was not loaded`);
@@ -546,12 +546,12 @@ function writeOf(bound: BoundQuerySet<ModelSpec, Row>, op: (qs: QuerySet<ModelSp
 }
 
 /** The fields that a write must read back: the guard fields, so the next write sees their values. */
-function versionFields(meta: ModelMeta): readonly string[] {
+function guardFields(meta: ModelMeta): readonly string[] {
   return meta.guards.map((f) => f.ir);
 }
 
 /** With instance guards, match only the loaded values of the row. */
-function versionBound(o: Row): BoundQuerySet<ModelSpec, Row> {
+function guardBound(o: Row): BoundQuerySet<ModelSpec, Row> {
   const meta = metaOf(o);
   let bound = rowBound(o);
   for (const f of meta.guards) bound = bound.filter(meta.column(f).eq(loadedVersion(o, f) as never) as never) as never;
@@ -577,7 +577,7 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
       throw new TypeError(`${meta.name}.update() cannot set the version field ${f.name}; use ${meta.name}.objects.filter({ pk: ... }).update({ ${f.name}: ... }) to override it`);
     }
   }
-  const rows = await writeOf(versionBound(this), (qs) => qs.update(values as never, { returning: true }), versionFields(meta));
+  const rows = await writeOf(guardBound(this), (qs) => qs.update(values as never, { returning: true }), guardFields(meta));
   if (!rows.length) {
     await throwIfChanged(this);
     throw new (meta.model.DoesNotExist)(`${meta.name} ${show(this["pk"])} no longer exists`);
@@ -585,7 +585,7 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
 }
 
 async function instanceDelete(this: Row): Promise<void> {
-  const rows = await writeOf(versionBound(this), (qs) => qs.delete({ returning: true }), versionFields(metaOf(this)));
+  const rows = await writeOf(guardBound(this), (qs) => qs.delete({ returning: true }), guardFields(metaOf(this)));
   if (!rows.length) await throwIfChanged(this);
 }
 

@@ -7,17 +7,16 @@ import pytest
 
 import orm
 from soft_delete_ext import loads_soft_delete
-from artifact_caps import artifact_capabilities
+from artifact_caps import artifact_capabilities, has_extension
 
-CAPABILITIES = set(artifact_capabilities())
 DATABASES = ["sqlite", "postgres"]
 OLD = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
-def requires(capability: str) -> pytest.MarkDecorator:
-    return pytest.mark.skipif(
-        capability not in CAPABILITIES, reason=f"requires a selected {capability} native artifact"
-    )
+def requires(name: str) -> pytest.MarkDecorator:
+    """Skip unless the artifact has the extension (`orm.locking`) or the host capability (`proxy-models`)."""
+    present = has_extension(name) if name.startswith("orm.") else name in artifact_capabilities()
+    return pytest.mark.skipif(not present, reason=f"requires {name} in the native artifact")
 
 
 async def connect(dialect: str, source: str) -> tuple[orm.Database, dict]:
@@ -40,7 +39,7 @@ def as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-@requires("updated-at")
+@requires("orm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("mode", ["database", "application"])
 async def test_updated_at_is_set_on_orm_updates_and_by_the_trigger(dialect, mode):
@@ -92,7 +91,7 @@ model Book {{
 """
 
 
-@requires("soft-delete")
+@requires("orm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("mode", ["database", "application"])
 async def test_soft_delete_updates_instead_of_deleting(dialect, mode):
@@ -140,8 +139,8 @@ model Doc {
 """
 
 
-@requires("soft-delete")
-@requires("optimistic-locking")
+@requires("orm.soft-delete")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_soft_deleted_instance_can_be_undeleted(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
@@ -169,7 +168,7 @@ model Doc {
 """
 
 
-@requires("soft-delete")
+@requires("orm.soft-delete")
 @requires("query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
@@ -205,8 +204,8 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
         await db.close()
 
 
-@requires("soft-delete")
-@requires("optimistic-locking")
+@requires("orm.soft-delete")
+@requires("orm.locking")
 @requires("query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
@@ -242,8 +241,8 @@ model Book {
 """
 
 
-@requires("soft-delete")
-@requires("optimistic-locking")
+@requires("orm.soft-delete")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_hard_delete_of_a_soft_deleted_parent_leaves_no_orphan(dialect):
     db, models = await connect(dialect, CASCADE_VERSIONED)
@@ -268,8 +267,8 @@ async def test_a_hard_delete_of_a_soft_deleted_parent_leaves_no_orphan(dialect):
         await db.close()
 
 
-@requires("soft-delete")
-@requires("optimistic-locking")
+@requires("orm.soft-delete")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_the_soft_delete_triggers_bump_the_version(dialect):
     db, models = await connect(dialect, CASCADE_VERSIONED)
@@ -292,8 +291,8 @@ async def test_the_soft_delete_triggers_bump_the_version(dialect):
         await db.close()
 
 
-@requires("soft-delete")
-@requires("optimistic-locking")
+@requires("orm.soft-delete")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
@@ -313,7 +312,7 @@ async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
         await db.close()
 
 
-@requires("optimistic-locking")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_stale_instance_write_raises_version_conflict(dialect):
     db, models = await connect(
@@ -367,8 +366,8 @@ model Doc {{
 """
 
 
-@requires("optimistic-locking")
-@requires("updated-at")
+@requires("orm.locking")
+@requires("orm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_bumps_the_version(dialect):
     db, models = await connect(dialect, upsert_doc("application", version=True))
@@ -389,7 +388,7 @@ async def test_an_upsert_bumps_the_version(dialect):
         await db.close()
 
 
-@requires("updated-at")
+@requires("orm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
     db, models = await connect(dialect, upsert_doc("application"))
@@ -409,7 +408,7 @@ async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
         await db.close()
 
 
-@requires("updated-at")
+@requires("orm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_the_default_upsert_update_list_drops_updated_at(dialect):
     db, models = await connect(dialect, upsert_doc("application"))
@@ -425,7 +424,7 @@ async def test_the_default_upsert_update_list_drops_updated_at(dialect):
         await db.close()
 
 
-@requires("optimistic-locking")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
     db, models = await connect(dialect, upsert_doc(version=True))
@@ -441,7 +440,7 @@ async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
         await db.close()
 
 
-@requires("updated-at")
+@requires("orm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
     db, models = await connect(dialect, upsert_doc("database"))
@@ -480,7 +479,7 @@ model PostTag {
 """
 
 
-@requires("soft-delete")
+@requires("orm.soft-delete")
 @requires("query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect):
@@ -505,12 +504,12 @@ async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect)
 
 
 @requires("proxy-models")
-@requires("optimistic-locking")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("operation", ["update", "delete"])
 @pytest.mark.parametrize("mode", [None, "application", "database"])
 async def test_a_stale_proxy_instance_checks_the_loaded_version(dialect, operation, mode):
-    if mode is not None and "soft-delete" not in CAPABILITIES:
+    if mode is not None and not has_extension("orm.soft-delete"):
         pytest.skip("requires soft-delete")
     source = upsert_doc(version=True)
     if mode is not None:
@@ -557,7 +556,7 @@ model Review {
         await db.close()
 
 
-@requires("optimistic-locking")
+@requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_rejects_an_explicit_version(dialect):
     db, models = await connect(dialect, upsert_doc(version=True))
@@ -578,17 +577,17 @@ async def test_an_instance_rejects_an_explicit_version(dialect):
 
 @requires("model-composition")
 @pytest.mark.parametrize(
-    "capability,field,role",
+    "extension,field",
     [
-        ("updated-at", "changed DateTime @default(now()) @timestamps.updated_at", "@timestamps.updated_at"),
-        ("soft-delete", "deleted DateTime? @soft_delete.deleted_at", "@soft_delete.deleted_at"),
-        ("optimistic-locking", "version Int @default(0) @locking.version", "@locking.version"),
+        ("orm.timestamps", "changed DateTime @default(now()) @timestamps.updated_at"),
+        ("orm.soft-delete", "deleted DateTime? @soft_delete.deleted_at"),
+        ("orm.locking", "version Int @default(0) @locking.version"),
     ],
 )
 @pytest.mark.parametrize("owner", ["Person", "Employee", "Manager"])
-def test_composed_ownership_chain_rejects_tracking_roles(capability, field, role, owner):
-    if capability not in CAPABILITIES:
-        pytest.skip(f"requires {capability}")
+def test_composed_ownership_chain_rejects_tracking_records(extension, field, owner):
+    if not has_extension(extension):
+        pytest.skip(f"requires {extension}")
     source = f"""
 model Person {{
  id Int @id
@@ -608,7 +607,7 @@ model Manager {{
     with pytest.raises(orm.SchemaError) as error:
         orm.loads(source, registry=orm.Registry())
     message = str(error.value)
-    assert owner in message and field.split()[0] in message and role in message
+    assert owner in message and field.split()[0] in message and extension in message
     assert "Employee" in message or "Manager" in message
 
 
@@ -622,7 +621,7 @@ model Doc {
 """
 
 
-@requires("soft-delete")
+@requires("orm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_onto_a_soft_deleted_row_changes_nothing(dialect):
     db, models = await connect(dialect, UPSERT_SOFT_DELETE)
@@ -650,7 +649,7 @@ model Doc {
 """
 
 
-@requires("soft-delete")
+@requires("orm.soft-delete")
 @requires("query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_user_default_named_deleted_clashes_with_the_soft_delete_default(dialect):
@@ -674,7 +673,7 @@ model Book {
 """
 
 
-@requires("soft-delete")
+@requires("orm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_reference_to_a_soft_deleted_row_loads_none(dialect):
     db, models = await connect(dialect, REFERENCE_TO_SOFT_DELETED)

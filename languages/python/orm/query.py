@@ -1821,8 +1821,8 @@ class BoundQuerySet(Generic[M]):
         return await self._write(lambda qs: qs.update(**values).returning())
 
     async def delete(self) -> list[M]:
-        """``DELETE`` the rows of the objects, in one statement (a soft-delete model sets its
-        field instead). Gives the objects whose rows changed, in input order, filled from the rows."""
+        """``DELETE`` the rows of the objects, in one statement (a model with a delete rewrite
+        sets its field instead). Gives the objects whose rows changed, in input order, filled from the rows."""
         return await self._write(lambda qs: qs.delete().returning())
 
     async def count(self) -> int:

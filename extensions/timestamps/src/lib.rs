@@ -86,6 +86,22 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 on: vec![WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite], value: AssignValue::Now, upsert: UpsertDefault::Drop });
         }
     }
+    // A proxy defined after its root's batch: the root has a record from that batch, and a database-mode root has a trigger.
+    let roots: Vec<(String, String)> = ir.behavior.write_assignments.iter().filter(|a| a.source == SOURCE).map(|a| (a.model.clone(), a.field.clone())).collect();
+    for (root, name) in roots {
+        let Some(column) = ir.models.iter().find(|m| m.name == root).and_then(|m| m.fields.iter().find(|f| f.name == name)).map(|f| f.column.clone()) else { continue };
+        let trigger = format!("updated_at_{column}");
+        if ir.models.iter().find(|m| m.name == root).is_some_and(|m| m.triggers.iter().any(|t| t.name == trigger)) { continue; }
+        let proxies: Vec<String> = ir.behavior.proxy_models.iter().filter(|p| p.storage_owner == root).map(|p| p.model.clone()).collect();
+        for proxy in proxies {
+            if ir.behavior.write_assignments.iter().any(|a| a.source == SOURCE && a.model == proxy && a.field == name) { continue; }
+            if !ir.models.iter().find(|m| m.name == proxy).is_some_and(|m| m.fields.iter().any(|f| f.name == name)) {
+                return Err(format!("{proxy}: proxy must keep the field {name}, so its writes can set it"));
+            }
+            ir.behavior.write_assignments.push(WriteAssignment { source: SOURCE.into(), model: proxy, field: name.clone(),
+                on: vec![WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite], value: AssignValue::Now, upsert: UpsertDefault::Drop });
+        }
+    }
     Ok(())
 }
 
@@ -179,6 +195,23 @@ mod tests {
         let mut ir = with_proxy("database", true);
         prepared(&mut ir).unwrap();
         assert_eq!(ir.behavior.write_assignments.len(), 1);
+    }
+
+    #[test]
+    fn a_proxy_in_a_later_batch_gets_the_assignment_of_an_application_root_only() {
+        for (mode, expected) in [("application", vec!["Post", "PostView"]), ("database", vec!["Post"])] {
+            let mut ir = schema("postgres", Some(mode), "date_time");
+            prepared(&mut ir).unwrap();
+            ir.behavior.declarations.clear();
+            let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+            view.name = "PostView".into();
+            ir.models.push(view);
+            ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+            prepare(&mut ir).unwrap();
+            prepare(&mut ir).unwrap();
+            let models: Vec<_> = ir.behavior.write_assignments.iter().map(|a| a.model.as_str()).collect();
+            assert_eq!(models, expected, "{mode}");
+        }
     }
 
     #[test]

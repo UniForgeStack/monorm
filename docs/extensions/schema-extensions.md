@@ -2,7 +2,7 @@
 
 Three build-time extensions give a column a role that the ORM keeps on writes.
 Each one is a crate in `extensions/`; the host has no code for the roles, and the crate pushes neutral write records.
-Select the crate in the `orm-extension-build` configuration (see `build-time-extensions.md`); do not set the feature by hand.
+Select the crate in the `orm-extension-build` configuration (see `build-time-extensions.md`).
 
 | Crate | Extension id | Attribute |
 |---|---|---|
@@ -11,7 +11,7 @@ Select the crate in the `orm-extension-build` configuration (see `build-time-ext
 | `orm-locking` (`extensions/locking`) | `orm.locking` | `@locking.version` |
 
 You declare the column; the attribute gives it the role.
-A build without the extension has no engine code for the role, and a schema with its attribute fails with "rebuild".
+A build without the extension fails a schema with its attribute: "not compiled into this artifact; rebuild with its extension".
 
 ## Modes
 
@@ -102,9 +102,14 @@ model Book {
 * Application mode has no cascade.
 * A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
   Schema definition rejects `updated_at`, soft-delete and version fields anywhere in its ownership chain, including the composed model and every ancestor through the root.
-  The error names the composed model, the owner, the field and its role, because composed writes cannot maintain those roles.
+  The error names the composed model, the owner, the field and the extension id that wrote the record (`orm.timestamps`, `orm.soft-delete` or `orm.locking`), because composed writes cannot maintain those records.
 
 ### Behavior changes
+
+* Error messages changed when the role code left the host.
+  A composed-chain error names the extension id, not the attribute: `a write record from orm.timestamps on Person.changed is not supported in a composed model's ownership chain`.
+  A write record on a field of the wrong type says `wrong type for a time assignment` (it said `wrong type for updated_at`).
+  The soft-delete extension still requires a nullable `DateTime`; the host rule for a delete rewrite accepts any `DateTime`, so another extension can rewrite deletes on a required column.
 
 * Reads hide deleted rows.
   Before, soft delete hid nothing, and a model needed `@@query.filter("deleted_at == null")`.

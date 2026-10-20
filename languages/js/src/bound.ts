@@ -125,7 +125,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
 
   /**
    * `DELETE` the rows of the objects and give the objects whose row was deleted (or, for a
-   * soft delete, updated), filled from the returned rows.
+   * delete rewrite, updated), filled from the returned rows.
    */
   async delete(): Promise<R[]> {
     return this.write((qs) => qs.delete({ returning: true }) as unknown as PromiseLike<Row[]>);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, of, Registry, scope, VersionConflict, type Database } from "../src/index.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
-import { artifactCapabilities } from "./artifact-caps.js";
+import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
 
 const capabilities = artifactCapabilities();
 const OLD = new Date("2000-01-01T00:00:00Z");
@@ -21,7 +21,7 @@ async function open(dialect: string, source: string): Promise<[Database, Models]
 
 for (const dialect of ["sqlite", "postgres"]) {
   for (const mode of ["database", "application"]) {
-    test(`updated_at is set on ORM updates and by the trigger (${dialect}, ${mode})`, { skip: !capabilities.includes("updated-at") }, async () => {
+    test(`updated_at is set on ORM updates and by the trigger (${dialect}, ${mode})`, { skip: !hasExtension("orm.timestamps") }, async () => {
       const [db, models] = await open(dialect, `
 model Note {
   id      Int      @id
@@ -45,7 +45,7 @@ model Note {
       } finally { await db.dropTables(); await db.close(); }
     });
 
-    test(`soft delete updates instead of deleting (${dialect}, ${mode})`, { skip: !capabilities.includes("soft-delete") }, async () => {
+    test(`soft delete updates instead of deleting (${dialect}, ${mode})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
       const [db, models] = await open(dialect, `
 model Author {
   id      Int       @id
@@ -100,7 +100,7 @@ model Doc {
   @@map("tracking_node_soft_docs")
 }`;
 
-  test(`a soft-deleted instance can be undeleted (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+  test(`a soft-deleted instance can be undeleted (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -113,7 +113,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an instance reloads and updates its own soft-deleted row (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+  test(`an instance reloads and updates its own soft-deleted row (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -126,7 +126,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a partial versioned instance updates twice without a conflict (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+  test(`a partial versioned instance updates twice without a conflict (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int    @id
@@ -147,9 +147,9 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  const versionedSkip = { skip: !["soft-delete", "optimistic-locking"].every((c) => capabilities.includes(c)) };
+  const versionedSkip = { skip: !hasExtension("orm.soft-delete", "orm.locking") };
 
-  test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("query-defaults") }, async () => {
+  test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !capabilities.includes("query-defaults") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -182,7 +182,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an upsert onto a soft-deleted row changes nothing (${dialect})`, { skip: !capabilities.includes("soft-delete") }, async () => {
+  test(`an upsert onto a soft-deleted row changes nothing (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -201,7 +201,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !["soft-delete", "query-defaults"].every((c) => capabilities.includes(c)) }, async () => {
+  test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !capabilities.includes("query-defaults") }, async () => {
     await assert.rejects(open(dialect, `
 model Doc {
   id      Int       @id
@@ -211,7 +211,7 @@ model Doc {
 }`), /default name is set by both orm\.soft-delete default "deleted" and orm\.query-defaults default "deleted"/);
   });
 
-  test(`a reference to a soft-deleted row loads null (${dialect})`, { skip: !capabilities.includes("soft-delete") }, async () => {
+  test(`a reference to a soft-deleted row loads null (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Author {
   id      Int       @id
@@ -251,7 +251,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`the soft-delete members work on a two-word field (${dialect})`, { skip: !capabilities.includes("soft-delete") }, async () => {
+  test(`the soft-delete members work on a two-word field (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Page {
   id         Int       @id
@@ -295,7 +295,7 @@ model Book {
   removed   DateTime? @soft_delete.deleted_at(mode: "database")
   @@map("tracking_node_cascade_books")
 }`;
-  const cascadeSkip = { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") };
+  const cascadeSkip = { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") };
 
   test(`a hard delete of a soft-deleted parent leaves no orphan (${dialect})`, cascadeSkip, async () => {
     const [db, models] = await open(dialect, cascadeVersioned);
@@ -333,7 +333,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !capabilities.includes("soft-delete") || !capabilities.includes("optimistic-locking") }, async () => {
+  test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -348,7 +348,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a stale instance write throws VersionConflict (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+  test(`a stale instance write throws VersionConflict (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int    @id
@@ -384,7 +384,7 @@ model Doc {
   @@map("tracking_node_upsert_docs")
 }`;
 
-  test(`an upsert bumps the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") || !capabilities.includes("updated-at") }, async () => {
+  test(`an upsert bumps the version (${dialect})`, { skip: !hasExtension("orm.locking") || !hasExtension("orm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "application", version: true }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -399,7 +399,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an upsert sets updated_at in application mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+  test(`an upsert sets updated_at in application mode (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "application" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -412,7 +412,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`the default upsert update list drops updated_at (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+  test(`the default upsert update list drops updated_at (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "application" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -423,7 +423,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an update: true upsert does not reset the version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+  test(`an update: true upsert does not reset the version (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ version: true }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -434,7 +434,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !capabilities.includes("updated-at") }, async () => {
+  test(`an upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "database" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -449,7 +449,7 @@ for (const dialect of ["sqlite", "postgres"]) {
   for (const mode of [null, "application", "database"]) {
     for (const operation of ["update", "delete"]) {
       test(`stale proxy instance checks the loaded version (${dialect}, ${operation}, ${mode})`, {
-        skip: !capabilities.includes("proxy-models") || !capabilities.includes("optimistic-locking") || (mode !== null && !capabilities.includes("soft-delete")),
+        skip: !capabilities.includes("proxy-models") || !hasExtension("orm.locking") || (mode !== null && !hasExtension("orm.soft-delete")),
       }, async () => {
         const [db, models] = await open(dialect, `
 model Doc {
@@ -490,7 +490,7 @@ model Review {
     }
   }
 
-  test(`instance rejects an explicit version (${dialect})`, { skip: !capabilities.includes("optimistic-locking") }, async () => {
+  test(`instance rejects an explicit version (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
  id Int @id

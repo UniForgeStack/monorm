@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import orm
 from orm import _native
-from artifact_caps import artifact_capabilities
+from artifact_caps import artifact_capabilities, has_extension
 
 SOURCE = Path(__file__).parents[3].joinpath("fixtures/proxy.prisma").read_text()
 pytestmark = pytest.mark.skipif(
@@ -232,8 +232,8 @@ def _has(*names):
 
 
 @pytest.mark.skipif(
-    not _has("proxy-models", "soft-delete", "optimistic-locking"),
-    reason="requires proxy-models, soft-delete and optimistic-locking",
+    not (_has("proxy-models") and has_extension("orm.soft-delete", "orm.locking")),
+    reason="requires proxy-models, soft-delete and locking",
 )
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_a_proxy_takes_the_roles_of_its_root(dialect):
@@ -261,7 +261,7 @@ async def test_a_proxy_takes_the_roles_of_its_root(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not _has("proxy-models", "soft-delete"), reason="requires proxy-models and soft-delete")
+@pytest.mark.skipif(not (_has("proxy-models") and has_extension("orm.soft-delete")), reason="requires proxy-models and soft-delete")
 def test_a_proxy_must_keep_the_soft_delete_field():
     source = ROLES_SOURCE.replace("@@proxy.of(Doc)", '@@proxy.of(Doc)\n  @@proxy.fields(exclude: ["deleted"])')
     with pytest.raises(Exception, match="proxy must keep the soft-delete field deleted"):

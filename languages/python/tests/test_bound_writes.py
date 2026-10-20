@@ -7,9 +7,8 @@ import pytest
 import orm
 from blog.models import Post, User
 from soft_delete_ext import loads_soft_delete
-from artifact_caps import artifact_capabilities
+from artifact_caps import has_extension
 
-CAPABILITIES = set(artifact_capabilities())
 
 
 async def seed(count=4):
@@ -110,7 +109,7 @@ async def docs():
 
 
 soft_delete = pytest.mark.skipif(
-    "soft-delete" not in CAPABILITIES, reason="requires a selected soft-delete native artifact"
+    not has_extension("orm.soft-delete"), reason="requires a selected soft-delete native artifact"
 )
 
 

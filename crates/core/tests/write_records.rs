@@ -58,6 +58,13 @@ fn neutral_rules_reject_bad_records() {
     bad_guard["guard"]["item"]["name"] = "nope".into();
     assert!(err(json!({"delete_rewrites": [bad_guard]})).contains("nope"));
     assert!(err(json!({"instance_guards": [{"source": "a", "model": "Missing", "field": "rev"}]})).contains("unknown model Missing"));
+    let mut missing = assign("changed", "now", json!(["update"]));
+    missing["model"] = "Missing".into();
+    assert!(err(json!({"write_assignments": [missing]})).contains("unknown model Missing"));
+    let mut missing = rewrite("ext-a", "removed");
+    missing["model"] = "Missing".into();
+    assert!(err(json!({"delete_rewrites": [missing]})).contains("unknown model Missing"));
+    assert!(err(json!({"delete_rewrites": [rewrite("ext-a", "nope")]})).contains("nope"));
 }
 
 #[cfg(feature = "composition")]
@@ -87,6 +94,10 @@ fn a_composed_chain_rejects_every_write_record() {
     assert!(err.contains("write record from ext-b on Parent.removed is not supported in a composed model's ownership chain"), "{err}");
     let err = build(json!({"instance_guards": [{"source": "ext-c", "model": "Parent", "field": "changed"}]})).err().unwrap();
     assert!(err.contains("write record from ext-c on Parent.changed is not supported in a composed model's ownership chain"), "{err}");
+    let mut own = assign("changed", "now", json!(["update"]));
+    own["model"] = "Child".into();
+    let err = build(json!({"write_assignments": [own]})).err().unwrap();
+    assert!(err.contains("write record from ext-a on Child.changed is not supported in a composed model's ownership chain"), "{err}");
 }
 
 #[cfg(feature = "composition")]
@@ -101,7 +112,8 @@ fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
         }
         m
     };
-    let models = json!([model("Grand", "grands", None), model("Parent", "parents", Some(("Grand", "grand"))), model("Child", "children", Some(("Parent", "parent")))]);
+    // The leaf comes first, so the walk needs two links to reach the root.
+    let models = json!([model("Child", "children", Some(("Parent", "parent"))), model("Parent", "parents", Some(("Grand", "grand"))), model("Grand", "grands", None)]);
     let build = |records: Value| {
         let mut behavior = json!({"schema_contract": SCHEMA_CONTRACT, "storage": {"models": models},
             "owner_links": [{"child": "Parent", "parent": "Grand", "child_key": "id", "parent_key": "id"}, {"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
@@ -112,5 +124,5 @@ fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
     let mut root = assign("changed", "now", json!(["update"]));
     root["model"] = "Grand".into();
     let err = build(json!({"write_assignments": [root]})).err().unwrap();
-    assert!(err.contains("a write record from ext-a on Grand.changed is not supported in a composed model's ownership chain"), "{err}");
+    assert!(err.contains("model Child: a write record from ext-a on Grand.changed is not supported in a composed model's ownership chain"), "{err}");
 }

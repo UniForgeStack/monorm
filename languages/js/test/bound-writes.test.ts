@@ -3,10 +3,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, of, Registry, type Database } from "../src/index.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
-import { artifactCapabilities } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const capabilities = artifactCapabilities();
-const soft = { skip: !capabilities.includes("soft-delete") };
+const soft = { skip: !hasExtension("orm.soft-delete") };
 type Models = Record<string, any>;
 const bound = (b: unknown): any => b;
 

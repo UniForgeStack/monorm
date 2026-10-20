@@ -65,9 +65,9 @@ the frontend checks extension dependency constraints against that resolved selec
 A manifest capability in `HOST_FEATURE_CAPABILITIES` (`query-defaults`, `model-composition`,
 `proxy-models`, `generic-relations`) also turns on the host Cargo feature of the same name in both bindings.
 `file-storage` is not one: it has no host code and only requires `async-field-adapter.v1`.
-The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host code; see `schema-extensions.md`.
-Do not add those features by hand; select the extension crate.
-`scripts/feature-check.sh` builds one artifact per such extension, and one with all of them, and runs every suite on each.
+The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
+Select the extension crates.
+`scripts/feature-check.sh` builds one artifact per host feature, one `tracking` artifact with the three column-role extensions, and one with all of them, and runs every suite on each.
 
 Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
 For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
