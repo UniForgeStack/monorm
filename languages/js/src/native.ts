@@ -141,6 +141,7 @@ export interface NativeEngine extends NativeInspector {
     trace?: NativeTrace | null,
     returning?: boolean,
     scope?: string | null,
+    withoutDefaults?: string | null,
   ): Promise<unknown>;
   copyInsert(model: string, fields: string[], rows: unknown[][], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<number>;
   attach(model: string, parentId: unknown, fields: string[], rows: unknown[][], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<unknown>;

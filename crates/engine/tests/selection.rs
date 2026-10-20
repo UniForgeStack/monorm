@@ -330,6 +330,32 @@ mod unset_when_absent {
 }
 
 #[test]
+fn upsert_bypass_names_the_defaults_it_skips() {
+    use orm_core::ir::Bypass;
+    use orm_engine::{db, plan::{plan_insert, OnConflict}};
+    let schema = Schema::from_ir(serde_json::from_value(schema(true)).unwrap()).unwrap();
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let sql = |bypass: Bypass, update: bool| {
+            let conflict = if update { OnConflict::Update(vec!["id".into()], None, vec!["value".into()], vec![]) }
+                else { OnConflict::Nothing(vec!["id".into()], None) };
+            plan_insert(&schema, Target::new(dialect), "Selected", &["id".into(), "value".into()],
+                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), &NoParams, false, &bypass)
+                .map(|(stmt, _)| db::build(dialect, &stmt).0)
+        };
+        for bypass in [Bypass::All(false), Bypass::Names(vec![])] {
+            assert!(sql(bypass, true).unwrap().contains(" DO UPDATE SET \"value\" = \"excluded\".\"value\" WHERE "), "{dialect:?}");
+        }
+        for bypass in [Bypass::All(true), Bypass::Names(vec!["query".into()])] {
+            let sql = sql(bypass, true).unwrap();
+            assert!(!sql.contains(" WHERE "), "{sql}");
+        }
+        let error = sql(Bypass::Names(vec!["nope".into()]), true).unwrap_err().to_string();
+        assert!(error.contains("unknown default") && error.contains("query"), "{error}");
+        assert!(sql(Bypass::Names(vec!["nope".into()]), false).is_err(), "a name is checked without DO UPDATE too");
+    }
+}
+
+#[test]
 fn neutral_upsert_filters_the_update_action_and_fails_closed() {
     use orm_engine::{db, plan::{plan_insert, OnConflict}};
     let mut raw = schema(true);
@@ -353,7 +379,7 @@ fn neutral_upsert_filters_the_update_action_and_fails_closed() {
                 OnConflict::Update(vec!["id".into()], None, vec!["value".into()], vec![])
             } else { OnConflict::Nothing(vec!["id".into()], None) };
             plan_insert(&schema, Target::new(dialect), "Selected", &["id".into(), "value".into()],
-                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), params, false)
+                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), params, false, &Default::default())
         };
         let error = insert(true, &NoParams).err().expect("missing scope must fail before execution");
         assert!(error.to_string().contains("scope.tenant"), "{error}");
@@ -500,7 +526,7 @@ fn scope_errors_identify_the_prepared_default_at_each_consumer() {
         }
         check(orm_engine::plan::plan_insert(&schema, target, "Child", &["id".into()],
             vec![vec![Some(1.into())]], Some(orm_engine::plan::OnConflict::Update(vec!["id".into()], None, vec!["id".into()], vec![])),
-            &NoParams, false).err().expect("upsert scope"));
+            &NoParams, false, &Default::default()).err().expect("upsert scope"));
         let Operation::Select(q) = serde_json::from_value(json!({"op":"select","model":"Selected","prefetch":[{"relation":"children","model":"Child"}]})).unwrap() else { panic!("select") };
         check(plan_prefetch_only(&schema, target, &q, &NoParams).err().expect("prefetch scope"));
         let bypass = serde_json::from_value(json!({"op":"select","model":"Child","without_defaults":true})).unwrap();

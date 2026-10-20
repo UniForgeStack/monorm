@@ -58,7 +58,7 @@ fn inspect_insert(schema: &schema::Schema, target: Target, model: &str, fields: 
     });
     let values = convert_rows(schema, model, fields, rows, true)?;
     let params = orm_engine::params::Scoped { params: &PyParams(params), scope: &opts.scope };
-    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params, batch_size, returning).map_err(engine_err)?;
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params, batch_size, returning, &opts.without_defaults).map_err(engine_err)?;
     let batching = plans.len() > 1;
     inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
 }
@@ -168,7 +168,7 @@ impl PySchema {
     fn validate_insert(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, allowed: Vec<String>) -> PyResult<()> {
         protect::ensure_writable(&self.inner, model, &allowed).map_err(engine_err)?;
         let values = convert_rows(&self.inner, model, &fields, rows, true)?;
-        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), model, &fields, values, None, &orm_engine::NoParams).map_err(engine_err)?;
+        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), model, &fields, values, None, &orm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
         Ok(())
     }
 
@@ -535,8 +535,9 @@ impl Engine {
     /// None. `conflict_where` (condition IR, parameters in `params`) is the predicate of a
     /// partial unique index.
     /// Rows beyond the parameter limit, or beyond `batch_size`, go to further statements
-    /// in one transaction (inside `tx` when given).
-    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_where = None, trace = None, returning = true, scope = None))]
+    /// in one transaction (inside `tx` when given). `without_defaults` (JSON: `false`,
+    /// `true` or a list of names) skips defaults of the model in the DO UPDATE condition.
+    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_where = None, trace = None, returning = true, scope = None, without_defaults = "false"))]
     #[allow(clippy::too_many_arguments)]
     fn insert<'py>(
         &self,
@@ -556,8 +557,10 @@ impl Engine {
         trace: Option<&Bound<'py, Trace>>,
         returning: bool,
         scope: Option<&str>,
+        without_defaults: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
+        let without_defaults: ir::Bypass = serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?;
         let set: Vec<ir::Assignment> = match set {
             Some(json) => serde_json::from_str(json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
             None => vec![],
@@ -574,7 +577,7 @@ impl Engine {
         let scope = serde_json::from_str(scope.unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
         let params = orm_engine::params::Scoped { params: &PyParams(&params), scope: &scope };
         let plans =
-            exec::plan_inserts(&self.schema, self.target, model, &fields, values, conflict, &params, batch_size, returning)
+            exec::plan_inserts(&self.schema, self.target, model, &fields, values, conflict, &params, batch_size, returning, &without_defaults)
                 .map_err(engine_err)?;
         let target = self.target;
         let conn = self.traced(tx, trace);
