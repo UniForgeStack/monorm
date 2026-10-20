@@ -349,13 +349,13 @@ async def test_one_row_indices_and_default_order(one_row_topics):
     assert (await t[-1]).name == "a"
     assert (await t.order_by(Topic.name)[0]).name == "a"
     assert (await t.without_defaults()[0]).name == "c"
-    assert (await t[1:3][1]).name == "a"
-    assert (await t[1:2].first()).name == "b"
+    assert [x.name for x in await t[1:3]] == ["b", "a"]
+    assert (await t[orm.param("i")].prepare()(i=2)).name == "a"
 
 
 async def test_one_row_missing_and_required(one_row_topics):
     _, Topic, t = one_row_topics
-    assert await t[1:2][1] is None
+    assert await t[orm.param("i")].prepare()(i=99) is None
     assert await t[99] is None
     assert await t.filter(Topic.name == "missing").first() is None
     with pytest.raises(Topic.DoesNotExist):
@@ -402,28 +402,47 @@ async def test_one_row_create_task(one_row_topics):
 
 async def test_one_row_index_errors(one_row_topics):
     _, _, t = one_row_topics
-    for sliced in [t[:2], t[1:], t.limit(0), t.offset(1)]:
-        with pytest.raises(ValueError, match="limit or offset"):
-            sliced.last()
-        with pytest.raises(ValueError, match="limit or offset"):
-            sliced[-1]
     with pytest.raises(ValueError):
         t[-2]
-    with pytest.raises(orm.QueryError, match="param"):
-        t[orm.param("index")]
     limited = t.limit(orm.param("limit"))
-    with pytest.raises(orm.QueryError, match="param"):
-        limited[0]
-    with pytest.raises(orm.QueryError, match="param"):
-        limited.first()
-    with pytest.raises(orm.QueryError, match="param"):
-        limited.get()
-    with pytest.raises(ValueError, match="limit or offset"):
-        limited.last()
-    with pytest.raises(orm.QueryError, match="param"):
+    for cut in [t[:2], t[1:], t.limit(0), t.offset(1), limited]:
+        for one in [lambda q: q.first(), lambda q: q.last(), lambda q: q[0], lambda q: q[-1], lambda q: q.get()]:
+            with pytest.raises(orm.QueryError, match=r"use \[n\]"):
+                one(cut)
+    with pytest.raises(orm.QueryError, match=r"use \[n\]"):
         await limited.prepare().first(limit=0)
-    with pytest.raises(orm.QueryError, match="param"):
+    with pytest.raises(orm.QueryError, match=r"use \[n\]"):
         await limited.prepare().get(limit=0)
+
+
+async def test_one_row_param_index(one_row_topics):
+    db, Topic, t = one_row_topics
+    prepared = t[orm.param("n")].prepare()
+    sql = prepared.sql(n=1)
+    assert sql.endswith("LIMIT 1 OFFSET 1")
+    assert [(await prepared(n=i)).name for i in range(3)] == ["c", "b", "a"]
+    assert await prepared(n=9) is None
+
+
+def test_slice_combinations_raise(one_row_topics):
+    _, _, t = one_row_topics
+    p = orm.param("n")
+    for build in [
+        lambda: t[2:5][1:2],
+        lambda: t[2:5][1],
+        lambda: t[2][5],
+        lambda: t[2:][:3],
+        lambda: t.limit(3)[1:2],
+        lambda: t.offset(2)[1:],
+        lambda: t[1:2].limit(1),
+        lambda: t[1:2].offset(1),
+        lambda: t.limit(1).limit(2),
+        lambda: t.offset(1).offset(2),
+        lambda: t.limit(p)[:2],
+    ]:
+        with pytest.raises((orm.QueryError, TypeError)):
+            build()
+    assert t.limit(2).offset(1).sql() == t.offset(1).limit(2).sql()
 
 
 async def test_one_row_prepared(one_row_topics, observe_queries):

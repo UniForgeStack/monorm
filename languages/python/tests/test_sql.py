@@ -108,7 +108,8 @@ def test_to_one_load_and_order_use_left_joins():
 
 def test_slicing():
     assert Post.objects.all()[5:10].sql().endswith("LIMIT 5 OFFSET 5")
-    assert Post.objects.all()[5:10][1:3].sql().endswith("LIMIT 2 OFFSET 6")
+    assert Post.objects.all()[5:].sql().endswith("OFFSET 5")
+    assert Post.objects.all()[:5].sql().endswith("LIMIT 5")
 
 
 def test_null_comparisons():
@@ -361,7 +362,8 @@ def test_lock_guard_keeps_for_update():
 @pytest.mark.parametrize("limit,offset", [(10, None), (None, 5), (10, 5), (0, None)])
 def test_paginated_relation_aggregates_keep_scalar_subqueries(limit, offset):
     query = User.objects.select(User.id, func.count(User.posts), func.max(User.posts.views))
-    query = query.order_by(User.name, User.id).limit(limit).offset(offset)
+    ordered = query = query.order_by(User.name, User.id)
+    query = query.limit(limit).offset(offset)
     sql = query.sql()
     assert "LATERAL" not in sql
     assert '(SELECT COUNT(*) FROM "posts"' in sql
@@ -373,7 +375,7 @@ def test_paginated_relation_aggregates_keep_scalar_subqueries(limit, offset):
         assert f"OFFSET {offset}" in sql
     assert query.inspect().statements[0].joins_count == 0
     assert query.inspect().statements[0].correlated_count == 2
-    assert "LATERAL" in query.limit(None).offset(None).sql()
+    assert "LATERAL" in ordered.sql()
 
 
 def test_select_to_one_columns_join_and_to_many_is_rejected():

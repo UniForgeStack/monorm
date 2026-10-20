@@ -94,7 +94,7 @@ async def test_prepared_limit_offset_and_expressions(clean):
     assert [p.title for p in await page(bump=10, min=55, n=10, skip=0)] == ["a_2%", "b1"]
     assert await page.count(bump=0, min=0, n=3, skip=2) == 2
     # A one-row query must not silently replace the parameterized limit.
-    with pytest.raises(QueryError, match="param"):
+    with pytest.raises(QueryError, match=r"use \[n\]"):
         await page.first(bump=0, min=10, n=5, skip=1)
     with pytest.raises(QueryError, match="non-negative integer"):
         await page(bump=0, min=0, n=-1, skip=0)
@@ -166,7 +166,7 @@ def test_param_misuse():
         Post.objects.filter(Post.id == param("id")).sql()
     with pytest.raises(TypeError, match="in_"):
         Post.id.in_(param("ids"))
-    with pytest.raises(QueryError, match="sliced"):
+    with pytest.raises(QueryError, match="single slice"):
         Post.objects.limit(param("n"))[:5]
     with pytest.raises(ValueError, match="identifier"):
         param("not a name")

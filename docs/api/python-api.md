@@ -184,7 +184,7 @@ User.objects.all()[10:20]                     # LIMIT 10 OFFSET 10
 async for u in User.objects.filter(...): ...
 
 await qs.first() / qs.last()                  # lazy OneRowQuery; by ordering, else pk; None if empty
-await qs[n] / qs[-1]                         # row n of this slice; [-1] is last()
+await qs[n] / qs[-1]                         # row n (n may be orm.param()); [-1] is last()
 qs.first().prepare() / qs.first().inspect()  # prepare a one-row read or inspect its plan
 await qs.get(cond)                            # User | None; rejects multiple matches
 await qs.require().get(cond)                  # User; rejects zero or multiple matches
@@ -203,8 +203,9 @@ qs.model                                      # the model class
 ```
 
 `OneRowQuery` runs afresh on each await; TypeScript reuses the result of its first await.
-Only `-1` or non-negative integer indices are supported; another negative index raises `ValueError`, and a `param()` index raises `QueryError`.
-`last()` (also `[-1]`) raises `ValueError` at the call on a query set with a limit or offset; a `param()` limit before `first()`, `[n]`, `get()` or prepared `first()` / `get()` raises `QueryError`.
+Only `-1` or non-negative integer indices are supported; another negative index raises `ValueError`.
+`first()`, `last()` (also `[-1]`), `get()`, `[n]` and prepared `first()` / `get()` raise `QueryError` at the call on a query set with any `limit()`, `offset()` or slice, literal or `param()`: read the n-th row with `[n]` (`qs[65]`, not `offset(60)[5]`). `[orm.param("n")]` gives `OFFSET $n LIMIT 1`.
+A query set takes one slice, or one `limit()` and one `offset()` in either order; a second slice, a slice after `limit()` / `offset()`, `limit()` / `offset()` after a slice, and the same method twice raise `QueryError`.
 Use a relation's `[n].label(name)` in `load()` to store one row per parent (or `None`); `get().label(name)` raises `TypeError`.
 
 A model with a composite primary key (`@@id([shop, id])`) has a tuple `pk` in key order, `(1, 7)`.
@@ -387,6 +388,7 @@ await post.qs().delete()
 | `await post.refresh(lock=True)` | `await post.qs().lock()` |
 | `await job.refresh(lock=True, skip_locked=True)` gives `False` | `await job.qs().lock(skip_locked=True)` gives `[]` |
 | `await orm.prefetch(posts, Post.author)` | `await orm.of(posts).load(Post.author)` |
+| `await qs.offset(i).first()` (or `qs[i:][0]`) | `await qs[i]`, or `qs[orm.param("i")]` in a prepared query |
 
 `refresh()` raised `DoesNotExist` for a row that is not found; `qs().lock()` and the other bound reads give `[]`.
 
@@ -603,7 +605,7 @@ reuses the statement, which is prepared once per connection.
 * Values can't be `None`: whether a comparison is `= $1` or `IS NULL` is fixed when the
   query is built, so write `is_null()` into the query instead.
 * `in_(param(...))` is rejected, because the number of values is part of the query. A
-  query set limited by a `param()` can't be sliced; use `limit()` / `offset()`.
+  `param()` can be the index in `[param("n")]`; a query set limited by a `param()` can't be sliced.
 * A `param()` outside a prepared query raises `QueryError`. Calls with a missing or
   unknown name raise `TypeError`.
 * Prepared queries read. Inserts and updates already send their rows to Rust without an

@@ -652,7 +652,7 @@ async def test_batches(clean, observe_queries):
     assert [event.rows for event in events] == [7, 7, 7, 4]
     assert seen == sorted(p.id for p in posts)
     assert [len(b) async for b in Post.objects.filter(Post.id < 0).batches(10)] == []
-    assert [len(b) async for b in Post.objects.all()[:0].filter(Post.id > 0).limit(None).batches(25)] == [25]
+    assert [len(b) async for b in Post.objects.filter(Post.id > 0).batches(25)] == [25]
     batch = await anext(Post.objects.load(Post.author).batches(3))
     assert batch[0].author == alice
     with pytest.raises(orm.QueryError):

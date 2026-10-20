@@ -155,8 +155,8 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 |---|---|
 | `await qs` / `for await (const u of qs)` | `R[]`, cached per query set (below) |
 | `.all()` | `Promise<R[]>`, always a fresh query |
-| `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws `RangeError` at the call on a query set with a limit or an offset |
-| `.at(n)` | `OneRowQuery<R \| null>`: the row at position `n` of the order; `at(-1)` is `last()`, another negative `n` throws |
+| `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws `QueryError` at the call on a query set with a limit, offset or slice |
+| `.at(n)` | `OneRowQuery<R \| null>`: the row at position `n` of the order; `at(-1)` is `last()`, another negative `n` throws; `n` may be `param()` |
 | `.get(...conditions)` | `OneRowQuery<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
 | `.require().get(...)` | `OneRowQuery<R>`; throws on zero or multiple matches |
 | `.require().first()` / `.require().last()` / `.require().at(n)` | `OneRowQuery<R>`; throws on zero matches |
@@ -171,7 +171,8 @@ A `OneRowQuery` is lazy: `qs.first()` starts no query until `then`, `catch` or `
 Before this, `first()`, `last()` and `get()` started the query at the call; code that calls one and never awaits it no longer queries.
 It has `.prepare()` (the prepared query's `.run(values)` gives the row), `.inspect()` and `.sql()`.
 Awaiting the same `OneRowQuery` again reuses its first result; Python runs afresh on each await.
-A `param()` limit before `first()`, `at(n)`, `get()` or prepared `first()` / `get()` raises `QueryError`; `last()` and `at(-1)` reject any limit or offset with `RangeError` at the call.
+`first()`, `last()`, `at(n)`, `get()` and prepared `first()` / `get()` throw `QueryError` at the call on a query set with any `limit()`, `offset()` or `slice()`, literal or `param()`: read the n-th row with `at(n)`. `at(param("n"))` gives `OFFSET $n LIMIT 1`.
+A query set takes one `slice()`, or one `limit()` and one `offset()` in either order; any other combination throws `QueryError`.
 A one-row relation load needs `.at(n).label(name)`; `.get().label(name)` throws `TypeError`.
 
 `.require()` clones the query and rejects absent row results with
@@ -333,6 +334,7 @@ await post.qs().delete();
 | `await post.refresh({ lock: true })` | `await post.qs().lock()` |
 | `await job.refresh({ lock: true, skipLocked: true })` gives `false` | `await job.qs().lock({ skipLocked: true })` gives `[]` |
 | `await prefetch(posts, Post.author)` | `await of(posts).load(Post.author)` |
+| `await qs.offset(i).first()` | `await qs.at(i)`, or `qs.at(param("i"))` in a prepared query |
 
 `refresh()` threw `DoesNotExist` for a row that is not found; `qs().lock()` and the other bound reads give `[]`.
 
