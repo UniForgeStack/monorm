@@ -1662,7 +1662,7 @@ async def prefetch(
                 keys.append(key)
     rows = [[o._field_value(k) for k in keys] for o in objs]
     op, params = _with_scope(json.dumps(ir), params)
-    await database._engine.prefetch(op, params, keys, rows, objs, database._tx(), db)
+    await database._call(lambda trace: database._engine.prefetch(op, params, keys, rows, objs, database._tx(), db, trace))
 
 
 def _bound_objects(objs: Iterable[M] | M) -> tuple[M, ...]:

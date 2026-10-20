@@ -122,9 +122,9 @@ async def test_a_relation_only_load_runs_no_root_query(clean, db, observe_querie
     alice, posts = await seed()
     await Comment.objects.insert_many([{"post": posts[0], "body": "a"}, {"post": posts[1], "body": "b"}])
     held = await stale(posts)
-    with observe_queries(db) as events:  # a root query would show
+    with observe_queries(db) as events:
         result = await Post.objects.of(held).load(Post.comments)
-    assert events == [] and result == held
+    assert len(events) == 1 and "comment" in events[0].sql.lower() and result == held
     assert [len(p.comments.cached) for p in held] == [1, 1, 0, 0]
     assert held[0].title == "p0"
 
@@ -190,6 +190,15 @@ async def test_a_relation_only_read_with_a_lock_reads_the_keys_with_for_update(c
     async with db.transaction():
         await orm.of(held).lock().load(Post.comments)
     assert any("FOR UPDATE" in e.sql for e in events)
+
+
+async def test_a_relation_only_read_gives_its_statements_to_on_query(clean, db):
+    _, posts = await seed()
+    held = await stale(posts)
+    events: list[orm.QueryEvent] = []
+    db.on_query(events.append)
+    await orm.of(held).load(Post.comments)
+    assert any("comment" in e.sql.lower() for e in events)
 
 
 async def test_using_names_the_database_to_read(clean, db):

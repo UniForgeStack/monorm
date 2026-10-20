@@ -2530,7 +2530,7 @@ export async function prefetch(
   const names = keys.map((k) => meta.fieldByIr.get(k)!.name);
   const rows = objs.map((o) => names.map((n) => fieldValue(o, n)));
   const [op, withParams] = withScope(JSON.stringify(ir), params);
-  const res = await wait(() => db.engine.prefetch(op, withParams, keys, rows, db.tx()));
+  const res = await db.send((tx, trace) => db.engine.prefetch(op, withParams, keys, rows, tx, trace));
   new Builder(db.registry, using ?? (objs[0]![DB] as Database | undefined)).prefetched(meta, objs, res);
 }
 

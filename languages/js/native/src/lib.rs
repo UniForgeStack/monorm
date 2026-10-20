@@ -715,6 +715,7 @@ impl Engine {
     /// names the root fields they read, `rows` holds those values per parent. The promise
     /// gives `{rows, prefetched}`, `rows` the parents' key rows.
     #[napi(ts_return_type = "Promise<unknown>")]
+    #[allow(clippy::too_many_arguments)]
     pub fn prefetch<'env>(
         &self,
         env: &'env Env,
@@ -723,6 +724,7 @@ impl Engine {
         keys: Vec<String>,
         rows: Unknown<'_>,
         tx: Option<&Transaction>,
+        trace: Option<&Trace>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         let ir::Operation::Select(q) = parse_op(&op_json).map_err(engine_err)? else {
             return Err(query_err("prefetch() takes a select"));
@@ -741,7 +743,7 @@ impl Engine {
             }
             values.push(out);
         }
-        let conn = self.conn(tx);
+        let conn = self.traced(tx, trace);
         let schema = self.schema.clone();
         env.spawn_future_with_callback(
             async move { exec::prefetch(conn.as_ref(), target, Box::new(exec::ValueRows(values)), plans).await.map_err(engine_err) },
