@@ -908,7 +908,7 @@ impl<'s> Planner<'s> {
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
                 #[cfg(feature = "model-composition")]
                 if crate::composed::is_composed(schema, &q.model)? {
-                    let mut select: Select = serde_json::from_value(serde_json::json!({"model":q.model,"without_defaults":q.without_defaults})).map_err(|e| query_err(e.to_string()))?;
+                    let mut select: Select = serde_json::from_value(serde_json::json!({"model":q.model,"without_defaults":q.without_defaults,"without_root_filter":q.without_root_filter})).map_err(|e| query_err(e.to_string()))?;
                     select.filters = q.filters.clone(); select.with = q.with.clone();
                     let mut matched = p.build_select(&select)?.stmt;
                     let prior_joins = p.joins.len();
@@ -1180,10 +1180,10 @@ impl<'s> Planner<'s> {
 
     // -- filters ------------------------------------------------------------------------
 
-    fn apply_filters(&mut self, filters: &[Expr], without_defaults: &Bypass) -> Result<Vec<SExpr>> {
+    fn apply_filters(&mut self, filters: &[Expr], without_defaults: &Bypass, without_root_filter: bool) -> Result<Vec<SExpr>> {
         self.policy_bypass = without_defaults.clone();
         let mut out: Vec<SExpr> = filters.iter().map(|f| self.cond(f)).collect::<Result<_>>()?;
-        if let Some(filter) = active_filter(self.model(self.root), without_defaults) {
+        if let Some(filter) = active_filter(self.model(self.root), without_defaults).filter(|_| !without_root_filter) {
             out.push(self.cond(&filter)?); self.root_filtered = true;
         }
         #[cfg(feature = "proxy-models")]
@@ -2626,7 +2626,7 @@ impl<'s> Planner<'s> {
             let kind = if j.outer { JoinType::LeftJoin } else { JoinType::InnerJoin };
             stmt.join(kind, Alias::new(&j.cte), on);
         }
-        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
             stmt.and_where(w);
         }
         for o in q.order.iter().filter(|_| order) {
@@ -2992,7 +2992,7 @@ impl<'s> Planner<'s> {
         for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name)) {
             stmt.value(Alias::new(column), v);
         }
-        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
             stmt.and_where(w);
         }
         if !q.returning {
@@ -3022,7 +3022,7 @@ impl<'s> Planner<'s> {
         for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false) {
             stmt.value(Alias::new(column), v);
         }
-        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
             stmt.and_where(w);
         }
         stmt.and_where(self.cond(&rewrite.guard)?);
@@ -3047,7 +3047,7 @@ impl<'s> Planner<'s> {
         crate::ownership::require_local_write(root)?;
         let mut stmt = Query::delete();
         stmt.from_table(Alias::new(root.table()));
-        for w in self.apply_filters(&q.filters, &q.without_defaults)? {
+        for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
             stmt.and_where(w);
         }
         if !q.returning {
@@ -3175,7 +3175,7 @@ pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_
             _ => Err(Error::query("a default order is a root column")),
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(serde_json::json!({"order":keys, "filtered":active_filter(schema.model(schema.model_idx(&q.model).map_err(query_err)?), &q.without_defaults).is_some()}))
+    Ok(serde_json::json!({"order":keys, "filtered":!q.without_root_filter && active_filter(schema.model(schema.model_idx(&q.model).map_err(query_err)?), &q.without_defaults).is_some()}))
 }
 
 /// The filter defaults of a select IR document, as `[{source, name, expr, active}]`.
@@ -3189,7 +3189,7 @@ pub fn current_filter_json(schema: &Schema, select_json: &str) -> Result<serde_j
     model.read_defaults.parts.iter().filter_map(|p| {
         let expr = p.filter_json.as_ref()?;
         Some(Ok(serde_json::json!({
-            "source": p.identity.source, "name": p.identity.name, "expr": expr, "active": !q.without_defaults.skips(&p.identity.name),
+            "source": p.identity.source, "name": p.identity.name, "expr": expr, "active": !q.without_root_filter && !q.without_defaults.skips(&p.identity.name),
         })))
     }).collect()
 }
@@ -3636,7 +3636,7 @@ pub fn plan_update_many(
         planner.require(planner.caps.returning, "update_many().returning()")?;
     }
     validate_bypass(m, without_defaults)?;
-    let where_ = planner.apply_filters(filters, without_defaults)?;
+    let where_ = planner.apply_filters(filters, without_defaults, false)?;
     let key_cols: Vec<SExpr> = cols[..width].iter().map(|c| col(&table, &c.column)).collect();
     let mut stmts = vec![];
     for chunk in rows.chunks(chunk_rows.max(1)) {

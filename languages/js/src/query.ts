@@ -512,6 +512,8 @@ export interface QueryState {
   readonly required?: boolean;
   readonly modelHelpers?: readonly string[];
   readonly withoutDefaults: boolean | readonly string[];
+  /** Skip the root model's default filter only: `of()` sets it, joined and aggregated targets keep theirs. */
+  readonly withoutRootFilter?: boolean;
   readonly withoutRelated: boolean;
   readonly modelFields: readonly string[] | undefined;
   /** `modelFields` adds to the model's default selection (a bare path beside columns). */
@@ -792,7 +794,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * and for a query set with order, slice, joins or a source other than the model's table.
    */
   of<B extends M["row"]>(objs: B | Iterable<B>): BoundQuerySetOf<M, B> {
-    return makeBound(this as never, typeof objs === "object" && objs !== null && Symbol.iterator in objs ? [...(objs as Iterable<B>)] : [objs]) as never;
+    return makeBound(this.clone({ withoutRootFilter: true }) as never, typeof objs === "object" && objs !== null && Symbol.iterator in objs ? [...(objs as Iterable<B>)] : [objs]) as never;
   }
 
   /** Keep rows matching all `conditions`. */
@@ -1054,6 +1056,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const ctx = this.context(params, outer, ctes);
     const ir: IR = { op, model: this.rootName() };
     if (s.withoutDefaults) ir["without_defaults"] = s.withoutDefaults;
+    if (s.withoutRootFilter) ir["without_root_filter"] = true;
     if (s.withoutRelated) ir["without_related"] = true;
     if (s.modelFields !== undefined) {
       ir["model_fields"] = s.modelFields;
@@ -1147,6 +1150,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const ctx = new IRContext(this.meta, params);
     const ir: IR = { op, model: this.meta.name, filters: s.filters.map((f) => f.ir(ctx)) };
     if (s.withoutDefaults) ir["without_defaults"] = s.withoutDefaults;
+    if (s.withoutRootFilter) ir["without_root_filter"] = true;
     if (s.modelFields !== undefined) ir["model_fields"] = s.modelFields;
     if (values !== undefined) {
       ir["set"] = assignments(this.meta, values, ctx);
@@ -1268,7 +1272,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   private defaultsSelect(): string {
-    return JSON.stringify({ model: this.meta.name, without_defaults: this.state.withoutDefaults, from: this.state.from ? "cte" : null });
+    return JSON.stringify({ model: this.meta.name, without_defaults: this.state.withoutDefaults, without_root_filter: this.state.withoutRootFilter ?? false, from: this.state.from ? "cte" : null });
   }
 
   /**

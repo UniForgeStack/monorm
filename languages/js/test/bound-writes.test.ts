@@ -146,7 +146,7 @@ model Item {
       const items = Item.objects.using(db);
       const held = await items.insertMany([1, 2].map((id: number) => ({ id, name: `i${id}` }))).returning();
       await of(held[0]).delete();
-      assert.equal(await of(held).count(), 1);
+      assert.equal(await of(held).count(), 2);
       assert.equal(await bound(of(held)).allWithDeleted().count(), 2);
       assert.equal(await bound(of(held)).deletedOnly().count(), 1);
     } finally { await db.dropTables(); await db.close(); }

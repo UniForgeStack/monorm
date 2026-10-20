@@ -82,7 +82,7 @@ model Book {
   A bare `without_defaults()` removes every default.
   `deleted_only()` (`deletedOnly()`) bypasses `"deleted"` and gives only the soft-deleted rows.
 * An instance method that needs its own row (`update()`, `load()`, `delete()`) finds the row even when a default hides it.
-  `post.qs()` applies the defaults: use `post.qs().without_defaults()` for a soft-deleted row.
+  `post.qs()` and `of(objs)` also apply no default to their own rows.
 * Database mode adds a `BEFORE DELETE ... FOR EACH ROW WHEN (OLD.deleted_at IS NULL)` trigger.
   It sets the field and cancels the delete (Postgres `RETURN NULL`, SQLite `RAISE(IGNORE)`).
   A raw `DELETE` of a live row soft-deletes it.
@@ -125,6 +125,10 @@ model Book {
   Before, they dropped all of them, including a tenant filter.
 * An upsert (`on_conflict(update=True)`) whose key a soft-deleted row holds changes nothing: the conflict blocks the insert, the `"deleted"` default blocks the update.
   Undelete the row first, or hard-delete it.
+* A bound query set (`of(objs)`, `Model.objects.of(objs)`, `post.qs()`) applies no default of the model to its own rows.
+  Before, it applied them, so a soft-deleted or tenant-hidden object was not read, locked, updated or deleted by `of()`.
+  Now `of(objs).update()` and `of(objs).delete()` ignore the tenant and soft-delete filters on the root, as `post.save()` and `post.delete()` do.
+  `filter()` still narrows, and a relation inside a bound `load()` keeps the default of its target model.
 * No changelog file exists, so this list is the record.
 
 ## Behavior change: upsert
