@@ -44,6 +44,7 @@ pub struct SchemaUnit {
     pub path: PathBuf,
     pub models: Vec<String>,
     pub enums: Vec<String>,
+    pub types: Vec<String>,
 }
 
 pub struct CompiledProject {
@@ -87,7 +88,7 @@ impl Loader {
         let items = if offset == 0 { syntax::parse(source) } else { syntax::parse_at(source, offset + 1) }
             .map_err(|e| self.located(e))?;
         let index = self.units.len();
-        self.units.push(SchemaUnit { path: origin.to_path_buf(), models: vec![], enums: vec![] });
+        self.units.push(SchemaUnit { path: origin.to_path_buf(), models: vec![], enums: vec![], types: vec![] });
         let mut out = vec![];
         for mut item in items {
             match &mut item {
@@ -129,6 +130,7 @@ impl Loader {
                     }
                 }
                 syntax::Item::Enum(e) => self.units[index].enums.push(e.name.clone()),
+                syntax::Item::Type(t) => self.units[index].types.push(t.name.clone()),
                 _ => {}
             }
             out.push(item);

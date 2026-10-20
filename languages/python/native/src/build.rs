@@ -23,6 +23,32 @@ struct ModelClass {
     cls: Py<PyType>,
     /// Field names, interned, in schema order (the order of the row columns).
     names: Vec<Py<PyString>>,
+    /// Nested values the class assembles from the cells of their leaves.
+    decoders: Vec<Decoder>,
+}
+
+/// `cls._meta.decoders`: once every leaf of a nested value is in the instance, the leaves
+/// go to `func` and its result is stored under `target`.
+struct Decoder {
+    target: Py<PyString>,
+    leaves: Vec<Py<PyString>>,
+    func: Py<PyAny>,
+}
+
+fn decoders(py: Python<'_>, cls: &Bound<'_, PyAny>) -> PyResult<Vec<Decoder>> {
+    let Ok(items) = cls.getattr(pyo3::intern!(py, "_meta")).and_then(|m| m.getattr(pyo3::intern!(py, "decoders"))) else {
+        return Ok(vec![]);
+    };
+    let mut out = Vec::new();
+    for item in items.try_iter()? {
+        let (target, leaves, func): (String, Vec<String>, Py<PyAny>) = item?.extract()?;
+        out.push(Decoder {
+            target: PyString::intern(py, &target).unbind(),
+            leaves: leaves.iter().map(|n| PyString::intern(py, n).unbind()).collect(),
+            func,
+        });
+    }
+    Ok(out)
 }
 
 /// The Python class of each model, by schema model index, and the members of each
@@ -65,6 +91,7 @@ impl Classes {
             out.push(match classes.get_item(&m.ir.name)? {
                 None => None,
                 Some(cls) => Some(ModelClass {
+                    decoders: decoders(py, &cls)?,
                     cls: cls.cast_into::<PyType>()?.unbind(),
                     names: m.fields().iter().map(|f| PyString::intern(py, &f.name).unbind()).collect(),
                 }),
@@ -153,12 +180,37 @@ impl<'a, 'py> Builder<'a, 'py> {
                 target.set_item(mc.names[f.field.position].bind(self.py), self.cell(rows, r, slot, types[slot])?)?;
             }
             inst.dict.set_item("_orm_internal", internal)?;
+            self.assemble(mc, &inst)?;
             return Ok(inst);
         }
         for (i, name) in mc.names.iter().enumerate() {
             inst.dict.set_item(name.bind(self.py), self.cell(rows, r, start + i, types[start + i])?)?;
         }
+        self.assemble(mc, &inst)?;
         Ok(inst)
+    }
+
+    /// Replace the leaf cells of each nested value by the value (a group with a leaf not
+    /// selected stays as its cells).
+    fn assemble(&self, mc: &ModelClass, inst: &Instance<'py>) -> PyResult<()> {
+        for d in &mc.decoders {
+            let mut values = Vec::with_capacity(d.leaves.len());
+            for leaf in &d.leaves {
+                match inst.dict.get_item(leaf.bind(self.py))? {
+                    Some(v) => values.push(v),
+                    None => break,
+                }
+            }
+            if values.len() != d.leaves.len() {
+                continue;
+            }
+            for leaf in &d.leaves {
+                inst.dict.del_item(leaf.bind(self.py))?;
+            }
+            let value = d.func.bind(self.py).call1(PyTuple::new(self.py, values)?)?;
+            inst.dict.set_item(d.target.bind(self.py), value)?;
+        }
+        Ok(())
     }
 
     fn clear_absent(&self, parent: &Instance<'py>, attr: &str) -> PyResult<()> {

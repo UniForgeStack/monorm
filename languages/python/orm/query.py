@@ -32,6 +32,7 @@ from .expr import (
 )
 from . import pagination
 from .fields import BelongsTo, HasMany, ManyToMany, key_items, key_value
+from .nested import NestedRef
 from .pagination import Page
 from .protection import allowed_writes
 from . import adapters, debug
@@ -260,7 +261,7 @@ def _derive(
             continue
         if isinstance(item, ColumnRef):
             if not item._path:
-                own.append(item._field.name)
+                own.extend(item._load_names() if isinstance(item, NestedRef) else [item._field.name])
                 continue
             hops = item._path
         elif isinstance(item, RelationPath):
@@ -282,8 +283,9 @@ def _derive(
                 related.extend(hops[:i] for i in range(1, len(hops) + 1) if hops[:i] not in related)
                 if isinstance(item, ColumnRef):
                     names = fields.setdefault(hops, [])
-                    if item._field.name not in names:
-                        names.append(item._field.name)
+                    for name in item._load_names() if isinstance(item, NestedRef) else [item._field.name]:
+                        if name not in names:
+                            names.append(name)
                 else:
                     whole.add(hops)
             continue
@@ -312,7 +314,9 @@ def _derive(
                 else:
                     base = item
             elif isinstance(item, ColumnRef):
-                column: ColumnRef[Any] = ColumnRef(target, rest, item._field)
+                column: ColumnRef[Any] = (
+                    item._at(target, rest) if isinstance(item, NestedRef) else ColumnRef(target, rest, item._field)
+                )
                 if not any(c._path == rest and c._field is item._field for c in inner if isinstance(c, ColumnRef)):
                     inner.append(column)
             elif rest and isinstance(item, RelationPath):
@@ -571,7 +575,7 @@ class QuerySet(Generic[M]):
                 self._check_path(item)
             elif isinstance(item, ColumnRef) and item._root is self._model:
                 if not item._path:
-                    own.append(item._field.name)
+                    own.extend(item._load_names() if isinstance(item, NestedRef) else [item._field.name])
             else:
                 raise TypeError(
                     f"load() takes columns, relations and relation query sets of {self._model.__name__}, got {item!r}"
@@ -1822,7 +1826,8 @@ class BoundQuerySet(Generic[M]):
         query = self._query()
         if any("_orm_internal" in o.__dict__ for o in self._objs):
             meta = self._qs._model._meta
-            held = [n for n in meta.field_names if any(n in o.__dict__ for o in self._objs)]
+            group = meta.leaf_group
+            held = [n for n in meta.field_names if any(n in o.__dict__ or group.get(n) in o.__dict__ for o in self._objs)]
             query = query.load(*(ColumnRef(self._qs._model, (), meta.fields[n]) for n in held))
         returned = {row.pk: row for row in await build(query)}
         if len(self._objs) == 1 and len(returned) == 1:

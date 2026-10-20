@@ -1220,6 +1220,8 @@ class RelationPath(Generic[M]):
             if name.startswith("_"):
                 raise AttributeError(name)
             meta = self._target._meta
+            if name in meta.nested:
+                return meta.nested[name].__get__(None, self._target)._at(self._root, self._path)
             if name in meta.fields:
                 return ColumnRef(self._root, self._path, meta.fields[name])
             if name in meta.relations:
@@ -1229,7 +1231,7 @@ class RelationPath(Generic[M]):
 
     def __dir__(self) -> Iterable[str]:
         meta = self._target._meta
-        return [*meta.fields, *meta.relations, "objects"]
+        return [*meta.public_names, *meta.relations, "objects"]
 
     @property
     def objects(self) -> QuerySet[M]:

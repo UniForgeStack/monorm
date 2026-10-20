@@ -58,6 +58,7 @@ export { Database, connect, getDatabase, scope } from "./db.js";
 export type { ConnectOptions, QueryEvent, SessionLockOptions } from "./db.js";
 export {
   DatabaseError,
+  DecodeError,
   DoesNotExist,
   IntegrityError,
   LockNotAvailable,

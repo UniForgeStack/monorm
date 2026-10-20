@@ -7,7 +7,7 @@ import { DB, INTERNAL, fieldValue, invalidateReference, type Instance, type Mode
 import { prefetch, registerBound, QuerySet, type Allowed, type LoadAll, type LoadItem, type LockOptions, type Narrow, type RootNames } from "./query.js";
 import type { QueryInspection } from "./inspection.js";
 import { key } from "./value-key.js";
-import type { ModelSpec } from "./meta.js";
+import { slot, type ModelSpec } from "./meta.js";
 
 /** Keys in one read statement: a large set stays under the parameter cap and the expression depth limit.
  * A composite key takes half, as its OR of ANDs is two levels deep per key and SQLite stops at depth 1000. */
@@ -138,7 +138,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     let query = this.inner.using(this.database()).filter(this.keyFilter(first) as never);
     if (this.objs.some((o) => o[INTERNAL])) {
       const loaded = new Set<string>();
-      for (const o of this.objs) for (const f of meta.fieldList) if (Object.hasOwn(o, f.name)) loaded.add(f.ir);
+      for (const o of this.objs) for (const f of meta.fieldList) if (Object.hasOwn(o, slot(f))) loaded.add(f.ir);
       query = query.onlyFields([...new Set([...loaded, ...extra])]);
     }
     // one object, one row: the write may have changed the key, so the row is matched by the filter

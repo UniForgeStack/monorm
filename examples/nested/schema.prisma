@@ -1,0 +1,25 @@
+// Source of truth for examples/nested: nested value types on both storages.
+// models.py / models.pyi / models.ts next to this file are generated from it.
+
+datasource db {
+  provider = "postgresql"
+}
+
+type Geo {
+  lat Float
+  lng Float?
+}
+
+type Address {
+  city   String
+  floor  Int @default(7)
+  big    BigInt
+  opened DateTime
+  geo    Geo?
+}
+
+model Shop {
+  id       Int      @id
+  address  Address?
+  snapshot Address  @storage(json)
+}

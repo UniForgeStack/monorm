@@ -6,15 +6,15 @@ import { DB, INTERNAL, RELATED, fieldValue, type ModelMeta, type Row } from "./m
 import { resolve, type Database } from "./db.js";
 import type { BoundQuerySet } from "./bound.js";
 import { prefetch, QuerySet, type LoadItem, type LoadEntry } from "./query.js";
-import type { Hop, ModelSpec } from "./meta.js";
+import { slot, type Hop, type ModelSpec } from "./meta.js";
 
 function metaOf(row: Row): ModelMeta { return (row.constructor as unknown as { meta: ModelMeta }).meta; }
 function loaded(row: Row, path: readonly string[], field?: string, label?: string, query?: Pick<QuerySet<ModelSpec>, "state">): boolean {
   if (!path.length && query) {
     const fields = query.state.modelFields ?? metaOf(row).fieldList.map((f) => f.ir);
-    return fields.every((n) => Object.hasOwn(row, metaOf(row).fieldByIr.get(n)!.name)) && (query.state.loads ?? []).every((i) => itemLoaded(row, i));
+    return fields.every((n) => Object.hasOwn(row, slot(metaOf(row).fieldByIr.get(n)!))) && (query.state.loads ?? []).every((i) => itemLoaded(row, i));
   }
-  if (!path.length) return field !== undefined ? Object.hasOwn(row, field) : metaOf(row).fieldList.every((f) => Object.hasOwn(row, f.name));
+  if (!path.length) return field !== undefined ? Object.hasOwn(row, field) : metaOf(row).fieldList.every((f) => Object.hasOwn(row, slot(f)));
   const [name, ...rest] = path;
   const relation = metaOf(row).relationByIr.get(name!)!;
   const attr = !rest.length && label !== undefined ? label : relation.name;
@@ -89,7 +89,7 @@ export function merge(row: Row, fresh: Row, reload: boolean, invalidate?: (row: 
     const internal = (row[INTERNAL] ??= {}) as Record<string, unknown>;
     for (const [name, value] of Object.entries(fresh[INTERNAL] as object)) if (reload || !Object.hasOwn(internal, name)) internal[name] = value;
   }
-  if (meta.fieldList.every((f) => Object.hasOwn(row, f.name))) delete row[INTERNAL];
+  if (meta.fieldList.every((f) => Object.hasOwn(row, slot(f)))) delete row[INTERNAL];
   mergeAbsent(row, fresh);
   const cache = (row[RELATED] ??= {});
   for (const [name, value] of Object.entries(fresh[RELATED] ?? {})) {
@@ -104,7 +104,7 @@ export async function loadInstance(
   invalidate?: (row: Row, name: string) => void,
 ): Promise<void> {
   const meta = metaOf(owner);
-  const requested = items.length ? items : meta.fieldList.map((f) => meta.column(f));
+  const requested = items.length ? items : meta.publicList.map((f) => meta.column(f));
   // Validate all arguments and relation query options before any I/O.
   // Bare bypass on purpose: this only validates the request and runs no query.
   const query = (meta.objects.withoutDefaults().load as (...items: readonly LoadItem<ModelSpec>[]) => QuerySet<ModelSpec>)(...requested);

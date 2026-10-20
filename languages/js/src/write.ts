@@ -2,6 +2,7 @@
 
 import { Expression, ParamRef, wrap, type IR, type IRContext } from "./expr.js";
 import { fieldValue, type ModelMeta } from "./model.js";
+import { flattenGroup, jsonInsert, nestedAssignments } from "./nested.js";
 
 /** Values of one row by TypeScript name, a to-one relation (`author: user`) giving its
  * key column. Expressions are refused unless `expressions`. */
@@ -16,7 +17,9 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
     }
     const f = meta.inputFields.get(key);
     if (f) {
-      values.set(f.ir, value);
+      if (f.nested === undefined || what === "update") values.set(f.ir, value);
+      else if (f.nested.storage === "json") values.set(f.ir, jsonInsert(f.nested, value));
+      else for (const [leaf, v] of flattenGroup(f.nested, value)) values.set(leaf, v);
       continue;
     }
     const rel = meta.relations.get(key);
@@ -49,7 +52,8 @@ export function prepareRows(
       provided.add(k);
     }
     for (const f of meta.inputFieldList) {
-      if (!values.has(f.ir) && !(f.hasInsertDefault || f.nullable)) {
+      const parts = f.nested?.storage === "columns" ? f.nested.leaves.map((l) => meta.fieldByIr.get(l.ir)!) : [f];
+      if (parts.some((p) => !values.has(p.ir) && !(p.hasInsertDefault || p.nullable))) {
         throw new TypeError(`${meta.name}.${f.name} is required`);
       }
     }
@@ -116,10 +120,10 @@ export function prepareUpdateRows(meta: ModelMeta, rows: readonly object[]): { f
 
 /** `SET` items as IR: plain values become parameters, expressions compile in `ctx`. */
 export function assignments(meta: ModelMeta, values: object, ctx: IRContext): IR[] {
-  return [...normalize(meta, values, "update", true)].map(([field, value]) => ({
-    field,
-    value: wrap(value).ir(ctx),
-  }));
+  return [...normalize(meta, values, "update", true)].flatMap(([field, value]) => {
+    const nested = meta.fieldByIr.get(field)?.nested;
+    return nested !== undefined ? nestedAssignments(nested, value, ctx) : [{ field, value: wrap(value).ir(ctx) }];
+  });
 }
 
 /** Validate explicit local-only attachment using definition-prepared inputs. */

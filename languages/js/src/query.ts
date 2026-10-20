@@ -41,8 +41,8 @@ import {
   type Subquery,
 } from "./expr.js";
 import { NotLoaded, QueryError, TransactionRequired } from "./errors.js";
-import type { DefaultNames, Hop, HopKind, In, ModelSpec, RelationMeta } from "./meta.js";
-import { DB, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
+import { irNames, type DefaultNames, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
+import { DB, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
@@ -330,7 +330,7 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
     if (item instanceof Labeled) continue;
     const hops = loadPath(item);
     if (!hops.length) {
-      own.push((item as Column<unknown, string>).field.ir);
+      own.push(...irNames((item as Column<unknown, string>).field));
       continue;
     }
     const group = groups.get(hops[0]!) ?? [];
@@ -350,7 +350,7 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
         for (let i = 1; i <= hops.length; i++) if (!has(hops.slice(0, i))) related.push(hops.slice(0, i));
         if (item instanceof Column) {
           const entry = fields.get(hops.join(".")) ?? { path: hops, fields: [] };
-          if (!entry.fields.includes(item.field.ir)) entry.fields.push(item.field.ir);
+          for (const ir of irNames(item.field)) if (!entry.fields.includes(ir)) entry.fields.push(ir);
           fields.set(hops.join("."), entry);
         } else {
           whole.add(hops.join("."));
@@ -379,7 +379,7 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
         else base = item;
       } else if (item instanceof Column) {
         if (!inner.some((c) => c instanceof Column && c.field === item.field && c.path.join(".") === rest.join("."))) {
-          inner.push(new Column(target, rest, item.field, item.text));
+          inner.push(columnOf(target, rest, item.field, item.text));
         }
       } else if (rest.length) {
         inner.push(restOf(item as RelationPath<ModelSpec, string, readonly Hop[]>, target));
@@ -701,7 +701,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       } else if (item instanceof OneRowQuery) {
         throw new TypeError("a one-row query in load() needs .label(name)");
       } else if (item instanceof Column && item.root === this.meta) {
-        if (!item.path.length) own.push(item.field.ir);
+        if (!item.path.length) own.push(...irNames(item.field));
       } else if (item instanceof RelationPath && !(item instanceof Column)) {
         this.checkPath(item);
       } else {

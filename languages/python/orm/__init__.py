@@ -11,8 +11,10 @@ expressions over model attributes, Django-style managers on top::
 from .inspection import QueryInspection, StatementInspection
 from . import debug, fields, otel
 from .db import Database, QueryEvent, connect, get_database, scope
+from .nested import NestedRef, NestedValue
 from .errors import (
     DatabaseError,
+    DecodeError,
     DoesNotExist,
     IntegrityError,
     LockNotAvailable,
@@ -141,6 +143,9 @@ __all__ = [
     "SchemaError",
     "DoesNotExist",
     "MultipleObjectsReturned",
+    "DecodeError",
+    "NestedRef",
+    "NestedValue",
     "NotLoaded",
     "VersionConflict",
     "NotConnected",

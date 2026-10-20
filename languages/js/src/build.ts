@@ -83,7 +83,7 @@ export class Builder {
 
   /** The objects of a top-level SELECT: instances (prefetched relations attached), or
    * `select()` rows keyed by `keys`. */
-  select(res: NativeSelect, keys?: readonly string[]): Obj[] {
+  select(res: NativeSelect, keys?: readonly string[], decoders?: readonly (((raw: unknown) => unknown) | undefined)[]): Obj[] {
     if ("joins" in res.output) {
       const objs = this.instances(res.output, res.rows);
       const meta = this.meta(res.output.model);
@@ -92,7 +92,7 @@ export class Builder {
       }
       return objs;
     }
-    return this.columns(res.output, res.rows, keys ?? []);
+    return this.columns(res.output, res.rows, keys ?? [], decoders);
   }
 
   /** Puts the relations of `res` on `parents`, whose key rows `res.rows` are (`prefetch()`). */
@@ -102,7 +102,7 @@ export class Builder {
     }
   }
 
-  private columns(out: NativeColumns, rows: NativeRows, keys: readonly string[]): Obj[] {
+  private columns(out: NativeColumns, rows: NativeRows, keys: readonly string[], decoders?: readonly (((raw: unknown) => unknown) | undefined)[]): Obj[] {
     const { n, width, values } = rows;
     const objs: Obj[] = new Array(n);
     for (let r = 0; r < n; r++) {
@@ -111,7 +111,8 @@ export class Builder {
       for (let i = 0; i < out.items.length; i++) {
         const w = out.items[i]!;
         if (w < 0) {
-          o[keys[i]!] = values[pos];
+          const decode = decoders?.[i];
+          o[keys[i]!] = decode === undefined ? values[pos] : decode(values[pos]);
           pos += 1;
         } else {
           o[keys[i]!] = this.meta(out.model).instance(values, pos, this.db);

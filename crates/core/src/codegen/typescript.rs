@@ -21,7 +21,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr};
+use crate::ir::{ColType, EnumStorage, FieldIr, NestedStorage, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
 use crate::schema::{Model, Schema};
 
 const WIDTH: usize = 89;
@@ -93,6 +93,118 @@ fn quote(s: &str) -> String {
     serde_json::to_string(s).expect("a string serializes")
 }
 
+/// A nested field of a model: the `columns` group of its leaf fields, or the one `json` field.
+struct Group<'a> {
+    name: &'a str,
+    ty: &'a str,
+    nullable: bool,
+}
+
+/// The nested fields of `m`, in field order. Their leaf fields stay out of every public shape.
+fn groups<'a>(m: &'a Model) -> Vec<Group<'a>> {
+    let mut out: Vec<Group<'a>> = vec![];
+    for f in m.fields() {
+        let Some(n) = &f.nested else { continue };
+        let under = n.storage == NestedStorage::Columns && n.under_null;
+        match out.iter_mut().find(|g| g.name == n.field) {
+            Some(g) => g.nullable &= under,
+            None => out.push(Group { name: &n.field, ty: &n.ty, nullable: if n.storage == NestedStorage::Json { f.nullable } else { under } }),
+        }
+    }
+    out
+}
+
+fn type_of<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a TypeIr> {
+    ir.types.iter().find(|t| t.name == name)
+}
+
+fn sub_has_default(sf: &TypeFieldIr) -> bool {
+    sf.leaf.as_ref().is_some_and(|l| has_server_value(l) || l.client_default.is_some())
+}
+
+/// Whether a value of `name` needs at least one subfield from the caller.
+fn type_requires(ir: &SchemaIr, name: &str) -> bool {
+    type_of(ir, name).is_some_and(|t| {
+        t.fields.iter().any(|sf| {
+            !sf.nullable && !sf.list && !sub_has_default(sf) && sf.type_name.as_deref().is_none_or(|n| type_requires(ir, n))
+        })
+    })
+}
+
+fn sub_element(sf: &TypeFieldIr) -> String {
+    match (&sf.type_name, &sf.leaf) {
+        (Some(n), _) => n.clone(),
+        (_, Some(l)) => element_type(l),
+        _ => "unknown".into(),
+    }
+}
+
+fn or_null(t: String, nullable: bool) -> String {
+    if nullable { format!("{t} | null") } else { t }
+}
+
+/// The type of a subfield on a value.
+fn sub_value(sf: &TypeFieldIr) -> String {
+    let t = sub_element(sf);
+    or_null(if sf.list { format!("readonly ({t})[]") } else { t }, sf.nullable)
+}
+
+/// What a caller may give for a subfield; `patch` leaves a list out (it cannot be assigned part by part).
+fn sub_input(sf: &TypeFieldIr, patch: bool) -> Option<String> {
+    let one = match &sf.type_name {
+        Some(n) => format!("{n} | {n}{}", if patch { "Patch" } else { "Input" }),
+        None => format!("In<{}>", sub_element(sf)),
+    };
+    if sf.list {
+        return if patch { None } else { Some(or_null(format!("readonly ({one})[]"), sf.nullable)) };
+    }
+    Some(or_null(one, sf.nullable))
+}
+
+fn sub_optional(ir: &SchemaIr, sf: &TypeFieldIr) -> bool {
+    sf.nullable || sub_has_default(sf) || sf.type_name.as_deref().is_some_and(|n| !type_requires(ir, n))
+}
+
+/// The value type, input shapes, reference type and value class of one `type` block.
+fn write_type(body: &mut String, ir: &SchemaIr, t: &TypeIr) {
+    let name = &t.name;
+    writeln!(body, "{}\n", section(name)).unwrap();
+    writeln!(body, "/** A `{name}` value: immutable, compared with `equals()`. */\nexport interface {name} {{").unwrap();
+    for sf in &t.fields {
+        writeln!(body, "  readonly {}: {};", sf.name, sub_value(sf)).unwrap();
+    }
+    writeln!(body, "  equals(other: unknown): boolean;\n  toJSON(): Record<string, unknown>;\n}}\n").unwrap();
+    writeln!(body, "export interface {name}Input {{").unwrap();
+    for sf in &t.fields {
+        let q = if sub_optional(ir, sf) { "?" } else { "" };
+        writeln!(body, "  readonly {}{q}: {};", sf.name, sub_input(sf, false).unwrap_or_default()).unwrap();
+    }
+    writeln!(body, "}}\n").unwrap();
+    writeln!(body, "export interface {name}Patch {{").unwrap();
+    for sf in &t.fields {
+        if let Some(one) = sub_input(sf, true) {
+            writeln!(body, "  readonly {}?: {one};", sf.name).unwrap();
+        }
+    }
+    writeln!(body, "}}\n").unwrap();
+    writeln!(body, "export interface {name}Class {{\n  new (values: {name}Input): {name};\n}}\n").unwrap();
+    writeln!(
+        body,
+        "/** The columns of a `{name}` member: the whole value, and one column per subfield. */\nexport type {name}Ref<S extends string, H extends readonly Hop[], O extends boolean, N extends string, X> = Column<O extends true ? X | null : X, S, N, H> & {{"
+    )
+    .unwrap();
+    for sf in &t.fields {
+        match &sf.type_name {
+            Some(n) => writeln!(body, "  readonly {}: {n}Ref<S, H, O, {}, {} | (null extends X ? null : never)>;", sf.name, quote(&sf.name), sub_value(sf)).unwrap(),
+            None => {
+                let v = sub_value(sf);
+                writeln!(body, "  readonly {}: Column<O extends true ? {v} | null : null extends X ? {v} | null : {v}, S, {}, H>;", sf.name, quote(&sf.name)).unwrap()
+            }
+        }
+    }
+    writeln!(body, "}};\n").unwrap();
+}
+
 /// The to-one relation of `m` whose key holds field `field` (a foreign key on `m`).
 fn belongs_to<'a>(m: &'a Model, field: &str) -> Option<&'a RelationIr> {
     m.ir.relations.iter().find(|r| r.kind == RelKind::One && r.foreign_key && r.from.iter().any(|f| f == field))
@@ -140,7 +252,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     // names: camelCase must stay unique and clear of the runtime's own
     for m in &schema.models {
         let mut seen = BTreeSet::new();
-        let names = m.fields().iter().map(|f| &f.name).chain(m.ir.relations.iter().map(|r| &r.name));
+        let own = groups(m);
+        let names = m.fields().iter().filter(|f| f.nested.is_none()).map(|f| f.name.as_str()).chain(own.iter().map(|g| g.name)).chain(m.ir.relations.iter().map(|r| r.name.as_str()));
         for n in names {
             let c = camel(n);
             if RESERVED.contains(&c.as_str()) {
@@ -169,9 +282,20 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "export type {0} = (typeof {0})[keyof typeof {0}];\n", e.name).unwrap();
     }
 
+    for t in &ir.types {
+        write_type(&mut body, ir, t);
+        writeln!(body, "export const {0} = nested[{1}] as unknown as {0}Class;\n", t.name, quote(&t.name)).unwrap();
+        for sf in t.fields.iter().filter_map(|sf| sf.leaf.as_ref()) {
+            for (word, import) in [("Decimal", "Decimal"), ("JsonValue", "JsonValue")] {
+                if element_type(sf) == word { used.insert(import); }
+            }
+        }
+    }
+
     for m in &schema.models {
         let name = &m.ir.name;
         let pk = m.pk_field();
+        let groups = groups(m);
         writeln!(body, "{}\n", section(name)).unwrap();
         for f in m.fields() {
             let t = file_value_type(m, f);
@@ -185,9 +309,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         // the column values
         writeln!(body, "/** The column values of a {name} row. */").unwrap();
         writeln!(body, "export interface {name}Data {{").unwrap();
-        for f in m.fields() {
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             let optional = m.read_flags.fields.as_ref().is_some_and(|fields| !fields.contains(&f.name));
             writeln!(body, "  readonly {}{}: {};", camel(&f.name), if optional { "?" } else { "" }, file_value_type(m, f)).unwrap();
+        }
+        for g in &groups {
+            writeln!(body, "  readonly {}: {};", camel(g.name), or_null(g.ty.to_owned(), g.nullable)).unwrap();
         }
         writeln!(body, "}}\n").unwrap();
 
@@ -234,7 +361,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         // key or the related row, exactly one of them
         writeln!(body, "export type {name}Insert = {{").unwrap();
         let mut one_of = vec![];
-        for (position, f) in m.fields().iter().enumerate() {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
@@ -256,6 +383,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 }
             }
         }
+        for g in &groups {
+            let t = or_null(format!("{} | {}Input", g.ty, g.ty), g.nullable);
+            let q = if g.nullable || !type_requires(ir, g.ty) { "?" } else { "" };
+            writeln!(body, "  {}{q}: {t};", camel(g.name)).unwrap();
+        }
         write!(body, "}}").unwrap();
         for (f, r) in one_of {
             let (key, rel) = (camel(&f.name), camel(&r.name));
@@ -271,7 +403,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
 
         // update: plain values or expressions over the model
         writeln!(body, "export interface {name}Update {{").unwrap();
-        for (position, f) in m.fields().iter().enumerate() {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
@@ -289,11 +421,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
             }
         }
+        for g in &groups {
+            writeln!(body, "  {}?: {};", camel(g.name), or_null(format!("{} | {}Patch", g.ty, g.ty), g.nullable)).unwrap();
+        }
         writeln!(body, "}}\n").unwrap();
 
         // updateMany rows: the primary key plus plain values
         writeln!(body, "export interface {name}UpdateRow {{").unwrap();
-        for (position, f) in m.fields().iter().enumerate() {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
@@ -304,6 +439,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 let null = if f.nullable { " | null" } else { "" };
                 writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
             }
+        }
+        for g in &groups {
+            writeln!(body, "  {}?: {};", camel(g.name), or_null(format!("{} | {}Input", g.ty, g.ty), g.nullable)).unwrap();
         }
         writeln!(body, "}}\n").unwrap();
 
@@ -366,9 +504,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             "export interface {name}Fields<S extends string, H extends readonly Hop[], O extends boolean> {{"
         )
         .unwrap();
-        for f in m.fields() {
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             writeln!(body, "  readonly {}: Column<O extends true ? {} | null : {}, S, {}, H>;", camel(&f.name), file_value_type(m, f), file_value_type(m, f), quote(&camel(&f.name)))
                 .unwrap();
+        }
+        for g in &groups {
+            let x = or_null(g.ty.to_owned(), g.nullable);
+            writeln!(body, "  readonly {}: {}Ref<S, H, O, {}, {x}>;", camel(g.name), g.ty, quote(&camel(g.name))).unwrap();
         }
         for r in &m.ir.relations {
             let kind = hop_kind(schema, m, r)?;
@@ -462,6 +604,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     writeln!(out, "const models = define(SCHEMA, {{ requiredCapabilities: [\"reference-loading\"]{} }});\n", if ext_options.is_empty() { String::new() } else { format!(", {ext_options}") }).unwrap();
     #[cfg(not(feature = "reference-loading"))]
     if ext_options.is_empty() { writeln!(out, "const models = define(SCHEMA);\n").unwrap(); } else { writeln!(out, "const models = define(SCHEMA, {{ {ext_options} }});\n").unwrap(); }
+    if !ir.types.is_empty() {
+        out.push_str("const nested = (models as unknown as { readonly $types: Record<string, unknown> }).$types;\n\n");
+    }
     if !ir.behavior.file_fields.is_empty() {
         out.push_str("import { FileField, type Reference, type Registry as StorageRegistry, type Upload } from \"@orm/file-storage\";\nimport { installModel } from \"@orm/file-storage/model\";\n");
         let mut adapters = Vec::new();

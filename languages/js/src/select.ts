@@ -17,6 +17,7 @@
 
 import { inspection, inspector, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
+import { NestedColumn } from "./nested.js";
 import { withScope, type Database } from "./db.js";
 import { DoesNotExist, MultipleObjectsReturned, QueryError, TransactionRequired } from "./errors.js";
 import {
@@ -295,7 +296,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
       );
     }
     const res = (await db.run(ir, params)) as NativeSelect;
-    const rows = new Builder(db.registry, sel.qs.state.db).select(res, this.items.map(([k]) => k)) as Row[];
+    const rows = new Builder(db.registry, sel.qs.state.db).select(res, this.items.map(([k]) => k), this.items.map(([, node]) => (node instanceof NestedColumn ? (raw: unknown) => node.decode(raw) : undefined))) as Row[];
     if (sel.qs.state.required && !rows.length) throw new DoesNotExist("the query returned no row");
     return rows;
   }

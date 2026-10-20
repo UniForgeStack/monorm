@@ -4,6 +4,7 @@
  */
 
 import type { Decimal } from "./decimal.js";
+import type { NestedInfo } from "./nested.js";
 
 /** Column types of the schema IR. */
 export type ColType =
@@ -89,6 +90,10 @@ export interface FieldMeta {
   readonly hasInsertDefault: boolean;
   /** Physical database default; client defaults do not change it. */
   readonly hasServerValue: boolean;
+  /** A member of a nested type: a `json` field, or the group a `columns` field stands for. */
+  readonly nested?: NestedInfo | undefined;
+  /** A stored leaf of a `columns` group: the engine reads and writes it, the model does not show it. */
+  readonly leaf?: { readonly group: string; readonly path: readonly string[]; readonly underNull: boolean } | undefined;
 }
 
 export type RelationKind = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
@@ -105,6 +110,16 @@ export interface RelationMeta {
 }
 
 /** `author_id` -> `authorId`: how schema names read in TypeScript. */
+/** The IR names of the stored fields behind `f`: the leaves of a nested `columns` group, else `f` itself. */
+export function irNames(f: FieldMeta): readonly string[] {
+  return f.nested?.storage === "columns" ? f.nested.leaves.map((l) => l.ir) : [f.ir];
+}
+
+/** The row property that holds a field: its group for a leaf of a nested `columns` value. */
+export function slot(f: FieldMeta): string {
+  return f.leaf !== undefined ? f.leaf.group : f.name;
+}
+
 export function camel(name: string): string {
   return name.replace(/(?<=[A-Za-z0-9])_+([A-Za-z0-9])/g, (_, c: string) => c.toUpperCase());
 }

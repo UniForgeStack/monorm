@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, TypeVarTuple, Unpack, c
 from .inspection import QueryInspection, _inspect
 from ._cache import cached
 from .errors import DoesNotExist, MultipleObjectsReturned, QueryError
+from .nested import NestedRef
 from .expr import ColumnRef, ConditionLike, Expression, Func, IRContext, Labeled, Ordering, ScalarSubquery, _Ctes, and_
 
 if TYPE_CHECKING:
@@ -96,6 +97,8 @@ def _make_row(names: tuple[str, ...], values: tuple[Any, ...]) -> Any:
 def _column_name(item: Any, i: int) -> str:
     if isinstance(item, Labeled):
         return item._name
+    if isinstance(item, NestedRef):
+        return item._select_name()
     if isinstance(item, ColumnRef):
         return item._field.name
     if isinstance(item, Func):
@@ -295,7 +298,17 @@ class Select(Generic[Unpack[Ts]]):
         rows: list[Any] = await qs._run(ir, params, row_class(self._names))
         if qs._required and not rows:
             raise DoesNotExist("the query returned no row")
+        nested = [(i, item) for i, item in enumerate(self._items) if isinstance(item, NestedRef)]
+        if nested:
+            rows = [self._decoded(row, nested) for row in rows]
         return rows
+
+    @staticmethod
+    def _decoded(row: Any, nested: list[tuple[int, NestedRef]]) -> Any:
+        values = list(row)
+        for i, item in nested:
+            values[i] = item._decode(values[i])
+        return tuple.__new__(type(row), values)
 
     def __await__(self) -> Generator[Any, None, list[Row[Unpack[Ts]]]]:
         return cached(self, self._rows).__await__()

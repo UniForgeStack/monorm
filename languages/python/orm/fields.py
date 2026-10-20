@@ -185,6 +185,20 @@ class Json(Field[T]):
     type_name = "json"
 
 
+R = TypeVar("R")
+
+
+class Nested(Generic[T, R]):
+    """A nested field as the generated stub types it: the reference ``R`` on the class, the value ``T`` on an instance."""
+
+    @overload
+    def __get__(self, obj: None, owner: type[Any]) -> R: ...
+    @overload
+    def __get__(self, obj: object, owner: type[Any]) -> T: ...
+    def __get__(self, obj: object | None, owner: type[Any]) -> Any:
+        raise NotImplementedError("the generated models.py builds nested fields at runtime")
+
+
 class Decimal(Field[T]):
     """``numeric``. Values are exact ``decimal.Decimal``s; ints, floats and decimal
     strings are accepted as input."""
