@@ -658,10 +658,10 @@ class Model:
     # database the instance was read from.
 
     def _bound(self, *extra: str) -> BoundQuerySet[Self]:
-        """This row as a bound set without query defaults, so a default cannot hide the
-        row from its own write or load. A partial instance keeps its public shape plus ``extra``."""
-        # Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own write or load.
-        bound = self.qs().without_defaults()
+        """This row as a bound set. It applies no default on the row, so a default cannot hide it
+        from its own write or load; a relation or aggregate keeps the default of its target.
+        A partial instance keeps its public shape plus ``extra``."""
+        bound = self.qs()
         if "_orm_internal" not in self.__dict__:
             return bound
         names = [n for n in self._meta.field_names if n in self.__dict__]
@@ -677,11 +677,7 @@ class Model:
     async def _raise_if_changed(self) -> None:
         """No row matched a guarded write: raise when the row has other guard values."""
         for name in self._meta.guards:
-            changed = (
-                self.qs()
-                .without_defaults()
-                .filter(ColumnRef(type(self), (), self._meta.fields[name]) != getattr(self, name))
-            )
+            changed = self.qs().filter(ColumnRef(type(self), (), self._meta.fields[name]) != getattr(self, name))
             if await changed.exists():
                 raise VersionConflict(f"{type(self).__name__} {self.pk!r} was changed since it was loaded")
 

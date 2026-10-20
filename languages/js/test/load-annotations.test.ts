@@ -64,7 +64,7 @@ test("a labeled relation query set nests the aggregate", async () => {
   assert.deepEqual(alice.counted.map((p: Dynamic) => [p.title, Number(p.n)]).sort(), [["p1", 2], ["p2", 0]]);
 });
 
-test("instance load reads only the aggregate and skips a loaded label until reload", async () => {
+test("instance load reads only the aggregate and reads a loaded label again", async () => {
   const { p1 } = await seed();
   const post = (await Post.objects.load(Post.title).get(Post.id.eq(p1.id)))!;
   const loaded = (await post.load(nComments())) as Dynamic;
@@ -72,8 +72,6 @@ test("instance load reads only the aggregate and skips a loaded label until relo
   assert.equal(post.title, "p1");
   await Comment.objects.insert({ post: p1, body: "z" });
   await post.load(nComments());
-  assert.equal(Number((post as Dynamic).n), 2);
-  await post.load(nComments(), { reload: true });
   assert.equal(Number((post as Dynamic).n), 3);
 });
 

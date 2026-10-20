@@ -137,14 +137,14 @@ async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> Non
         item
         for item in requested
         if (isinstance(item, ColumnRef) and not item._path and (reload or item._field.name not in owner.__dict__))
-        or (isinstance(item, Labeled) and (reload or item._name not in owner.__dict__))
+        or isinstance(item, Labeled)
     ]
     if own and not any(isinstance(i, ColumnRef) for i in own):
         # a labeled aggregate alone must not read every column
         own = [*(getattr(model, f.name) for f in owner._meta.key), *own]
     if own:
-        # Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own load.
-        bound = owner.qs().without_defaults().load(*own)
+        # qs() applies no default on the root row; a relation or aggregate keeps the default of its target.
+        bound = owner.qs().load(*own)
         if reload:
             bound = bound.using("primary")
         if not await bound:
