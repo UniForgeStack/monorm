@@ -357,6 +357,45 @@ await q.all({ author: 1n, n: 10 }); // { author: bigint | number; n: number | bi
 A prepared query also has `.get(values)`, `.first(values)`, `.count(values)`,
 `.exists(values)` and `.sql(values)`.
 
+## Nested types
+
+A `type` block declares a value with named subfields. A model field of that type is stored in
+columns (the default: one column per leaf, named `<field>_<subfield>`) or as one JSON value
+(`@storage(json)`). Both read and write the same way; `examples/nested/schema.prisma` has both.
+The generated module exports the value classes (`Address`, `Geo`) beside the models, with the types
+`Address` (the value), `AddressInput` (what `insert()` and the constructor take) and `AddressPatch`.
+
+```ts
+const address = new Address({ city: "Oslo", big: 1n, opened: new Date(), geo: new Geo({ lat: 1.5 }) }); // immutable, address.equals(other)
+await Shop.objects.insert({ id: 1, address, snapshot: { city: "Rome", big: 2, opened: new Date() } });  // an object is checked like the class
+await Shop.objects.filter(Shop.address.geo.lat.gt(1)).orderBy(Shop.address.city);
+await Shop.objects.filter(Shop.address.isNull());                // Shop.address.eq(address) compares whole values
+await Shop.objects.select({ city: Shop.address.city, whole: Shop.address });
+await Shop.objects.filter(...).update({ address: { city: "Bergen", geo: { lng: 4 } } });  // patch: only these subfields
+await Shop.objects.filter(...).update({ address });              // replace: the whole value
+await Shop.objects.filter(...).update({ address: null });
+```
+
+* A value class applies the defaults of its subfields, so a replace resets an omitted subfield.
+  An object in `insert()` is validated against the type: a missing required subfield is a `TypeError`, and so is an unknown
+  or mistyped one.
+* A patch (an object in `update()`) changes only the named subfields, at any depth. It needs at least one subfield,
+  cannot set a non-nullable subfield to `null`, and cannot name a list subfield. A patch needs a present value:
+  to fill a null field, replace it with a whole value.
+* The leaf columns of a `columns` field are not public: rows, `toJSON()`, the types, `insert()` and `update()`
+  know `address`, never `addressCity`. `load()` of a subfield loads the whole value.
+* A subfield compares as its scalar type (a `DateTime` subfield as a timestamp). An omitted subfield in a
+  whole-value comparison equals `null`. `ne()` on a whole field is three-valued: a null field matches neither
+  `eq()` nor `ne()`. A `param()` in a whole-field comparison is an error, and so is `orderBy()` of a whole field.
+  A null middle level reads as null in every subfield below it.
+* A subfield whose name `Expression` already uses (`text`, `eq`, ...) is reached with `Shop.address.child("text")`.
+* A JSON value is checked when read. A `BigInt` subfield goes in JSON as text (a number above `2 ** 53` from the
+  database raises `DecodeError`: the native layer reads JSON numbers as `f64`), a `Decimal` as text, a `DateTime` as UTC text
+  (1 to 6 fraction digits are accepted back; the read value has millisecond precision). A stored value that does not fit
+  the type raises `DecodeError` with `model`, `field` and `path` (`Shop.snapshot.geo.lat: expected a number, got "x"`).
+* In a `columns` field a nullable level has a database `CHECK` and no column `DEFAULT` below it: the engine applies the
+  default when it sets the group.
+
 ## Columns and aggregates: `select()`
 
 `select({ alias: expr | Model })` gives object rows typed per key. `func` has `count sum

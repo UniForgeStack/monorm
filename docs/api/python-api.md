@@ -490,6 +490,41 @@ await Doc.objects.filter(...).update(meta=Doc.meta.json_merge({"seen": True}))  
   `NULL` stays `NULL` after a merge.
 * PostgreSQL only: on SQLite these are a `QueryError`.
 
+### Nested types
+
+A `type` block declares a value with named subfields. A model field of that type is stored in
+columns (the default: one column per leaf, named `<field>_<subfield>`) or as one JSON value
+(`@storage(json)`). Both read and write the same way; `examples/nested/schema.prisma` has both.
+
+```python
+Shop(id=1, address=Address(city="Oslo", geo=Geo(lat=1.5)), snapshot=...)   # value classes: immutable, equal by value
+await Shop.objects.insert(id=1, address={"city": "Oslo", "big": 1, "opened": when})   # a dict is checked like the class
+await Shop.objects.filter(Shop.address.geo.lat > 1).order_by(Shop.address.city)
+await Shop.objects.filter(Shop.address == None)                  # a null field; Shop.address == Address(...) compares whole values
+await Shop.objects.select(Shop.id, Shop.address.city, Shop.address)   # a scalar, or a value
+await Shop.objects.filter(...).update(address={"city": "Bergen", "geo": {"lng": 4.0}})   # patch: only these subfields
+await Shop.objects.filter(...).update(address=Address(city="Bergen", ...))               # replace: the whole value
+await Shop.objects.filter(...).update(address=None)
+```
+
+* A value class applies the defaults of its subfields, so a replace resets an omitted subfield.
+  A dict in `insert()` is validated against the type: a missing required subfield is a
+  `ValueError`, an unknown or mistyped one a `TypeError`.
+* A patch (a dict in `update()`) changes only the named subfields, at any depth. It needs at least one subfield,
+  cannot set a non-nullable subfield to `None`, and cannot name a list subfield. A patch needs a present value:
+  to fill a null field, replace it with a whole value.
+* The leaf columns of a `columns` field are not public: `to_dict()`, `repr()`, the `.pyi` stub and `insert()` /
+  `update()` know `address`, never `address_city`. `load()` of a subfield loads the whole value.
+* A subfield compares as its scalar type (a `DateTime` subfield as a timestamp). An omitted subfield in a
+  whole-value comparison equals `None`. `!=` on a whole field is three-valued: a null field matches neither
+  `==` nor `!=`. A `param()` in a whole-field comparison is an error, and so is `order_by()` of a whole field.
+  A null middle level reads as null in every subfield below it.
+* A JSON value is checked when read. `BigInt` and `Decimal` subfields go in JSON as text and a `DateTime` as UTC text
+  (1 to 6 fraction digits are accepted back). A stored value that does not fit the type raises
+  `DecodeError` with `model`, `field` and `path` (`Shop.snapshot.geo.lat: expected a number, got "x"`).
+* In a `columns` field a nullable level has a database `CHECK` and no column `DEFAULT` below it: the engine applies the
+  default when it sets the group.
+
 ### Full-text search
 
 ```python
