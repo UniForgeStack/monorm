@@ -139,8 +139,11 @@ test("paginated relation aggregates keep scalar subqueries", () => {
     if (offset !== null) assert.ok(sql.includes(`OFFSET ${offset}`));
     assert.equal(query.inspect().statements[0]!.joinsCount, 0);
     assert.equal(query.inspect().statements[0]!.correlatedCount, 2);
-    assert.ok(query.limit(null).offset(null).sql().includes("LATERAL"));
   }
+  const unbounded = User.objects
+    .select({ id: User.id, posts: func.count(User.posts), top: func.max(User.posts.views) })
+    .orderBy(User.name, User.id);
+  assert.ok(unbounded.sql().includes("LATERAL"));
 });
 
 test("a to-one load() and orderBy use LEFT JOINs", () => {
@@ -152,7 +155,8 @@ test("a to-one load() and orderBy use LEFT JOINs", () => {
 
 test("slicing", () => {
   assert.ok(Post.objects.slice(5, 10).sql().endsWith("LIMIT 5 OFFSET 5"));
-  assert.ok(Post.objects.slice(5, 10).slice(1, 3).sql().endsWith("LIMIT 2 OFFSET 6"));
+  assert.ok(Post.objects.slice(5).sql().endsWith("OFFSET 5"));
+  assert.ok(Post.objects.slice(0, 5).sql().endsWith("LIMIT 5"));
   assert.throws(() => Post.objects.slice(-1), RangeError);
 });
 

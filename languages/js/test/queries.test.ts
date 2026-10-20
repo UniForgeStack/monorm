@@ -694,9 +694,6 @@ test("at(n) is the row at a position of the order; at(-1) is last()", async () =
   // no orderBy(): the default order, as first()
   assert.equal((await User.objects.at(0))!.name, "Alice");
   assert.equal((await User.objects.at(2))!.name, "Carol");
-  // on a slice, n counts from the start of the slice
-  assert.equal((await byName.slice(1).at(0))!.name, "Bob");
-  assert.equal(await byName.slice(1, 2).at(1), null);
   await assert.rejects(async () => byName.at(-2), RangeError);
   await assert.rejects(async () => byName.at(1.5), RangeError);
 });
@@ -728,14 +725,33 @@ test("first(), last(), at() and get() start no query until awaited", async () =>
   }
 });
 
-test("last() and at(-1) throw on a query set with a limit or an offset; first() keeps working", async () => {
+test("first(), last(), at() and get() throw QueryError on a query set with a limit, offset or slice", () => {
+  const byName = User.objects.orderBy(User.name);
+  for (const cut of [byName.limit(2), byName.offset(1), byName.slice(1, 3)]) {
+    for (const read of [() => cut.first(), () => cut.last(), () => cut.at(0), () => cut.at(-1), () => cut.get()]) {
+      assert.throws(read, (e: unknown) => e instanceof QueryError && /limit, offset or slice; use at\(n\)/.test(e.message));
+    }
+  }
+});
+
+test("at(param) reads the row at a position bound at run time", async () => {
   await seed();
   const byName = User.objects.orderBy(User.name);
-  for (const sliced of [byName.limit(2), byName.offset(1), byName.slice(1, 3)]) {
-    assert.throws(() => sliced.last(), { name: "RangeError", message: /limit or offset/ });
-    assert.throws(() => sliced.at(-1), { name: "RangeError", message: /limit or offset/ });
-  }
-  assert.equal((await byName.slice(1, 3).first())!.name, "Bob");
+  const one = byName.at(param("n"));
+  const prepared = one.prepare();
+  assert.match(prepared.sql({ n: 1 }), /LIMIT 1 OFFSET 1$/);
+  assert.equal((await prepared.run({ n: 0 }))!.name, "Alice");
+  assert.equal((await prepared.run({ n: 2 }))!.name, "Carol");
+  assert.equal(await prepared.run({ n: 99 }), null);
+});
+
+test("limit(), offset() and slice() combine only as one limit and one offset, or one slice", () => {
+  const base = Post.objects;
+  assert.ok(base.limit(5).offset(2).sql().endsWith("LIMIT 5 OFFSET 2"));
+  assert.ok(base.offset(2).limit(5).sql().endsWith("LIMIT 5 OFFSET 2"));
+  const repeated = [() => base.limit(1).limit(2), () => base.offset(1).offset(2), () => base.slice(0, 1).slice(0, 1),
+    () => base.slice(0, 5).limit(1), () => base.slice(0, 5).offset(1), () => base.limit(5).slice(0, 1), () => base.offset(1).slice(0, 1)];
+  for (const build of repeated) assert.throws(build, (e: unknown) => e instanceof QueryError && /use one limit\(\) and one offset\(\), or a single slice\(\)/.test(e.message));
 });
 
 test("param() limits cannot be replaced by one-row queries", async () => {
@@ -743,7 +759,7 @@ test("param() limits cannot be replaced by one-row queries", async () => {
   assert.throws(() => limited.first(), QueryError);
   assert.throws(() => limited.at(0), QueryError);
   assert.throws(() => limited.get(), QueryError);
-  assert.throws(() => limited.last(), RangeError);
+  assert.throws(() => limited.last(), QueryError);
   await assert.rejects(() => limited.prepare().first({ n: 0 }), QueryError);
   await assert.rejects(() => limited.prepare().get({ n: 0 }), QueryError);
 });

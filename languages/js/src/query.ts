@@ -524,6 +524,8 @@ export interface QueryState {
   readonly order: readonly Ordering<string, unknown>[];
   readonly limit: number | ParamRef<string> | undefined;
   readonly offset: number | ParamRef<string> | undefined;
+  /** Which of `limit`, `offset` and `slice` were applied; a second cut of one kind throws. */
+  readonly cuts?: readonly string[];
   /** Joined paths, IR relation names, prefixes first. */
   readonly related: readonly (readonly string[])[];
   readonly prefetch: readonly PrefetchItem[];
@@ -864,7 +866,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   limit<N extends string>(n: ParamRef<N>): PreserveRequired<this, QuerySetOf<M, R, S, P & ParamValues<N, number | bigint>, X, V>>;
   limit(n: number | null): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>>;
   limit(n: number | null | ParamRef<string>): unknown {
-    return this.clone({ limit: count(n, "limit") });
+    return this.clone({ limit: count(n, "limit"), cuts: this.cut("limit") });
   }
 
   /** Skip `n` rows; `n` may be a `param()` in a prepared query. */
@@ -872,28 +874,31 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   offset(n: number | null): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>>;
   offset(n: number | null | ParamRef<string>): unknown {
     const v = count(n, "offset");
-    return this.clone({ offset: v === 0 ? undefined : v });
+    return this.clone({ offset: v === 0 ? undefined : v, cuts: this.cut("offset") });
+  }
+
+  private cut(kind: string): readonly string[] {
+    const cuts = this.state.cuts ?? [];
+    if (cuts.includes(kind) || cuts.includes("slice") || (kind === "slice" && cuts.length)) {
+      throw new QueryError(`${kind}() can't be applied to a query set that already has ${cuts.map((c) => `a ${c}`).join(" and ")}; use one limit() and one offset(), or a single slice()`);
+    }
+    return [...cuts, kind];
+  }
+
+  private noCuts(what: string): void {
+    if (this.state.cuts?.length) {
+      throw new QueryError(`${what} can't be used on a query set with a limit, offset or slice; use at(n) to read the n-th row`);
+    }
   }
 
   /** Rows `start` (inclusive) to `end` (exclusive) of the current ordering, like
    * `Array.slice`: `slice(10, 20)` is `offset(10).limit(10)`. Non-negative only. */
   slice(start: number, end?: number): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>> {
-    const { limit, offset } = this.state;
-    if (limit instanceof ParamRef || offset instanceof ParamRef) {
-      throw new QueryError("a query set limited by param() can't be sliced; use limit() and offset()");
-    }
+    const cuts = this.cut("slice");
     if (!Number.isInteger(start) || start < 0 || (end !== undefined && (!Number.isInteger(end) || end < 0))) {
       throw new RangeError("slice() takes non-negative integers");
     }
-    const off = (offset ?? 0) + start;
-    let lim = limit;
-    if (end !== undefined) {
-      const n = Math.max(end - start, 0);
-      lim = lim === undefined ? n : Math.max(Math.min(n, lim - start), 0);
-    } else if (lim !== undefined) {
-      lim = Math.max(lim - start, 0);
-    }
-    return this.clone({ offset: off || undefined, limit: lim }) as never;
+    return this.clone({ offset: start || undefined, limit: end === undefined ? undefined : Math.max(end - start, 0), cuts }) as never;
   }
 
   /**
@@ -1341,28 +1346,32 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** @internal */
-  protected firstRows(n = 0): this {
-    return this.clone({ order: this.defaultOrder() }).slice(n, n + 1) as never;
+  protected firstRows(n: number | ParamRef<string> = 0, order = this.defaultOrder()): this {
+    this.noCuts(n === 0 ? "first()" : "at()");
+    return this.clone({ order, offset: n === 0 ? undefined : n, limit: 1, cuts: ["slice"] }) as never;
   }
 
   /** The last row by the current ordering (the primary key if none), or `null`.
-   * Throws on a query set with a limit or an offset: the last row of a slice is not
-   * the last row of the reversed order. */
+   * Throws `QueryError` on a query set with a limit, an offset or a slice: the last row of
+   * a slice is not the last row of the reversed order. */
   last(): OneRowQuery<RequiredResult<this, R>, P, X, V> {
-    if (this.state.limit !== undefined || this.state.offset !== undefined) {
-      throw new RangeError("last() can't be used on a query set with a limit or offset");
-    }
-    return new OneRowQuery(() => this.clone({ order: this.defaultOrder().map((o) => o.reversed()) }).slice(0, 1) as never, pickFirst);
+    this.noCuts("last()");
+    return new OneRowQuery(() => this.firstRows(0, this.defaultOrder().map((o) => o.reversed())) as never, pickFirst);
   }
 
   /**
    * The row at position `n` of the current ordering (the primary key if none), or
-   * `null`: `at(1)` is `offset(1).first()`. `at(-1)` is `last()`; another negative
-   * index throws. On a sliced query set `n` counts from the start of the slice.
+   * `null`; `n` may be a `param()` in a prepared query. `at(-1)` is `last()`; another
+   * negative index throws. Throws `QueryError` on a query set with a limit, an offset
+   * or a slice.
    */
-  at(n: number): OneRowQuery<RequiredResult<this, R>, P, X, V> {
-    if (!Number.isInteger(n) || n < -1) throw new RangeError("at() takes a non-negative integer, or -1");
-    if (n === -1) return this.last();
+  at<N extends string>(n: ParamRef<N>): OneRowQuery<RequiredResult<this, R>, P & ParamValues<N, number | bigint>, X, V>;
+  at(n: number): OneRowQuery<RequiredResult<this, R>, P, X, V>;
+  at(n: number | ParamRef<string>): unknown {
+    if (!(n instanceof ParamRef)) {
+      if (!Number.isInteger(n) || n < -1) throw new RangeError("at() takes a non-negative integer, or -1");
+      if (n === -1) return this.last();
+    }
     const qs = this.firstRows(n);
     return new OneRowQuery(() => qs, pickFirst);
   }
@@ -1372,7 +1381,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   get<const C extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: C
   ): OneRowQuery<RequiredResult<this, R>, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>> {
-    if (this.state.limit instanceof ParamRef) throw new QueryError("a one-row query can't have a param() limit");
+    this.noCuts("get()");
     return new OneRowQuery(() => (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null), true);
   }
 
@@ -1604,7 +1613,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const values = { ...options?.defaults, ...given } as M["insert"];
     const where = cols.map((c) => c.eq(key.get(c.field.ir) as never)) as never[];
     // A replica can lag behind the insert's conflict, so the reads see the primary too.
-    const reads = this.using("primary").clone({ limit: undefined, offset: undefined, required: false });
+    const reads = this.using("primary").clone({ limit: undefined, offset: undefined, cuts: [], required: false });
     const read = async (): Promise<M["row"] | null> => {
       const found = await reads.filter(...where).limit(2).fetch();
       return found.length ? (one(this.meta, found) as M["row"]) : null;
@@ -2122,7 +2131,7 @@ export class Prepared<M extends ModelSpec, R, P> {
       let qs = this.qs;
       let op = "select";
       if (kind === "get") {
-        if (qs.state.limit instanceof ParamRef) throw new QueryError("a one-row query can't have a param() limit");
+        qs["noCuts"]("get()");
         qs = qs.limit(2) as never;
       } else if (kind === "first") {
         qs = qs["firstRows"]();

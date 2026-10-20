@@ -414,7 +414,7 @@ test("SQLite indexed relation labels", async () => {
     assert.deepEqual(rows.map((a) => [a.firstBook?.title ?? null, a.secondBook?.title ?? null, a.lastBook?.title ?? null]), [
       ["one", "two", "three"], ["other", null, "other"], [null, null, null],
     ]);
-    const empty = await Author.objects.using(db).load(Author.books.objects.slice(0, 3).at(5).label("outside"));
+    const empty = await Author.objects.using(db).load(Author.books.objects.at(5).label("outside"));
     assert.ok(empty.every((a) => a.outside === null));
     await assert.rejects(async () => { await Book.objects.using(db).load(Book.author.objects.at(0).label("person")); }, /to-many/);
   } finally { await db.close(); }

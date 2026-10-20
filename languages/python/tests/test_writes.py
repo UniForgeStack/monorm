@@ -325,7 +325,7 @@ async def test_get_or_insert_names_a_row_the_filters_hide(clean):
     with pytest.raises(orm.QueryError, match="filters hide it"):
         await User.objects.filter(User.name == "B").get_or_insert(email="a@x.io", defaults={"name": "B"})
     # The limit and offset do not apply to the read.
-    user, created = await User.objects.offset(1)[:1].get_or_insert(email="a@x.io")
+    user, created = await User.objects.offset(1).limit(1).get_or_insert(email="a@x.io")
     assert not created and user.name == "A"
 
 

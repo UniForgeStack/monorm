@@ -398,6 +398,7 @@ class QuerySet(Generic[M]):
         "_order",
         "_limit",
         "_offset",
+        "_cuts",
         "_related",
         "_prefetch",
         "_loads",
@@ -428,6 +429,8 @@ class QuerySet(Generic[M]):
         self._order: tuple[Ordering, ...] = ()
         self._limit: int | Param | None = None
         self._offset: int | Param | None = None
+        # which of "limit", "offset", "slice" were applied; a second cut of one kind raises
+        self._cuts: tuple[str, ...] = ()
         self._related: tuple[tuple[str, ...], ...] = ()
         self._prefetch: tuple[_Prefetch, ...] = ()
         # what load() was given; _model_fields, _related, _related_fields and _prefetch derive from it
@@ -464,6 +467,7 @@ class QuerySet(Generic[M]):
         new._order = self._order
         new._limit = self._limit
         new._offset = self._offset
+        new._cuts = self._cuts
         new._related = self._related
         new._prefetch = self._prefetch
         new._loads = self._loads
@@ -644,43 +648,54 @@ class QuerySet(Generic[M]):
         order = tuple(i if isinstance(i, Ordering) else Ordering(i, desc=False) for i in items)
         return self._clone(_order=order)
 
+    def _cut(self, kind: str) -> tuple[str, ...]:
+        if kind in self._cuts or "slice" in self._cuts or (kind == "slice" and self._cuts):
+            raise QueryError(
+                f"{kind} can't be applied to a query set that already has a {' and a '.join(self._cuts)}; "
+                "use one limit() and one offset(), or a single slice"
+            )
+        return (*self._cuts, kind)
+
+    def _no_cuts(self, what: str) -> None:
+        if self._cuts:
+            raise QueryError(f"{what} can't be used on a query set with a limit, offset or slice; use [n] to read the n-th row")
+
     def limit(self, n: int | None) -> Self:
         """At most ``n`` rows; ``n`` may be a :func:`orm.param` in a prepared query."""
-        return self._clone(_limit=n)
+        return self._clone(_limit=n, _cuts=self._cut("limit"))
 
     def offset(self, n: int | None) -> Self:
         """Skip ``n`` rows; ``n`` may be a :func:`orm.param` in a prepared query."""
-        return self._clone(_offset=n if isinstance(n, Param) else n or None)
+        return self._clone(_offset=n if isinstance(n, Param) else n or None, _cuts=self._cut("offset"))
+
+    def _at(self, n: int | Param, order: tuple[Ordering, ...]) -> OneRowQuery[M | None]:
+        self._no_cuts("[n]")
+        cuts = ("slice",)
+        return OneRowQuery(self._clone(_order=order, _offset=n if isinstance(n, Param) else n or None, _limit=1, _cuts=cuts))
 
     @overload
     def __getitem__(self, s: int) -> OneRowQuery[M | None]: ...
     @overload
     def __getitem__(self, s: slice) -> Self: ...
     def __getitem__(self, s: int | slice) -> OneRowQuery[M | None] | Self:
-        """Slice rows, or lazily read one row by index; ``[-1]`` is ``last()``."""
+        """Slice rows, or lazily read the row at an index (an int or :func:`orm.param`);
+        ``[-1]`` is ``last()``. A query set takes one slice, and no slice after ``limit()`` or ``offset()``."""
         if isinstance(s, Param):
-            raise QueryError("a query set index can't be param()")
+            return self._at(s, self._default_order())
         if isinstance(s, int):
             if s == -1:
                 return self.last()
             if s < 0:
                 raise ValueError("only -1 or non-negative indices are supported")
-            return self[s : s + 1].first()
-        if isinstance(self._limit, Param) or isinstance(self._offset, Param):
-            raise QueryError("a query set limited by param() can't be sliced; use limit() and offset()")
+            return self._at(s, self._default_order())
         if not isinstance(s, slice):
             raise TypeError("query set indices must be integers or slices")
+        cuts = self._cut("slice")
         if s.step is not None or (s.start or 0) < 0 or (s.stop is not None and s.stop < 0):
             raise ValueError("only non-negative slices without a step are supported")
         start = s.start or 0
-        offset = (self._offset or 0) + start
-        limit = self._limit
-        if s.stop is not None:
-            n = max(s.stop - start, 0)
-            limit = n if limit is None else max(min(n, limit - start), 0)
-        elif limit is not None:
-            limit = max(limit - start, 0)
-        return self._clone(_offset=offset or None, _limit=limit)
+        limit = None if s.stop is None else max(s.stop - start, 0)
+        return self._clone(_offset=start or None, _limit=limit, _cuts=cuts)
 
     def lock(self, exclusive: bool = True, *, nowait: bool = False, skip_locked: bool = False) -> Self:
         """Lock the rows this query reads until the transaction ends.
@@ -1172,21 +1187,20 @@ class QuerySet(Generic[M]):
 
     def first(self) -> OneRowQuery[M | None]:
         """Lazy first row by the current ordering, or None."""
-        return OneRowQuery(self._clone(_order=self._default_order())[:1])
+        self._no_cuts("first()")
+        return OneRowQuery(self._clone(_order=self._default_order(), _limit=1, _cuts=("slice",)))
 
     def last(self) -> OneRowQuery[M | None]:
         """Lazy last row by the current ordering, or None; slices are unsupported."""
-        if self._limit is not None or self._offset is not None:
-            raise ValueError("last() can't be used on a query set with a limit or offset")
+        self._no_cuts("last()")
         order = tuple(o.reversed() for o in self._default_order())
-        return OneRowQuery(self._clone(_order=order)[:1])
+        return OneRowQuery(self._clone(_order=order, _limit=1, _cuts=("slice",)))
 
     def get(self, *conditions: ConditionLike) -> OneRowQuery[M | None]:
         """Lazy single matching row, or None; multiple matches always raise.
 
         ``require().get()`` also raises ``Model.DoesNotExist`` when absent."""
-        if isinstance(self._limit, Param):
-            raise QueryError("a one-row query can't have a param() limit")
+        self._no_cuts("get()")
         return OneRowQuery(self.filter(*conditions).limit(2), unique=True)
 
     async def count(self) -> int:
@@ -1318,7 +1332,7 @@ class QuerySet(Generic[M]):
         values = {**(defaults or {}), **lookup}
         where = [c == key[c._field.name] for c in cols]
         # A replica can lag behind the insert's conflict, so the reads see the primary too.
-        reads = self.using("primary")._clone(_limit=None, _offset=None, _required=False)
+        reads = self.using("primary")._clone(_limit=None, _offset=None, _cuts=(), _required=False)
 
         async def read() -> M | None:
             return await reads.get(*where)
@@ -1542,11 +1556,11 @@ class Prepared(Generic[M]):
             qs = self._qs
             op = "select"
             if kind == "get":
-                if isinstance(qs._limit, Param):
-                    raise QueryError("a one-row query can't have a param() limit")
+                qs._no_cuts("get()")
                 qs = qs.limit(2)
             elif kind == "first":
-                qs = qs._clone(_order=qs._default_order())[:1]
+                qs._no_cuts("first()")
+                qs = qs._clone(_order=qs._default_order(), _limit=1, _cuts=("slice",))
             elif kind in ("count", "exists"):
                 op = kind
             params = SlotParams()
