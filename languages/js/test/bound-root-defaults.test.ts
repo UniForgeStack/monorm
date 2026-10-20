@@ -85,4 +85,30 @@ for (const provider of ["sqlite", "postgresql"]) {
       await db.close();
     }
   });
+
+  test(`an instance label load keeps the default of its target (${provider})`, { skip: skip || !url }, async () => {
+    const { db, Owner, held } = await setup();
+    try {
+      const n = func.count(Owner.kids).label("n");
+      await held[0].load(n);
+      await held[1].load(n);
+      assert.deepEqual([Number(held[0].n), Number(held[1].n)], [1, 1]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test(`an instance label is read again on each load (${provider})`, { skip: skip || !url }, async () => {
+    const { db, Owner, Kid, held } = await setup();
+    try {
+      const n = func.count(Owner.kids).label("n");
+      await held[0].load(n);
+      assert.equal(Number(held[0].n), 1);
+      await Kid.objects.using(db).withoutDefaults().insertMany([{ id: 4, ownerId: 1, active: true }]);
+      await held[0].load(n);
+      assert.equal(Number(held[0].n), 2);
+    } finally {
+      await db.close();
+    }
+  });
 }

@@ -75,14 +75,12 @@ async def test_cached_relation_set_is_not_used_when_it_has_a_label(clean):
     assert sorted(p.n for p in posts) == [0, 2]
 
 
-async def test_instance_load_skips_a_loaded_label_until_reload(clean):
+async def test_instance_load_reads_a_loaded_label_again(clean):
     _, p1, _ = await seed()
     post = await Post.objects.load(Post.title).get(Post.id == p1.id)
     await post.load(n_comments())
     await Comment.objects.insert(post=p1, body="z")
     await post.load(n_comments())
-    assert post.n == 2
-    await post.load(n_comments(), reload=True)
     assert post.n == 3
 
 

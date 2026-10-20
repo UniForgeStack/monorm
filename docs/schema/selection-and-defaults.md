@@ -209,7 +209,7 @@ the filtered view, not evidence that the physical row is absent.
 
 UPDATE/DELETE `returning` uses the query's scalar selection, including schema
 defaults. It returns the actual written row even when the mutation leaves the
-filter. Instance update, delete and load use internal identity and bypass defaults (they run through `qs().without_defaults()`);
+filter. Instance update, delete and load use internal identity and bypass the default on the row itself (they run through `qs()`);
 instance update fetches only the instance's public fields and helpers.
 A bound query set (`of(objs)`, `post.qs()`) applies no default to its own rows, but a relation it loads keeps the defaults of its target.
 A plain `await post.qs()` with no `load()` reads the normal selection, so a partial object gets those fields.

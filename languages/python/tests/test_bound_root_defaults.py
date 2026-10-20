@@ -85,3 +85,23 @@ async def test_a_bound_aggregate_keeps_the_default_of_its_target(owners):
     Owner, _, db, held = owners
     await Owner.objects.of(held).using(db).load(func.count(Owner.kids).label("n"))
     assert [(o.id, o.n) for o in held] == [(1, 1), (2, 1)]
+
+
+@query_defaults
+async def test_an_instance_label_load_keeps_the_default_of_its_target(owners):
+    Owner, _, db, held = owners
+    n = func.count(Owner.kids).label("n")
+    await held[0].load(n)
+    await held[1].load(n)
+    assert [held[0].n, held[1].n] == [1, 1]
+
+
+@query_defaults
+async def test_an_instance_label_is_read_again_on_each_load(owners):
+    Owner, Kid, db, held = owners
+    n = func.count(Owner.kids).label("n")
+    await held[0].load(n)
+    assert held[0].n == 1
+    await Kid.objects.using(db).without_defaults().insert_many([{"id": 4, "owner_id": 1, "active": True}])
+    await held[0].load(n)
+    assert held[0].n == 2

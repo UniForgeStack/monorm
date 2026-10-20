@@ -93,14 +93,14 @@ export interface Instance<M extends ModelSpec> {
   /** A query set bound to this object: reads fill it in place. Same as `Model.objects.of(this)`. */
   qs(): BoundQuerySetOf<M, this>;
   /**
-   * `post.qs().withoutDefaults().update(values)` for this object. Values may be expressions
+   * `post.qs().update(values)` for this object. Values may be expressions
    * (`{ views: Post.views.add(1) }`); the instance is filled from the returned row, so
    * it shows what the database stored. With an instance guard field, throws `VersionConflict`
    * when the row has a newer value; a missing row throws `DoesNotExist`.
    */
   update(values: M["update"]): Promise<void>;
   /**
-   * `post.qs().withoutDefaults().delete()` for this object; the instance is filled from the
+   * `post.qs().delete()` for this object; the instance is filled from the
    * returned row (a delete rewrite shows its stored value). With an instance guard field, throws
    * `VersionConflict` when the row has a newer value.
    */
@@ -535,9 +535,9 @@ function loadedVersion(o: Row, version: FieldMeta): unknown {
   return value;
 }
 
-/** The bound set of the one row of `o`, with no defaults: a default must not hide a row the instance already holds. */
+/** The bound set of the one row of `o`: no default applies to the row, but a relation or aggregate keeps the default of its target. */
 function rowBound(o: Row): BoundQuerySet<ModelSpec, Row> {
-  return (o["qs"] as () => BoundQuerySet<ModelSpec, Row>)().withoutDefaults();
+  return (o["qs"] as () => BoundQuerySet<ModelSpec, Row>)();
 }
 
 /** Run a write on the row of the bound set; the objects are filled from the returned rows. */

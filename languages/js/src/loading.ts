@@ -111,13 +111,13 @@ export async function loadInstance(
   query.inspect();
   const own = requested.filter((item): item is Column<unknown, string> | Labeled<unknown> =>
     (item instanceof Column && !item.path.length && (reload || !Object.hasOwn(owner, item.field.name)))
-    || (item instanceof Labeled && (reload || !Object.hasOwn(owner, item.name))));
+    || item instanceof Labeled);
   if (own.length) {
     // a labeled aggregate alone must not read every column
     if (!own.some((i) => i instanceof Column)) own.unshift(...meta.key.map((f) => meta.column(f)));
-    // Bare bypass on purpose: the instance already holds this row, so a default must not hide it from its own load.
-    // A reload reads the primary, as the removed refresh() did.
-    let bound = (owner["qs"] as () => BoundQuerySet<ModelSpec, Row>)().withoutDefaults();
+    // qs() applies no default on the root row; a relation or aggregate keeps the default of its target.
+    // A reload reads the primary: a replica can lag behind the last write.
+    let bound = (owner["qs"] as () => BoundQuerySet<ModelSpec, Row>)();
     if (reload) bound = bound.using(resolve(owner[DB] as Database | undefined).primary);
     const rows = await (bound.load as (...items: (Column<unknown, string> | Labeled<unknown>)[]) => BoundQuerySet<ModelSpec, Row>)(...own);
     if (!rows.length) throw new (meta.model.DoesNotExist)(`${meta.name} ${JSON.stringify(String(owner["pk"]))} no longer exists`);

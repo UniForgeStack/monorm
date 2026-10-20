@@ -330,7 +330,7 @@ It preserves loaded fields and skips loaded values. `reload=True` refreshes the
 requested values. `await post.load(reload=True)` with no items reads all scalar fields, so a partial object becomes full.
 `await post.load()` fills the scalar fields that are missing. Nested paths and
 filtered relation querysets work too. Collection values remain in `.cached`.
-`post.load()`, `post.update()` and `post.delete()` run through `post.qs().without_defaults()`: they ignore the query defaults of the model.
+`post.load()`, `post.update()` and `post.delete()` run through `post.qs()`: they apply no query default to the row itself, but a relation or aggregate they load keeps the defaults of its target.
 
 **Instances you already have.** `await orm.of(instances).load(*items)` loads relations onto them, as `load()` does for the rows of a query:
 
