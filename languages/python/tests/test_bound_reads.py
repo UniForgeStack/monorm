@@ -8,9 +8,8 @@ import pytest
 import orm
 from blog.models import Comment, Post, User
 from soft_delete_ext import loads_soft_delete
-from artifact_caps import artifact_capabilities
+from artifact_caps import has_extension
 
-CAPABILITIES = set(artifact_capabilities())
 
 
 async def seed():
@@ -282,7 +281,7 @@ async def test_a_column_named_qs_is_reserved():
         orm.loads("model Q {\n  id Int @id\n  qs Int\n}\n", registry=orm.Registry())
 
 
-@pytest.mark.skipif("soft-delete" not in CAPABILITIES, reason="requires a selected soft-delete native artifact")
+@pytest.mark.skipif(not has_extension("orm.soft-delete"), reason="requires a selected soft-delete native artifact")
 async def test_a_soft_deleted_object_is_not_refreshed_unless_the_default_is_bypassed():
     source = 'model Doc {\n  id Int @id\n  title String\n  deleted DateTime? @soft_delete.deleted_at(mode: "application")\n}\n'
     registry = orm.Registry()

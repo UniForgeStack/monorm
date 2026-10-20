@@ -22,5 +22,5 @@ def test_behavior_field_takes_the_ir_field_name():
 
 
 def test_behavior_lookup_is_empty_without_records():
-    assert ext.behavior_records(Post, "soft_delete") == []
+    assert ext.behavior_records(Post, "delete_rewrites") == []
     assert ext.LANGUAGE_CONTRACT == 1

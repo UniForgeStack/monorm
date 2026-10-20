@@ -11,11 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from artifact_caps import artifact_capabilities
+from artifact_caps import has_extension
 from orm import _native
 
 ROOT = Path(__file__).resolve().parents[3]
-CAPABILITIES = set(artifact_capabilities())
 SCHEMA = """\
 model Post {
   id      Int       @id
@@ -53,7 +52,7 @@ async def go(post: Post, tag: Tag) -> None:
 EXPECTED = {i for i, line in enumerate(USE.splitlines(), 1) if "# E:" in line}
 
 pytestmark = pytest.mark.skipif(
-    "soft-delete" not in CAPABILITIES,
+    not has_extension("orm.soft-delete"),
     reason="requires a selected soft-delete native artifact",
 )
 

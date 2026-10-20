@@ -6,7 +6,7 @@ import os
 import pytest
 import orm
 from orm import _native
-from artifact_caps import artifact_capabilities
+from artifact_caps import has_extension
 
 pytestmark = pytest.mark.skipif(
     "model-composition" not in json.loads(_native.native_artifact())["capabilities"],
@@ -188,16 +188,16 @@ async def test_composed_writes_read_the_scope(provider):
 
 
 @pytest.mark.parametrize(
-    "field,capability",
+    "field,extension",
     [
-        ("version Int @default(0) @locking.version", "optimistic-locking"),
-        ("deleted DateTime? @soft_delete.deleted_at", "soft-delete"),
-        ("changed DateTime @default(now()) @timestamps.updated_at", "updated-at"),
+        ("version Int @default(0) @locking.version", "orm.locking"),
+        ("deleted DateTime? @soft_delete.deleted_at", "orm.soft-delete"),
+        ("changed DateTime @default(now()) @timestamps.updated_at", "orm.timestamps"),
     ],
 )
-def test_a_role_on_a_composed_model_is_rejected(field, capability):
-    if capability not in artifact_capabilities():
-        pytest.skip(f"requires a {capability} native artifact")
+def test_a_tracking_attribute_on_a_composed_model_is_rejected(field, extension):
+    if not has_extension(extension):
+        pytest.skip(f"requires the {extension} extension")
     source = f"""
 model Person {{
  id Int @id

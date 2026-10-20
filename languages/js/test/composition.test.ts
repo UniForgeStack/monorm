@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, IntegrityError, TransactionAborted, loads, Registry, type InspectedStatement } from "../src/index.js";
-import { artifactCapabilities } from "./artifact-caps.js";
+import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
 
 const enabled = (artifactCapabilities()).includes("model-composition");
 const source = `
@@ -131,13 +131,12 @@ for (const provider of ["sqlite", "postgresql"]) {
   });
 }
 
-const capabilities = artifactCapabilities();
-for (const [field, capability] of [
-  ["version Int @default(0) @locking.version", "optimistic-locking"],
-  ["deleted DateTime? @soft_delete.deleted_at", "soft-delete"],
-  ["changed DateTime @default(now()) @timestamps.updated_at", "updated-at"],
+for (const [field, extension] of [
+  ["version Int @default(0) @locking.version", "orm.locking"],
+  ["deleted DateTime? @soft_delete.deleted_at", "orm.soft-delete"],
+  ["changed DateTime @default(now()) @timestamps.updated_at", "orm.timestamps"],
 ] as const) {
-  test(`a role on a composed model is rejected (${capability})`, { skip: !enabled || !capabilities.includes(capability) }, () => {
+  test(`a role on a composed model is rejected (${extension})`, { skip: !enabled || !hasExtension(extension) }, () => {
     const roleSource = `datasource db {\n provider = "sqlite"\n}
 model Person {
  id Int @id

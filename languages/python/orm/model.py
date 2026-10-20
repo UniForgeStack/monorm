@@ -689,9 +689,9 @@ class Model:
         """``UPDATE ... SET <values> WHERE pk = ... RETURNING`` the loaded fields.
 
         Values may be expressions (``views=Post.views + 1``); the instance is refreshed
-        from the returned row, so it shows what the database stored. With
-        ``@locking.version``, raises :class:`orm.VersionConflict` when the row has a
-        newer version. An explicit version field raises :class:`TypeError`; use a
+        from the returned row, so it shows what the database stored. With an
+        instance guard field, raises :class:`orm.VersionConflict` when the row has a
+        newer value. An explicit guard field raises :class:`TypeError`; use a
         query-set update for an intentional override.
         """
         if not values:
@@ -709,8 +709,8 @@ class Model:
 
     async def delete(self) -> None:
         """``DELETE ... WHERE pk = ... RETURNING`` the loaded fields; the instance is filled from
-        the returned row, so a soft delete shows its stored value. With ``@locking.version``, raises :class:`orm.VersionConflict`
-        when the row has a newer version; a hard delete has no version check."""
+        the returned row, so a delete rewrite shows its stored value. With an instance guard field, raises :class:`orm.VersionConflict`
+        when the row has a newer value; a hard delete has no guard check."""
         bound = self._versioned(self._bound(*self._meta.guards))
         if not await bound.delete():
             await self._raise_if_changed()
