@@ -205,6 +205,27 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
 
 
 @requires("orm.soft-delete")
+@requires("query-defaults")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
+    db, models = await connect(dialect, TENANT_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1, "shop": 1}, {"id": 2, "shop": 2}])
+        with orm.scope(shop=2):
+            doc = await docs.get(Doc.id == 2)
+        # The instance uses a bare bypass: no scope is set, and the shop 2 row is gone.
+        await doc.hard_delete()
+        with orm.scope(shop=1):
+            assert await docs.all_with_deleted().count() == 1
+        assert [d.id for d in await docs.without_defaults()] == [1]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("orm.soft-delete")
 @requires("orm.locking")
 @requires("query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
