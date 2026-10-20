@@ -46,6 +46,19 @@ export class SchemaError extends ORMError {
   override name = "SchemaError";
 }
 
+/** A stored nested value (JSON, or leaf columns) differs from its type; `path` says where. */
+export class DecodeError extends ORMError {
+  override name = "DecodeError";
+  constructor(
+    readonly model: string,
+    readonly field: string,
+    readonly path: readonly (string | number)[],
+    detail: string,
+  ) {
+    super(`${model}.${[field, ...path].join(".")}: ${detail}`);
+  }
+}
+
 /** `get()` matched no row. Each model has a subclass: `User.DoesNotExist`. */
 export class DoesNotExist extends ORMError {
   override name = "DoesNotExist";

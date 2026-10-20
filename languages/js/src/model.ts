@@ -11,6 +11,7 @@ import { checkRequires } from "./adapters.js";
 import { isAbsent } from "./reference-absence.js";
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
 import { Column, PATH, RelationPath, and, type Condition, type PathState, type Source } from "./expr.js";
+import { NestedColumn, buildTypes, decodeJsonCell, type IRNested, type IRType, type NestedInfo, type NestedType } from "./nested.js";
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
@@ -47,6 +48,8 @@ export type IRField = {
   default?: unknown;
   default_now?: boolean;
   default_sql?: string;
+  /** Set on a stored field of a nested type: the group it belongs to. */
+  nested?: IRNested;
   /** The ORM insert default (`@client_default`); native insert preparation fills it. */
   client_default?: unknown;
   [key: string]: unknown;
@@ -65,7 +68,7 @@ export type IRRelation = {
 
 export type IRModel = { name: string; table: string; fields: IRField[]; relations?: IRRelation[]; [key: string]: unknown };
 export type IREnum = { name: string; storage?: string; values: { name: string; value: string | number }[]; [key: string]: unknown };
-export type SchemaIR = { models: IRModel[]; enums?: IREnum[]; [key: string]: unknown };
+export type SchemaIR = { models: IRModel[]; enums?: IREnum[]; types?: IRType[]; [key: string]: unknown };
 
 /** A model, as the types see it: the generated `UserModel` adds its columns and
  * relation paths. */
@@ -122,9 +125,14 @@ export class ModelMeta implements Source {
   narrowed: ReadonlySet<string> = new Set();
   readonly fields = new Map<string, FieldMeta>();
   readonly fieldByIr = new Map<string, FieldMeta>();
+  /** Every stored field, the leaves of nested `columns` groups included (what the engine reads and writes). */
   readonly fieldList: FieldMeta[] = [];
+  /** The fields the model shows: `fieldList` with each group's leaves replaced by one group member. */
+  readonly publicList: FieldMeta[] = [];
+  /** The `columns` groups, with the leaf fields of each. */
+  readonly groups: FieldMeta[] = [];
   inputFields: ReadonlyMap<string, FieldMeta> = this.fields;
-  inputFieldList: readonly FieldMeta[] = this.fieldList;
+  inputFieldList: readonly FieldMeta[] = this.publicList;
   readonly relations = new Map<string, RelationMeta>();
   readonly relationByIr = new Map<string, RelationMeta>();
   /** The primary key fields in key order. */
@@ -157,9 +165,11 @@ export class ModelMeta implements Source {
     readonly ir: IRModel,
     readonly registry: Registry,
   ) {
+    const leaves = new Map<string, FieldMeta[]>();
     for (const f of ir.fields) {
       const physicalDefault = !!(f.auto_increment || f.default !== undefined || f.default_now || f.default_sql || f.hints?.["composition.key-default"] === "true");
-      const fm: FieldMeta = {
+      const n = f.nested;
+      const base: FieldMeta = {
         name: camel(f.name),
         ir: f.name,
         type: f.type,
@@ -171,10 +181,60 @@ export class ModelMeta implements Source {
         hasInsertDefault: physicalDefault || f.client_default !== undefined,
         hasServerValue: physicalDefault,
       };
+      if (n?.storage === "columns") {
+        const group = camel(n.field);
+        const fm: FieldMeta = { ...base, leaf: { group, path: n.path ?? [], underNull: n.under_null ?? false } };
+        this.fieldByIr.set(fm.ir, fm);
+        this.fieldList.push(fm);
+        const seen = leaves.get(n.field);
+        if (seen) {
+          seen.push(fm);
+        } else {
+          leaves.set(n.field, [fm]);
+          this.publicList.push(undefined as never);
+        }
+        continue;
+      }
+      const fm: FieldMeta = n ? { ...base, nested: { model: ir.name, field: f.name, type: registry.nestedType(n.type), storage: "json", nullable: base.nullable, leaves: [] } } : base;
       checkName(ir.name, fm.name, this.fields);
       this.fields.set(fm.name, fm);
       this.fieldByIr.set(fm.ir, fm);
       this.fieldList.push(fm);
+      this.publicList.push(fm);
+    }
+    let at = 0;
+    for (const f of ir.fields) {
+      while (this.publicList[at] !== undefined) at++;
+      const n = f.nested;
+      if (n?.storage !== "columns" || this.publicList.some((p) => p?.ir === n.field)) continue;
+      const members = leaves.get(n.field)!;
+      const nullable = members.every((m) => m.leaf!.underNull);
+      const info: NestedInfo = {
+        model: ir.name,
+        field: n.field,
+        type: registry.nestedType(n.type),
+        storage: "columns",
+        nullable,
+        leaves: members.map((m) => ({ ir: m.ir, path: m.leaf!.path })),
+      };
+      const group: FieldMeta = {
+        name: camel(n.field),
+        ir: n.field,
+        type: "json",
+        nullable,
+        array: false,
+        enumName: undefined,
+        primaryKey: false,
+        unique: false,
+        hasInsertDefault: false,
+        hasServerValue: false,
+        nested: info,
+      };
+      checkName(ir.name, group.name, this.fields);
+      this.fields.set(group.name, group);
+      this.publicList[at] = group;
+      this.fieldByIr.set(group.ir, group);
+      this.groups.push(group);
     }
     if (ir.fields.some((f) => f.primary_key && f.hints?.["composition.child"] === "true")) {
       this.attachInputFields = ir.fields.filter((f) => f.hints?.["composition.local"] === "true").map((f) => this.fieldByIr.get(f.name)!);
@@ -254,7 +314,7 @@ export class ModelMeta implements Source {
 
   /** A column of this model, at the root of its own queries. */
   column(f: FieldMeta): Column<unknown, string> {
-    return new Column(this, [], f, `${this.name}.${f.name}`);
+    return columnOf(this, [], f, `${this.name}.${f.name}`);
   }
 
   /** The primary key field of a model with a one-field key. */
@@ -272,11 +332,11 @@ export class ModelMeta implements Source {
 
   private makePathProto(): object {
     const proto = Object.create(RelationPath.prototype) as object;
-    for (const f of this.fieldList) {
+    for (const f of this.publicList) {
       Object.defineProperty(proto, f.name, {
         get(this: RelationPath<ModelSpec, string, never>) {
           const s = this[PATH];
-          return new Column(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."));
+          return columnOf(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."));
         },
         enumerable: true,
       });
@@ -330,7 +390,7 @@ export class ModelMeta implements Source {
       toJSON: {
         value(this: Row) {
           const out: Record<string, unknown> = {};
-          for (const f of meta.fieldList) {
+          for (const f of meta.publicList) {
             if (Object.hasOwn(this, f.name)) out[f.name] = this[f.name];
           }
           return out;
@@ -339,7 +399,7 @@ export class ModelMeta implements Source {
       },
       [Symbol.for("nodejs.util.inspect.custom")]: {
         value(this: Row) {
-          const shown = meta.fieldList.filter((f) => Object.hasOwn(this, f.name)).map((f) => `${f.name}: ${show(this[f.name])}`).join(", ");
+          const shown = meta.publicList.filter((f) => Object.hasOwn(this, f.name)).map((f) => `${f.name}: ${show(this[f.name])}`).join(", ");
           return `${meta.name} { ${shown} }`;
         },
       },
@@ -363,7 +423,7 @@ export class ModelMeta implements Source {
   private makePartialRow(): new () => Row {
     const meta = this;
     const proto = Object.create(this.Row.prototype) as Record<string, unknown>;
-    for (const f of this.fieldList) {
+    for (const f of this.publicList) {
       Object.defineProperty(proto, f.name, {
         get() { throw new NotLoaded(`${meta.name}.${f.name} was not loaded`); },
         set(this: Row, value: unknown) { Object.defineProperty(this, f.name, { value, writable: true, configurable: true, enumerable: true }); },
@@ -379,16 +439,32 @@ export class ModelMeta implements Source {
   instance(values: unknown[], start: number, db: Database | undefined, shape?: NativeShape): Row {
     const o = shape ? new this.PartialRow() : new this.Row();
     const fields = this.fieldList;
+    const cells = this.groups.length ? new Map<string, Map<string, unknown>>() : undefined;
+    const put = (f: FieldMeta, v: unknown) => {
+      if (f.leaf !== undefined) {
+        let g = cells!.get(f.leaf.group);
+        if (g === undefined) cells!.set(f.leaf.group, (g = new Map()));
+        g.set(f.leaf.path.join("."), v);
+      } else {
+        o[f.name] = f.nested !== undefined ? decodeJsonCell(f.nested, v) : v;
+      }
+    };
     if (shape) {
       const internal: Record<string, unknown> = {};
       for (const f of shape) {
-        const name = fields[f.field]!.name;
-        if (f.public) o[name] = values[start + f.slot];
-        else internal[name] = values[start + f.slot];
+        const meta = fields[f.field]!;
+        if (f.public) put(meta, values[start + f.slot]);
+        else internal[meta.name] = values[start + f.slot];
       }
       o[INTERNAL] = internal;
     } else {
-      for (let i = 0; i < fields.length; i++) o[fields[i]!.name] = values[start + i];
+      for (let i = 0; i < fields.length; i++) put(fields[i]!, values[start + i]);
+    }
+    if (cells !== undefined) {
+      for (const [name, g] of cells) {
+        const group = this.fields.get(name)!;
+        if (g.size === group.nested!.leaves.length) o[name] = group.nested!.type.collapse(g, [], group.nullable);
+      }
     }
     if (this.decodeRow !== undefined) this.decodeRow(o);
     if (db !== undefined) {
@@ -410,6 +486,11 @@ export class ModelMeta implements Source {
   toString(): string {
     return this.name;
   }
+}
+
+/** A column of `f`: a nested member gets subfield access. */
+export function columnOf(root: Column<unknown, string>["root"], path: readonly string[], f: FieldMeta, text: string): Column<unknown, string> {
+  return f.nested !== undefined ? new NestedColumn(root, path, f, text, f.nested, []) : new Column(root, path, f, text);
 }
 
 /** Names the runtime gives meaning to on models / instances. */
@@ -620,6 +701,35 @@ export class Registry {
   private behavior: Record<string, unknown> = {};
   private identities: unknown;
   private nativeSchema: NativeSchema | undefined;
+  private readonly types = new Map<string, IRType>();
+  private built: Map<string, NestedType> | undefined;
+
+  /** The nested type `name`, with its value class. */
+  nestedType(name: string): NestedType {
+    this.built ??= buildTypes([...this.types.values()]);
+    const t = this.built.get(name);
+    if (!t) throw new TypeError(`unknown nested type ${JSON.stringify(name)}`);
+    return t;
+  }
+
+  /** The value classes of the nested types, by name. */
+  valueClasses(): Record<string, unknown> {
+    this.built ??= buildTypes([...this.types.values()]);
+    return Object.fromEntries([...this.built].map(([k, t]) => [k, t.cls]));
+  }
+
+  /** @internal */
+  addType(t: IRType): void {
+    const known = this.types.get(t.name);
+    if (known && JSON.stringify(known) !== JSON.stringify(t)) {
+      throw new TypeError(`a type named ${t.name} is already registered`);
+    }
+    if (!known) {
+      this.types.set(t.name, t);
+      this.built = undefined;
+      this.nativeSchema = undefined;
+    }
+  }
 
   get(name: string): ModelMeta {
     const m = this.models.get(name);
@@ -704,6 +814,9 @@ export class Registry {
     if (this.enums.size) {
       out.enums = [...this.enums.values()];
     }
+    if (this.types.size) {
+      out.types = [...this.types.values()];
+    }
     return JSON.parse(JSON.stringify({ ...out, ...(this.dialect === undefined ? {} : { dialect: this.dialect }), ...this.extra, ...(this.identities === undefined ? {} : { identities: this.identities }), ...(Object.keys(this.behavior).length ? { behavior: this.behavior } : {}) })) as SchemaIR;
   }
 
@@ -718,6 +831,8 @@ export class Registry {
     for (const [k, v] of this.models) next.models.set(k, v);
     for (const [k, v] of this.enums) next.enums.set(k, v);
     for (const [k, v] of this.enumValues) next.enumValues.set(k, v);
+    for (const [k, v] of this.types) next.types.set(k, v);
+    next.built = this.built;
     next.dialect = this.dialect;
     next.behavior = detached(this.behavior);
     next.identities = detached(this.identities);
@@ -733,6 +848,9 @@ export class Registry {
     this.enumValues.clear();
     for (const [k, v] of next.enums) this.enums.set(k, v);
     for (const [k, v] of next.enumValues) this.enumValues.set(k, v);
+    this.types.clear();
+    for (const [k, v] of next.types) this.types.set(k, v);
+    this.built = next.built;
     this.dialect = next.dialect;
     this.behavior = detached(next.behavior);
     this.identities = detached(next.identities);
@@ -801,6 +919,9 @@ export function define(
   for (const e of ir.enums ?? []) {
     reg.addEnum(e);
   }
+  for (const t of ir.types ?? []) {
+    reg.addType(t);
+  }
   const out: Record<string, ModelClass<ModelSpec> & Record<string, unknown>> = {};
   for (const m of ir.models) {
     if (destination.has(m.name)) {
@@ -815,7 +936,7 @@ export function define(
     meta.narrowed = new Set((proxy?.fields ?? []).filter((f) => f.non_null).map((f) => f.field));
     const computed = new Set(((ir.behavior as { result_fields?: { model: string; field: string }[] } | undefined)?.result_fields ?? []).filter((f) => f.model === m.name).map((f) => f.field));
     if (computed.size) {
-      meta.inputFieldList = meta.fieldList.filter((f) => !computed.has(f.ir));
+      meta.inputFieldList = meta.publicList.filter((f) => !computed.has(f.ir));
       meta.inputFields = new Map(meta.inputFieldList.map((f) => [f.name, f]));
     }
     for (const method of ((ir.behavior as { methods?: { model: string; name: string; native_function: string }[] } | undefined)?.methods ?? [])) {
@@ -837,6 +958,7 @@ export function define(
   const flags = JSON.parse(reg.prepareFrom(prepared).readFlags()) as Record<string, { filtered: boolean }>;
   for (const name of Object.keys(out)) reg.get(name).filtered = flags[name]?.filtered ?? false;
   destination.publish(reg);
+  Object.defineProperty(out, "$types", { value: reg.valueClasses() });
   return out;
 }
 

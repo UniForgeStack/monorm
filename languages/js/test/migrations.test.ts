@@ -151,6 +151,9 @@ test("the generated models are current", async () => {
   };
   assert.deepEqual(comparable(readFileSync(join(ROOT, "examples/blog/models.ts"), "utf8")), comparable(native().generateTypescript(schema, "orm")), "run `orm generate typescript`");
   assert.deepEqual(comparable(readFileSync(join(ROOT, "languages/js/test/blog/models.ts"), "utf8")), comparable(native().generateTypescript(schema, "../../src/index.js")));
+  const nestedSchema = join(ROOT, "examples/nested/schema.prisma");
+  assert.deepEqual(comparable(readFileSync(join(ROOT, "examples/nested/models.ts"), "utf8")), comparable(native().generateTypescript(nestedSchema, "orm")), "run `orm generate typescript` in examples/nested");
+  assert.deepEqual(comparable(readFileSync(join(ROOT, "languages/js/test/nested/models.ts"), "utf8")), comparable(native().generateTypescript(nestedSchema, "../../src/index.js")));
   const out = join(tmp(), "models.ts");
   const sets = ["--query-set", "Post=./queries.js#PostQueries", "--query-set", "Tag=./queries.js#TagQueries"];
   assert.equal(cli(["--schema", schema, "generate", "typescript", "-o", out, "--import", "../../../src/index.js", ...sets]).code, 0);
