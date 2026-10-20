@@ -979,6 +979,9 @@ pub struct Select {
     pub model_helpers: Vec<String>,
     #[serde(default)]
     pub without_defaults: Bypass,
+    /// Skip the root model's default filter only; joined and aggregated targets keep theirs.
+    #[serde(default)]
+    pub without_root_filter: bool,
     #[serde(default)]
     pub without_related: bool,
     /// The root model, or a CTE of this statement when the query reads a CTE that has no
@@ -1089,6 +1092,9 @@ pub struct Update {
     pub scope: BTreeMap<String, usize>,
     #[serde(default)]
     pub without_defaults: Bypass,
+    /// Skip the root model's default filter only; joined and aggregated targets keep theirs.
+    #[serde(default)]
+    pub without_root_filter: bool,
     pub model: String,
     #[serde(default)]
     pub with: Vec<Cte>,
@@ -1109,6 +1115,9 @@ pub struct Delete {
     pub scope: BTreeMap<String, usize>,
     #[serde(default)]
     pub without_defaults: Bypass,
+    /// Skip the root model's default filter only; joined and aggregated targets keep theirs.
+    #[serde(default)]
+    pub without_root_filter: bool,
     pub model: String,
     #[serde(default)]
     pub with: Vec<Cte>,

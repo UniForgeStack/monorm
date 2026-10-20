@@ -154,6 +154,31 @@ mod read_flags {
     }
 
     #[test]
+    fn root_filter_bypass_leaves_join_targets_filtered() {
+        let schema = schema();
+        assert!(!plan(&schema, json!({"op":"select","model":"Owner","without_root_filter":true})).filtered);
+        let joined = plan(&schema, json!({"op":"select","model":"Child","select_related":[["owner"]],"without_root_filter":true}));
+        let Output::Instances { joins, .. } = joined.output else { panic!("instances") };
+        assert!(joins[0].filtered, "the joined Owner keeps its default");
+        let bare = plan(&schema, json!({"op":"select","model":"Child","select_related":[["owner"]],"without_defaults":true}));
+        let Output::Instances { joins, .. } = bare.output else { panic!("instances") };
+        assert!(!joins[0].filtered);
+        for op in ["update", "delete"] {
+            let sql = |root_free: bool| {
+                let operation = serde_json::from_value(json!({"op":op,"model":"Owner","without_root_filter":root_free,
+                    "set":[{"field":"active","value":{"t":"int","value":0}}]})).unwrap();
+                match Planner::plan(&schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() {
+                    Plan::Update(stmt, _) => orm_engine::db::build(Dialect::Postgres, &stmt).0,
+                    Plan::Delete(stmt, _) => orm_engine::db::build(Dialect::Postgres, &stmt).0,
+                    _ => panic!("write"),
+                }
+            };
+            assert!(sql(false).contains(r#""active""#) && sql(false).contains("WHERE"), "{op}");
+            assert!(!sql(true).contains("WHERE"), "{op}: {}", sql(true));
+        }
+    }
+
+    #[test]
     fn prepared_flags_and_effective_order() {
         let schema = schema();
         let flags = |name: &str| schema.models.iter().find(|m| m.ir.name == name).unwrap().read_flags.clone();

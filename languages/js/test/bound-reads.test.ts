@@ -278,7 +278,7 @@ for (const provider of ["sqlite", "postgresql"]) {
 
 const queryDefaults = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes("query-defaults") ?? false;
 
-test("of() applies the model's query defaults; withoutDefaults() reads past them", { skip: !queryDefaults }, async () => {
+test("of() applies no query default on the root; withoutDefaults() stays accepted", { skip: !queryDefaults }, async () => {
   const registry = new Registry();
   const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
   const models = define({ dialect: "sqlite", models: [
@@ -291,10 +291,11 @@ test("of() applies the model's query defaults; withoutDefaults() reads past them
   try {
     await db.createTables();
     const notes = await Note.objects.using(db).withoutDefaults().insertMany([{ id: 1, visible: true, body: "a" }, { id: 2, visible: false, body: "b" }]).returning();
-    assert.deepEqual((await of(notes)).map((n: Any) => n.id), [1]);
+    assert.deepEqual((await of(notes)).map((n: Any) => n.id), [1, 2]);
     assert.deepEqual((await of(notes).withoutDefaults()).map((n: Any) => n.id), [1, 2]);
-    assert.equal(await notes[1].qs().exists(), false);
+    assert.equal(await notes[1].qs().exists(), true);
     assert.equal(await notes[1].qs().withoutDefaults().exists(), true);
+    assert.deepEqual((await of(notes).filter(Note.visible.eq(true))).map((n: Any) => n.id), [1]);
   } finally {
     await db.close();
   }

@@ -121,7 +121,7 @@ async def test_a_bound_delete_soft_deletes_and_fills_the_objects(docs):
     assert result == [held[1], held[0]]
     assert held[0].deleted is not None and held[1].deleted is not None and held[2].deleted is None
     assert await Doc.objects.using(db).count() == 2
-    assert await Doc.objects.of(held).using(db) == held[2:]
+    assert await Doc.objects.of(held).using(db) == held
 
 
 @soft_delete
@@ -133,7 +133,7 @@ async def test_the_soft_delete_members_are_on_the_bound_set(docs):
     assert await bound.deleted_only() == held[:2]
     assert await bound.all_with_deleted() == held
     assert await bound.all_with_deleted().deleted_only().count() == 2
-    assert await Doc.objects.of(held).using(db).count() == 2
+    assert await Doc.objects.of(held).using(db).count() == 4
 
 
 @soft_delete

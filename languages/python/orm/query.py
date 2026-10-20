@@ -388,6 +388,7 @@ class QuerySet(Generic[M]):
         "_required",
         "_model_helpers",
         "_without_defaults",
+        "_without_root_filter",
         "_without_related",
         "_model_fields",
         "_with_default_fields",
@@ -415,6 +416,7 @@ class QuerySet(Generic[M]):
         self._required = False
         self._model_helpers: tuple[str, ...] = ()
         self._without_defaults: bool | tuple[str, ...] = False
+        self._without_root_filter = False
         self._without_related = False
         self._model_fields: tuple[str, ...] | None = None
         # _model_fields adds to the model's default selection (a bare path beside columns)
@@ -452,6 +454,7 @@ class QuerySet(Generic[M]):
         new._required = self._required
         new._model_helpers = self._model_helpers
         new._without_defaults = self._without_defaults
+        new._without_root_filter = self._without_root_filter
         new._without_related = self._without_related
         new._model_fields = self._model_fields
         new._with_default_fields = self._with_default_fields
@@ -725,7 +728,7 @@ class QuerySet(Generic[M]):
             or self._label is not None
         ):
             raise TypeError("of() takes a query set without order, slice, join, CTE or union state")
-        return _bound_class(self._model)(items, self)
+        return _bound_class(self._model)(items, self._clone(_without_root_filter=True))
 
     # -- CTEs -------------------------------------------------------------------------------
 
@@ -908,6 +911,8 @@ class QuerySet(Generic[M]):
         ir: dict[str, Any] = {"op": op, "model": self._root_name()}
         if self._without_defaults:
             ir["without_defaults"] = self._without_defaults
+        if self._without_root_filter:
+            ir["without_root_filter"] = True
         if self._without_related:
             ir["without_related"] = True
         if self._model_fields is not None:
@@ -986,6 +991,8 @@ class QuerySet(Generic[M]):
         ir: dict[str, Any] = {"op": op, "model": self._model._meta.name, "filters": [f._ir(ctx) for f in self._filters]}
         if self._without_defaults:
             ir["without_defaults"] = self._without_defaults
+        if self._without_root_filter:
+            ir["without_root_filter"] = True
         if self._model_fields is not None:
             ir["model_fields"] = list(self._model_fields)
         if values is not None:
@@ -1058,6 +1065,7 @@ class QuerySet(Generic[M]):
             {
                 "model": self._model._meta.name,
                 "without_defaults": self._without_defaults,
+                "without_root_filter": self._without_root_filter,
                 "from": None if self._from is None else "cte",
             }
         )

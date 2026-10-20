@@ -283,7 +283,7 @@ async def test_a_column_named_qs_is_reserved():
 
 
 @pytest.mark.skipif("soft-delete" not in CAPABILITIES, reason="requires a selected soft-delete native artifact")
-async def test_a_soft_deleted_object_is_not_refreshed_unless_the_default_is_bypassed():
+async def test_a_soft_deleted_object_is_refreshed_because_of_applies_no_default():
     source = 'model Doc {\n  id Int @id\n  title String\n  deleted DateTime? @soft_delete.deleted_at(mode: "application")\n}\n'
     registry = orm.Registry()
     Doc = loads_soft_delete(source, registry=registry)["Doc"]
@@ -297,12 +297,12 @@ async def test_a_soft_deleted_object_is_not_refreshed_unless_the_default_is_bypa
         await docs.filter(Doc.id == 1).update(title="changed")
         await docs.filter(Doc.id == 1).delete()
         await docs.filter(Doc.id == 2).update(title="changed")
-        assert await Doc.objects.of(held).using(db) == [held[1]]
-        assert held[0].title == "a" and held[1].title == "changed"
+        assert await Doc.objects.of(held).using(db) == held
+        assert held[0].title == "changed" and held[1].title == "changed"
         assert await Doc.objects.of(held).using(db).without_defaults("deleted") == held
-        assert held[0].title == "changed"
         assert await Doc.objects.of(held[0]).using(db).without_defaults() == [held[0]]
-        assert await Doc.objects.of(held).using(db).count() == 1
+        assert await Doc.objects.of(held).using(db).count() == 2
+        assert await Doc.objects.of(held).using(db).filter(Doc.id == 2) == [held[1]]
     finally:
         await db.drop_tables()
         await db.close()

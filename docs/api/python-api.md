@@ -363,10 +363,12 @@ await post.qs().delete()
 
 * A bound set keeps the rule "at most one row per bound object": `filter()`, `exclude()`, `load()`, `lock()`, `using()`, `without_defaults()`, `without_related()`, `update()`, `delete()`, `count()`, `exists()`, `sql()` and `inspect()` are allowed, and so are the extension members `hard_delete()` and `undelete()`.
   Ordering, slices, `first()`, `get()` and other shape-changing methods do not exist on it.
-* `post.qs()` applies the query defaults of the model.
-  The shortcuts `post.load()`, `post.update()` and `post.delete()` ignore them, as if they ran through `post.qs().without_defaults()`.
-  So `await post.load(reload=True)` refreshes a soft-deleted post, and `await post.qs().load()` does not.
-  The same holds for `lock()`: use `post.qs().without_defaults().lock()` for a soft-deleted row.
+* A bound set applies no query default of the model to its own rows, for every read and write: `of(objs)` and `post.qs()` see a soft-deleted post, and `update()` and `delete()` write it.
+  `filter()` still narrows.
+  A relation query set inside a bound `load()` keeps the defaults of its target model, also in an aggregate.
+  `without_defaults()` stays allowed: on the bound set it changes only the targets.
+  The same holds for `lock()`: `post.qs().lock()` locks a soft-deleted row.
+  This is the same rule as for the shortcuts `post.load()`, `post.update()` and `post.delete()`.
 * A plain `await post.qs()` with no `load()` reads the normal selection of the model, so a partial object gets those fields.
 * A read of more than 500 keys runs in chunks of at most 500 keys, one statement for each chunk.
   The chunks are not one snapshot unless you hold a transaction: use `db.transaction()` when you need one.
@@ -1194,8 +1196,7 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   (`FOR ... OF <table>`), never rows joined by `load()`.
 * `post.qs().lock(exclusive=True, *, nowait=False, skip_locked=False)` reloads the row with the options of the query set's `lock()` and gives a list with the instance.
   It locks the whole row. A row that is missing, or locked elsewhere with `skip_locked`, gives `[]` and leaves the instance unchanged.
-  `post.qs()` applies the query defaults of the model, so it does not see a soft-deleted row.
-  For that row, use `post.qs().without_defaults().lock()`.
+  `post.qs()` applies no query default to the row of the post, so it also locks a soft-deleted row.
 * Row locks and `db.lock(key)` without `session=True` are held until the transaction
   ends, so they raise `orm.TransactionRequired` outside `db.transaction()`. `count()` / `exists()` /
   `update()` / `delete()` on a locked query set raise `QueryError` (writes lock the rows
