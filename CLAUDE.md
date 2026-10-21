@@ -30,10 +30,10 @@ npm test && npm run test:bun && npm run typecheck
 
 The checks above build no optional feature. `scripts/feature-check.sh` builds one
 artifact per feature extension (proxy-models, query-defaults, model-composition,
-file-storage, generic-relations, tracking: timestamps, soft-delete and locking) and one with all of them, `inherit` included, through `orm-extension-build`;
+file-storage, generic-relations, tracking: timestamps, soft-delete and locking, inherit) and one with all of them through `orm-extension-build`;
 the extension manifests select the Cargo features, never a hand-set `--features`.
 On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
-public scripts, and once the `extensions/file-storage` packages and their end-to-end scripts.
+and inherit public scripts, and once the `extensions/file-storage` packages and their end-to-end scripts.
 CI runs it (`.github/workflows/feature-check.yml`). Run it before you commit a change
 to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code:
 

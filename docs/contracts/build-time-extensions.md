@@ -68,7 +68,7 @@ A manifest capability in `HOST_FEATURE_CAPABILITIES` (`query-defaults`, `model-c
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
 The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
 Select the extension crates.
-`scripts/feature-check.sh` builds one artifact per host feature, one `tracking` artifact with the three column-role extensions, and one with all of them, and runs every suite on each.
+`scripts/feature-check.sh` builds one artifact per host feature, one `tracking` artifact with the three column-role extensions, one `inherit` artifact, and one with all of them, and runs every suite on each.
 
 Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
 For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
@@ -246,6 +246,23 @@ Profiles fingerprint the normalized model, relevant enums/storage, native config
 Runtime definitions can add unrelated models but must match compiled behavior shapes and versions.
 A stale profile fails before connection or queries with a rebuild instruction.
 There is no interpreter fallback.
+
+### Contract fields for derived models and types
+
+An extension pass can derive models and relations.
+Four fields of the schema IR carry the result to the host.
+Core uses them without knowledge of the extension that sets them.
+
+- `RelationIr.label`: the `@relation("name")` text of a back relation that has no owning relation yet, in a model whose pass derives it (`from` and `to` are empty).
+  The pass consumes it. A label that no pass consumes is an error after lowering.
+- `TypeModel` (`name`, `fields`, `extended_by`): the fields of a model that has no table.
+  Code generation writes a type for it and no runtime model.
+  `extended_by` lists the models that extend it directly, in schema order.
+- `behavior.type_models`: the `TypeModel` list of a schema.
+  `merge_definition` merges the lists of two batches by name; two entries with one name and different content are an error.
+- `behavior.model_overrides`: a map from a model to the model that took its table (`{"User": "MyUser"}`).
+  Language code reads it with `behavior_value("model_overrides")` (`behaviorValue` in TypeScript).
+  Two models that override one model are an error.
 
 ## Execution and performance
 

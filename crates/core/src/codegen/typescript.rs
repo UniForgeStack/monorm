@@ -67,11 +67,11 @@ fn value_type(f: &FieldIr) -> String {
     }
 }
 
-/// The fields of an abstract model, those of the abstract models it extends first; a redeclared field replaces the inherited one.
-fn abstract_fields<'a>(type_models: &'a [crate::ir::TypeModel], name: &str) -> Vec<&'a FieldIr> {
+/// The fields of a type model, those of the type models it extends first; a redeclared field replaces the inherited one.
+fn type_model_fields<'a>(type_models: &'a [crate::ir::TypeModel], name: &str) -> Vec<&'a FieldIr> {
     let mut out: Vec<&FieldIr> = Vec::new();
     for t in type_models.iter().filter(|t| t.extended_by.iter().any(|c| c == name)) {
-        for f in abstract_fields(type_models, &t.name) {
+        for f in type_model_fields(type_models, &t.name) {
             out.retain(|g| g.name != f.name);
             out.push(f);
         }
@@ -228,10 +228,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     let method_modules: Vec<&str> = model_methods.values().map(|(module, _)| *module).collect::<BTreeSet<_>>().into_iter().collect();
     let methods_of = |model: &str| model_methods.get(model).map(|(module, class)| format!("_m{}.{class}", method_modules.iter().position(|m| m == module).unwrap()));
     // A class that an abstract model declares takes the model's spec as its type parameter (`class UserQueries<S extends AbstractUserSpec>`).
-    let generic = |model: &str| {
-        query_sets.get(model).is_some_and(|q| !q.2)
-            && ir.models.iter().any(|m| m.name == model && m.classes_from.as_ref().is_some_and(|c| ir.behavior.type_models.iter().any(|t| &t.name == c)))
-    };
+    let generic = |model: &str| super::declares_generic(ir, &query_sets, model);
     let query_type = |model: &str, spec: &str| query_set(model).map(|class| if generic(model) { format!("{class}<{spec}>") } else { class });
     let has_queries = |model: &str| query_set(model).is_some() || options.extensions.iter().any(|e| e.applies(ir, model));
     let ext_base = options.ext_import.as_deref().unwrap_or("./orm-ext");
@@ -280,7 +277,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
 
     for t in &ir.behavior.type_models {
         let name = &t.name;
-        let fields = abstract_fields(&ir.behavior.type_models, name);
+        let fields = type_model_fields(&ir.behavior.type_models, name);
         writeln!(body, "{}\n", section(name)).unwrap();
         writeln!(body, "/** The column values of the abstract model {name}; a model that extends it has them. */").unwrap();
         writeln!(body, "export interface {name}Data {{").unwrap();
