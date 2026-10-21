@@ -183,7 +183,8 @@ A model's table is the model name in lower case, or `@@map("name")`.
 
 Prefer a single schema file for an ordinary project. Explicit schema imports are
 available for reusable libraries or a small module that needs its own generated
-models; no app registration or directory discovery is required.
+models; no directory discovery is required. A schema from an installed package
+needs no path: see [Importing an installed app](#importing-an-installed-app).
 
 ```prisma
 // schema.prisma: the main schema
@@ -213,6 +214,32 @@ A prefix is prepended to default table names, explicit `@@map` names and
 names, explicit constraint/index names and raw SQL are preserved; use unique
 explicit names and write raw SQL with the final table names. Cycles and repeated
 imports, including the same file through different paths, are errors.
+
+#### Importing an installed app
+
+`import "app:<name>"` imports the schema of an installed Python or npm package.
+`<name>` is the distribution name (`orm-auth` on PyPI and on npm), so one string works
+in a Python project and in a TypeScript project.
+
+```prisma
+import "app:orm-auth" (prefix: "auth_")
+```
+
+* The app declares its schema in its package metadata. Without it, the import is an error that names the missing metadata. There is no default file name.
+  * Python: an entry point in the group `orm.apps`, named like the distribution. The value is `<package>:<schema file>`, for example
+    `orm-auth = "orm_auth:schema.prisma"` under `[project.entry-points."orm.apps"]` in `pyproject.toml`.
+    `pyproject.toml` accepts only this form (a `/` path is rejected). A subpackage is `orm_auth.db:schema.prisma`.
+  * npm: `"orm": {"app": "./schema.prisma"}` in `package.json`.
+* Resolution happens when you run `orm generate`, `orm makemigrations` and `orm migrate`, not at run time: the generated models embed the compiled schema.
+  The command line finds the app, and the schema loader gets a map from the name to the file. It does not import the app package.
+  * Python: `importlib.metadata` finds the entry point, and `importlib.util.find_spec` finds the package directory. It works for an editable install (`uv pip install -e`).
+  * Node: from the directory of the importing schema (its real path), it goes up through `node_modules/<name>/package.json`. This resolves an app that only another app depends on under pnpm's strict layout.
+  * The standalone `orm` binary does not look for packages. Give it the file: `orm generate --app orm-auth=path/to/schema.prisma`. `--app` can repeat; the Python and Node commands add it themselves.
+* An app that is not installed is an error: ``import "app:orm-auth": not installed; install the `orm-auth` package``. There is no version lock.
+* The rules of an imported schema stay the same: no `datasource`, no extension imports, one migration history, the prefix on table names.
+* An app schema can import another app. The second app is found from the first app's own package.
+  Each file loads once, so an app that two schemas both import is a repeated import and an error (as for relative imports).
+* The module lookup of `@@query_set` and `@@model_methods` starts from the resolved schema file (see [Query set and model methods](#query-set-and-instance-methods-query_set-model_methods)).
 
 Python generation writes `models.py` and `models.pyi` beside each schema. Keep
 schema modules in separate directories. Use a shared Python package tree, or put
@@ -512,7 +539,7 @@ model User {
 * `@@query_set("UserQueries")` names a query set class. Codegen finds its module `queries`, as `Post.objects` uses it.
 * `@@model_methods("UserMethods")` names a class whose methods go on each instance of the model, for example `user.check_password(raw)`. Codegen finds its module `methods`.
 * Each takes one string, the class name. It is the same in Python and TypeScript.
-* Module lookup. The schema file is in the same package as its code.
+* Module lookup. The schema file is in the same package as its code. For `import "app:orm-auth"` the schema file is the resolved one in the installed package, so the lookup finds `orm_auth` and `orm-auth`, not your project.
   * Python: codegen finds the import root above the schema file.
     The import root is the nearest directory that has a `pyproject.toml`, `setup.py` or `setup.cfg` (or `src/` under it, when the schema is there), or a `site-packages` / `dist-packages` directory.
     The module is the dotted path from the import root to the schema directory, then `queries` or `methods`: `orm_auth.queries:UserQueries` and `orm_auth.methods:UserMethods`.
