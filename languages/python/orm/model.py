@@ -483,6 +483,25 @@ def _enum(ir: dict[str, Any], module: str | None) -> type[enum.Enum]:
     return cls
 
 
+_CLASS_BODY = {
+    "__module__", "__qualname__", "__doc__", "__dict__", "__weakref__", "__annotations__", "__annotate__",
+    "__annotate_func__", "__annotations_cache__", "__firstlineno__", "__static_attributes__", "__orig_bases__",
+    "__parameters__", "__type_params__", "__slots__", "__abstractmethods__", "_abc_impl",
+}
+
+
+_DISPLAY = {"__str__", "__repr__"}
+
+
+def _check_methods(model: str, methods: type, members: set[str]) -> None:
+    for base in methods.__mro__[:-1]:
+        for name in vars(base):
+            if name in _CLASS_BODY:
+                continue
+            if name in members or name in _RESERVED or (hasattr(Model, name) and name not in _DISPLAY):
+                raise TypeError(f"{model}.{name}: model method collision")
+
+
 def define(
     schema: str | dict[str, Any],
     *,
@@ -491,6 +510,7 @@ def define(
     required_capabilities: tuple[str, ...] = (),
     extensions: dict[str, types.ModuleType] | None = None,
     members: dict[str, tuple[str, ...]] | None = None,
+    model_methods: dict[str, type] | None = None,
 ) -> dict[str, Any]:
     """Build model classes from a compiled schema (the JSON IR ``orm compile`` and
     :func:`load` produce). Generated ``models.py`` modules call this.
@@ -500,6 +520,7 @@ def define(
 
     ``extensions`` maps an extension id to its generated package, and ``members`` maps a model to the
     ids whose query-set and instance classes it gets, dependencies first. Generated modules pass both.
+    ``model_methods`` maps a model to a class whose methods go on each of its instances (``@@model_methods``).
     """
     from .query import BoundQuerySet, QuerySet, use_extensions
 
@@ -568,9 +589,12 @@ def define(
                 lambda n: hasattr(Model, n) or n in _RESERVED,
                 lambda n: hasattr(BoundQuerySet, n),
             )
+        methods = (model_methods or {}).get(m["name"])
+        if methods is not None:
+            _check_methods(m["name"], methods, set(ns).union(*(r["instance_members"] for _, r in chain)))
         cls: type[Model] = types.new_class(
             m["name"],
-            (*(c[1] for c in reversed(classes)), Model),
+            (*(c[1] for c in reversed(classes)), *((methods,) if methods is not None else ()), Model),
             {"table": m["table"], "registry": reg, "key": m.get("primary_key")},
             lambda body: body.update(ns),
         )
@@ -610,10 +634,19 @@ def define(
     return out
 
 
-def load(path: str | PathLike[str], *, registry: Registry | None = None, module: str | None = None) -> dict[str, Any]:
+def load(
+    path: str | PathLike[str],
+    *,
+    registry: Registry | None = None,
+    module: str | None = None,
+    model_methods: dict[str, type] | None = None,
+) -> dict[str, Any]:
     """Compile a schema file (``schema.prisma``) and build its models: no generated code
-    needed (generate ``models.py`` / ``.pyi`` for editor and type-checker support)."""
-    return define(_native.compile_schema_file(str(path)), registry=registry, module=module)
+    needed (generate ``models.py`` / ``.pyi`` for editor and type-checker support).
+    ``model_methods`` is as for :func:`define`."""
+    return define(
+        _native.compile_schema_file(str(path)), registry=registry, module=module, model_methods=model_methods
+    )
 
 
 class Model:
@@ -874,7 +907,13 @@ def describe(model: type[Model]) -> dict[str, Any]:
     }
 
 
-def loads(source: str, *, registry: Registry | None = None, module: str | None = None) -> dict[str, Any]:
+def loads(
+    source: str,
+    *,
+    registry: Registry | None = None,
+    module: str | None = None,
+    model_methods: dict[str, type] | None = None,
+) -> dict[str, Any]:
     """Like :func:`load`, for schema source text (``import`` paths resolve against the
     current directory)."""
-    return define(_native.compile_schema(source), registry=registry, module=module)
+    return define(_native.compile_schema(source), registry=registry, module=module, model_methods=model_methods)

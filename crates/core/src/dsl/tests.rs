@@ -718,6 +718,21 @@ fn protected_write_is_a_model_flag_without_ddl() {
     assert!(error.contains("@@protected_write takes no arguments"), "{error}");
 }
 
+#[test]
+fn query_set_and_model_methods_name_classes_in_the_ir_without_ddl() {
+    let source = "model Post {\n id Int @id\n @@query_set(\"PostQueries\")\n @@model_methods(\"PostMethods\")\n}";
+    let ir = compile(source, None).unwrap();
+    assert_eq!((ir.models[0].query_set.as_deref(), ir.models[0].model_methods.as_deref()), (Some("PostQueries"), Some("PostMethods")));
+    let snapshot = |source: &str| crate::migrate::snapshot(&check(compile(source, None).unwrap()).unwrap().1).unwrap();
+    let plain = "model Post {\n id Int @id\n}";
+    assert_eq!(snapshot(source), snapshot(plain));
+    assert!(!serde_json::to_string(&compile(plain, None).unwrap()).unwrap().contains("query_set"));
+    for attribute in ["query_set", "model_methods"] {
+        let error = compile(&source.replace(&format!("@@{attribute}(\"Post{}\")", if attribute == "query_set" { "Queries" } else { "Methods" }), &format!("@@{attribute}")), None).unwrap_err();
+        assert!(error.contains(&format!("@@{attribute}(\"...\") takes one string")), "{error}");
+    }
+}
+
 const COMPOSITE: &str = r#"
 model Item {
   shop  BigInt

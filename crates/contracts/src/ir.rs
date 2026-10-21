@@ -278,6 +278,16 @@ pub struct ModelIr {
     /// `@@protected_write`: ORM writes need a scope that allows them. No DDL, no snapshot.
     #[serde(skip_serializing_if = "crate::ir::is_false", default)]
     pub protected_write: bool,
+    /// `@@query_set("Class")`: the class name only. Codegen finds the module.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub query_set: Option<String>,
+    /// `@@model_methods("Class")`: a class whose methods go on each instance.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_methods: Option<String>,
+    /// The model whose declaration gave the two class names, when a pass copied them (inheritance).
+    /// Codegen looks for the classes in the package of that model's schema file; empty means this model.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub classes_from: Option<String>,
 }
 
 impl ModelIr {

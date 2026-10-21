@@ -276,6 +276,45 @@ export class ModelMeta implements Source {
     this.model = model as never;
   }
 
+  /** @internal The class of the instance methods, or the function that gives it, until the first instance. */
+  modelMethods: unknown;
+
+  /** @internal Names the class of the instance methods (`useModelMethods`). */
+  useModelMethods(source: unknown): void {
+    if (this.methodsApplied) throw new TypeError(`${this.name}: the model methods are already in use`);
+    this.modelMethods = source;
+    // an arrow function (no prototype) gives the class later; a class is checked now
+    if ((source as { prototype?: unknown }).prototype !== undefined) this.applyMethods();
+  }
+
+  private methodsApplied = false;
+
+  private applyMethods(): void {
+    const given = this.modelMethods;
+    this.modelMethods = undefined;
+    const cls = (given as { prototype?: unknown }).prototype === undefined ? (given as () => unknown)() : given;
+    const chain: object[] = [];
+    if (typeof cls !== "function" || (cls as { prototype?: unknown }).prototype === undefined) {
+      throw new TypeError(`${this.name}: a model methods class is a class, got ${String(cls)}`);
+    }
+    for (let p = (cls as { prototype: object }).prototype; p !== null && p !== Object.prototype; p = Object.getPrototypeOf(p) as object) chain.push(p);
+    const members = new Map<PropertyKey, PropertyDescriptor>();
+    for (const proto of chain.reverse()) {
+      for (const key of Reflect.ownKeys(proto)) {
+        if (key !== "constructor") members.set(key, Object.getOwnPropertyDescriptor(proto, key)!);
+      }
+    }
+    const target = this.Row.prototype as object;
+    for (const key of members.keys()) {
+      if (key === "toString") continue; // a display override is allowed; every other member must not collide
+      if (key in target || (typeof key === "string" && (RESERVED.has(key) || this.fields.has(key) || this.relations.has(key)))) {
+        throw new TypeError(`${this.name}.${String(key)}: model method collision`);
+      }
+    }
+    for (const [key, descriptor] of members) Object.defineProperty(target, key, { ...descriptor, enumerable: false });
+    this.methodsApplied = true;
+  }
+
   /** @internal The root query set, built on first use. */
   get objects(): QuerySet<ModelSpec> {
     return (this.rootQuerySet ??= makeQuerySet(this));
@@ -438,6 +477,7 @@ export class ModelMeta implements Source {
 
   /** The instance for the row in `values` starting at `start`. */
   instance(values: unknown[], start: number, db: Database | undefined, shape?: NativeShape): Row {
+    if (this.modelMethods !== undefined) this.applyMethods();
     const o = shape ? new this.PartialRow() : new this.Row();
     const fields = this.fieldList;
     const cells = this.groups.length ? new Map<string, Map<string, unknown>>() : undefined;

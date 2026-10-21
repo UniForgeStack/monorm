@@ -1255,12 +1255,23 @@ pub fn compile_schema_file(path: String) -> napi::Result<String> {
 /// `models.ts` source for a schema file; the runtime is imported from `runtime`.
 #[cfg(feature = "generate-typescript")]
 #[napi]
-pub fn generate_typescript(path: String, runtime: Option<String>, query_sets: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
+pub fn generate_typescript(
+    path: String,
+    runtime: Option<String>,
+    query_sets: Option<std::collections::HashMap<String, String>>,
+    model_methods: Option<std::collections::HashMap<String, String>>,
+) -> napi::Result<String> {
     let p = std::path::Path::new(&path);
-    let (ir, schema) =
-        orm_core::dsl::check(orm_core::dsl::compile_file(p).map_err(schema_err)?).map_err(schema_err)?;
+    let project = orm_core::dsl::compile_project_file(p).map_err(schema_err)?;
+    let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default().into_iter().collect(), ..Default::default() };
+    let mut options = orm_core::codegen::Options {
+        query_sets: query_sets.unwrap_or_default().into_iter().collect(),
+        model_methods: model_methods.unwrap_or_default().into_iter().collect(),
+        ..Default::default()
+    };
+    let out_dir = p.parent().unwrap_or(std::path::Path::new("."));
+    options.with_schema_classes(&ir, &project.units, orm_core::codegen::lookup::Language::TypeScript, out_dir).map_err(schema_err)?;
     orm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("orm"), &options).map_err(schema_err)
 }
 

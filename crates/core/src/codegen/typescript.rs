@@ -206,6 +206,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     // one namespace import per module, read lazily so an import cycle with it is safe
     let modules: Vec<&str> = query_sets.values().map(|(module, ..)| *module).collect::<BTreeSet<_>>().into_iter().collect();
     let query_set = |model: &str| query_sets.get(model).map(|(module, class, _)| format!("_q{}.{class}", modules.iter().position(|m| m == module).unwrap()));
+    let model_methods = options.model_methods(ir, schema, '#')?;
+    let method_modules: Vec<&str> = model_methods.values().map(|(module, _)| *module).collect::<BTreeSet<_>>().into_iter().collect();
+    let methods_of = |model: &str| model_methods.get(model).map(|(module, class)| format!("_m{}.{class}", method_modules.iter().position(|m| m == module).unwrap()));
     let has_queries = |model: &str| query_set(model).is_some() || options.extensions.iter().any(|e| e.applies(ir, model));
     let ext_base = options.ext_import.as_deref().unwrap_or("./orm-ext");
     // names: camelCase must stay unique and clear of the runtime's own
@@ -284,7 +287,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         )
         .unwrap();
         let exts = options.model_extensions(ir, name);
-        let instances: String = exts.iter().rev().map(|(i, e)| format!(", _e{i}.{}", e.members.instance)).collect();
+        let mut instances: String = exts.iter().rev().map(|(i, e)| format!(", _e{i}.{}", e.members.instance)).collect();
+        if let Some(class) = methods_of(name) {
+            write!(instances, ", {class}").unwrap();
+        }
         writeln!(body, "export interface {name} extends {name}Data, Instance<{name}Spec>{instances} {{").unwrap();
         for file in &m.file_fields {
             let field = camel(&m.fields()[file.position].name);
@@ -514,6 +520,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             let class = if inherited { format!("(() => {class}) as never") } else { format!("() => {class}") };
             writeln!(body, "useQuerySet({name}, {class});\n").unwrap();
         }
+        if let Some(class) = methods_of(name) {
+            writeln!(body, "useModelMethods({name}, () => {class});\n").unwrap();
+        }
     }
 
     let mut out = String::new();
@@ -542,10 +551,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     }
     types.sort_unstable();
     let imports = types.iter().map(|t| format!("type {t}")).collect::<Vec<_>>().join(", ");
-    let runtime_values = if query_sets.is_empty() { "define" } else { "define, useQuerySet" };
+    let runtime_values: String = ["define", if query_sets.is_empty() { "" } else { "useQuerySet" }, if model_methods.is_empty() { "" } else { "useModelMethods" }]
+        .into_iter().filter(|v| !v.is_empty()).collect::<Vec<_>>().join(", ");
     writeln!(out, "import {{ {runtime_values}, {imports} }} from {};", quote(runtime)).unwrap();
     for (i, module) in modules.iter().enumerate() {
         writeln!(out, "import * as _q{i} from {};", quote(module)).unwrap();
+    }
+    for (i, module) in method_modules.iter().enumerate() {
+        writeln!(out, "import * as _m{i} from {};", quote(module)).unwrap();
     }
     for i in &used_exts {
         writeln!(out, "import * as _e{i} from {};", quote(&format!("{ext_base}/{}/index.js", options.extensions[*i].typescript_dir()))).unwrap();

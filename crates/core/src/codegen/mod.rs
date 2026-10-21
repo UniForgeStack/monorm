@@ -1,4 +1,5 @@
 //! Code generation from the schema, one module per language.
+pub mod lookup;
 #[cfg(feature = "generate-rust")]
 pub mod rust;
 #[cfg(feature = "generate-python")]
@@ -65,6 +66,8 @@ pub struct Options {
     /// The user's query-set class per model: Python `module:Class`, TypeScript
     /// `specifier#Export`.
     pub query_sets: std::collections::BTreeMap<String, String>,
+    /// The user's instance-methods class per model, in the same form as `query_sets`.
+    pub model_methods: std::collections::BTreeMap<String, String>,
     /// The language code of the artifact's extensions, dependencies first.
     pub extensions: Vec<ExtensionCode>,
     /// Where the generated models import the extension packages from: the dotted module of
@@ -128,21 +131,8 @@ impl Options {
     /// The query sets split at `sep` into (module, class, inherited), checked against the schema.
     /// A proxy without a class of its own gets the class of its nearest ancestor that has one, and `inherited` is true.
     pub fn query_sets<'a>(&'a self, ir: &'a crate::ir::SchemaIr, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str, bool)>, String> {
-        let mut out = std::collections::BTreeMap::new();
-        for (model, target) in &self.query_sets {
-            if !schema.models.iter().any(|m| m.ir.name == *model) {
-                return Err(format!("--query-set {model}: the schema has no model {model}"));
-            }
-            let parts = if sep == '#' { target.rsplit_once(sep) } else { target.split_once(sep) }
-                .filter(|(m, c)| !m.is_empty() && if sep == ':' { is_python_ident(c) } else { is_js_ident(c) });
-            let Some((module, class)) = parts else {
-                return Err(format!("--query-set {model}={target}: expected {}", if sep == ':' { "module:Class" } else { "specifier#Export" }));
-            };
-            if sep == ':' && !module.split('.').all(is_python_ident) {
-                return Err(format!("--query-set {model}={target}: {module} is not an absolute module name"));
-            }
-            out.insert(model.as_str(), (module, class, false));
-        }
+        let mut out: std::collections::BTreeMap<&str, (&str, &str, bool)> =
+            split_targets(lookup::ClassKind::QuerySet.flag(), &self.query_sets, schema, sep)?.into_iter().map(|(m, (module, class))| (m, (module, class, false))).collect();
         for proxy in &ir.behavior.proxy_models {
             if out.contains_key(proxy.model.as_str()) { continue; }
             let ancestors = ir.behavior.ancestors(&proxy.model).unwrap_or_default();
@@ -152,6 +142,39 @@ impl Options {
         }
         Ok(out)
     }
+
+    /// The instance-methods classes split at `sep` into (module, class), checked against the schema.
+    /// A proxy without a class of its own gets the class of its nearest ancestor that has one.
+    pub fn model_methods<'a>(&'a self, ir: &'a crate::ir::SchemaIr, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str)>, String> {
+        let mut out = split_targets(lookup::ClassKind::ModelMethods.flag(), &self.model_methods, schema, sep)?;
+        for proxy in &ir.behavior.proxy_models {
+            if out.contains_key(proxy.model.as_str()) { continue; }
+            let ancestors = ir.behavior.ancestors(&proxy.model).unwrap_or_default();
+            if let Some(&target) = ancestors.iter().find_map(|a| out.get(a)) {
+                out.insert(proxy.model.as_str(), target);
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn split_targets<'a>(flag: &str, targets: &'a std::collections::BTreeMap<String, String>, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str)>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (model, target) in targets {
+        if !schema.models.iter().any(|m| m.ir.name == *model) {
+            return Err(format!("{flag} {model}: the schema has no model {model}"));
+        }
+        let parts = if sep == '#' { target.rsplit_once(sep) } else { target.split_once(sep) }
+            .filter(|(m, c)| !m.is_empty() && if sep == ':' { is_python_ident(c) } else { is_js_ident(c) });
+        let Some((module, class)) = parts else {
+            return Err(format!("{flag} {model}={target}: expected {}", if sep == ':' { "module:Class" } else { "specifier#Export" }));
+        };
+        if sep == ':' && !module.split('.').all(is_python_ident) {
+            return Err(format!("{flag} {model}={target}: {module} is not an absolute module name"));
+        }
+        out.insert(model.as_str(), (module, class));
+    }
+    Ok(out)
 }
 
 fn is_ident(s: &str) -> bool {
@@ -237,6 +260,42 @@ mod reference_tests {
         assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("module:Class"));
         options.query_sets = [("Nope".to_string(), "a:B".to_string())].into();
         assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("no model Nope"));
+    }
+
+    #[test]
+    fn model_methods_reach_both_generators() {
+        let (ir, schema) = schema();
+        let mut options = Options::default();
+        options.model_methods.insert("Post".into(), "app.methods:PostMethods".into());
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.module.contains("from app.methods import PostMethods as _PostMethods") && py.module.contains("model_methods={\"Post\": _PostMethods}"));
+        assert!(py.stub.contains("class Post(_PostMethods, Model):"));
+        options.model_methods.insert("Post".into(), "./methods.js#PostMethods".into());
+        let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+        assert!(ts.contains("import * as _m0 from \"./methods.js\";") && ts.contains("useModelMethods(Post, () => _m0.PostMethods);"));
+        assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("--model-methods") );
+        options.model_methods = [("Nope".to_string(), "a:B".to_string())].into();
+        assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("no model Nope"));
+    }
+
+    #[test]
+    fn a_schema_class_name_fills_in_only_where_the_consumer_gave_none() {
+        use super::lookup::Language;
+        let mut ir = crate::dsl::compile("model Post {\n id Int @id\n @@query_set(\"PostQueries\")\n @@model_methods(\"PostMethods\")\n}\nmodel Tag {\n id Int @id\n @@query_set(\"TagQueries\")\n}", None).unwrap();
+        let dir = std::env::temp_dir().join(format!("orm-schema-classes-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("pkg")).unwrap();
+        std::fs::write(dir.join("pyproject.toml"), "").unwrap();
+        let unit = || crate::dsl::SchemaUnit { path: dir.join("pkg/schema.prisma"), models: vec!["Post".into(), "Tag".into()], enums: vec![], types: vec![] };
+        let mut options = Options::default();
+        options.query_sets.insert("Post".into(), "mine.queries:PostQueries".into());
+        options.with_schema_classes(&ir, &[unit()], Language::Python, &dir).unwrap();
+        assert_eq!(options.query_sets["Post"], "mine.queries:PostQueries");
+        assert_eq!(options.query_sets["Tag"], "pkg.queries:TagQueries");
+        assert_eq!(options.model_methods["Post"], "pkg.methods:PostMethods");
+        ir.models[0].query_set = Some("not a class".into());
+        let error = Options::default().with_schema_classes(&ir, &[unit()], Language::Python, &dir).unwrap_err();
+        assert!(error.contains("is not a class name"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn tagged(ir: &mut crate::ir::SchemaIr, model: &str) -> ExtensionCode {
@@ -362,6 +421,27 @@ mod reference_tests {
             assert!(ts.contains(&format!("useQuerySet({model}, (() => _q0.PostQueries) as never);")), "{ts}");
         }
         assert!(!ts.contains("useQuerySet(Note") && ts.matches("readonly queries: _q0.PostQueries;").count() == 3);
+    }
+
+    #[test]
+    fn a_proxy_takes_the_model_methods_of_its_root_unless_it_names_its_own() {
+        let (ir, schema) = proxied();
+        let mut options = Options::default();
+        options.model_methods.insert("Post".into(), "app.methods:PostMethods".into());
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.module.contains("model_methods={\"Draft\": _DraftMethods, \"Final\": _FinalMethods, \"Post\": _PostMethods}"), "{}", py.module);
+        assert!(py.module.contains("from app.methods import PostMethods as _DraftMethods") && !py.module.contains("_NoteMethods"), "{}", py.module);
+        assert!(py.stub.contains("class Draft(_DraftMethods, Model):") && py.stub.contains("class Note(Model):"), "{}", py.stub);
+        options.model_methods.insert("Draft".into(), "app.methods:DraftMethods".into());
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.module.contains("from app.methods import DraftMethods as _FinalMethods"), "{}", py.module);
+        let mut options = Options::default();
+        options.model_methods.insert("Post".into(), "./methods.js#PostMethods".into());
+        let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+        for model in ["Post", "Draft", "Final"] {
+            assert!(ts.contains(&format!("useModelMethods({model}, () => _m0.PostMethods);")), "{ts}");
+        }
+        assert!(!ts.contains("useModelMethods(Note"), "{ts}");
     }
 
     #[test]

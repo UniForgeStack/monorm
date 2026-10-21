@@ -2623,6 +2623,16 @@ export function useQuerySet<M extends ModelSpec>(
   meta.resetQuerySet(querySet);
 }
 
+/**
+ * Gives the instances of `model` the methods of `methods` (a class, or an arrow function
+ * that gives it). A function is called on the first instance, so the class's module can
+ * import the models module. A method named like a field, a relation or a runtime member is
+ * an error. Generated `models.ts` modules call this for `@@model_methods` and `--model-methods`.
+ */
+export function useModelMethods<M extends ModelSpec>(model: ModelClass<M>, methods: (new (...args: never[]) => object) | (() => new (...args: never[]) => object)): void {
+  model._meta.useModelMethods(methods);
+}
+
 function isQuerySetClass(x: unknown): boolean {
   return x === QuerySet || (typeof x === "function" && (x as { prototype?: unknown }).prototype instanceof QuerySet);
 }

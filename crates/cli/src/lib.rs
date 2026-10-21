@@ -8,7 +8,7 @@
 //! orm [--schema FILE] [--dir DIR] [--url URL] <command>
 //!   check                                         compile the schema and report errors
 //!   compile [-o ir.json]                          the compiled schema (JSON IR)
-//!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]...
+//!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
 //!   makemigrations [name] [--empty] [--check]
 //!   sqlmigrate <migration> [--down]
 //!   migrate [target]
@@ -23,7 +23,8 @@
 //! from `[tool.orm]` in `pyproject.toml` or the `"orm"` key of `package.json`
 //! (`schema`, `migrations`), else `schema.prisma` and `migrations`. The database URL
 //! comes from `--url` or `ORM_DATABASE_URL`. `generate` also reads the query-set classes
-//! from `[tool.orm.query_sets]` (Python) or `"orm": {"querySets": ...}` (TypeScript).
+//! from `[tool.orm.query_sets]` (Python) or `"orm": {"querySets": ...}` (TypeScript),
+//! and the model-methods classes from `[tool.orm.model_methods]` or `"orm": {"modelMethods": ...}`.
 //!
 //! Output goes to the process's stdout and stderr. Exit codes: 0 success, 1 failure
 //! (an invalid schema, a migration error, a database error, `makemigrations --check`
@@ -68,7 +69,7 @@ impl Host {
 
 const COMMANDS: &str = "  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check                                    compile the schema and report errors
   compile [-o ir.json]                     print or write the compiled schema (JSON IR)
-  generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]...
+  generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
                                            the models module from the schema; TARGET is
                                            module:Class (Python) or specifier#Export (TypeScript)
   makemigrations [name] [--empty] [--check]
@@ -119,7 +120,7 @@ struct Args {
 }
 
 const FLAGS: [&str; 6] = ["--empty", "--check", "--down", "--force", "-h", "--help"];
-const VALUED: [&str; 13] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--ext-dir"];
+const VALUED: [&str; 14] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -196,23 +197,23 @@ fn package_json() -> Option<Config> {
     Some(Config { schema: get("schema"), migrations: get("migrations") })
 }
 
-/// The query-set classes of `language` from its configuration file: `[tool.orm.query_sets]`
-/// in `pyproject.toml` (Python) or `"orm": {"querySets": ...}` in `package.json`.
-fn configured_query_sets(language: &str) -> Result<std::collections::BTreeMap<String, String>> {
+/// The `what` classes of `language` from its configuration file: `[tool.orm.<py_key>]`
+/// in `pyproject.toml` (Python) or `"orm": {"<js_key>": ...}` in `package.json`.
+fn configured_targets(language: &str, what: &str, py_key: &str, js_key: &str) -> Result<std::collections::BTreeMap<String, String>> {
     if language == "rust" { return Ok(Default::default()); }
     let table: Option<Vec<(String, Option<String>)>> = if language == "python" {
         std::fs::read_to_string("pyproject.toml").ok().and_then(|t| t.parse::<toml::Table>().ok()).and_then(|doc| {
-            let sets = doc.get("tool")?.get("orm")?.get("query_sets")?.as_table()?.clone();
+            let sets = doc.get("tool")?.get("orm")?.get(py_key)?.as_table()?.clone();
             Some(sets.into_iter().map(|(k, v)| (k, v.as_str().map(String::from))).collect())
         })
     } else {
         std::fs::read_to_string("package.json").ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|doc| {
-            let sets = doc.get("orm")?.get("querySets")?.as_object()?.clone();
+            let sets = doc.get("orm")?.get(js_key)?.as_object()?.clone();
             Some(sets.into_iter().map(|(k, v)| (k, v.as_str().map(String::from))).collect())
         })
     };
     table.unwrap_or_default().into_iter()
-        .map(|(model, target)| target.map(|t| (model.clone(), t)).ok_or_else(|| Failure::Setup(format!("query set of {model} must be a string"))))
+        .map(|(model, target)| target.map(|t| (model.clone(), t)).ok_or_else(|| Failure::Setup(format!("{what} of {model} must be a string"))))
         .collect()
 }
 
@@ -337,7 +338,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             }
         }
         "generate" => {
-            args.allow(command, &["-o", "--out", "--import", "--query-set", "--ext-dir"], 1)?;
+            args.allow(command, &["-o", "--out", "--import", "--query-set", "--model-methods", "--ext-dir"], 1)?;
             generate(&args, host, &schema)?;
         }
         "makemigrations" => {
@@ -409,23 +410,26 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
     let project = dsl::compile_project_file(schema).map_err(Failure::Failed)?;
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut options = codegen::Options { query_sets: configured_query_sets(language)?, extensions: orm_core::behavior::extension_code(language), ..codegen::Options::default() };
+    let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, extensions: orm_core::behavior::extension_code(language), ..codegen::Options::default() };
     if language == "rust" && args.opt(&["--ext-dir"]).is_some() { return Err(Failure::Usage("--ext-dir is for python and typescript".into())); }
-    let mut flag_models = std::collections::BTreeSet::new();
-    for (key, value) in &args.options {
-        if let ("--query-set", Some(value)) = (key.as_str(), value) {
-            let (model, target) = value.split_once('=').filter(|(m, t)| !m.is_empty() && !t.is_empty())
-                .ok_or_else(|| Failure::Usage("--query-set needs Model=TARGET".into()))?;
-            if !flag_models.insert(model) {
-                return Err(Failure::Usage(format!("duplicate --query-set for model {model}")));
+    for (kind, targets) in [(codegen::lookup::ClassKind::QuerySet, &mut options.query_sets), (codegen::lookup::ClassKind::ModelMethods, &mut options.model_methods)] {
+        let flag = kind.flag();
+        let mut flag_models = std::collections::BTreeSet::new();
+        for (key, value) in &args.options {
+            if let (true, Some(value)) = (key == flag, value) {
+                let (model, target) = value.split_once('=').filter(|(m, t)| !m.is_empty() && !t.is_empty())
+                    .ok_or_else(|| Failure::Usage(format!("{flag} needs Model=TARGET")))?;
+                if !flag_models.insert(model) {
+                    return Err(Failure::Usage(format!("duplicate {flag} for model {model}")));
+                }
+                targets.insert(model.to_owned(), target.to_owned());
             }
-            options.query_sets.insert(model.to_owned(), target.to_owned());
         }
     }
     match language {
         #[cfg(feature = "generate-rust")]
         "rust" => {
-            if !options.query_sets.is_empty() || args.opt(&["--import"]).is_some() { return Err(Failure::Usage("Rust generation uses native extension traits; --query-set and --import are unsupported".into())); }
+            if !options.query_sets.is_empty() || !options.model_methods.is_empty() || args.opt(&["--import"]).is_some() { return Err(Failure::Usage("Rust generation uses native extension traits; --query-set, --model-methods and --import are unsupported".into())); }
             let out = out.unwrap_or_else(|| schema.with_file_name("models.rs"));
             write(&out, &codegen::rust::generate(&ir, &compiled).map_err(Failure::Failed)?)?;
             println!("wrote {}", out.display());
@@ -438,6 +442,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                 return Err(Failure::Usage("--import is for typescript".into()));
             }
             let out = out.unwrap_or_else(|| schema.with_file_name("models.py"));
+            options.with_schema_classes(&ir, &project.units, codegen::lookup::Language::Python, out.parent().unwrap_or(Path::new("."))).map_err(Failure::Failed)?;
             let ext_dir = args.opt(&["--ext-dir"]).map(PathBuf::from).unwrap_or_else(|| out.with_file_name("orm_ext"));
             if !options.extensions.is_empty() {
                 let name = ext_dir.file_name().unwrap().to_string_lossy().into_owned();
@@ -475,9 +480,10 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         #[cfg(feature = "generate-typescript")]
         "typescript" => {
             let out = out.unwrap_or_else(|| schema.with_file_name("models.ts"));
+            options.with_schema_classes(&ir, &project.units, codegen::lookup::Language::TypeScript, out.parent().unwrap_or(Path::new("."))).map_err(Failure::Failed)?;
             let ext_dir = args.opt(&["--ext-dir"]).map(PathBuf::from).unwrap_or_else(|| out.with_file_name("orm-ext"));
             if !options.extensions.is_empty() {
-                options.ext_import = Some(relative_specifier(&absolute(out.parent().unwrap_or(Path::new(".")))?, &absolute(&ext_dir)?));
+                options.ext_import = Some(codegen::lookup::relative(&absolute(out.parent().unwrap_or(Path::new(".")))?, &absolute(&ext_dir)?));
             }
             write_extensions(&options, "typescript", &ext_dir)?;
             let runtime = args.opt(&["--import"]).unwrap_or("orm");
@@ -509,16 +515,6 @@ fn write_extensions(options: &codegen::Options, language: &str, dir: &Path) -> R
         println!("wrote {}", path.display());
     }
     Ok(())
-}
-
-#[cfg(feature = "generate-typescript")]
-fn relative_specifier(from: &Path, to: &Path) -> String {
-    let (a, b): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
-    let common = a.iter().zip(&b).take_while(|(a, b)| a == b).count();
-    let mut parts: Vec<String> = (common..a.len()).map(|_| "..".into()).collect();
-    parts.extend(b[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
-    let joined = parts.join("/");
-    if joined.starts_with("..") { joined } else if joined.is_empty() { ".".into() } else { format!("./{joined}") }
 }
 
 // Normalize output paths without requiring generated files to exist yet.

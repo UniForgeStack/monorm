@@ -176,6 +176,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str) -> Result<Generate
 /// [`generate`] with generator options (the user's query-set classes).
 pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &super::Options) -> Result<Generated, String> {
     let query_sets = options.query_sets(ir, schema, ':')?;
+    let model_methods = options.model_methods(ir, schema, ':')?;
     // A proxy takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
     // which the stub cannot combine with the proxy's `QuerySet[Proxy]`, so the stub types its methods as `Any`.
     let inherits = |model: &str| query_sets.get(model).is_some_and(|q| q.2);
@@ -205,6 +206,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          # inserts / updates and query sets) for editors and type checkers.\n\n",
     );
     writeln!(py, "from orm import QuerySet, define{}\n", if query_sets.is_empty() { "" } else { ", use_query_set" }).unwrap();
+    for (model, (module, class)) in &model_methods {
+        writeln!(py, "from {module} import {class} as _{model}Methods").unwrap();
+    }
+    if !model_methods.is_empty() {
+        py.push('\n');
+    }
     // the extensions some model uses, with the models that use each, in chain order
     let model_exts: Vec<(&str, Vec<(usize, &super::ExtensionCode)>)> = names.iter().map(|n| (*n, options.model_extensions(ir, n))).filter(|(_, e)| !e.is_empty()).collect();
     let used_exts: BTreeSet<usize> = model_exts.iter().flat_map(|(_, e)| e.iter().map(|(i, _)| *i)).collect();
@@ -218,6 +225,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         let modules: Vec<String> = used_exts.iter().map(|i| format!("{:?}: _ext{i}", options.extensions[*i].members.extension)).collect();
         let members: Vec<String> = model_exts.iter().map(|(m, e)| format!("{m:?}: ({},)", e.iter().map(|(_, x)| format!("{:?}", x.members.extension)).collect::<Vec<_>>().join(", "))).collect();
         write!(ext_kwargs, ", extensions={{{}}}, members={{{}}}", modules.join(", "), members.join(", ")).unwrap();
+    }
+    if !model_methods.is_empty() {
+        let classes: Vec<String> = model_methods.keys().map(|m| format!("{m:?}: _{m}Methods")).collect();
+        write!(ext_kwargs, ", model_methods={{{}}}", classes.join(", ")).unwrap();
     }
     writeln!(py, "_SCHEMA = r\"\"\"\n{ir_json}\n\"\"\"\n").unwrap();
     #[cfg(feature = "reference-loading")]
@@ -302,7 +313,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         writeln!(body, "{}\n", section(name)).unwrap();
         let exts = options.model_extensions(ir, name);
         let instances: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}Instance, ")).collect();
-        writeln!(body, "class {name}({instances}Model):").unwrap();
+        let methods = if model_methods.contains_key(name.as_str()) { format!("_{name}Methods, ") } else { String::new() };
+        writeln!(body, "class {name}({instances}{methods}Model):").unwrap();
         for method in ir.behavior.methods.iter().filter(|method| method.model == *name) {
             let output = if method.output.is_some() { "str" } else { "None" };
             writeln!(body, "    @staticmethod\n    def {}(value: str) -> {output}: ...", method.name).unwrap();
@@ -575,6 +587,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
     }
     pyi.push_str("QuerySet, RelationPath, Update, UpdateMany\nfrom orm import fields as f\n\n");
+    for (model, (module, class)) in &model_methods {
+        writeln!(pyi, "from {module} import {class} as _{model}Methods").unwrap();
+    }
     for (model, (module, class, _)) in query_sets.iter().filter(|(m, _)| !inherits(m)) {
         let alias = if used_exts.is_empty() || options.model_extensions(ir, model).is_empty() { "Objects" } else { "UserObjects" };
         writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();
@@ -587,7 +602,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         let bound = if e.members.bound_query_set.is_empty() { String::new() } else { format!(", {} as _ext{i}BoundQuerySet", e.members.bound_query_set) };
         writeln!(pyi, "from {ext_base}.{} import {} as _ext{i}QuerySet, {} as _ext{i}Instance{bound}", e.python_package(), e.members.query_set, e.members.instance).unwrap();
     }
-    if !query_sets.is_empty() || !used_exts.is_empty() {
+    if !query_sets.is_empty() || !used_exts.is_empty() || !model_methods.is_empty() {
         pyi.push('\n');
     }
     if !ir.behavior.file_fields.is_empty() {
