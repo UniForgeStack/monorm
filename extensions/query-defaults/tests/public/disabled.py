@@ -26,6 +26,7 @@ try:
     orm.loads('model Bad {\n id Int @id\n @@query.filter("positive", "id > 0")\n}', registry=registry)
 except orm.SchemaError as error:
     assert "@query.filter" in str(error) and "rebuild" in str(error), error
+    assert "@@query.*" in str(error) and "docs/README.md" in str(error), error
 else:
     raise AssertionError("disabled artifact accepted @@query syntax")
 assert registry.ir() == before

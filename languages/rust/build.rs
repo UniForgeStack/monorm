@@ -1,3 +1,6 @@
+const QUERY_SOURCE: &str = "orm.query-defaults";
+const QUERY_POLICY: &str = "query";
+
 fn main() {
     println!("cargo:rerun-if-changed=examples/schema.prisma");
     println!("cargo:rerun-if-changed=examples/loading.prisma");
@@ -30,7 +33,7 @@ fn orm_client_fixture_defaults() -> Vec<orm_core::behavior::ReadDefault> {
     vec![
         orm_core::behavior::ReadDefault {
             model: "OrderedAuthor".into(),
-            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
+            source: QUERY_SOURCE.into(), name: QUERY_POLICY.into(), annotate: Default::default(),
             fields: Some(vec!["name".into()]),
             load: vec![],
             filter: Some(serde_json::json!({"t":"col","path":[],"name":"visible"})),
@@ -42,7 +45,7 @@ fn orm_client_fixture_defaults() -> Vec<orm_core::behavior::ReadDefault> {
         },
         orm_core::behavior::ReadDefault {
             model: "PolicyAuthor".into(),
-            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
+            source: QUERY_SOURCE.into(), name: QUERY_POLICY.into(), annotate: Default::default(),
             fields: Some(vec!["name".into(), "note".into()]),
             load: vec![],
             filter: Some(serde_json::json!({"t":"col","path":[],"name":"visible"})),
@@ -50,7 +53,7 @@ fn orm_client_fixture_defaults() -> Vec<orm_core::behavior::ReadDefault> {
         },
         orm_core::behavior::ReadDefault {
             model: "ScopedNote".into(),
-            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
+            source: QUERY_SOURCE.into(), name: QUERY_POLICY.into(), annotate: Default::default(),
             fields: None,
             load: vec![],
             filter: Some(serde_json::json!({"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"shop"},"r":{"t":"scope","name":"shop"}})),
@@ -58,7 +61,7 @@ fn orm_client_fixture_defaults() -> Vec<orm_core::behavior::ReadDefault> {
         },
         orm_core::behavior::ReadDefault {
             model: "PolicyBook".into(),
-            source: "orm.query-defaults".into(), name: "query".into(), annotate: Default::default(),
+            source: QUERY_SOURCE.into(), name: QUERY_POLICY.into(), annotate: Default::default(),
             fields: Some(vec!["title".into()]),
             load: vec![vec!["author".into()]],
             filter: None,

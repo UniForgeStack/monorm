@@ -498,7 +498,11 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
         // One name can have a model entry (`@@x`) and a field entry (`@x`).
         let named = || manifests.iter().flat_map(|m| m.attributes.iter().map(move |a| (m, a))).filter(|(_, a)| a.name == d.attribute);
         let found = named().find(|(_, a)| (a.target == AttributeTarget::Field) == d.field.is_some()).or_else(|| named().next());
-        let (m, a) = found.ok_or_else(|| fail(d, "not compiled into this artifact; rebuild with its extension".into()))?;
+        let (m, a) = found.ok_or_else(|| {
+            let prefix = if d.field.is_some() { "@" } else { "@@" };
+            let namespace = d.attribute.split_once('.').map_or(d.attribute.as_str(), |(n, _)| n);
+            fail(d, format!("not compiled into this artifact; rebuild with its extension (namespace {prefix}{namespace}.*, see docs/README.md)"))
+        })?;
         if m.host_contract != HOST_CONTRACT || m.schema_contract != SCHEMA_CONTRACT {
             return Err(fail(d, format!("{} requires incompatible host/schema contracts; rebuild", m.id)));
         }
@@ -832,9 +836,9 @@ mod tests {
     }
 
     #[test]
-    fn an_attribute_without_its_extension_asks_for_a_rebuild() {
+    fn a_disabled_extension_error_names_the_namespace_and_the_readme() {
         let error = validate_declarations(&schema(crate::dialect::Dialect::Sqlite), &[], None).unwrap_err();
-        assert_eq!(error, "schema.prisma:3:7: @app.trim: not compiled into this artifact; rebuild with its extension");
+        assert_eq!(error, "schema.prisma:3:7: @app.trim: not compiled into this artifact; rebuild with its extension (namespace @app.*, see docs/README.md)");
     }
 
     #[test]

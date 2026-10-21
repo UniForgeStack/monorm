@@ -56,9 +56,6 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
         if let Some(first) = merged.parts.iter().find(|p| p.identity.name == d.name) {
             return Err(clash(&d.model, "default name", &first.identity, &identity));
         }
-        if d.name == "query" && d.source != "orm.query-defaults" {
-            return Err(format!("{}: default name \"query\" is reserved for query-defaults (source {})", d.model, d.source));
-        }
         if let Some(fields) = &d.fields {
             if let Some(first) = &merged.fields_owner { return Err(clash(&d.model, "default fields", first, &identity)); }
             let mut seen = HashSet::new();

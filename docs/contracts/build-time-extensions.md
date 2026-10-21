@@ -127,7 +127,8 @@ Use the artifact with `PYTHONPATH=$DIR/py ORM_PROFILE=custom` in Python and `ORM
 Without `prepare_only`, the frontend builds the release libraries itself.
 `scripts/feature-check.sh all` does the same steps and runs every suite on the result.
 A schema that uses an extension attribute on an artifact without that extension fails during definition:
-`@proxy.of: not compiled into this artifact; rebuild with its extension`.
+`@proxy.of: not compiled into this artifact; rebuild with its extension (namespace @@proxy.*, see docs/README.md)`.
+The message names the namespace of the attribute.
 
 Protected writes (`@@protected_write`), client defaults, cursor pagination, the N+1 finder and reference loaders are in the core.
 They need no extension.

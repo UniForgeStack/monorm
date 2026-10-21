@@ -556,7 +556,7 @@ Behavior (new attributes, proxies, defaults) comes from build-time extensions, b
 
 A namespaced attribute belongs to a build-time extension crate.
 The artifact must be built with that crate ([build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions));
-otherwise definition fails with `@<name>: not compiled into this artifact; rebuild with its extension`.
+otherwise definition fails with `@<name>: not compiled into this artifact; rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)`.
 
 | Attribute | Extension | Doc |
 |---|---|---|

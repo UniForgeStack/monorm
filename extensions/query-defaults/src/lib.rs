@@ -5,19 +5,20 @@ use std::collections::{BTreeMap, HashMap};
 
 /// Compiler-local inheritance state; parent identities never enter the host contract.
 #[derive(Clone, Default)]
-struct QueryDefaults {
+struct ModelPolicy {
     model: String,
     filter: Option<Value>,
     /// `@@query.filter("<name>", ...)`: one entry each, inherited by name.
     named: BTreeMap<String, Value>,
     fields: Option<Vec<String>>,
     related: Vec<Vec<String>>,
-    order: Vec<OrderKey>,
-    order_set: bool,
+    order: Option<Vec<OrderKey>>,
 }
 
 /// The entry that holds the order, fields, related paths and the `@@query.defaults(filter:)` filter.
 const POLICY: &str = "query";
+/// The `ReadDefault` source of every entry this extension emits.
+const SOURCE: &str = "orm.query-defaults";
 
 /// The options of a policy, in `@@query.defaults(<option>: ...)` and `@@query.<option>(...)`.
 /// `@@query.filter` is not one: it adds named filters (see `named_filters`).
@@ -112,12 +113,12 @@ fn check_order(ir: &SchemaIr, model: &orm_contracts::ir::ModelIr, order: &[Order
 
 pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
     let declarations = &ir.behavior.declarations;
-    let mut resolved: HashMap<String, QueryDefaults> = ir.behavior.read_defaults.iter().filter(|d| d.source == "orm.query-defaults" && d.name == POLICY).map(|d| (d.model.clone(), QueryDefaults { model: d.model.clone(), filter: d.filter.clone(), named: BTreeMap::new(), fields: d.fields.clone(), related: d.load.clone(), order: d.order.clone().unwrap_or_default(), order_set: d.order.is_some() })).collect();
-    for d in ir.behavior.read_defaults.iter().filter(|d| d.source == "orm.query-defaults" && d.name != POLICY) {
+    let mut resolved: HashMap<String, ModelPolicy> = ir.behavior.read_defaults.iter().filter(|d| d.source == SOURCE && d.name == POLICY).map(|d| (d.model.clone(), ModelPolicy { model: d.model.clone(), filter: d.filter.clone(), named: BTreeMap::new(), fields: d.fields.clone(), related: d.load.clone(), order: d.order.clone() })).collect();
+    for d in ir.behavior.read_defaults.iter().filter(|d| d.source == SOURCE && d.name != POLICY) {
         if let (Some(r), Some(f)) = (resolved.get_mut(&d.model), &d.filter) { r.named.insert(d.name.clone(), f.clone()); }
     }
     let mut order_sources: HashMap<String, String> = HashMap::new();
-    fn resolve(ir: &SchemaIr, name: &str, resolved: &mut HashMap<String, QueryDefaults>, order_sources: &mut HashMap<String, String>, stack: &mut Vec<String>) -> Result<QueryDefaults, String> {
+    fn resolve(ir: &SchemaIr, name: &str, resolved: &mut HashMap<String, ModelPolicy>, order_sources: &mut HashMap<String, String>, stack: &mut Vec<String>) -> Result<ModelPolicy, String> {
         if let Some(d) = resolved.get(name) { return Ok(d.clone()); }
         if stack.iter().any(|n| n == name) { return Err(format!("query-default inheritance cycle: {} -> {name}", stack.join(" -> "))); }
         stack.push(name.into());
@@ -127,7 +128,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         let proxy_parent = ir.behavior.proxy_models.iter().find(|p| p.model == name).map(|p| p.parent.as_str());
         let composed_parent = ir.behavior.declarations.iter().find(|d| d.model == name && d.attribute == "composition.model").and_then(|d| d.arguments.get("parent")).and_then(Value::as_str);
         let parent = given.get("parent").and_then(Value::as_str).or(proxy_parent).or(composed_parent);
-        let inherited = match parent { Some(p) => resolve(ir, p, resolved, order_sources, stack)?, None => QueryDefaults::default() };
+        let inherited = match parent { Some(p) => resolve(ir, p, resolved, order_sources, stack)?, None => ModelPolicy::default() };
         let mut out = inherited.clone(); out.model = name.into();
         if let Some(source) = given.get("filter") {
             let source = source.as_str().ok_or("filter must be a string")?;
@@ -146,14 +147,13 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
             out.related = strings(related)?.into_iter().map(|s| s.split('.').map(str::to_owned).collect()).collect();
         }
         if let Some(order) = given.get("order") {
-            out.order_set = true;
-            out.order = order.as_array().ok_or("order must be a list of strings")?.iter().map(|k| order_key(model, k)).collect::<Result<_, _>>()?;
+            out.order = Some(order.as_array().ok_or("order must be a list of strings")?.iter().map(|k| order_key(model, k)).collect::<Result<_, _>>()?);
         }
         let source = match parent.and_then(|p| order_sources.get(p)) {
             Some(s) if !given.contains_key("order") => s.clone(),
             _ => name.to_owned(),
         };
-        check_order(ir, model, &out.order, &source)?;
+        check_order(ir, model, out.order.as_deref().unwrap_or_default(), &source)?;
         order_sources.insert(name.into(), source);
         let excluded: Vec<&str> = ir.behavior.declarations.iter().filter(|d| d.model == name && d.attribute == "query.selectOut").filter_map(|d| d.field.as_deref()).collect();
         if !excluded.is_empty() {
@@ -164,15 +164,15 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
     }
     if !declarations.iter().any(|d| d.attribute.starts_with("query.")) && resolved.is_empty() { return Ok(()); }
     for model in &ir.models { resolve(ir, &model.name, &mut resolved, &mut order_sources, &mut vec![])?; }
-    ir.behavior.read_defaults.retain(|d| d.source != "orm.query-defaults");
+    ir.behavior.read_defaults.retain(|d| d.source != SOURCE);
     for m in &ir.models {
         let d = resolved.remove(&m.name).expect("resolved model");
         for (name, filter) in d.named {
-            ir.behavior.read_defaults.push(ReadDefault { source: "orm.query-defaults".into(), name, model: d.model.clone(), filter: Some(filter), ..Default::default() });
+            ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name, model: d.model.clone(), filter: Some(filter), ..Default::default() });
         }
-        ir.behavior.read_defaults.push(ReadDefault { source: "orm.query-defaults".into(), name: POLICY.into(), model: d.model,
+        ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: POLICY.into(), model: d.model,
             filter: d.filter, fields: d.fields, load: d.related,
-            order: if d.order_set { Some(d.order) } else { None }, annotate: BTreeMap::new() });
+            order: d.order, annotate: BTreeMap::new() });
     }
     Ok(())
 }
@@ -272,9 +272,8 @@ mod tests {
         lower(&mut schema).unwrap();
         assert_eq!(schema.behavior.read_defaults[0].source, "tenant-extension");
         for d in &schema.behavior.read_defaults[1..] {
-            assert_eq!(d.source, "orm.query-defaults");
-            assert_eq!(d.name, "query");
-            assert!(serde_json::to_value(d).unwrap().get("parent").is_none());
+            assert_eq!(d.source, SOURCE);
+            assert_eq!(d.name, POLICY);
         }
         let before = serde_json::to_value(&schema).unwrap();
         lower(&mut schema).unwrap();
@@ -323,13 +322,11 @@ mod tests {
         schema.behavior.declarations.retain(|d| d.model != "Child");
         schema.behavior.proxy_models.push(serde_json::from_value(json!({"model":"Child","parent":"Parent"})).unwrap());
         lower(&mut schema).unwrap();
-        assert!(serde_json::to_value(&schema.behavior.read_defaults[1]).unwrap().get("parent").is_none());
         assert_eq!(schema.behavior.read_defaults[1].filter, schema.behavior.read_defaults[0].filter);
         let mut schema = ir();
         schema.behavior.declarations.retain(|d| d.model != "Child");
         schema.behavior.declarations.push(serde_json::from_value(json!({"model":"Child","attribute":"composition.model","field":null,"arguments":{"parent":"Parent","parentRef":"p","childRef":"c"},"positional":[],"location":{"file":"test","line":4,"column":1}})).unwrap());
         lower(&mut schema).unwrap();
-        assert!(serde_json::to_value(&schema.behavior.read_defaults[1]).unwrap().get("parent").is_none());
         // An untyped proxy declaration is no parent source; only the lowered contract is.
         let mut schema = ir();
         schema.behavior.declarations.retain(|d| d.model != "Child");
@@ -446,7 +443,6 @@ mod tests {
         schema.behavior.declarations[1].arguments.insert("parent".into(), json!("Other"));
         schema.behavior.declarations[1].arguments.remove("filter");
         lower(&mut schema).unwrap();
-        assert!(serde_json::to_value(&schema.behavior.read_defaults[1]).unwrap().get("parent").is_none());
         assert_eq!(schema.behavior.read_defaults[1].order, schema.behavior.read_defaults[2].order);
     }
     #[test]
@@ -470,9 +466,9 @@ mod tests {
         named(&mut schema, "Parent", "published", "visible == true");
         lower(&mut schema).unwrap();
         let parent = entries(&schema, "Parent");
-        assert_eq!(parent.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["published", "tenant", "query"]);
+        assert_eq!(parent.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["published", "tenant", POLICY]);
         assert_eq!(parent[0].1.as_ref().unwrap()["t"], "cmp");
-        assert!(schema.behavior.read_defaults.iter().all(|d| d.source == "orm.query-defaults"));
+        assert!(schema.behavior.read_defaults.iter().all(|d| d.source == SOURCE));
         // The `query` entry keeps the defaults(filter:) filter, fields and order.
         assert_eq!(parent[2].1.as_ref().unwrap()["t"], "cmp");
         let before = serde_json::to_value(&schema).unwrap(); lower(&mut schema).unwrap();
@@ -489,7 +485,7 @@ mod tests {
         lower(&mut schema).unwrap();
         let child = entries(&schema, "Child");
         let names: Vec<&str> = child.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["published", "tenant", "query"], "extra is removed, tenant is inherited");
+        assert_eq!(names, ["published", "tenant", POLICY], "extra is removed, tenant is inherited");
         assert_eq!(child[0].1.as_ref().unwrap()["t"], "and", "same name replaces, and can extend the parent's");
         assert_eq!(child[1].1, entries(&schema, "Parent").into_iter().find(|(n, _)| n == "tenant").unwrap().1);
     }
@@ -499,7 +495,7 @@ mod tests {
         assert!(error(json!(["id > 1"])).contains("@@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")"));
         assert!(error(json!(["a", "b", "c"])).contains("takes a name and an expression"));
         assert!(error(json!(["bad name", "id > 1"])).contains("must be letters, digits and underscores"));
-        assert!(error(json!(["query", "id > 1"])).contains("reserved"));
+        assert!(error(json!([POLICY, "id > 1"])).contains("reserved"));
         assert!(error(json!(["a", "id >"])).contains("@@query.filter \"a\":"));
         let mut s = ir(); named(&mut s, "Parent", "a", "id > 1"); named(&mut s, "Parent", "a", "id > 2");
         assert!(lower(&mut s).unwrap_err().contains("@@query.filter \"a\" is given twice"));

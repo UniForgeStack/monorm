@@ -97,8 +97,10 @@ Post.objects.without_defaults()              # no default filter
 ```
 
 The name is letters, digits and underscores.
-A name is unique on a model. `"query"` is reserved: that entry holds the order, the fields and the related paths,
+A name is unique on a model across sources: the first entry keeps the name and a second one is a schema error that names both sources.
+`"query"` is the query-defaults convention, not a core rule: that entry holds the order, the fields and the related paths,
 and also the filter of `@@query.defaults(filter: ...)`. `without_defaults("query")` drops those with that filter.
+The `query` entry exists on every model once any `@@query.*` is declared.
 A one-argument `@@query.filter("<expr>")` is a schema error that shows the two-argument form.
 
 A child (`@@query.parent`, a proxy or a composed model) inherits each name of its parent.

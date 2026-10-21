@@ -11,7 +11,7 @@ Select the crate in the `orm-extension-build` configuration (see `build-time-ext
 | `orm-locking` (`extensions/locking`) | `orm.locking` | `@locking.version` |
 
 You declare the column; the attribute gives it the role.
-A build without the extension fails a schema with its attribute: "not compiled into this artifact; rebuild with its extension".
+A build without the extension fails a schema with its attribute: "not compiled into this artifact; rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)".
 
 ## Modes
 

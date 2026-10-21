@@ -1,4 +1,4 @@
-//! The neutral contract has no public producer for multi-source contributions yet.
+//! The neutral `read_defaults` slot, built by hand: the merge and validation rules need no extension.
 use orm_core::{behavior::{merge_definition, Requirements, SCHEMA_CONTRACT}, ir::SchemaIr, schema::Schema};
 use serde_json::{json, Value};
 
@@ -47,6 +47,8 @@ fn conflicts_name_both_sources_and_entries_even_for_empty_owned_lists() {
     }
     let error = prepare(json!([entry("first-ext","same",json!({})),entry("second-ext","same",json!({}))])).err().unwrap();
     for text in ["first-ext", "second-ext", "same", "default name"] { assert!(error.contains(text), "{error}"); }
+    let error = prepare(json!([entry("first-ext","query",json!({})),entry("second-ext","query",json!({}))])).err().unwrap();
+    for text in ["first-ext", "second-ext", "query", "default name"] { assert!(error.contains(text), "{error}"); }
 }
 
 #[test]
@@ -63,9 +65,11 @@ fn neutral_defaults_validate_once_without_the_extension() {
         json!({"order":[{"field":"missing"}]}), json!({"load":[[]]}),
         json!({"load":[["missing"]]}), json!({"annotate":{"bad":{"t":"invalid"}}})
     ] { assert!(prepare(json!([entry("other-ext","other",extra)])).is_err()); }
-    for (source, name) in [("", "other"), ("other-ext", ""), ("other-ext", "query")] {
+    for (source, name) in [("", "other"), ("other-ext", "")] {
         assert!(prepare(json!([entry(source, name, json!({}))])).is_err());
     }
+    // Core reserves no name: "query" is the query-defaults convention, and the first entry wins.
+    prepare(json!([entry("other-ext", "query", json!({}))])).unwrap();
     // Required-column NULL checks are deliberately exempt from strict-null validation.
     prepare(json!([entry("other-ext","other",json!({"filter":{"t":"is_null","item":{"t":"col","path":[],"name":"id"}}}))])).unwrap();
 }

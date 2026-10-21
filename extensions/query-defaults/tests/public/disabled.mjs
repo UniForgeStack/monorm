@@ -7,6 +7,7 @@ define({ models: [{ name: 'Plain', table: 'plain', fields: [field] }], behavior:
 } }, { registry });
 const before = registry.ir();
 assert.throws(() => loads('model Bad {\n id Int @id\n @@query.filter("positive", "id > 0")\n}', { registry }),
-  error => error instanceof SchemaError && /@query.filter.*rebuild/.test(error.message));
+  error => error instanceof SchemaError && /@query.filter.*rebuild/.test(error.message)
+    && error.message.includes('@@query.*') && error.message.includes('docs/README.md'));
 assert.deepEqual(registry.ir(), before);
 console.log('Disabled Node syntax/neutral contract: passed');
