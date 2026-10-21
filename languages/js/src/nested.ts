@@ -178,6 +178,13 @@ export class NestedType {
     return v;
   }
 
+  /** A list leaf as one list parameter, each element checked like a plain leaf. */
+  leafList(sub: Sub, value: unknown, what: string): unknown {
+    if (value === null) return this.leafValue(sub, value, what);
+    if (!Array.isArray(value)) throw new TypeError(`${what}: expected a list, got ${describe(value)}`);
+    return value.map((v, i) => this.leafValue(sub, v, `${what}[${i}]`));
+  }
+
   /** The value a value class holds for `sub`. */
   coerce(sub: Sub, value: unknown, what: string): unknown {
     if (value === null) {
@@ -586,7 +593,7 @@ function flatten(nt: NestedType, given: Map<string, unknown>, prefix: string[], 
     else if (s.dynamicDefault) continue;
     else throw new TypeError(`${at}: is required`);
     if (s.nested === undefined) {
-      out.set(names.get(path.join("."))!, nt.leafValue(s, v, at));
+      out.set(names.get(path.join("."))!, s.list ? nt.leafList(s, v, at) : nt.leafValue(s, v, at));
     } else if (v === null) {
       if (!s.nullable) throw new TypeError(`${at}: is not nullable`);
       const head = `${path.join(".")}.`;

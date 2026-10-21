@@ -123,6 +123,8 @@ def lookup_values(model: type[Model], values: Mapping[str, Any]) -> dict[str, An
     for key, value in values.items():
         if isinstance(value, Expression):
             raise TypeError(f"{meta.name}.{key}: get_or_insert takes plain values, not expressions")
+        if key in meta.nested:
+            raise TypeError(f"get_or_insert: {meta.name}.{key} is a nested field; look up by a plain field of a unique constraint")
         if isinstance(rel := meta.relations.get(key), BelongsTo):
             items = _link(rel, value)
         elif key not in meta.input_fields:
@@ -155,6 +157,11 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
         for key, value in row.items():
             if isinstance(value, Expression):
                 raise TypeError(f"{meta.name}.{key}: update_many takes plain values, not expressions")
+            if key in meta.nested and isinstance(value, Mapping):
+                raise TypeError(
+                    f"update_many: {meta.name}.{key} is a dict; a dict patches, and update_many only replaces. "
+                    f"Pass a {meta.nested[key].nt.name} value, or use update() to patch"
+                )
             if (nested := _nested_values(meta, key, value)) is not None:
                 values.update(nested)
             elif key in meta.input_fields:

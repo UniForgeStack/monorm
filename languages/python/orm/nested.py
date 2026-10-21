@@ -123,6 +123,14 @@ class NestedType:
             raise TypeError(f"{what}: expected {sub.type}, got {type(value).__name__}")
         return value
 
+    def leaf_list(self, sub: _Sub, value: Any, what: str) -> Any:
+        """A list leaf as one list parameter, each element checked like a plain leaf."""
+        if value is None:
+            return self.leaf_value(sub, value, what)
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise TypeError(f"{what}: expected a list, got {type(value).__name__}")
+        return [self.leaf_value(sub, v, f"{what}[{i}]") for i, v in enumerate(value)]
+
     def bound(self, sub: _Sub, value: Any, what: str, json: bool) -> Any:
         """A leaf value as a query parameter; inside a JSON value the engine binds a DateTime or Date as text."""
         v = self.leaf_value(sub, value, what)
@@ -600,7 +608,7 @@ class NestedGroup(_Access):
             else:
                 raise ValueError(f"{at}: is required")
             if s.nested is None:
-                out[names[path]] = nt.leaf_value(s, v, at)
+                out[names[path]] = nt.leaf_list(s, v, at) if s.list else nt.leaf_value(s, v, at)
             elif v is None:
                 if not s.nullable:
                     raise ValueError(f"{at}: is not nullable")

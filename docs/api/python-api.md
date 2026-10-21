@@ -532,6 +532,8 @@ await Shop.objects.filter(...).update(address=None)
 * A patch (a dict in `update()`) changes only the named subfields, at any depth. It needs at least one subfield,
   cannot set a non-nullable subfield to `None`, and cannot name a list subfield. A patch needs a present value:
   to fill a null field, replace it with a whole value.
+* `update_many()` only replaces: a dict for a nested field is a `TypeError`; pass a value class, or use `update()` to patch.
+  `get_or_insert()` refuses a nested field as a lookup key.
 * The leaf columns of a `columns` field are not public: `to_dict()`, `repr()`, the `.pyi` stub and `insert()` /
   `update()` know `address`, never `address_city`. `load()` of a subfield loads the whole value.
 * A subfield compares as its scalar type (a `DateTime` subfield as a timestamp). An omitted subfield in a

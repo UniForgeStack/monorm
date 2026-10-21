@@ -2,7 +2,7 @@
 
 import { Expression, ParamRef, wrap, type IR, type IRContext } from "./expr.js";
 import { fieldValue, type ModelMeta } from "./model.js";
-import { flattenGroup, jsonInsert, nestedAssignments } from "./nested.js";
+import { flattenGroup, jsonInsert, NestedValue, nestedAssignments } from "./nested.js";
 
 /** Values of one row by TypeScript name, a to-one relation (`author: user`) giving its
  * key column. Expressions are refused unless `expressions`. */
@@ -17,6 +17,12 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
     }
     const f = meta.inputFields.get(key);
     if (f) {
+      if (f.nested !== undefined && what === "getOrInsert") {
+        throw new TypeError(`getOrInsert: ${meta.name}.${key} is a nested field; look up by a plain field of a unique constraint`);
+      }
+      if (f.nested !== undefined && what === "updateMany" && value !== null && !(value instanceof NestedValue)) {
+        throw new TypeError(`updateMany: ${meta.name}.${key} is an object; an object patches, and updateMany only replaces. Pass a ${f.nested.type.name} value, or use update() to patch`);
+      }
       if (f.nested === undefined || what === "update") values.set(f.ir, value);
       else if (f.nested.storage === "json") values.set(f.ir, jsonInsert(f.nested, value));
       else for (const [leaf, v] of flattenGroup(f.nested, value)) values.set(leaf, v);

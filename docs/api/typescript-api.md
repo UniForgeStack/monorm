@@ -400,6 +400,8 @@ await Shop.objects.filter(...).update({ address: null });
 * A patch (an object in `update()`) changes only the named subfields, at any depth. It needs at least one subfield,
   cannot set a non-nullable subfield to `null`, and cannot name a list subfield. A patch needs a present value:
   to fill a null field, replace it with a whole value.
+* `updateMany()` only replaces: an object for a nested field is a `TypeError`; pass a value class, or use `update()` to patch.
+  `getOrInsert()` refuses a nested field as a lookup key.
 * The leaf columns of a `columns` field are not public: rows, `toJSON()`, the types, `insert()` and `update()`
   know `address`, never `addressCity`. `load()` of a subfield loads the whole value.
 * A subfield compares as its scalar type (a `DateTime` subfield as a timestamp). An omitted subfield in a

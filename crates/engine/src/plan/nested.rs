@@ -46,33 +46,37 @@ fn object_value(d: Dialect, sql: String) -> String {
     if d == Dialect::Sqlite { format!("json({sql})") } else { sql }
 }
 
-/// A leaf column (slot `$n`) as a JSON value.
-fn leaf_json(d: Dialect, ty: ColType, n: usize) -> String {
+/// A leaf value, given as SQL text, as a JSON value.
+fn leaf_json(d: Dialect, ty: ColType, sql: &str) -> String {
     match (d, ty) {
-        (Dialect::Postgres, ColType::DateTime) => format!("to_char(${n} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')"),
-        (Dialect::Postgres, ColType::Date) => format!("to_char(${n}, 'YYYY-MM-DD')"),
-        (Dialect::Postgres, ColType::BigInt | ColType::Decimal) => format!("${n}::text"),
-        (Dialect::Sqlite, ColType::BigInt) => format!("CAST(${n} AS TEXT)"),
-        (Dialect::Sqlite, ColType::Bool) => format!("json(CASE WHEN ${n} IS NULL THEN NULL WHEN ${n} THEN 'true' ELSE 'false' END)"),
-        (Dialect::Sqlite, ColType::Json) => format!("json(${n})"),
-        _ => format!("${n}"),
+        (Dialect::Postgres, ColType::DateTime) => format!("to_char({sql} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')"),
+        (Dialect::Postgres, ColType::Date) => format!("to_char({sql}, 'YYYY-MM-DD')"),
+        (Dialect::Postgres, ColType::BigInt | ColType::Decimal) => format!("{sql}::text"),
+        (Dialect::Sqlite, ColType::BigInt) => format!("CAST({sql} AS TEXT)"),
+        (Dialect::Sqlite, ColType::Bool) => format!("json(CASE WHEN {sql} IS NULL THEN NULL WHEN {sql} THEN 'true' ELSE 'false' END)"),
+        (Dialect::Sqlite, ColType::Json) => format!("json({sql})"),
+        _ => sql.to_owned(),
     }
 }
 
-/// A bound parameter (slot `$n`, bound as `json_subfield_type` of `ty`) as a JSON value.
-fn json_param(d: Dialect, ty: ColType, n: usize) -> String {
+/// A value of type `ty`, given as SQL text, as a JSON value. A bound parameter has the type
+/// `json_subfield_type` of `ty`; an expression has the type of the column or JSON subfield it reads,
+/// so a DateTime or Date goes through a cast first.
+fn json_param(d: Dialect, ty: ColType, sql: &str, expr: bool) -> String {
     if d == Dialect::Sqlite {
-        return leaf_json(d, ty, n);
+        return leaf_json(d, ty, sql);
     }
     let value = match ty {
-        ColType::Json => return format!("COALESCE(${n}::jsonb, 'null'::jsonb)"),
-        ColType::Int => format!("${n}::integer"),
-        ColType::Float => format!("${n}::double precision"),
-        ColType::Bool => format!("${n}::boolean"),
-        ColType::BigInt => format!("(${n}::bigint)::text"),
-        ColType::Decimal => format!("(${n}::numeric)::text"),
-        ColType::Uuid => format!("(${n}::uuid)::text"),
-        ColType::String | ColType::Text | ColType::DateTime | ColType::Date => format!("${n}::text"),
+        ColType::Json => return format!("COALESCE({sql}::jsonb, 'null'::jsonb)"),
+        ColType::DateTime if expr => return leaf_json(d, ty, &format!("({sql})::timestamptz")),
+        ColType::Date if expr => return leaf_json(d, ty, &format!("({sql})::date")),
+        ColType::Int => format!("{sql}::integer"),
+        ColType::Float => format!("{sql}::double precision"),
+        ColType::Bool => format!("{sql}::boolean"),
+        ColType::BigInt => format!("({sql}::bigint)::text"),
+        ColType::Decimal => format!("({sql}::numeric)::text"),
+        ColType::Uuid => format!("({sql}::uuid)::text"),
+        ColType::String | ColType::Text | ColType::DateTime | ColType::Date => format!("{sql}::text"),
     };
     format!("COALESCE(to_jsonb({value}), 'null'::jsonb)")
 }
@@ -235,7 +239,7 @@ impl<'s> Planner<'s> {
                     let leaf = g.leaves.iter().find(|l| l.nested.as_ref().is_some_and(|n| n.path == *prefix));
                     let leaf = leaf.ok_or_else(|| Error::query(format!("no column for the subfield {}", prefix.join("."))))?;
                     args.push(self.resolve(path, &leaf.name)?);
-                    leaf_json(d, leaf.ty, args.len())
+                    leaf_json(d, leaf.ty, &format!("${}", args.len()))
                 }
             };
             parts.push(format!("{}, {value}", sql_lit(&tf.name)));
@@ -458,7 +462,7 @@ impl<'s> Planner<'s> {
     }
 
     /// An assigned value as a JSON value of the dialect, in the slots of `args`.
-    fn json_in(&self, t: Target<'s>, e: &Expr, args: &mut Vec<SExpr>) -> Result<String> {
+    fn json_in(&mut self, t: Target<'s>, e: &Expr, args: &mut Vec<SExpr>) -> Result<String> {
         let d = self.target.dialect;
         match (e, t) {
             (Expr::Null, _) => Ok(json_null(d).to_owned()),
@@ -469,7 +473,13 @@ impl<'s> Planner<'s> {
                 };
                 let v = self.params.value(self.param(*i)?, Some(ValueType::scalar(d.json_subfield_type(ty))))?;
                 args.push(bind(v, None));
-                Ok(json_param(d, ty, args.len()))
+                Ok(json_param(d, ty, &format!("${}", args.len()), false))
+            }
+            (e, Target::Leaf(ty, list)) if !matches!(e, Expr::Object { .. }) => {
+                let ty = if list { ColType::Json } else { ty };
+                let v = self.value(e, Hint::ty(d.json_subfield_type(ty)))?;
+                args.push(v);
+                Ok(json_param(d, ty, &format!("${}", args.len()), true))
             }
             (Expr::Object { fields }, Target::Type(ty, false)) => {
                 self.check_object(ty, fields)?;
