@@ -24,3 +24,7 @@ def test_behavior_field_takes_the_ir_field_name():
 def test_behavior_lookup_is_empty_without_records():
     assert ext.behavior_records(Post, "delete_rewrites") == []
     assert ext.LANGUAGE_CONTRACT == 1
+
+
+def test_behavior_value_is_none_without_a_record():
+    assert ext.behavior_value("model_overrides") is None

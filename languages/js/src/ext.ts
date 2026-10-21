@@ -1,5 +1,5 @@
 /** The host surface for extension language code, next to the public `orm` API. */
-import type { ModelMeta } from "./model.js";
+import type { ModelMeta, Registry } from "./model.js";
 import type { ModelSpec } from "./meta.js";
 import { QuerySet } from "./query.js";
 import type { BoundQuerySet } from "./bound.js";
@@ -33,6 +33,11 @@ export const InstanceBase = class {} as unknown as new <H extends object = {}>()
 export function behaviorRecords(qs: QuerySet<ModelSpec>, kind: string): readonly Readonly<Record<string, unknown>>[] {
   const meta = qs.meta;
   return meta.registry.behaviorRecords(kind, meta.name);
+}
+
+/** The prepared behavior record of `kind` that is not a list of per-model records, `undefined` if absent. */
+export function behaviorValue(registry: Registry, kind: string): unknown {
+  return registry.behaviorValue(kind);
 }
 
 /** The field that a behavior record names in its `field` key (an IR name): its language name and its column. */
