@@ -142,3 +142,36 @@ fn app_flag_gives_the_loader_the_schema_of_an_app() {
     assert!(ok.status.success(), "{}", text(&ok.stderr));
     assert!(text(&ok.stdout).contains("(2 models)"), "{}", text(&ok.stdout));
 }
+
+#[test]
+fn generate_python_writes_nothing_into_an_app_package() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-app-gen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("site/orm_auth")).unwrap();
+    std::fs::create_dir_all(dir.join("proj")).unwrap();
+    std::fs::write(dir.join("site/orm_auth/schema.prisma"), "model User {\n  id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("proj/schema.prisma"), "import \"app:orm-auth\"\nmodel Post {\n  id Int @id\n}\n").unwrap();
+    let before = std::fs::read_dir(dir.join("site/orm_auth")).unwrap().count();
+
+    let out = orm(&dir.join("proj"), &["--app", "orm-auth=../site/orm_auth/schema.prisma", "generate", "python"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(std::fs::read_dir(dir.join("site/orm_auth")).unwrap().count(), before, "{}", text(&out.stdout));
+    let module = std::fs::read_to_string(dir.join("proj/models.py")).unwrap();
+    assert!(module.contains("\"User\",") && module.contains("\"Post\","), "{module}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_app_flags_of_the_user_win_over_later_ones() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-app-win-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("dev.prisma"), "model User {\n  id Int @id\n}\nmodel Dev {\n  id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("installed.prisma"), "model User {\n  id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("schema.prisma"), "import \"app:orm-auth\" (prefix: \"auth_\")\n").unwrap();
+
+    let out = orm(&dir, &["check", "--schema", "schema.prisma", "--app", "orm-auth=dev.prisma", "--app", "orm-auth=installed.prisma"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("(2 models)"), "{}", text(&out.stdout));
+    let _ = std::fs::remove_dir_all(&dir);
+}

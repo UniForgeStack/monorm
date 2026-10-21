@@ -179,7 +179,7 @@ impl Args {
             if key != "--app" { continue; }
             let (name, path) = value.as_deref().and_then(|v| v.split_once('=')).filter(|(n, p)| !n.is_empty() && !p.is_empty())
                 .ok_or_else(|| Failure::Usage("--app needs NAME=PATH".into()))?;
-            apps.insert(name.to_owned(), PathBuf::from(path));
+            apps.entry(name.to_owned()).or_insert_with(|| PathBuf::from(path));
         }
         Ok(apps)
     }
@@ -472,7 +472,9 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
             }
             let g = codegen::python::generate_with(&ir, &compiled, &source, &options).map_err(Failure::Failed)?;
             write_extensions(&options, "python", &ext_dir)?;
-            if project.units.len() == 1 {
+            // The models of an installed app belong to the consumer: they go into its facade, and no file is written into the app package.
+            let own: Vec<&dsl::SchemaUnit> = project.units.iter().filter(|u| u.app.is_none()).collect();
+            if own.len() == 1 {
                 write(&out, &g.module)?;
                 write(&out.with_extension("pyi"), &g.stub)?;
                 println!("wrote {} and {}", out.display(), out.with_extension("pyi").display());
@@ -482,14 +484,22 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                 let mut files = vec![(shared.clone(), g.module), (shared.with_extension("pyi"), g.stub)];
                 let mut outputs = std::collections::HashSet::new();
                 outputs.insert(shared_abs.clone());
-                for (index, unit) in project.units.iter().enumerate() {
+                for (index, unit) in own.iter().enumerate() {
                     let target = if index == 0 { out.clone() } else { unit.path.with_file_name("models.py") };
                     let target_abs = absolute(&target)?;
                     if !outputs.insert(target_abs.clone()) {
                         return Err(Failure::Failed(format!("multiple schema modules would write {}; put each schema in its own directory", target.display())));
                     }
                     let (relative, import) = module_paths(target_abs.parent().unwrap(), &shared_abs, "_orm_models")?;
-                    let facade = codegen::python::facade(unit, &relative, &import, &compiled);
+                    let mut merged = dsl::SchemaUnit { path: unit.path.clone(), app: None, models: unit.models.clone(), enums: unit.enums.clone(), types: unit.types.clone() };
+                    if index == 0 {
+                        for app in project.units.iter().filter(|u| u.app.is_some()) {
+                            merged.models.extend(app.models.iter().cloned());
+                            merged.enums.extend(app.enums.iter().cloned());
+                            merged.types.extend(app.types.iter().cloned());
+                        }
+                    }
+                    let facade = codegen::python::facade(&merged, &relative, &import, &compiled);
                     files.push((target.clone(), facade.module));
                     files.push((target.with_extension("pyi"), facade.stub));
                 }

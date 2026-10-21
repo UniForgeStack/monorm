@@ -46,7 +46,7 @@ def resolve_apps(schema: str | os.PathLike[str]) -> dict[str, str]:
     """``{name: schema file}`` of every app the schema, its imports and their apps import.
     An app that is not installed is left out: the schema loader reports it."""
     apps: dict[str, str] = {}
-    pending = [Path(schema)]
+    pending = [Path(schema).resolve()]
     seen: set[Path] = set()
     while pending:
         file = pending.pop()
@@ -64,5 +64,5 @@ def resolve_apps(schema: str | os.PathLike[str]) -> dict[str, str]:
                     apps[name] = str(found)
                     pending.append(found)
             elif target.endswith(".prisma"):
-                pending.append(file.parent / target)
+                pending.append((file.parent / target).resolve())
     return apps

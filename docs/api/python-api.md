@@ -57,7 +57,7 @@ python examples/blog/demo.py sqlite://:memory:
   the model classes (field and relation descriptors) from it. `orm.load("schema.prisma")`
   does the same at runtime without a generated file. `orm.load` does not resolve `import "app:..."`:
   generate the models (or `python -m orm`) so the command line finds the installed app
-  through its `orm.apps` entry point (see [`schema.md`](../schema/schema.md#importing-an-installed-app)).
+  through its `orm.apps` entry point (see [`schema.md`](../schema/schema.md#installed-app-import)).
 * **`models.pyi` (types).** Per model:
   * the model class (`id: f.BigInt[int]`, `posts: f.HasMany[Post, _PostPath]`, a typed
     `update()`);

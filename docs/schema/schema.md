@@ -184,7 +184,7 @@ A model's table is the model name in lower case, or `@@map("name")`.
 Prefer a single schema file for an ordinary project. Explicit schema imports are
 available for reusable libraries or a small module that needs its own generated
 models; no directory discovery is required. A schema from an installed package
-needs no path: see [Importing an installed app](#importing-an-installed-app).
+needs no path: see [Installed app import](#installed-app-import).
 
 ```prisma
 // schema.prisma: the main schema
@@ -215,7 +215,7 @@ names, explicit constraint/index names and raw SQL are preserved; use unique
 explicit names and write raw SQL with the final table names. Cycles and repeated
 imports, including the same file through different paths, are errors.
 
-#### Importing an installed app
+#### Installed app import
 
 `import "app:<name>"` imports the schema of an installed Python or npm package.
 `<name>` is the distribution name (`orm-auth` on PyPI and on npm), so one string works
@@ -228,7 +228,7 @@ import "app:orm-auth" (prefix: "auth_")
 * The app declares its schema in its package metadata. Without it, the import is an error that names the missing metadata. There is no default file name.
   * Python: an entry point in the group `orm.apps`, named like the distribution. The value is `<package>:<schema file>`, for example
     `orm-auth = "orm_auth:schema.prisma"` under `[project.entry-points."orm.apps"]` in `pyproject.toml`.
-    `pyproject.toml` accepts only this form (a `/` path is rejected). A subpackage is `orm_auth.db:schema.prisma`.
+    `pyproject.toml` accepts only this form and rejects a `/` path. A subpackage is `orm_auth.db:schema.prisma`.
   * npm: `"orm": {"app": "./schema.prisma"}` in `package.json`.
 * Resolution happens when you run `orm generate`, `orm makemigrations` and `orm migrate`, not at run time: the generated models embed the compiled schema.
   The command line finds the app, and the schema loader gets a map from the name to the file. It does not import the app package.
