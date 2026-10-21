@@ -85,3 +85,20 @@ def test_the_command_line_resolves_apps_before_it_runs_a_command(site: Path, tmp
     (site / "orm_billing-0.1.dist-info" / "entry_points.txt").write_text("[orm.apps]\norm-billing = orm_billing:schema.prisma\n")
     assert main(["--schema", str(schema), "check"]) == 0
     assert "(3 models)" in capfd.readouterr().out
+
+
+def test_an_import_cycle_across_directories_is_scanned_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a/x.prisma").write_text('import "../b/y.prisma"\n')
+    (tmp_path / "b/y.prisma").write_text('import "../a/x.prisma"\n')
+    reads: list[Path] = []
+    read_text = Path.read_text
+
+    def counting(self: Path, *args: object, **kwargs: object) -> str:
+        reads.append(self)
+        return read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    assert resolve_apps(tmp_path / "a/x.prisma") == {}
+    assert len(reads) == 2

@@ -285,7 +285,7 @@ mod reference_tests {
         let dir = std::env::temp_dir().join(format!("orm-schema-classes-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("pkg")).unwrap();
         std::fs::write(dir.join("pyproject.toml"), "").unwrap();
-        let unit = || crate::dsl::SchemaUnit { path: dir.join("pkg/schema.prisma"), models: vec!["Post".into(), "Tag".into()], enums: vec![], types: vec![] };
+        let unit = || crate::dsl::SchemaUnit { app: None, path: dir.join("pkg/schema.prisma"), models: vec!["Post".into(), "Tag".into()], enums: vec![], types: vec![] };
         let mut options = Options::default();
         options.query_sets.insert("Post".into(), "mine.queries:PostQueries".into());
         options.with_schema_classes(&ir, &[unit()], Language::Python, &dir).unwrap();

@@ -174,7 +174,7 @@ mod tests {
     const M: ClassKind = ClassKind::ModelMethods;
 
     #[test]
-    fn python_goes_up_through_the_directories_with_an_init_file() {
+    fn python_package_path_starts_at_the_project_file_directory() {
         let root = dir("py-package");
         touch(&root.join("pyproject.toml"), "");
         touch(&root.join("orm_auth/__init__.py"), "");
@@ -273,7 +273,7 @@ mod tests {
     fn the_classes_come_from_the_unit_that_declared_them() {
         let root = dir("from-unit");
         touch(&root.join("pyproject.toml"), "");
-        let unit = |path: &str, model: &str| SchemaUnit { path: root.join(path), models: vec![model.into()], enums: vec![], types: vec![] };
+        let unit = |path: &str, model: &str| SchemaUnit { app: None, path: root.join(path), models: vec![model.into()], enums: vec![], types: vec![] };
         let units = [unit("orm_auth/schema.prisma", "AbstractUser"), unit("app/schema.prisma", "User")];
         let mut ir = crate::dsl::compile("model AbstractUser {\n id Int @id\n @@query_set(\"UserQueries\")\n}\nmodel User {\n id Int @id\n}", None).unwrap();
         ir.models[1].query_set = Some("UserQueries".into());

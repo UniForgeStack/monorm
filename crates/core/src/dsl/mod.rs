@@ -49,6 +49,8 @@ pub type Apps = std::collections::BTreeMap<String, PathBuf>;
 /// Source ownership for generated modules. Model and enum names remain global.
 pub struct SchemaUnit {
     pub path: PathBuf,
+    /// The installed app that owns this file, directly or through its own imports.
+    pub app: Option<String>,
     pub models: Vec<String>,
     pub enums: Vec<String>,
     pub types: Vec<String>,
@@ -77,7 +79,7 @@ impl Loader<'_> {
         format!("{label}:{}:{}: {}", e.pos.line.saturating_sub(*start) + 1, e.pos.col, e.msg)
     }
 
-    fn expand(&mut self, source: &str, origin: &Path, prefix: &str, root: bool) -> Result<Vec<syntax::Item>, String> {
+    fn expand(&mut self, source: &str, origin: &Path, prefix: &str, root: bool, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
         let canonical = if origin.exists() {
             origin.canonicalize().map_err(|e| e.to_string())?
         } else {
@@ -96,7 +98,7 @@ impl Loader<'_> {
         let items = if offset == 0 { syntax::parse(source) } else { syntax::parse_at(source, offset + 1) }
             .map_err(|e| self.located(e))?;
         let index = self.units.len();
-        self.units.push(SchemaUnit { path: origin.to_path_buf(), models: vec![], enums: vec![], types: vec![] });
+        self.units.push(SchemaUnit { path: origin.to_path_buf(), app: owner.map(str::to_owned), models: vec![], enums: vec![], types: vec![] });
         let mut out = vec![];
         for mut item in items {
             match &mut item {
@@ -114,7 +116,7 @@ impl Loader<'_> {
                     if app.is_some() || imported.extension().is_some_and(|e| e == "prisma") {
                         let text = std::fs::read_to_string(&imported)
                             .map_err(|e| self.located(syntax::Error { pos: *pos, msg: format!("import {path:?}: {e}") }))?;
-                        out.extend(self.expand(&text, &imported, &format!("{prefix}{local}"), false)?);
+                        out.extend(self.expand(&text, &imported, &format!("{prefix}{local}"), false, app.as_deref().or(owner))?);
                         continue;
                     }
                     if !root || !local.is_empty() {
@@ -171,7 +173,7 @@ type IdentityUpdate<'a> = (&'a [(String, String)], &'a [String]);
 fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, apps: &Apps) -> Result<CompiledProject, String> {
     let mut loader = Loader { apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0 };
     let origin = origin.unwrap_or(Path::new("<schema>"));
-    let mut items = loader.expand(source, origin, "", true)?;
+    let mut items = loader.expand(source, origin, "", true, None)?;
     let mut declared = std::collections::HashMap::new();
     for item in &items {
         let (name, pos) = match item {
