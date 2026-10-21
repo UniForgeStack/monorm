@@ -21,7 +21,7 @@ from .expr import ColumnRef, Comparison, Condition, IsNull, Node
 from .fields import BY_TYPE, Enum, Json
 
 if TYPE_CHECKING:
-    from .expr import IR, IRContext
+    from .expr import IR, Alias, IRContext, NullRule
     from .model import Model
     from .select import Select
 
@@ -676,9 +676,17 @@ class NestedRef(ColumnRef[Any]):
 
     __slots__ = ("_group", "_sub")
 
-    def __init__(self, root: type[Model], path: tuple[str, ...], group: _Access, sub: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        root: type[Model],
+        path: tuple[str, ...],
+        group: _Access,
+        sub: tuple[str, ...],
+        rule: NullRule | None = None,
+        alias: tuple[Alias | None, ...] = (),
+    ) -> None:
         field = group.leaf_field(sub) if sub and _is_leaf(group.nt, sub) else group
-        super().__init__(root, path, field)  # type: ignore[arg-type]
+        super().__init__(root, path, field, rule, alias)  # type: ignore[arg-type]
         self._group = group
         self._sub = sub
 
@@ -706,8 +714,8 @@ class NestedRef(ColumnRef[Any]):
         return node
 
     def _ir(self, ctx: IRContext) -> IR:
-        ColumnRef._ir(self, ctx)  # checks the root
-        return {"t": "col", "path": list(self._path), "name": self._group.name, "sub": list(self._sub)}
+        ir = ColumnRef._ir(self, ctx)  # checks the root, and tags the alias
+        return {**ir, "name": self._group.name, "sub": list(self._sub)}
 
     def _decode(self, raw: Any) -> Any:
         """The Python value of a selected cell."""
@@ -722,9 +730,11 @@ class NestedRef(ColumnRef[Any]):
             return tuple(nt._decode_leaf(leaf, x, model, name, (*self._sub, i)) for i, x in enumerate(raw))
         return nt._decode_leaf(leaf, raw, model, name, self._sub)
 
-    def _at(self, root: type[Model], path: tuple[str, ...]) -> NestedRef:
-        """The same reference reached from ``root`` through a relation ``path``."""
-        return NestedRef(root, path, self._group, self._sub)
+    def _at(
+        self, root: type[Model], path: tuple[str, ...], rule: NullRule | None = None, alias: tuple[Alias | None, ...] = ()
+    ) -> NestedRef:
+        """The same reference reached from ``root`` through a relation ``path`` with its null rule and aliases."""
+        return NestedRef(root, path, self._group, self._sub, rule, alias)
 
     def _select_name(self) -> str:
         return "_".join((self._group.name, *self._sub))
@@ -744,12 +754,12 @@ class NestedRef(ColumnRef[Any]):
             nt = self._type_here()
             if name not in nt.by_name:
                 raise AttributeError(f"{nt.name} has no subfield {name!r}; it has {', '.join(nt.by_name)}")
-            return NestedRef(self._root, self._path, self._group, (*self._sub, name))
+            return NestedRef(self._root, self._path, self._group, (*self._sub, name), self._rule, self._alias)
 
     def __getitem__(self, name: Any) -> Any:
         if not isinstance(name, str) or not self._whole or name not in self._type_here().by_name:
             raise KeyError(name)
-        return NestedRef(self._root, self._path, self._group, (*self._sub, name))
+        return NestedRef(self._root, self._path, self._group, (*self._sub, name), self._rule, self._alias)
 
     def __eq__(self, other: Any) -> Condition:  # type: ignore[override]
         if self._whole and other is not None and not isinstance(other, Node):

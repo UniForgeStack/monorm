@@ -22,6 +22,7 @@ import { withScope, type Database } from "./db.js";
 import { DoesNotExist, MultipleObjectsReturned, QueryError, TransactionRequired } from "./errors.js";
 import {
   Column,
+  Condition,
   Expression,
   IRContext,
   Ordering,
@@ -387,7 +388,7 @@ export function makeSelect(qs: QuerySet<ModelSpec, unknown, string, unknown, str
     if (!(item instanceof Expression)) {
       throw new TypeError(`select() takes columns and expressions, got ${String(item)} for ${key}`);
     }
-    return [key, item];
+    return [key, item instanceof Condition ? resolveNullRule(item, false, false) : item];
   });
   return new Select(qs, out);
 }

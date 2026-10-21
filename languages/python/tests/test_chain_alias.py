@@ -98,3 +98,34 @@ async def test_the_shared_row_holds_inside_a_deeper_path(data):
     assert await names(db, Author.objects.filter(Author.posts.notes.body == "x", Author.posts.notes.alias().body == "y")) == {"a2"}
     # another post (an alias may match the same row): a1 has x on one post and y on the other, a2 has both on one
     assert await names(db, Author.objects.filter(Author.posts.notes.body == "x", Author.posts.alias().notes.body == "y")) == {"a1", "a2"}
+
+
+NESTED = """
+type Geo {
+  city String
+  zip  String?
+}
+
+model Shop {
+  id     BigInt @id @default(autoincrement())
+  geo    Geo?   @storage(json)
+  @@map("ca_shop")
+}
+
+model Stall {
+  id      BigInt @id @default(autoincrement())
+  shop_id BigInt?
+  shop    Shop?  @relation(fields: [shop_id], references: [id])
+  @@map("ca_stall")
+}
+"""
+
+
+def test_a_nested_column_behind_a_path_keeps_the_alias_the_rule_and_the_to_one_state():
+    m = orm.loads('datasource db {\n  provider = "sqlite"\n}\n' + NESTED, registry=orm.Registry())
+    Stall = m["Stall"]
+    same = Stall.objects.filter(Stall.shop.geo.city == "a", Stall.shop.geo.zip == "b").sql()
+    other = Stall.objects.filter(Stall.shop.geo.city == "a", Stall.shop.alias().geo.zip == "b").sql()
+    assert same.count("EXISTS") == other.count("EXISTS") - 1
+    ruled = Stall.objects.filter(Stall.shop.or_null().geo.zip != "b").sql()
+    assert 'NOT EXISTS(SELECT 1 FROM "ca_shop"' in ruled
