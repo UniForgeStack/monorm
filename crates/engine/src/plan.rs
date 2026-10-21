@@ -39,7 +39,7 @@ use orm_core::writes::{AssignValue, WriteKind as AssignKind};
 
 mod nested;
 
-const ALIAS_PLACES: &str = "alias() marks another related row in a filter condition; it does not work in an aggregate, order_by(), load() or outer()";
+const ALIAS_PLACES: &str = "alias() marks another related row in a filter condition; it works only in filter() and exclude()";
 
 /// A `select_related` object inside each row: its columns start at `start` and it is
 /// attached to the root object (`parent` None) or to an earlier join's object.
@@ -1385,21 +1385,29 @@ impl<'s> Planner<'s> {
 
     /// A `!=` or `NOT IN` of a to-one path column against values is `NOT (==)` / `NOT IN`:
     /// it keeps the rows with no related row.
+    /// The other side may read columns of the scope's own row, or of the same to-one tail.
     fn to_one_negation(&self, e: &Expr) -> Option<Expr> {
-        let plain = |o: &Expr| {
+        let plain = |o: &Expr, tail: &[String]| {
             let (mut paths, mut has_not) = (vec![], false);
             col_paths(o, &mut paths, &mut has_not);
-            paths.is_empty() && !matches!(o, Expr::Null)
+            let own = &self.scope().path[..];
+            !matches!(o, Expr::Null) && paths.iter().all(|p| *p == own || *p == tail)
         };
+        fn tail_of<'a>(p: &Planner, c: &'a Expr) -> Option<&'a [String]> {
+            match c {
+                Expr::Col { path, .. } if p.is_to_one_column(c) => Some(&path[..]),
+                _ => None,
+            }
+        }
         let positive = match e {
             Expr::Cmp { op: CmpOp::Ne, l, r } => {
-                let (col, other) = if matches!(**l, Expr::Col { .. }) { (l, r) } else { (r, l) };
-                if !self.is_to_one_column(col) || !plain(other) {
+                let flips = |col: &Expr, other: &Expr| tail_of(self, col).is_some_and(|t| plain(other, t));
+                if !flips(l, r) && !flips(r, l) {
                     return None;
                 }
                 Expr::Cmp { op: CmpOp::Eq, l: l.clone(), r: r.clone() }
             }
-            Expr::In { item, values, neg: true } if self.is_to_one_column(item) && values.iter().all(plain) => {
+            Expr::In { item, values, neg: true } if tail_of(self, item).is_some_and(|t| values.iter().all(|v| plain(v, t))) => {
                 Expr::In { item: item.clone(), values: values.clone(), neg: false }
             }
             Expr::InSelect { item, select, neg: true } if self.is_to_one_column(item) => {

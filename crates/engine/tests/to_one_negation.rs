@@ -6,11 +6,13 @@ fn schema() -> Schema {
     Schema::from_ir(serde_json::from_value(json!({"models":[
         {"name":"Note","table":"note","fields":[
             {"name":"id","column":"id","type":"int","primary_key":true},
-            {"name":"writer_id","column":"writer_id","type":"int","nullable":true}],
+            {"name":"writer_id","column":"writer_id","type":"int","nullable":true},
+            {"name":"label","column":"label","type":"text"}],
          "relations":[{"name":"writer","kind":"one","target":"Writer","from":"writer_id","to":"id","foreign_key":true}]},
         {"name":"Writer","table":"writer","fields":[
             {"name":"id","column":"id","type":"int","primary_key":true},
-            {"name":"email","column":"email","type":"text"}],
+            {"name":"email","column":"email","type":"text"},
+            {"name":"nick","column":"nick","type":"text"}],
          "relations":[{"name":"notes","kind":"many","target":"Note","from":"id","to":"writer_id"}]}
     ]})).unwrap()).unwrap()
 }
@@ -55,5 +57,44 @@ fn a_column_of_the_root_and_a_null_test_do_not_flip() {
     let sql = render("Note", cmp("ne", json!({"t":"col","path":[],"name":"writer_id"}), json!({"t":"int","value":1})));
     assert!(where_of(&sql).contains("<>") && !where_of(&sql).contains("EXISTS"), "{sql}");
     let sql = render("Note", json!({"t":"is_null","item":email(&["writer"]),"neg":true}));
+    assert!(where_of(&sql).starts_with("EXISTS"), "{sql}");
+}
+
+fn root(name: &str) -> J { json!({"t":"col","path":[],"name":name}) }
+
+#[test]
+fn a_to_one_ne_against_a_root_column_flips_on_either_side() {
+    let negated_eq = render("Note", json!({"t":"not","item":cmp("eq", email(&["writer"]), root("label"))}));
+    for sql in [
+        render("Note", cmp("ne", email(&["writer"]), root("label"))),
+        render("Note", cmp("ne", root("label"), email(&["writer"]))),
+    ] {
+        assert!(where_of(&sql).starts_with("NOT EXISTS") && !where_of(&sql).contains("<>"), "{sql}");
+    }
+    assert_eq!(where_of(&render("Note", cmp("ne", email(&["writer"]), root("label")))), where_of(&negated_eq));
+}
+
+#[test]
+fn a_to_one_not_in_with_a_root_column_item_flips() {
+    let items = json!([text("a"), root("label")]);
+    let not_in = render("Note", json!({"t":"in","item":email(&["writer"]),"values":items,"neg":true}));
+    let negated = render("Note", json!({"t":"not","item":{"t":"in","item":email(&["writer"]),"values":items,"neg":false}}));
+    assert_eq!(where_of(&not_in), where_of(&negated), "{not_in}");
+    assert!(where_of(&not_in).starts_with("NOT EXISTS"), "{not_in}");
+}
+
+#[test]
+fn both_sides_on_the_same_to_one_tail_flip() {
+    let nick = json!({"t":"col","path":["writer"],"name":"nick"});
+    let sql = render("Note", cmp("ne", email(&["writer"]), nick));
+    assert!(where_of(&sql).starts_with("NOT EXISTS") && !where_of(&sql).contains("<>"), "{sql}");
+}
+
+#[test]
+fn a_to_one_ne_against_a_to_many_column_stays_positive() {
+    let sql = render(
+        "Writer",
+        cmp("ne", json!({"t":"col","path":["notes","writer"],"name":"email"}), json!({"t":"col","path":["notes"],"name":"label"})),
+    );
     assert!(where_of(&sql).starts_with("EXISTS"), "{sql}");
 }

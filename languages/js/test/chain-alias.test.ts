@@ -111,3 +111,9 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 }
+
+test("the alias message names the only places it works", async () => {
+  const { Post } = await import("./blog/models.js");
+  const { outer } = await import("../src/index.js");
+  assert.throws(() => (outer as any)((Post as any).comments.alias().id), /it works only in filter\(\) and exclude\(\)/);
+});

@@ -19,6 +19,7 @@ model Note {
   writerId Int?
   writer   Writer? @relation(fields: [writerId], references: [id])
   score    Int?
+  label    String  @default("")
   @@map("np_node_note")
 }
 `;
@@ -81,11 +82,11 @@ for (const provider of ["sqlite", "postgresql"]) {
     const [n1, n2, n3, n4, n5] = await Note.objects
       .using(db)
       .insertMany([
-        { writerId: w1.id, score: 1 },
-        { writerId: w2.id, score: 2 },
-        { writerId: null, score: 3 },
-        { writerId: w3.id, score: 1 },
-        { writerId: w1.id, score: null },
+        { writerId: w1.id, score: 1, label: "a" },
+        { writerId: w2.id, score: 2, label: "a" },
+        { writerId: null, score: 3, label: "a" },
+        { writerId: w3.id, score: 1, label: "c" },
+        { writerId: w1.id, score: null, label: "z" },
       ])
       .returning();
     const pick = async (model: any, c: any) => (await model.objects.using(db).filter(c).all()).map((r: any) => r.id).sort();
@@ -134,6 +135,13 @@ for (const provider of ["sqlite", "postgresql"]) {
     assert.deepEqual(await notes(not(Note.writer.email.eq("a"))), of(n2, n3, n4));
     assert.deepEqual(await notes(Note.writer.email.ne("a").orNull()), of(n2, n3, n4));
     assert.deepEqual(await notes(Note.writer.email.ne("a").andNotNull()), of(n2, n4));
+  });
+
+  await run("a to-one ne against a root column keeps the rows with no related row", async ({ Note, n: [n1, n2, n3, n4, n5], notes }) => {
+    assert.deepEqual(await notes(Note.writer.email.ne(Note.label)), of(n2, n3, n5));
+    assert.deepEqual(await notes(Note.label.ne(Note.writer.email)), of(n2, n3, n5));
+    assert.deepEqual(await notes(not(Note.writer.email.eq(Note.label))), of(n2, n3, n5));
+    assert.deepEqual(await notes(Note.writer.email.notIn([Note.label])), of(n2, n3, n5));
   });
 
   await run("a nullable target column takes the strict rule and the methods", async ({ Note, n: [n1, n2, n3, n4, n5], notes }) => {

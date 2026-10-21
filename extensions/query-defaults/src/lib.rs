@@ -197,7 +197,7 @@ impl<'a> Parser<'a> {
             } else if matches!(c, '=' | '!' | '<' | '>' | '&' | '|') && chars.peek().is_some_and(|n| *n == '=' || *n == c) { token.push(chars.next().unwrap()); }
             tokens.push(token);
         }
-        if let Some(m) = tokens.iter().find(|t| matches!(t.as_str(), "or_null" | "and_not_null")) {
+        if let Some(m) = tokens.iter().filter(|t| !t.starts_with('"')).flat_map(|t| t.split('.')).find(|s| matches!(*s, "or_null" | "and_not_null")) {
             return Err(format!("{m}() is not available in a default filter; write the NULL test as a condition, for example `(x > 1 or x == null)`"));
         }
         let mut p = Self { tokens, pos: 0, parent };
@@ -300,12 +300,13 @@ mod tests {
     }
     #[test]
     fn null_methods_are_rejected_with_a_clear_error() {
-        for source in ["(id > 1).or_null()", "id.in([1]).and_not_null()"] {
+        for source in ["(id > 1).or_null()", "id.in([1]).and_not_null()", "writer.or_null.name == 1", "writer.and_not_null == 1"] {
             let err = Parser::parse(source, None).unwrap_err();
             assert!(err.contains("not available in a default filter") && err.contains("x == null"), "{err}");
         }
         assert!(Parser::parse("(id > 1 or id == null)", None).is_ok());
         assert!(Parser::parse("name == \"or_null\"", None).is_ok());
+        assert!(Parser::parse("name == \"a.or_null\"", None).is_ok());
     }
     #[test]
     fn inheritance_clear_and_replacement_are_distinct() {
