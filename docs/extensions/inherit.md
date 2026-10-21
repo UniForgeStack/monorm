@@ -47,7 +47,9 @@ model MyUser {
   Relations to `User` point to the child, and the migration changes the table and keeps its rows.
   Two models that override the same model is an error.
   If the override has its own `@@map`, the migration renames the base table to that name.
-  To remove such an override, use two steps: remove the `@@map` and migrate, then remove the override.
+  To remove such an override, use two steps.
+  First, replace the `@@map` with `@@renamed_from("<mapped name>")` on the override and migrate: the table gets its default name back.
+  Then remove the override and migrate.
   If you remove both at once, the base model comes back with its default table name, the migration cannot match the renamed table, and it creates a new table and drops the old one with its rows.
 
 ## Get the active model
