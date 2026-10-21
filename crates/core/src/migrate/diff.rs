@@ -410,7 +410,7 @@ pub fn json_backfills(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Resu
 }
 
 /// Operations turning `old` into `new`. `renames` maps new names to old ones.
-pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
+pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
     let mut changed = HashSet::new();
     for n in &new.tables {
         let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
@@ -445,9 +445,9 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
         let mut intermediate = old.clone();
         intermediate.tables.retain(|t| !rebuilt.contains(&t.name));
         for t in &mut intermediate.tables { t.foreign_keys.retain(|fk| !rebuilt.contains(&fk.ref_table)); }
-        let mut ops = diff(old, &intermediate, &Renames::default());
-        ops.extend(diff(&intermediate, new, renames));
-        return ops;
+        let mut ops = diff(old, &intermediate, &Renames::default())?;
+        ops.extend(diff(&intermediate, new, renames)?);
+        return Ok(ops);
     }
     let mut ops = vec![];
 
@@ -746,7 +746,7 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
     let (mut adds, mut alters, mut drops, mut backfills) = (vec![], vec![], vec![], vec![]);
     for ((o, n), cols) in pairs.iter().zip(&col_pairs) {
         let table = &n.name;
-        let copied = super::nested_copy::copies(o, n, new.dialect).unwrap_or_default();
+        let copied = super::nested_copy::copies(o, n, new.dialect)?;
         let mut sets = vec![];
         for (oc, nc) in cols {
             match (oc, nc) {
@@ -843,14 +843,14 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
             ops.push(Op::DropExtension(e.clone()));
         }
     }
-    ops
+    Ok(ops)
 }
 
 /// Fails when a storage change between the two snapshots has data that no copy can move.
 pub fn check_copies(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<(), String> {
     for n in &new.tables {
         let source = old.tables.iter().find(|o| o.name == n.name).or_else(|| {
-            renames.tables.get(&n.name).and_then(|h| old.tables.iter().find(|o| &o.name == h))
+            renames.tables.get(&n.name).and_then(|h| old.tables.iter().find(|o| &o.name == h)).filter(|o| !new.tables.iter().any(|t| t.name == o.name))
         });
         if let Some(o) = source {
             super::nested_copy::copies(o, n, new.dialect)?;

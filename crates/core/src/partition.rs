@@ -277,14 +277,14 @@ default = true
                 for column in &mut pk.columns { if column == "kind" { *column = "category".into(); } }
             }
         }
-        let ops = migrate::diff::diff(&old, &new, &renames);
+        let ops = migrate::diff::diff(&old, &new, &renames).unwrap();
         assert!(ops.iter().any(|op| matches!(op, migrate::Op::RenameColumn { .. })), "{ops:?}");
         assert!(ops.iter().all(|op| !matches!(op, migrate::Op::DropTable { .. } | migrate::Op::CreateTable { .. })), "{ops:?}");
-        let reverse = migrate::diff::diff(&new, &old, &renames.reversed());
+        let reverse = migrate::diff::diff(&new, &old, &renames.reversed()).unwrap();
         assert!(reverse.iter().all(|op| !matches!(op, migrate::Op::DropTable { .. })), "{reverse:?}");
         // A real expression change must still rebuild, even with a rename hint.
         new.tables[0].partition_by = Some("LIST (lower(category) || 'category' || $$kind$$ || kind_suffix /* kind */)".into());
-        let ops = migrate::diff::diff(&old, &new, &renames);
+        let ops = migrate::diff::diff(&old, &new, &renames).unwrap();
         assert!(ops.iter().any(|op| matches!(op, migrate::Op::DropTable { .. })));
     }
     #[test]
