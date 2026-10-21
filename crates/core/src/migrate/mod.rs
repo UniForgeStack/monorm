@@ -10,6 +10,7 @@
 pub mod diff;
 pub mod files;
 pub mod model;
+pub mod nested_copy;
 pub mod pg;
 pub mod pull;
 pub mod sqlite;
@@ -88,13 +89,17 @@ pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
         return Err(format!("migration snapshot targets {}, schema targets {}; use a separate migrations directory", previous.dialect.name(), current.dialect.name()));
     }
     let identity_changed = previous.identities != current.identities;
+    let fills = diff::json_backfills(previous, &current, &renames)?;
+    diff::check_copies(previous, &current, &renames)?;
+    diff::check_copies(&current, previous, &renames.reversed())?;
     if current.dialect == crate::dialect::Dialect::Sqlite {
-        let mut up = sqlite::steps(previous, &current, &renames)?;
+        let mut up = sqlite::steps_with(previous, &current, &renames, &fills)?;
         let mut down = sqlite::steps(&current, previous, &renames.reversed())?;
         if identity_changed { identity_step(&mut up); identity_step(&mut down); }
         return Ok(MigrationPlan { up, down, snapshot: current });
     }
-    let up = diff::diff(previous, &current, &renames);
+    let mut up = diff::diff(previous, &current, &renames);
+    up.extend(fills);
     let down = diff::diff(&current, previous, &renames.reversed());
     let mut up = steps(&up, &current);
     let mut down = steps(&down, previous);

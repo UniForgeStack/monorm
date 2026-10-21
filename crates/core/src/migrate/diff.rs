@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::model::{
     Check, Column, DbSchema, EnumType, Exclusion, Extension, ForeignKey, Function, Index, PrimaryKey, Renames, Table,
-    Trigger, Unique,
+    Trigger, Unique, ShapeEntry,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,6 +86,12 @@ pub enum Op {
     AddColumn { table: String, column: Column },
     /// `UPDATE <table> SET <column> = <value> WHERE <one of the others> IS NOT NULL`.
     BackfillColumn { table: String, column: String, value: String, others: Vec<String> },
+    /// Sets `path` of the JSON object in `column` to `value` in each row where its parent object
+    /// exists and the key is missing: a subfield of a `json` nested type that rows lack.
+    BackfillJson { table: String, column: String, path: Vec<String>, value: serde_json::Value },
+    /// `UPDATE <table> SET <column> = <expression over the old columns>, ...`: the data of a nested
+    /// type whose storage changed between `columns` and `json`.
+    CopyColumns { table: String, sets: Vec<(String, String)> },
     DropColumn { table: String, column: String },
     AlterColumnType { table: String, column: String, from: String, to: String },
     SetNotNull { table: String, column: String },
@@ -117,6 +123,7 @@ impl Op {
                 format!("changes {table}.{column} from {from} to {to}; existing values must convert")
             }
             Op::SetNotNull { table, column } => format!("fails if {table}.{column} holds NULLs"),
+            Op::CopyColumns { table, .. } => format!("copies the data of a nested type in {table} to its new storage"),
             Op::AddColumn { table, column }
                 if !column.nullable && column.default.is_none() && !column.identity =>
             {
@@ -343,6 +350,63 @@ fn rename_partition_column(sql: &str, from: &str, to: &str) -> String {
         } else { out.push(c); }
     }
     out
+}
+
+/// The default a new subfield (and, for a group, its required subfields) gives a row that lacks it.
+fn default_fill(shape: &[ShapeEntry], e: &ShapeEntry, at: &str) -> Result<Option<serde_json::Value>, String> {
+    if e.group {
+        let mut object = serde_json::Map::new();
+        for child in shape.iter().filter(|c| c.path.len() == e.path.len() + 1 && c.path.starts_with(&e.path)) {
+            if let Some(v) = default_fill(shape, child, at)? {
+                object.insert(child.path[child.path.len() - 1].clone(), v);
+            }
+        }
+        return Ok(Some(serde_json::Value::Object(object)));
+    }
+    match (&e.default, e.nullable) {
+        (Some(v), _) => Ok(Some(v.clone())),
+        (None, true) => Ok(None),
+        (None, false) => Err(format!("{at}.{}: a required subfield added to a json field needs a @default, to fill the rows that exist; add one or make it nullable", e.path.join("."))),
+    }
+}
+
+/// The data fills for a `json` nested type that gained a required subfield. Rows that
+/// lack the key, or hold a JSON `null` there, get the `@default`. A snapshot without the old
+/// shape proves no key new, so it fills every required subfield that has a `@default`.
+pub fn json_backfills(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
+    let mut ops = vec![];
+    for n in &new.tables {
+        let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
+        let Some(o) = old.tables.iter().find(|o| o.name == n.name || &o.name == previous) else { continue };
+        for nc in &n.columns {
+            let Some(shape) = &nc.nested.0 else { continue };
+            let Some(oc) = o.column(renames.renamed_column(n, o, &nc.name).unwrap_or(&nc.name)) else { continue };
+            let before = oc.nested.0.as_ref();
+            let at = format!("{}.{}", n.name, nc.name);
+            for e in shape.shape.iter().filter(|e| !e.nullable) {
+                let was = before.and_then(|b| b.shape.iter().find(|b| b.path == e.path));
+                if was.is_some_and(|b| !b.nullable) {
+                    continue;
+                }
+                // an entry the old shape does not prove new (no shape, or no parent entry) gets only a guarded fill
+                let proven = before.is_some_and(|b| e.path.len() == 1 || b.shape.iter().any(|p| p.path == e.path[..e.path.len() - 1]));
+                let value = match proven {
+                    true => {
+                        let ancestors = (1..e.path.len()).any(|k| shape.shape.iter().any(|a| a.path == e.path[..k] && a.list));
+                        if shape.list || ancestors {
+                            return Err(format!("{at}.{}: a required subfield added inside a list can't be filled by a migration; make it nullable, or update the rows by hand", e.path.join(".")));
+                        }
+                        default_fill(&shape.shape, e, &at)?
+                    }
+                    false => default_fill(&shape.shape, e, &at).ok().flatten(),
+                };
+                if let Some(value) = value {
+                    ops.push(Op::BackfillJson { table: n.name.clone(), column: nc.name.clone(), path: e.path.clone(), value });
+                }
+            }
+        }
+    }
+    Ok(ops)
 }
 
 /// Operations turning `old` into `new`. `renames` maps new names to old ones.
@@ -680,12 +744,22 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
 
     // -- columns ---------------------------------------------------------------------------
     let (mut adds, mut alters, mut drops, mut backfills) = (vec![], vec![], vec![], vec![]);
-    for ((_, n), cols) in pairs.iter().zip(&col_pairs) {
+    for ((o, n), cols) in pairs.iter().zip(&col_pairs) {
         let table = &n.name;
+        let copied = super::nested_copy::copies(o, n, new.dialect).unwrap_or_default();
+        let mut sets = vec![];
         for (oc, nc) in cols {
             match (oc, nc) {
                 (None, Some(nc)) => {
-                    adds.push(Op::AddColumn { table: table.clone(), column: (*nc).clone() });
+                    let copy = copied.iter().find(|(c, _)| *c == nc.name);
+                    if copy.is_some() && !nc.nullable {
+                        // Existing rows have no value until the copy runs.
+                        adds.push(Op::AddColumn { table: table.clone(), column: Column { nullable: true, ..(*nc).clone() } });
+                        alters.push(Op::SetNotNull { table: table.clone(), column: nc.name.clone() });
+                    } else {
+                        adds.push(Op::AddColumn { table: table.clone(), column: (*nc).clone() });
+                    }
+                    sets.extend(copy.cloned());
                     if let Some(b) = n.backfill(&nc.name) {
                         let kept = |c: &String| cols.iter().any(|(o, k)| o.is_some() && k.is_some_and(|k| k.name == *c));
                         if b.others.iter().any(kept) {
@@ -736,6 +810,9 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
                 (None, None) => {}
             }
         }
+        if !sets.is_empty() {
+            backfills.push(Op::CopyColumns { table: table.clone(), sets });
+        }
     }
     ops.extend(adds);
     ops.extend(backfills);
@@ -767,4 +844,17 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
         }
     }
     ops
+}
+
+/// Fails when a storage change between the two snapshots has data that no copy can move.
+pub fn check_copies(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<(), String> {
+    for n in &new.tables {
+        let source = old.tables.iter().find(|o| o.name == n.name).or_else(|| {
+            renames.tables.get(&n.name).and_then(|h| old.tables.iter().find(|o| &o.name == h))
+        });
+        if let Some(o) = source {
+            super::nested_copy::copies(o, n, new.dialect)?;
+        }
+    }
+    Ok(())
 }

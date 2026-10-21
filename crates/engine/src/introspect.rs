@@ -469,6 +469,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
             default: if serial { None } else { c.default },
             identity: serial || !c.identity.is_empty(),
             comment: c.comment,
+            nested: Default::default(),
         });
     }
     let index_keys: BTreeMap<i64, &PgIndex> = indexes.iter().map(|i| (i.oid, i)).collect();
@@ -952,6 +953,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
                 default: c.default.as_deref().map(|d| strip_parens(d).to_owned()),
                 identity: autoinc.contains(&c.name),
                 comment: None,
+                nested: Default::default(),
             });
         }
         pk.sort();

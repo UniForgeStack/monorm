@@ -18,10 +18,12 @@ pub(super) enum PathTarget {
     Group,
 }
 
-/// The position and `@map` of one member of a type.
+/// The position, `@map` and `@renamed_from` of one member of a type.
 pub(super) struct TypeMember {
     pub pos: Pos,
     pub map: Option<String>,
+    /// The old column segment of a nested subfield.
+    pub renamed_from: Option<String>,
 }
 
 pub(super) type Paths = HashMap<String, PathTarget>;
@@ -78,19 +80,21 @@ pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &
                 if !args.positional.is_empty() || !args.named.is_empty() {
                     return err(args.pos, format!("{what}: {name} takes no arguments"));
                 }
-                let mut map = None;
+                let (mut map, mut renamed_from) = (None, None);
                 for a in &member.attrs {
                     match (a.name.as_str(), a.args.positional.as_slice()) {
                         ("map", [(_, Value::Str(s))]) if a.args.named.is_empty() => map = Some(s.clone()),
                         ("map", _) => return err(a.pos, format!("{what}: @map(\"...\") takes one string")),
-                        _ => return err(a.pos, format!("{what}: a nested type takes only @map; put @@storage on {name}")),
+                        ("renamed_from", [(_, Value::Str(s))]) if a.args.named.is_empty() => renamed_from = Some(s.clone()),
+                        ("renamed_from", _) => return err(a.pos, format!("{what}: @renamed_from(\"...\") takes one string")),
+                        _ => return err(a.pos, format!("{what}: a nested type takes only @map and @renamed_from; put @@storage on {name}")),
                     }
                 }
-                ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map });
+                ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map, renamed_from });
                 fields.push(TypeFieldIr { name: member.name.clone(), nullable: *optional, list: *list, type_name: Some(name.clone()), leaf: None });
                 continue;
             }
-            ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map: None });
+            ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map: None, renamed_from: None });
             if models.contains_key(name.as_str()) {
                 return err(*pos, format!("{what}: a type holds no relation; {name} is a model"));
             }
@@ -172,9 +176,17 @@ pub(super) fn expand(m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'
     }
     let mut storage = ty.storage;
     let mut prefix = None;
+    let mut renamed_from = None;
     for a in &member.attrs {
+        if a.name == "renamed_from" {
+            renamed_from = match a.args.positional.as_slice() {
+                [(_, Value::Str(s))] if a.args.named.is_empty() => Some(s.clone()),
+                _ => return err(a.pos, format!("{what}: @renamed_from(\"...\") takes one string")),
+            };
+            continue;
+        }
         if a.name != "storage" {
-            return err(a.pos, format!("{what}: a field of a nested type takes @storage(columns | json), not @{}", a.name));
+            return err(a.pos, format!("{what}: a field of a nested type takes @storage(columns | json) and @renamed_from, not @{}", a.name));
         }
         let mut n = Named::new(format!("{what}: @storage"), &a.args);
         storage = match a.args.positional.as_slice() {
@@ -194,19 +206,27 @@ pub(super) fn expand(m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'
         walk_paths(ctx, ty, &member.name, &mut vec![], &mut paths);
         let mut f = FieldIr::plain(&member.name, ColType::Json);
         f.nullable = optional;
+        f.renamed_from = renamed_from;
         f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![], list: member.ty.list, under_null: false, root_required: false, present_with: vec![] });
         return Ok(Expansion { fields: vec![f], checks: vec![], paths });
     }
     if member.ty.list {
         return err(member.pos, format!("{what}: a list of {} needs @storage(json); columns storage holds no list of a type", ty.name));
     }
-    let mut cx = Columns { ctx, items, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, root_required: !optional, out: Expansion { fields: vec![], checks: vec![], paths }, claimed: vec![] };
+    let mut cx = Columns { ctx, items, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, old_field: renamed_from, old: vec![], root_required: !optional, out: Expansion { fields: vec![], checks: vec![], paths }, claimed: vec![] };
     cx.level(ty, &mut vec![], &mut vec![], false, optional, member.pos)?;
     Ok(cx.out)
 }
 
 fn json_checks(ty: &TypeIr, ctx: &Ctx<'_>, what: &str, pos: Pos) -> Result<()> {
     for f in &ty.fields {
+        let hinted = match &f.leaf {
+            Some(l) => l.renamed_from.is_some(),
+            None => ctx.members[&(ty.name.clone(), f.name.clone())].renamed_from.is_some(),
+        };
+        if hinted {
+            return err(pos, format!("{what}: {}.{} has a @renamed_from, which a json subfield can't use: a migration can't rename a key yet", ty.name, f.name));
+        }
         match (&f.type_name, &f.leaf) {
             (Some(n), _) => json_checks(&ctx.nested[n], ctx, what, pos)?,
             (None, Some(l)) if l.check.is_some() || l.unique || l.index => {
@@ -254,6 +274,10 @@ struct Columns<'a> {
     field: &'a str,
     ty: &'a str,
     prefix: Option<String>,
+    /// The old model field name (`@renamed_from`): its columns had the default joined names.
+    old_field: Option<String>,
+    /// The old column segments of the nested levels above the current one.
+    old: Vec<String>,
     /// The model field is non-null.
     root_required: bool,
     out: Expansion,
@@ -266,6 +290,14 @@ impl Columns<'_> {
         match &self.prefix {
             Some(p) => format!("{p}{}", segments.join("_")),
             None => format!("{}_{}", self.field, segments.join("_")),
+        }
+    }
+
+    /// The column that `segments` had before the renames, under the old model field name.
+    fn old_column(&self, segments: &[String]) -> String {
+        match &self.old_field {
+            Some(old) => format!("{old}_{}", segments.join("_")),
+            None => self.column(segments),
         }
     }
 
@@ -298,8 +330,10 @@ impl Columns<'_> {
                     let member = &self.ctx.members[&(ty.name.clone(), f.name.clone())];
                     let (sub_pos, segment) = (member.pos, member.map.clone().unwrap_or_else(|| f.name.clone()));
                     segments.push(segment);
+                    self.old.push(member.renamed_from.clone().unwrap_or_else(|| segments.last().cloned().unwrap_or_default()));
                     let inner = self.ctx.nested[n].clone();
                     self.level(&inner, names, segments, under_null, f.nullable, sub_pos)?;
+                    self.old.pop();
                     segments.pop();
                 }
                 (None, Some(leaf)) => {
@@ -310,7 +344,9 @@ impl Columns<'_> {
                         s
                     };
                     let column = self.column(&seg(&leaf.column));
-                    l.renamed_from = leaf.renamed_from.as_ref().map(|old| self.column(&seg(old)));
+                    let mut old = self.old.clone();
+                    old.push(leaf.renamed_from.clone().unwrap_or_else(|| leaf.column.clone()));
+                    l.renamed_from = Some(self.old_column(&old)).filter(|old| *old != column);
                     l.name = format!("{}_{}", self.field, names.join("_"));
                     l.column = column;
                     l.nullable = leaf.nullable || under_null;

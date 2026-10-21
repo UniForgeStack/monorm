@@ -106,7 +106,7 @@ Its fields use the same syntax as model fields: `name Type[?] @attr...`.
 ```prisma
 type Geo {
   lat Float
-  lng Float
+  lng Float?
 }
 
 type Address {
@@ -125,6 +125,10 @@ model Shop {
   `@storage(columns | json)` (ours) on a field overrides it.
   The default is `columns`: one column per leaf, named `<field>_<subfield>`.
 * A subfield takes `@map`, `@default`, `@db.*`, `@check` and `@renamed_from`.
+  `@renamed_from` on a model field of a nested type names the old field: the old columns had the default joined names under it.
+  The hint of each level (field, nested subfield, leaf) builds the old column name, so one rename of a parent renames every column below it.
+  On a model field with `@storage(json)`, it renames the one column.
+  A subfield of a `json` type takes no `@renamed_from`: a migration cannot rename a key yet, so the schema is refused.
 * A type holds no `@id`, no relation and no `autoincrement()` default, and it cannot contain itself.
 
 ### Relations

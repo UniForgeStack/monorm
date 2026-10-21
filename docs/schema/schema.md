@@ -370,6 +370,14 @@ model Shop {
   The type needs at least one required subfield for that rule.
 * A JSON field refuses a dynamic default (`@default(now())`, `@client_default(...)`), `@check`, `@unique` and `@index` on a subfield of its type.
   Use `@storage(columns)` for such a type.
+* `makemigrations` handles a change of a nested type:
+  * A new required subfield of a `columns` type adds a column. Under a nullable field it adds the column without `DEFAULT`, fills the `@default` in the rows where the field is set, and then extends the `CHECK`.
+  * A new required subfield of a `json` type runs one `UPDATE` that sets the `@default` where the key is missing or holds a JSON `null`, and its parent object exists. A subfield that changes from nullable to required runs the same `UPDATE`. Without a `@default`, `makemigrations` fails: add one, or make the subfield nullable.
+    A new required subfield inside a list of a type fails too: update those rows by hand.
+  * The snapshot keeps the shape of each `json` field for this. A snapshot from an older version has none: then every required subfield with a `@default` gets the same guarded `UPDATE`, which changes no row that already has the key.
+  * `down` does not remove the key from the rows.
+  * `@renamed_from("old")` on a model field of a type, or on a subfield, renames the columns of a `columns` field. On a model field with `@storage(json)` it renames the one column. A subfield of a `json` type takes no `@renamed_from`: a migration cannot rename a key yet, so the schema is refused.
+  * The snapshot keeps the `@default` fills of a `columns` type, so `down` fills a required subfield that it adds back.
 * `@@index([address.city])` and `@@unique([address.street, address.city])` name a subfield by its dotted path.
 
 The language API is in [python-api.md](../api/python-api.md#nested-types) and [typescript-api.md](../api/typescript-api.md#nested-types).
