@@ -25,12 +25,12 @@ import {
   Slot,
   SlotParams,
   and,
-  checkNullRule,
   differs,
   exists,
   not,
   or,
   outer,
+  resolveNullRule,
   type CteLike,
   type ExistsQuery,
   type IR,
@@ -808,8 +808,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (!conditions.length) {
       return this as never;
     }
-    const condition = and(...conditions);
-    checkNullRule(condition);
+    const condition = resolveNullRule(and(...conditions));
     return this.clone({ filters: [...this.state.filters, condition] }) as never;
   }
 
@@ -960,7 +959,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (this.state.joins.some(([c]) => c === cte) || cte === this.state.from) {
       throw new QueryError(`${cte.name} is already read by this query`);
     }
-    return this.clone({ joins: [...this.state.joins, [cte, asCondition(on), options.outer ?? false]] }) as never;
+    return this.clone({ joins: [...this.state.joins, [cte, resolveNullRule(asCondition(on)), options.outer ?? false]] }) as never;
   }
 
   /**
@@ -1386,7 +1385,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     ...conditions: C
   ): OneRowQuery<RequiredResult<this, R>, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>> {
     this.noCuts("get()");
-    if (conditions.length) checkNullRule(and(...(conditions as unknown as never[])));
+    if (conditions.length) resolveNullRule(and(...(conditions as unknown as never[])));
     return new OneRowQuery(() => (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null), true);
   }
 

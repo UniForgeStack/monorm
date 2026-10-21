@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, Union, Unpack, overload
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, Union, Unpack, overload
 from typing import Literal as _Literal
 
 from .errors import QueryError
@@ -32,6 +32,7 @@ M = TypeVar("M", bound="Model")
 IR = dict[str, Any]
 # Where NULLs go in an ordering.
 NullsPlace = _Literal["first", "last"]
+NullRule = _Literal["or_null", "and_not_null"]
 
 __all__ = [
     "Expression",
@@ -516,12 +517,15 @@ def _same_table_model(column_root: type[Model], root: type[Model] | Cte) -> type
 class ColumnRef(Expression[T]):
     """A column of ``root``'s model, or of a model reached from it through ``path``."""
 
-    __slots__ = ("_root", "_path", "_field")
+    __slots__ = ("_root", "_path", "_field", "_rule")
 
-    def __init__(self, root: type[Model], path: tuple[str, ...], field: Field[Any]) -> None:
+    def __init__(
+        self, root: type[Model], path: tuple[str, ...], field: Field[Any], rule: NullRule | None = None
+    ) -> None:
         self._root = root
         self._path = path
         self._field = field
+        self._rule = rule
 
     def _ir(self, ctx: IRContext) -> IR:
         if self._root is not ctx.root:
@@ -614,7 +618,7 @@ class Func(Expression[T]):
         self._args = tuple(_wrap(a) for a in args)
         self._rel = rel
         self._distinct = distinct
-        self._filter = None if filter is None else as_condition(filter)
+        self._filter = None if filter is None else resolve_null_rule(as_condition(filter))
         self._order = _orderings(order_by)
 
     def _ir(self, ctx: IRContext) -> IR:
@@ -1228,12 +1232,27 @@ class RelationPath(Generic[M]):
     longer :class:`RelationPath`. Used in filters and ``load()``; ``.objects`` gives the relation query set.
     """
 
-    __slots__ = ("_root", "_path", "_target")
+    __slots__ = ("_root", "_path", "_target", "_rule")
+    _rule: NullRule | None
 
-    def __init__(self, root: type[Model], path: tuple[str, ...], target: type[M]) -> None:
+    def __init__(
+        self, root: type[Model], path: tuple[str, ...], target: type[M], rule: NullRule | None = None
+    ) -> None:
         self._root = root
         self._path = path
         self._target = target
+        self._rule = rule
+
+    def or_null(self) -> Self:
+        """The null rule of this path: ``or_null()`` lets the missing related row, and a NULL in
+        any nullable column reached through the path, pass. A method on one comparison wins:
+        ``Post.author.or_null().email != 'x'`` keeps the posts without an author."""
+        return RelationPath(self._root, self._path, self._target, "or_null")  # type: ignore[return-value]
+
+    def and_not_null(self) -> Self:
+        """The null rule of this path: ``and_not_null()`` drops the missing related row, and a NULL
+        in any nullable column reached through the path. A method on one comparison wins."""
+        return RelationPath(self._root, self._path, self._target, "and_not_null")  # type: ignore[return-value]
 
     # Hidden from type checkers: generated stubs declare each model's path class with
     # its real attributes, so unknown names are reported instead of typed as Any.
@@ -1246,10 +1265,10 @@ class RelationPath(Generic[M]):
             if name in meta.nested:
                 return meta.nested[name].__get__(None, self._target)._at(self._root, self._path)
             if name in meta.fields:
-                return ColumnRef(self._root, self._path, meta.fields[name])
+                return ColumnRef(self._root, self._path, meta.fields[name], self._rule)
             if name in meta.relations:
                 rel = meta.relations[name]
-                return RelationPath(self._root, (*self._path, name), rel.target)
+                return RelationPath(self._root, (*self._path, name), rel.target, self._rule)
             raise AttributeError(f"{self._target.__name__} has no field or relation {name!r}")
 
     def __dir__(self) -> Iterable[str]:
@@ -1289,7 +1308,7 @@ class RelationPath(Generic[M]):
                 "compares with an instance (compare a key column instead)"
             )
         columns: list[ColumnRef[Any]] = [
-            ColumnRef(self._root, self._path[:-1], owner._meta.fields[n]) for n in rel.via_fields
+            ColumnRef(self._root, self._path[:-1], owner._meta.fields[n], self._rule) for n in rel.via_fields
         ]
         if other is None:
             nulls: list[Condition] = [IsNull(c, neg=neg) for c in columns]
@@ -1300,9 +1319,19 @@ class RelationPath(Generic[M]):
         if any(k is None for k in keys):
             raise ValueError(f"{self!r} can't compare with {other!r}: its {', '.join(rel.to_fields)} is None")
         if len(columns) == 1:
-            return Comparison("ne" if neg else "eq", columns[0], _wrap(keys[0]))
-        match = Together([Comparison("eq", c, _wrap(k)) for c, k in zip(columns, keys, strict=True)])
-        return Negated(match) if neg else match
+            if not neg:
+                return PathComparison("eq", columns[0], _wrap(keys[0]))
+            different: Condition = Comparison("ne", columns[0], _wrap(keys[0]))
+        else:
+            match: list[Condition] = [Comparison("eq", c, _wrap(k)) for c, k in zip(columns, keys, strict=True)]
+            if not neg:
+                return PathMatch(match)
+            different = Negated(Together(match))
+        # `path != x` is `~(path == x)`: a NULL key stays, unless the path has its own null rule.
+        nullable = [c for c in columns if c._nullable]
+        if self._rule is not None or not nullable:
+            return different
+        return NullKept(different, [IsNull(c, neg=False) for c in nullable])
 
     __bool__ = _bool_misuse
 
@@ -1364,12 +1393,12 @@ class Condition(Node):
         """``(condition OR column IS NULL)``: a NULL row passes. Apply it to one comparison
         (``==``, ``!=``, ``<``, ``>``, ``in_``, ``like``, ``between``) of a nullable column,
         before ``~``: ``~(x > 20).or_null()`` is ``NOT (x > 20 OR x IS NULL)``."""
-        return or_(self, *(IsNull(c, neg=False) for c in self._null_columns("or_null")))
+        return or_(self, *_null_tests(self._null_columns("or_null"), keeps_null=True))
 
     def and_not_null(self) -> Condition:
         """``(condition AND column IS NOT NULL)``: a NULL row fails. Under ``~`` it keeps NULL
         rows: ``~(x > 20).and_not_null()`` is ``NOT (x > 20 AND x IS NOT NULL)``."""
-        return and_(self, *(IsNull(c, neg=True) for c in self._null_columns("and_not_null")))
+        return and_(self, *_null_tests(self._null_columns("and_not_null"), keeps_null=False))
 
     def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
         raise TypeError(
@@ -1378,15 +1407,44 @@ class Condition(Node):
         )
 
 
+def _to_one(column: ColumnRef[Any]) -> bool:
+    """Whether every hop to the column is to-one: a missing related row reads as a NULL."""
+    from .fields import BelongsTo, HasOne
+
+    if not column._path:
+        return False
+    owner: type[Model] = column._root
+    for name in column._path:
+        relation = owner._meta.relations[name]
+        if not isinstance(relation, (BelongsTo, HasOne)):
+            return False
+        owner = relation.target
+    return True
+
+
+def _null_tests(columns: Sequence[ColumnRef[Any]], *, keeps_null: bool) -> list[Condition]:
+    """The NULL tests a null method adds for each column. Behind a to-one path the missing
+    related row counts as a NULL, so `or_null()` adds `NOT EXISTS (... col IS NOT NULL)`."""
+    out: list[Condition] = []
+    for c in columns:
+        if keeps_null:
+            if _to_one(c):
+                out.append(Not(IsNull(c, neg=True)))
+            elif c._nullable:
+                out.append(IsNull(c, neg=False))
+        elif c._nullable or _to_one(c):
+            out.append(IsNull(c, neg=True))
+    return out
+
+
 def _nullable_columns(method: str, nodes: Sequence[Node]) -> list[ColumnRef[Any]]:
-    """The nullable columns among ``nodes``, once each; raises when none is nullable."""
+    """The columns among ``nodes`` that hold a NULL, once each; raises when none does.
+    Behind a to-one path the missing related row is one."""
     out: dict[str, ColumnRef[Any]] = {}
     for node in nodes:
         if not isinstance(node, ColumnRef):
             raise TypeError(f"{method}() applies to a plain column, not to {node!r}")
-        if node._path:
-            raise QueryError(f"{method}() on {node!r}: a column reached through a relation is not supported")
-        if node._nullable:
+        if node._nullable or _to_one(node):
             out.setdefault(repr(node), node)
     if not out:
         raise QueryError(
@@ -1417,8 +1475,9 @@ def _tested(leaf: Condition) -> list[Node]:
 
 
 def _strict_columns(leaf: Condition) -> list[ColumnRef[Any]]:
-    """The nullable plain columns a comparison tests (a column behind a relation is not checked)."""
-    return [n for n in _tested(leaf) if isinstance(n, ColumnRef) and not n._path and n._nullable]
+    """The nullable columns a comparison tests. A NOT NULL column behind a to-one path is not a
+    nullable value: a negation keeps the rows with no related row."""
+    return [n for n in _tested(leaf) if isinstance(n, ColumnRef) and n._nullable]
 
 
 def _is_negative(leaf: Condition) -> bool:
@@ -1427,39 +1486,77 @@ def _is_negative(leaf: Condition) -> bool:
     return isinstance(leaf, Negated) or (isinstance(leaf, (In, InSelect)) and leaf.neg)
 
 
-def check_null_rule(condition: Condition, *, negated: bool = False) -> None:
-    """Raise when a comparison on a nullable plain column has neither ``or_null()`` nor
-    ``and_not_null()`` and either sits under ``~`` or is a ``!=`` / ``not_in``.
+def _null_siblings(items: Sequence[Condition], tests_not_null: bool) -> set[str]:
+    """The columns that `items` test for NULL in the way the two null methods build it:
+    ``col IS NOT NULL`` in an `&`, ``col IS NULL`` (or ``NOT col IS NOT NULL``) in a `|`."""
+    out: set[str] = set()
+    for i in items:
+        if isinstance(i, IsNull) and i.neg == tests_not_null:
+            out.add(repr(i.item))
+        elif isinstance(i, Not) and isinstance(i.item, IsNull) and i.item.neg != tests_not_null:
+            out.add(repr(i.item.item))
+    return out
 
-    A comparison counts as handled when a sibling ``IS NULL`` in an enclosing ``|``, or a sibling
-    ``IS NOT NULL`` in an enclosing ``&``, is on its column: that is the shape the two methods
-    build, and it stays correct under ``~``."""
 
-    def walk(node: Condition, neg: bool, handled: frozenset[str]) -> None:
+def resolve_null_rule(condition: Condition, *, negated: bool = False) -> Condition:
+    """Apply the null rule to ``condition``; return the condition to run.
+
+    A comparison on a nullable column that has neither ``or_null()`` nor ``and_not_null()`` and
+    either sits under ``~`` or is a ``!=`` / ``not_in`` raises. A comparison counts as handled
+    when a sibling ``IS NULL`` in an enclosing ``|``, or a sibling ``IS NOT NULL`` in an
+    enclosing ``&``, is on its column: that is the shape the two methods build, and it stays
+    correct under ``~``.
+
+    A column that comes from a path with a null rule (``Post.author.or_null()``) gets the
+    method of the path, unless its comparison is handled. A ``path == x`` of a nullable key
+    under ``~`` keeps the rows with a NULL key."""
+
+    def rule_of(leaf: Condition, neg: bool, handled: frozenset[str]) -> Condition:
+        ruled = {repr(c): c for c in _tested(leaf) if isinstance(c, ColumnRef) and c._rule and repr(c) not in handled}
+        ruled_leaf = leaf
+        for c in ruled.values():
+            keeps_null = c._rule == "or_null"
+            tests = _null_tests([c], keeps_null=keeps_null)
+            if tests:
+                ruled_leaf = (or_ if keeps_null else and_)(ruled_leaf, *tests)
+        if ruled_leaf is not leaf:
+            return ruled_leaf
+        if neg and isinstance(leaf, (PathComparison, PathMatch)):
+            keys = [c for c in _strict_columns(leaf) if repr(c) not in handled]
+            if keys:
+                return and_(leaf, *(IsNull(c, neg=True) for c in keys))
+        return leaf
+
+    def walk(node: Condition, neg: bool, handled: frozenset[str]) -> Condition:
         if isinstance(node, Not) and not isinstance(node, Negated):
-            walk(node.item, True, handled)
-        elif isinstance(node, BoolOp):
-            tests_not_null = node.op == "and"
-            inner = handled | {repr(i.item) for i in node.items if isinstance(i, IsNull) and i.neg == tests_not_null}
-            for item in node.items:
-                walk(item, neg, inner)
-        else:
-            for col in _strict_columns(node):
-                if repr(col) in handled:
-                    continue
-                if neg:
-                    raise QueryError(
-                        f"{node!r} sits under ~ / not_() / exclude() and {col!r} is nullable: add or_null() or "
-                        "and_not_null() to the comparison. or_null() drops NULL rows under negation, "
-                        "and_not_null() keeps them"
-                    )
-                if _is_negative(node):
-                    raise QueryError(
-                        f"{node!r} on the nullable {col!r} drops NULL rows silently: add or_null() or "
-                        "and_not_null() to the comparison. or_null() keeps NULL rows, and_not_null() drops them"
-                    )
+            item = walk(node.item, True, handled)
+            return node if item is node.item else Not(item)
+        if isinstance(node, BoolOp) and not isinstance(node, PathMatch):
+            inner = handled | _null_siblings(node.items, node.op == "and")
+            items = [walk(i, neg, inner) for i in node.items]
+            if all(a is b for a, b in zip(items, node.items, strict=True)):
+                return node
+            return Together(items) if isinstance(node, Together) else BoolOp(node.op, items)
+        ruled = rule_of(node, neg, handled)
+        if ruled is not node:
+            return ruled
+        for col in _strict_columns(node):
+            if repr(col) in handled:
+                continue
+            if neg:
+                raise QueryError(
+                    f"{node!r} sits under ~ / not_() / exclude() and {col!r} is nullable: add or_null() or "
+                    "and_not_null() to the comparison. or_null() drops NULL rows under negation, "
+                    "and_not_null() keeps them"
+                )
+            if _is_negative(node):
+                raise QueryError(
+                    f"{node!r} on the nullable {col!r} drops NULL rows silently: add or_null() or "
+                    "and_not_null() to the comparison. or_null() keeps NULL rows, and_not_null() drops them"
+                )
+        return node
 
-    walk(condition, negated, frozenset())
+    return walk(condition, negated, frozenset())
 
 
 class Comparison(Condition):
@@ -1479,6 +1576,12 @@ class Comparison(Condition):
     def __repr__(self) -> str:
         sym = {"eq": "==", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">="}.get(self.op, self.op)
         return f"({self.left!r} {sym} {self.right!r})"
+
+
+class PathComparison(Comparison):
+    """``path == x`` of a single key: it keeps the rows with a NULL key under ``~``."""
+
+    __slots__ = ()
 
 
 class Arith(Expression[Any]):
@@ -1655,6 +1758,29 @@ class Together(BoolOp):
         return _either_side(method, self, _tested(self))
 
 
+class PathMatch(Together):
+    """``path == x`` of a composite key: it keeps the rows with a NULL key under ``~``."""
+
+    __slots__ = ()
+
+
+class NullKept(BoolOp):
+    """``path != x`` of a nullable key: ``(key <> x OR key IS NULL)``, the form of ``~(path == x)``.
+    ``or_null()`` is already there; ``and_not_null()`` drops the NULL keys again."""
+
+    __slots__ = ("base",)
+
+    def __init__(self, base: Condition, nulls: list[Condition]) -> None:
+        super().__init__("or", [base, *nulls])
+        self.base = base
+
+    def or_null(self) -> Condition:
+        return self
+
+    def and_not_null(self) -> Condition:
+        return self.base.and_not_null()
+
+
 class Not(Condition):
     __slots__ = ("item",)
 
@@ -1715,9 +1841,7 @@ def or_(*conditions: ConditionLike) -> Condition:
 
 
 def not_(condition: ConditionLike) -> Condition:
-    inner = as_condition(condition)
-    check_null_rule(inner, negated=True)
-    return Not(inner)
+    return Not(resolve_null_rule(as_condition(condition), negated=True))
 
 
 def differs(column: ColumnRef[Any], value: Any) -> Condition:

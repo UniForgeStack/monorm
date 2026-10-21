@@ -14,6 +14,8 @@
 //!   FROM tags t2 JOIN post_tags t3 ON t3.tag_id = t2.id WHERE t3.post_id = posts.id
 //!   AND ...)`, and its prefetch selects the join row's key next to each tag.
 
+use std::borrow::Cow;
+
 #[cfg(feature = "postgres")]
 use sea_query::extension::postgres::PgExpr;
 
@@ -1328,17 +1330,70 @@ impl<'s> Planner<'s> {
         Ok(SExpr::exists(sub))
     }
 
+    /// Whether `e` is a column that sits below the current scope behind to-one hops only.
+    fn is_to_one_column(&self, e: &Expr) -> bool {
+        let Expr::Col { path, .. } = e else { return false };
+        let scope = self.scope();
+        if path.len() <= scope.path.len() || !path.starts_with(&scope.path) {
+            return false;
+        }
+        let mut model = scope.model;
+        for hop in &path[scope.path.len()..] {
+            match self.model(model).relation(hop) {
+                Ok((rel, target)) if rel.kind == RelKind::One && rel.through.is_none() => model = target,
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// A `!=` or `NOT IN` of a to-one path column against values is `NOT (==)` / `NOT IN`:
+    /// it keeps the rows with no related row.
+    fn to_one_negation(&self, e: &Expr) -> Option<Expr> {
+        let plain = |o: &Expr| {
+            let (mut paths, mut has_not) = (vec![], false);
+            col_paths(o, &mut paths, &mut has_not);
+            paths.is_empty() && !matches!(o, Expr::Null)
+        };
+        let positive = match e {
+            Expr::Cmp { op: CmpOp::Ne, l, r } => {
+                let (col, other) = if matches!(**l, Expr::Col { .. }) { (l, r) } else { (r, l) };
+                if !self.is_to_one_column(col) || !plain(other) {
+                    return None;
+                }
+                Expr::Cmp { op: CmpOp::Eq, l: l.clone(), r: r.clone() }
+            }
+            Expr::In { item, values, neg: true } if self.is_to_one_column(item) && values.iter().all(plain) => {
+                Expr::In { item: item.clone(), values: values.clone(), neg: false }
+            }
+            Expr::InSelect { item, select, neg: true } if self.is_to_one_column(item) => {
+                Expr::InSelect { item: item.clone(), select: select.clone(), neg: false }
+            }
+            _ => return None,
+        };
+        Some(Expr::Not { item: Box::new(positive) })
+    }
+
     fn cond(&mut self, e: &Expr) -> Result<SExpr> {
         if let Some(rewritten) = self.whole_field(e)? {
+            return self.cond(&rewritten);
+        }
+        if let Some(rewritten) = self.to_one_negation(e) {
             return self.cond(&rewritten);
         }
         match e {
             Expr::And { items } | Expr::Or { items } => {
                 let is_and = matches!(e, Expr::And { .. });
+                // A to-one `!=` is `NOT (==)`: it must leave the group before the grouping.
+                let items: Vec<Cow<Expr>> = items
+                    .iter()
+                    .map(|i| self.to_one_negation(i).map_or(Cow::Borrowed(i), Cow::Owned))
+                    .collect();
                 // Children that live entirely below the same relation share one subquery.
                 let mut groups: Vec<(&str, Vec<&Expr>)> = vec![];
                 let mut parts = vec![];
-                for item in items {
+                for item in &items {
+                    let item: &Expr = item;
                     match self.pure_hop(item) {
                         Some(h) => match groups.iter_mut().find(|(g, _)| *g == h) {
                             Some((_, members)) => members.push(item),

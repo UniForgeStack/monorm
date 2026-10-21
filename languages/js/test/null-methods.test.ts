@@ -55,7 +55,7 @@ model NoteLabel {
 `;
 
 function where(qs: { sql(): string }): string {
-  return qs.sql().split(" WHERE ")[1]!;
+  return qs.sql().split(" WHERE ").slice(1).join(" WHERE ");
 }
 
 test("the method binds before not()", () => {
@@ -96,8 +96,9 @@ test("a NOT NULL column throws", () => {
   assert.throws(() => User.email.like("a%").andNotNull(), /NOT NULL/);
 });
 
-test("a column reached through a relation throws for now", () => {
-  assert.throws(() => Post.comments.authorId.eq(1n).orNull(), /relation/);
+test("a nullable column reached through a to-many relation takes the method", () => {
+  assert.equal(where(Post.objects.filter(Post.comments.authorId.eq(1n).orNull())).split('"author_id" IS NULL').length - 1, 1);
+  assert.throws(() => Post.comments.id.eq(1n).orNull(), /NOT NULL/);
 });
 
 test("a computed value is not checked yet", () => {
@@ -215,7 +216,9 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.deepEqual(await ids(eq), of(one));
       assert.deepEqual(await ids(eq.orNull()), of(one, nul, half));
       assert.deepEqual(await ids(eq.andNotNull()), of(one));
-      assert.throws(() => Line.objects.using(db).filter(ne), (e: unknown) => e instanceof QueryError && /orNull\(\)/.test(e.message));
+      assert.deepEqual(await ids(ne), of(two, nul, half));
+      assert.deepEqual(await ids(not(eq)), of(two, nul, half));
+      assert.deepEqual(await ids(not(ne)), of(one));
       assert.deepEqual(await ids(ne.orNull()), of(two, nul, half));
       assert.deepEqual(await ids(ne.andNotNull()), of(two));
       assert.deepEqual(await ids(eq.orNull().not()), of(two));

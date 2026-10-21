@@ -74,9 +74,11 @@ test("a NOT NULL column and a null test need nothing", () => {
   assert.ok(Comment.objects.filter(x.gt(20n), x.eq(1n), x.in([1n])).sql());
 });
 
-test("a column behind a relation stays as it is until wave 2", () => {
-  assert.ok(Post.objects.exclude(Post.comments.authorId.eq(1n)).sql());
-  assert.ok(Post.objects.filter(Post.comments.authorId.ne(1n)).sql());
+test("a nullable column behind a to-many relation follows the column rule", () => {
+  assert.throws(() => Post.objects.exclude(Post.comments.authorId.eq(1n)), QueryError);
+  assert.throws(() => Post.objects.filter(Post.comments.authorId.ne(1n)), QueryError);
+  assert.ok(Post.objects.filter(Post.comments.id.ne(1n)).sql());
+  assert.ok(Post.objects.exclude(Post.comments.id.eq(1n)).sql());
 });
 
 const nested = `
@@ -157,14 +159,11 @@ test("a null test of the right direction handles a comparison", () => {
   assert.ok(Comment.objects.filter(not(x.gt(1n).and(x.ne(null)))).sql());
 });
 
-test("a composite key ne gets the positive message", () => {
+test("a composite key ne keeps the rows with a NULL key column", () => {
   const { Line, Item } = loads(nested, { registry: new Registry() }) as any;
   const item = Object.assign(new Item._meta.Row(), { shop: 1n, id: 2n });
-  assert.throws(
-    () => Line.objects.filter(Line.item.ne(item)),
-    (e: unknown) =>
-      e instanceof QueryError && positiveNe.test(e.message) && !/sits under/.test(e.message) && e.message.startsWith("(Line.shop, Line.itemId) != (1, 2)"),
-  );
+  assert.equal(Line.objects.filter(Line.item.ne(item)).sql().split(" IS NULL").length - 1, 2);
+  assert.equal(Line.objects.filter(not(Line.item.eq(item))).sql().split(" IS NOT NULL").length - 1, 2);
 });
 
 test("the message prints the comparison, then the nullable column", () => {
@@ -185,10 +184,10 @@ test("a negated like on a nullable column throws, on a NOT NULL one it does not"
   assert.ok(User.objects.filter(User.email.contains("a").not()).sql());
 });
 
-test("a single-key relation ne follows the column rule, in filter() and get()", () => {
+test("a single-key relation ne never raises; the key column ne keeps the column rule", () => {
   const alice = Object.assign(new (User as any)._meta.Row(), { id: 1n }) as never;
-  assert.throws(() => Comment.objects.filter(Comment.author.ne(alice)), positiveNe);
-  assert.throws(() => Comment.objects.get(Comment.author.ne(alice)), positiveNe);
+  assert.ok(Comment.objects.filter(Comment.author.ne(alice)).sql());
+  assert.ok(Comment.objects.get(Comment.author.ne(alice)));
   assert.throws(() => Comment.objects.get(x.ne(1n)), positiveNe);
   assert.ok(Comment.objects.get(x.ne(1n).orNull()));
 });

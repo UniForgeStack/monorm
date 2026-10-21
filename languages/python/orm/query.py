@@ -27,7 +27,7 @@ from .expr import (
     _Ctes,
     and_,
     as_condition,
-    check_null_rule,
+    resolve_null_rule,
     differs,
     not_,
     or_,
@@ -642,7 +642,7 @@ class QuerySet(Generic[M]):
         if not conditions:
             return self._clone()
         condition = and_(*conditions)
-        check_null_rule(condition)
+        condition = resolve_null_rule(condition)
         return self._clone(_filters=(*self._filters, condition))
 
     def exclude(self, *conditions: ConditionLike) -> Self:
@@ -789,7 +789,7 @@ class QuerySet(Generic[M]):
             raise TypeError(f"join() takes a CTE, got {cte!r}")
         if any(c is cte for c, _, _ in self._joins) or cte is self._from:
             raise ValueError(f"{cte.name} is already read by this query")
-        return self._clone(_joins=(*self._joins, (cte, as_condition(on), outer)))
+        return self._clone(_joins=(*self._joins, (cte, resolve_null_rule(as_condition(on)), outer)))
 
     def from_(self, cte: Cte) -> Self:
         """Read the rows from ``cte`` instead of the model's table: a subquery in

@@ -218,7 +218,7 @@ Call the method on one comparison (`eq ne lt gt in like between`), before `.not(
 `x.gt(20).orNull().not()` is `NOT (x > 20 OR x IS NULL)`.
 A composite key gets one `IS NULL` per key column.
 A combined condition, `.not()` of a condition or a computed value throws `TypeError`.
-A NOT NULL column and a column reached through a relation throw `QueryError`.
+A NOT NULL column throws `QueryError`.
 
 **The strict null rule.**
 A comparison on a nullable plain column needs `.orNull()` or `.andNotNull()` in two cases:
@@ -227,10 +227,23 @@ Without one the call throws `QueryError` when the query is built.
 `orNull()` drops NULL rows under negation and `andNotNull()` keeps them (it is the reverse for a positive `ne` or `notIn`).
 For example, `exclude(x.eq(1).orNull())` or `exclude(x.eq(1).andNotNull())`.
 The rule applies only when the column itself is nullable.
-A NOT NULL column, an `isNull()` test, a default filter and a column reached through a relation are not checked.
+A NOT NULL column, an `isNull()` test and a default filter are not checked.
 A sibling test handles a comparison only in the shape the methods build: an `or` with `IS NULL`, or an `and` with `IS NOT NULL`.
 `not()` checks when it runs: `not(x.gt(1n)).or(x.isNull())` throws, so write `x.gt(1n).orNull().not()` or `not(x.gt(1n).or(x.isNull()))`.
 `exclude()` stays and follows the rule of `not()`.
+`having()`, a join `on` and an aggregate `filter` run the same check for a positive `ne` or `notIn`.
+`func.case` and `select(...)` do not.
+
+**Relation paths.**
+A to-one relation `ne` is `not(eq)` on the path and never throws: `Comment.author.ne(alice)` keeps the comments with no author.
+The same flip applies to `not()`, `.not()`, `notIn` and a composite key.
+`Comment.authorId.ne(1n)` is a column comparison and keeps the column rule, so it throws without `orNull()` or `andNotNull()`.
+A NOT NULL column behind a to-one path is not a nullable value: `Comment.author.email.ne("x")` keeps the comments with no author.
+A nullable column behind a to-one path takes the strict rule and the methods.
+`Post.author.nick.ne("n").orNull()` keeps the posts with no author and the authors with no nick.
+On a to-many path the methods apply to each related row inside the `EXISTS`.
+`.orNull()` or `.andNotNull()` on the path itself (`Post.author.andNotNull()`) covers the missing related row and every nullable column behind it.
+A method on one comparison wins over the method on the path.
 
 The types check the following:
 

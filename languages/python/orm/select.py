@@ -42,7 +42,7 @@ from .expr import (
     ScalarSubquery,
     _Ctes,
     and_,
-    check_null_rule,
+    resolve_null_rule,
 )
 
 if TYPE_CHECKING:
@@ -216,7 +216,7 @@ class Select(Generic[Unpack[Ts]]):
         if not conditions:
             return self._clone()
         condition = and_(*conditions)
-        check_null_rule(condition)
+        condition = resolve_null_rule(condition)
         return self._clone(_having=(*self._having, condition))
 
     def distinct(self, *on: ColumnRef[Any]) -> Self:

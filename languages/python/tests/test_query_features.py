@@ -523,7 +523,8 @@ async def test_outer_through_relation_paths(clean):
         .as_scalar()
     )
     rows = await Post.objects.order_by(Post.title).select(Post.title, others.label("n"))
-    assert [tuple(r) for r in rows] == [("a1", 0), ("a2", 1), ("a3", 0), ("b1", 1)]
+    # `author.name != x` keeps the comment with no author (c2): a to-one `!=` is `~(==)`.
+    assert [tuple(r) for r in rows] == [("a1", 0), ("a2", 2), ("a3", 0), ("b1", 1)]
     email = User.objects.filter(User.name == outer(Comment.post.author.name)).select(User.email).as_scalar()
     rows = await Comment.objects.order_by(Comment.id).select(Comment.body, email.label("email"))
     assert [tuple(r) for r in rows] == [

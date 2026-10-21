@@ -28,8 +28,8 @@ import {
   ParamRef,
   ScalarSubquery,
   and,
-  checkNullRule,
   orderings,
+  resolveNullRule,
   type Ctes,
   type IR,
   type Node,
@@ -196,8 +196,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
     if (!conditions.length) {
       return this as never;
     }
-    const condition = and(...conditions);
-    checkNullRule(condition);
+    const condition = resolveNullRule(and(...conditions));
     return this.with(this.qs, { ...this.state, having: [...this.state.having, condition] });
   }
 

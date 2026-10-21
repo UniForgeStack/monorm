@@ -100,9 +100,10 @@ def test_a_not_null_value_raises():
         User.email.like("a%").and_not_null()
 
 
-def test_a_column_reached_through_a_relation_raises_for_now():
-    with pytest.raises(QueryError, match="relation"):
-        (Post.comments.author_id == 1).or_null()
+def test_a_nullable_column_reached_through_a_to_many_relation_takes_the_method():
+    assert where(Post.objects.filter((Post.comments.author_id == 1).or_null())).count('"author_id" IS NULL') == 1
+    with pytest.raises(QueryError, match="NOT NULL"):
+        (Post.comments.id == 1).or_null()
 
 
 def test_a_computed_value_is_not_checked_yet():
@@ -196,8 +197,9 @@ async def test_a_composite_key_has_one_is_null_per_column(models):
     assert await ids(eq) == {one.id}
     assert await ids(eq.or_null()) == {one.id, null.id, half.id}
     assert await ids(eq.and_not_null()) == {one.id}
-    with pytest.raises(QueryError, match="or_null"):
-        await ids(ne)
+    assert await ids(ne) == {two.id, null.id, half.id}
+    assert await ids(~eq) == {two.id, null.id, half.id}
+    assert await ids(~ne) == {one.id}
     assert await ids(ne.or_null()) == {two.id, null.id, half.id}
     assert await ids(ne.and_not_null()) == {two.id}
     assert await ids(~eq.or_null()) == {two.id}

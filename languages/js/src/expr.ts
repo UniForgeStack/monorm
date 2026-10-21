@@ -439,13 +439,13 @@ export abstract class Condition<S extends string = never, P = {}> extends Expres
    * `ne`, `lt`, `gt`, `in`, `like`, `between`) of a nullable column, inside `not()`:
    * `not(x.gt(20).orNull())` is `NOT (x > 20 OR x IS NULL)`. */
   orNull(): Condition<S, P> {
-    return or(this, ...this.nullColumns("orNull").map((c) => new IsNull(c, false))) as never;
+    return or(this, ...nullTests(this.nullColumns("orNull"), true)) as never;
   }
 
   /** `(condition AND column IS NOT NULL)`: a NULL row fails. Inside `not()` it keeps NULL
    * rows: `not(x.gt(20).andNotNull())` is `NOT (x > 20 AND x IS NOT NULL)`. */
   andNotNull(): Condition<S, P> {
-    return and(this, ...this.nullColumns("andNotNull").map((c) => new IsNull(c, true))) as never;
+    return and(this, ...nullTests(this.nullColumns("andNotNull"), false)) as never;
   }
 
   /** @internal The nullable columns this condition compares, once each. */
@@ -457,17 +457,30 @@ export abstract class Condition<S extends string = never, P = {}> extends Expres
   }
 }
 
-/** The nullable columns among `nodes`, once each; throws when none is nullable. */
+/** The NULL tests a null method adds for each column. Behind a to-one path the missing related
+ * row counts as a NULL, so `orNull()` adds `NOT EXISTS (... col IS NOT NULL)`. */
+function nullTests(columns: readonly Column<unknown, string>[], keepsNull: boolean): Condition<any, any>[] {
+  const out: Condition<any, any>[] = [];
+  for (const c of columns) {
+    if (keepsNull) {
+      if (c.toOne) out.push(new Not(new IsNull(c, true)));
+      else if (c.canBeNull()) out.push(new IsNull(c, false));
+    } else if (c.canBeNull() || c.toOne) {
+      out.push(new IsNull(c, true));
+    }
+  }
+  return out;
+}
+
+/** The nullable columns among `nodes`, once each; throws when none is nullable. Behind a to-one
+ * path the missing related row is a NULL. */
 function nullableColumns(method: string, nodes: readonly Node[]): Column<unknown, string>[] {
   const out = new Map<string, Column<unknown, string>>();
   for (const node of nodes) {
     if (!(node instanceof Column)) {
       throw new TypeError(`${method}() applies to a plain column, not to ${describe(node)}`);
     }
-    if (node.path.length) {
-      throw new QueryError(`${method}() on ${node.text}: a column reached through a relation is not supported`);
-    }
-    if (node.canBeNull()) out.set(node.text, node);
+    if (node.canBeNull() || node.toOne) out.set(node.text, node);
   }
   if (!out.size) {
     throw new QueryError(`${method}() on ${nodes.map(describe).join(", ")}: the column is NOT NULL, so no row has a NULL to keep or drop`);
@@ -627,8 +640,17 @@ export class Column<T, S extends string = never, N extends string = string, H ex
     readonly path: readonly string[],
     readonly field: FieldMeta,
     readonly text: string,
+    /** @internal The null rule of the path the column was reached through. */
+    readonly rule: NullRule | undefined = undefined,
+    /** @internal Whether every hop from the root to the column is to-one. */
+    readonly toOne = false,
   ) {
     super();
+  }
+
+  /** @internal The same column under the null rule of a path. */
+  withRule(rule: NullRule | undefined): Column<T, S> {
+    return rule === this.rule ? this : (new Column(this.root, this.path, this.field, this.text, rule, this.toOne) as never);
   }
 
   ir(ctx: IRContext): IR {
@@ -786,7 +808,7 @@ export class Func<T, S extends string = never, P = {}> extends Expression<T, S, 
     orderBy: unknown = undefined,
   ) {
     super();
-    this.filter = filter === undefined ? undefined : asCondition(filter);
+    this.filter = filter === undefined ? undefined : resolveNullRule(asCondition(filter));
     this.order = orderings(orderBy);
   }
 
@@ -1420,6 +1442,9 @@ export const func = new Functions();
  * related model's columns and relations). */
 export const PATH: unique symbol = Symbol("orm.path");
 
+/** The null rule of a relation path: `Post.author.orNull()` / `andNotNull()`. */
+export type NullRule = "orNull" | "andNotNull";
+
 export interface PathState {
   readonly root: Source;
   /** IR relation names from the root. */
@@ -1430,6 +1455,10 @@ export interface PathState {
   /** A path that ends in a `belongsTo` relation: its foreign key columns, and how to read
    * the referenced key of a target instance (one value per column). */
   readonly belongsTo?: { readonly key: readonly Column<unknown, string>[]; readonly read: (o: object) => unknown[] };
+  /** Whether every hop from the root is to-one (`belongsTo` / `hasOne`); a root has none. */
+  readonly toOne?: boolean;
+  /** The null rule of the path. */
+  readonly rule?: NullRule;
 }
 
 export class RelationPath<M extends ModelSpec, S extends string, H extends readonly Hop[]> {
@@ -1452,10 +1481,31 @@ export class RelationPath<M extends ModelSpec, S extends string, H extends reado
     return compareRelation(this, value, true);
   }
 
+  /**
+   * The null rule of this path: `orNull()` lets the missing related row, and a NULL in any
+   * nullable column reached through the path, pass. A method on one comparison wins:
+   * `Post.author.orNull().email.ne("x")` keeps the posts without an author.
+   */
+  orNull(): this {
+    return withRule(this, "orNull");
+  }
+
+  /** The null rule of this path: `andNotNull()` drops the missing related row, and a NULL in
+   * any nullable column reached through the path. A method on one comparison wins. */
+  andNotNull(): this {
+    return withRule(this, "andNotNull");
+  }
+
   toString(): string {
     const s = this[PATH];
     return [s.root.name, ...s.names].join(".");
   }
+}
+
+function withRule<P extends object>(path: P, rule: NullRule): P {
+  const copy = Object.create(Object.getPrototypeOf(path)) as P;
+  (copy as Record<PropertyKey, unknown>)[PATH] = { ...(path as unknown as { [PATH]: PathState })[PATH], rule };
+  return copy;
 }
 
 /** Hops that end in a to-one relation. */
@@ -1466,7 +1516,7 @@ function compareRelation(path: RelationPath<ModelSpec, string, readonly Hop[]>, 
   if (!s.belongsTo) {
     throw new TypeError(`${String(path)} is not a belongsTo relation; only a belongsTo relation compares with an instance (compare a key column instead)`);
   }
-  const columns = s.belongsTo.key;
+  const columns = s.belongsTo.key.map((c) => c.withRule(s.rule));
   if (value === null) {
     const nulls = columns.map((c) => new IsNull(c, neg));
     return nulls.length === 1 ? nulls[0]! : neg ? or(...nulls) : and(...nulls);
@@ -1476,9 +1526,19 @@ function compareRelation(path: RelationPath<ModelSpec, string, readonly Hop[]>, 
   if (key.length !== columns.length || missing !== undefined) {
     throw new TypeError(`${String(path)} can't compare with an instance whose key is ${String(missing)}`);
   }
-  if (columns.length === 1) return new Comparison(neg ? "ne" : "eq", columns[0]!, wrap(key[0]));
-  const match = new Together(columns.map((c, i) => new Comparison("eq", c, wrap(key[i]))));
-  return neg ? new Negated(match) : match;
+  let different: Condition<any, any>;
+  if (columns.length === 1) {
+    if (!neg) return new PathComparison("eq", columns[0]!, wrap(key[0]));
+    different = new Comparison("ne", columns[0]!, wrap(key[0]));
+  } else {
+    const match = columns.map((c, i) => new Comparison("eq", c, wrap(key[i])));
+    if (!neg) return new PathMatch(match);
+    different = new Negated(new Together(match));
+  }
+  // `path.ne(x)` is `not(path.eq(x))`: a NULL key stays, unless the path has its own null rule.
+  const nullable = columns.filter((c) => c.canBeNull());
+  if (s.rule !== undefined || !nullable.length) return different;
+  return new NullKept(different, nullable.map((c) => new IsNull(c, false)));
 }
 
 /** Where NULLs go in an ordering. */
@@ -1687,6 +1747,31 @@ class Negated extends Not {
   }
 }
 
+/** `path.eq(x)` of a single key: it keeps the rows with a NULL key under `not()`. */
+class PathComparison extends Comparison {}
+
+/** `path.eq(x)` of a composite key: it keeps the rows with a NULL key under `not()`. */
+class PathMatch extends Together {}
+
+/** `path.ne(x)` of a nullable key: `(key <> x OR key IS NULL)`, the form of `not(path.eq(x))`.
+ * `orNull()` is already there; `andNotNull()` drops the NULL keys again. */
+class NullKept extends BoolOp {
+  constructor(
+    readonly base: Condition<any, any>,
+    nulls: Condition<any, any>[],
+  ) {
+    super("or", [base, ...nulls]);
+  }
+
+  override orNull(): Condition<any, any> {
+    return this;
+  }
+
+  override andNotNull(): Condition<any, any> {
+    return this.base.andNotNull();
+  }
+}
+
 /** A condition from a boolean expression (`Post.published` as `published = TRUE`). */
 export function asCondition(value: unknown): Node {
   if (value instanceof Condition) {
@@ -1729,9 +1814,7 @@ export function or<const C extends CondArgs>(...conditions: C): Condition<ScopeO
 }
 
 export function not<S extends string, P>(condition: Expression<boolean | null, S, P>): Condition<S, P> {
-  const inner = asCondition(condition);
-  checkNullRule(inner, true);
-  return new Not(inner) as never;
+  return new Not(resolveNullRule(asCondition(condition), true)) as never;
 }
 
 const ARITH: Record<string, string> = { add: "+", sub: "-", mul: "*", div: "/", mod: "%", concat: "||" };
@@ -1774,27 +1857,65 @@ function isNegative(leaf: Node): boolean {
   return leaf instanceof Negated || ((leaf instanceof InList || leaf instanceof InSelect) && leaf.neg);
 }
 
-/** The nullable plain columns a comparison tests (a column behind a relation is not checked). */
+/** The nullable columns a comparison tests. A NOT NULL column behind a to-one path is not a
+ * nullable value: a negation keeps the rows with no related row. */
 function strictColumns(leaf: Node): Column<unknown, string>[] {
-  return tested(leaf).filter((n): n is Column<unknown, string> => n instanceof Column && !n.path.length && n.canBeNull());
+  return tested(leaf).filter((n): n is Column<unknown, string> => n instanceof Column && n.canBeNull());
+}
+
+/** The columns that `items` test for NULL the way the two null methods build it: `col IS NOT NULL`
+ * in an `and()`, `col IS NULL` (or `not(col IS NOT NULL)`) in an `or()`. */
+function nullSiblings(items: readonly Node[], testsNotNull: boolean): string[] {
+  const out: string[] = [];
+  for (const i of items) {
+    if (i instanceof IsNull && i.neg === testsNotNull) out.push(describe(i.item));
+    else if (i instanceof Not && i.item instanceof IsNull && i.item.neg !== testsNotNull) out.push(describe(i.item.item));
+  }
+  return out;
 }
 
 /**
- * Throws when a comparison on a nullable plain column has neither `orNull()` nor `andNotNull()`
- * and either sits under `not()` or is a `ne` / `notIn`. A comparison is handled when a sibling
- * `IS NULL` in an enclosing `or()`, or a sibling `IS NOT NULL` in an enclosing `and()`, is on its
- * column: the shape the two methods build, which stays correct under `not()`.
+ * Applies the null rule to `condition` and returns the condition to run.
+ *
+ * A comparison on a nullable column that has neither `orNull()` nor `andNotNull()` and either sits
+ * under `not()` or is a `ne` / `notIn` throws. A comparison is handled when a sibling `IS NULL` in
+ * an enclosing `or()`, or a sibling `IS NOT NULL` in an enclosing `and()`, is on its column: the
+ * shape the two methods build, which stays correct under `not()`.
+ *
+ * A column that comes from a path with a null rule (`Post.author.orNull()`) gets the method of the
+ * path, unless its comparison is handled. A `path.eq(x)` of a nullable key under `not()` keeps the
+ * rows with a NULL key.
  */
-export function checkNullRule(condition: Node, negated = false): void {
-  const walk = (node: Node, neg: boolean, handled: ReadonlySet<string>): void => {
-    if (node instanceof Not && !(node instanceof Negated)) return walk(node.item, true, handled);
-    if (node instanceof BoolOp) {
-      const testsNotNull = node.op === "and";
-      const inner = new Set(handled);
-      for (const i of node.items) if (i instanceof IsNull && i.neg === testsNotNull) inner.add(describe(i.item));
-      for (const i of node.items) walk(i, neg, inner);
-      return;
+export function resolveNullRule(condition: Node, negated = false): Node {
+  const ruleOf = (leaf: Node, neg: boolean, handled: ReadonlySet<string>): Node => {
+    const ruled = new Map<string, Column<unknown, string>>();
+    for (const c of tested(leaf)) if (c instanceof Column && c.rule && !handled.has(c.text)) ruled.set(c.text, c);
+    let out = leaf;
+    for (const c of ruled.values()) {
+      const keepsNull = c.rule === "orNull";
+      const tests = nullTests([c], keepsNull);
+      if (tests.length) out = keepsNull ? or(out as Condition, ...tests) : and(out as Condition, ...tests);
     }
+    if (out !== leaf) return out;
+    if (neg && (leaf instanceof PathComparison || leaf instanceof PathMatch)) {
+      const keys = strictColumns(leaf).filter((c) => !handled.has(c.text));
+      if (keys.length) return and(leaf, ...keys.map((c) => new IsNull(c, true)));
+    }
+    return leaf;
+  };
+  const walk = (node: Node, neg: boolean, handled: ReadonlySet<string>): Node => {
+    if (node instanceof Not && !(node instanceof Negated)) {
+      const item = walk(node.item, true, handled);
+      return item === node.item ? node : new Not(item);
+    }
+    if (node instanceof BoolOp && !(node instanceof PathMatch)) {
+      const inner = new Set([...handled, ...nullSiblings(node.items, node.op === "and")]);
+      const items = node.items.map((i) => walk(i, neg, inner));
+      if (items.every((i, n) => i === node.items[n])) return node;
+      return node instanceof Together ? new Together(items as Condition<any, any>[]) : new BoolOp(node.op, items);
+    }
+    const ruled = ruleOf(node, neg, handled);
+    if (ruled !== node) return ruled;
     for (const col of strictColumns(node)) {
       if (handled.has(col.text)) continue;
       if (neg) {
@@ -1810,8 +1931,9 @@ export function checkNullRule(condition: Node, negated = false): void {
         );
       }
     }
+    return node;
   };
-  walk(condition, negated, new Set());
+  return walk(condition, negated, new Set());
 }
 
 /**

@@ -27,7 +27,6 @@ def where(qs) -> str:
         lambda: not_(x == 1),
         lambda: Comment.objects.exclude(x == 1),
         lambda: Comment.objects.exclude(Comment.id == 1, x == 1),
-        lambda: Comment.objects.filter(~(Comment.author != ALICE)),
     ],
 )
 def test_a_negation_of_a_nullable_comparison_raises(build):
@@ -41,7 +40,6 @@ def test_a_negation_of_a_nullable_comparison_raises(build):
         lambda: Comment.objects.filter(x != 1),
         lambda: Comment.objects.filter(x.not_in([1, 2])),
         lambda: Comment.objects.filter(Comment.id == 1, (x != 1) | (Comment.id == 2)),
-        lambda: Comment.objects.filter(Comment.author != ALICE),
         lambda: Comment.objects.get(x != 1),
     ],
 )
@@ -90,9 +88,15 @@ def test_a_not_null_column_and_a_null_test_need_nothing():
     assert Comment.objects.filter(x > 20, x == 1, x.in_([1])).sql()
 
 
-def test_a_column_behind_a_relation_stays_as_it_is_until_wave_2():
-    assert Post.objects.exclude(Post.comments.author_id == 1).sql()
-    assert Post.objects.filter(Post.comments.author_id != 1).sql()
+def test_a_nullable_column_behind_a_to_many_relation_follows_the_column_rule():
+    for build in (
+        lambda: Post.objects.exclude(Post.comments.author_id == 1),
+        lambda: Post.objects.filter(Post.comments.author_id != 1),
+    ):
+        with pytest.raises(QueryError):
+            build()
+    assert Post.objects.filter(Post.comments.id != 1).sql()
+    assert Post.objects.exclude(Post.comments.id == 1).sql()
 
 
 NESTED = """
@@ -189,15 +193,12 @@ model Line {
     )
 
 
-def test_a_composite_key_ne_is_one_not_equal_and_gets_the_positive_message(lines):
+def test_a_composite_key_ne_keeps_the_rows_with_a_null_key_column(lines):
     Line, Item = lines["Line"], lines["Item"]
     item = object.__new__(Item)
     item.__dict__.update(shop=1, id=2)
-    with pytest.raises(QueryError) as e:
-        Line.objects.filter(Line.item != item)
-    assert "or_null() keeps NULL rows, and_not_null() drops them" in str(e.value)
-    assert "sits under" not in str(e.value)
-    assert str(e.value).startswith("(Line.shop, Line.item_id) != (1, 2)")
+    assert Line.objects.filter(Line.item != item).sql().count(" IS NULL") == 2
+    assert Line.objects.filter(~(Line.item == item)).sql().count(" IS NOT NULL") == 2
 
 
 @pytest.mark.parametrize(

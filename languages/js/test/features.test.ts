@@ -110,7 +110,7 @@ test("outer() through relation paths", async () => {
   await seed();
   const others = Comment.objects.filter(Comment.postId.eq(outer(Post.id)), Comment.author.name.ne(outer(Post.author.name))).select({ n: func.count() }).asScalar();
   const rows = await Post.objects.orderBy(Post.title).select({ title: Post.title, n: others }).all();
-  assert.deepEqual(rows, [{ title: "a1", n: 0n }, { title: "a2", n: 1n }, { title: "a3", n: 0n }, { title: "b1", n: 1n }]);
+  assert.deepEqual(rows, [{ title: "a1", n: 0n }, { title: "a2", n: 2n }, { title: "a3", n: 0n }, { title: "b1", n: 1n }]);
   const email = User.objects.filter(User.name.eq(outer(Comment.post.author.name))).select({ e: User.email }).asScalar();
   const bodies = await Comment.objects.orderBy(Comment.id).select({ body: Comment.body, email }).all();
   assert.deepEqual(bodies, [{ body: "c1", email: "alice@example.com" }, { body: "c2", email: "alice@example.com" }, { body: "c3", email: "bob@example.com" }]);
