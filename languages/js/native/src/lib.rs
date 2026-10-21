@@ -1221,6 +1221,13 @@ pub fn cli<'env>(env: &'env Env, argv: Vec<String>) -> napi::Result<PromiseRaw<'
     env.spawn_future(async move { Ok(orm_cli::run(&argv, orm_cli::Host::Node).await) })
 }
 
+/// The schema file of a command line, as the CLI resolves it.
+#[cfg(feature = "cli")]
+#[napi]
+pub fn cli_schema(argv: Vec<String>) -> String {
+    orm_cli::schema_path(&argv, orm_cli::Host::Node).to_string_lossy().into_owned()
+}
+
 /// For `npx orm migrate`: `[schema, dir, url, target]` as the CLI resolves them (null
 /// entries for a missing URL or target), or null for any other command line.
 #[cfg(feature = "cli")]
@@ -1246,8 +1253,9 @@ pub fn find_migration(dir: String, name: String) -> napi::Result<Vec<String>> {
 }
 
 #[napi]
-pub fn compile_schema_file(path: String) -> napi::Result<String> {
-    let ir = orm_core::dsl::compile_file(std::path::Path::new(&path)).map_err(schema_err)?;
+pub fn compile_schema_file(path: String, apps: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
+    let apps = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
+    let ir = orm_core::dsl::compile_file_with(std::path::Path::new(&path), &apps).map_err(schema_err)?;
     let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(schema_err)
 }
@@ -1260,9 +1268,11 @@ pub fn generate_typescript(
     runtime: Option<String>,
     query_sets: Option<std::collections::HashMap<String, String>>,
     model_methods: Option<std::collections::HashMap<String, String>>,
+    apps: Option<std::collections::HashMap<String, String>>,
 ) -> napi::Result<String> {
     let p = std::path::Path::new(&path);
-    let project = orm_core::dsl::compile_project_file(p).map_err(schema_err)?;
+    let apps = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
+    let project = orm_core::dsl::compile_project_file_with(p, &apps).map_err(schema_err)?;
     let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = orm_core::codegen::Options {

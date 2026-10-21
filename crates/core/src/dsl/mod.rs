@@ -20,6 +20,9 @@
 //! }
 //! ```
 //!
+//! `import "app:orm-auth"` reads the schema of an installed app; the host resolves the name
+//! to a file and gives the loader an [`Apps`] map.
+//!
 //! [`compile`] turns a file into the [`SchemaIr`] every binding consumes. The full
 //! reference is `docs/schema/schema.md`; `docs/schema/prisma-syntax.md` has the design.
 
@@ -39,6 +42,10 @@ pub fn compile(source: &str, origin: Option<&Path>) -> Result<SchemaIr, String> 
     compile_project(source, origin).map(|project| project.ir)
 }
 
+/// Installed apps by distribution name: the schema file each `import "app:<name>"` reads.
+/// The host (Python, Node or `--app name=path`) resolves them; the loader never searches.
+pub type Apps = std::collections::BTreeMap<String, PathBuf>;
+
 /// Source ownership for generated modules. Model and enum names remain global.
 pub struct SchemaUnit {
     pub path: PathBuf,
@@ -54,7 +61,8 @@ pub struct CompiledProject {
     pub inputs: Vec<PathBuf>,
 }
 
-struct Loader {
+struct Loader<'a> {
+    apps: &'a Apps,
     units: Vec<SchemaUnit>,
     seen: std::collections::HashSet<PathBuf>,
     active: Vec<PathBuf>,
@@ -62,7 +70,7 @@ struct Loader {
     lines: u32,
 }
 
-impl Loader {
+impl Loader<'_> {
     fn located(&self, e: syntax::Error) -> String {
         let (start, _, label) = self.locations.iter().find(|(start, end, _)| e.pos.line >= *start && e.pos.line < *end)
             .unwrap_or(&self.locations[0]);
@@ -93,8 +101,17 @@ impl Loader {
         for mut item in items {
             match &mut item {
                 syntax::Item::Import { pos, path, prefix: local } => {
-                    let imported = origin.parent().unwrap_or(Path::new("")).join(&*path);
-                    if imported.extension().is_some_and(|e| e == "prisma") {
+                    let app = path.strip_prefix("app:").map(str::to_owned);
+                    let imported = match &app {
+                        Some(name) => {
+                            let file = self.apps.get(name).ok_or_else(|| self.located(syntax::Error { pos: *pos,
+                                msg: format!("import \"app:{name}\": not installed; install the `{name}` package (or pass --app {name}=PATH)") }))?;
+                            file.canonicalize().map_err(|e| self.located(syntax::Error { pos: *pos,
+                                msg: format!("import \"app:{name}\": {}: {e}", file.display()) }))?
+                        }
+                        None => origin.parent().unwrap_or(Path::new("")).join(&*path),
+                    };
+                    if app.is_some() || imported.extension().is_some_and(|e| e == "prisma") {
                         let text = std::fs::read_to_string(&imported)
                             .map_err(|e| self.located(syntax::Error { pos: *pos, msg: format!("import {path:?}: {e}") }))?;
                         out.extend(self.expand(&text, &imported, &format!("{prefix}{local}"), false)?);
@@ -141,13 +158,18 @@ impl Loader {
 }
 
 pub fn compile_project(source: &str, origin: Option<&Path>) -> Result<CompiledProject, String> {
-    compile_project_mode(source, origin, None)
+    compile_project_mode(source, origin, None, &Apps::new())
+}
+
+/// [`compile_project`] with the installed apps that `import "app:<name>"` reads.
+pub fn compile_project_with(source: &str, origin: Option<&Path>, apps: &Apps) -> Result<CompiledProject, String> {
+    compile_project_mode(source, origin, None, apps)
 }
 
 type IdentityUpdate<'a> = (&'a [(String, String)], &'a [String]);
 
-fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>) -> Result<CompiledProject, String> {
-    let mut loader = Loader { units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0 };
+fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, apps: &Apps) -> Result<CompiledProject, String> {
+    let mut loader = Loader { apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0 };
     let origin = origin.unwrap_or(Path::new("<schema>"));
     let mut items = loader.expand(source, origin, "", true)?;
     let mut declared = std::collections::HashMap::new();
@@ -242,14 +264,21 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
 }
 
 pub fn compile_project_file(path: &Path) -> Result<CompiledProject, String> {
+    compile_project_file_with(path, &Apps::new())
+}
+
+pub fn compile_project_file_with(path: &Path, apps: &Apps) -> Result<CompiledProject, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    compile_project(&source, Some(path))
+    compile_project_with(&source, Some(path), apps)
 }
 
 /// Compiles and validates a schema file.
 pub fn compile_file(path: &Path) -> Result<SchemaIr, String> {
-    let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    compile(&source, Some(path))
+    compile_file_with(path, &Apps::new())
+}
+
+pub fn compile_file_with(path: &Path, apps: &Apps) -> Result<SchemaIr, String> {
+    compile_project_file_with(path, apps).map(|project| project.ir)
 }
 
 /// Compiles source and checks it the way the engine will (relations, keys, schema
@@ -269,8 +298,12 @@ mod tests;
 /// generic relation extension. A schema without extension declarations gets the full
 /// engine check before atomic publication; extension lowering waits for compilation.
 pub fn generate_identities(path: &Path, renames: &[(String, String)], restores: &[String]) -> Result<orm_contracts::identity::IdentityManifest, String> {
+    generate_identities_with(path, renames, restores, &Apps::new())
+}
+
+pub fn generate_identities_with(path: &Path, renames: &[(String, String)], restores: &[String], apps: &Apps) -> Result<orm_contracts::identity::IdentityManifest, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let project = compile_project_mode(&source, Some(path), Some((renames, restores)))?;
+    let project = compile_project_mode(&source, Some(path), Some((renames, restores)), apps)?;
     let manifest = project.ir.identities.clone().ok_or("missing generated identities")?;
     if project.ir.behavior.declarations.is_empty() { check(project.ir)?; }
     crate::identity::write(&crate::identity::manifest_path(path), &manifest)?;

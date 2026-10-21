@@ -1033,8 +1033,9 @@ fn compile_schema(source: &str, path: Option<&str>) -> PyResult<String> {
 }
 
 #[pyfunction]
-fn compile_schema_file(path: &str) -> PyResult<String> {
-    let ir = orm_core::dsl::compile_file(std::path::Path::new(path)).map_err(schema_err)?;
+#[pyo3(signature = (path, apps = None))]
+fn compile_schema_file(path: &str, apps: Option<orm_core::dsl::Apps>) -> PyResult<String> {
+    let ir = orm_core::dsl::compile_file_with(std::path::Path::new(path), &apps.unwrap_or_default()).map_err(schema_err)?;
     let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(|e| schema_err(e.to_string()))
 }
@@ -1042,14 +1043,15 @@ fn compile_schema_file(path: &str) -> PyResult<String> {
 /// `(models.py, models.pyi)` source for a schema file.
 #[cfg(feature = "generate-python")]
 #[pyfunction]
-#[pyo3(signature = (path, query_sets = None, model_methods = None))]
+#[pyo3(signature = (path, query_sets = None, model_methods = None, apps = None))]
 fn generate_python(
     path: &str,
     query_sets: Option<std::collections::BTreeMap<String, String>>,
     model_methods: Option<std::collections::BTreeMap<String, String>>,
+    apps: Option<orm_core::dsl::Apps>,
 ) -> PyResult<(String, String)> {
     let p = std::path::Path::new(path);
-    let project = orm_core::dsl::compile_project_file(p).map_err(schema_err)?;
+    let project = orm_core::dsl::compile_project_file_with(p, &apps.unwrap_or_default()).map_err(schema_err)?;
     let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default(), model_methods: model_methods.unwrap_or_default(), ..Default::default() };
@@ -1065,6 +1067,13 @@ fn generate_python(
 #[pyfunction]
 fn cli(py: Python<'_>, argv: Vec<String>) -> i32 {
     py.detach(|| orm_cli::run_blocking(&argv, orm_cli::Host::Python))
+}
+
+/// The schema file of a command line, as the CLI resolves it.
+#[cfg(feature = "cli")]
+#[pyfunction]
+fn cli_schema(argv: Vec<String>) -> PathBuf {
+    orm_cli::schema_path(&argv, orm_cli::Host::Python)
 }
 
 /// For `python -m orm migrate`: `(schema, dir, url, target)` as the CLI resolves them,
@@ -1132,6 +1141,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli, m)?)?;
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(cli_migrate_args, m)?)?;
+    #[cfg(feature = "cli")]
+    m.add_function(wrap_pyfunction!(cli_schema, m)?)?;
     m.add_function(wrap_pyfunction!(list_migrations, m)?)?;
     m.add_function(wrap_pyfunction!(find_migration, m)?)?;
     m.add_class::<PySchema>()?;

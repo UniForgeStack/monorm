@@ -11,15 +11,23 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+import { resolveApps } from "./apps.js";
 import "./index.js"; // loads the modules in their order
 import { hasDataSteps, migrateCommand } from "./migrations.js";
 import { native } from "./native.js";
 
 /** Runs the command line; gives the exit code. Output goes to stdout / stderr. */
-export function main(argv: readonly string[]): Promise<number> {
+export async function main(rawArgv: readonly string[]): Promise<number> {
   const addon = native();
   if (typeof addon.cli !== "function") throw new Error("CLI unavailable; install @orm/native-tooling and set ORM_PROFILE=tooling");
-  const found = addon.cliMigrateArgs([...argv]);
+  const argv = [...rawArgv];
+  try {
+    for (const [name, file] of Object.entries(resolveApps(addon.cliSchema(argv)))) argv.push("--app", `${name}=${file}`);
+  } catch (e) {
+    process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 1;
+  }
+  const found = addon.cliMigrateArgs(argv);
   if (found !== null) {
     const [schema, dir, url, target] = found;
     // data.ts runs in TypeScript, so this migrator applies the directory; without a URL the CLI reports the usage error
@@ -30,7 +38,7 @@ export function main(argv: readonly string[]): Promise<number> {
       });
     }
   }
-  return addon.cli([...argv]);
+  return addon.cli(argv);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {

@@ -5,7 +5,7 @@
 //! * `npx orm` / `bunx orm`, through the Node addon (`languages/js/native`).
 //!
 //! ```text
-//! orm [--schema FILE] [--dir DIR] [--url URL] <command>
+//! orm [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>
 //!   check                                         compile the schema and report errors
 //!   compile [-o ir.json]                          the compiled schema (JSON IR)
 //!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
@@ -25,6 +25,9 @@
 //! comes from `--url` or `ORM_DATABASE_URL`. `generate` also reads the query-set classes
 //! from `[tool.orm.query_sets]` (Python) or `"orm": {"querySets": ...}` (TypeScript),
 //! and the model-methods classes from `[tool.orm.model_methods]` or `"orm": {"modelMethods": ...}`.
+//!
+//! `--app NAME=PATH` (repeatable) gives the schema file of an installed app for `import "app:NAME"`;
+//! `python -m orm` and `npx orm` add it for the apps they find.
 //!
 //! Output goes to the process's stdout and stderr. Exit codes: 0 success, 1 failure
 //! (an invalid schema, a migration error, a database error, `makemigrations --check`
@@ -90,7 +93,7 @@ in pyproject.toml or \"orm\" in package.json, else schema.prisma and migrations/
 The database URL comes from --url or ORM_DATABASE_URL.";
 
 fn usage(host: Host) -> String {
-    format!("usage: {} [--schema FILE] [--dir DIR] [--url URL] <command>\n{COMMANDS}", host.prog())
+    format!("usage: {} [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>\n{COMMANDS}", host.prog())
 }
 
 enum Failure {
@@ -120,7 +123,7 @@ struct Args {
 }
 
 const FLAGS: [&str; 6] = ["--empty", "--check", "--down", "--force", "-h", "--help"];
-const VALUED: [&str; 14] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir"];
+const VALUED: [&str; 15] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -159,7 +162,7 @@ impl Args {
     /// Only these options (besides the global ones) and at most `max` positionals
     /// after the command.
     fn allow(&self, command: &str, options: &[&str], max: usize) -> Result<()> {
-        let global = ["--schema", "--dir", "--url"];
+        let global = ["--schema", "--dir", "--url", "--app"];
         if let Some((k, _)) = self.options.iter().find(|(k, _)| !global.contains(&k.as_str()) && !options.contains(&k.as_str())) {
             return Err(Failure::Usage(format!("{command} doesn't take {k}")));
         }
@@ -167,6 +170,18 @@ impl Args {
             return Err(Failure::Usage(format!("too many arguments for {command}")));
         }
         Ok(())
+    }
+
+    /// The `--app NAME=PATH` options: the installed apps that `import "app:NAME"` reads.
+    fn apps(&self) -> Result<dsl::Apps> {
+        let mut apps = dsl::Apps::new();
+        for (key, value) in &self.options {
+            if key != "--app" { continue; }
+            let (name, path) = value.as_deref().and_then(|v| v.split_once('=')).filter(|(n, p)| !n.is_empty() && !p.is_empty())
+                .ok_or_else(|| Failure::Usage("--app needs NAME=PATH".into()))?;
+            apps.insert(name.to_owned(), PathBuf::from(path));
+        }
+        Ok(apps)
     }
 
     fn arg(&self, i: usize) -> Option<&str> {
@@ -225,8 +240,8 @@ fn config(host: Host) -> Config {
     .unwrap_or_default()
 }
 
-fn load(path: &Path) -> Result<(orm_core::ir::SchemaIr, orm_core::schema::Schema)> {
-    dsl::compile_file(path).and_then(dsl::check).map_err(Failure::Failed)
+fn load(path: &Path, args: &Args) -> Result<(orm_core::ir::SchemaIr, orm_core::schema::Schema)> {
+    dsl::compile_file_with(path, &args.apps()?).and_then(dsl::check).map_err(Failure::Failed)
 }
 
 fn write(path: &Path, text: &str) -> Result<()> {
@@ -251,6 +266,13 @@ pub fn migrate_args(argv: &[String], host: Host) -> Option<(PathBuf, PathBuf, Op
     let env = std::env::var("ORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let url = args.opt(&["--url"]).map(String::from).or(env);
     Some((schema, dir, url, args.arg(0).map(String::from)))
+}
+
+/// The schema file a command line reads, as [`run`] resolves it. The Python and Node hosts
+/// scan it for `import "app:NAME"` before they run the command.
+pub fn schema_path(argv: &[String], host: Host) -> PathBuf {
+    let schema = Args::parse(argv).ok().and_then(|args| args.opt(&["--schema"]).map(String::from));
+    PathBuf::from(schema.or(config(host).schema).unwrap_or_else(|| "schema.prisma".into()))
 }
 
 /// Runs the command line `argv` (without the program name) and gives the exit code.
@@ -317,7 +339,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             }
             let path = orm_core::identity::manifest_path(&schema);
             let previous = if path.exists() { orm_core::identity::read(&path).map_err(Failure::Failed)? } else { Default::default() };
-            let manifest = dsl::generate_identities(&schema, &renames, &restores).map_err(Failure::Failed)?;
+            let manifest = dsl::generate_identities_with(&schema, &renames, &restores, &args.apps()?).map_err(Failure::Failed)?;
             let changes = orm_core::identity::changes(&previous, &manifest);
             if changes.is_empty() { println!("no identity changes"); }
             for change in changes { println!("{change}"); }
@@ -325,12 +347,12 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         }
         "check" => {
             args.allow(command, &[], 0)?;
-            let (ir, _) = load(&schema)?;
+            let (ir, _) = load(&schema, &args)?;
             println!("{}: ok ({} models)", schema.display(), ir.models.len());
         }
         "compile" => {
             args.allow(command, &["-o", "--out"], 0)?;
-            let (ir, _) = load(&schema)?;
+            let (ir, _) = load(&schema, &args)?;
             let json = serde_json::to_string_pretty(&ir).map_err(failed)? + "\n";
             match args.opt(&["-o", "--out"]) {
                 Some(out) => write(Path::new(out), &json)?,
@@ -343,7 +365,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         }
         "makemigrations" => {
             args.allow(command, &["--name", "--empty", "--check"], 1)?;
-            let (_, compiled) = load(&schema)?;
+            let (_, compiled) = load(&schema, &args)?;
             if args.flag("--check") {
                 let plan = files::files::next(&dir, &compiled).map_err(Failure::Failed)?;
                 for s in &plan.up {
@@ -407,7 +429,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         (None, _, Host::Node) => "typescript",
         (None, _, Host::Binary) => return Err(Failure::Usage("generate needs a language: python, typescript or rust".into())),
     };
-    let project = dsl::compile_project_file(schema).map_err(Failure::Failed)?;
+    let project = dsl::compile_project_file_with(schema, &args.apps()?).map_err(Failure::Failed)?;
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, extensions: orm_core::behavior::extension_code(language), ..codegen::Options::default() };
@@ -632,7 +654,7 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                 }
             }
             "baseline" => {
-                let (_, compiled) = load(schema)?;
+                let (_, compiled) = load(schema, args)?;
                 let applied = migrate::applied_names(&*driver).await?;
                 if !applied.is_empty() {
                     return Err(failed(format!("the database already has applied migrations ({}); baseline only marks the first", applied.join(", "))));

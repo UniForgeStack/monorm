@@ -1049,3 +1049,46 @@ fn a_json_subfield_index_builds_a_create_index_on_the_expression() {
     assert!(sql.contains("CREATE INDEX") && sql.contains("((\"address\") ->> 'city')"), "{sql}");
     assert!(sql.contains("CREATE UNIQUE INDEX") && sql.contains("::integer"), "{sql}");
 }
+
+#[test]
+fn app_imports_read_the_schema_an_installed_app_declares() {
+    use crate::codegen::lookup::{target, Language};
+    let dir = std::env::temp_dir().join(format!("orm-app-imports-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    // a Python app (a package with __init__.py) that imports an npm-style app, as a project would see them
+    let auth = dir.join("site-packages/orm_auth");
+    let billing = dir.join("project/node_modules/orm-billing");
+    std::fs::create_dir_all(&auth).unwrap();
+    std::fs::create_dir_all(&billing).unwrap();
+    std::fs::write(auth.join("__init__.py"), "").unwrap();
+    std::fs::write(auth.join("schema.prisma"), "import \"app:orm-billing\" (prefix: \"b_\")\nmodel User {\n id Int @id\n invoices Invoice[]\n @@query_set(\"UserQueries\")\n}\n").unwrap();
+    std::fs::write(billing.join("package.json"), "{\"name\": \"orm-billing\"}").unwrap();
+    std::fs::write(billing.join("schema.prisma"), "model Invoice {\n id Int @id\n user_id Int\n user User @relation(fields: [user_id], references: [id])\n @@query_set(\"InvoiceQueries\")\n}\n").unwrap();
+    let root = dir.join("project/schema.prisma");
+    std::fs::write(&root, "datasource db {\n provider = \"sqlite\"\n}\nimport \"app:orm-auth\" (prefix: \"auth_\")\nmodel Post {\n id Int @id\n}\n").unwrap();
+    let apps: Apps = [("orm-auth".to_owned(), auth.join("schema.prisma")), ("orm-billing".to_owned(), billing.join("schema.prisma"))].into();
+    let project = compile_project_file_with(&root, &apps).unwrap();
+    let tables: Vec<_> = project.ir.models.iter().map(|m| (m.name.as_str(), m.table.as_str())).collect();
+    assert_eq!(tables, [("Invoice", "auth_b_invoice"), ("User", "auth_user"), ("Post", "post")]);
+    assert!(check(project.ir).is_ok());
+    // the module lookup starts from the resolved schema path, not from the importing project
+    let units = &project.units;
+    assert_eq!(units[1].path, auth.join("schema.prisma").canonicalize().unwrap());
+    let out = dir.join("project");
+    assert_eq!(target(Language::Python, &units[1].path, &out, "queries", "UserQueries").unwrap(), "orm_auth.queries:UserQueries");
+    assert_eq!(target(Language::TypeScript, &units[2].path, &out, "queries", "InvoiceQueries").unwrap(), "orm-billing/queries.js#InvoiceQueries");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_app_import_without_an_installed_app_names_the_package() {
+    let dir = std::env::temp_dir().join(format!("orm-app-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("schema.prisma");
+    std::fs::write(&root, "model A {\n id Int @id\n}\nimport \"app:orm-auth\"\n").unwrap();
+    let error = compile_file(&root).unwrap_err();
+    assert!(error.contains("schema.prisma:4:") && error.contains("app:orm-auth") && error.contains("install the `orm-auth` package"), "{error}");
+    let apps: Apps = [("orm-auth".to_owned(), dir.join("gone.prisma"))].into();
+    assert!(compile_file_with(&root, &apps).unwrap_err().contains("gone.prisma"));
+    std::fs::remove_dir_all(&dir).ok();
+}
