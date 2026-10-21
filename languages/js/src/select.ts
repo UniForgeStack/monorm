@@ -28,6 +28,7 @@ import {
   ParamRef,
   ScalarSubquery,
   and,
+  checkNullRule,
   orderings,
   type Ctes,
   type IR,
@@ -195,7 +196,9 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
     if (!conditions.length) {
       return this as never;
     }
-    return this.with(this.qs, { ...this.state, having: [...this.state.having, and(...conditions)] });
+    const condition = and(...conditions);
+    checkNullRule(condition);
+    return this.with(this.qs, { ...this.state, having: [...this.state.having, condition] });
   }
 
   /** `SELECT DISTINCT`; with columns, Postgres' `DISTINCT ON (...)`: the first row (by

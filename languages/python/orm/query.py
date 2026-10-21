@@ -27,6 +27,8 @@ from .expr import (
     _Ctes,
     and_,
     as_condition,
+    check_null_rule,
+    differs,
     not_,
     or_,
 )
@@ -639,7 +641,9 @@ class QuerySet(Generic[M]):
         """Keep rows matching all ``conditions``."""
         if not conditions:
             return self._clone()
-        return self._clone(_filters=(*self._filters, and_(*conditions)))
+        condition = and_(*conditions)
+        check_null_rule(condition)
+        return self._clone(_filters=(*self._filters, condition))
 
     def exclude(self, *conditions: ConditionLike) -> Self:
         """Drop rows matching all ``conditions``."""
@@ -2278,7 +2282,7 @@ class ManyRelatedSet(QuerySet[M]):
         async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(
             savepoint=False
         ):
-            await self._links().filter(col.not_in(keys)).delete()
+            await self._links().filter(differs(col, keys)).delete()
             if keys:
                 await self._add(keys, extra)
 

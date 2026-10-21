@@ -451,7 +451,7 @@ export abstract class Condition<S extends string = never, P = {}> extends Expres
   /** @internal The nullable columns this condition compares, once each. */
   nullColumns(method: string): Column<unknown, string>[] {
     throw new TypeError(
-      `${method}() applies to one comparison (eq, ne, lt, gt, in, like, between) of a column, not to a combined condition; ` +
+      `${method}() applies to one comparison (eq, ne, lt, gt, in, like, between) of a column, not to ${describe(this)}; ` +
         "call it on the comparison itself, before you combine with and() / or() / not()",
     );
   }
@@ -462,17 +462,24 @@ function nullableColumns(method: string, nodes: readonly Node[]): Column<unknown
   const out = new Map<string, Column<unknown, string>>();
   for (const node of nodes) {
     if (!(node instanceof Column)) {
-      throw new TypeError(`${method}() applies to a plain column, not to ${String(node)}`);
+      throw new TypeError(`${method}() applies to a plain column, not to ${describe(node)}`);
     }
     if (node.path.length) {
       throw new QueryError(`${method}() on ${node.text}: a column reached through a relation is not supported`);
     }
-    if (node.field.nullable || "subPath" in node) out.set(node.text, node);
+    if (node.canBeNull()) out.set(node.text, node);
   }
   if (!out.size) {
-    throw new QueryError(`${method}() on ${nodes.map(String).join(", ")}: the column is NOT NULL, so no row has a NULL to keep or drop`);
+    throw new QueryError(`${method}() on ${nodes.map(describe).join(", ")}: the column is NOT NULL, so no row has a NULL to keep or drop`);
   }
   return [...out.values()];
+}
+
+/** The nullable columns on any side of a comparison; the other sides may be any value. */
+function eitherSide(method: string, owner: Node, nodes: readonly Node[]): Column<unknown, string>[] {
+  const columns = nodes.filter((n) => n instanceof Column);
+  if (!columns.length) throw new TypeError(`${method}() applies to a plain column, not to ${describe(owner)}`);
+  return nullableColumns(method, columns);
 }
 
 /** A query used as a value: one column (`in()`, `asScalar()`). */
@@ -494,7 +501,7 @@ function inValues(item: Expression<unknown, string, unknown>, values: unknown, n
     return new InSelect(item, values as Subquery, neg);
   }
   if (!values.length) {
-    return new Const(neg);
+    return new Const(neg, item);
   }
   return new InList(item, values.map(wrap), neg);
 }
@@ -645,6 +652,11 @@ export class Column<T, S extends string = never, N extends string = string, H ex
       throw new QueryError(`${this.text} belongs to ${this.root.name}, not to a ${ctx.root.name} query; ${hint}`);
     }
     return { t: "col", path: [...this.path], name: this.field.ir };
+  }
+
+  /** @internal Whether the ORM cannot prove the column non-null. */
+  canBeNull(): boolean {
+    return this.field.nullable;
   }
 
   override toString(): string {
@@ -1517,8 +1529,7 @@ class Comparison extends Condition<any, any> {
   }
 
   override nullColumns(method: string): Column<unknown, string>[] {
-    if (!(this.left instanceof Column)) return super.nullColumns(method);
-    return nullableColumns(method, [this.left, this.right].filter((n) => n instanceof Column));
+    return eitherSide(method, this, tested(this));
   }
 }
 
@@ -1583,6 +1594,10 @@ class IsNull extends Condition<any, any> {
   ir(ctx: IRContext): IR {
     return { t: "is_null", item: this.item.ir(ctx), neg: this.neg };
   }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    throw new TypeError(`${method}() does not apply to ${describe(this)}: it is already a NULL test`);
+  }
 }
 
 class Like extends Condition<any, any> {
@@ -1605,13 +1620,23 @@ class Like extends Condition<any, any> {
   }
 }
 
+/** A constant condition. `in([])` and `notIn([])` keep the `column` they test, so `orNull()` and
+ * `andNotNull()` apply to them as to any other `in`. */
 class Const extends Condition<never, {}> {
-  constructor(readonly value: boolean) {
+  constructor(
+    readonly value: boolean,
+    readonly column: Node | undefined = undefined,
+  ) {
     super();
   }
 
   ir(): IR {
     return { t: "const", value: this.value };
+  }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    if (this.column === undefined) return super.nullColumns(method);
+    return nullableColumns(method, [this.column]);
   }
 }
 
@@ -1636,12 +1661,8 @@ class Together extends BoolOp {
   }
 
   override nullColumns(method: string): Column<unknown, string>[] {
-    const nodes: Node[] = [];
-    for (const item of this.items) {
-      if (!(item instanceof Comparison)) return super.nullColumns(method);
-      nodes.push(item.left);
-    }
-    return nullableColumns(method, nodes);
+    if (!this.items.every((item) => item instanceof Comparison)) return super.nullColumns(method);
+    return eitherSide(method, this, tested(this));
   }
 }
 
@@ -1708,7 +1729,98 @@ export function or<const C extends CondArgs>(...conditions: C): Condition<ScopeO
 }
 
 export function not<S extends string, P>(condition: Expression<boolean | null, S, P>): Condition<S, P> {
-  return new Not(asCondition(condition)) as never;
+  const inner = asCondition(condition);
+  checkNullRule(inner, true);
+  return new Not(inner) as never;
+}
+
+const ARITH: Record<string, string> = { add: "+", sub: "-", mul: "*", div: "/", mod: "%", concat: "||" };
+const SYMBOLS: Record<string, string> = { eq: "==", ne: "!=", lt: "<", le: "<=", gt: ">", ge: ">=" };
+
+/** A condition or value as text, for error messages. */
+function describe(node: unknown): string {
+  if (typeof node === "string") return JSON.stringify(node);
+  if (node instanceof Column) return node.text;
+  if (node instanceof Literal) return typeof node.value === "string" ? JSON.stringify(node.value) : String(node.value);
+  if (node instanceof Comparison) return `(${describe(node.left)} ${SYMBOLS[node.op] ?? node.op} ${describe(node.right)})`;
+  if (node instanceof InList) return `${describe(node.item)} ${node.neg ? "NOT IN" : "IN"} (${node.values.map(describe).join(", ")})`;
+  if (node instanceof InSelect) return `${describe(node.item)} ${node.neg ? "NOT IN" : "IN"} (subquery)`;
+  if (node instanceof Like) return `${describe(node.item)} ${node.ci ? "ILIKE" : "LIKE"} ${describe(node.pattern)}`;
+  if (node instanceof IsNull) return `${describe(node.item)} IS ${node.neg ? "NOT " : ""}NULL`;
+  if (node instanceof Const) return node.value ? "TRUE" : "FALSE";
+  if (node instanceof Negated) {
+    const pairs = (node.item as BoolOp).items.filter((i): i is Comparison => i instanceof Comparison);
+    return `(${pairs.map((i) => describe(i.left)).join(", ")}) != (${pairs.map((i) => describe(i.right)).join(", ")})`;
+  }
+  if (node instanceof Not) return `not(${describe(node.item)})`;
+  if (node instanceof BoolOp) return `(${node.items.map(describe).join(node.op === "and" ? " AND " : " OR ")})`;
+  if (node instanceof Func) return `${node.name}(${node.args.map(describe).join(", ")})`;
+  if (node instanceof Arith) return `(${describe(node.left)} ${ARITH[node.op] ?? node.op} ${describe(node.right)})`;
+  if (node instanceof Bound) return describe(node.param);
+  return String(node);
+}
+
+/** The operands a comparison tests, whatever their kind; empty for any other condition. */
+function tested(leaf: Node): Node[] {
+  if (leaf instanceof Comparison) return [leaf.left, leaf.right];
+  if (leaf instanceof InList || leaf instanceof InSelect || leaf instanceof Like) return [leaf.item];
+  if (leaf instanceof Together) return leaf.items.flatMap(tested);
+  if (leaf instanceof Negated) return tested(leaf.item);
+  return [];
+}
+
+function isNegative(leaf: Node): boolean {
+  if (leaf instanceof Comparison) return leaf.op === "ne";
+  return leaf instanceof Negated || ((leaf instanceof InList || leaf instanceof InSelect) && leaf.neg);
+}
+
+/** The nullable plain columns a comparison tests (a column behind a relation is not checked). */
+function strictColumns(leaf: Node): Column<unknown, string>[] {
+  return tested(leaf).filter((n): n is Column<unknown, string> => n instanceof Column && !n.path.length && n.canBeNull());
+}
+
+/**
+ * Throws when a comparison on a nullable plain column has neither `orNull()` nor `andNotNull()`
+ * and either sits under `not()` or is a `ne` / `notIn`. A comparison is handled when a sibling
+ * `IS NULL` in an enclosing `or()`, or a sibling `IS NOT NULL` in an enclosing `and()`, is on its
+ * column: the shape the two methods build, which stays correct under `not()`.
+ */
+export function checkNullRule(condition: Node, negated = false): void {
+  const walk = (node: Node, neg: boolean, handled: ReadonlySet<string>): void => {
+    if (node instanceof Not && !(node instanceof Negated)) return walk(node.item, true, handled);
+    if (node instanceof BoolOp) {
+      const testsNotNull = node.op === "and";
+      const inner = new Set(handled);
+      for (const i of node.items) if (i instanceof IsNull && i.neg === testsNotNull) inner.add(describe(i.item));
+      for (const i of node.items) walk(i, neg, inner);
+      return;
+    }
+    for (const col of strictColumns(node)) {
+      if (handled.has(col.text)) continue;
+      if (neg) {
+        throw new QueryError(
+          `${describe(node)} sits under not() / exclude() and ${col.text} is nullable: add orNull() or andNotNull() to the comparison. ` +
+            "orNull() drops NULL rows under negation, andNotNull() keeps them",
+        );
+      }
+      if (isNegative(node)) {
+        throw new QueryError(
+          `${describe(node)} on the nullable ${col.text} drops NULL rows silently: add orNull() or andNotNull() to the comparison. ` +
+            "orNull() keeps NULL rows, andNotNull() drops them",
+        );
+      }
+    }
+  };
+  walk(condition, negated, new Set());
+}
+
+/**
+ * @internal `column` differs from `value`, or from every item of an array; a NULL row of a
+ * nullable column counts as different, except from `null`.
+ */
+export function differs(column: Column<unknown, string>, value: unknown): Condition<string, {}> {
+  const condition = (Array.isArray(value) ? column.notIn(value as never) : column.ne(value as never)) as Condition<string, {}>;
+  return column.canBeNull() && !(condition instanceof IsNull) ? (condition.orNull() as Condition<string, {}>) : condition;
 }
 
 /** `Decimal` instances are values, not expressions; re-exported for `instanceof`. */

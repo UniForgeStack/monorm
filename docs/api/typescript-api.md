@@ -219,7 +219,18 @@ Call the method on one comparison (`eq ne lt gt in like between`), before `.not(
 A composite key gets one `IS NULL` per key column.
 A combined condition, `.not()` of a condition or a computed value throws `TypeError`.
 A NOT NULL column and a column reached through a relation throw `QueryError`.
-`exclude()` is unchanged.
+
+**The strict null rule.**
+A comparison on a nullable plain column needs `.orNull()` or `.andNotNull()` in two cases:
+under `not()`, `.not()` or `exclude()`, and as `ne` or `notIn` in any `filter()`, `get()` or `having()`.
+Without one the call throws `QueryError` when the query is built.
+`orNull()` drops NULL rows under negation and `andNotNull()` keeps them (it is the reverse for a positive `ne` or `notIn`).
+For example, `exclude(x.eq(1).orNull())` or `exclude(x.eq(1).andNotNull())`.
+The rule applies only when the column itself is nullable.
+A NOT NULL column, an `isNull()` test, a default filter and a column reached through a relation are not checked.
+A sibling test handles a comparison only in the shape the methods build: an `or` with `IS NULL`, or an `and` with `IS NOT NULL`.
+`not()` checks when it runs: `not(x.gt(1n)).or(x.isNull())` throws, so write `x.gt(1n).orNull().not()` or `not(x.gt(1n).or(x.isNull()))`.
+`exclude()` stays and follows the rule of `not()`.
 
 The types check the following:
 

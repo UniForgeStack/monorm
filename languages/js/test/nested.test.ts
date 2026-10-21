@@ -119,14 +119,14 @@ for (const kind of ["postgres", "sqlite"] as const) {
       assert.deepEqual(await pks(S.address.opened.eq(WHEN)), [1, 2, 3]);
       assert.deepEqual(await pks(S.address.opened.gt(WHEN)), []);
       assert.deepEqual(await pks(S.address.opened.in([WHEN])), [1, 2, 3]);
-      assert.deepEqual(await pks(S.address.opened.notIn([WHEN])), []);
+      assert.deepEqual(await pks(S.address.opened.notIn([WHEN]).andNotNull()), []);
       assert.deepEqual(await pks(S.address.isNull()), [4]);
       assert.deepEqual(await pks(S.address.isNotNull()), [1, 2, 3]);
       assert.deepEqual(await pks(S.address.geo.isNull()), [3, 4]);
       assert.deepEqual(await pks(S.address.eq(address(w))), [1]);
       assert.deepEqual(await pks(S.address.geo.eq({ lat: 1.5 })), [1]);
       assert.deepEqual(await pks(S.address.geo.eq(new w.Geo({ lat: 9.0, lng: 2.5 }))), [2]);
-      assert.deepEqual(await pks(S.address.ne(address(w))), [2, 3]);
+      assert.deepEqual(await pks(S.address.ne(address(w)).andNotNull()), [2, 3]);
     });
 
     scenario("order by a subfield and never by a whole field", async (w, S, q) => {

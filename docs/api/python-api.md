@@ -245,7 +245,18 @@ Call the method on one comparison (`==`, `!=`, `<`, `>`, `in_`, `like`, `between
 A composite key gets one `IS NULL` per key column.
 A combined condition, `~cond` or a computed value raises `TypeError`.
 A NOT NULL column and a column reached through a relation raise `QueryError`.
-`exclude()` is unchanged.
+
+**The strict null rule.**
+A comparison on a nullable plain column needs `.or_null()` or `.and_not_null()` in two cases:
+under `~`, `not_()` or `exclude()`, and as `!=` or `not_in()` in any `filter()`, `get()` or `having()`.
+Without one the call raises `QueryError` when the query is built.
+`or_null()` drops NULL rows under negation and `and_not_null()` keeps them (it is the reverse for a positive `!=` or `not_in()`).
+For example, `exclude((x == 1).or_null())` or `exclude((x == 1).and_not_null())`.
+The rule applies only when the column itself is nullable.
+A NOT NULL column, an `is_null()` test, a default filter and a column reached through a relation are not checked.
+A sibling test handles a comparison only in the shape the methods build: an `|` with `IS NULL`, or an `&` with `IS NOT NULL`.
+`~` checks when it runs: `~(x > 1) | x.is_null()` raises, so write `~(x > 1).or_null()` or `~((x > 1) | x.is_null())`.
+`exclude()` stays and follows the rule of `not_()`.
 
 ### Relation filters (Django semantics, no duplicate rows)
 

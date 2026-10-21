@@ -16,7 +16,7 @@ from . import _capabilities, _extensions, _native
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
 from collections.abc import Iterable, Sequence
 
-from .expr import ColumnRef, Condition, RelationPath, and_
+from .expr import ColumnRef, Condition, RelationPath, and_, differs
 from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, ManyToMany, Relation, String, key_items
 from .nested import NestedGroup, NestedJson, NestedType, _Access, build_types, leaf_names
 
@@ -723,7 +723,7 @@ class Model:
     async def _raise_if_changed(self) -> None:
         """No row matched a guarded write: raise when the row has other guard values."""
         for name in self._meta.guards:
-            changed = self.qs().filter(ColumnRef(type(self), (), self._meta.fields[name]) != getattr(self, name))
+            changed = self.qs().filter(differs(ColumnRef(type(self), (), self._meta.fields[name]), getattr(self, name)))
             if await changed.exists():
                 raise VersionConflict(f"{type(self).__name__} {self.pk!r} was changed since it was loaded")
 

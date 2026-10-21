@@ -25,6 +25,8 @@ import {
   Slot,
   SlotParams,
   and,
+  checkNullRule,
+  differs,
   exists,
   not,
   or,
@@ -806,7 +808,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (!conditions.length) {
       return this as never;
     }
-    return this.clone({ filters: [...this.state.filters, and(...conditions)] }) as never;
+    const condition = and(...conditions);
+    checkNullRule(condition);
+    return this.clone({ filters: [...this.state.filters, condition] }) as never;
   }
 
   /**
@@ -1382,6 +1386,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     ...conditions: C
   ): OneRowQuery<RequiredResult<this, R>, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>> {
     this.noCuts("get()");
+    if (conditions.length) checkNullRule(and(...(conditions as unknown as never[])));
     return new OneRowQuery(() => (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null), true);
   }
 
@@ -2473,7 +2478,8 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     // Uploads run before the transaction opens, so none holds it; one call stores one value in every row.
     if (keys.length) extra = await prepareValues(this.through, extra);
     await resolve(this.state.db ?? (this.instance[DB] as Database | undefined)).transaction(async () => {
-      await this.links().filter(this.targetColumn().notIn(keys as never) as never).delete();
+      const target = this.targetColumn();
+      await this.links().filter(differs(target, keys) as never).delete();
       if (keys.length) await this.addLinks(keys, extra);
     }, { savepoint: false });
   }

@@ -31,7 +31,19 @@ from .inspection import QueryInspection, _inspect
 from ._cache import cached
 from .errors import DoesNotExist, MultipleObjectsReturned, QueryError
 from .nested import NestedRef
-from .expr import ColumnRef, ConditionLike, Expression, Func, IRContext, Labeled, Ordering, ScalarSubquery, _Ctes, and_
+from .expr import (
+    ColumnRef,
+    ConditionLike,
+    Expression,
+    Func,
+    IRContext,
+    Labeled,
+    Ordering,
+    ScalarSubquery,
+    _Ctes,
+    and_,
+    check_null_rule,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -203,7 +215,9 @@ class Select(Generic[Unpack[Ts]]):
         """Keep groups matching all ``conditions``: ``having(func.count() > 2)``."""
         if not conditions:
             return self._clone()
-        return self._clone(_having=(*self._having, and_(*conditions)))
+        condition = and_(*conditions)
+        check_null_rule(condition)
+        return self._clone(_having=(*self._having, condition))
 
     def distinct(self, *on: ColumnRef[Any]) -> Self:
         """``SELECT DISTINCT``; with columns, Postgres' ``DISTINCT ON (...)``: the first

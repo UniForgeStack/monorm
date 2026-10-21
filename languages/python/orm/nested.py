@@ -687,6 +687,20 @@ class NestedRef(ColumnRef[Any]):
         """Whether this is a nested value, not a scalar."""
         return not self._sub or not _is_leaf(self._group.nt, self._sub)
 
+    @property
+    def _nullable(self) -> bool:
+        """Whether the declaration lets the value be NULL: the group, or any subfield on the path."""
+        if self._group.nullable:
+            return True
+        node = self._group.nt
+        for i, k in enumerate(self._sub):
+            sub = node.by_name[k]
+            if sub.nullable or (sub.list and i < len(self._sub) - 1):
+                return True
+            if sub.nested is not None and i < len(self._sub) - 1:
+                node = node.inner(sub)
+        return False
+
     def _type_here(self) -> NestedType:
         node = self._group.nt.at(self._sub)
         return node

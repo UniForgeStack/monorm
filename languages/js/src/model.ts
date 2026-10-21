@@ -10,7 +10,7 @@
 import { checkRequires } from "./adapters.js";
 import { isAbsent } from "./reference-absence.js";
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
-import { Column, PATH, RelationPath, and, type Condition, type PathState, type Source } from "./expr.js";
+import { Column, PATH, RelationPath, and, differs, type Condition, type PathState, type Source } from "./expr.js";
 import { NestedColumn, buildTypes, decodeJsonCell, type IRNested, type IRType, type NestedInfo, type NestedType } from "./nested.js";
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
@@ -643,7 +643,8 @@ function guardBound(o: Row): BoundQuerySet<ModelSpec, Row> {
 async function throwIfChanged(o: Row): Promise<void> {
   const meta = metaOf(o);
   for (const f of meta.guards) {
-    const changed = rowBound(o).filter(meta.column(f).ne(loadedVersion(o, f) as never) as never);
+    const column = meta.column(f);
+    const changed = rowBound(o).filter(differs(column, loadedVersion(o, f)) as never);
     if (await changed.exists()) throw new VersionConflict(`${meta.name} ${show(o["pk"])} was changed since it was loaded`);
   }
 }

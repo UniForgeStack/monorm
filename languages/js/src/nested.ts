@@ -655,6 +655,19 @@ export class NestedColumn extends Column<any, string, string, any> {
     return !this.subPath.length || this.info.type.subAt(this.subPath).nested !== undefined;
   }
 
+  /** Whether the declaration lets the value be NULL: the group, or any subfield on the path. */
+  override canBeNull(): boolean {
+    if (this.info.nullable) return true;
+    let node = this.info.type;
+    const last = this.subPath.length - 1;
+    for (const [i, k] of this.subPath.entries()) {
+      const sub = node.byName.get(k)!;
+      if (sub.nullable || (sub.list && i < last)) return true;
+      if (sub.nested !== undefined && i < last) node = node.inner(sub);
+    }
+    return false;
+  }
+
   /** The type of the value here (for a scalar: the type that holds it). */
   get typeHere(): NestedType {
     return this.whole ? this.info.type.at(this.subPath) : this.info.type.at(this.subPath.slice(0, -1));

@@ -134,7 +134,7 @@ async def test_filter_by_subfield_whole_value_and_null(shop):
     assert await pks(S.address.opened == WHEN) == [1, 2, 3]
     assert await pks(S.address.opened > WHEN) == []
     assert await pks(S.address.opened.in_([WHEN])) == [1, 2, 3]
-    assert await pks(S.address.opened.not_in([WHEN])) == []
+    assert await pks(S.address.opened.not_in([WHEN]).and_not_null()) == []
     assert await pks(S.address == None) == [4]  # noqa: E711
     assert await pks(S.address != None) == [1, 2, 3]  # noqa: E711
     assert await pks(S.address.geo == None) == [3, 4]  # noqa: E711  # a null field has a null middle level too
@@ -147,7 +147,7 @@ async def test_filter_by_subfield_whole_value_and_null(shop):
 async def test_ne_on_a_whole_field_is_three_valued(shop):
     q, S, classes, _ = shop
     await seed(shop)
-    got = [s.id for s in await q.filter(S.address != address(classes)).order_by(S.id)]
+    got = [s.id for s in await q.filter((S.address != address(classes)).and_not_null()).order_by(S.id)]
     assert got == [2, 3]  # the null row matches neither == nor !=
 
 
