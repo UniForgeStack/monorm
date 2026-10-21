@@ -237,6 +237,16 @@ A boolean column is a condition by itself: `filter(Post.published)`. Using Pytho
 `and` / `or` / `not` on expressions raises `TypeError` instead of silently doing the
 wrong thing.
 
+A comparison of a nullable column is false for a NULL row, and so is its negation.
+`.or_null()` adds `OR column IS NULL` and `.and_not_null()` adds `AND column IS NOT NULL`:
+`(Comment.author_id > 20).or_null()` keeps the NULL rows.
+Call the method on one comparison (`==`, `!=`, `<`, `>`, `in_`, `like`, `between`), before `~`:
+`~(x > 20).or_null()` is `NOT (x > 20 OR x IS NULL)`.
+A composite key gets one `IS NULL` per key column.
+A combined condition, `~cond` or a computed value raises `TypeError`.
+A NOT NULL column and a column reached through a relation raise `QueryError`.
+`exclude()` is unchanged.
+
 ### Relation filters (Django semantics, no duplicate rows)
 
 | Query | Meaning | SQL |

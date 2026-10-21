@@ -242,7 +242,7 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
     low: Operand<NonNullable<T>, S2, P2>,
     high: Operand<NonNullable<T>, S3, P3>,
   ): Condition<S | S2 | S3, P & P2 & P3> {
-    return this.gte(low as never).and(this.lte(high as never)) as never;
+    return new Together([this.gte(low as never), this.lte(high as never)]) as never;
   }
 
   // String matching ------------------------------------------------------------------------
@@ -433,6 +433,45 @@ export abstract class Condition<S extends string = never, P = {}> extends Expres
   not(): Condition<S, P> {
     return not(this);
   }
+
+  /** `(condition OR column IS NULL)`: a NULL row passes. Call it on one comparison (`eq`,
+   * `ne`, `lt`, `gt`, `in`, `like`, `between`) of a nullable column, inside `not()`:
+   * `not(x.gt(20).orNull())` is `NOT (x > 20 OR x IS NULL)`. */
+  orNull(): Condition<S, P> {
+    return or(this, ...this.nullColumns("orNull").map((c) => new IsNull(c, false))) as never;
+  }
+
+  /** `(condition AND column IS NOT NULL)`: a NULL row fails. Inside `not()` it keeps NULL
+   * rows: `not(x.gt(20).andNotNull())` is `NOT (x > 20 AND x IS NOT NULL)`. */
+  andNotNull(): Condition<S, P> {
+    return and(this, ...this.nullColumns("andNotNull").map((c) => new IsNull(c, true))) as never;
+  }
+
+  /** @internal The nullable columns this condition compares, once each. */
+  nullColumns(method: string): Column<unknown, string>[] {
+    throw new TypeError(
+      `${method}() applies to one comparison (eq, ne, lt, gt, in, like, between) of a column, not to a combined condition; ` +
+        "call it on the comparison itself, before you combine with and() / or() / not()",
+    );
+  }
+}
+
+/** The nullable columns among `nodes`, once each; throws when none is nullable. */
+function nullableColumns(method: string, nodes: readonly Node[]): Column<unknown, string>[] {
+  const out = new Map<string, Column<unknown, string>>();
+  for (const node of nodes) {
+    if (!(node instanceof Column)) {
+      throw new TypeError(`${method}() applies to a plain column, not to ${String(node)}`);
+    }
+    if (node.path.length) {
+      throw new QueryError(`${method}() on ${node.text}: a column reached through a relation is not supported`);
+    }
+    if (node.field.nullable || "subPath" in node) out.set(node.text, node);
+  }
+  if (!out.size) {
+    throw new QueryError(`${method}() on ${nodes.map(String).join(", ")}: the column is NOT NULL, so no row has a NULL to keep or drop`);
+  }
+  return [...out.values()];
 }
 
 /** A query used as a value: one column (`in()`, `asScalar()`). */
@@ -1410,8 +1449,8 @@ function compareRelation(path: RelationPath<ModelSpec, string, readonly Hop[]>, 
     throw new TypeError(`${String(path)} can't compare with an instance whose key is ${String(missing)}`);
   }
   if (columns.length === 1) return new Comparison(neg ? "ne" : "eq", columns[0]!, wrap(key[0]));
-  const match = and(...columns.map((c, i) => new Comparison("eq", c, wrap(key[i]))));
-  return neg ? not(match) : match;
+  const match = new Together(columns.map((c, i) => new Comparison("eq", c, wrap(key[i]))));
+  return neg ? new Negated(match) : match;
 }
 
 /** Where NULLs go in an ordering. */
@@ -1460,6 +1499,11 @@ class Comparison extends Condition<any, any> {
   ir(ctx: IRContext): IR {
     return { t: "cmp", op: this.op, l: this.left.ir(ctx), r: this.right.ir(ctx) };
   }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    if (!(this.left instanceof Column)) return super.nullColumns(method);
+    return nullableColumns(method, [this.left, this.right].filter((n) => n instanceof Column));
+  }
 }
 
 class Arith extends Expression<any, any, any> {
@@ -1488,6 +1532,10 @@ class InSelect extends Condition<any, any> {
   ir(ctx: IRContext): IR {
     return { t: "in_select", item: this.item.ir(ctx), select: this.query.subqueryIr(ctx, "in()"), neg: this.neg };
   }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    return nullableColumns(method, [this.item]);
+  }
 }
 
 class InList extends Condition<any, any> {
@@ -1501,6 +1549,10 @@ class InList extends Condition<any, any> {
 
   ir(ctx: IRContext): IR {
     return { t: "in", item: this.item.ir(ctx), values: this.values.map((v) => v.ir(ctx)), neg: this.neg };
+  }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    return nullableColumns(method, [this.item]);
   }
 }
 
@@ -1531,6 +1583,10 @@ class Like extends Condition<any, any> {
     const pattern = p instanceof Node ? p.ir(ctx) : p instanceof ParamRef ? p.slot(ctx.params) : ctx.param(p);
     return { t: "like", item: this.item.ir(ctx), pattern, ci: this.ci, neg: false };
   }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    return nullableColumns(method, [this.item]);
+  }
 }
 
 class Const extends Condition<never, {}> {
@@ -1556,6 +1612,23 @@ class BoolOp extends Condition<any, any> {
   }
 }
 
+/** An AND that is one comparison: `between` and a composite key match. `orNull()` adds one
+ * `IS NULL` per nullable column it compares. */
+class Together extends BoolOp {
+  constructor(items: Condition<any, any>[]) {
+    super("and", items);
+  }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    const nodes: Node[] = [];
+    for (const item of this.items) {
+      if (!(item instanceof Comparison)) return super.nullColumns(method);
+      nodes.push(item.left);
+    }
+    return nullableColumns(method, nodes);
+  }
+}
+
 class Not extends Condition<any, any> {
   constructor(readonly item: Node) {
     super();
@@ -1563,6 +1636,17 @@ class Not extends Condition<any, any> {
 
   ir(ctx: IRContext): IR {
     return { t: "not", item: this.item.ir(ctx) };
+  }
+}
+
+/** The `ne` of a composite key: one comparison, so `orNull()` applies to it. */
+class Negated extends Not {
+  constructor(override readonly item: Condition<any, any>) {
+    super(item);
+  }
+
+  override nullColumns(method: string): Column<unknown, string>[] {
+    return this.item.nullColumns(method);
   }
 }
 

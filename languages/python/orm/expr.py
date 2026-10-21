@@ -220,7 +220,7 @@ class Expression(Node, Generic[T]):
         return IsNull(self, neg=True)
 
     def between(self, low: T | Expression[T], high: T | Expression[T]) -> Condition:
-        return (self >= low) & (self <= high)
+        return Together([self >= low, self <= high])
 
     # String matching ---------------------------------------------------------------------
 
@@ -1278,8 +1278,8 @@ class RelationPath(Generic[M]):
             raise ValueError(f"{self!r} can't compare with {other!r}: its {', '.join(rel.to_fields)} is None")
         if len(columns) == 1:
             return Comparison("ne" if neg else "eq", columns[0], _wrap(keys[0]))
-        match = and_(*(Comparison("eq", c, _wrap(k)) for c, k in zip(columns, keys, strict=True)))
-        return not_(match) if neg else match
+        match = Together([Comparison("eq", c, _wrap(k)) for c, k in zip(columns, keys, strict=True)])
+        return Negated(match) if neg else match
 
     __bool__ = _bool_misuse
 
@@ -1337,6 +1337,42 @@ class Condition(Node):
         """The condition as a named boolean column in ``select()``."""
         return Labeled(self, name)
 
+    def or_null(self) -> Condition:
+        """``(condition OR column IS NULL)``: a NULL row passes. Apply it to one comparison
+        (``==``, ``!=``, ``<``, ``>``, ``in_``, ``like``, ``between``) of a nullable column,
+        before ``~``: ``~(x > 20).or_null()`` is ``NOT (x > 20 OR x IS NULL)``."""
+        return or_(self, *(IsNull(c, neg=False) for c in self._null_columns("or_null")))
+
+    def and_not_null(self) -> Condition:
+        """``(condition AND column IS NOT NULL)``: a NULL row fails. Under ``~`` it keeps NULL
+        rows: ``~(x > 20).and_not_null()`` is ``NOT (x > 20 AND x IS NOT NULL)``."""
+        return and_(self, *(IsNull(c, neg=True) for c in self._null_columns("and_not_null")))
+
+    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+        raise TypeError(
+            f"{method}() applies to one comparison (==, !=, <, >, in_, like, between) of a column, "
+            f"not to {self!r}; call it on the comparison itself, before you combine with & | ~"
+        )
+
+
+def _nullable_columns(method: str, nodes: list[Node]) -> list[ColumnRef[Any]]:
+    """The nullable columns among ``nodes``, once each; raises when none is nullable."""
+    from .nested import NestedRef
+
+    out: dict[str, ColumnRef[Any]] = {}
+    for node in nodes:
+        if not isinstance(node, ColumnRef):
+            raise TypeError(f"{method}() applies to a plain column, not to {node!r}")
+        if node._path:
+            raise QueryError(f"{method}() on {node!r}: a column reached through a relation is not supported")
+        if node._field.nullable or isinstance(node, NestedRef):
+            out.setdefault(repr(node), node)
+    if not out:
+        raise QueryError(
+            f"{method}() on {', '.join(map(repr, nodes))}: the column is NOT NULL, so no row has a NULL to keep or drop"
+        )
+    return list(out.values())
+
 
 class Comparison(Condition):
     __slots__ = ("op", "left", "right")
@@ -1348,6 +1384,11 @@ class Comparison(Condition):
 
     def _ir(self, ctx: IRContext) -> IR:
         return {"t": "cmp", "op": self.op, "l": self.left._ir(ctx), "r": self.right._ir(ctx)}
+
+    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+        if not isinstance(self.left, ColumnRef):
+            return super()._null_columns(method)
+        return _nullable_columns(method, [n for n in (self.left, self.right) if isinstance(n, ColumnRef)])
 
     def __repr__(self) -> str:
         sym = {"eq": "==", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">="}.get(self.op, self.op)
@@ -1385,6 +1426,9 @@ class InSelect(Condition):
             "select": self.select._subquery_ir(ctx, "in_()"),
             "neg": self.neg,
         }
+
+    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+        return _nullable_columns(method, [self.item])
 
     def __repr__(self) -> str:
         return f"{self.item!r} {'NOT IN' if self.neg else 'IN'} ({self.select!r})"
@@ -1424,6 +1468,9 @@ class In(Condition):
             "neg": self.neg,
         }
 
+    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+        return _nullable_columns(method, [self.item])
+
 
 class IsNull(Condition):
     __slots__ = ("item", "neg")
@@ -1454,6 +1501,9 @@ class Like(Condition):
             "neg": self.neg,
         }
 
+    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+        return _nullable_columns(method, [self.item])
+
 
 class Const(Condition):
     __slots__ = ("value",)
@@ -1480,6 +1530,25 @@ class BoolOp(Condition):
         return "(" + sym.join(map(repr, self.items)) + ")"
 
 
+class Together(BoolOp):
+    """An AND that is one comparison: ``between`` and a composite key match. ``or_null()`` adds
+    one ``IS NULL`` per nullable column it compares."""
+
+    __slots__ = ()
+
+    def __init__(self, items: list[Condition]) -> None:
+        super().__init__("and", items)
+
+    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+        nodes: list[Node] = []
+        for item in self.items:
+            if isinstance(item, Comparison):
+                nodes.append(item.left)
+            else:
+                return super()._null_columns(method)
+        return _nullable_columns(method, nodes)
+
+
 class Not(Condition):
     __slots__ = ("item",)
 
@@ -1491,6 +1560,15 @@ class Not(Condition):
 
     def __repr__(self) -> str:
         return f"~{self.item!r}"
+
+
+class Negated(Not):
+    """The ``!=`` of a composite key: one comparison, so ``or_null()`` applies to it."""
+
+    __slots__ = ()
+
+    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+        return self.item._null_columns(method)
 
 
 ConditionLike = Union[Condition, Expression[bool]]

@@ -210,6 +210,16 @@ model is a type error and a `TypeError`. Conditions combine with `and()`,
 `or()`, `not()`, or the methods of the same names. A boolean column is a condition by
 itself (`filter(Post.published)`).
 
+A comparison of a nullable column is false for a NULL row, and so is its negation.
+`.orNull()` adds `OR column IS NULL` and `.andNotNull()` adds `AND column IS NOT NULL`:
+`Comment.authorId.gt(20n).orNull()` keeps the NULL rows.
+Call the method on one comparison (`eq ne lt gt in like between`), before `.not()`:
+`x.gt(20).orNull().not()` is `NOT (x > 20 OR x IS NULL)`.
+A composite key gets one `IS NULL` per key column.
+A combined condition, `.not()` of a condition or a computed value throws `TypeError`.
+A NOT NULL column and a column reached through a relation throw `QueryError`.
+`exclude()` is unchanged.
+
 The types check the following:
 
 * A condition reads only the query's model: `Post.objects.filter(User.email.eq("x"))`
