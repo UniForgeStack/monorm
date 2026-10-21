@@ -732,7 +732,7 @@ mod tests {
     use crate::migrate::model::{Column, PrimaryKey};
 
     fn col(name: &str, ty: &str) -> Column {
-        Column { name: name.into(), ty: ty.into(), nullable: false, default: None, identity: false, comment: None }
+        Column { name: name.into(), ty: ty.into(), nullable: false, default: None, identity: false, comment: None, nested: Default::default() }
     }
 
     #[test]

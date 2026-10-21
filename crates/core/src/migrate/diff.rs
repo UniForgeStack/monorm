@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::model::{
     Check, Column, DbSchema, EnumType, Exclusion, Extension, ForeignKey, Function, Index, PrimaryKey, Renames, Table,
-    Trigger, Unique,
+    Trigger, Unique, ShapeEntry,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,6 +86,9 @@ pub enum Op {
     AddColumn { table: String, column: Column },
     /// `UPDATE <table> SET <column> = <value> WHERE <one of the others> IS NOT NULL`.
     BackfillColumn { table: String, column: String, value: String, others: Vec<String> },
+    /// Sets `path` of the JSON object in `column` to `value` in each row where its parent object
+    /// exists and the key is missing: a subfield of a `json` nested type that rows lack.
+    BackfillJson { table: String, column: String, path: Vec<String>, value: serde_json::Value },
     DropColumn { table: String, column: String },
     AlterColumnType { table: String, column: String, from: String, to: String },
     SetNotNull { table: String, column: String },
@@ -343,6 +346,63 @@ fn rename_partition_column(sql: &str, from: &str, to: &str) -> String {
         } else { out.push(c); }
     }
     out
+}
+
+/// The default a new subfield (and, for a group, its required subfields) gives a row that lacks it.
+fn default_fill(shape: &[ShapeEntry], e: &ShapeEntry, at: &str) -> Result<Option<serde_json::Value>, String> {
+    if e.group {
+        let mut object = serde_json::Map::new();
+        for child in shape.iter().filter(|c| c.path.len() == e.path.len() + 1 && c.path.starts_with(&e.path)) {
+            if let Some(v) = default_fill(shape, child, at)? {
+                object.insert(child.path[child.path.len() - 1].clone(), v);
+            }
+        }
+        return Ok(Some(serde_json::Value::Object(object)));
+    }
+    match (&e.default, e.nullable) {
+        (Some(v), _) => Ok(Some(v.clone())),
+        (None, true) => Ok(None),
+        (None, false) => Err(format!("{at}.{}: a required subfield added to a json field needs a @default, to fill the rows that exist; add one or make it nullable", e.path.join("."))),
+    }
+}
+
+/// The data fills for a `json` nested type that gained a required subfield. Rows that
+/// lack the key, or hold a JSON `null` there, get the `@default`. A snapshot without the old
+/// shape proves no key new, so it fills every required subfield that has a `@default`.
+pub fn json_backfills(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
+    let mut ops = vec![];
+    for n in &new.tables {
+        let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
+        let Some(o) = old.tables.iter().find(|o| o.name == n.name || &o.name == previous) else { continue };
+        for nc in &n.columns {
+            let Some(shape) = &nc.nested.0 else { continue };
+            let Some(oc) = o.column(renames.renamed_column(n, o, &nc.name).unwrap_or(&nc.name)) else { continue };
+            let before = oc.nested.0.as_ref();
+            let at = format!("{}.{}", n.name, nc.name);
+            for e in shape.shape.iter().filter(|e| !e.nullable) {
+                let was = before.and_then(|b| b.shape.iter().find(|b| b.path == e.path));
+                if was.is_some_and(|b| !b.nullable) {
+                    continue;
+                }
+                // an entry the old shape does not prove new (no shape, or no parent entry) gets only a guarded fill
+                let proven = before.is_some_and(|b| e.path.len() == 1 || b.shape.iter().any(|p| p.path == e.path[..e.path.len() - 1]));
+                let value = match proven {
+                    true => {
+                        let ancestors = (1..e.path.len()).any(|k| shape.shape.iter().any(|a| a.path == e.path[..k] && a.list));
+                        if shape.list || ancestors {
+                            return Err(format!("{at}.{}: a required subfield added inside a list can't be filled by a migration; make it nullable, or update the rows by hand", e.path.join(".")));
+                        }
+                        default_fill(&shape.shape, e, &at)?
+                    }
+                    false => default_fill(&shape.shape, e, &at).ok().flatten(),
+                };
+                if let Some(value) = value {
+                    ops.push(Op::BackfillJson { table: n.name.clone(), column: nc.name.clone(), path: e.path.clone(), value });
+                }
+            }
+        }
+    }
+    Ok(ops)
 }
 
 /// Operations turning `old` into `new`. `renames` maps new names to old ones.

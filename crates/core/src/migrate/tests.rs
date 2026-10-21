@@ -431,3 +431,105 @@ fn a_defaulted_leaf_added_under_a_nullable_group_fills_only_present_rows() {
         }
     }
 }
+
+#[test]
+fn a_json_link_is_stored_in_the_snapshot_but_never_compared() {
+    let old: model::Column = serde_json::from_value(json!({"name": "address", "type": "jsonb"})).unwrap();
+    assert!(old.nested.0.is_none(), "a snapshot without a link still loads");
+    assert!(!serde_json::to_string(&old).unwrap().contains("nested"));
+    let linked: model::Column = serde_json::from_value(json!({
+        "name": "address", "type": "jsonb",
+        "nested": {"field": "address", "shape": [{"path": ["city"]}, {"path": ["geo"], "group": true, "nullable": true}]}
+    })).unwrap();
+    assert_eq!(linked.nested.0.as_ref().unwrap().shape.len(), 2);
+    assert_eq!(old, linked);
+    assert_eq!(serde_json::from_str::<model::Column>(&serde_json::to_string(&linked).unwrap()).unwrap().nested.0.unwrap().shape[1].path, ["geo"]);
+}
+
+fn json_source(dialect: &str, types: &str) -> Schema {
+    let src = format!("datasource db {{\n  provider = \"{dialect}\"\n}}\n{types}");
+    crate::dsl::check(crate::dsl::compile(&src, None).unwrap()).unwrap().1
+}
+
+fn stored(snapshot: &DbSchema) -> DbSchema {
+    parse_snapshot(&serde_json::to_string(snapshot).unwrap()).unwrap()
+}
+
+const DIALECTS: [&str; 2] = ["postgresql", "sqlite"];
+
+#[test]
+fn a_json_fill_covers_a_key_that_holds_a_json_null() {
+    let types = |zip: &str| format!("type A {{\n  city String\n  zip {zip}\n}}\n\nmodel S {{\n  id Int @id\n  a A @storage(json)\n}}\n");
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types("String?")), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&json_source(dialect, &types("String @default(\"z\")")), &p1.snapshot).unwrap();
+        let all = sql(&p2.up).join("\n");
+        let guard = if dialect == "sqlite" { "COALESCE(json_type(\"a\", '$.\"zip\"'), 'null') = 'null'" } else { "COALESCE(jsonb_typeof((\"a\") -> 'zip'), 'null') = 'null'" };
+        assert!(all.contains(guard), "{dialect}: {all}");
+    }
+}
+
+#[test]
+fn a_snapshot_without_a_shape_fills_defaults_and_demands_none() {
+    let types = |extra: &str| format!("type A {{\n  city String\n{extra}}}\n\nmodel S {{\n  id Int @id\n  a A{} @storage(json)\n}}\n", if extra.contains("[]") { "[]" } else { "" });
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types("")), &DbSchema::default()).unwrap();
+        let mut old = stored(&p1.snapshot);
+        for c in old.tables.iter_mut().flat_map(|t| t.columns.iter_mut()) {
+            c.nested = Default::default();
+        }
+        let extra = "  zip String @default(\"z\")\n  note String\n";
+        let all = sql(&super::plan(&json_source(dialect, &types(extra)), &old).unwrap().up).join("\n");
+        assert!(all.contains("zip") && !all.contains("note"), "{dialect}: {all}");
+        // a list of the type: nothing can prove the key new, so no error
+        let list = sql(&super::plan(&json_source(dialect, &types("  zip String @default(\"z\")\n  note String\n  more String[]\n")), &old).unwrap().up).join("\n");
+        assert!(list.contains("zip"), "{dialect}: {list}");
+    }
+}
+
+#[test]
+fn a_subfield_under_a_group_the_snapshot_lacks_is_still_filled() {
+    let types = |g: &str| format!("type G {{\n  lat Float\n{g}}}\n\ntype A {{\n  city String\n  g G?\n}}\n\nmodel S {{\n  id Int @id\n  a A @storage(json)\n}}\n");
+    let without_g = |dialect| json_source(dialect, "type G {\n  lat Float\n}\n\ntype A {\n  city String\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n");
+    for dialect in DIALECTS {
+        // `g` was added without a migration (a nullable key changes no database object), so the snapshot lacks it
+        let stale = super::plan(&without_g(dialect), &DbSchema::default()).unwrap().snapshot;
+        let all = sql(&super::plan(&json_source(dialect, &types("  alt Float @default(0)\n")), &stale).unwrap().up).join("\n");
+        assert!(all.contains("alt"), "{dialect}: {all}");
+    }
+}
+
+#[test]
+fn a_required_subfield_of_a_top_level_list_is_filled() {
+    let types = |extra: &str| format!("type A {{\n  city String\n{extra}}}\n\nmodel S {{\n  id Int @id\n  a A @storage(json)\n}}\n");
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types("")), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&json_source(dialect, &types("  tags String[] @default([])\n")), &p1.snapshot).unwrap();
+        let all = sql(&p2.up).join("\n");
+        assert!(all.contains("tags") && all.contains("'[]'"), "{dialect}: {all}");
+    }
+}
+
+#[test]
+fn a_json_fill_stores_a_default_the_way_the_writers_do() {
+    let src = "type A {\n  city String\n  price Decimal @default(1.5)\n  big BigInt @default(9007199254740993)\n  at DateTime @default(\"2026-01-02T03:04:05Z\")\n  n Int @default(3)\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n";
+    let snap = super::plan(&json_source("postgresql", src), &DbSchema::default()).unwrap().snapshot;
+    let shape = &snap.tables[0].column("a").unwrap().nested.0.as_ref().unwrap().shape;
+    let default = |name: &str| shape.iter().find(|e| e.path == [name]).unwrap().default.clone().unwrap();
+    assert_eq!(default("price"), json!("1.5"));
+    assert_eq!(default("big"), json!("9007199254740993"));
+    assert_eq!(default("at"), json!("2026-01-02T03:04:05.000000Z"));
+    assert_eq!(default("n"), json!(3));
+}
+
+#[test]
+fn a_stored_snapshot_keeps_the_fill_a_downgrade_needs() {
+    let types = |zip: &str| format!("type A {{\n  city String\n{zip}}}\n\nmodel S {{\n  id Int @id\n  a A?\n}}\n");
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types("  zip String @default(\"z\")\n")), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&json_source(dialect, &types("")), &stored(&p1.snapshot)).unwrap();
+        let down = sql(&p2.down).join("\n");
+        let fill = if dialect == "sqlite" { "CASE WHEN \"a_city\" IS NOT NULL THEN 'z' END" } else { "UPDATE \"s\" SET \"a_zip\" = 'z' WHERE \"a_city\" IS NOT NULL" };
+        assert!(down.contains(fill), "{dialect}: {down}");
+    }
+}

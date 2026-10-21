@@ -73,8 +73,29 @@ pub fn create_all(db: &DbSchema, idempotent: bool) -> Vec<String> {
     sql
 }
 
+fn json_fill_sql(op: &diff::Op) -> String {
+    let diff::Op::BackfillJson { table, column, path, value } = op else { unreachable!("json_backfills yields only BackfillJson") };
+    let at = |p: &[String]| super::model::quote_literal(&format!("${}", p.iter().map(|k| format!(".\"{k}\"")).collect::<String>()));
+    let c = ident(column);
+    let (parent, _) = path.split_at(path.len() - 1);
+    let holder = if parent.is_empty() { format!("json_type({c})") } else { format!("json_type({c}, {})", at(parent)) };
+    format!(
+        "UPDATE {} SET {c} = json_set({c}, {}, json({})) WHERE {holder} = 'object' AND COALESCE(json_type({c}, {}), 'null') = 'null'",
+        ident(table), at(path), super::model::quote_literal(&value.to_string()), at(path)
+    )
+}
+
 pub fn steps(from: &DbSchema, to: &DbSchema, renames: &Renames) -> Result<Vec<Step>> {
-    if from.tables == to.tables { return Ok(vec![]); }
+    steps_with(from, to, renames, &[])
+}
+
+/// `fills` are the `Op::BackfillJson` data fills (`diff::json_backfills`), run after the rebuild.
+pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[diff::Op]) -> Result<Vec<Step>> {
+    let fills = fills.iter().map(json_fill_sql).collect::<Vec<_>>();
+    if from.tables == to.tables {
+        if fills.is_empty() { return Ok(vec![]); }
+        return Ok(vec![Step { summary: "Fill new subfields of json columns".into(), sql: fills.join(";\n"), warning: None }]);
+    }
     let mut sql = vec![];
     // Rebuilding drops objects attached to a table. Refuse objects absent from the
     // previous snapshot rather than silently destroying user-created indexes/triggers.
@@ -104,9 +125,7 @@ pub fn steps(from: &DbSchema, to: &DbSchema, renames: &Renames) -> Result<Vec<St
         let temp = format!("__orm_new_{}", t.name);
         sql.push(create_table(t, &temp, false));
         if let Some(old) = source(t) {
-            let old_of = |name: &String| old.column(name).map(|_| name.clone()).or_else(|| {
-                renames.columns.get(&(t.name.clone(), name.clone())).filter(|h| old.column(h).is_some() && t.column(h).is_none()).cloned()
-            });
+            let old_of = |name: &String| old.column(name).map(|_| name.clone()).or_else(|| renames.renamed_column(t, old, name).cloned());
             let values = t.columns.iter().map(|c| {
                 match old_of(&c.name) {
                     Some(col) => ident(&col),
@@ -131,6 +150,7 @@ pub fn steps(from: &DbSchema, to: &DbSchema, renames: &Renames) -> Result<Vec<St
         }
         sql.extend(t.indexes.iter().map(|ix| index(&t.name, ix, false)));
     }
+    sql.extend(fills);
     // SQLite resolves the tables of a trigger body when it creates the trigger.
     for t in &to.tables {
         sql.extend(t.triggers.iter().map(|tr| trigger(&t.name, tr, false)));

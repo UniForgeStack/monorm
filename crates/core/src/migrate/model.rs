@@ -118,22 +118,30 @@ pub struct Table {
     pub indexes: Vec<Index>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
-    /// Built from the schema, never stored: it does not take part in a snapshot comparison.
-    #[serde(skip)]
+    /// Fills for the columns a nullable group holds. The snapshot stores them, so a downgrade
+    /// that re-adds such a column can fill it; they do not take part in a snapshot comparison.
+    #[serde(default, skip_serializing_if = "Backfills::is_empty")]
     pub backfills: Backfills,
 }
 
 /// A default that the database does not carry (`NestedIr::under_null`): a migration that
 /// adds `column` sets it to `value` in each row where one of the `others` is not NULL.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Backfill {
     pub column: String,
     pub value: String,
     pub others: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(transparent)]
 pub struct Backfills(pub Vec<Backfill>);
+
+impl Backfills {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 impl PartialEq for Backfills {
     fn eq(&self, _: &Self) -> bool {
@@ -173,6 +181,82 @@ pub struct Column {
     pub identity: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// The nested type a `json` column holds. It is not a database fact, so it does not take
+    /// part in a snapshot comparison: only the differ reads it, to backfill a new subfield.
+    #[serde(default, skip_serializing_if = "NestedLink::is_none")]
+    pub nested: NestedLink,
+}
+
+/// Where a `json` column's value comes from in the schema, and the shape it had.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(transparent)]
+pub struct NestedLink(pub Option<NestedShape>);
+
+impl NestedLink {
+    fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+impl PartialEq for NestedLink {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NestedShape {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub list: bool,
+    pub shape: Vec<ShapeEntry>,
+}
+
+/// One subfield of a nested type, by its path of subfield names from the model field.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ShapeEntry {
+    pub path: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nullable: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub list: bool,
+    /// A nested type rather than a scalar.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub group: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+}
+
+/// A leaf default as the writers store it in a JSON value: BigInt and Decimal as text, a DateTime in UTC with microseconds.
+fn json_default(ty: crate::ir::ColType, v: &serde_json::Value) -> serde_json::Value {
+    use crate::ir::ColType;
+    use serde_json::Value;
+    match (ty, v) {
+        (ColType::BigInt | ColType::Decimal, Value::Number(n)) => Value::String(n.to_string()),
+        (ColType::DateTime, Value::String(s)) => match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(t) => Value::String(t.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
+            Err(_) => v.clone(),
+        },
+        _ => v.clone(),
+    }
+}
+
+fn shape_of(types: &[crate::ir::TypeIr], ty: &str, path: &mut Vec<String>, out: &mut Vec<ShapeEntry>) {
+    let Some(ty) = types.iter().find(|t| t.name == ty) else { return };
+    for f in &ty.fields {
+        path.push(f.name.clone());
+        out.push(ShapeEntry {
+            path: path.clone(),
+            nullable: f.nullable,
+            list: f.list,
+            group: f.type_name.is_some(),
+            default: f.leaf.as_ref().and_then(|l| l.default.as_ref().map(|v| json_default(l.ty, v))),
+        });
+        if let Some(n) = &f.type_name {
+            shape_of(types, n, path, out);
+        }
+        path.pop();
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -293,6 +377,12 @@ pub struct Renames {
 }
 
 impl Renames {
+    /// The old column of `column` in `old` when a hint renames it: `old` has the hinted
+    /// column and `new` no longer does.
+    pub fn renamed_column(&self, new: &Table, old: &Table, column: &str) -> Option<&String> {
+        self.columns.get(&(new.name.clone(), column.to_owned())).filter(|h| old.column(h).is_some() && new.column(h).is_none())
+    }
+
     /// The same renames seen from the other side, for down migrations.
     pub fn reversed(&self) -> Renames {
         let tables: HashMap<String, String> =
@@ -560,6 +650,11 @@ impl Builder<'_> {
                 default,
                 identity: f.auto_increment,
                 comment: f.comment.clone(),
+                nested: NestedLink(f.nested.as_ref().filter(|n| n.storage == crate::ir::NestedStorage::Json).map(|n| {
+                    let mut shape = vec![];
+                    shape_of(&schema.types, &n.ty, &mut vec![], &mut shape);
+                    NestedShape { field: n.field.clone(), list: n.list, shape }
+                })),
             });
             if f.unique && !f.primary_key {
                 table.uniques.push(Unique {

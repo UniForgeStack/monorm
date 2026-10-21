@@ -1,10 +1,16 @@
 """Nested types on columns storage migrate as plain columns plus the generated null check."""
 
+import contextlib
+import json
+import os
+
 import pytest
 
 import orm
 from orm import Registry, SchemaError
-from orm.migrations import Migrations
+from orm.migrations import Migrations, Migrator
+
+PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
 V1 = """
 type Geo {
@@ -147,3 +153,205 @@ def test_a_snapshot_without_root_required_gives_no_migration(tmp_path):
     assert migs.make() is not None
     assert "root_required" not in next(tmp_path.glob("*/snapshot.json")).read_text()  # the snapshot holds database tables only
     assert up(tmp_path, source) == []
+
+
+JSON_V1 = """
+type Geo {
+  lat Float
+}
+
+type Address {
+  city String
+  geo  Geo
+}
+
+model Shop {
+  id      Int     @id
+  address Address @storage(json)
+}
+"""
+JSON_V2 = JSON_V1.replace("  lat Float\n", "  lat Float\n  alt Float @default(0)\n").replace(
+    "  city String\n", '  city String\n  zip  String @default("0")\n'
+)
+SQLITE = 'datasource db { provider = "sqlite" }\n'
+
+
+def test_a_new_required_json_subfield_with_a_default_fills_the_rows_that_lack_it(tmp_path):
+    Migrations(tmp_path, models(JSON_V1)).make()
+    sql = up(tmp_path, JSON_V2)
+    assert not any("ADD COLUMN" in s for s in sql)  # the column is the same; only its rows change
+    fills = [s for s in sql if s.startswith('UPDATE "shop"')]
+    assert len(fills) == 2
+    zip_fill = next(s for s in fills if "'zip'" in s)
+    assert "jsonb_set(\"address\", ARRAY['zip'], '\"0\"'::jsonb)" in zip_fill
+    assert "jsonb_typeof(\"address\") = 'object' AND COALESCE(jsonb_typeof((\"address\") -> 'zip'), 'null') = 'null'" in zip_fill
+    alt_fill = next(s for s in fills if "'alt'" in s)
+    assert "ARRAY['geo', 'alt']" in alt_fill and "\"address\" #> ARRAY['geo']" in alt_fill
+
+
+def test_a_new_required_json_subfield_fills_on_sqlite(tmp_path):
+    Migrations(tmp_path, models(SQLITE + JSON_V1)).make()
+    sql = up(tmp_path, SQLITE + JSON_V2)
+    assert len(sql) == 1
+    assert """json_set("address", '$."geo"."alt"', json('0'))""" in sql[0]
+    assert """json_type("address", '$."geo"') = 'object' AND COALESCE(json_type("address", '$."geo"."alt"'), 'null') = 'null'""" in sql[0]
+
+
+def test_a_new_required_json_subfield_without_a_default_is_an_error(tmp_path):
+    Migrations(tmp_path, models(JSON_V1)).make()
+    with pytest.raises(SchemaError, match=r"shop\.address\.zip: a required subfield added to a json field needs a @default"):
+        up(tmp_path, JSON_V1.replace("  city String\n", "  city String\n  zip  String\n"))
+
+
+def test_a_new_nullable_json_subfield_changes_no_rows(tmp_path):
+    Migrations(tmp_path, models(JSON_V1)).make()
+    assert up(tmp_path, JSON_V1.replace("  city String\n", "  city String\n  zip  String?\n")) == []
+
+
+def test_a_new_required_subfield_in_a_json_list_is_an_error(tmp_path):
+    source = JSON_V1.replace("Address @storage", "Address[] @storage")
+    Migrations(tmp_path, models(source)).make()
+    with pytest.raises(SchemaError, match="added inside a list can't be filled by a migration"):
+        up(tmp_path, source.replace("  city String\n", '  city String\n  zip  String @default("0")\n'))
+
+
+def test_a_second_make_after_a_json_backfill_finds_nothing(tmp_path):
+    Migrations(tmp_path, models(JSON_V1)).make()
+    assert Migrations(tmp_path, models(JSON_V2)).make() is not None
+    assert Migrations(tmp_path, models(JSON_V2)).make() is None
+    assert '"alt"' in sorted(tmp_path.glob("*/snapshot.json"))[-1].read_text()
+
+
+DIALECTS = ["postgres", "sqlite"]
+DROP = "DROP TABLE IF EXISTS shop; DROP TABLE IF EXISTS orm_migrations"
+
+
+@contextlib.asynccontextmanager
+async def database(dialect, registry):
+    url = "sqlite://:memory:" if dialect == "sqlite" else PG_URL
+    try:
+        db = await orm.connect(url, registry=registry, default=False, max_connections=2)
+    except orm.DatabaseError as e:
+        pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
+    try:
+        await db.execute(DROP)
+        yield db
+    finally:
+        await db.execute(DROP)
+        await db.close()
+
+
+async def migrate(db, tmp_path, source):
+    migs = Migrations(tmp_path, models(source))
+    assert migs.make() is not None
+    await Migrator(db, migs).upgrade()
+
+
+async def insert_addresses(db, rows):
+    values = ", ".join(f"({i}, '{json.dumps(value)}')" for i, value in rows)
+    await db.execute(f"INSERT INTO shop (id, address) VALUES {values}")
+
+
+async def addresses(db):
+    return {
+        r["id"]: json.loads(r["address"]) if isinstance(r["address"], str) else r["address"]
+        for r in await db.fetch("SELECT id, address FROM shop")
+    }
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_applying_the_backfill_keeps_present_keys_and_fills_missing_ones(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    async with database(dialect, models(prefix + JSON_V1)) as db:
+        await migrate(db, tmp_path, prefix + JSON_V1)
+        await insert_addresses(
+            db,
+            [
+                (1, {"city": "A", "geo": {"lat": 1}}),
+                (2, {"city": "B", "zip": "9", "geo": {"lat": 2, "alt": 5}}),
+                (3, {"city": "C"}),
+            ],
+        )
+        await migrate(db, tmp_path, prefix + JSON_V2)
+        assert await addresses(db) == {
+            1: {"city": "A", "zip": "0", "geo": {"lat": 1, "alt": 0}},
+            2: {"city": "B", "zip": "9", "geo": {"lat": 2, "alt": 5}},
+            3: {"city": "C", "zip": "0"},  # no geo object: nothing to put alt in
+        }
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_applying_the_backfill_fills_a_key_that_holds_a_json_null(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    nullable = JSON_V1.replace("  city String\n", "  city String\n  zip  String?\n")
+    required = JSON_V1.replace("  city String\n", '  city String\n  zip  String @default("z")\n')
+    async with database(dialect, models(prefix + nullable)) as db:
+        await migrate(db, tmp_path, prefix + nullable)
+        geo = {"lat": 1}
+        await insert_addresses(
+            db,
+            [(1, {"city": "A", "geo": geo}), (2, {"city": "B", "zip": None, "geo": geo}), (3, {"city": "C", "zip": "9", "geo": geo})],
+        )
+        await migrate(db, tmp_path, prefix + required)
+        got = await addresses(db)
+        assert [got[i]["zip"] for i in (1, 2, 3)] == ["z", "z", "9"]
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_applying_the_backfill_skips_a_null_or_missing_middle_level(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    optional = JSON_V1.replace("  geo  Geo\n", "  geo  Geo?\n")
+    deeper = optional.replace("  lat Float\n", "  lat Float\n  alt Float @default(0)\n")
+    async with database(dialect, models(prefix + optional)) as db:
+        await migrate(db, tmp_path, prefix + optional)
+        await insert_addresses(
+            db,
+            [(1, {"city": "A", "geo": {"lat": 1}}), (2, {"city": "B", "geo": None}), (3, {"city": "C"})],
+        )
+        await migrate(db, tmp_path, prefix + deeper)
+        assert await addresses(db) == {
+            1: {"city": "A", "geo": {"lat": 1, "alt": 0}},
+            2: {"city": "B", "geo": None},
+            3: {"city": "C"},
+        }
+
+
+COLUMNS_V1 = """
+type Address {
+  city String
+  zip  String @default("z")
+}
+
+model Shop {
+  id      Int      @id
+  address Address?
+}
+"""
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_downgrade_refills_a_required_leaf_it_re_adds(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    source, removed = prefix + COLUMNS_V1, prefix + COLUMNS_V1.replace('  zip  String @default("z")\n', "")
+    async with database(dialect, models(source)) as db:
+        await migrate(db, tmp_path, source)
+        await db.execute("INSERT INTO shop (id, address_city, address_zip) VALUES (1, 'A', 'q'), (2, NULL, NULL)")
+        await migrate(db, tmp_path, removed)
+        await Migrator(db, Migrations(tmp_path, models(removed))).downgrade()
+        rows = {r["id"]: (r["address_city"], r["address_zip"]) for r in await db.fetch("SELECT * FROM shop")}
+        assert rows == {1: ("A", "z"), 2: (None, None)}
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_applying_a_renamed_subfield_keeps_the_data(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    source = prefix + V1
+    renamed = prefix + V1.replace("  lng Float?", '  longitude Float? @renamed_from("lng")')
+    async with database(dialect, models(source)) as db:
+        await migrate(db, tmp_path, source)
+        await db.execute(
+            "INSERT INTO shop (id, address_city, address_geo_lat, address_geo_lng) VALUES (1, 'A', 1.5, 2.5), (2, NULL, NULL, NULL)"
+        )
+        await migrate(db, tmp_path, renamed)
+        rows = {r["id"]: (r["address_city"], r["address_geo_longitude"]) for r in await db.fetch("SELECT * FROM shop")}
+        assert rows == {1: ("A", 2.5), 2: (None, None)}
