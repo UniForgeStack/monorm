@@ -346,6 +346,11 @@ A query such as `filter(User.posts.views.gt(10)).filter(User.posts.published)` c
 No error tells you about the change.
 To keep the old meaning, write `User.posts.alias()` in one of the conditions.
 
+An `or()` in one call changed in the other direction.
+`filter(User.posts.views.gt(10), or(User.posts.published, User.posts.title.eq("a")))` was one `EXISTS`.
+The `or()` term is now a barrier, so it asks for its own post, and the query can return more rows.
+To keep the old meaning, use the same `alias()` object in the conditions that must share a post.
+
 A `belongsTo` relation compares with an instance of its target:
 `Post.author.eq(alice)` is `Post.authorId.eq(alice.id)` (no join), `.ne(alice)` the
 opposite, and `.eq(null)` is `IS NULL`. The types allow `eq` / `ne` only on to-one

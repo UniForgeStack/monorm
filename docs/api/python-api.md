@@ -347,6 +347,11 @@ A query such as `filter(User.posts.views > 10).filter(User.posts.published)` can
 No error tells you about the change.
 To keep the old meaning, write `User.posts.alias()` in one of the conditions.
 
+A `|` in one call changed in the other direction.
+`filter(User.posts.views > 10, (User.posts.published == True) | (User.posts.title == "a"))` was one `EXISTS`.
+The `|` term is now a barrier, so it asks for its own post, and the query can return more rows.
+To keep the old meaning, use the same `alias()` object in the conditions that must share a post.
+
 This differs from Django in two ways.
 Django treats separate `filter()` calls on a multi-valued relation as independent.
 Django also uses a `JOIN` and returns a parent once **per matching child** unless you add `.distinct()`.
