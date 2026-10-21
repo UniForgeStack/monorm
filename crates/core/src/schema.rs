@@ -70,6 +70,9 @@ impl Model {
             renamed_from: None,
             comment: None,
             protected_write: false,
+            query_set: None,
+            model_methods: None,
+            classes_from: None,
         };
         Ok(Model {
             file_fields: vec![],

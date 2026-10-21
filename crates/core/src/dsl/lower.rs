@@ -536,6 +536,9 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         renamed_from: None,
         comment: None,
         protected_write: false,
+        query_set: None,
+        model_methods: None,
+        classes_from: None,
     };
     // model-level attributes that aren't schema objects; the rest come after relations
     for a in &m.blocks {
@@ -551,6 +554,8 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
             "renamed_from" => ir.renamed_from = Some(text(a)?),
             "protected_write" if a.args.positional.is_empty() && a.args.named.is_empty() => ir.protected_write = true,
             "protected_write" => return err(a.pos, format!("{}: @@protected_write takes no arguments", m.name)),
+            "query_set" => ir.query_set = Some(text(a)?),
+            "model_methods" => ir.model_methods = Some(text(a)?),
             _ => {}
         }
     }
@@ -1302,7 +1307,7 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
             n.finish()?;
             m.partition = Some(partition.ok_or_else(|| super::syntax::Error { pos: b.pos, msg: format!("{what}: give list:, range: or hash:") })?);
         }
-        "map" | "comment" | "renamed_from" | "protected_write" => {}
+        "map" | "comment" | "renamed_from" | "protected_write" | "query_set" | "model_methods" => {}
         "index" => {
             extra_positional(1)?;
             let columns: Vec<IndexColumnIr> = keys(b.pos, first, &what, false)?.into_iter().map(|(k, _)| k).collect();

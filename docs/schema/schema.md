@@ -506,6 +506,39 @@ schema.prisma:44:14: relation Comment.author: author_id is not nullable, so the 
 schema.prisma:34:3: model Post: an attribute must be on one line (put a long trigger body in a `function` block)
 ```
 
+### Query set and model methods (`@@query_set`, `@@model_methods`)
+
+```prisma
+model User {
+  id       Int    @id @default(autoincrement())
+  password String
+  @@query_set("UserQueries")
+  @@model_methods("UserMethods")
+}
+```
+
+* `@@query_set("UserQueries")` names a query set class. Codegen finds its module `queries`, as `Post.objects` uses it.
+* `@@model_methods("UserMethods")` names a class whose methods go on each instance of the model, for example `user.check_password(raw)`. Codegen finds its module `methods`.
+* Each takes one string, the class name. It is the same in Python and TypeScript.
+* Module lookup. The schema file is in the same package as its code.
+  * Python: codegen finds the import root above the schema file.
+    The import root is the nearest directory that has a `pyproject.toml`, `setup.py` or `setup.cfg` (or `src/` under it, when the schema is there), or a `site-packages` / `dist-packages` directory.
+    The module is the dotted path from the import root to the schema directory, then `queries` or `methods`: `orm_auth.queries:UserQueries` and `orm_auth.methods:UserMethods`.
+    This also works for a namespace package (`acme.auth.queries:UserQueries` for `src/acme/auth/`) and for a directory without an `__init__.py`.
+    A schema directly in the import root gives `queries:UserQueries`.
+    With no import root, codegen fails and tells you to give the full path with `--query-set` / `--model-methods`.
+  * TypeScript, an installed package (the schema path has a `node_modules` directory): codegen reads `name` from the nearest `package.json`. It writes `orm-auth/queries.js#UserQueries` and `orm-auth/methods.js#UserMethods`.
+    The `package.json` of the package must list `"./schema.prisma"`, `"./queries.js"` and `"./methods.js"` in `exports`.
+  * TypeScript, your own project (the nearest `package.json` of the schema also holds the generated file), or no `package.json`: the import is relative to the generated models file (`./queries.js#UserQueries`).
+    `generateTypescript(schema)` of the tooling addon assumes `models.ts` is next to the schema file.
+* A consumer replaces the schema class: `--query-set User=...` and `--model-methods User=...` (or `[tool.orm.query_sets]` / `[tool.orm.model_methods]`, `"orm": {"querySets"}` / `{"modelMethods"}`).
+  The order is flag, then config, then the attribute.
+* The attributes create no DDL. Migrations ignore them. The model IR keeps both names.
+* A method name that is also a model member (a field, a relation, a member of the model or an extension member) is an error when the model is prepared, in both languages: `User.delete: model method collision`.
+  The display members `__str__` and `__repr__` (Python) and `toString` (TypeScript) are not collisions: a methods class may override them.
+* A proxy model takes the `@@model_methods` of its root model, as it takes the `@@query_set`. Name the class on the proxy to replace it.
+* An inherited attribute resolves in the package of the schema that declared it (the IR field `classes_from`).
+
 ### Protected writes (`@@protected_write`)
 
 `@@protected_write` is an application-level check in the ORM. It does not protect the database.

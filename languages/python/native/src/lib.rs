@@ -1042,13 +1042,19 @@ fn compile_schema_file(path: &str) -> PyResult<String> {
 /// `(models.py, models.pyi)` source for a schema file.
 #[cfg(feature = "generate-python")]
 #[pyfunction]
-#[pyo3(signature = (path, query_sets = None))]
-fn generate_python(path: &str, query_sets: Option<std::collections::BTreeMap<String, String>>) -> PyResult<(String, String)> {
+#[pyo3(signature = (path, query_sets = None, model_methods = None))]
+fn generate_python(
+    path: &str,
+    query_sets: Option<std::collections::BTreeMap<String, String>>,
+    model_methods: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<(String, String)> {
     let p = std::path::Path::new(path);
-    let (ir, schema) =
-        orm_core::dsl::check(orm_core::dsl::compile_file(p).map_err(schema_err)?).map_err(schema_err)?;
+    let project = orm_core::dsl::compile_project_file(p).map_err(schema_err)?;
+    let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default(), ..Default::default() };
+    let mut options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default(), model_methods: model_methods.unwrap_or_default(), ..Default::default() };
+    let out_dir = p.parent().unwrap_or(std::path::Path::new("."));
+    options.with_schema_classes(&ir, &project.units, orm_core::codegen::lookup::Language::Python, out_dir).map_err(schema_err)?;
     let g = orm_core::codegen::python::generate_with(&ir, &schema, &source, &options).map_err(schema_err)?;
     Ok((g.module, g.stub))
 }

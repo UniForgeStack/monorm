@@ -171,6 +171,31 @@ Then `Post.objects` is a `PostQueries`, and the methods chain with every builder
   The stub gives such a class only the generated bases and a `__getattr__` that returns `Any`: the methods of the class work, but mypy and pyright do not check them on the proxy.
   Name the class for the proxy (`--query-set Draft=...`) to get the checked methods.
 
+## Model methods
+
+`@@model_methods("UserMethods")` in the schema, or `--model-methods User=auth.methods:UserMethods`, puts the methods of a class on every `User` instance:
+
+```python
+# auth/methods.py
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from auth.models import User
+
+class UserMethods:
+    def check_password(self: "User", raw: str) -> bool:
+        return verify(raw, self.password)
+```
+
+* `models.py` declares `class User(UserMethods, orm.Model)`, so `models.pyi` types the methods.
+  The methods module must not import `auth.models` at import time: use `TYPE_CHECKING`, as above.
+* A consumer replaces the class with `--model-methods User=module:Class`, `[tool.orm.model_methods]` in `pyproject.toml`, or the `model_methods=` argument of `_native.generate_python`.
+* `define(..., model_methods={"User": UserMethods})`, `orm.load(path, model_methods=...)` and `orm.loads(text, model_methods=...)` set it for a model from a schema file or text.
+* A method name that is a field, a relation, a member of `Model` or an extension member (for example `delete`) raises `TypeError: User.delete: model method collision` when the model is prepared.
+  A methods class may define `__str__` and `__repr__`; every other `object` member (`__eq__`, `__hash__`) still raises.
+* `@@query_set("UserQueries")` in the schema names the query set class of the section above. Codegen writes the dotted path from the import root (the nearest directory with `pyproject.toml`, `setup.py` or `setup.cfg`, `src/` under it, or `site-packages`) to the schema directory: `orm_auth.queries:UserQueries`, or `acme.auth.queries:UserQueries` for `src/acme/auth/`.
+  A schema in the import root gives `queries:UserQueries`. With no import root, codegen fails and asks for `--query-set`.
+
 ## Queries
 
 Builders return a new immutable `QuerySet`. Awaiting it runs the query. Awaiting the

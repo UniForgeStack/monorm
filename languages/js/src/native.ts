@@ -190,7 +190,7 @@ interface Addon {
   profileMetadata(): string;
   compileSchema(source: string, path?: string | null): string;
   compileSchemaFile(path: string): string;
-  generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null): string;
+  generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null, modelMethods?: Record<string, string> | null): string;
   setDecimalClass(ctor: unknown): void;
   cli(argv: string[]): Promise<number>;
   cliMigrateArgs(argv: string[]): (string | null)[] | null;

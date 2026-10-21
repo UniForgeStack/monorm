@@ -149,6 +149,33 @@ Then `Post.objects` is a `PostQueries`, and the methods chain with every builder
   The row type of an inherited method is the row type of the root model today: `Draft.objects.published().all()` is typed `Post[]`, and the rows are `Draft` at run time.
   `models.ts` calls `useQuerySet(Draft, (() => _q0.PostQueries) as never)`: the class extends `QuerySet<PostSpec>`, which `useQuerySet` does not accept for the `Draft` spec.
 
+## Model methods
+
+`@@model_methods("UserMethods")` in the schema, or `--model-methods User=orm-auth/methods.js#UserMethods`, puts the methods of a class on every `User` row:
+
+```ts
+// methods.ts
+import type { User } from "./models.js";
+
+export class UserMethods {
+  checkPassword(this: User, raw: string): boolean {
+    return verify(raw, this.password);
+  }
+}
+```
+
+* `models.ts` calls `useModelMethods(User, () => _m0.UserMethods)`, and the row interface extends the class.
+  The class is read on the first use of the model, so `methods.ts` can import `models.ts` (use `import type`) without an import cycle.
+  `useModelMethods(Model, cls)` also takes the class itself, for models from `define()` or `loads()`. A second call throws once a class is applied (a class is applied at once, a function that gives the class at the first row).
+  A function is replaced by a second call until the first row.
+* A consumer replaces the class with `--model-methods User=specifier#Export`, `"orm": { "modelMethods": { "User": "..." } }` in `package.json`, or the fourth argument of the tooling addon's `generateTypescript`.
+* A method name that is a field, a relation, or a member of the row (for example `delete`) throws `TypeError: User.delete: model method collision`.
+  A class passed directly is checked at the call. A function that returns the class is checked on the first row, not when the model is prepared: the function must stay lazy for the import cycle.
+  A methods class may override `toString`. `valueOf` and the other members of the row still collide.
+* `@@query_set("UserQueries")` in the schema names the query set class of the section above. For an installed schema (a `node_modules` path), codegen reads `name` from the nearest `package.json` and writes `orm-auth/queries.js#UserQueries`.
+  A schema in your own project (its `package.json` also holds `models.ts`) or outside a package gives `./queries.js#UserQueries`, relative to `models.ts`. `generateTypescript(schema)` assumes `models.ts` is next to the schema file.
+  An installed package must list `"./schema.prisma"`, `"./queries.js"` and `"./methods.js"` in `exports`.
+
 ## Queries
 
 Query sets are lazy and immutable: building one never touches the database. Awaiting
