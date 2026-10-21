@@ -36,6 +36,13 @@ pub(super) fn groups<'a>(m: &'a Model) -> Vec<Group<'a>> {
 }
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// Whether the query-set class of `model` comes from a type model: the class takes the model (or its spec) as a type parameter.
+pub(super) fn declares_generic(ir: &SchemaIr, query_sets: &std::collections::BTreeMap<&str, (&str, &str, bool)>, model: &str) -> bool {
+    query_sets.get(model).is_some_and(|q| !q.2)
+        && ir.models.iter().any(|m| m.name == model && m.classes_from.as_ref().is_some_and(|c| ir.behavior.type_models.iter().any(|t| &t.name == c)))
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 pub(super) fn type_of<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a TypeIr> {
     ir.types.iter().find(|t| t.name == name)
 }
@@ -101,6 +108,7 @@ impl ExtensionCode {
     /// Whether the model gets the members of this extension: it, or one of its fields,
     /// declares an attribute of the extension, or a record the extension prepared names it.
     /// A proxy declares nothing, but the extension prepares the records of its root for it.
+    /// An extension that adds no query-set, instance or bound query-set member never applies.
     pub fn applies(&self, ir: &crate::ir::SchemaIr, model: &str) -> bool {
         let m = &self.members;
         let adds_nothing = m.query_set_members.is_empty() && m.instance_members.is_empty() && m.bound_query_set_members.is_empty();

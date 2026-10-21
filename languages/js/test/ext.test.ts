@@ -21,5 +21,6 @@ test("the hard-delete statement is a delete of the query set", async () => {
 });
 
 test("a behavior value is undefined without a record", () => {
-  assert.equal(behaviorValue(sqliteRegistry, "model_overrides"), undefined);
+  assert.equal(behaviorValue("model_overrides", sqliteRegistry), undefined);
+  assert.equal(behaviorValue("model_overrides"), undefined);
 });

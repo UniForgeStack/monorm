@@ -1,5 +1,5 @@
 /** The host surface for extension language code, next to the public `orm` API. */
-import type { ModelMeta, Registry } from "./model.js";
+import { registry as defaultRegistry, type ModelMeta, type Registry } from "./model.js";
 import type { ModelSpec } from "./meta.js";
 import { QuerySet } from "./query.js";
 import type { BoundQuerySet } from "./bound.js";
@@ -36,7 +36,7 @@ export function behaviorRecords(qs: QuerySet<ModelSpec>, kind: string): readonly
 }
 
 /** The prepared behavior record of `kind` that is not a list of per-model records, `undefined` if absent. */
-export function behaviorValue(registry: Registry, kind: string): unknown {
+export function behaviorValue(kind: string, registry: Registry = defaultRegistry): unknown {
   return registry.behaviorValue(kind);
 }
 

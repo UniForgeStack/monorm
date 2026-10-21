@@ -787,7 +787,13 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.write_assignments.extend(n.write_assignments);
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
-    c.type_models.extend(n.type_models);
+    for t in n.type_models {
+        match c.type_models.iter().find(|known| known.name == t.name) {
+            Some(known) if serde_json::to_value(known).ok() != serde_json::to_value(&t).ok() => return Err(format!("{} is declared as an abstract type twice with different content; rebuild dependent schemas together", t.name)),
+            Some(_) => {}
+            None => c.type_models.push(t),
+        }
+    }
     for (base, child) in n.model_overrides {
         if c.model_overrides.get(&base).is_some_and(|known| known != &child) { return Err(format!("{base} is overridden by two models; rebuild dependent schemas together")); }
         c.model_overrides.insert(base, child);
@@ -982,6 +988,18 @@ mod tests {
         let artifact = Artifact { exports: vec!["app.trim".into()], ..Artifact::default() };
         let error = check_requirements(&ir, &artifact).unwrap_err();
         assert!(error.starts_with("User: stale or missing specialization f") && error.contains("rebuild"), "{error}");
+    }
+
+    #[test]
+    fn merge_definition_dedupes_type_models_by_name_and_rejects_a_different_one() {
+        let model = |field: &str| -> crate::ir::TypeModel {
+            serde_json::from_value(serde_json::json!({"name": "AbstractUser", "fields": [{"name": field, "column": field, "type": "int"}], "extended_by": ["User"]})).unwrap()
+        };
+        let batch = |m: crate::ir::TypeModel| { let mut ir = SchemaIr::default(); ir.behavior.type_models = vec![m]; ir };
+        let merged = merge_definition(batch(model("a")), batch(model("a"))).unwrap();
+        assert_eq!(merged.behavior.type_models.len(), 1);
+        let error = merge_definition(batch(model("a")), batch(model("b"))).unwrap_err();
+        assert!(error.contains("AbstractUser") && error.contains("rebuild"), "{error}");
     }
 
     #[test]

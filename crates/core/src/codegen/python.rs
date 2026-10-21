@@ -96,22 +96,22 @@ fn file_value_type(m: &Model, f: &FieldIr) -> String {
     value_type(f)
 }
 
-/// The stub bases of a model: the abstract models that extend directly into it, descendants first, else `Model`.
-fn abstract_bases(type_models: &[crate::ir::TypeModel], name: &str) -> String {
+/// The stub bases of a model: the type models that extend directly into it, descendants first, else `Model`.
+fn type_model_bases(type_models: &[crate::ir::TypeModel], name: &str) -> String {
     let bases: Vec<String> = type_models.iter().rev().filter(|t| t.extended_by.iter().any(|c| c == name)).map(|t| format!("{}Fields", t.name)).collect();
     if bases.is_empty() { "Model".into() } else { bases.join(", ") }
 }
 
-/// The `(name, stub line)` of the fields of an abstract model (`own`) or of all its abstract ancestors.
-fn abstract_lines(type_models: &[crate::ir::TypeModel], name: &str, own: bool) -> Vec<(String, String)> {
+/// The `(name, stub line)` of the fields of a type model (`own`) or of all its type-model ancestors.
+fn type_model_lines(type_models: &[crate::ir::TypeModel], name: &str, own: bool) -> Vec<(String, String)> {
     let line = |f: &FieldIr| (f.name.clone(), format!("{}: f.{}[{}]", f.name, field_class(f), value_type(f)));
     if own {
         return type_models.iter().find(|t| t.name == name).map(|t| t.fields.iter().filter(|f| f.nested.is_none()).map(line).collect()).unwrap_or_default();
     }
     let mut out = Vec::new();
     for t in type_models.iter().filter(|t| t.extended_by.iter().any(|c| c == name)) {
-        out.extend(abstract_lines(type_models, &t.name, false));
-        out.extend(abstract_lines(type_models, &t.name, true));
+        out.extend(type_model_lines(type_models, &t.name, false));
+        out.extend(type_model_lines(type_models, &t.name, true));
     }
     out
 }
@@ -201,10 +201,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     // which the stub cannot combine with the proxy's `QuerySet[Proxy]`, so the stub types its methods as `Any`.
     let inherits = |model: &str| query_sets.get(model).is_some_and(|q| q.2);
     // A class that an abstract model declares takes the model as its type parameter (`class UserQueries[M: AbstractUserFields]`).
-    let generic = |model: &str| {
-        query_sets.get(model).is_some_and(|q| !q.2)
-            && ir.models.iter().any(|m| m.name == model && m.classes_from.as_ref().is_some_and(|c| ir.behavior.type_models.iter().any(|t| &t.name == c)))
-    };
+    let generic = |model: &str| super::declares_generic(ir, &query_sets, model);
     let ir_json = super::embedded_schema_json(ir)?;
     if ir_json.contains("\"\"\"") {
         return Err("schema text contains \"\"\" which can't be embedded in the generated module".into());
@@ -291,8 +288,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     let qs: Vec<String> = names.iter().map(|n| format!("{n}QuerySet")).collect();
     if !qs.is_empty() { writeln!(py, "{} = QuerySet", qs.join(" = ")).unwrap(); }
     // An abstract model has no runtime model; the name only has to import.
-    let abstracts: Vec<String> = type_models.iter().map(|t| format!("{}Fields", t.name)).collect();
-    if !abstracts.is_empty() { writeln!(py, "{} = Model", abstracts.join(" = ")).unwrap(); }
+    let type_stubs: Vec<String> = type_models.iter().map(|t| format!("{}Fields", t.name)).collect();
+    if !type_stubs.is_empty() { writeln!(py, "{} = Model", type_stubs.join(" = ")).unwrap(); }
     let mut dicts: Vec<String> =
         names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]).collect();
     dicts.extend(composed_names.iter().map(|n| format!("{n}Attach")));
@@ -347,9 +344,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
     for t in type_models {
         writeln!(body, "{}\n", section(&format!("{}Fields", t.name))).unwrap();
-        writeln!(body, "class {}Fields({}):", t.name, abstract_bases(type_models, &t.name)).unwrap();
-        let inherited = abstract_lines(type_models, &t.name, false);
-        let own = abstract_lines(type_models, &t.name, true);
+        writeln!(body, "class {}Fields({}):", t.name, type_model_bases(type_models, &t.name)).unwrap();
+        let inherited = type_model_lines(type_models, &t.name, false);
+        let own = type_model_lines(type_models, &t.name, true);
         for (name, line) in &own {
             let clash = inherited.iter().any(|(n, l)| n == name && l != line);
             writeln!(body, "    {line}{}", if clash { "  # type: ignore[assignment]" } else { "" }).unwrap();
@@ -364,7 +361,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         let exts = options.model_extensions(ir, name);
         let instances: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}Instance, ")).collect();
         let methods = if model_methods.contains_key(name.as_str()) { format!("_{name}Methods, ") } else { String::new() };
-        let bases = abstract_bases(type_models, name);
+        let bases = type_model_bases(type_models, name);
         writeln!(body, "class {name}({instances}{methods}{}):", if bases == "Model" { bases } else { format!("{bases}, Model") }).unwrap();
         for method in ir.behavior.methods.iter().filter(|method| method.model == *name) {
             let output = if method.output.is_some() { "str" } else { "None" };
@@ -374,7 +371,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let field = &m.fields()[file.position].name;
             writeln!(body, "    async def {field}_signed_url(self, *, expires_in: int = 300) -> str: ...\n    def {field}_open(self) -> AsyncIterator[bytes]: ...").unwrap();
         }
-        let inherited = abstract_lines(type_models, name, false);
+        let inherited = type_model_lines(type_models, name, false);
         for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             let line = format!("{}: f.{}[{}]", f.name, field_class(f), file_value_type(m, f));
             let clash = inherited.iter().any(|(n, l)| *n == f.name && *l != line);
