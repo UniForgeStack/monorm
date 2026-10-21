@@ -654,7 +654,7 @@ export class Column<T, S extends string = never, N extends string = string, H ex
     readonly text: string,
     /** @internal The null rule of the path the column was reached through. */
     readonly rule: NullRule | undefined = undefined,
-    /** @internal Whether every hop from the root to the column is to-one. */
+    /** @internal Whether the last hop to the column is to-one, counted from the last to-many hop. */
     readonly toOne = false,
     /** @internal The `alias()` tag of each hop of the path (`undefined`: untagged). */
     readonly alias: readonly (Alias | undefined)[] | undefined = undefined,
@@ -949,7 +949,7 @@ export class Case<T, S extends string = never, P = {}> extends Expression<T, S, 
       if (!Array.isArray(b) || b.length !== 2) {
         throw new TypeError(`case() branches are [condition, value] pairs, got ${String(b)}`);
       }
-      return [asCondition(b[0]), wrap(b[1])] as const;
+      return [resolveNullRule(asCondition(b[0]), false, false), wrap(b[1])] as const;
     });
     this.fallback = fallback === undefined ? undefined : wrap(fallback);
   }
@@ -1499,7 +1499,7 @@ export interface PathState {
   /** A path that ends in a `belongsTo` relation: its foreign key columns, and how to read
    * the referenced key of a target instance (one value per column). */
   readonly belongsTo?: { readonly key: readonly Column<unknown, string>[]; readonly read: (o: object) => unknown[] };
-  /** Whether every hop from the root is to-one (`belongsTo` / `hasOne`); a root has none. */
+  /** Whether the last hop is to-one (`belongsTo` / `hasOne`), counted from the last to-many hop; a root has none. */
   readonly toOne?: boolean;
   /** The null rule of the path. */
   readonly rule?: NullRule;
@@ -1933,12 +1933,12 @@ function strictColumns(leaf: Node): Column<unknown, string>[] {
   return tested(leaf).filter((n): n is Column<unknown, string> => n instanceof Column && n.canBeNull());
 }
 
-/** The columns that `items` test for NULL the way the two null methods build it: `col IS NOT NULL`
- * in an `and()`, `col IS NULL` (or `not(col IS NOT NULL)`) in an `or()`. */
 function colKey(node: Node): string {
   return node instanceof Column ? node.key : describe(node);
 }
 
+/** The columns that `items` test for NULL the way the two null methods build it: `col IS NOT NULL`
+ * in an `and()`, `col IS NULL` (or `not(col IS NOT NULL)`) in an `or()`. */
 function nullSiblings(items: readonly Node[], testsNotNull: boolean): string[] {
   const out: string[] = [];
   for (const i of items) {
@@ -1959,8 +1959,11 @@ function nullSiblings(items: readonly Node[], testsNotNull: boolean): string[] {
  * A column that comes from a path with a null rule (`Post.author.orNull()`) gets the method of the
  * path, unless its comparison is handled. A `path.eq(x)` of a nullable key under `not()` keeps the
  * rows with a NULL key.
+ *
+ * With `strict` false (a `case()` condition, a `select()` value) the path rule applies and the
+ * two throws are skipped: the condition is a value there, not a filter.
  */
-export function resolveNullRule(condition: Node, negated = false): Node {
+export function resolveNullRule(condition: Node, negated = false, strict = true): Node {
   const ruleOf = (leaf: Node, neg: boolean, handled: ReadonlySet<string>): Node => {
     const ruled = new Map<string, Column<unknown, string>>();
     for (const c of tested(leaf)) if (c instanceof Column && c.rule && !handled.has(c.key)) ruled.set(c.key, c);
@@ -1990,7 +1993,7 @@ export function resolveNullRule(condition: Node, negated = false): Node {
     }
     const ruled = ruleOf(node, neg, handled);
     if (ruled !== node) return ruled;
-    for (const col of strictColumns(node)) {
+    for (const col of strict ? strictColumns(node) : []) {
       if (handled.has(col.key)) continue;
       if (neg) {
         throw new QueryError(

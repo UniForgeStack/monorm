@@ -1388,8 +1388,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     ...conditions: C
   ): OneRowQuery<RequiredResult<this, R>, P & ParamsOfAll<C>, X | OuterRefs<ScopesOf<C>, S>> {
     this.noCuts("get()");
-    if (conditions.length) resolveNullRule(and(...(conditions as unknown as never[])));
-    return new OneRowQuery(() => (this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>).limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null), true);
+    // filter() resolves the null rule once, and here, so a bad condition throws when get() is called.
+    const filtered = this.filter(...(conditions as unknown as never[])) as unknown as QuerySet<M, R>;
+    return new OneRowQuery(() => filtered.limit(2) as never, (rows) => (rows.length ? one(this.meta, rows) : null), true);
   }
 
   /** The number of rows. */

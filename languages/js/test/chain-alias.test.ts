@@ -30,6 +30,36 @@ model Note {
 }
 `;
 
+const nested = `
+type Geo {
+  city String
+  zip  String?
+}
+
+model Shop {
+  id  Int  @id @default(autoincrement())
+  geo Geo? @storage(json)
+  @@map("ca_node_shop")
+}
+
+model Stall {
+  id     Int   @id @default(autoincrement())
+  shopId Int?
+  shop   Shop? @relation(fields: [shopId], references: [id])
+  @@map("ca_node_stall")
+}
+`;
+
+test("a nested column behind a path keeps the alias and the rule", () => {
+  const Stall: any = loads(`datasource db {\n  provider = "sqlite"\n}\n${nested}`, { registry: new Registry() })["Stall"];
+  const same = Stall.objects.filter(Stall.shop.geo.city.eq("a"), Stall.shop.geo.zip.eq("b")).sql() as string;
+  const other = Stall.objects.filter(Stall.shop.geo.city.eq("a"), Stall.shop.alias().geo.zip.eq("b")).sql() as string;
+  assert.equal(same.split("EXISTS").length, 2, same);
+  assert.equal(other.split("EXISTS").length, 3, other);
+  const ruled = Stall.objects.filter(Stall.shop.orNull().geo.zip.ne("b")).sql() as string;
+  assert.ok(ruled.includes('NOT EXISTS(SELECT 1 FROM "ca_node_shop"'), ruled);
+});
+
 for (const provider of ["sqlite", "postgresql"]) {
   const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];
 

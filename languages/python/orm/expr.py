@@ -545,6 +545,7 @@ class ColumnRef(Expression[T]):
     """A column of ``root``'s model, or of a model reached from it through ``path``."""
 
     __slots__ = ("_root", "_path", "_field", "_rule", "_alias")
+    _rule: NullRule | None
 
     def __init__(
         self,
@@ -882,7 +883,7 @@ class Case(Expression[T]):
         for w in whens:
             if not isinstance(w, tuple) or len(w) != 2:
                 raise TypeError(f"case() branches are (condition, value) tuples, got {w!r}")
-        self._whens = [(as_condition(c), _wrap(v)) for c, v in whens]
+        self._whens = [(resolve_null_rule(as_condition(c), strict=False), _wrap(v)) for c, v in whens]
         self._default = None if default is None else _wrap(default)
 
     def _ir(self, ctx: IRContext) -> IR:
@@ -1327,7 +1328,7 @@ class RelationPath(Generic[M]):
                 raise AttributeError(name)
             meta = self._target._meta
             if name in meta.nested:
-                return meta.nested[name].__get__(None, self._target)._at(self._root, self._path)
+                return meta.nested[name].__get__(None, self._target)._at(self._root, self._path, self._rule, self._alias)
             if name in meta.fields:
                 return ColumnRef(self._root, self._path, meta.fields[name], self._rule, self._alias)
             if name in meta.relations:
@@ -1473,18 +1474,17 @@ class Condition(Node):
 
 
 def _to_one(column: ColumnRef[Any]) -> bool:
-    """Whether every hop to the column is to-one: a missing related row reads as a NULL."""
+    """Whether the column sits behind to-one hops only, counted from the last to-many hop (the
+    engine's scope): there a missing related row reads as a NULL."""
     from .fields import BelongsTo, HasOne
 
-    if not column._path:
-        return False
     owner: type[Model] = column._root
+    to_one = False
     for name in column._path:
         relation = owner._meta.relations[name]
-        if not isinstance(relation, (BelongsTo, HasOne)):
-            return False
+        to_one = isinstance(relation, (BelongsTo, HasOne))
         owner = relation.target
-    return True
+    return to_one
 
 
 def _null_tests(columns: Sequence[ColumnRef[Any]], *, keeps_null: bool) -> list[Condition]:
@@ -1567,7 +1567,7 @@ def _null_siblings(items: Sequence[Condition], tests_not_null: bool) -> set[str]
     return out
 
 
-def resolve_null_rule(condition: Condition, *, negated: bool = False) -> Condition:
+def resolve_null_rule(condition: Condition, *, negated: bool = False, strict: bool = True) -> Condition:
     """Apply the null rule to ``condition``; return the condition to run.
 
     A comparison on a nullable column that has neither ``or_null()`` nor ``and_not_null()`` and
@@ -1578,7 +1578,8 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False) -> Conditi
 
     A column that comes from a path with a null rule (``Post.author.or_null()``) gets the
     method of the path, unless its comparison is handled. A ``path == x`` of a nullable key
-    under ``~`` keeps the rows with a NULL key."""
+    under ``~`` keeps the rows with a NULL key. ``strict=False`` applies the path rules and never
+    raises (``func.case()`` and ``select()`` values)."""
 
     def rule_of(leaf: Condition, neg: bool, handled: frozenset[str]) -> Condition:
         ruled = {c._key: c for c in _tested(leaf) if isinstance(c, ColumnRef) and c._rule and c._key not in handled}
@@ -1609,7 +1610,7 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False) -> Conditi
         ruled = rule_of(node, neg, handled)
         if ruled is not node:
             return ruled
-        for col in _strict_columns(node):
+        for col in _strict_columns(node) if strict else ():
             if col._key in handled:
                 continue
             if neg:

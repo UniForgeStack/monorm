@@ -33,6 +33,7 @@ from .errors import DoesNotExist, MultipleObjectsReturned, QueryError
 from .nested import NestedRef
 from .expr import (
     ColumnRef,
+    Condition,
     ConditionLike,
     Expression,
     Func,
@@ -127,6 +128,14 @@ def _column_name(item: Any, i: int) -> str:
 # -- the query ---------------------------------------------------------------------------
 
 
+def _with_path_rules(item: Any) -> Any:
+    """A boolean value (``cond.label("x")``) with the path null rules of its condition applied; it never raises."""
+    if isinstance(item, Labeled) and isinstance(item._inner, Condition):
+        inner = resolve_null_rule(item._inner, strict=False)
+        return item if inner is item._inner else Labeled(inner, item._name)
+    return item
+
+
 class Select(Generic[Unpack[Ts]]):
     """A query returning rows of chosen columns. Built by ``QuerySet.select(...)``;
     every method returns a new ``Select``, and nothing runs until it is awaited. Awaiting
@@ -145,6 +154,7 @@ class Select(Generic[Unpack[Ts]]):
                     raise TypeError(f"select() takes {qs.model.__name__} itself or expressions, not {item.__name__}")
             elif not isinstance(item, Expression):
                 raise TypeError(f"select() takes columns and expressions, got {item!r}")
+        items = tuple(_with_path_rules(item) for item in items)
         names = tuple(_column_name(item, i) for i, item in enumerate(items))
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:

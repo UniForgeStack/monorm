@@ -148,7 +148,7 @@ def test_the_check_runs_in_a_join_on_and_an_aggregate_filter():
     assert func.count(filter=(Comment.author_id != 1).and_not_null()) is not None
 
 
-def test_the_check_does_not_run_in_a_case_or_a_select():
+def test_the_strict_check_does_not_run_in_a_case_or_a_select():
     assert Comment.objects.select(func.case((Comment.author_id != 1, 1), default=0).label("flag")).sql()
 
 
@@ -158,3 +158,33 @@ def test_a_to_one_not_in_a_subquery_and_a_mixed_path_flip_in_sql():
     assert 'WHERE NOT EXISTS(SELECT 1 FROM "users" AS "t1"' in sql and '"t1"."email" IN (SELECT' in sql
     sql = Post.objects.filter(Post.comments.author.email != "x").sql()
     assert '"t1"."post_id" = "posts"."id" AND (NOT EXISTS(SELECT 1 FROM "users" AS "t2"' in sql
+
+
+async def test_a_null_method_on_a_to_one_hop_after_a_to_many_hop_applies_per_related_row(rows):
+    Writer, _, (w1, w2, w3), _, _, writers = rows
+    # The Writer fixture is circular, so every writer matches `email == "a"` through its own notes; the SQL shape is the check.
+    assert await writers((Writer.notes.writer.email == "a").or_null()) == ids(w1)
+    assert await writers(Writer.notes.writer.or_null().nick == "n") == ids(w1, w3)
+    assert await writers(Writer.notes.writer.and_not_null().nick == "n") == ids(w1)
+
+
+def test_the_null_methods_on_a_to_one_hop_after_a_to_many_hop_make_the_rule_inside_the_exists():
+    for cond in (
+        (Post.comments.author.email == "a").or_null(),
+        Post.comments.author.or_null().email == "a",
+    ):
+        sql = Post.objects.filter(cond).sql()
+        assert 'NOT EXISTS(SELECT 1 FROM "comments" AS "t1"' in sql and sql.count('"t2"."email" IS NOT NULL') == 1
+    sql = Post.objects.filter(Post.comments.author.and_not_null().email == "a").sql()
+    assert "NOT EXISTS" not in sql and """("t2"."email" = 'a' AND "t2"."email" IS NOT NULL)""" in sql
+
+
+def test_a_path_rule_applies_in_a_case_condition_and_a_select_value():
+    cond = Comment.author.or_null().name == "x"
+    for sql in (
+        Comment.objects.select(func.case((cond, 1), default=0).label("flag")).sql(),
+        Comment.objects.select(cond.label("flag")).sql(),
+    ):
+        assert 'NOT EXISTS(SELECT 1 FROM "users"' in sql and '"name" IS NOT NULL' in sql
+    # A path rule that is not set keeps the plain value and never raises in these places.
+    assert "NOT EXISTS" not in Comment.objects.select(func.case((Comment.author.name == "x", 1), default=0).label("flag")).sql()

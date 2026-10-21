@@ -34,8 +34,25 @@ test("a column ne keeps the column rule in a join on and an aggregate filter", (
   assert.ok(func.count({ filter: Comment.authorId.ne(1n).andNotNull() } as never));
 });
 
-test("the check does not run in a case or a select", () => {
+test("the strict check does not run in a case or a select", () => {
   assert.ok(Comment.objects.select({ flag: func.case([Comment.authorId.ne(1n), 1], { default: 0 }) }).sql());
+});
+
+test("a path rule applies in a case condition and a select value", () => {
+  const cond = Comment.author.orNull().name.eq("x");
+  for (const sql of [Comment.objects.select({ flag: func.case([cond, 1], { default: 0 }) }).sql(), Comment.objects.select({ flag: cond }).sql()]) {
+    assert.ok(sql.includes('NOT EXISTS(SELECT 1 FROM "users"') && sql.includes('"name" IS NOT NULL'), sql);
+  }
+  assert.ok(!Comment.objects.select({ flag: func.case([Comment.author.name.eq("x"), 1], { default: 0 }) }).sql().includes("NOT EXISTS"));
+});
+
+test("the null methods on a to-one hop after a to-many hop make the rule inside the exists", () => {
+  for (const cond of [Post.comments.author.email.eq("a").orNull(), Post.comments.author.orNull().email.eq("a")]) {
+    const sql = Post.objects.filter(cond).sql();
+    assert.ok(sql.includes('NOT EXISTS(SELECT 1 FROM "comments" AS "t1"') && sql.split('"t2"."email" IS NOT NULL').length === 2, sql);
+  }
+  const sql = Post.objects.filter(Post.comments.author.andNotNull().email.eq("a")).sql();
+  assert.ok(!sql.includes("NOT EXISTS") && sql.includes(`("t2"."email" = 'a' AND "t2"."email" IS NOT NULL)`), sql);
 });
 
 test("a to-one notIn a subquery and a mixed path flip in sql", () => {
@@ -152,5 +169,12 @@ for (const provider of ["sqlite", "postgresql"]) {
     assert.deepEqual(await writers(Writer.notes.andNotNull().score.ne(1)), of(w2));
     assert.deepEqual(await writers(not(Writer.notes.score.eq(2).andNotNull())), of(w1, w3));
     assert.deepEqual(await writers(not(Writer.notes.score.eq(2).orNull())), of(w3));
+  });
+
+  await run("a null method on a to-one hop after a to-many hop applies per related row", async ({ Writer, w: [w1, , w3], writers }) => {
+    // The Writer fixture is circular, so the SQL shape is the check; this shows the query runs.
+    assert.deepEqual(await writers(Writer.notes.writer.email.eq("a").orNull()), of(w1));
+    assert.deepEqual(await writers(Writer.notes.writer.orNull().nick.eq("n")), of(w1, w3));
+    assert.deepEqual(await writers(Writer.notes.writer.andNotNull().nick.eq("n")), of(w1));
   });
 }
