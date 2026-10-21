@@ -22,6 +22,7 @@ model Note {
   writer_id BigInt?
   writer    Writer? @relation(fields: [writer_id], references: [id])
   score     Int?
+  label     String  @default("")
   @@map("np_note")
 }
 """
@@ -45,11 +46,11 @@ async def rows(request):
     ).returning()
     n1, n2, n3, n4, n5 = await Note.objects.using(db).insert_many(
         [
-            {"writer_id": w1.id, "score": 1},
-            {"writer_id": w2.id, "score": 2},
-            {"writer_id": None, "score": 3},
-            {"writer_id": w3.id, "score": 1},
-            {"writer_id": w1.id, "score": None},
+            {"writer_id": w1.id, "score": 1, "label": "a"},
+            {"writer_id": w2.id, "score": 2, "label": "a"},
+            {"writer_id": None, "score": 3, "label": "a"},
+            {"writer_id": w3.id, "score": 1, "label": "c"},
+            {"writer_id": w1.id, "score": None, "label": "z"},
         ]
     ).returning()
 
@@ -94,6 +95,14 @@ async def test_a_not_null_target_column_is_not_a_nullable_value(rows):
     assert await notes(~(Note.writer.email == "a")) == ids(n2, n3, n4)
     assert await notes((Note.writer.email != "a").or_null()) == ids(n2, n3, n4)
     assert await notes((Note.writer.email != "a").and_not_null()) == ids(n2, n4)
+
+
+async def test_a_to_one_ne_against_a_root_column_keeps_the_rows_with_no_related_row(rows):
+    _, Note, _, (n1, n2, n3, n4, n5), notes, _ = rows
+    assert await notes(Note.writer.email != Note.label) == ids(n2, n3, n5)
+    assert await notes(Note.label != Note.writer.email) == ids(n2, n3, n5)
+    assert await notes(~(Note.writer.email == Note.label)) == ids(n2, n3, n5)
+    assert await notes(Note.writer.email.not_in([Note.label])) == ids(n2, n3, n5)
 
 
 async def test_a_nullable_target_column_takes_the_strict_rule_and_the_methods(rows):
