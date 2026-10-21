@@ -98,9 +98,9 @@ pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
         if identity_changed { identity_step(&mut up); identity_step(&mut down); }
         return Ok(MigrationPlan { up, down, snapshot: current });
     }
-    let mut up = diff::diff(previous, &current, &renames);
+    let mut up = diff::diff(previous, &current, &renames)?;
     up.extend(fills);
-    let down = diff::diff(&current, previous, &renames.reversed());
+    let down = diff::diff(&current, previous, &renames.reversed())?;
     let mut up = steps(&up, &current);
     let mut down = steps(&down, previous);
     if identity_changed { identity_step(&mut up); identity_step(&mut down); }
@@ -116,7 +116,7 @@ fn identity_step(steps: &mut Vec<Step>) {
 pub fn create_all(schema: &Schema) -> Result<Vec<String>> {
     let current = snapshot(schema)?;
     if current.dialect == crate::dialect::Dialect::Sqlite { return Ok(sqlite::create_all(&current, true)); }
-    let ops = diff::diff(&DbSchema::default(), &current, &Default::default());
+    let ops = diff::diff(&DbSchema::default(), &current, &Default::default())?;
     Ok(ops.iter().map(|op| pg::render(op, true)).collect())
 }
 
@@ -124,6 +124,7 @@ pub fn create_all(schema: &Schema) -> Result<Vec<String>> {
 /// belong to the database, not the schema). Drift detection runs it in a shadow schema.
 pub fn create_statements(db: &DbSchema) -> Vec<String> {
     diff::diff(&DbSchema::default(), db, &Default::default())
+        .expect("a diff from an empty schema copies no column")
         .iter()
         .filter(|op| !matches!(op, Op::CreateExtension(_)))
         .map(|op| pg::render(op, false))

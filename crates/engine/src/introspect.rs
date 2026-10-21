@@ -1125,7 +1125,8 @@ pub fn differences(live: &DbSchema, target: &DbSchema) -> Vec<Step> {
     let mut b = target.clone();
     a.extensions.clear();
     b.extensions.clear();
-    let ops = diff::diff(&a, &b, &Default::default());
+    // introspected schemas carry no nested links, so no storage change copies a column
+    let ops = diff::diff(&a, &b, &Default::default()).expect("a diff of introspected schemas copies no column");
     let mut steps: Vec<Step> = if live.dialect == Dialect::Sqlite && !ops.is_empty() {
         // SQLite rebuilds tables: one step with SQLite's SQL that names every change
         let sql = orm_core::migrate::sqlite::steps(&a, &b, &Default::default()).unwrap_or_default();

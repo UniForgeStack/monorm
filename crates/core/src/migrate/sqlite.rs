@@ -156,6 +156,6 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
         sql.extend(t.triggers.iter().map(|tr| trigger(&t.name, tr, false)));
     }
     if sequence { sql.push("DROP TABLE __orm_sequence".into()); }
-    let warnings = diff::diff(from, to, renames).iter().filter_map(|op| op.warning()).collect::<Vec<_>>();
+    let warnings = diff::diff(from, to, renames)?.iter().filter_map(|op| op.warning()).collect::<Vec<_>>();
     Ok(vec![Step { summary: "Rebuild SQLite schema and preserve existing rows".into(), sql: sql.join(";\n"), warning: if warnings.is_empty() { None } else { Some(warnings.join("; ")) } }])
 }

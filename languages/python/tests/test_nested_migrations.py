@@ -492,3 +492,130 @@ def test_a_second_make_after_a_storage_change_finds_nothing(tmp_path, dialect):
     for where in ("columns", "json", "columns"):
         assert Migrations(tmp_path, models(storage(dialect, where))).make() is not None
         assert Migrations(tmp_path, models(storage(dialect, where))).make() is None
+
+
+ORM_SOURCE = """
+type Geo {
+  lat Float
+  lng Float?
+}
+
+type Stamp {
+%(extra)s  label String
+  at    DateTime
+  flag  Json?
+  n     BigInt
+  geo   Geo?
+}
+
+model Shop {
+  id   Int    @id
+  data Stamp? %(storage)s
+}
+"""
+UTC = datetime.timezone.utc
+STAMPS = [
+    (1, "a", datetime.datetime(2026, 1, 2, 3, 4, 5, 123456, UTC), True, 2**60, {"lat": 1.5, "lng": None}),
+    (2, "b", datetime.datetime(2026, 1, 2, 3, 4, 5, 500000, UTC), "text", -5, None),
+    (3, "c", datetime.datetime(2026, 12, 31, 23, 59, 59, tzinfo=UTC), False, 0, {"lat": 0.5, "lng": 2.5}),
+    (4, "d", datetime.datetime(2026, 12, 31, 23, 59, 59, 120000, UTC), {"k": [1, 2]}, 1, None),
+]
+
+
+def orm_source(dialect, storage="", extra=""):
+    return (SQLITE if dialect == "sqlite" else "") + ORM_SOURCE % {"storage": storage, "extra": extra}
+
+
+def stamp_rows():
+    rows = [
+        {"id": i, "data": {"label": label, "at": at, "flag": flag, "n": n, "geo": geo}}
+        for i, label, at, flag, n, geo in STAMPS
+    ]
+    return rows + [{"id": 5, "data": None}]
+
+
+def seen(rows):
+    """What an ORM read of the rows shows, as plain values."""
+    out = {}
+    for r in rows:
+        d = r.data
+        out[r.id] = None if d is None else {
+            "label": d.label, "at": d.at, "flag": d.flag, "n": d.n,
+            "geo": None if d.geo is None else {"lat": d.geo.lat, "lng": d.geo.lng},
+            **({"code": d.code} if hasattr(d, "code") else {}),
+        }
+    return out
+
+
+@contextlib.asynccontextmanager
+async def connected(dialect, source, tmp_path):
+    """A connection, bound to the models of `source`, on a database that outlives the connection."""
+    registry = Registry()
+    classes = orm.loads(source, registry=registry)
+    url = f"sqlite://{tmp_path / 'live.db'}" if dialect == "sqlite" else PG_URL
+    try:
+        db = await orm.connect(url, registry=registry, default=False, max_connections=2)
+    except orm.DatabaseError as e:
+        pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
+    try:
+        yield db, classes["Shop"]
+    finally:
+        await db.close()
+
+
+async def read(dialect, source, tmp_path):
+    """Reads and filters through a fresh connection bound to `source`; the filter is `==` on a DateTime leaf."""
+    async with connected(dialect, source, tmp_path) as (db, Shop):
+        rows = await Shop.objects.using(db).order_by(Shop.id)
+        hits = {i: [r.id for r in await Shop.objects.using(db).filter(Shop.data.at == at).order_by(Shop.id)] for i, _, at, *_ in STAMPS}
+        return seen(rows), hits
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+@pytest.mark.parametrize("columns", ["", '@storage(columns, prefix: "d_")'])
+@pytest.mark.parametrize("first", ["columns", "json"])
+async def test_rows_written_through_the_orm_read_and_filter_after_a_storage_change(tmp_path, dialect, columns, first):
+    where = {"columns": columns, "json": "@storage(json)"}
+    other = "json" if first == "columns" else "columns"
+    sources = {w: orm_source(dialect, where[w]) for w in where}
+    migrations = tmp_path / "m"
+    async with connected(dialect, sources[first], tmp_path) as (db, Shop):
+        await db.execute(DROP)
+        await migrate(db, migrations, sources[first])
+        await Shop.objects.using(db).insert_many(stamp_rows())
+        first_seen = seen(await Shop.objects.using(db).order_by(Shop.id))
+        assert first_seen[1]["at"] == STAMPS[0][2] and first_seen[1]["flag"] is True and first_seen[3]["flag"] is False
+        try:
+            await migrate(db, migrations, sources[other])
+            rows, hits = await read(dialect, sources[other], tmp_path)
+            assert rows == first_seen
+            assert hits == {i: [i] for i, *_ in STAMPS}
+            await Migrator(db, Migrations(migrations, models(sources[other]))).downgrade()
+            rows, hits = await read(dialect, sources[first], tmp_path)
+            assert rows == first_seen
+            assert hits == {i: [i] for i, *_ in STAMPS}
+        finally:
+            await db.execute(DROP)
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_new_subfield_with_a_default_is_filled_by_a_storage_change_through_the_orm(tmp_path, dialect):
+    extra = '  code  String @default("z")\n'
+    pairs = [("json", "columns"), ("columns", "json")]
+    for first, other in pairs:
+        where = {"columns": "", "json": "@storage(json)"}
+        migrations = tmp_path / f"from_{first}"
+        before = orm_source(dialect, where[first])
+        after = orm_source(dialect, where[other], extra)
+        async with connected(dialect, before, tmp_path) as (db, Shop):
+            await db.execute(DROP)
+            try:
+                await migrate(db, migrations, before)
+                await Shop.objects.using(db).insert_many(stamp_rows())
+                await migrate(db, migrations, after)
+                async with connected(dialect, after, tmp_path) as (db2, Shop2):
+                    rows = seen(await Shop2.objects.using(db2).order_by(Shop2.id))
+                assert rows[5] is None
+                assert {i: r["code"] for i, r in rows.items() if r is not None} == {i: "z" for i, *_ in STAMPS}
+            finally:
+                await db.execute(DROP)

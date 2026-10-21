@@ -646,3 +646,136 @@ fn a_list_of_a_type_has_no_storage_change_to_copy() {
         assert!(err.contains("list"), "{dialect}: {err}");
     }
 }
+
+fn storage_types_with(a: &str, root: &str, storage: &str) -> String {
+    format!("type A {{\n{a}}}\n\nmodel S {{\n  id Int @id\n  a A{root} {storage}\n}}\n")
+}
+
+fn linkless(snapshot: &DbSchema) -> DbSchema {
+    let mut old = stored(snapshot);
+    for c in old.tables.iter_mut().flat_map(|t| t.columns.iter_mut()) {
+        c.nested = Default::default();
+    }
+    old
+}
+
+#[test]
+fn a_snapshot_without_the_leaf_links_copies_down_by_the_default_joined_names() {
+    for dialect in DIALECTS {
+        let (cols, json) = storage_change(dialect, "?");
+        let again = super::plan(&json_source(dialect, &storage_types("?", "@storage(json)")), &linkless(&cols.snapshot)).unwrap();
+        assert_eq!(sql(&again.down), sql(&json.down), "{dialect}");
+        let read = if dialect == "sqlite" { "json_extract(\"a\", '$.\"n\"')" } else { "(\"a\" #>> ARRAY['n'])::bigint" };
+        assert!(sql(&again.down).join("\n").contains(read), "{dialect}");
+    }
+}
+
+#[test]
+fn a_new_required_leaf_before_the_old_ones_keeps_a_null_group_null() {
+    let types = |a: &str, storage: &str| storage_types_with(a, "?", storage);
+    let before = "  city String\n";
+    let after = "  code String @default(\"z\")\n  city String\n";
+    for dialect in DIALECTS {
+        let cols = super::plan(&json_source(dialect, &types(before, "")), &DbSchema::default()).unwrap();
+        let json = super::plan(&json_source(dialect, &types(after, "@storage(json)")), &stored(&cols.snapshot)).unwrap();
+        let copy = sql(&json.up).join(";\n");
+        assert!(copy.contains("CASE WHEN \"a_city\" IS NOT NULL THEN json"), "{dialect}: {copy}");
+    }
+}
+
+/// The old snapshot column links removed, as a snapshot from before the links.
+fn first_table(db: &DbSchema) -> &model::Table { &db.tables[0] }
+
+#[test]
+fn a_json_snapshot_without_a_shape_copies_up_by_the_field_name_and_refuses_down() {
+    for dialect in DIALECTS {
+        let (cols, json) = storage_change(dialect, "?");
+        let shapeless = linkless(&json.snapshot);
+        let d = cols.snapshot.dialect;
+        let up = super::nested_copy::copies(first_table(&shapeless), first_table(&cols.snapshot), d).unwrap();
+        let names = up.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["a_city", "a_n", "a_at", "a_g_lat", "a_g_lng"], "{dialect}");
+        assert!(up.iter().all(|(_, e)| e.contains("\"a\"")), "{dialect}: {up:?}");
+        let err = super::nested_copy::copies(first_table(&cols.snapshot), first_table(&shapeless), d).unwrap_err();
+        assert!(err.contains("too old"), "{dialect}: {err}");
+        // a json link that holds an empty shape is as old
+        let mut empty = stored(&json.snapshot);
+        for l in empty.tables.iter_mut().flat_map(|t| t.columns.iter_mut()).filter_map(|c| c.nested.0.as_mut()) { l.shape.clear(); }
+        let err = super::nested_copy::copies(first_table(&cols.snapshot), first_table(&empty), d).unwrap_err();
+        assert!(err.contains("too old"), "{dialect}: {err}");
+        let err = super::plan(&json_source(dialect, &storage_types("?", "")), &shapeless).unwrap_err();
+        assert!(err.contains("too old"), "{dialect}: {err}");
+        let err = diff::diff(&cols.snapshot, &shapeless, &Default::default()).unwrap_err();
+        assert!(err.contains("too old"), "{dialect}: {err}");
+    }
+}
+
+#[test]
+fn a_required_leaf_with_no_old_column_and_no_default_is_an_error() {
+    for dialect in DIALECTS {
+        let (cols, _) = storage_change(dialect, "?");
+        let mut old = linkless(&cols.snapshot);
+        old.tables[0].columns.retain(|c| c.name != "a_n");
+        let err = super::plan(&json_source(dialect, &storage_types("?", "@storage(json)")), &old).unwrap_err();
+        assert!(err.contains("too old") && err.contains("s.a"), "{dialect}: {err}");
+    }
+}
+
+#[test]
+fn a_new_subfield_with_a_default_is_filled_when_json_becomes_columns() {
+    let a = "  city String\n";
+    let b = "  code String @default(\"z\")\n  city String\n";
+    let fills = [
+        ("postgresql", "\"a_code\" = CASE WHEN jsonb_typeof(\"a\") = 'object' THEN ('z')::varchar END"),
+        ("sqlite", "CASE WHEN json_type(\"a\", '$') = 'object' THEN 'z' END"),
+    ];
+    for (dialect, fill) in fills {
+        let json = super::plan(&json_source(dialect, &storage_types_with(a, "?", "@storage(json)")), &DbSchema::default()).unwrap();
+        let cols = super::plan(&json_source(dialect, &storage_types_with(b, "?", "")), &stored(&json.snapshot)).unwrap();
+        let up = sql(&cols.up).join(";\n");
+        assert!(up.contains(fill), "{dialect}: {up}");
+        // a required root: the same
+        let json = super::plan(&json_source(dialect, &storage_types_with(a, "", "@storage(json)")), &DbSchema::default()).unwrap();
+        let cols = super::plan(&json_source(dialect, &storage_types_with(b, "", "")), &stored(&json.snapshot)).unwrap();
+        assert!(sql(&cols.up).join(";\n").contains(fill), "{dialect}");
+    }
+}
+
+#[test]
+fn the_sqlite_copy_of_a_datetime_and_a_json_leaf_matches_the_writers() {
+    let a = "  city String\n  at DateTime?\n  extra Json?\n";
+    let json = super::plan(&json_source("sqlite", &storage_types_with(a, "?", "@storage(json)")), &DbSchema::default()).unwrap();
+    let cols = super::plan(&json_source("sqlite", &storage_types_with(a, "?", "")), &stored(&json.snapshot)).unwrap();
+    let up = sql(&cols.up).join(";\n");
+    // chrono `%.f`: no fraction, three, six or nine digits
+    for part in ["'000000000'", "= '000000'", "= '000'"] {
+        assert!(up.contains(part), "{part}: {up}");
+    }
+    assert!(!up.contains("000000Z") && !up.contains("'.000000'"), "{up}");
+    // a JSON scalar is kept as JSON text
+    assert!(up.contains("json_type(\"a\", '$.\"extra\"')") && up.contains("\"a\" -> '$.\"extra\"'"), "{up}");
+    assert!(!up.contains("json_quote(json_extract(\"a\", '$.\"extra\"'))"), "{up}");
+}
+
+#[test]
+fn the_copy_encodes_a_leaf_with_its_new_type() {
+    let types = |ty: &str, storage: &str| storage_types_with(&format!("  city String\n  n {ty}\n"), "?", storage);
+    let encoded = [("postgresql", "\"a_n\"::text"), ("sqlite", "CAST(\"a_n\" AS TEXT)")];
+    for (dialect, text) in encoded {
+        let cols = super::plan(&json_source(dialect, &types("Int", "")), &DbSchema::default()).unwrap();
+        let json = super::plan(&json_source(dialect, &types("BigInt", "@storage(json)")), &stored(&cols.snapshot)).unwrap();
+        let up = sql(&json.up).join(";\n");
+        assert!(up.contains(text), "{dialect}: {up}");
+    }
+}
+
+#[test]
+fn a_diff_reports_a_copy_it_cannot_make_instead_of_dropping_it() {
+    let (cols, json) = storage_change("postgresql", "?");
+    let list = |field: &str| format!("type A {{\n  city String\n}}\n\nmodel S {{\n  id Int @id\n  {field}\n}}\n");
+    let one = super::plan(&json_source("postgresql", &list("a A")), &DbSchema::default()).unwrap().snapshot;
+    let many = super::plan(&json_source("postgresql", &list("a A[] @storage(json)")), &DbSchema::default()).unwrap().snapshot;
+    let err = diff::diff(&one, &many, &Default::default()).unwrap_err();
+    assert!(err.contains("list"), "{err}");
+    assert!(diff::diff(&cols.snapshot, &json.snapshot, &Default::default()).is_ok());
+}
