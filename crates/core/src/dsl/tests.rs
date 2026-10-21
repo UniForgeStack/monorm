@@ -1034,3 +1034,38 @@ fn a_json_subfield_index_builds_a_create_index_on_the_expression() {
     assert!(sql.contains("CREATE INDEX") && sql.contains("((\"address\") ->> 'city')"), "{sql}");
     assert!(sql.contains("CREATE UNIQUE INDEX") && sql.contains("::integer"), "{sql}");
 }
+
+#[test]
+fn a_rename_hint_names_the_old_column_through_parent_and_field_renames() {
+    let old_columns = |src: &str| -> Vec<(String, Option<String>)> {
+        ok(src).models[0].fields.iter().filter(|f| f.nested.is_some()).map(|f| (f.column.clone(), f.renamed_from.clone())).collect()
+    };
+    let src = "type Geo {\n  lat Float @renamed_from(\"y\")\n  lng Float\n}\n\ntype A {\n  city String\n  pos Geo @renamed_from(\"geo\")\n}\n\nmodel S {\n  id Int @id\n  addr A @renamed_from(\"address\")\n}\n";
+    assert_eq!(
+        old_columns(src),
+        [
+            ("addr_city".to_owned(), Some("address_city".to_owned())),
+            ("addr_pos_lat".to_owned(), Some("address_geo_y".to_owned())),
+            ("addr_pos_lng".to_owned(), Some("address_geo_lng".to_owned())),
+        ]
+    );
+    // a new prefix with a renamed field: the old columns had the default joined names
+    let with_prefix = src.replace("addr A @renamed_from(\"address\")", "addr A @storage(columns, prefix: \"a_\") @renamed_from(\"address\")");
+    assert_eq!(old_columns(&with_prefix)[0], ("a_city".to_owned(), Some("address_city".to_owned())));
+    // no hint, no rename
+    let plain = "type Geo {\n  lat Float\n}\n\nmodel S {\n  id Int @id\n  g Geo\n}\n";
+    assert_eq!(old_columns(plain), [("g_lat".to_owned(), None)]);
+    // a json field renames its one column
+    let json = "type Geo {\n  lat Float\n}\n\nmodel S {\n  id Int @id\n  place Geo @storage(json) @renamed_from(\"g\")\n}\n";
+    assert_eq!(ok(json).models[0].fields[1].renamed_from.as_deref(), Some("g"));
+}
+
+#[test]
+fn a_rename_hint_on_a_json_subfield_is_refused() {
+    let leaf = "type Geo {\n  lat Float @renamed_from(\"y\")\n}\n\nmodel S {\n  id Int @id\n  g Geo @storage(json)\n}\n";
+    assert!(fails(leaf).contains("S.g: Geo.lat has a @renamed_from, which a json subfield can't use"), "{}", fails(leaf));
+    let group = "type Geo {\n  lat Float\n}\n\ntype A {\n  pos Geo @renamed_from(\"geo\")\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n";
+    assert!(fails(group).contains("A.pos has a @renamed_from"), "{}", fails(group));
+    // the same hints rename columns under columns storage, and the field hint renames a json column
+    assert!(ok(&leaf.replace("@storage(json)", "@storage(columns)")).models[0].fields.len() == 2);
+}

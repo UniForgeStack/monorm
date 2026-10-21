@@ -78,6 +78,26 @@ def test_renamed_from_on_a_subfield_renames_its_column(tmp_path):
     assert not any("DROP COLUMN" in s for s in sql)
 
 
+def test_renamed_from_on_the_field_and_a_parent_subfield_renames_every_column(tmp_path):
+    Migrations(tmp_path, models(V1)).make()
+    renamed = V1.replace("  geo   Geo", '  place Geo @renamed_from("geo")').replace("  address Address?", '  where   Address? @renamed_from("address")')
+    sql = up(tmp_path, renamed)
+    for old, new in (("address_city", "where_city"), ("address_geo_lat", "where_place_lat"), ("address_geo_lng", "where_place_lng")):
+        assert f'ALTER TABLE "shop" RENAME COLUMN "{old}" TO "{new}"' in sql
+    assert not any("DROP COLUMN" in s or "ADD COLUMN" in s for s in sql)
+
+
+def test_renamed_from_with_a_new_prefix_renames_the_default_named_columns(tmp_path):
+    Migrations(tmp_path, models(V1)).make()
+    prefixed = V1.replace("  address Address?", '  address Address? @storage(columns, prefix: "a_")')
+    sql = up(tmp_path, prefixed)
+    assert 'ALTER TABLE "shop" RENAME COLUMN "address_city" TO "a_city"' not in sql  # no hint: a drop and an add
+    hinted = V1.replace("  address Address?", '  addr Address? @storage(columns, prefix: "a_") @renamed_from("address")')
+    sql = up(tmp_path, hinted)
+    assert 'ALTER TABLE "shop" RENAME COLUMN "address_city" TO "a_city"' in sql
+    assert 'ALTER TABLE "shop" RENAME COLUMN "address_geo_lat" TO "a_geo_lat"' in sql
+
+
 def test_a_second_make_after_a_nested_change_finds_nothing(tmp_path):
     Migrations(tmp_path, models(V1)).make()
     changed = V1.replace("  city String\n", "  city String\n  zip  String\n")
