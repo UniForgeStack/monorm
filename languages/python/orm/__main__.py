@@ -23,6 +23,8 @@ from __future__ import annotations
 import sys
 
 from . import _native
+from ._apps import resolve_apps
+from ._native import SchemaError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +36,13 @@ def main(argv: list[str] | None = None) -> int:
             "CLI is unavailable in this runtime profile; install orm[tooling] and set ORM_PROFILE=tooling"
         )
     args = sys.argv[1:] if argv is None else list(argv)
+    try:
+        apps = resolve_apps(_native.cli_schema(args))
+    except SchemaError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    for name, path in apps.items():
+        args += ["--app", f"{name}={path}"]
     found = _native.cli_migrate_args(args)
     if found is not None:
         schema, directory, url, target = found

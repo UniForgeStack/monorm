@@ -124,3 +124,21 @@ fn pull_baseline_and_drift_on_sqlite() {
     assert!(text(&drift.stdout).contains("add column book.pages"), "{}", text(&drift.stdout));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn app_flag_gives_the_loader_the_schema_of_an_app() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-app-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("vendor")).unwrap();
+    std::fs::write(dir.join("vendor/auth.prisma"), "model User {\n  id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("schema.prisma"), "import \"app:orm-auth\" (prefix: \"auth_\")\nmodel Post {\n  id Int @id\n}\n").unwrap();
+
+    let missing = orm(&dir, &["check", "--schema", "schema.prisma"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(text(&missing.stderr).contains("install the `orm-auth` package (or pass --app orm-auth=PATH)"), "{}", text(&missing.stderr));
+    assert_eq!(orm(&dir, &["check", "--app", "orm-auth"]).status.code(), Some(2));
+
+    let ok = orm(&dir, &["check", "--schema", "schema.prisma", "--app", "orm-auth=vendor/auth.prisma"]);
+    assert!(ok.status.success(), "{}", text(&ok.stderr));
+    assert!(text(&ok.stdout).contains("(2 models)"), "{}", text(&ok.stdout));
+}

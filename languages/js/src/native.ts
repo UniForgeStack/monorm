@@ -189,10 +189,11 @@ interface Addon {
   nativeArtifact(): string;
   profileMetadata(): string;
   compileSchema(source: string, path?: string | null): string;
-  compileSchemaFile(path: string): string;
-  generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null, modelMethods?: Record<string, string> | null): string;
+  compileSchemaFile(path: string, apps?: Record<string, string> | null): string;
+  generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null, modelMethods?: Record<string, string> | null, apps?: Record<string, string> | null): string;
   setDecimalClass(ctor: unknown): void;
   cli(argv: string[]): Promise<number>;
+  cliSchema(argv: string[]): string;
   cliMigrateArgs(argv: string[]): (string | null)[] | null;
   listMigrations(dir: string): string[][];
   findMigration(dir: string, name: string): string[];

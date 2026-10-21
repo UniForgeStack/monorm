@@ -55,7 +55,9 @@ python examples/blog/demo.py sqlite://:memory:
 
 * **`models.py` (runtime).** The compiled schema IR plus `orm.define()`, which builds
   the model classes (field and relation descriptors) from it. `orm.load("schema.prisma")`
-  does the same at runtime without a generated file.
+  does the same at runtime without a generated file. `orm.load` does not resolve `import "app:..."`:
+  generate the models (or `python -m orm`) so the command line finds the installed app
+  through its `orm.apps` entry point (see [`schema.md`](../schema/schema.md#importing-an-installed-app)).
 * **`models.pyi` (types).** Per model:
   * the model class (`id: f.BigInt[int]`, `posts: f.HasMany[Post, _PostPath]`, a typed
     `update()`);

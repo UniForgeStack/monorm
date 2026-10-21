@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _native
+from ._apps import resolve_apps
 from .db import Database, _callbacks, _Callbacks, _current_tx
 from .db import connect as orm_connect
 from ._native import MigrationError
@@ -101,7 +102,7 @@ def _native_schema(schema: Schema) -> _native.Schema:
         return schema
     if isinstance(schema, Registry):
         return schema.prepare()
-    return _native.Schema(_native.compile_schema_file(os.fspath(schema)))
+    return _native.Schema(_native.compile_schema_file(os.fspath(schema), resolve_apps(schema)))
 
 
 class Migrations:
