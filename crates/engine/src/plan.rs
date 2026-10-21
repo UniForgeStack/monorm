@@ -30,7 +30,7 @@ use sea_query::{
 use crate::error::{query_err, Error, Result};
 use crate::params::Params;
 use orm_core::ir::{
-    ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
+    Annotation, ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
     JsonKey, NestedStorage, Prefetch, RelKind, RelationIr, Select, SelectItem, Update, ValueType, When,
 };
 use orm_core::dialect::{Capabilities, Dialect, Target};
@@ -906,7 +906,7 @@ impl<'s> Planner<'s> {
         };
         validate_named_bypass(schema, model, bypass)?;
         Ok(match op {
-            Operation::Select(q) => Plan::Select(plan_select(schema, target, q, params)?),
+            Operation::Select(q) => Plan::Select(plan_select(schema, target, with_default_annotations(schema, q)?.as_ref(), params)?),
             Operation::Count(q) | Operation::Exists(q) => {
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, q.from.as_deref(), params, vec![], 0)?;
@@ -2837,19 +2837,9 @@ impl<'s> Planner<'s> {
         }).collect() }))
     }
 
-    /// `q` with the root and joined query defaults; borrowed when no default applies.
-    fn with_query_defaults<'q>(&self, q: &'q Select) -> Result<std::borrow::Cow<'q, Select>> {
+    /// `q` with the root and joined read defaults (fields and related paths); borrowed when no default applies.
+    fn with_read_defaults<'q>(&self, q: &'q Select) -> Result<std::borrow::Cow<'q, Select>> {
         let mut q = std::borrow::Cow::Borrowed(q);
-        let bypass = q.without_defaults.clone();
-        for part in self.model(self.root).read_defaults.parts.iter().filter(|p| !bypass.skips(&p.identity.name)) {
-            for (name, expr) in &part.annotate {
-                // An explicit named selection overrides the default of that name.
-                if q.columns.as_ref().is_some_and(|items| items.iter().any(|item|
-                    matches!(item, SelectItem::Expr { name: Some(n), .. } if n == name))) { continue; }
-                q.to_mut().columns.get_or_insert_with(|| vec![SelectItem::Model])
-                    .push(SelectItem::Expr { expr: expr.clone(), name: Some(name.clone()) });
-            }
-        }
         if q.model_fields.is_none() { if let Some(fields) = active_fields(self.model(self.root), &q.without_defaults) { q.to_mut().model_fields = Some(fields.to_vec()); } }
         if !q.without_related && q.columns.is_none() {
             for path in active_related(self.schema, self.root, &q.without_defaults)? {
@@ -2888,7 +2878,7 @@ impl<'s> Planner<'s> {
             }
             _ => q,
         };
-        let defaulted = self.with_query_defaults(q)?;
+        let defaulted = self.with_read_defaults(q)?;
         let q = defaulted.as_ref();
         if let Some(items) = &q.columns {
             return self.select_columns(q, items, false);
@@ -3333,6 +3323,23 @@ fn with_default_order(schema: &Schema, q: &Select) -> Result<Option<Select>> {
     if !q.order.is_empty() { return Ok(None); }
     let order = effective_order(schema, q)?;
     Ok((!order.is_empty()).then(|| Select { order, ..q.clone() }))
+}
+
+/// `q` with the default annotations of its model, for a read that returns instances. A
+/// default is a relation aggregate set on each object; `select(...)` projections, subqueries
+/// and internal reads never get one. An explicit annotation of the same name wins.
+fn with_default_annotations<'q>(schema: &Schema, q: &'q Select) -> Result<std::borrow::Cow<'q, Select>> {
+    let mut q = std::borrow::Cow::Borrowed(q);
+    if q.columns.is_some() || q.from.is_some() { return Ok(q); }
+    let bypass = q.without_defaults.clone();
+    let model = schema.model(schema.model_idx(&q.model).map_err(query_err)?);
+    for part in model.read_defaults.parts.iter().filter(|p| !bypass.skips(&p.identity.name)) {
+        for (name, expr) in &part.annotate {
+            if q.annotations.iter().any(|a| a.name == *name) { continue; }
+            q.to_mut().annotations.push(Annotation { name: name.clone(), expr: expr.clone() });
+        }
+    }
+    Ok(q)
 }
 
 /// A top-level SELECT with its `WITH` clause.

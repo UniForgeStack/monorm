@@ -111,6 +111,10 @@ Build-select the compiler as a dependency with alias `query_defaults`; its
 manifest selects the `query-defaults` host capability. Without that compiler,
 `@@query.*` declarations fail at definition. The neutral `read_defaults` prepared
 contract is accepted in every build; other extensions can contribute to it.
+An `annotate` item of that contract must be a relation aggregate.
+A read that returns model instances sets it as an attribute of each object.
+A `select(...)` projection, an aggregate, `group_by`, `distinct` and a subquery never get it.
+An explicit annotation of the same name wins over the default.
 Ordinary explicit partial selections remain available in baseline builds.
 
 Options omitted on a child inherit the nearest parent's policy. An explicit `filter:` option
