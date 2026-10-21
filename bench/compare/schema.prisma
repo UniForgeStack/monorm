@@ -1,0 +1,81 @@
+// The shared benchmark schema: the `orm` and Prisma runners read this file; Django and Rust mirror it.
+// schema.sql is the same schema as SQL.
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id         BigInt   @id @default(autoincrement())
+  email      String   @unique @db.VarChar(254)
+  name       String   @db.VarChar(100)
+  created_at DateTime
+  posts      Post[]
+  comments   Comment[]
+
+  @@map("users")
+}
+
+model Category {
+  id    BigInt @id @default(autoincrement())
+  name  String @unique @db.VarChar(50)
+  posts Post[]
+
+  @@map("categories")
+}
+
+model Post {
+  id          BigInt    @id @default(autoincrement())
+  author_id   BigInt
+  category_id BigInt?
+  title       String    @db.VarChar(200)
+  body        String    @db.Text
+  views       Int       @default(0)
+  published   Boolean   @default(false)
+  created_at  DateTime
+  author      User      @relation(fields: [author_id], references: [id], onDelete: Cascade)
+  category    Category? @relation(fields: [category_id], references: [id], onDelete: SetNull)
+  comments    Comment[]
+  tags        Tag[]     @relation(through: PostTag)
+  post_tags   PostTag[]
+
+  @@index([author_id])
+  @@index([category_id])
+  @@index([published, views])
+  @@map("posts")
+}
+
+model Comment {
+  id          BigInt   @id @default(autoincrement())
+  post_id     BigInt
+  author_id   BigInt?
+  body        String   @db.Text
+  created_at  DateTime
+  post        Post     @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  author      User?    @relation(fields: [author_id], references: [id], onDelete: SetNull)
+
+  @@index([post_id])
+  @@index([author_id])
+  @@map("comments")
+}
+
+model Tag {
+  id        BigInt    @id @default(autoincrement())
+  name      String    @unique @db.VarChar(50)
+  posts     Post[]    @relation(through: PostTag)
+  post_tags PostTag[]
+
+  @@map("tags")
+}
+
+model PostTag {
+  id      BigInt @id @default(autoincrement())
+  post_id BigInt
+  tag_id  BigInt
+  post    Post   @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  tag     Tag    @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+
+  @@unique([post_id, tag_id])
+  @@index([tag_id])
+  @@map("post_tags")
+}

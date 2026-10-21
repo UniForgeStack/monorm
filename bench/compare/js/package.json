@@ -1,0 +1,12 @@
+{
+  "name": "bench-compare-js",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript runners of the comparison benchmark: our js package, Prisma, pg",
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "pg": "8.23.1",
+    "prisma": "7.10.1"
+  }
+}
