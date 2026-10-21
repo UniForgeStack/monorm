@@ -42,9 +42,17 @@ impl ExtensionCode {
         self.members.extension.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect()
     }
 
-    /// Whether the model, or one of its fields, declares an attribute of this extension.
+    /// Whether the model gets the members of this extension: it, or one of its fields,
+    /// declares an attribute of the extension, or a record the extension prepared names it.
+    /// A proxy declares nothing, but the extension prepares the records of its root for it.
     pub fn applies(&self, ir: &crate::ir::SchemaIr, model: &str) -> bool {
-        ir.behavior.declarations.iter().any(|d| d.model == model && self.attributes.contains(&d.attribute))
+        let id = self.members.extension.as_str();
+        let b = &ir.behavior;
+        b.declarations.iter().any(|d| d.model == model && self.attributes.contains(&d.attribute))
+            || b.read_defaults.iter().any(|r| r.model == model && r.source == id)
+            || b.delete_rewrites.iter().any(|r| r.model == model && r.source == id)
+            || b.write_assignments.iter().any(|r| r.model == model && r.source == id)
+            || b.instance_guards.iter().any(|r| r.model == model && r.source == id)
     }
 
     /// The files to write below the extension directory: path, content with the header.
@@ -68,7 +76,8 @@ impl Options {
 
 impl Options {
     /// The query sets split at `sep` into (module, class), checked against the schema.
-    pub fn query_sets(&self, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&str, (&str, &str)>, String> {
+    /// A proxy without a class of its own gets the class of its nearest ancestor that has one.
+    pub fn query_sets<'a>(&'a self, ir: &'a crate::ir::SchemaIr, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str)>, String> {
         let mut out = std::collections::BTreeMap::new();
         for (model, target) in &self.query_sets {
             if !schema.models.iter().any(|m| m.ir.name == *model) {
@@ -83,6 +92,17 @@ impl Options {
                 return Err(format!("--query-set {model}={target}: {module} is not an absolute module name"));
             }
             out.insert(model.as_str(), (module, class));
+        }
+        for proxy in &ir.behavior.proxy_models {
+            let mut parent = proxy.parent.as_str();
+            for _ in 0..ir.behavior.proxy_models.len() {
+                if out.contains_key(proxy.model.as_str()) { break; }
+                if let Some(&set) = out.get(parent) {
+                    out.insert(proxy.model.as_str(), set);
+                } else if let Some(up) = ir.behavior.proxy_models.iter().find(|p| p.model == parent) {
+                    parent = up.parent.as_str();
+                }
+            }
         }
         Ok(out)
     }
@@ -229,6 +249,73 @@ mod reference_tests {
         assert!(ts.contains("readonly boundQueries: InstanceType<ReturnType<typeof _e0.taggedBoundQuerySet<new (...args: any[]) => BoundQuerySet<PostBaseSpec>>>>;"));
         assert!(ts.lines().find(|l| l.starts_with("import { define")).is_some_and(|l| l.contains("type BoundQuerySet")));
         assert!(ts.contains("extensions: { \"example.language\": { module: _e0, hash: \"abc\", dir: new URL(\"./orm-ext/example-language/\", import.meta.url) } }, members: { \"Post\": [\"example.language\"] }"));
+    }
+
+    /// `Post`, its proxy `Draft` and a proxy of that, `Final`, and an unrelated `Note`.
+    fn proxied() -> (crate::ir::SchemaIr, crate::schema::Schema) {
+        let mut ir = crate::dsl::compile("model Post {\n id Int @id\n}\nmodel Draft {\n id Int @id\n}\nmodel Final {\n id Int @id\n}\nmodel Note {\n id Int @id\n}", None).unwrap();
+        // The schema is built first: only an artifact with the proxy-models capability accepts a proxy there.
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        for (model, parent) in [("Draft", "Post"), ("Final", "Draft")] {
+            ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: model.into(), parent: parent.into(), storage_owner: "Post".into(), ..Default::default() });
+        }
+        (ir, schema)
+    }
+
+    fn delete_rewrite(model: &str) -> orm_contracts::writes::DeleteRewrite {
+        orm_contracts::writes::DeleteRewrite { source: "example.language".into(), model: model.into(), field: "deleted".into(), guard: serde_json::Value::Null }
+    }
+
+    #[test]
+    fn a_proxy_gets_the_extension_members_of_its_root_through_the_prepared_records() {
+        let (mut ir, schema) = proxied();
+        let ext = tagged(&mut ir, "Post");
+        let options = Options { extensions: vec![ext.clone()], ..Options::default() };
+        // The attribute is on the root only and no record names the proxy: only the root has the members.
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.module.contains("members={\"Post\": (\"example.language\",)})"), "{}", py.module);
+        // A prepared record of the extension names a proxy, and a proxy of a proxy, the same way.
+        ir.behavior.delete_rewrites.extend([delete_rewrite("Draft"), delete_rewrite("Final")]);
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.module.contains("members={\"Post\": (\"example.language\",), \"Draft\": (\"example.language\",), \"Final\": (\"example.language\",)})"), "{}", py.module);
+        assert!(py.stub.contains("class Draft(_ext0Instance, Model):") && py.stub.contains("class Final(_ext0Instance, Model):"));
+        assert!(py.stub.contains("class _DraftObjects(_ext0QuerySet[Draft], DraftQuerySet): ...") && py.stub.contains("class Note(Model):"));
+        let mut ts_ext = ext;
+        ts_ext.members.language = "typescript".into();
+        ts_ext.members.query_set = "taggedQuerySet".into();
+        let options = Options { extensions: vec![ts_ext], ..Options::default() };
+        let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+        assert!(ts.contains("export interface Draft extends DraftData, Instance<DraftSpec>, _e0.TaggedInstance {"), "{ts}");
+        assert!(ts.contains("\"Draft\": [\"example.language\"]") && ts.contains("\"Final\": [\"example.language\"]") && !ts.contains("\"Note\": ["));
+    }
+
+    #[test]
+    fn a_proxy_takes_the_query_set_class_of_its_root_unless_it_names_its_own() {
+        let (ir, schema) = proxied();
+        let mut options = Options::default();
+        options.query_sets.insert("Post".into(), "app.queries:PostQueries".into());
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        for model in ["Post", "Draft", "Final"] {
+            assert!(py.module.contains(&format!("use_query_set({model}, \"app.queries:PostQueries\")")), "{}", py.module);
+        }
+        assert!(!py.module.contains("use_query_set(Note"));
+        // The root's class has the root as its model, so the stub of a proxy types the user's methods as `Any`.
+        assert!(py.stub.contains("from app.queries import PostQueries as _PostObjects") && !py.stub.contains("as _DraftObjects"));
+        assert!(py.stub.contains("class _DraftObjects(DraftQuerySet):\n    def __getattr__(self, name: str) -> Any: ..."), "{}", py.stub);
+        assert!(py.stub.contains("objects: ClassVar[_DraftObjects]") && py.stub.contains("objects: ClassVar[NoteQuerySet]"));
+        // The class of the nearest proxy ancestor that has one wins, and a proxy's own class wins over the root's.
+        options.query_sets.insert("Draft".into(), "app.queries:DraftQueries".into());
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.module.contains("use_query_set(Draft, \"app.queries:DraftQueries\")") && py.module.contains("use_query_set(Final, \"app.queries:DraftQueries\")"));
+        assert!(py.stub.contains("from app.queries import DraftQueries as _DraftObjects") && py.stub.contains("class _FinalObjects(FinalQuerySet):"));
+        let mut options = Options::default();
+        options.query_sets.insert("Post".into(), "./queries.js#PostQueries".into());
+        let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+        assert!(ts.contains("useQuerySet(Post, () => _q0.PostQueries);"), "{ts}");
+        for model in ["Draft", "Final"] {
+            assert!(ts.contains(&format!("useQuerySet({model}, (() => _q0.PostQueries) as never);")), "{ts}");
+        }
+        assert!(!ts.contains("useQuerySet(Note") && ts.matches("readonly queries: _q0.PostQueries;").count() == 3);
     }
 
     #[test]

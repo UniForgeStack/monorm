@@ -5,6 +5,7 @@ import pytest
 import orm
 from conftest import DATABASE_URL
 from artifact_caps import artifact_capabilities, has_extension
+from soft_delete_ext import loads_soft_delete
 
 SOURCE = """
 model PartitionRow {
@@ -127,7 +128,7 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
         '@@map("partition_proxy_reward")\n @@query.filter("tenant", "shop == scope.shop and deleted == null")',
     )
     registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    models = loads_soft_delete(source, registry=registry)
     Reward, Percent, Fixed = (models[n] for n in ("Reward", "PercentageReward", "FixedReward"))
     db = await orm.connect(DATABASE_URL, registry=registry, default=False)
     try:
@@ -143,8 +144,8 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
             assert await Fixed.objects.using(db).count() == 1
         # Neither scope nor the deleted-row default remains; storage ownership does.
         assert await Percent.objects.using(db).without_defaults().count() == 2
-        deleted = Percent.objects.using(db).without_defaults().filter(Percent.deleted.is_not_null())
-        assert await deleted.count() == 1
+        # The proxy has the soft-delete members of its root.
+        assert await Percent.objects.using(db).without_defaults().deleted_only().count() == 1
     finally:
         await db.drop_tables()
         await db.close()

@@ -32,13 +32,15 @@ def soft_delete_module() -> ModuleType:
 
 
 def loads_soft_delete(source: str, *, registry: orm.Registry | None = None) -> dict[str, Any]:
-    """`orm.loads`, with the soft-delete members on each model that declares `@soft_delete.deleted_at`."""
+    """`orm.loads`, with the soft-delete members on each model the extension has a record for, a proxy too."""
     ir = _native.compile_schema(source)
-    declarations = json.loads(ir).get("behavior", {}).get("declarations", ())
-    models = sorted({d["model"] for d in declarations if d["attribute"].startswith("soft_delete.")})
+    behavior = json.loads(ir).get("behavior", {})
+    models = {d["model"] for d in behavior.get("declarations", ()) if d["attribute"].startswith("soft_delete.")}
+    for kind in ("read_defaults", "delete_rewrites", "write_assignments", "instance_guards"):
+        models |= {r["model"] for r in behavior.get(kind, ()) if r["source"] == ID}
     return define(
         ir,
         registry=registry,
         extensions={ID: soft_delete_module()},
-        members={name: (ID,) for name in models},
+        members={name: (ID,) for name in sorted(models)},
     )

@@ -35,10 +35,12 @@ function generated(): Promise<Code> {
   return code;
 }
 
-/** `loads`, with the soft-delete members on each model that declares `@soft_delete.deleted_at`. */
+/** `loads`, with the soft-delete members on each model the extension has a record for, a proxy too. */
 export async function loadsSoftDelete(source: string, options: { registry: Registry }): Promise<ReturnType<typeof plainLoads>> {
   const ir = call(() => native().compileSchema(source, null));
-  const declarations = (JSON.parse(ir).behavior?.declarations ?? []) as { attribute: string; model: string }[];
-  const models = [...new Set(declarations.filter((d) => d.attribute.startsWith("soft_delete.")).map((d) => d.model))];
+  const behavior = JSON.parse(ir).behavior ?? {};
+  const declared = ((behavior.declarations ?? []) as { attribute: string; model: string }[]).filter((d) => d.attribute.startsWith("soft_delete.")).map((d) => d.model);
+  const records = ["read_defaults", "delete_rewrites", "write_assignments", "instance_guards"].flatMap((kind) => (behavior[kind] ?? []) as { source: string; model: string }[]);
+  const models = [...new Set([...declared, ...records.filter((r) => r.source === ID).map((r) => r.model)])];
   return define(ir, { registry: options.registry, extensions: { [ID]: await generated() }, members: Object.fromEntries(models.map((m) => [m, [ID]])) } as never);
 }

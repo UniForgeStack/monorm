@@ -144,6 +144,9 @@ Then `Post.objects` is a `PostQueries`, and the methods chain with every builder
 * `User.posts.objects.published()` uses them for related rows in `load()`.
 * A method returns `this` with a cast. TypeScript can not change the type arguments of `this`, so a custom method gives the class's own row type:
   call custom methods before `load()`, `label()` or `asPrefetch()`, whose row and relation types they would drop.
+* A proxy model (`@@proxy.of`) takes the class of its root model, or of its nearest ancestor with a class, unless the proxy names its own.
+  `Draft.objects.published()` works for a `Draft` proxy of `Post` and the types of the methods carry over.
+  `models.ts` calls `useQuerySet(Draft, (() => _q0.PostQueries) as never)`: the class extends `QuerySet<PostSpec>`, which `useQuerySet` does not accept for the `Draft` spec.
 
 ## Queries
 

@@ -166,6 +166,10 @@ Then `Post.objects` is a `PostQueries`, and the methods chain with every builder
 * `User.posts.objects.published()` uses them for related rows in `load()`.
 * The class must subclass `QuerySet` and must not declare `__slots__` (it mixes with the relation-set classes); `use_query_set` raises `TypeError` otherwise.
   Keep state in the query, not in attributes: builder methods copy the instance `__dict__`, but nothing else.
+* A proxy model (`@@proxy.of`) takes the class of its root model, or of its nearest ancestor with a class, unless the proxy names its own.
+  `Draft.objects` is a `PostQueries` for a `Draft` proxy of `Post`, and `Draft.objects.published()` returns `Draft` rows.
+  The stub gives such a class only the generated bases and a `__getattr__` that returns `Any`: the methods of the class work, but mypy and pyright do not check them on the proxy.
+  Name the class for the proxy (`--query-set Draft=...`) to get the checked methods.
 
 ## Queries
 

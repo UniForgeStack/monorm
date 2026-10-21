@@ -216,7 +216,10 @@ pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str) -> Result<Generate
 
 /// [`generate`] with generator options (the user's query-set classes).
 pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &super::Options) -> Result<Generated, String> {
-    let query_sets = options.query_sets(schema, ':')?;
+    let query_sets = options.query_sets(ir, schema, ':')?;
+    // A proxy takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
+    // which the stub cannot combine with the proxy's `QuerySet[Proxy]`, so the stub types its methods as `Any`.
+    let inherits = |model: &str| query_sets.contains_key(model) && !options.query_sets.contains_key(model);
     let ir_json = super::embedded_schema_json(ir)?;
     if ir_json.contains("\"\"\"") {
         return Err("schema text contains \"\"\" which can't be embedded in the generated module".into());
@@ -542,9 +545,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
              -> UpdateMany[{name}]: ...  # type: ignore[override]\n"
         )
         .unwrap();
-        if !exts.is_empty() {
+        if !exts.is_empty() || inherits(name) {
             // the user's class first, then the extensions, last in the chain first, as at runtime
-            let user = if query_sets.contains_key(name.as_str()) { format!("_{name}UserObjects, ") } else { String::new() };
+            let user = if query_sets.contains_key(name.as_str()) && !inherits(name) { format!("_{name}UserObjects, ") } else { String::new() };
+            let any = if inherits(name) { "    def __getattr__(self, name: str) -> Any: ...\n" } else { "" };
             let mixins: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}QuerySet[{name}], ")).collect();
             let bound: String = exts
                 .iter()
@@ -552,10 +556,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                 .filter(|(i, _)| !options.extensions[*i].members.bound_query_set.is_empty())
                 .map(|(i, _)| format!("_ext{i}BoundQuerySet[{name}], "))
                 .collect();
-            if bound.is_empty() {
+            if bound.is_empty() && any.is_empty() {
                 writeln!(body, "class _{name}Objects({user}{mixins}{name}QuerySet): ...\n").unwrap();
+            } else if bound.is_empty() {
+                writeln!(body, "class _{name}Objects({user}{mixins}{name}QuerySet):\n{any}").unwrap();
             } else {
                 writeln!(body, "class _{name}Objects({user}{mixins}{name}QuerySet):").unwrap();
+                body.push_str(any);
                 writeln!(body, "    def of(self, objs: Iterable[{name}] | {name}) -> _{name}BoundObjects: ...\n").unwrap();
                 writeln!(body, "class _{name}BoundObjects({bound}BoundQuerySet[{name}]): ...\n").unwrap();
             }
@@ -591,7 +598,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     // `Literal` and `overload` type `insert_many(..., copy=True)`.
     let typing = format!(
         "{}ClassVar, Literal, NotRequired, Required, TypedDict, overload",
-        if used.contains("Any") { "Any, " } else { "" },
+        if used.contains("Any") || query_sets.keys().any(|m| inherits(m)) { "Any, " } else { "" },
     );
     writeln!(pyi, "from typing import {typing}").unwrap();
     if used.contains("UUID") {
@@ -603,7 +610,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, NestedRef, NestedValue, QuerySet, RelationPath, Update, UpdateMany\n\
          from orm import fields as f\n\n",
     );
-    for (model, (module, class)) in &query_sets {
+    for (model, (module, class)) in query_sets.iter().filter(|(m, _)| !inherits(m)) {
         let alias = if used_exts.is_empty() || options.model_extensions(ir, model).is_empty() { "Objects" } else { "UserObjects" };
         writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();
     }

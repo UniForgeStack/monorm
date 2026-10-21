@@ -38,6 +38,15 @@ encoding changes, key changes and physical object overrides fail during definiti
 A proxy cannot override a relation; inherited relations keep their targets.
 A proxy cannot declare `@@protected_write`; it shares the protection of its root model.
 
+**Inherited behavior.** A proxy has every member that another extension adds to its root model.
+For example, a proxy of a soft-delete model has `all_with_deleted()`, `deleted_only()`, `undelete()` and `hard_delete()`.
+A model gets the members of an extension when the prepared record of that extension names it, a proxy too.
+A proxy also uses the user query-set class of its root model (`--query-set`, `use_query_set`, `useQuerySet`), unless it names its own.
+This holds in the generated Python and TypeScript code and at run time.
+
+Native code that `orm-extension-build` generates for one model (`methods`, `result_fields`, `specializations`) is not inherited by a proxy.
+Models that `orm.loads` or `define()` build at run time get extension members only from the caller.
+
 **Inherited fields.** `@@proxy.fields(include: [...])` or
 `@@proxy.fields(exclude: [...])` selects the source fields and relations by name.
 With no `@@proxy.fields`, the proxy inherits all of them. `include` and `exclude`
