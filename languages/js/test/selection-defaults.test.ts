@@ -234,6 +234,27 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   });
 }
 
+for (const dialect of ["sqlite", "postgres"] as const) {
+  test(`a default annotation applies to prefetched rows: ${dialect}`, async (t) => {
+    if (!queryDefaults) {
+      t.skip("needs a native build with the query-defaults feature");
+      return;
+    }
+    const { db, Author, Book, a, b } = await open(dialect, true, true);
+    try {
+      const ann = await a.insert({ name: "ann", bio: "large", note: null });
+      await b.insert({ title: "one", authorId: ann.pk });
+      await b.insert({ title: "two", authorId: ann.pk });
+      const books = await b.withoutRelated().load(Book.author.objects.asPrefetch()).orderBy(Book.title).all();
+      assert.equal(Number(books[0].author.bookCount), 2);
+      const node = await b.withoutRelated().load(Book.author.objects.asPrefetch().withoutDefaults("counts")).orderBy(Book.title).all();
+      assert.equal(node[0].author.bookCount, undefined);
+      const parent = await b.withoutDefaults().load(Book.author.objects.asPrefetch()).orderBy(Book.title).all();
+      assert.equal(parent[0].author.bookCount, undefined);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
 test("schema default order: one source per option", (t) => {
   if (!queryDefaults) {
     t.skip("needs a native build with the query-defaults feature");

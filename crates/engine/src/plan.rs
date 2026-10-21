@@ -3409,6 +3409,7 @@ fn plan_prefetch(
     }
     validate_bypass(cm, &q.without_defaults)?;
     q.without_defaults.merge(without_defaults);
+    q = with_default_annotations(schema, &q)?.into_owned();
     let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone(), sub: vec![], alias: vec![] }, desc: false, nulls: None }).collect();
     q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
