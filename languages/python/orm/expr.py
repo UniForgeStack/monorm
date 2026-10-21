@@ -506,6 +506,13 @@ def param(name: str) -> Any:
     return Param(name)
 
 
+def _same_table_model(column_root: type[Model], root: type[Model] | Cte) -> type[Model] | None:
+    """``root`` when it is a model other than ``column_root`` that stores its rows in the same table."""
+    if isinstance(root, type) and root._meta.table == column_root._meta.table:
+        return root
+    return None
+
+
 class ColumnRef(Expression[T]):
     """A column of ``root``'s model, or of a model reached from it through ``path``."""
 
@@ -518,6 +525,17 @@ class ColumnRef(Expression[T]):
 
     def _ir(self, ctx: IRContext) -> IR:
         if self._root is not ctx.root:
+            own = _same_table_model(self._root, ctx.root)
+            if own is not None:
+                # Models on one table share their columns: the query's own model resolves the name.
+                if self._path:
+                    if self._path[0] not in own._meta.relations:
+                        raise LookupError(f"{own.__name__} has no relation {self._path[0]!r}")
+                    return {"t": "col", "path": list(self._path), "name": self._field.name}
+                field = own._meta.fields.get(self._field.name)
+                if field is None:
+                    raise LookupError(f"{own.__name__} has no field {self._field.name!r}")
+                return {"t": "col", "path": [], "name": field.name}
             root = ctx.root.__name__ if isinstance(ctx.root, type) else f"CTE {ctx.root.name}"
             hint = f"reach it through a relation of {root} instead"
             c = ctx.outer

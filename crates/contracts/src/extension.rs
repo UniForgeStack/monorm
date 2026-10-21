@@ -80,6 +80,27 @@ pub struct Requirements {
     pub instance_guards: Vec<crate::writes::InstanceGuard>,
 }
 impl Requirements {
+    /// The proxy ancestors of `model`, nearest first, ending at the root.
+    /// `None` when the proxy parents form a cycle.
+    pub fn ancestors<'a>(&'a self, model: &'a str) -> Option<Vec<&'a str>> {
+        let mut out = vec![];
+        let mut current = model;
+        while let Some(proxy) = self.proxy_models.iter().find(|p| p.model == current) {
+            if proxy.parent == model || out.contains(&proxy.parent.as_str()) { return None; }
+            out.push(proxy.parent.as_str());
+            current = proxy.parent.as_str();
+        }
+        Some(out)
+    }
+
+    /// The extensions that prepared a read default, delete rewrite, write assignment or instance guard for `model`.
+    pub fn record_sources<'a>(&'a self, model: &'a str) -> impl Iterator<Item = &'a str> {
+        self.read_defaults.iter().filter(move |r| r.model == model).map(|r| r.source.as_str())
+            .chain(self.delete_rewrites.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
+            .chain(self.write_assignments.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
+            .chain(self.instance_guards.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()

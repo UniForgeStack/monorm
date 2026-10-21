@@ -13,13 +13,60 @@ pub struct Sources {
     pub node: String,
 }
 
+/// A proxy takes the spec of its nearest ancestor that has one, then adds its own entries.
+/// An own entry with the same field, computed or method name replaces the inherited one.
+/// A field rule or computed field on a field the proxy does not keep is left out.
+/// An inherited record rule that needs a dropped field fails the build, unless an own record rule of the proxy has the same export.
+fn inherited_specs(schema: &SchemaIr, specs: &[NativeSpec]) -> Result<Vec<NativeSpec>, String> {
+    let own: BTreeMap<_, _> = specs.iter().map(|s| (s.model.as_str(), s)).collect();
+    let mut merged = vec![];
+    for proxy in &schema.behavior.proxy_models {
+        let source = schema.behavior.ancestors(&proxy.model).unwrap_or_default().into_iter().find_map(|a| own.get(a).copied());
+        let own_spec = own.get(proxy.model.as_str()).copied();
+        let Some(model) = schema.models.iter().find(|m| m.name == proxy.model) else {
+            merged.extend(own_spec.cloned());
+            continue;
+        };
+        let Some(source) = source.or(own_spec) else { continue };
+        let kept = |name: &String| model.fields.iter().any(|f| f.name == *name);
+        let inherited = source.model != proxy.model;
+        let mut spec = NativeSpec { model: proxy.model.clone(), fields: vec![], computed: vec![], records: vec![], methods: vec![] };
+        if inherited {
+            spec.fields = source.fields.iter().filter(|r| kept(&r.field)).cloned().collect();
+            spec.computed = source.computed.iter().filter(|c| kept(&c.dependency)).cloned().collect();
+            let replaced = |export: &String| own_spec.is_some_and(|o| o.records.iter().any(|r| r.export == *export));
+            for rule in &source.records {
+                if replaced(&rule.export) { continue; }
+                match rule.dependencies.iter().find(|d| !kept(d)) {
+                    None => spec.records.push(rule.clone()),
+                    Some(dropped) => return Err(format!(
+                        "{}: record rule {} (inherited from {}) needs field {dropped}, which the proxy drops; keep {dropped} in the proxy, or declare an own record rule of the same export {}",
+                        proxy.model, rule.export, source.model, rule.export,
+                    )),
+                }
+            }
+            spec.methods = source.methods.clone();
+        }
+        if let Some(own_spec) = own_spec {
+            for rule in &own_spec.fields { spec.fields.retain(|r| r.field != rule.field); spec.fields.push(rule.clone()); }
+            for computed in &own_spec.computed { spec.computed.retain(|c| c.field != computed.field); spec.computed.push(computed.clone()); }
+            for method in &own_spec.methods { spec.methods.retain(|m| m.name != method.name); spec.methods.push(method.clone()); }
+            spec.records.extend(own_spec.records.iter().cloned());
+        }
+        if own_spec.is_some() || !(spec.fields.is_empty() && spec.computed.is_empty() && spec.records.is_empty() && spec.methods.is_empty()) { merged.push(spec); }
+    }
+    Ok(merged)
+}
+
 /// Resolve names and types at build time. The generated hot path uses field positions.
 pub fn generate(schema: &mut SchemaIr, specs: &[NativeSpec], manifests: &[Manifest]) -> Result<Sources, String> {
     generate_with_sources(schema, specs, manifests, &BTreeMap::new())
 }
 
 pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manifests: &[Manifest], sources: &BTreeMap<String, String>) -> Result<Sources, String> {
-    let mut specs = specs.to_vec();
+    let merged = inherited_specs(schema, specs)?;
+    let mut specs: Vec<_> = specs.iter().filter(|s| !schema.behavior.proxy_models.iter().any(|p| p.model == s.model)).cloned().collect();
+    specs.extend(merged);
     specs.sort_by(|a, b| a.model.cmp(&b.model));
     for spec in &mut specs { spec.methods.sort_by(|a, b| a.name.cmp(&b.name)); }
     let exports: BTreeMap<_, _> = manifests.iter().flat_map(|m| m.exports.iter().map(|e| (e.id.as_str(), e))).collect();

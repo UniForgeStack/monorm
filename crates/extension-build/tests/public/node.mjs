@@ -3,9 +3,12 @@ import { readFile } from "node:fs/promises";
 const orm = await import(process.env.ORM_EXTENSION_TEST_JS);
 const schema = JSON.parse(await readFile(process.env.ORM_EXTENSION_TEST_SCHEMA, "utf8"));
 const registry = new orm.Registry();
-const { NativeUser: User, NativeRecord: Record, LoweredUser:Lowered, NativeNullable:Nullable } = orm.define(schema, { registry });
+const { NativeUser: User, NativeRecord: Record, LoweredUser:Lowered, NativeNullable:Nullable, NativeAdmin: Admin } = orm.define(schema, { registry });
 assert.equal(User.validateUsername("valid"), undefined);
 assert.throws(() => User.validateUsername("bad!"), /username/);
+// A proxy inherits the native methods of its root.
+assert.equal(Admin.validateUsername("valid"), undefined);
+assert.throws(() => Admin.validateUsername("bad!"), /username/);
 const { NativeUser: GeneratedUser, LoweredUser:GeneratedLowered } = await import(process.env.ORM_EXTENSION_GENERATED);
 assert.equal(GeneratedUser.validateUsername("valid"), undefined);
 const snapshot = JSON.parse(registry.native().snapshot());
@@ -51,6 +54,12 @@ try {
   const row = await User.objects.insert({ username: "  alice  " });
   assert.equal(row.username, "alice");
   assert.equal(row.display, "Hello, alice!");
+  assert.equal((await Admin.objects.filter(Admin.username.eq("alice")).get()).display, "Hello, alice!");
+  const made = await Admin.objects.insert({ username: "  zed  " });
+  assert.equal(made.username, "zed");
+  assert.equal(made.display, "Hello, zed!");
+  await assert.rejects(() => Admin.objects.insert({ username: "bad!" }), /username/);
+  await made.delete();
   const generatedRow = await GeneratedUser.objects.using(db).filter(GeneratedUser.id.eq(row.id)).get();
   assert.equal(generatedRow.display, row.display);
   assert.match(User.objects.sql(), /NULL/);

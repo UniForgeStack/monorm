@@ -235,6 +235,7 @@ Native-only computations cannot be used in SQL filters, ordering, grouping, expr
 Nested/cyclic computed dependencies require an expanded profile and currently fail at build time.
 Relation-dependent computation is not supported by this primitive.
 
+A proxy model takes the spec of its nearest ancestor and adds its own entries to it; an own entry replaces the inherited one of the same name (see [proxy-models.md](../extensions/proxy-models.md)).
 Static model methods use scalar string exports with generated Python/TypeScript types and collision checks.
 Names must be valid Python identifiers, excluding keywords and `__debug__`.
 Generated write types omit computed fields and exclude expressions for native validated fields.

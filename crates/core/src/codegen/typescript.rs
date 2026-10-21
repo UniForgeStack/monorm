@@ -204,8 +204,8 @@ pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str) -> 
 pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str, options: &super::Options) -> Result<String, String> {
     let query_sets = options.query_sets(ir, schema, '#')?;
     // one namespace import per module, read lazily so an import cycle with it is safe
-    let modules: Vec<&str> = query_sets.values().map(|(module, _)| *module).collect::<BTreeSet<_>>().into_iter().collect();
-    let query_set = |model: &str| query_sets.get(model).map(|(module, class)| format!("_q{}.{class}", modules.iter().position(|m| m == module).unwrap()));
+    let modules: Vec<&str> = query_sets.values().map(|(module, ..)| *module).collect::<BTreeSet<_>>().into_iter().collect();
+    let query_set = |model: &str| query_sets.get(model).map(|(module, class, _)| format!("_q{}.{class}", modules.iter().position(|m| m == module).unwrap()));
     let has_queries = |model: &str| query_set(model).is_some() || options.extensions.iter().any(|e| e.applies(ir, model));
     let ext_base = options.ext_import.as_deref().unwrap_or("./orm-ext");
     // names: camelCase must stay unique and clear of the runtime's own
@@ -510,7 +510,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "export const {name} = models[{}] as unknown as {name}Model;\n", quote(name)).unwrap();
         if let Some(class) = query_set(name) {
             // an inherited class is a `QuerySet` of the root spec, which `useQuerySet` rejects for the proxy
-            let inherited = !options.query_sets.contains_key(name.as_str());
+            let inherited = query_sets[name.as_str()].2;
             let class = if inherited { format!("(() => {class}) as never") } else { format!("() => {class}") };
             writeln!(body, "useQuerySet({name}, {class});\n").unwrap();
         }

@@ -41,7 +41,8 @@ fn application_rust_runs_through_both_bindings() {
         ]},{"name":"NativeNullable","table":"native_nullable","fields":[
             {"name":"id","column":"id","type":"int","primary_key":true,"auto_increment":true},
             {"name":"username","column":"username","type":"string","nullable":true}
-        ]}],"behavior":{"schema_contract":2,"declarations":[
+        ]},{"name":"NativeAdmin","table":"native_admins","fields":[]}],"behavior":{"schema_contract":2,"declarations":[
+            {"attribute":"proxy.of","model":"NativeAdmin","field":null,"arguments":{},"positional":["NativeUser"],"location":{"file":"profile.json","line":3,"column":1}},
             {"attribute":"example.rename","model":"LoweredUser","field":"name","arguments":{"to":"public_name"},"positional":[],"location":{"file":"profile.json","line":1,"column":1}},
             {"attribute":"example.hide","model":"LoweredUser","field":"secret","arguments":{},"positional":[],"location":{"file":"profile.json","line":2,"column":1}}
         ]}});
@@ -51,7 +52,8 @@ fn application_rust_runs_through_both_bindings() {
         let config = temporary.join(format!("{dialect}-build.json"));
         fs::write(&config, serde_json::to_vec(&serde_json::json!({
             "host":host, "output":output, "offline":true,
-            "dependencies":{"rename":{"package":"example-rename","path":host.join("crates/extension-build/tests/fixtures/rename")}},
+            "dependencies":{"rename":{"package":"example-rename","path":host.join("crates/extension-build/tests/fixtures/rename")},
+                "proxy":{"package":"orm-proxy","path":host.join("extensions/proxy")}},
             "modules":[{"alias":"native_rules","source":host.join("crates/extension-build/tests/fixtures/native/src/lib.rs"),"manifest":manifest}],
             "specialization":{"schema":schema_path,"models":[{"model":"NativeUser", "fields":[{"field":"username","transforms":["example.trim"],"validators":["example.username"]}],
                 "records":[{"export":"example.record","dependencies":["username"]}],

@@ -27,6 +27,7 @@ async def check():
     Record = models["NativeRecord"]
     Lowered = models["LoweredUser"]
     Nullable = models["NativeNullable"]
+    Admin = models["NativeAdmin"]
     assert User.validate_username("valid") is None
     try:
         User.validate_username("bad!")
@@ -39,6 +40,15 @@ async def check():
     assert GeneratedUser._meta.schema_ir == User._meta.schema_ir
     assert GeneratedUser.validate_username("valid") is None
     assert "display" in User._meta.fields
+    # A proxy inherits the native methods and result fields of its root.
+    assert Admin.validate_username("valid") is None
+    try:
+        Admin.validate_username("bad!")
+    except orm.QueryError:
+        pass
+    else:
+        raise AssertionError("a proxy lost the compiled model method of its root")
+    assert "display" in Admin._meta.fields and "display" not in Admin._meta.input_fields
     assert "display" not in User._meta.input_fields
     snapshot = json.loads(reg.native().snapshot())
     table = next(t for t in snapshot["tables"] if t["name"] == "native_users")
@@ -98,6 +108,17 @@ async def check():
         await record.delete()
         row = await User.objects.insert(username="  alice  ")
         assert row.username == "alice" and row.display == "Hello, alice!"
+        viewed = await Admin.objects.filter(Admin.username == "alice").get()
+        assert viewed.display == "Hello, alice!"
+        made = await Admin.objects.insert(username="  zed  ")
+        assert made.username == "zed" and made.display == "Hello, zed!"
+        try:
+            await Admin.objects.insert(username="bad!")
+        except orm.QueryError:
+            pass
+        else:
+            raise AssertionError("a proxy write skipped the validator of its root")
+        await made.delete()
         collisions = orm.Registry(dialect=SCHEMA.get("dialect", "postgres"))
 
         class NativeUser(orm.Model, registry=collisions, table="native_users"):

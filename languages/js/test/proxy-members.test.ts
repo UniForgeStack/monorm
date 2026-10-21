@@ -2,12 +2,13 @@
 // Runs only with an artifact that selects the proxy-models and soft-delete extensions.
 // Each `// E:` line of the typing use must fail and no other line may.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import ts from "typescript";
-import { Registry } from "../src/index.js";
+import { connect, Registry } from "../src/index.js";
 import { native } from "../src/native.js";
 import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
@@ -56,7 +57,9 @@ export async function go() {
   const removed = await of([draft]).hardDelete();
   same<typeof removed, Draft[]>();
   await Post.objects.titled("a").allWithDeleted().all();
-  await Draft.objects.titled("a").all();
+  // The row type of an inherited method is the root row type today; the rule for both languages is an open owner question.
+  const titled = await Draft.objects.titled("a").all();
+  same<typeof titled, Post[]>();
   Note.objects.deletedOnly(); // E:
   Note.objects.titled("a"); // E:
   of([note]).undelete(); // E:
@@ -109,4 +112,46 @@ test("a proxy gets the soft-delete members at run time through the record of the
     assert.equal(typeof models.Post!.objects[member], "function", member);
   }
   assert.equal(models.Note!.objects.deletedOnly, undefined);
+});
+
+const url = process.env["ORM_TEST_DATABASE_URL"] ?? "";
+
+test("an inherited query-set method returns rows of the proxy at run time", { skip: skip || !url }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "orm-proxy-members-run-"));
+  writeFileSync(join(root, "schema.prisma"), SCHEMA);
+  writeFileSync(join(root, "queries.ts"), QUERIES);
+  const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm", "--query-set", "Post=./queries.js#PostQueries"];
+  assert.equal(await native().cli(args), 0);
+  const src = join(import.meta.dirname, "..", "src");
+  const imports: Record<string, string> = { '"orm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"orm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
+  const emit = (from: string, to: string) => {
+    mkdirSync(to, { recursive: true });
+    for (const name of readdirSync(from).filter((n) => n.endsWith(".ts") && !n.endsWith(".d.ts"))) {
+      let { outputText } = ts.transpileModule(readFileSync(join(from, name), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
+      for (const [from, to] of Object.entries(imports)) outputText = outputText.replaceAll(` from ${from}`, ` from ${to}`);
+      writeFileSync(join(to, name.replace(/\.ts$/, ".js")), outputText);
+    }
+  };
+  const out = join(root, "js");
+  emit(root, out);
+  emit(join(root, "orm-ext", "orm-soft-delete"), join(out, "orm-ext", "orm-soft-delete"));
+  // Bun runs every test file in one process, so the default registry already holds Post from another file.
+  const modelsFile = join(out, "models.js");
+  const isolated = readFileSync(modelsFile, "utf8").replace(/define\(SCHEMA(\)|, \{)/, (_, tail: string) => `define(SCHEMA, { registry: __registry${tail === ")" ? " })" : ","}`);
+  assert.notEqual(isolated, readFileSync(modelsFile, "utf8"));
+  writeFileSync(modelsFile, `import { Registry as __Registry } from ${imports['"orm"']};\nexport const __registry = new __Registry();\n${isolated}`);
+  const { Draft, Post, __registry: registry } = (await import(pathToFileURL(join(out, "models.js")).href)) as Record<string, any>;
+  const db = await connect(url, { registry, default: false });
+  try {
+    await db.execute("DROP TABLE IF EXISTS proxy_members_post");
+    await db.execute("CREATE TABLE proxy_members_post (id INTEGER PRIMARY KEY, title TEXT NOT NULL, deleted_at TIMESTAMPTZ)");
+    await Post.objects.using(db).insertMany([{ id: 1, title: "a" }, { id: 2, title: "b" }]);
+    const rows = await Draft.objects.titled("a").using(db).all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].constructor.name, "Draft");
+    assert.equal((await Post.objects.using(db).all())[0].constructor.name, "Post");
+  } finally {
+    await db.execute("DROP TABLE IF EXISTS proxy_members_post");
+    await db.close();
+  }
 });

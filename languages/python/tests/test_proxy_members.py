@@ -113,6 +113,12 @@ def test_proxy_takes_the_query_set_class_of_its_root(models):
     assert not hasattr(models.PmNote.objects, "titled")
 
 
+def test_inherited_method_reads_a_root_column_on_a_proxy(models):
+    sql = models.PmDraft.objects.titled("a").sql()
+    assert "FROM \"proxy_members_post\"" in sql
+    assert "\"title\" = 'a'" in sql
+
+
 def error_lines(output: str, pattern: str) -> set[int]:
     return {int(m.group(1)) for m in re.finditer(pattern, output, re.M)}
 

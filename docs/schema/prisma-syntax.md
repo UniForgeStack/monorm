@@ -104,6 +104,11 @@ Fields are `name Type @attr...` with no colon. `Type?` is nullable, as before.
 Its fields use the same syntax as model fields: `name Type[?] @attr...`.
 
 ```prisma
+type Geo {
+  lat Float
+  lng Float
+}
+
 type Address {
   city String
   geo  Geo?

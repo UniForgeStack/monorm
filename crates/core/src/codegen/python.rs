@@ -178,7 +178,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     let query_sets = options.query_sets(ir, schema, ':')?;
     // A proxy takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
     // which the stub cannot combine with the proxy's `QuerySet[Proxy]`, so the stub types its methods as `Any`.
-    let inherits = |model: &str| query_sets.contains_key(model) && !options.query_sets.contains_key(model);
+    let inherits = |model: &str| query_sets.get(model).is_some_and(|q| q.2);
     let ir_json = super::embedded_schema_json(ir)?;
     if ir_json.contains("\"\"\"") {
         return Err("schema text contains \"\"\" which can't be embedded in the generated module".into());
@@ -245,7 +245,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
     if !query_sets.is_empty() {
         py.push_str("\n# The user's query-set classes, imported on first use of `Model.objects`.\n");
-        for (model, (module, class)) in &query_sets {
+        for (model, (module, class, _)) in &query_sets {
             writeln!(py, "use_query_set({model}, \"{module}:{class}\")").unwrap();
         }
     }
@@ -575,7 +575,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
     }
     pyi.push_str("QuerySet, RelationPath, Update, UpdateMany\nfrom orm import fields as f\n\n");
-    for (model, (module, class)) in query_sets.iter().filter(|(m, _)| !inherits(m)) {
+    for (model, (module, class, _)) in query_sets.iter().filter(|(m, _)| !inherits(m)) {
         let alias = if used_exts.is_empty() || options.model_extensions(ir, model).is_empty() { "Objects" } else { "UserObjects" };
         writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();
     }

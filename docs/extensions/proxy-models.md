@@ -41,10 +41,19 @@ A proxy cannot declare `@@protected_write`; it shares the protection of its root
 **Inherited behavior.** A proxy has every member that another extension adds to its root model.
 For example, a proxy of a soft-delete model has `all_with_deleted()`, `deleted_only()`, `undelete()` and `hard_delete()`.
 A model gets the members of an extension when the prepared record of that extension names it, a proxy too.
-A proxy also uses the user query-set class of its root model (`--query-set`, `use_query_set`, `useQuerySet`), unless it names its own.
-This holds in the generated Python and TypeScript code and at run time.
+A proxy also uses the user query-set class of its root model, unless it names its own.
+This holds in generated Python and TypeScript code (`--query-set`) and in `[tool.orm.query_sets]`.
+A direct `use_query_set` or `useQuerySet` call on the root model does not reach its proxies.
+A method of that class may name a column of the root model, such as `Post.published.eq(true)`.
+A query accepts a column of any model on the same table and resolves it by name on its own model.
+A field the proxy drops gives the usual "has no field" error.
 
-Native code that `orm-extension-build` generates for one model (`methods`, `result_fields`, `specializations`) is not inherited by a proxy.
+A proxy also inherits the native model spec of its nearest ancestor that has one (`methods`, computed `result_fields`, field rules, record rules, and the specialization).
+A proxy with a spec of its own adds its entries to the inherited ones; an own method, field rule or computed field replaces the inherited one of the same name.
+`orm-extension-build` leaves out a field rule or computed field when the proxy does not keep the field that it names.
+An inherited record rule that needs a field the proxy drops fails the build.
+The error names the rule and the field. Keep the field in the proxy, or declare an own record rule of the same export in the proxy.
+The own rule replaces the inherited rule of that export only; any other inherited rule that needs a dropped field still fails the build.
 Models that `orm.loads` or `define()` build at run time get extension members only from the caller.
 
 **Inherited fields.** `@@proxy.fields(include: [...])` or

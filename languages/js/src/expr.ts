@@ -19,6 +19,7 @@
 import { Decimal } from "./decimal.js";
 import { QueryError } from "./errors.js";
 import type { FieldMeta, Hop, In, JsonValue, ModelSpec } from "./meta.js";
+import type { ModelMeta } from "./model.js";
 
 export type IR = { [key: string]: unknown };
 
@@ -602,6 +603,12 @@ class Bound extends Expression<unknown, never, {}> {
   }
 }
 
+/** `b` as a model when it is not `a` but stores its rows in the same table as `a`. */
+function sameTable(a: Source, b: Source): ModelMeta | undefined {
+  const table = (s: Source) => ("cteKind" in s ? undefined : (s as { table?: string }).table);
+  return table(a) !== undefined && table(a) === table(b) ? (b as ModelMeta) : undefined;
+}
+
 /** A column of `root`'s model, or of a model reached from it through `path`. `N` is the
  * field's name and `H` the hops to its model, for `load()`'s row types. */
 export class Column<T, S extends string = never, N extends string = string, H extends readonly Hop[] = readonly Hop[]> extends Expression<T, S, {}> {
@@ -619,6 +626,15 @@ export class Column<T, S extends string = never, N extends string = string, H ex
 
   ir(ctx: IRContext): IR {
     if (this.root !== ctx.root) {
+      const same = sameTable(this.root, ctx.root);
+      if (same) {
+        // Models on one table share their columns: the query's own model resolves the name.
+        if (this.path.length > 0) {
+          if (!same.relations.has(this.path[0]!)) throw new TypeError(`${same.name} has no relation ${JSON.stringify(this.path[0])}`);
+          return { t: "col", path: [...this.path], name: this.field.ir };
+        }
+        return { t: "col", path: [], name: same.field(this.field.name).ir };
+      }
       let hint = `reach it through a relation of ${ctx.root.name} instead`;
       for (let c = ctx.outer; c; c = c.outer) {
         if (c.root === this.root) {

@@ -36,8 +36,8 @@ def loads_soft_delete(source: str, *, registry: orm.Registry | None = None) -> d
     ir = _native.compile_schema(source)
     behavior = json.loads(ir).get("behavior", {})
     models = {d["model"] for d in behavior.get("declarations", ()) if d["attribute"].startswith("soft_delete.")}
-    for kind in ("read_defaults", "delete_rewrites", "write_assignments", "instance_guards"):
-        models |= {r["model"] for r in behavior.get(kind, ()) if r["source"] == ID}
+    for rows in (v for v in behavior.values() if isinstance(v, list)):
+        models |= {r["model"] for r in rows if isinstance(r, dict) and r.get("source") == ID and "model" in r}
     return define(
         ir,
         registry=registry,

@@ -102,10 +102,7 @@ impl ExtensionCode {
         let id = self.members.extension.as_str();
         let b = &ir.behavior;
         b.declarations.iter().any(|d| d.model == model && self.attributes.contains(&d.attribute))
-            || b.read_defaults.iter().any(|r| r.model == model && r.source == id)
-            || b.delete_rewrites.iter().any(|r| r.model == model && r.source == id)
-            || b.write_assignments.iter().any(|r| r.model == model && r.source == id)
-            || b.instance_guards.iter().any(|r| r.model == model && r.source == id)
+            || b.record_sources(model).any(|source| source == id)
     }
 
     /// The files to write below the extension directory: path, content with the header.
@@ -128,9 +125,9 @@ impl Options {
 }
 
 impl Options {
-    /// The query sets split at `sep` into (module, class), checked against the schema.
-    /// A proxy without a class of its own gets the class of its nearest ancestor that has one.
-    pub fn query_sets<'a>(&'a self, ir: &'a crate::ir::SchemaIr, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str)>, String> {
+    /// The query sets split at `sep` into (module, class, inherited), checked against the schema.
+    /// A proxy without a class of its own gets the class of its nearest ancestor that has one, and `inherited` is true.
+    pub fn query_sets<'a>(&'a self, ir: &'a crate::ir::SchemaIr, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str, bool)>, String> {
         let mut out = std::collections::BTreeMap::new();
         for (model, target) in &self.query_sets {
             if !schema.models.iter().any(|m| m.ir.name == *model) {
@@ -144,17 +141,13 @@ impl Options {
             if sep == ':' && !module.split('.').all(is_python_ident) {
                 return Err(format!("--query-set {model}={target}: {module} is not an absolute module name"));
             }
-            out.insert(model.as_str(), (module, class));
+            out.insert(model.as_str(), (module, class, false));
         }
         for proxy in &ir.behavior.proxy_models {
-            let mut parent = proxy.parent.as_str();
-            for _ in 0..ir.behavior.proxy_models.len() {
-                if out.contains_key(proxy.model.as_str()) { break; }
-                if let Some(&set) = out.get(parent) {
-                    out.insert(proxy.model.as_str(), set);
-                } else if let Some(up) = ir.behavior.proxy_models.iter().find(|p| p.model == parent) {
-                    parent = up.parent.as_str();
-                }
+            if out.contains_key(proxy.model.as_str()) { continue; }
+            let ancestors = ir.behavior.ancestors(&proxy.model).unwrap_or_default();
+            if let Some(&(module, class, _)) = ancestors.iter().find_map(|a| out.get(a)) {
+                out.insert(proxy.model.as_str(), (module, class, true));
             }
         }
         Ok(out)

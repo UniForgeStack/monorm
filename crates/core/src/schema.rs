@@ -279,12 +279,8 @@ impl Schema {
                 if !seen.insert(&proxy.model) || !model_index.contains_key(&proxy.model) || !model_index.contains_key(&proxy.parent) {
                     return Err(format!("{}: duplicate or unresolved proxy metadata; rebuild schema", proxy.model));
                 }
-                let mut parent = proxy.parent.as_str();
-                let mut path = std::collections::BTreeSet::from([proxy.model.as_str()]);
-                while let Some(next) = ir.behavior.proxy_models.iter().find(|p| p.model == parent) {
-                    if !path.insert(parent) { return Err("cyclic proxy metadata; rebuild schema".into()); }
-                    parent = &next.parent;
-                }
+                let ancestors = ir.behavior.ancestors(&proxy.model).ok_or("cyclic proxy metadata; rebuild schema")?;
+                let parent = ancestors.last().copied().unwrap_or(&proxy.parent);
                 let model = &models[model_index[&proxy.model]];
                 if proxy.storage_owner != parent { return Err(format!("{}: stale proxy storage owner; rebuild schema", proxy.model)); }
                 let physical = storage.as_ref().ok_or("proxy models require explicit physical storage")?;
