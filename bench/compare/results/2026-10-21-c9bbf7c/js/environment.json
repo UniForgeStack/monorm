@@ -1,0 +1,121 @@
+{
+  "date": "2026-10-21T13:30:10.478Z",
+  "git_sha": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+  "runtime": "node v22.22.0",
+  "machine": "linux x64",
+  "packages": {
+    "pg": "8.23.1",
+    "prisma": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "@prisma/adapter-pg": "7.10.1"
+  },
+  "postgres": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+  "database": "bench",
+  "pool_size": 10,
+  "uptime_before": "13:10:06 up  1:11,  0 user,  load average: 1.84, 1.68, 1.58",
+  "uptime_after": "13:30:10 up  1:31,  0 user,  load average: 1.67, 1.69, 1.61",
+  "orm_artifact": "/home/user/monorm/bench/compare/build/all",
+  "warmup_calls": 50,
+  "contenders": {
+    "orm": {
+      "profile": "postgres",
+      "build": {
+        "features": [
+          "postgres",
+          "profile-postgres"
+        ],
+        "profile": "release",
+        "revision": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "capabilities": {
+        "cli": false,
+        "composition": false,
+        "generate-python": false,
+        "generate-typescript": false
+      },
+      "native": "/home/user/monorm/bench/compare/build/orm.node",
+      "prepared_statements": "engine default: prepared once per connection and cached",
+      "insert_note": "orm returns full rows: insertMany(...).returning() has no key-only form",
+      "upsert_note": "onConflict returns a row count, no RETURNING",
+      "pool": 10
+    },
+    "prisma": {
+      "prisma": "7.10.1",
+      "adapter": "@prisma/adapter-pg 7.10.1",
+      "query_engine": "TypeScript query compiler (WASM) with the driver adapter; no Rust query engine",
+      "prepared_statements": "unnamed statements: the pg driver re-parses each call (adapter-pg without statementNameGenerator)",
+      "pool": 10,
+      "insert_note": "bulk inserts use createManyAndReturn with select { id: true }: ids only, orm returns full rows",
+      "upsert_note": "upsert-100 is 100 upserts in one $transaction: Prisma has no bulk upsert, orm and Django send one statement",
+      "find_unique_note": "findUnique calls in one tick are batched by Prisma into one query; this runner issues them one at a time",
+      "update_note": "update-1 uses updateMany (no row read back); update() would add a SELECT"
+    },
+    "pg": {
+      "pg": "8.23.1",
+      "prepared_statements": "named prepared statements, one name per statement text",
+      "pool": 10,
+      "join_note": "join-to-one uses an inner JOIN: posts.author_id is NOT NULL, so the rows equal the ORMs' joins"
+    },
+    "orm-all": {
+      "profile": "custom",
+      "build": {
+        "features": [
+          "cli",
+          "composition",
+          "default",
+          "generate-python",
+          "generate-typescript",
+          "generic-relations",
+          "model-composition",
+          "postgres",
+          "proxy-models",
+          "query-defaults",
+          "reference-loading",
+          "sqlite"
+        ],
+        "profile": "release",
+        "revision": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "capabilities": {
+        "cli": true,
+        "composition": true,
+        "generate-python": true,
+        "generate-typescript": true
+      },
+      "native": "/home/user/monorm/bench/compare/build/all/orm.node",
+      "prepared_statements": "engine default: prepared once per connection and cached",
+      "insert_note": "orm returns full rows: insertMany(...).returning() has no key-only form",
+      "upsert_note": "onConflict returns a row count, no RETURNING",
+      "pool": 10
+    }
+  },
+  "rounds": 20,
+  "iters": 20,
+  "round_loads": [
+    1.55,
+    1.44,
+    1.28,
+    1.2,
+    1.89,
+    1.84,
+    1.86,
+    1.95,
+    1.41,
+    1.58,
+    1.42,
+    1.18,
+    1.37,
+    1.61,
+    1.86,
+    1.76,
+    1.7,
+    1.98,
+    1.91,
+    1.84
+  ],
+  "max_load": 2
+}

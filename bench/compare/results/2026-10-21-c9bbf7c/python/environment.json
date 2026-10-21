@@ -1,0 +1,122 @@
+{
+  "date": "2026-10-21T13:10:06.730300+00:00",
+  "git_sha": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+  "python": "3.14.6",
+  "machine": "Linux-6.18.44-fc-v139-x86_64-with-glibc2.39",
+  "packages": {
+    "orm": "0.1.0",
+    "django": "6.1.2",
+    "psycopg": "3.3.6",
+    "psycopg-binary": "3.3.6",
+    "psycopg-pool": "3.3.3",
+    "asgiref": "3.12.1"
+  },
+  "postgres": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+  "database": "bench",
+  "pool_size": 10,
+  "uptime_before": "12:38:17 up 39 min,  0 user,  load average: 1.13, 1.38, 1.29",
+  "uptime_after": "13:10:06 up  1:11,  0 user,  load average: 1.84, 1.68, 1.58",
+  "orm_artifact": "/home/user/monorm/bench/compare/build/all",
+  "warmup_calls": 50,
+  "contenders": {
+    "orm": {
+      "profile": "postgres",
+      "build": {
+        "features": [
+          "postgres",
+          "profile-postgres"
+        ],
+        "profile": "release",
+        "revision": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "capabilities": {
+        "cli": false,
+        "composition": false,
+        "generate-python": false,
+        "generate-typescript": false
+      },
+      "prepared_statements": "engine default: prepared once per connection and cached",
+      "pool": 10,
+      "insert_note": "orm returns full rows: insert_many(...).returning() has no key-only form",
+      "upsert_note": "on_conflict returns a row count, no RETURNING"
+    },
+    "django-sync": {
+      "django": "6.1.2",
+      "prepared_statements": "psycopg default: server-side prepare after 5 executions of one statement; Django inlines LIMIT/OFFSET, so the read-N statements differ per page and are not prepared",
+      "pool": "psycopg_pool min=max=10, one pool per process; each concurrent task returns its connection with close()",
+      "async_note": "Django async ORM runs each call through sync_to_async (thread-sensitive): calls serialize on one thread",
+      "delete_note": "QuerySet.delete() runs BEGIN, DELETE, COMMIT: 3 statements",
+      "upsert_note": "bulk_create(update_conflicts=True) adds RETURNING id",
+      "vendor": "postgresql"
+    },
+    "django-async": {
+      "django": "6.1.2",
+      "prepared_statements": "psycopg default: server-side prepare after 5 executions of one statement; Django inlines LIMIT/OFFSET, so the read-N statements differ per page and are not prepared",
+      "pool": "psycopg_pool min=max=10, one pool per process; each concurrent task returns its connection with close()",
+      "async_note": "Django async ORM runs each call through sync_to_async (thread-sensitive): calls serialize on one thread",
+      "delete_note": "QuerySet.delete() runs BEGIN, DELETE, COMMIT: 3 statements",
+      "upsert_note": "bulk_create(update_conflicts=True) adds RETURNING id",
+      "vendor": "postgresql"
+    },
+    "orm-all": {
+      "profile": "custom",
+      "build": {
+        "features": [
+          "cli",
+          "composition",
+          "default",
+          "generate-python",
+          "generate-typescript",
+          "generic-relations",
+          "model-composition",
+          "postgres",
+          "proxy-models",
+          "query-defaults",
+          "reference-loading",
+          "sqlite"
+        ],
+        "profile": "release",
+        "revision": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "capabilities": {
+        "cli": true,
+        "composition": true,
+        "generate-python": true,
+        "generate-typescript": true
+      },
+      "prepared_statements": "engine default: prepared once per connection and cached",
+      "pool": 10,
+      "insert_note": "orm returns full rows: insert_many(...).returning() has no key-only form",
+      "upsert_note": "on_conflict returns a row count, no RETURNING"
+    }
+  },
+  "rounds": 20,
+  "iters": 20,
+  "round_loads": [
+    1.05859375,
+    1.201171875,
+    1.73828125,
+    1.9794921875,
+    1.8173828125,
+    1.71142578125,
+    1.36572265625,
+    1.57470703125,
+    1.27294921875,
+    1.3564453125,
+    1.9501953125,
+    1.75634765625,
+    1.7685546875,
+    1.9111328125,
+    1.8955078125,
+    1.84716796875,
+    1.400390625,
+    1.421875,
+    1.185546875,
+    1.57421875
+  ],
+  "max_load": 2.0
+}

@@ -1,0 +1,101 @@
+check read-pk: ok
+check read-50: ok
+check read-1000: ok
+check projection-1000: ok
+check filter: ok
+check filter-ne-null: ok
+check count: ok
+check aggregate: ok
+check join-to-one: ok
+check prefetch-to-many: ok
+check m2m: ok
+check insert-1: ok
+check bulk-insert-100: ok
+check bulk-insert-1000: ok
+check update-1: ok
+check bulk-update-100: ok
+check upsert-100: ok
+check delete-100: ok
+check tx-5: ok
+check concurrent: ok
+round 1 orm done
+round 1 prisma done
+round 1 pg done
+round 1 orm-all done
+round 2 prisma done
+round 2 pg done
+round 2 orm-all done
+round 2 orm done
+round 3 pg done
+round 3 orm-all done
+round 3 orm done
+round 3 prisma done
+round 4 orm-all done
+round 4 orm done
+round 4 prisma done
+round 4 pg done
+round 5 orm done
+round 5 prisma done
+round 5 pg done
+round 5 orm-all done
+round 6 prisma done
+round 6 pg done
+round 6 orm-all done
+round 6 orm done
+round 7 pg done
+round 7 orm-all done
+round 7 orm done
+round 7 prisma done
+round 8 orm-all done
+round 8 orm done
+round 8 prisma done
+round 8 pg done
+round 9 orm done
+round 9 prisma done
+round 9 pg done
+round 9 orm-all done
+round 10 prisma done
+round 10 pg done
+round 10 orm-all done
+round 10 orm done
+round 11 pg done
+round 11 orm-all done
+round 11 orm done
+round 11 prisma done
+round 12 orm-all done
+round 12 orm done
+round 12 prisma done
+round 12 pg done
+round 13 orm done
+round 13 prisma done
+round 13 pg done
+round 13 orm-all done
+round 14 prisma done
+round 14 pg done
+round 14 orm-all done
+round 14 orm done
+round 15 pg done
+round 15 orm-all done
+round 15 orm done
+round 15 prisma done
+round 16 orm-all done
+round 16 orm done
+round 16 prisma done
+round 16 pg done
+round 17 orm done
+round 17 prisma done
+round 17 pg done
+round 17 orm-all done
+round 18 prisma done
+round 18 pg done
+round 18 orm-all done
+round 18 orm done
+round 19 pg done
+round 19 orm-all done
+round 19 orm done
+round 19 prisma done
+round 20 orm-all done
+round 20 orm done
+round 20 prisma done
+round 20 pg done
+wrote /home/user/monorm/bench/compare/results/2026-10-21-c9bbf7c/js
