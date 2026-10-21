@@ -66,6 +66,7 @@ A manifest capability in `HOST_FEATURE_CAPABILITIES` (`query-defaults`, `model-c
 `proxy-models`, `generic-relations`) also turns on the host Cargo feature of the same name in both bindings.
 `file-storage` is not one: it has no host code and only requires `async-field-adapter.v1`.
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
+The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
 Select the extension crates.
 `scripts/feature-check.sh` builds one artifact per host feature, one `tracking` artifact with the three column-role extensions, and one with all of them, and runs every suite on each.
 
