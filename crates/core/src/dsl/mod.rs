@@ -249,7 +249,10 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
             }
             for relation in &model.relations {
                 if relation.label.is_some() || relation.through.is_none() && relation.from.is_empty() {
-                    return Err(at(&model.name, Some(&relation.name), format!("relation {}.{} has no owning relation after extension lowering", model.name, relation.name)));
+                    let named = relation.label.as_deref().filter(|l| !l.is_empty()).map(|l| format!(" named {l:?}")).unwrap_or_default();
+                    return Err(at(&model.name, Some(&relation.name), format!(
+                        "relation {}.{}: {} has no relation to {} with fields: / references:{named} after extension lowering",
+                        model.name, relation.name, relation.target, model.name)));
                 }
                 if let Some(target) = ir.models.iter().find(|m| m.name == relation.target) {
                     if let Some(to) = relation.to.iter().find(|to| !target.fields.iter().any(|f| &f.name == *to)) {

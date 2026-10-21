@@ -1005,6 +1005,10 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
         if to.is_some() {
             return err(rel.pos, format!("{what}: references: needs fields:"));
         }
+        let placeholder_on_delete = match n.get("onDelete") {
+            Some((p, v)) if deferred_identity.contains(&m.name) => Some((p, action(p, &name_of(p, v, &what)?)?)),
+            _ => None,
+        };
         n.finish()?;
         let back: Vec<RelArgs> = target_decl
             .members
@@ -1014,6 +1018,9 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
             .filter(|r| !r.fields.is_empty() && r.name == name)
             .collect();
         let back = match back.as_slice() {
+            [_] if placeholder_on_delete.is_some() => {
+                return err(placeholder_on_delete.map_or(member.pos, |(p, _)| p), format!("{what}: onDelete: belongs on the relation that has fields:"));
+            }
             [b] => b,
             // A model with declarations gets its owning relation from a pass: the pass fills `from`, `to` and `kind`'s key from `label`.
             [] if deferred_identity.contains(&m.name) => {
@@ -1027,7 +1034,7 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
                     from: vec![],
                     to: vec![],
                     foreign_key: false,
-                    on_delete: None,
+                    on_delete: placeholder_on_delete.map(|(_, a)| a),
                     on_update: None,
                     deferrable: None,
                     fk_name: None,
@@ -1038,7 +1045,7 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
             [] if name.as_deref().is_some_and(|n| n.contains("{model}")) => {
                 return err(
                     member.pos,
-                    format!("{what}: {{model}} in a relation name is only expanded in a relation of an abstract model (@@inherit.abstract); name this relation without it"),
+                    format!("{what}: {{model}} in a relation name is only expanded in a relation that an extension pass derives; name this relation without it"),
                 )
             }
             [] => {
