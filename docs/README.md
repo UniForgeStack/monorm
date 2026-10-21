@@ -31,6 +31,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | timestamps | `extensions/timestamps` (`orm-timestamps`) | `@timestamps.updated_at(mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | soft-delete | `extensions/soft-delete` (`orm-soft-delete`) | `@soft_delete.deleted_at(mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | locking | `extensions/locking` (`orm-locking`) | `@locking.version` | [schema-extensions.md](extensions/schema-extensions.md) |
+| inherit | `extensions/inherit` (`orm-inherit`) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
 
 [build-time-extensions.md](contracts/build-time-extensions.md#select-feature-extensions) shows how to select them, build, and package the result.
 The same doc describes the extension contract: manifests, passes, native behavior profiles.

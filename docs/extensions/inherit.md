@@ -46,6 +46,9 @@ model MyUser {
   `User` gets no table and no runtime model.
   Relations to `User` point to the child, and the migration changes the table and keeps its rows.
   Two models that override the same model is an error.
+  If the override has its own `@@map`, the migration renames the base table to that name.
+  To remove such an override, use two steps: remove the `@@map` and migrate, then remove the override.
+  If you remove both at once, the base model comes back with its default table name, the migration cannot match the renamed table, and it creates a new table and drops the old one with its rows.
 
 ## Get the active model
 
@@ -74,10 +77,14 @@ The runtime module has `AbstractUserFields = Model`.
 A bare `Protocol` does not work: `QuerySet` bounds its parameter to `Model`, and mypy and pyright reject it.
 Fields that are nested (embedded or composed) are not in these types.
 
+Known limit: these types carry fields only, not relations.
+A methods class on an abstract model cannot type `self.roles`; mypy reports an unknown attribute.
+
 ### A generic query-set class
 
 A query-set class that an abstract model names in `@@query_set` must be generic.
 The child classes use it with the child spec.
+Codegen does not reject a class that is not generic, but then the type checker does not check the class against the fields of the abstract model.
 
 ```python
 from typing import TYPE_CHECKING, Self
