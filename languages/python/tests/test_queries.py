@@ -194,16 +194,22 @@ async def test_filter_across_to_many_autojoins(clean):
     assert names(users) == ["Alice", "Bob"]  # no duplicates, Carol has no posts
 
 
-async def test_same_row_vs_independent_filters(clean):
+async def test_same_row_across_calls_and_alias_for_another_row(clean):
     await seed()
-    # One filter() call: the same post must be old AND unpublished.
+    # One path is one post for the whole query: old AND unpublished, in one call or two.
     same = await User.objects.filter(User.posts.created_at < YESTERDAY, User.posts.published == False)
     assert names(same) == ["Alice"]
-    # Two calls: an old post, and an unpublished post (possibly different ones).
-    indep = await User.objects.filter(User.posts.created_at < YESTERDAY).filter(User.posts.views > 40)
-    assert names(indep) == ["Alice", "Bob"]
-    both_same = await User.objects.filter(User.posts.created_at < YESTERDAY, User.posts.views > 40)
+    split = await User.objects.filter(User.posts.created_at < YESTERDAY).filter(User.posts.published == False)
+    assert names(split) == ["Alice"]
+    # The old post and the popular post are one post, so only Bob has both.
+    both_same = await User.objects.filter(User.posts.created_at < YESTERDAY).filter(User.posts.views > 40)
     assert names(both_same) == ["Bob"]
+    assert names(await User.objects.filter(User.posts.created_at < YESTERDAY, User.posts.views > 40)) == ["Bob"]
+    # alias() asks for another post: an old post, and a popular post (possibly different ones).
+    indep = await User.objects.filter(User.posts.created_at < YESTERDAY, User.posts.alias().views > 40)
+    assert names(indep) == ["Alice", "Bob"]
+    other = User.posts.alias()
+    assert names(await User.objects.filter(other.created_at < YESTERDAY).filter(other.views > 40)) == ["Bob"]
 
 
 async def test_exclude_and_negation(clean):

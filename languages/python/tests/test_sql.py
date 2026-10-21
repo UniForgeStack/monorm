@@ -35,9 +35,59 @@ def test_same_filter_call_means_same_related_row():
     assert '"t1"."views" > 10 AND "t1"."published" = TRUE' in w
 
 
-def test_separate_filter_calls_are_independent():
-    result = User.objects.filter(User.posts.views > 10).filter(User.posts.published == True).inspect()  # noqa: E712
-    assert result.statements[0].correlated_count == 2
+def test_separate_filter_calls_mean_the_same_related_row():
+    split = User.objects.filter(User.posts.views > 10).filter(User.posts.published == True)  # noqa: E712
+    together = User.objects.filter(User.posts.views > 10, User.posts.published == True)  # noqa: E712
+    assert split.inspect().statements[0].correlated_count == 1
+    assert split.sql() == together.sql()
+
+
+def test_alias_asks_for_another_related_row():
+    other = User.posts.alias()
+    query = User.objects.filter(User.posts.views > 10, other.published == True)  # noqa: E712
+    assert query.inspect().statements[0].correlated_count == 2
+    one_alias = User.objects.filter(other.views > 10, other.published == True)  # noqa: E712
+    assert one_alias.inspect().statements[0].correlated_count == 1
+    assert User.objects.filter(User.posts.alias().views > 10, User.posts.alias().published == True).inspect().statements[0].correlated_count == 2  # noqa: E712, E501
+
+
+def test_alias_tags_the_last_hop_only():
+    # another post, the same comment-of-that-post rule: two posts, so two subqueries of posts
+    query = User.objects.filter(User.posts.title == "a", User.posts.alias().comments.body == "x")
+    assert query.sql().count('FROM "posts"') == 2
+    # the same post, another comment: one subquery of posts, two of comments inside it
+    query = User.objects.filter(User.posts.comments.body == "x", User.posts.comments.alias().body == "y")
+    assert query.sql().count('FROM "posts"') == 1
+    assert query.sql().count('FROM "comments"') == 2
+
+
+def test_or_and_not_are_barriers_for_a_shared_related_row():
+    query = User.objects.filter(User.posts.views > 10, (User.posts.title == "a") | (User.posts.title == "b"))
+    assert query.inspect().statements[0].correlated_count == 2
+    query = User.objects.filter(User.posts.views > 100).exclude(User.posts.published == True)  # noqa: E712
+    assert query.inspect().statements[0].correlated_count == 2
+    assert "NOT EXISTS" in where(query)
+
+
+def test_query_defaults_filter_never_merges_with_user_conditions():
+    query = Post.objects.filter(Post.comments.body == "x")
+    assert query.sql().count("EXISTS") == 1
+
+
+def test_alias_is_for_filter_conditions_only():
+    other = User.posts.alias()
+    with pytest.raises(QueryError, match=r"alias\(\)"):
+        User.objects.load(other)
+    with pytest.raises(QueryError, match=r"alias\(\)"):
+        User.objects.load(other.comments)
+    with pytest.raises(QueryError, match=r"alias\(\)"):
+        User.objects.load(other.title)
+    with pytest.raises(QueryError, match=r"alias\(\)"):
+        User.objects.select(func.count(other)).sql()
+    with pytest.raises(QueryError, match=r"alias\(\)"):
+        User.objects.filter(User.id == orm.outer(other.views)).sql()
+    with pytest.raises(QueryError, match="two aliases"):
+        User.objects.filter(other.views > User.posts.alias().views).sql()
 
 
 def test_or_inside_one_relation_shares_subquery():

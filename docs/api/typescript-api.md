@@ -278,9 +278,46 @@ A `Date` holds milliseconds. A `DateTime` value read from the database keeps its
 
 ### Relation filters
 
-The semantics are Django's, with no duplicate rows. A to-many hop becomes a correlated
-`EXISTS`. Conditions in one `filter()` call must hold for the same related row, while
-separate calls are independent. `exclude()` is `NOT EXISTS`.
+A to-many hop becomes a correlated `EXISTS`, with no duplicate rows.
+`exclude()` is `NOT EXISTS`.
+
+**One path is one related row.**
+In one query, all the top-level `AND` conditions on one to-many path must hold for the same related row.
+It does not matter whether they are in one `filter()` call or in several calls: `filter(a, b)` is `filter(a).filter(b)`.
+Reuse of a path is not an error.
+Conditions in a deeper path follow the same rule inside the shared `EXISTS`.
+
+**`alias()` is another related row.**
+`User.posts.alias()` is the same path, but it asks for a different related row.
+Each alias is one `EXISTS`.
+All the conditions that use one alias object share the row, in one call or across calls.
+`alias()` tags only the last hop: `User.posts.comments.alias()` shares the post and asks for another comment.
+Two aliases can match the same row.
+You cannot use an alias in an aggregate, `orderBy()`, `load()` or `outer()`.
+These throw `QueryError`.
+
+```ts
+// some post has views > 10, and some other post is published
+User.objects.filter(User.posts.views.gt(10), User.posts.alias().published);
+```
+
+**`or` and `not` are barriers.**
+A condition inside `or(...)` or `not(...)` never shares a row with the conditions outside it.
+`filter(User.posts.views.gt(100)).exclude(User.posts.published.eq(true))` means: some post has more than 100 views, and no post is published.
+The query-defaults filter never merges with your conditions.
+
+**A reusable helper calls `alias()` itself.**
+A helper that means "some post such that ..." must call `User.posts.alias()` and use the result in all its conditions.
+Then it asks for its own post, and it does not narrow the posts of the other conditions in the query.
+Two helpers that use `User.posts` directly share one post, so both narrow to the same post.
+This is the accepted trade-off of the rule.
+
+**Meaning change.**
+Before this rule, two `filter()` calls on one to-many path were two independent `EXISTS`.
+They are now one `EXISTS`.
+A query such as `filter(User.posts.views.gt(10)).filter(User.posts.published)` can now return fewer rows.
+No error tells you about the change.
+To keep the old meaning, write `User.posts.alias()` in one of the conditions.
 
 A `belongsTo` relation compares with an instance of its target:
 `Post.author.eq(alice)` is `Post.authorId.eq(alice.id)` (no join), `.ne(alice)` the

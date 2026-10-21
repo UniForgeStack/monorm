@@ -164,10 +164,11 @@ async def test_many_to_many_links_and_queries(clean):
     assert [t.name for t in await p1.tags.order_by(Tag.name)] == ["news", "rust"]
     assert [p.title for p in await rust.posts.order_by(Post.id)] == ["one", "two"]
     assert await p3.tags.count() == 0
-    # filters follow both hops, one EXISTS per filter() call
+    # filters follow both hops; one path is one tag for the whole query, alias() is another tag
     assert [p.title for p in await Post.objects.filter(Post.tags.name == "rust").order_by(Post.id)] == ["one", "two"]
-    both = Post.objects.filter(Post.tags.name == "rust").filter(Post.tags.name == "news")
+    both = Post.objects.filter(Post.tags.name == "rust").filter(Post.tags.alias().name == "news")
     assert [p.title for p in await both] == ["one"]
+    assert await Post.objects.filter(Post.tags.name == "rust").filter(Post.tags.name == "news").count() == 0
     assert await Post.objects.filter(Post.tags.name == "rust", Post.tags.name == "news").count() == 0
     assert [p.title for p in await Post.objects.exclude(Post.tags.name == "rust")] == ["three"]
     assert [u.name for u in await User.objects.filter(User.posts.tags.name == "news")] == ["Alice"]

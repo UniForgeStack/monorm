@@ -37,6 +37,7 @@ impl<T: Model> RelatedSet<T> {
                                 path: vec![],
                                 name: name.clone(),
                                 sub: vec![],
+                                alias: vec![],
                             },
                             ir::CmpOp::Eq,
                             key.clone(),

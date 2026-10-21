@@ -94,7 +94,7 @@ class IRContext:
     column belongs to the query's root model (or CTE). ``outer`` is the context of the
     enclosing query, for subqueries."""
 
-    __slots__ = ("root", "params", "outer", "ctes", "windows", "_owner")
+    __slots__ = ("root", "params", "outer", "ctes", "windows", "_owner", "_aliases")
 
     def __init__(
         self, root: type[Model] | Cte, params: list[Any], outer: IRContext | None = None, ctes: _Ctes | None = None
@@ -106,6 +106,14 @@ class IRContext:
         self.ctes: _Ctes = ctes if ctes is not None else (outer.ctes if outer is not None else _Ctes())
         # Named windows of this query (not of enclosing ones), with their IR.
         self.windows: list[tuple[WindowDef, IR]] = []
+        # `alias()` tokens by first use, so equal queries give equal IR (cache keys).
+        self._aliases: dict[Alias, int] = {}
+
+    def alias_tags(self, alias: tuple[Alias | None, ...]) -> list[int] | None:
+        """The IR tags of a path's hops: 0 for an untagged hop, else the query-local number of its alias."""
+        if not any(alias):
+            return None
+        return [0 if a is None else self._aliases.setdefault(a, len(self._aliases) + 1) for a in alias]
 
     def param(self, value: Any) -> IR:
         if isinstance(value, Ordering):
@@ -514,18 +522,43 @@ def _same_table_model(column_root: type[Model], root: type[Model] | Cte) -> type
     return None
 
 
+class Alias:
+    """One ``User.posts.alias()`` call: the related row it names is one row for the whole
+    query, and another row than the one of any other alias or of the plain path."""
+
+    __slots__ = ()
+
+
+ALIAS_PLACES = (
+    "alias() marks another related row in a filter condition; "
+    "it does not work in an aggregate, order_by(), load() or outer()"
+)
+
+
+def no_alias(item: Any) -> None:
+    """Raise when ``item`` (a column or a path) carries an ``alias()``: the place has no related row to name."""
+    if any(getattr(item, "_alias", ())):
+        raise QueryError(f"{item!r}: {ALIAS_PLACES}")
+
+
 class ColumnRef(Expression[T]):
     """A column of ``root``'s model, or of a model reached from it through ``path``."""
 
-    __slots__ = ("_root", "_path", "_field", "_rule")
+    __slots__ = ("_root", "_path", "_field", "_rule", "_alias")
 
     def __init__(
-        self, root: type[Model], path: tuple[str, ...], field: Field[Any], rule: NullRule | None = None
+        self,
+        root: type[Model],
+        path: tuple[str, ...],
+        field: Field[Any],
+        rule: NullRule | None = None,
+        alias: tuple[Alias | None, ...] = (),
     ) -> None:
         self._root = root
         self._path = path
         self._field = field
         self._rule = rule
+        self._alias = alias
 
     def _ir(self, ctx: IRContext) -> IR:
         if self._root is not ctx.root:
@@ -549,7 +582,15 @@ class ColumnRef(Expression[T]):
                     break
                 c = c.outer
             raise ValueError(f"{self!r} belongs to {self._root.__name__}, not to a {root} query; {hint}")
-        return {"t": "col", "path": list(self._path), "name": self._field.name}
+        ir: IR = {"t": "col", "path": list(self._path), "name": self._field.name}
+        if (tags := ctx.alias_tags(self._alias)) is not None:
+            ir["alias"] = tags
+        return ir
+
+    @property
+    def _key(self) -> str:
+        """``repr()`` plus the aliases: two aliases of one column are two columns."""
+        return repr(self) + "".join(f"#{id(a)}" for a in self._alias if a is not None)
 
     @property
     def _nullable(self) -> bool:
@@ -627,6 +668,7 @@ class Func(Expression[T]):
             if self._rel._root is not ctx.root:
                 root = ctx.root.__name__ if isinstance(ctx.root, type) else ctx.root.name
                 raise ValueError(f"{self._rel!r} does not start at {root}")
+            no_alias(self._rel)
             ir["rel"] = list(self._rel._path)
         if self._distinct:
             ir["distinct"] = True
@@ -809,6 +851,7 @@ class Outer(Expression[T]):
     def __init__(self, column: ColumnRef[T]) -> None:
         if not isinstance(column, ColumnRef):
             raise TypeError(f"outer() takes a column of a model, got {column!r}")
+        no_alias(column)
         self._column = column
 
     def _ir(self, ctx: IRContext) -> IR:
@@ -1232,27 +1275,48 @@ class RelationPath(Generic[M]):
     longer :class:`RelationPath`. Used in filters and ``load()``; ``.objects`` gives the relation query set.
     """
 
-    __slots__ = ("_root", "_path", "_target", "_rule")
+    __slots__ = ("_root", "_path", "_target", "_rule", "_alias")
     _rule: NullRule | None
 
     def __init__(
-        self, root: type[Model], path: tuple[str, ...], target: type[M], rule: NullRule | None = None
+        self,
+        root: type[Model],
+        path: tuple[str, ...],
+        target: type[M],
+        rule: NullRule | None = None,
+        alias: tuple[Alias | None, ...] = (),
     ) -> None:
         self._root = root
         self._path = path
         self._target = target
         self._rule = rule
+        self._alias = alias
+
+    def alias(self) -> Self:
+        """Another related row: every condition on one to-many path is about one related row for
+        the whole query, and ``alias()`` names a different one. Keep the result in a variable to
+        use one alias in several conditions::
+
+            p = User.posts.alias()
+            User.objects.filter(User.posts.views > 10, p.views < 3)   # a popular post and another, unpopular post
+            User.objects.filter(p.title == "a", p.views < 3)          # one post: both hold for it
+
+        It tags the last hop only: ``User.posts.alias().comments`` is another post,
+        ``User.posts.comments.alias()`` is another comment of the same post. It works in
+        filter conditions, not in aggregates, ``order_by()``, ``load()`` or ``outer()``."""
+        kept = (*self._alias, *(None,) * (len(self._path) - 1 - len(self._alias)))[: len(self._path) - 1]
+        return RelationPath(self._root, self._path, self._target, self._rule, (*kept, Alias()))  # type: ignore[return-value]
 
     def or_null(self) -> Self:
         """The null rule of this path: ``or_null()`` lets the missing related row, and a NULL in
         any nullable column reached through the path, pass. A method on one comparison wins:
         ``Post.author.or_null().email != 'x'`` keeps the posts without an author."""
-        return RelationPath(self._root, self._path, self._target, "or_null")  # type: ignore[return-value]
+        return RelationPath(self._root, self._path, self._target, "or_null", self._alias)  # type: ignore[return-value]
 
     def and_not_null(self) -> Self:
         """The null rule of this path: ``and_not_null()`` drops the missing related row, and a NULL
         in any nullable column reached through the path. A method on one comparison wins."""
-        return RelationPath(self._root, self._path, self._target, "and_not_null")  # type: ignore[return-value]
+        return RelationPath(self._root, self._path, self._target, "and_not_null", self._alias)  # type: ignore[return-value]
 
     # Hidden from type checkers: generated stubs declare each model's path class with
     # its real attributes, so unknown names are reported instead of typed as Any.
@@ -1265,10 +1329,10 @@ class RelationPath(Generic[M]):
             if name in meta.nested:
                 return meta.nested[name].__get__(None, self._target)._at(self._root, self._path)
             if name in meta.fields:
-                return ColumnRef(self._root, self._path, meta.fields[name], self._rule)
+                return ColumnRef(self._root, self._path, meta.fields[name], self._rule, self._alias)
             if name in meta.relations:
                 rel = meta.relations[name]
-                return RelationPath(self._root, (*self._path, name), rel.target, self._rule)
+                return RelationPath(self._root, (*self._path, name), rel.target, self._rule, self._alias)
             raise AttributeError(f"{self._target.__name__} has no field or relation {name!r}")
 
     def __dir__(self) -> Iterable[str]:
@@ -1308,7 +1372,8 @@ class RelationPath(Generic[M]):
                 "compares with an instance (compare a key column instead)"
             )
         columns: list[ColumnRef[Any]] = [
-            ColumnRef(self._root, self._path[:-1], owner._meta.fields[n], self._rule) for n in rel.via_fields
+            ColumnRef(self._root, self._path[:-1], owner._meta.fields[n], self._rule, self._alias[: len(self._path) - 1])
+            for n in rel.via_fields
         ]
         if other is None:
             nulls: list[Condition] = [IsNull(c, neg=neg) for c in columns]
@@ -1486,15 +1551,19 @@ def _is_negative(leaf: Condition) -> bool:
     return isinstance(leaf, Negated) or (isinstance(leaf, (In, InSelect)) and leaf.neg)
 
 
+def _ckey(e: object) -> str:
+    return e._key if isinstance(e, ColumnRef) else repr(e)
+
+
 def _null_siblings(items: Sequence[Condition], tests_not_null: bool) -> set[str]:
     """The columns that `items` test for NULL in the way the two null methods build it:
     ``col IS NOT NULL`` in an `&`, ``col IS NULL`` (or ``NOT col IS NOT NULL``) in a `|`."""
     out: set[str] = set()
     for i in items:
         if isinstance(i, IsNull) and i.neg == tests_not_null:
-            out.add(repr(i.item))
+            out.add(_ckey(i.item))
         elif isinstance(i, Not) and isinstance(i.item, IsNull) and i.item.neg != tests_not_null:
-            out.add(repr(i.item.item))
+            out.add(_ckey(i.item.item))
     return out
 
 
@@ -1512,7 +1581,7 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False) -> Conditi
     under ``~`` keeps the rows with a NULL key."""
 
     def rule_of(leaf: Condition, neg: bool, handled: frozenset[str]) -> Condition:
-        ruled = {repr(c): c for c in _tested(leaf) if isinstance(c, ColumnRef) and c._rule and repr(c) not in handled}
+        ruled = {c._key: c for c in _tested(leaf) if isinstance(c, ColumnRef) and c._rule and c._key not in handled}
         ruled_leaf = leaf
         for c in ruled.values():
             keeps_null = c._rule == "or_null"
@@ -1522,7 +1591,7 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False) -> Conditi
         if ruled_leaf is not leaf:
             return ruled_leaf
         if neg and isinstance(leaf, (PathComparison, PathMatch)):
-            keys = [c for c in _strict_columns(leaf) if repr(c) not in handled]
+            keys = [c for c in _strict_columns(leaf) if c._key not in handled]
             if keys:
                 return and_(leaf, *(IsNull(c, neg=True) for c in keys))
         return leaf
@@ -1541,7 +1610,7 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False) -> Conditi
         if ruled is not node:
             return ruled
         for col in _strict_columns(node):
-            if repr(col) in handled:
+            if col._key in handled:
                 continue
             if neg:
                 raise QueryError(

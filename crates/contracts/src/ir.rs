@@ -715,7 +715,9 @@ pub enum ArithOp {
 pub enum Expr {
     /// A field reached from the query's root model through `path` (relation names).
     /// With `sub`, a subfield of a nested `json` field: `address.geo.lat` is `name: "address"`, `sub: ["geo", "lat"]`.
-    Col { path: Vec<String>, name: String, #[serde(default)] sub: Vec<String> },
+    /// `alias` (empty, or one entry per `path` hop) tags a hop `User.posts.alias()`: a hop with the same
+    /// nonzero tag is one related row for the whole query, a different tag is another row.
+    Col { path: Vec<String>, name: String, #[serde(default)] sub: Vec<String>, #[serde(default)] alias: Vec<u32> },
     Param { i: usize },
     Const { value: bool },
     /// SQL `NULL`; as a whole nested field, every leaf is null.

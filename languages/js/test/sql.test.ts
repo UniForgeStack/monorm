@@ -15,6 +15,7 @@ function where(qs: { sql(): string }): string {
   return i < 0 ? "" : sql.slice(i + 7);
 }
 
+const sqlOf = (qs: unknown): string => (qs as { sql(): string }).sql();
 const count = (s: string, part: string) => s.split(part).length - 1;
 const native = () => Post._meta.registry.native();
 
@@ -51,11 +52,45 @@ test("a to-many filter is EXISTS", () => {
   );
 });
 
-test("one filter() call means the same related row; separate calls are independent", () => {
+test("one path is one related row for the whole query: in one filter() call or across calls", () => {
   const same = where(User.objects.filter(User.posts.views.gt(10), User.posts.published.eq(true)));
   assert.equal(count(same, "EXISTS"), 1);
   assert.ok(same.includes('"t1"."views" > 10 AND "t1"."published" = TRUE'));
-  assert.equal(count(where(User.objects.filter(User.posts.views.gt(10)).filter(User.posts.published.eq(true))), "EXISTS"), 2);
+  const split = where(User.objects.filter(User.posts.views.gt(10)).filter(User.posts.published.eq(true)));
+  assert.equal(split, same);
+});
+
+test("alias() asks for another related row; one alias in two conditions is one row", () => {
+  const other = User.posts.alias();
+  assert.equal(count(where(User.objects.filter(User.posts.views.gt(10), other.published.eq(true))), "EXISTS"), 2);
+  assert.equal(count(where(User.objects.filter(other.views.gt(10), other.published.eq(true))), "EXISTS"), 1);
+  assert.equal(count(where(User.objects.filter(User.posts.alias().views.gt(10), User.posts.alias().published.eq(true))), "EXISTS"), 2);
+});
+
+test("alias() tags the last hop only", () => {
+  const post = User.objects.filter(User.posts.title.eq("a"), User.posts.alias().comments.body.eq("x")).sql();
+  assert.equal(count(post, 'FROM "posts"'), 2);
+  const comment = User.objects.filter(User.posts.comments.body.eq("x"), User.posts.comments.alias().body.eq("y")).sql();
+  assert.equal(count(comment, 'FROM "posts"'), 1);
+  assert.equal(count(comment, 'FROM "comments"'), 2);
+});
+
+test("or and not are barriers for a shared related row", () => {
+  const or2 = where(User.objects.filter(User.posts.views.gt(10), User.posts.title.eq("a").or(User.posts.title.eq("b"))));
+  assert.equal(count(or2, "EXISTS"), 2);
+  const w = where(User.objects.filter(User.posts.views.gt(100)).exclude(User.posts.published.eq(true)));
+  assert.equal(count(w, "EXISTS"), 2);
+  assert.ok(w.includes("NOT EXISTS"));
+});
+
+test("alias() works in filter conditions only", () => {
+  const other = User.posts.alias();
+  assert.throws(() => User.objects.load(other as never), /alias\(\)/);
+  assert.throws(() => User.objects.load(other.comments as never), /alias\(\)/);
+  assert.throws(() => User.objects.load(other.title as never), /alias\(\)/);
+  assert.throws(() => sqlOf(User.objects.select({ n: func.count(other) })), /alias\(\)/);
+  assert.throws(() => sqlOf(User.objects.filter(User.id.eq(outer(other.views as never) as never))), /alias\(\)/);
+  assert.throws(() => sqlOf(User.objects.filter(other.views.gt(User.posts.alias().views as never))), /two aliases/);
 });
 
 test("or inside one relation shares the subquery; with a local column it keeps rows", () => {

@@ -336,7 +336,7 @@ export class ModelMeta implements Source {
       Object.defineProperty(proto, f.name, {
         get(this: RelationPath<ModelSpec, string, never>) {
           const s = this[PATH];
-          return columnOf(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."), s.rule, s.path.length > 0 && s.toOne === true);
+          return columnOf(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."), s.rule, s.path.length > 0 && s.toOne === true, s.alias);
         },
         enumerable: true,
       });
@@ -349,7 +349,7 @@ export class ModelMeta implements Source {
           const s = this[PATH];
           const p = Object.create(registry.get(r.target).pathProto) as Record<PropertyKey, unknown>;
           const toOne = (s.toOne ?? true) && (r.kind === "belongsTo" || r.kind === "hasOne") && r.through === undefined;
-          const state: PathState = { root: s.root, path: [...s.path, r.ir], names: [...s.names, r.name], target: r.target, toOne, ...(s.rule ? { rule: s.rule } : {}) };
+          const state: PathState = { root: s.root, path: [...s.path, r.ir], names: [...s.names, r.name], target: r.target, toOne, ...(s.rule ? { rule: s.rule } : {}), ...(s.alias ? { alias: s.alias } : {}) };
           p[PATH] = r.kind === "belongsTo" ? { ...state, belongsTo: belongsToKey(owner, s, r) } : state;
           return p;
         },
@@ -490,8 +490,8 @@ export class ModelMeta implements Source {
 }
 
 /** A column of `f`: a nested member gets subfield access. */
-export function columnOf(root: Column<unknown, string>["root"], path: readonly string[], f: FieldMeta, text: string, rule?: NullRule, toOne = false): Column<unknown, string> {
-  return f.nested !== undefined ? new NestedColumn(root, path, f, text, f.nested, []) : new Column(root, path, f, text, rule, toOne);
+export function columnOf(root: Column<unknown, string>["root"], path: readonly string[], f: FieldMeta, text: string, rule?: NullRule, toOne = false, alias?: Column<unknown, string>["alias"]): Column<unknown, string> {
+  return f.nested !== undefined ? new NestedColumn(root, path, f, text, f.nested, [], alias) : new Column(root, path, f, text, rule, toOne, alias);
 }
 
 /** Names the runtime gives meaning to on models / instances. */
@@ -592,7 +592,7 @@ export function registerQueries(
 function belongsToKey(owner: ModelMeta, s: PathState, r: RelationMeta): NonNullable<PathState["belongsTo"]> {
   const key = r.from.map((name) => {
     const f = owner.fieldByIr.get(name)!;
-    return new Column(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."), s.rule, s.path.length > 0 && s.toOne === true);
+    return new Column(s.root, s.path, f, [s.root.name, ...s.names, f.name].join("."), s.rule, s.path.length > 0 && s.toOne === true, s.alias);
   });
   const read = (o: object): unknown[] => {
     const target = owner.registry.get(r.target);

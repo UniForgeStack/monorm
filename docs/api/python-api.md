@@ -276,17 +276,54 @@ A method on one comparison wins over the method on the path.
 | Query | Meaning | SQL |
 |---|---|---|
 | `filter(User.posts.views > 10, User.posts.published)` | some **single** post is both | one `EXISTS (… views > 10 AND published)` |
-| `filter(User.posts.views > 10).filter(User.posts.published)` | some post has views > 10 and some (maybe other) post is published | two `EXISTS` |
+| `filter(User.posts.views > 10).filter(User.posts.published)` | the same: some **single** post is both | one `EXISTS`, as in the line above |
+| `filter(User.posts.views > 10, User.posts.alias().published)` | some post has views > 10 and some other post is published | two `EXISTS` |
+| `filter(User.posts.views > 100).exclude(User.posts.published == True)` | some post has views > 100, and no post is published | `EXISTS` and `NOT EXISTS` |
 | `exclude(User.posts.published == False)` | no unpublished post (users without posts included) | `NOT EXISTS` |
 | `filter((User.email == x) \| (User.posts.views > 10))` | users without posts still match on email | `email = x OR EXISTS (…)` |
 | `filter(User.posts.comments.body.contains("hi"))` | nested hops | nested `EXISTS` |
 | `filter(Post.author.email == x)` | to-one hops | `EXISTS` on the PK (planned as a semi-join) |
 | `filter(Post.author == alice)` | the post's key is alice's key | `author_id = $1`, no join |
 
-This matches what Django returns for multi-valued relations: one `filter()` call means
-the same related row, separate calls are independent, and negation means "none". It
-differs in one way: Django uses a `JOIN` and returns a parent once **per matching
-child** unless you add `.distinct()`. `EXISTS` returns each parent once and needs no
+**One path is one related row.**
+In one query, all the top-level `AND` conditions on one to-many path must hold for the same related row.
+It does not matter whether they are in one `filter()` call or in several calls: `filter(a, b)` is `filter(a).filter(b)`.
+Reuse of a path is not an error.
+Conditions in a deeper path follow the same rule inside the shared `EXISTS`.
+
+**`alias()` is another related row.**
+`User.posts.alias()` is the same path, but it asks for a different related row.
+Each alias is one `EXISTS`.
+All the conditions that use one alias object share the row, in one call or across calls.
+`alias()` tags only the last hop: `User.posts.comments.alias()` shares the post and asks for another comment.
+Keep the alias in a variable to use it in more than one condition: `p = User.posts.alias()`.
+Two aliases can match the same row.
+You cannot use an alias in an aggregate, `order_by()`, `load()` or `outer()`.
+These raise `QueryError`.
+
+**`|` and `~` are barriers.**
+A condition inside `|` or `~` never shares a row with the conditions outside it.
+`filter(User.posts.views > 100).exclude(User.posts.published == True)` means: some post has more than 100 views, and no post is published.
+The two conditions are two different questions.
+The query-defaults filter (a default `active_filter` or a partition filter) never merges with your conditions.
+
+**A reusable helper calls `alias()` itself.**
+A helper that means "some post such that ..." must call `User.posts.alias()` and use the result in all its conditions.
+Then it asks for its own post, and it does not narrow the posts of the other conditions in the query.
+Two helpers that use `User.posts` directly share one post, so both narrow to the same post.
+This is the accepted trade-off of the rule.
+
+**Meaning change.**
+Before this rule, two `filter()` calls on one to-many path were two independent `EXISTS`.
+They are now one `EXISTS`.
+A query such as `filter(User.posts.views > 10).filter(User.posts.published)` can now return fewer rows.
+No error tells you about the change.
+To keep the old meaning, write `User.posts.alias()` in one of the conditions.
+
+This differs from Django in two ways.
+Django treats separate `filter()` calls on a multi-valued relation as independent.
+Django also uses a `JOIN` and returns a parent once **per matching child** unless you add `.distinct()`.
+`EXISTS` returns each parent once and needs no
 `DISTINCT`. The same filter code also works in `UPDATE` and `DELETE`, where Postgres
 doesn't allow `JOIN`.
 

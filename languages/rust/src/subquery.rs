@@ -145,6 +145,7 @@ impl<M: Model, Card> Subquery<M, Card> {
             path: Vec::new(),
             name: key.fields[0].into(),
             sub: vec![],
+            alias: vec![],
         };
         self.query = self
             .query

@@ -113,16 +113,21 @@ test("filter across a to-many relation", async () => {
   assert.deepEqual(names(await User.objects.filter(User.posts.createdAt.lt(YESTERDAY)).all()), ["Alice", "Bob"]);
 });
 
-test("same row vs independent filters", async () => {
+test("same row across calls, and alias() for another row", async () => {
   await seed();
-  // One filter() call: the same post must be old AND unpublished.
+  // One path is one post for the whole query: old AND unpublished, in one call or two.
   const same = await User.objects.filter(User.posts.createdAt.lt(YESTERDAY), User.posts.published.eq(false)).all();
   assert.deepEqual(names(same), ["Alice"]);
-  // Two calls: an old post, and a popular post (possibly different ones).
-  const indep = await User.objects.filter(User.posts.createdAt.lt(YESTERDAY)).filter(User.posts.views.gt(40)).all();
+  const split = await User.objects.filter(User.posts.createdAt.lt(YESTERDAY)).filter(User.posts.published.eq(false)).all();
+  assert.deepEqual(names(split), ["Alice"]);
+  // The old post and the popular post are one post, so only Bob has both.
+  assert.deepEqual(names(await User.objects.filter(User.posts.createdAt.lt(YESTERDAY)).filter(User.posts.views.gt(40)).all()), ["Bob"]);
+  assert.deepEqual(names(await User.objects.filter(User.posts.createdAt.lt(YESTERDAY), User.posts.views.gt(40)).all()), ["Bob"]);
+  // alias() asks for another post: an old post, and a popular post (possibly different ones).
+  const indep = await User.objects.filter(User.posts.createdAt.lt(YESTERDAY), User.posts.alias().views.gt(40)).all();
   assert.deepEqual(names(indep), ["Alice", "Bob"]);
-  const both = await User.objects.filter(User.posts.createdAt.lt(YESTERDAY), User.posts.views.gt(40)).all();
-  assert.deepEqual(names(both), ["Bob"]);
+  const other = User.posts.alias();
+  assert.deepEqual(names(await User.objects.filter(other.createdAt.lt(YESTERDAY)).filter(other.views.gt(40)).all()), ["Bob"]);
 });
 
 test("exclude and negation", async () => {
