@@ -2,12 +2,14 @@
 //!
 //! Relation paths are the interesting part:
 //!
-//! * In filters, every relation hop becomes a correlated `EXISTS` subquery. Conditions
-//!   inside one `filter()` entry that go through the same relation are grouped into one
-//!   subquery, so they must hold for the *same* related row; separate entries get
-//!   separate subqueries. `NOT` is a grouping barrier: `~(User.posts.views > 10)` means
-//!   "no post with more than 10 views". This matches Django's multi-valued relationship
-//!   semantics without its duplicate rows (no JOIN fan-out, no DISTINCT needed).
+//! * In filters, every relation hop becomes a correlated `EXISTS` subquery. The top-level
+//!   `AND` conditions that go through the same to-many relation share one subquery for the
+//!   whole query, in one `filter()` entry or across entries, so they must hold for the
+//!   *same* related row. An `alias()` tag on a hop asks for another related row: each
+//!   (hop, alias) pair is one subquery. `NOT` and `OR` are grouping barriers:
+//!   `~(User.posts.views > 10)` means "no post with more than 10 views". There are no
+//!   duplicate rows (no JOIN fan-out, no DISTINCT needed). The query-defaults filter is
+//!   planned apart and never joins a user group.
 //! * `select_related` and `order_by` follow to-one relations only, with `LEFT JOIN`s.
 //! * `prefetch` loads relations with one extra `WHERE fk IN (...)` query each.
 //! * A many-to-many relation is one hop through its join table: `EXISTS (SELECT 1
@@ -36,6 +38,8 @@ use orm_core::schema::{Model, Schema};
 use orm_core::writes::{AssignValue, WriteKind as AssignKind};
 
 mod nested;
+
+const ALIAS_PLACES: &str = "alias() marks another related row in a filter condition; it does not work in an aggregate, order_by(), load() or outer()";
 
 /// A `select_related` object inside each row: its columns start at `start` and it is
 /// attached to the root object (`parent` None) or to an earlier join's object.
@@ -626,11 +630,18 @@ fn relation_aggregates(cut: &Cut, e: &Expr, out: &mut Vec<Vec<String>>) {
 /// Aggregates and subqueries are opaque: an aggregate over a relation is its own
 /// correlated subquery, so its paths don't make the surrounding condition an `EXISTS`.
 fn col_paths<'e>(e: &'e Expr, out: &mut Vec<&'e [String]>, has_not: &mut bool) {
+    let mut refs = vec![];
+    col_refs(e, &mut refs, has_not);
+    out.extend(refs.into_iter().map(|(path, _)| path));
+}
+
+/// [`col_paths`], with the `alias()` tags of each path (empty when it has none).
+fn col_refs<'e>(e: &'e Expr, out: &mut Vec<(&'e [String], &'e [u32])>, has_not: &mut bool) {
     match e {
-        Expr::Col { path, .. } => out.push(path),
+        Expr::Col { path, alias, .. } => out.push((path, alias)),
         Expr::Object { fields } => {
             for f in fields {
-                col_paths(&f.value, out, has_not);
+                col_refs(&f.value, out, has_not);
             }
         }
         Expr::Null
@@ -647,49 +658,51 @@ fn col_paths<'e>(e: &'e Expr, out: &mut Vec<&'e [String]>, has_not: &mut bool) {
         Expr::Func { name, args, .. } => {
             if !is_aggregate(name) {
                 for a in args {
-                    col_paths(a, out, has_not);
+                    col_refs(a, out, has_not);
                 }
             }
         }
         // A window is computed over the query's own rows: its paths are read here.
         Expr::Window { func, partition_by, order_by, .. } => {
-            col_paths_all(func, out, has_not);
+            let mut inner = vec![];
+            col_paths_all(func, &mut inner, has_not);
+            out.extend(inner.into_iter().map(|path| (path, &[][..])));
             for p in partition_by {
-                col_paths(p, out, has_not);
+                col_refs(p, out, has_not);
             }
             for o in order_by {
-                col_paths(&o.expr, out, has_not);
+                col_refs(&o.expr, out, has_not);
             }
         }
-        Expr::InSelect { item, .. } => col_paths(item, out, has_not),
+        Expr::InSelect { item, .. } => col_refs(item, out, has_not),
         Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => {
-            col_paths(l, out, has_not);
-            col_paths(r, out, has_not);
+            col_refs(l, out, has_not);
+            col_refs(r, out, has_not);
         }
         Expr::And { items } | Expr::Or { items } => {
             for i in items {
-                col_paths(i, out, has_not);
+                col_refs(i, out, has_not);
             }
         }
         Expr::Not { item } => {
             *has_not = true;
-            col_paths(item, out, has_not);
+            col_refs(item, out, has_not);
         }
         Expr::In { item, values, .. } => {
-            col_paths(item, out, has_not);
+            col_refs(item, out, has_not);
             for v in values {
-                col_paths(v, out, has_not);
+                col_refs(v, out, has_not);
             }
         }
-        Expr::IsNull { item, .. } | Expr::JsonPath { item, .. } => col_paths(item, out, has_not),
+        Expr::IsNull { item, .. } | Expr::JsonPath { item, .. } => col_refs(item, out, has_not),
         Expr::Case { whens, default } => {
             for part in case_parts(whens, default) {
-                col_paths(part, out, has_not);
+                col_refs(part, out, has_not);
             }
         }
         Expr::Like { item, pattern, .. } => {
-            col_paths(item, out, has_not);
-            col_paths(pattern, out, has_not);
+            col_refs(item, out, has_not);
+            col_refs(pattern, out, has_not);
         }
     }
 }
@@ -803,6 +816,8 @@ pub struct Planner<'s> {
     allow_window: bool,
     /// `unnest()` returns a set of rows: only valid in the select list.
     allow_unnest: bool,
+    /// `alias()` tags only mean something in a filter condition.
+    alias_ok: bool,
     target: Target,
     caps: Capabilities,
     policy_bypass: Bypass,
@@ -843,6 +858,7 @@ impl<'s> Planner<'s> {
             allow_excluded: false,
             allow_window: false,
             allow_unnest: false,
+            alias_ok: false,
             target,
             caps: target.caps,
             policy_bypass: Bypass::default(),
@@ -1184,7 +1200,17 @@ impl<'s> Planner<'s> {
 
     fn apply_filters(&mut self, filters: &[Expr], without_defaults: &Bypass, without_root_filter: bool) -> Result<Vec<SExpr>> {
         self.policy_bypass = without_defaults.clone();
-        let mut out: Vec<SExpr> = filters.iter().map(|f| self.cond(f)).collect::<Result<_>>()?;
+        // One to-many path is one related row for the whole query: the conditions of every
+        // `filter()` call are one `AND`.
+        let mut conjuncts = vec![];
+        for f in filters { self.conjuncts(f, &mut conjuncts); }
+        let items: Vec<&Expr> = conjuncts.iter().map(|c| &**c).collect();
+        self.alias_ok = true;
+        let together = self.together(&items, true);
+        self.alias_ok = false;
+        let parts = together?;
+        // Thousands of conjuncts fold into a shallow tree; the defaults below stay separate.
+        let mut out = if parts.len() > FOLD_FAN_OUT { vec![fold(parts, true)] } else { parts };
         if let Some(filter) = active_filter(self.model(self.root), without_defaults).filter(|_| !without_root_filter) {
             out.push(self.cond(&filter)?); self.root_filtered = true;
         }
@@ -1200,27 +1226,33 @@ impl<'s> Planner<'s> {
         })
     }
 
-    /// The relation every column in `e` goes through next, if they all agree and `e`
-    /// has no `NOT` (which must stay outside the subquery).
-    fn pure_hop<'e>(&self, e: &'e Expr) -> Option<&'e str> {
-        let (mut paths, mut has_not) = (vec![], false);
-        col_paths(e, &mut paths, &mut has_not);
-        if has_not || paths.is_empty() {
-            return None;
-        }
+    /// The relations below the current scope that `e` reads, as (hop, `alias()` tag); whether it
+    /// also reads something outside them; and whether it contains a `NOT`.
+    fn hop_keys<'e>(&self, e: &'e Expr) -> (Vec<(&'e str, u32)>, bool, bool) {
+        let (mut refs, mut has_not) = (vec![], false);
+        col_refs(e, &mut refs, &mut has_not);
         let base = &self.scope().path;
-        let mut hop: Option<&str> = None;
-        for p in paths {
+        let (mut keys, mut local) = (vec![], false);
+        for (p, tags) in refs {
             if p.len() <= base.len() || !p.starts_with(base) {
-                return None;
+                local = true;
+                continue;
             }
-            let h = p[base.len()].as_str();
-            match hop {
-                Some(prev) if prev != h => return None,
-                _ => hop = Some(h),
+            let key = (p[base.len()].as_str(), tags.get(base.len()).copied().unwrap_or(0));
+            if !<[_]>::contains(&keys, &key) {
+                keys.push(key);
             }
         }
-        hop
+        (keys, local, has_not)
+    }
+
+    /// The relation (and `alias()` tag) every column in `e` goes through next, if they all
+    /// agree and `e` has no `NOT` (which must stay outside the subquery).
+    fn pure_hop<'e>(&self, e: &'e Expr) -> Option<(&'e str, u32)> {
+        match self.hop_keys(e) {
+            (keys, false, false) if keys.len() == 1 => Some(keys[0]),
+            _ => None,
+        }
     }
 
     /// `dst.<to> = src.<from>` over every column pair of the relation.
@@ -1233,15 +1265,19 @@ impl<'s> Planner<'s> {
         Ok(fold(pairs, true))
     }
 
-    /// First relation below the current scope referenced by a leaf condition.
-    fn any_hop<'e>(&self, e: &'e Expr) -> Option<&'e str> {
-        let (mut paths, mut has_not) = (vec![], false);
-        col_paths(e, &mut paths, &mut has_not);
-        let base = &self.scope().path;
-        paths
-            .into_iter()
-            .find(|p| p.len() > base.len() && p.starts_with(base))
-            .map(|p| p[base.len()].as_str())
+    /// First relation below the current scope referenced by a leaf condition. A leaf that
+    /// reads two aliases of that relation has no single related row to run in.
+    fn any_hop<'e>(&self, e: &'e Expr) -> Result<Option<&'e str>> {
+        let (keys, _, _) = self.hop_keys(e);
+        let Some(&(hop, tag)) = keys.first() else { return Ok(None) };
+        if keys.iter().any(|&(h, t)| h == hop && t != tag) {
+            return Err(Error::query(format!(
+                "one condition reads two aliases of {hop:?}: an alias() is another related row, so a condition \
+                 can compare its columns with constants and parameters, not with another alias; \
+                 put each alias in its own condition"
+            )));
+        }
+        Ok(Some(hop))
     }
 
     /// Adds the target rows of `rel`, linked to the source rows `src` (alias, model), to
@@ -1374,6 +1410,49 @@ impl<'s> Planner<'s> {
         Some(Expr::Not { item: Box::new(positive) })
     }
 
+    /// `e`, or its to-one negation form: a to-one `!=` is `NOT (==)` and must leave a group.
+    fn negated<'e>(&self, e: &'e Expr) -> Cow<'e, Expr> {
+        self.to_one_negation(e).map_or(Cow::Borrowed(e), Cow::Owned)
+    }
+
+    /// The top-level `AND` terms of `e`, nested `AND`s opened.
+    fn conjuncts<'e>(&self, e: &'e Expr, out: &mut Vec<Cow<'e, Expr>>) {
+        match e {
+            Expr::And { items } => items.iter().for_each(|i| self.conjuncts(i, out)),
+            other => out.push(self.negated(other)),
+        }
+    }
+
+    /// The conditions of `items`, joined by `AND` (`is_and`) or `OR`: the ones that live entirely
+    /// below the same relation and `alias()` tag share one subquery (one related row). A `NOT`
+    /// stays outside its subquery, so it is a barrier.
+    fn together(&mut self, items: &[&Expr], is_and: bool) -> Result<Vec<SExpr>> {
+        let mut groups: Vec<((&str, u32), Vec<&Expr>)> = vec![];
+        let mut parts = vec![];
+        for &item in items {
+            // An `OR` is a barrier: it is one condition on its own related row.
+            let hop = if is_and && matches!(item, Expr::Or { .. }) { None } else { self.pure_hop(item) };
+            match hop {
+                Some(key) => match groups.iter_mut().find(|(g, _)| *g == key) {
+                    Some((_, members)) => members.push(item),
+                    None => groups.push((key, vec![item])),
+                },
+                None => parts.push(self.cond(item)?),
+            }
+        }
+        for ((hop, _), members) in groups {
+            parts.push(self.exists_via(hop, |p| {
+                let mut terms = vec![];
+                for m in members {
+                    if is_and { p.conjuncts(m, &mut terms) } else { terms.push(p.negated(m)) }
+                }
+                let terms: Vec<&Expr> = terms.iter().map(|t| &**t).collect();
+                Ok(fold(p.together(&terms, is_and)?, is_and))
+            })?);
+        }
+        Ok(parts)
+    }
+
     fn cond(&mut self, e: &Expr) -> Result<SExpr> {
         if let Some(rewritten) = self.whole_field(e)? {
             return self.cond(&rewritten);
@@ -1384,35 +1463,16 @@ impl<'s> Planner<'s> {
         match e {
             Expr::And { items } | Expr::Or { items } => {
                 let is_and = matches!(e, Expr::And { .. });
-                // A to-one `!=` is `NOT (==)`: it must leave the group before the grouping.
-                let items: Vec<Cow<Expr>> = items
-                    .iter()
-                    .map(|i| self.to_one_negation(i).map_or(Cow::Borrowed(i), Cow::Owned))
-                    .collect();
-                // Children that live entirely below the same relation share one subquery.
-                let mut groups: Vec<(&str, Vec<&Expr>)> = vec![];
-                let mut parts = vec![];
-                for item in &items {
-                    let item: &Expr = item;
-                    match self.pure_hop(item) {
-                        Some(h) => match groups.iter_mut().find(|(g, _)| *g == h) {
-                            Some((_, members)) => members.push(item),
-                            None => groups.push((h, vec![item])),
-                        },
-                        None => parts.push(self.cond(item)?),
-                    }
+                let mut conjuncts = vec![];
+                for item in items {
+                    if is_and { self.conjuncts(item, &mut conjuncts) } else { conjuncts.push(self.negated(item)) }
                 }
-                for (hop, members) in groups {
-                    parts.push(self.exists_via(hop, |p| {
-                        let inner = members.iter().map(|m| p.cond(m)).collect::<Result<Vec<_>>>()?;
-                        Ok(fold(inner, is_and))
-                    })?);
-                }
-                Ok(fold(parts, is_and))
+                let items: Vec<&Expr> = conjuncts.iter().map(|c| &**c).collect();
+                Ok(fold(self.together(&items, is_and)?, is_and))
             }
             Expr::Not { item } => Ok(self.cond(item)?.not()),
             Expr::Const { value } => Ok(SExpr::cust(if *value { "TRUE" } else { "FALSE" })),
-            leaf => match self.any_hop(leaf) {
+            leaf => match self.any_hop(leaf)? {
                 Some(hop) => self.exists_via(hop, |p| p.cond(leaf)),
                 None => self.leaf(leaf),
             },
@@ -1605,7 +1665,7 @@ impl<'s> Planner<'s> {
 
     fn hint_of(&self, e: &Expr) -> Hint<'s> {
         match e {
-            Expr::Col { path, name, sub } => match self.walk(self.root, path).and_then(|m| self.sub_ref(m, name, sub)) {
+            Expr::Col { path, name, sub, .. } => match self.walk(self.root, path).and_then(|m| self.sub_ref(m, name, sub)) {
                 Ok(SubRef::Column(f)) => Hint { ty: Some(f.value_type()), field: Some(f) },
                 Ok(SubRef::Json { ty, .. }) => Hint { ty: Some(ty), field: None },
                 Ok(SubRef::Group(_)) => Hint::ty(ColType::Json),
@@ -1668,7 +1728,10 @@ impl<'s> Planner<'s> {
 
     fn value(&mut self, e: &Expr, hint: Hint<'s>) -> Result<SExpr> {
         Ok(match e {
-            Expr::Col { path, name, sub } => {
+            Expr::Col { path, name, sub, alias } => {
+                if alias.iter().any(|a| *a != 0) && !self.alias_ok {
+                    return Err(Error::query(ALIAS_PLACES));
+                }
                 #[cfg(feature = "composition")]
                 {
                     let m = self.model(self.walk(self.root, path)?);
@@ -1723,11 +1786,18 @@ impl<'s> Planner<'s> {
                 SExpr::SubQuery(None, Box::new(self.subselect(select, false)?.into()))
             }
             Expr::Window { func, base, partition_by, order_by, frame } => {
+                let ok = std::mem::replace(&mut self.alias_ok, false);
                 // Postgres rejects a set-returning function in a window.
-                self.with_unnest(false, |p| p.window(func, base.as_deref(), partition_by, order_by, frame))?
+                let window = self.with_unnest(false, |p| p.window(func, base.as_deref(), partition_by, order_by, frame));
+                self.alias_ok = ok;
+                window?
             }
             Expr::Func { name, args, rel, distinct, filter, order_by } => {
-                self.func(name, args, rel.as_deref(), *distinct, filter.as_deref(), order_by)?
+                let allowed = self.alias_ok && !is_aggregate(name);
+                let ok = std::mem::replace(&mut self.alias_ok, allowed);
+                let func = self.func(name, args, rel.as_deref(), *distinct, filter.as_deref(), order_by);
+                self.alias_ok = ok;
+                func?
             }
             Expr::Case { whens, default } => self.case(whens, default.as_deref(), hint)?,
             Expr::JsonPath { item, path, text } => self.json_path(item, path, *text)?,
@@ -1876,7 +1946,7 @@ impl<'s> Planner<'s> {
     fn expr_type(&self, e: &Expr) -> Result<ValueType> {
         let scalar = ValueType::scalar;
         Ok(match e {
-            Expr::Col { path, name, sub } => match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
+            Expr::Col { path, name, sub, .. } => match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
                 SubRef::Column(f) => f.value_type(),
                 SubRef::Json { ty, .. } => ty,
                 SubRef::Group(_) => scalar(ColType::Json),
@@ -2288,7 +2358,7 @@ impl<'s> Planner<'s> {
             if let Some((prev, target, path)) = tail {
                 let (rel, _) = self.model(prev).relation(path.last().map_or("", |s| s)).map_err(query_err)?;
                 if rel.kind == RelKind::One && rel.through.is_none() {
-                    let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone(), sub: vec![] };
+                    let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone(), sub: vec![], alias: vec![] };
                     return self.call("count", &[pk], false, c.filter, &[]);
                 }
             }
@@ -2453,7 +2523,7 @@ impl<'s> Planner<'s> {
                     self.lateral_open = false;
                     let mut e = e?;
                     let read_sql = match expr {
-                        Expr::Col { path, name, sub } if sub.is_empty() => {
+                        Expr::Col { path, name, sub, .. } if sub.is_empty() => {
                             let m = self.walk(self.root, path)?;
                             self.model(m).field(name).ok().and_then(|f| f.read_sql.as_ref())
                         }
@@ -2487,7 +2557,7 @@ impl<'s> Planner<'s> {
             self.require(self.caps.distinct_on, "distinct(on=...)")?;
             let mut cols = vec![];
             for e in &q.distinct_on {
-                let Expr::Col { path, name, sub } = e else {
+                let Expr::Col { path, name, sub, .. } = e else {
                     return Err(Error::query("distinct(on=...) takes columns"));
                 };
                 if !sub.is_empty() {
@@ -3226,7 +3296,7 @@ pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_
     let keys = if q.order.is_empty() { effective_order(schema, &q)? } else { vec![] }
         .into_iter()
         .map(|o| match o.expr {
-            Expr::Col { path, name, sub } if path.is_empty() && sub.is_empty() => Ok(serde_json::json!({"field": name, "desc": o.desc, "nulls": o.nulls})),
+            Expr::Col { path, name, sub, .. } if path.is_empty() && sub.is_empty() => Ok(serde_json::json!({"field": name, "desc": o.desc, "nulls": o.nulls})),
             _ => Err(Error::query("a default order is a root column")),
         })
         .collect::<Result<Vec<_>>>()?;
@@ -3324,7 +3394,7 @@ fn plan_prefetch(
     }
     validate_bypass(cm, &q.without_defaults)?;
     q.without_defaults.merge(without_defaults);
-    let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone(), sub: vec![] }, desc: false, nulls: None }).collect();
+    let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone(), sub: vec![], alias: vec![] }, desc: false, nulls: None }).collect();
     q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
     let slice = match sliced {
@@ -3803,7 +3873,7 @@ pub fn unique_row_update(schema: &Schema, target: Target, op: &Operation, params
             }
             Expr::Cmp { op: CmpOp::Eq, l, r } => {
                 for (column, parameter) in [(l, r), (r, l)] {
-                    let (Expr::Col { path, name, sub }, Expr::Param { i }) = (column.as_ref(), parameter.as_ref()) else { continue };
+                    let (Expr::Col { path, name, sub, .. }, Expr::Param { i }) = (column.as_ref(), parameter.as_ref()) else { continue };
                     let Ok(pos) = model.field_pos(name) else { continue };
                     let field = &model.fields()[pos];
                     if !path.is_empty() || !sub.is_empty() || !(field.primary_key || field.unique) || *i >= params.len() { continue; }

@@ -233,10 +233,11 @@ macro_rules! exercise {
                 .collect::<Vec<_>>(),
             vec![2]
         );
+        // one to-many path is one related row for the whole query, across filter() calls
         let separate = User::objects
             .filter(User::posts_path().title().eq("alpha".into()))
             .filter(User::posts_path().views().gt(10));
-        assert_eq!(separate.clone().using(&db).count().await.unwrap(), 2);
+        assert_eq!(separate.clone().using(&db).count().await.unwrap(), 1);
         assert!(separate.or(User::objects).is_err());
         let either = User::objects
             .order_by(User::ID.desc())

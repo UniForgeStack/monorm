@@ -320,6 +320,7 @@ async fn fetch_upgrade<M: Model, R, L, D>(
                                     path: vec![],
                                     name: model.fields()[pos].name.clone(),
                                     sub: vec![],
+                                    alias: vec![],
                                 }),
                                 op: orm_core::ir::CmpOp::Eq,
                                 r: Box::new(orm_core::ir::Expr::Param { i }),

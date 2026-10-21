@@ -26,6 +26,7 @@ from .expr import (
     _Slot,
     _Ctes,
     and_,
+    no_alias,
     as_condition,
     resolve_null_rule,
     differs,
@@ -576,6 +577,7 @@ class QuerySet(Generic[M]):
             elif isinstance(item, RelationPath):
                 self._check_path(item)
             elif isinstance(item, ColumnRef) and item._root is self._model:
+                no_alias(item)
                 if not item._path:
                     own.extend(item._load_names() if isinstance(item, NestedRef) else [item._field.name])
             else:
@@ -638,7 +640,8 @@ class QuerySet(Generic[M]):
         )
 
     def filter(self, *conditions: ConditionLike) -> Self:
-        """Keep rows matching all ``conditions``."""
+        """Keep rows matching all ``conditions``. One to-many path is one related row for the
+        whole query, here and in other ``filter()`` calls; ``path.alias()`` asks for another."""
         if not conditions:
             return self._clone()
         condition = and_(*conditions)
@@ -906,6 +909,7 @@ class QuerySet(Generic[M]):
             raise TypeError(f"expected a relation such as {self._model.__name__}.<relation>, got {p!r}")
         if p._root is not self._model:
             raise ValueError(f"{p!r} does not start at {self._model.__name__}")
+        no_alias(p)
 
     # -- IR ------------------------------------------------------------------------------
 

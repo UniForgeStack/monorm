@@ -250,7 +250,7 @@ impl<'s> Planner<'s> {
 
     /// The nested type a column expression names as a whole, if it does.
     fn whole_type(&self, e: &Expr) -> Option<&'s TypeIr> {
-        let Expr::Col { path, name, sub } = e else { return None };
+        let Expr::Col { path, name, sub, .. } = e else { return None };
         let m = self.walk(self.root, path).ok()?;
         match self.sub_ref(m, name, sub).ok()? {
             SubRef::Group(g) => Some(g.ty),
@@ -279,7 +279,7 @@ impl<'s> Planner<'s> {
                     _ => return Ok(None),
                 };
                 let Some(ty) = self.whole_type(col) else { return Ok(None) };
-                let Expr::Col { path, name, sub } = col else { unreachable!("whole_type needs a column") };
+                let Expr::Col { path, name, sub, .. } = col else { unreachable!("whole_type needs a column") };
                 let eq = match other {
                     Expr::Null => return Ok(Some(Expr::IsNull { item: Box::new(col.clone()), neg: matches!(op, CmpOp::Ne) })),
                     Expr::Object { fields } => {
@@ -292,11 +292,11 @@ impl<'s> Planner<'s> {
                 Ok(Some(if matches!(op, CmpOp::Ne) { Expr::Not { item: Box::new(eq) } } else { eq }))
             }
             Expr::IsNull { item, neg } => {
-                let Expr::Col { path, name, sub } = &**item else { return Ok(None) };
+                let Expr::Col { path, name, sub, .. } = &**item else { return Ok(None) };
                 let m = self.walk(self.root, path)?;
                 let Ok(SubRef::Group(g)) = self.sub_ref(m, name, sub) else { return Ok(None) };
                 Ok(Some(match self.null_leaf(&g.leaves, g.ty, &g.sub) {
-                    Some(leaf) => Expr::IsNull { item: Box::new(Expr::Col { path: path.clone(), name: name.clone(), sub: leaf.nested.as_ref().unwrap().path.clone() }), neg: *neg },
+                    Some(leaf) => Expr::IsNull { item: Box::new(Expr::Col { path: path.clone(), name: name.clone(), sub: leaf.nested.as_ref().unwrap().path.clone(), alias: vec![] }), neg: *neg },
                     None => Expr::Const { value: *neg },
                 }))
             }
@@ -308,7 +308,7 @@ impl<'s> Planner<'s> {
         self.check_object(ty, fields)?;
         for tf in &ty.fields {
             sub.push(tf.name.clone());
-            let at = Expr::Col { path: path.to_vec(), name: name.to_owned(), sub: sub.clone() };
+            let at = Expr::Col { path: path.to_vec(), name: name.to_owned(), sub: sub.clone(), alias: vec![] };
             match fields.iter().find(|f| f.name == tf.name).map(|f| &f.value) {
                 None | Some(Expr::Null) => out.push(Expr::IsNull { item: Box::new(at), neg: false }),
                 Some(Expr::Object { fields }) if tf.type_name.is_some() && !tf.list => {

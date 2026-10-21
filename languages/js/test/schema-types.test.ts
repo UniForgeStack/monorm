@@ -149,10 +149,11 @@ test("many-to-many links and queries", async () => {
   assert.deepEqual((await p1.tags.orderBy(Tag.name).all()).map((t) => t.name), ["news", "rust"]);
   assert.deepEqual((await rust.posts.orderBy(Post.id).all()).map((p) => p.title), ["one", "two"]);
   assert.equal(await p3.tags.count(), 0);
-  // filters follow both hops, one EXISTS per filter() call
+  // filters follow both hops; one path is one tag for the whole query, alias() is another tag
   assert.deepEqual((await Post.objects.filter(Post.tags.name.eq("rust")).orderBy(Post.id).all()).map((p) => p.title), ["one", "two"]);
-  const both = Post.objects.filter(Post.tags.name.eq("rust")).filter(Post.tags.name.eq("news"));
+  const both = Post.objects.filter(Post.tags.name.eq("rust")).filter(Post.tags.alias().name.eq("news"));
   assert.deepEqual((await both.all()).map((p) => p.title), ["one"]);
+  assert.equal(await Post.objects.filter(Post.tags.name.eq("rust")).filter(Post.tags.name.eq("news")).count(), 0);
   assert.equal(await Post.objects.filter(Post.tags.name.eq("rust"), Post.tags.name.eq("news")).count(), 0);
   assert.deepEqual((await Post.objects.exclude(Post.tags.name.eq("rust")).all()).map((p) => p.title), ["three"]);
   assert.deepEqual((await User.objects.filter(User.posts.tags.name.eq("news")).all()).map((u) => u.name), ["Alice"]);

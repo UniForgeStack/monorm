@@ -102,6 +102,7 @@ export class IRContext {
   readonly ctes: Ctes;
   readonly windows: [WindowDef<string, object>, IR][] = [];
   private readonly owner: boolean;
+  private readonly aliases = new Map<Alias, number>();
 
   constructor(
     readonly root: Source,
@@ -111,6 +112,17 @@ export class IRContext {
   ) {
     this.owner = outer === undefined && ctes === undefined;
     this.ctes = ctes ?? outer?.ctes ?? new Ctes();
+  }
+
+  /** The IR tags of a path's hops: 0 for an untagged hop, else the query-local number of its alias. */
+  aliasTags(alias: readonly (Alias | undefined)[] | undefined): number[] | undefined {
+    if (!alias?.some((a) => a !== undefined)) return undefined;
+    return alias.map((a) => {
+      if (a === undefined) return 0;
+      let n = this.aliases.get(a);
+      if (n === undefined) this.aliases.set(a, (n = this.aliases.size + 1));
+      return n;
+    });
   }
 
   param(value: unknown): IR {
@@ -480,7 +492,7 @@ function nullableColumns(method: string, nodes: readonly Node[]): Column<unknown
     if (!(node instanceof Column)) {
       throw new TypeError(`${method}() applies to a plain column, not to ${describe(node)}`);
     }
-    if (node.canBeNull() || node.toOne) out.set(node.text, node);
+    if (node.canBeNull() || node.toOne) out.set(node.key, node);
   }
   if (!out.size) {
     throw new QueryError(`${method}() on ${nodes.map(describe).join(", ")}: the column is NOT NULL, so no row has a NULL to keep or drop`);
@@ -644,13 +656,20 @@ export class Column<T, S extends string = never, N extends string = string, H ex
     readonly rule: NullRule | undefined = undefined,
     /** @internal Whether every hop from the root to the column is to-one. */
     readonly toOne = false,
+    /** @internal The `alias()` tag of each hop of the path (`undefined`: untagged). */
+    readonly alias: readonly (Alias | undefined)[] | undefined = undefined,
   ) {
     super();
   }
 
   /** @internal The same column under the null rule of a path. */
   withRule(rule: NullRule | undefined): Column<T, S> {
-    return rule === this.rule ? this : (new Column(this.root, this.path, this.field, this.text, rule, this.toOne) as never);
+    return rule === this.rule ? this : (new Column(this.root, this.path, this.field, this.text, rule, this.toOne, this.alias) as never);
+  }
+
+  /** @internal The column's name for the null rule: two aliases of a path are two columns. */
+  get key(): string {
+    return this.alias?.some((a) => a !== undefined) ? `${this.text}#${this.alias.map((a) => (a === undefined ? 0 : aliasId(a))).join(".")}` : this.text;
   }
 
   ir(ctx: IRContext): IR {
@@ -673,7 +692,8 @@ export class Column<T, S extends string = never, N extends string = string, H ex
       }
       throw new QueryError(`${this.text} belongs to ${this.root.name}, not to a ${ctx.root.name} query; ${hint}`);
     }
-    return { t: "col", path: [...this.path], name: this.field.ir };
+    const tags = ctx.aliasTags(this.alias);
+    return { t: "col", path: [...this.path], name: this.field.ir, ...(tags ? { alias: tags } : {}) };
   }
 
   /** @internal Whether the ORM cannot prove the column non-null. */
@@ -713,6 +733,7 @@ export class Outer<T, S extends string> extends Expression<T, OuterOf<S>, {}> {
     if (!(column instanceof Column)) {
       throw new TypeError(`outer() takes a column of a model, got ${String(column)}`);
     }
+    noAlias(column);
   }
 
   ir(ctx: IRContext): IR {
@@ -824,6 +845,7 @@ export class Func<T, S extends string = never, P = {}> extends Expression<T, S, 
       if (this.rel[PATH].root !== ctx.root) {
         throw new QueryError(`${String(this.rel)} does not start at ${ctx.root.name}`);
       }
+      noAlias(this.rel);
       ir["rel"] = [...this.rel[PATH].path];
     }
     if (this.distinct) {
@@ -1430,6 +1452,28 @@ class Functions {
 
 export const func = new Functions();
 
+// -- alias() ----------------------------------------------------------------------------------
+
+/** An `alias()` token: the identity of one other related row. */
+export class Alias {}
+
+const aliasIds = new WeakMap<Alias, number>();
+let aliasCount = 0;
+function aliasId(a: Alias): number {
+  let n = aliasIds.get(a);
+  if (n === undefined) aliasIds.set(a, (n = ++aliasCount));
+  return n;
+}
+
+/** Where an `alias()` has no meaning. */
+export const ALIAS_PLACES = "alias() marks another related row in a filter condition; it does not work in an aggregate, order_by(), load() or outer()";
+
+/** Throws when `item` (a column or a relation path) carries an `alias()` tag. */
+export function noAlias(item: unknown): void {
+  const alias = item instanceof Column ? item.alias : (item as { [PATH]?: PathState } | null)?.[PATH]?.alias;
+  if (alias?.some((a) => a !== undefined)) throw new QueryError(`${String(item)}: ${ALIAS_PLACES}`);
+}
+
 // -- relation paths ---------------------------------------------------------------------------
 
 /**
@@ -1459,6 +1503,8 @@ export interface PathState {
   readonly toOne?: boolean;
   /** The null rule of the path. */
   readonly rule?: NullRule;
+  /** The `alias()` tag of each hop (`undefined`: untagged); shorter than `path` when the last hops have none. */
+  readonly alias?: readonly (Alias | undefined)[];
 }
 
 export class RelationPath<M extends ModelSpec, S extends string, H extends readonly Hop[]> {
@@ -1479,6 +1525,30 @@ export class RelationPath<M extends ModelSpec, S extends string, H extends reado
   /** `Post.author.ne(alice)` is `Post.authorId.ne(alice.id)`; `.ne(null)` is `IS NOT NULL`. */
   ne(this: RelationPath<M, S, ToOne>, value: M["row"] | null): Condition<S, {}> {
     return compareRelation(this, value, true);
+  }
+
+  /**
+   * Another related row: every condition on one to-many path is about one related row for
+   * the whole query, and `alias()` names a different one. Keep the result in a variable to
+   * use one alias in several conditions:
+   *
+   * ```ts
+   * const p = User.posts.alias();
+   * User.objects.filter(User.posts.views.gt(10), p.views.lt(3));   // a popular post and another, unpopular post
+   * User.objects.filter(p.title.eq("a"), p.views.lt(3));           // one post: both hold for it
+   * ```
+   *
+   * It tags the last hop only: `User.posts.alias().comments` is another post,
+   * `User.posts.comments.alias()` is another comment of the same post. It works in filter
+   * conditions, not in aggregates, `orderBy()`, `load()` or `outer()`.
+   */
+  alias(): this {
+    const s = this[PATH];
+    if (!s.path.length) throw new TypeError(`alias() applies to a relation such as ${s.root.name}.<relation>, got ${String(this)}`);
+    const kept = Array.from({ length: s.path.length - 1 }, (_, i) => s.alias?.[i]);
+    const copy = Object.create(Object.getPrototypeOf(this) as object) as this;
+    (copy as Record<PropertyKey, unknown>)[PATH] = { ...s, alias: [...kept, new Alias()] };
+    return copy;
   }
 
   /**
@@ -1865,11 +1935,15 @@ function strictColumns(leaf: Node): Column<unknown, string>[] {
 
 /** The columns that `items` test for NULL the way the two null methods build it: `col IS NOT NULL`
  * in an `and()`, `col IS NULL` (or `not(col IS NOT NULL)`) in an `or()`. */
+function colKey(node: Node): string {
+  return node instanceof Column ? node.key : describe(node);
+}
+
 function nullSiblings(items: readonly Node[], testsNotNull: boolean): string[] {
   const out: string[] = [];
   for (const i of items) {
-    if (i instanceof IsNull && i.neg === testsNotNull) out.push(describe(i.item));
-    else if (i instanceof Not && i.item instanceof IsNull && i.item.neg !== testsNotNull) out.push(describe(i.item.item));
+    if (i instanceof IsNull && i.neg === testsNotNull) out.push(colKey(i.item));
+    else if (i instanceof Not && i.item instanceof IsNull && i.item.neg !== testsNotNull) out.push(colKey(i.item.item));
   }
   return out;
 }
@@ -1889,7 +1963,7 @@ function nullSiblings(items: readonly Node[], testsNotNull: boolean): string[] {
 export function resolveNullRule(condition: Node, negated = false): Node {
   const ruleOf = (leaf: Node, neg: boolean, handled: ReadonlySet<string>): Node => {
     const ruled = new Map<string, Column<unknown, string>>();
-    for (const c of tested(leaf)) if (c instanceof Column && c.rule && !handled.has(c.text)) ruled.set(c.text, c);
+    for (const c of tested(leaf)) if (c instanceof Column && c.rule && !handled.has(c.key)) ruled.set(c.key, c);
     let out = leaf;
     for (const c of ruled.values()) {
       const keepsNull = c.rule === "orNull";
@@ -1898,7 +1972,7 @@ export function resolveNullRule(condition: Node, negated = false): Node {
     }
     if (out !== leaf) return out;
     if (neg && (leaf instanceof PathComparison || leaf instanceof PathMatch)) {
-      const keys = strictColumns(leaf).filter((c) => !handled.has(c.text));
+      const keys = strictColumns(leaf).filter((c) => !handled.has(c.key));
       if (keys.length) return and(leaf, ...keys.map((c) => new IsNull(c, true)));
     }
     return leaf;
@@ -1917,7 +1991,7 @@ export function resolveNullRule(condition: Node, negated = false): Node {
     const ruled = ruleOf(node, neg, handled);
     if (ruled !== node) return ruled;
     for (const col of strictColumns(node)) {
-      if (handled.has(col.text)) continue;
+      if (handled.has(col.key)) continue;
       if (neg) {
         throw new QueryError(
           `${describe(node)} sits under not() / exclude() and ${col.text} is nullable: add orNull() or andNotNull() to the comparison. ` +

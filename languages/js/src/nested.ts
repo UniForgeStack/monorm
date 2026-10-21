@@ -640,8 +640,9 @@ export class NestedColumn extends Column<any, string, string, any> {
     text: string,
     readonly info: NestedInfo,
     readonly subPath: readonly string[],
+    alias?: Column<unknown, string>["alias"],
   ) {
-    super(root, path, field, text);
+    super(root, path, field, text, undefined, false, alias);
     if (this.whole) {
       for (const s of this.typeHere.subs) {
         if (s.name in this) continue;
@@ -678,7 +679,7 @@ export class NestedColumn extends Column<any, string, string, any> {
     if (!this.whole || !this.typeHere.byName.has(name)) {
       throw new TypeError(`${this.text} has no subfield ${JSON.stringify(name)}`);
     }
-    return new NestedColumn(this.root, this.path, this.field, `${this.text}.${name}`, this.info, [...this.subPath, name]);
+    return new NestedColumn(this.root, this.path, this.field, `${this.text}.${name}`, this.info, [...this.subPath, name], this.alias);
   }
 
   override ir(ctx: IRContext): IR {

@@ -27,6 +27,7 @@ import {
   and,
   differs,
   exists,
+  noAlias,
   not,
   or,
   outer,
@@ -703,6 +704,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       } else if (item instanceof OneRowQuery) {
         throw new TypeError("a one-row query in load() needs .label(name)");
       } else if (item instanceof Column && item.root === this.meta) {
+        noAlias(item);
         if (!item.path.length) own.push(...irNames(item.field));
       } else if (item instanceof RelationPath && !(item instanceof Column)) {
         this.checkPath(item);
@@ -1042,6 +1044,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (p[PATH].root !== this.meta) {
       throw new QueryError(`${String(p)} does not start at ${this.meta.name}`);
     }
+    noAlias(p);
   }
 
   // -- IR -------------------------------------------------------------------------------------
