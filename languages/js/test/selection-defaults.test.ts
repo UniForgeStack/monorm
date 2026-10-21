@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, define, IntegrityError, loads, NotLoaded, Registry } from "../src/index.js";
+import { connect, define, func, IntegrityError, loads, NotLoaded, Registry } from "../src/index.js";
 import { native } from "../src/native.js";
 
 const queryDefaults = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes("query-defaults") ?? false;
 
-async function open(dialect: "sqlite" | "postgres", defaults: boolean) {
+async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated = false) {
   const registry = new Registry();
   const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
   // Runtime define intentionally has no generated static model types.
@@ -19,6 +19,7 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean) {
     ], behavior: defaults ? { schema_contract: 2, read_defaults: [
       { source: "orm.query-defaults", name: "query", model: "SelectedAuthor", filter: { t: "col", path: [], name: "visible" }, fields: ["name", "note"] },
       { source: "orm.query-defaults", name: "query", model: "SelectedBook", fields: ["title"], load: [["author"]] },
+      ...(annotated ? [{ source: "test.counts", name: "counts", model: "SelectedAuthor", annotate: { bookCount: { t: "func", name: "count", rel: ["books"] } } }] : []),
     ] } : {} } as never, { registry });
   const Author = models["SelectedAuthor"] as any;
   const Book = models["SelectedBook"] as any;
@@ -203,6 +204,33 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       await db.dropTables();
       await db.close();
     }
+  });
+}
+
+for (const dialect of ["sqlite", "postgres"] as const) {
+  test(`a default annotation stays an instance read: ${dialect}`, async (t) => {
+    if (!queryDefaults) {
+      t.skip("needs a native build with the query-defaults feature");
+      return;
+    }
+    const { db, Author, a, b } = await open(dialect, true, true);
+    try {
+      const ann = await a.insert({ name: "ann", bio: "large", note: null });
+      await a.insert({ name: "bob", bio: "large" });
+      await b.insert({ title: "one", authorId: ann.pk });
+      await b.insert({ title: "two", authorId: ann.pk });
+      const rows = await a.orderBy(Author.name).all();
+      assert.deepEqual(rows.map((r: any) => Number(r.bookCount)), [2, 0]);
+      assert.deepEqual(rows[0].toJSON(), { name: "ann", note: null });
+      assert.throws(() => rows[0].bio, NotLoaded);
+      const prefetched = await a.load(Author.books).orderBy(Author.name).first();
+      assert.equal(Number(prefetched.bookCount), 2);
+      assert.equal((await a.withoutDefaults().orderBy(Author.name).first()).bookCount, undefined);
+      assert.equal(a.select({ name: Author.name }).sql().includes("COUNT"), false);
+      const grouped = await a.select({ id: Author.id, n: func.count() }).groupBy(Author.id).orderBy(Author.id).all();
+      assert.deepEqual(grouped.map((r: any) => Number(r.n)), [1, 1]);
+      assert.equal(await a.count(), 2);
+    } finally { await db.dropTables(); await db.close(); }
   });
 }
 

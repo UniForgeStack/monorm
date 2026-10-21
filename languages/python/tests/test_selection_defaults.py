@@ -6,6 +6,7 @@ import os
 
 import pytest
 import orm
+from orm import func
 from orm import _native
 
 QUERY_DEFAULTS = "query-defaults" in json.loads(_native.native_artifact()).get("capabilities", [])
@@ -216,6 +217,76 @@ async def test_selection_defaults(dialect):
         assert await a.update_many([{"id": hidden.pk, "name": "excluded"}]) == 0
         assert await a.delete() == 0
         assert await a.without_defaults().filter(Author.id == hidden.pk).delete() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+async def open_annotated(dialect):
+    document = schema(dialect, True)
+    document["behavior"]["read_defaults"].append(
+        {
+            "source": "test.counts",
+            "name": "counts",
+            "model": "SelectedAuthor",
+            "annotate": {"book_count": {"t": "func", "name": "count", "rel": ["books"]}},
+        }
+    )
+    registry = orm.Registry()
+    classes = orm.define(document, registry=registry)
+    url = (
+        "sqlite://:memory:"
+        if dialect == "sqlite"
+        else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    )
+    db = await orm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    return db, classes["SelectedAuthor"], classes["SelectedBook"]
+
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_default_annotation_keeps_model_instances(dialect):
+    db, Author, Book = await open_annotated(dialect)
+    a, b = Author.objects.using(db), Book.objects.using(db)
+    try:
+        ann = await a.insert(name="ann", bio="large", note=None)
+        await a.insert(name="bob", bio="large")
+        await b.insert(title="one", author_id=ann.pk)
+        await b.insert(title="two", author_id=ann.pk)
+        rows = await a.order_by(Author.name)
+        assert [type(o) for o in rows] == [Author, Author]
+        assert [o.book_count for o in rows] == [2, 0]
+        assert rows[0].to_dict() == {"name": "ann", "note": None}
+        with pytest.raises(orm.NotLoaded):
+            rows[0].bio
+        prefetched = await a.load(Author.books).order_by(Author.name).first()
+        assert prefetched.book_count == 2 and prefetched.books.cached[0].title in {"one", "two"}
+        assert [o.name for o in await a.without_defaults().order_by(Author.name)] == ["ann", "bob"]
+        assert not hasattr(await a.without_defaults().order_by(Author.name).first(), "book_count")
+        explicit = await a.load(func.count(Author.books).label("book_count")).order_by(Author.name).first()
+        assert explicit.book_count == 2
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_default_annotation_stays_out_of_projections(dialect):
+    db, Author, Book = await open_annotated(dialect)
+    a, b = Author.objects.using(db), Book.objects.using(db)
+    try:
+        ann = await a.insert(name="ann", bio="large", note=None)
+        await b.insert(title="one", author_id=ann.pk)
+        await b.insert(title="two", author_id=ann.pk)
+        grouped = await a.select(Author.id, func.count().label("n")).group_by(Author.id)
+        assert [tuple(r) for r in grouped] == [(ann.pk, 1)]
+        assert await a.count() == 1
+        distinct = await a.select(Author.name).distinct()
+        assert [tuple(r) for r in distinct] == [("ann",)]
+        assert "book_count" not in a.select(Author.name).sql()
     finally:
         await db.drop_tables()
         await db.close()

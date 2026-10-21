@@ -64,19 +64,28 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
             merged.fields_owner = Some(identity.clone());
         }
         let filter = d.filter.clone().map(serde_json::from_value::<Expr>).transpose().map_err(|e| format!("{} default filter: {e}", d.model))?;
-        if let Some(filter) = &filter { validate_filter(model, filter)?; }
         if let Some(order) = &d.order {
             if let Some(first) = &merged.order_owner { return Err(clash(&d.model, "default order", first, &identity)); }
             for key in order { model.field(&key.field)?; }
             merged.order = order.iter().map(|k| Order { expr: Expr::Col { path: vec![], name: k.field.clone(), sub: vec![], alias: vec![] }, desc: k.desc, nulls: k.nulls }).collect();
             merged.order_owner = Some(identity.clone());
         }
+        let mut scopes = vec![];
+        if let Some(filter) = &filter { walk(models, model, filter, false, &mut scopes)?; }
         let mut annotate = BTreeMap::new();
         for (name, expr) in &d.annotate {
             if let Some(first) = merged.parts.iter().find(|p| p.annotate.contains_key(name)) {
                 return Err(clash(&d.model, &format!("annotation {name:?}"), &first.identity, &identity));
             }
-            annotate.insert(name.clone(), serde_json::from_value(expr.clone()).map_err(|e| format!("{} default annotation {name}: {e}", d.model))?);
+            if model.field(name).is_ok() {
+                return Err(format!("{}: {} default {:?} annotation {name:?} has the name of a model field", d.model, d.source, d.name));
+            }
+            let expr: Expr = serde_json::from_value(expr.clone()).map_err(|e| format!("{} default annotation {name}: {e}", d.model))?;
+            if !matches!(expr, Expr::Func { rel: Some(_), .. }) {
+                return Err(format!("{}: {} default {:?} annotation {name:?} must be a relation aggregate", d.model, d.source, d.name));
+            }
+            walk(models, model, &expr, true, &mut scopes).map_err(|e| format!("{} default {:?} annotation {name:?}: {e}", d.source, d.name))?;
+            annotate.insert(name.clone(), expr);
         }
         for path in &d.load {
             let mut current = model;
@@ -93,8 +102,6 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
                 merged.load_owners.push(vec![identity.clone()]);
             }
         }
-        let mut scopes = vec![];
-        if let Some(filter) = &filter { filter_scopes(filter, &mut scopes); }
         merged.parts.push(PreparedPart { identity, filter, filter_json: d.filter.clone(), annotate, scopes });
     }
     fn visit(models: &[Model], flags: &[crate::schema::ReadFlags], idx: usize, stack: &mut Vec<usize>) -> Result<(), String> {
@@ -119,27 +126,43 @@ pub fn prepare(models: &mut [Model], defaults: &[ReadDefault]) -> Result<(), Str
     Ok(())
 }
 
-// Filters have already passed validate_filter, so only its supported nodes can occur.
-fn filter_scopes(expr: &Expr, scopes: &mut Vec<String>) {
-    match expr {
-        Expr::Scope { name } => { if !scopes.contains(name) { scopes.push(name.clone()); } }
-        Expr::Cmp { l, r, .. } => { filter_scopes(l, scopes); filter_scopes(r, scopes); }
-        Expr::And { items } | Expr::Or { items } => for item in items { filter_scopes(item, scopes); },
-        Expr::Not { item } | Expr::IsNull { item, .. } => filter_scopes(item, scopes),
-        _ => {}
+/// The model at the end of the relation `path` from `model`.
+fn target<'m>(models: &'m [Model], model: &'m Model, path: &[String]) -> Result<&'m Model, String> {
+    let mut current = model;
+    for hop in path {
+        let (r, _) = current.relation(hop)?;
+        current = models.iter().find(|m| m.ir.name == r.target).expect("validated relation");
     }
+    Ok(current)
+}
+
+/// Checks a default expression and collects its `scope.<name>` names, in one pass so the
+/// two cannot differ. A filter has root columns, literals, comparisons and boolean composition.
+/// An annotation is a relation aggregate; its arguments may also use arithmetic, calls and
+/// columns behind relation hops.
+fn walk(models: &[Model], model: &Model, expr: &Expr, annotation: bool, scopes: &mut Vec<String>) -> Result<(), String> {
+    let mut children: Vec<&Expr> = vec![];
+    match expr {
+        Expr::Col { path, name, .. } if path.is_empty() => { model.field(name)?; }
+        Expr::Col { path, name, .. } if annotation => { target(models, model, path)?.field(name)?; }
+        Expr::Const { .. } | Expr::Int { .. } | Expr::Text { .. } => {}
+        Expr::Scope { name } => { if !scopes.contains(name) { scopes.push(name.clone()); } }
+        Expr::Cmp { l, r, .. } => children.extend([&**l, &**r]),
+        Expr::And { items } | Expr::Or { items } => children.extend(items),
+        Expr::Not { item } | Expr::IsNull { item, .. } => children.push(item),
+        Expr::Arith { l, r, .. } if annotation => children.extend([&**l, &**r]),
+        Expr::Func { args, filter, order_by, rel, .. } if annotation => {
+            if let Some(rel) = rel { target(models, model, rel)?; }
+            children.extend(args.iter().chain(filter.as_deref()).chain(order_by.iter().map(|o| &o.expr)));
+        }
+        _ if annotation => return Err(format!("{}: default annotations support relation aggregates over columns, literals, arithmetic, comparisons and boolean composition", model.ir.name)),
+        _ => return Err(format!("{}: default filters support root columns, literals, comparisons and boolean composition", model.ir.name)),
+    }
+    children.into_iter().try_for_each(|child| walk(models, model, child, annotation, scopes))
 }
 
 pub(crate) fn validate_filter(model: &Model, filter: &Expr) -> Result<(), String> {
-    match filter {
-        Expr::Col { path, name, .. } if path.is_empty() => { model.field(name)?; }
-        Expr::Const { .. } | Expr::Int { .. } | Expr::Text { .. } | Expr::Scope { .. } => {}
-        Expr::Cmp { l, r, .. } => { validate_filter(model, l)?; validate_filter(model, r)?; }
-        Expr::And { items } | Expr::Or { items } => for item in items { validate_filter(model, item)?; },
-        Expr::Not { item } | Expr::IsNull { item, .. } => validate_filter(model, item)?,
-        _ => return Err(format!("{}: default filters support root columns, literals, comparisons and boolean composition", model.ir.name)),
-    }
-    Ok(())
+    walk(&[], model, filter, false, &mut vec![])
 }
 
 /// Finite eager-loading expansion, with prefixes before descendants.
