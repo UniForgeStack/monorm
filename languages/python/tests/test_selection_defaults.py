@@ -274,6 +274,26 @@ async def test_default_annotation_keeps_model_instances(dialect):
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_default_annotation_applies_to_prefetched_rows(dialect):
+    db, Author, Book = await open_annotated(dialect)
+    a, b = Author.objects.using(db), Book.objects.using(db)
+    try:
+        ann = await a.insert(name="ann", bio="large", note=None)
+        await b.insert(title="one", author_id=ann.pk)
+        await b.insert(title="two", author_id=ann.pk)
+        books = await b.without_related().load(Book.author.objects.as_prefetch()).order_by(Book.title)
+        assert books[0].author.book_count == 2
+        node = await b.without_related().load(Book.author.objects.as_prefetch().without_defaults("counts")).order_by(Book.title)
+        assert not hasattr(node[0].author, "book_count")
+        parent = await b.without_defaults().load(Book.author.objects.as_prefetch()).order_by(Book.title)
+        assert not hasattr(parent[0].author, "book_count")
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_stays_out_of_projections(dialect):
     db, Author, Book = await open_annotated(dialect)
     a, b = Author.objects.using(db), Book.objects.using(db)
