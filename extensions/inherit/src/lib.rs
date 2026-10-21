@@ -76,9 +76,30 @@ fn index(ir: &SchemaIr, name: &str) -> Result<usize, String> {
     ir.models.iter().position(|m| m.name == name).ok_or_else(|| format!("unknown model {name}"))
 }
 
-/// A table that is not the default one carries an explicit `@@map` (an import prefix keeps the model name as the suffix).
-fn default_table(m: &ModelIr) -> bool {
-    m.table.ends_with(&m.name.to_lowercase())
+/// The import prefix of a model that has the default table (`<prefix><lower-case name>`).
+fn prefix_of(m: &ModelIr) -> Option<&str> {
+    m.table.strip_suffix(m.name.to_lowercase().as_str())
+}
+
+/// Whether `m` has the default table under no prefix or one of `prefixes` (the prefixes of the models in the same schema).
+fn default_table<'a>(m: &ModelIr, prefixes: impl IntoIterator<Item = &'a str>) -> bool {
+    std::iter::once("").chain(prefixes).any(|p| prefix_of(m) == Some(p))
+}
+
+fn same<T: Serialize>(a: &T, b: &T) -> bool {
+    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
+}
+
+fn explicit_name<T: Serialize>(item: &T) -> Option<String> {
+    serde_json::to_value(item).ok()?.get("name")?.as_str().map(str::to_owned)
+}
+
+/// The concrete models that reach `name` through `extends` (`seen` stops a cycle; `order` reports it later).
+fn children(p: &Parsed, name: &str, seen: &mut Vec<String>) -> usize {
+    if seen.iter().any(|n| n == name) { return 0; }
+    seen.push(name.to_owned());
+    p.extends.iter().filter(|(_, (_, bases))| bases.iter().any(|b| b == name))
+        .map(|(c, _)| if p.abstracts.contains_key(c) { children(p, c, seen) } else { 1 }).sum()
 }
 
 fn validate(ir: &SchemaIr, p: &Parsed) -> Result<(), String> {
@@ -90,10 +111,17 @@ fn validate(ir: &SchemaIr, p: &Parsed) -> Result<(), String> {
     }
     for (name, d) in &p.abstracts {
         let m = &ir.models[index(ir, name)?];
-        for (set, what) in [(!default_table(m), "@@map"), (m.renamed_from.is_some(), "@@renamed_from"), (m.partition.is_some(), "@@partition")] {
+        let others = ir.models.iter().filter(|o| o.name != m.name).filter_map(prefix_of);
+        for (set, what) in [(!default_table(m, others), "@@map"), (m.renamed_from.is_some(), "@@renamed_from"), (m.partition.is_some(), "@@partition")] {
             if set { return Err(error(d, format!("{name} is abstract and has no table; {what} is not allowed on it"))); }
         }
         if p.overrides.contains_key(name) { return Err(error(d, format!("{name} is abstract and cannot override a model"))); }
+        if children(p, name, &mut vec![]) >= 2 {
+            let named = m.indexes.iter().filter_map(explicit_name).chain(m.constraints.iter().filter_map(explicit_name)).next();
+            if let Some(n) = named {
+                return Err(error(d, format!("{name} has an explicit index or constraint name {n:?} and two or more children; the name would repeat in each table. Remove the name")));
+            }
+        }
     }
     for m in &ir.models {
         for r in &m.relations {
@@ -131,7 +159,7 @@ fn order(p: &Parsed) -> Result<Vec<String>, Vec<String>> {
         }
         let Some((_, bases)) = p.extends.get(name) else { return Ok(()) };
         path.push(name.to_owned());
-        for base in bases { visit(p, base, path, done)?; }
+        for base in bases.iter().chain(p.overrides.get(name).map(|(_, b)| b)) { visit(p, base, path, done)?; }
         path.pop();
         done.push(name.to_owned());
         Ok(())
@@ -139,6 +167,13 @@ fn order(p: &Parsed) -> Result<Vec<String>, Vec<String>> {
     let mut done = vec![];
     for name in p.extends.keys() { visit(p, name, &mut vec![], &mut done)?; }
     Ok(done)
+}
+
+fn extend_from<T: Serialize + DeserializeOwned>(out: &mut Vec<T>, items: &[T], skip_equal: bool) -> Result<(), String> {
+    for item in items {
+        if !(skip_equal && out.iter().any(|o| same(o, item))) { out.push(copy(item)?); }
+    }
+    Ok(())
 }
 
 fn check_member(model: &ModelIr, name: &str) -> Result<(), String> {
@@ -152,8 +187,10 @@ fn check_member(model: &ModelIr, name: &str) -> Result<(), String> {
 }
 
 /// Copy the members of `bases` into `child`; the child's own members win, and the bases must not disagree.
+/// `override_base` is the first of `bases` when the child overrides it: it already holds the members it took from
+/// the other bases, so an equal member from another base is the same member and not a conflict.
 /// Returns the names of the inherited relations that still wait for an owning relation.
-fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], d: &Declaration) -> Result<Vec<String>, String> {
+fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], override_base: Option<&str>, d: &Declaration) -> Result<Vec<String>, String> {
     let ci = index(ir, child)?;
     let mut cm: ModelIr = copy(&ir.models[ci])?;
     let own_fields: BTreeSet<String> = cm.fields.iter().map(|f| f.name.clone()).collect();
@@ -177,10 +214,12 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], d: &Declaration) -> R
 
     for base in bases {
         let bm: ModelIr = copy(&ir.models[index(ir, base)?])?;
+        let repeat = override_base.is_some() && Some(base.as_str()) != override_base;
         let key: Vec<String> = bm.key_fields().into_iter().map(str::to_owned).collect();
         for f in bm.fields.iter().cloned() {
             if own_fields.contains(&f.name) { continue; }
             if let Some(first) = field_from.insert(f.name.clone(), base) {
+                if Some(first.as_str()) == override_base && fields.iter().any(|x| x.name == f.name && same(x, &f)) { continue; }
                 return Err(error(d, format!("{child}.{}: the field is in both {first} and {base}; redeclare it in {child}", f.name)));
             }
             fields.push(f);
@@ -188,14 +227,17 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], d: &Declaration) -> R
         for r in bm.relations.iter().cloned() {
             if own_relations.contains(&r.name) { continue; }
             if let Some(first) = relation_from.insert(r.name.clone(), base) {
+                // The override base resolved a placeholder of the abstract base already.
+                let kept = relations.iter().find(|x| x.name == r.name);
+                if Some(first.as_str()) == override_base && kept.is_some_and(|x| same(x, &r) || r.label.is_some() && x.label.is_none() && x.target == r.target) { continue; }
                 return Err(error(d, format!("{child}.{}: the relation is in both {first} and {base}; redeclare it in {child}", r.name)));
             }
             if r.label.is_some() { waiting.push(r.name.clone()); }
             relations.push(r);
         }
-        for i in &bm.indexes { indexes.push(copy(i)?); }
-        for c in &bm.constraints { constraints.push(copy(c)?); }
-        for t in &bm.triggers { triggers.push(copy(t)?); }
+        extend_from(&mut indexes, &bm.indexes, repeat)?;
+        extend_from(&mut constraints, &bm.constraints, repeat)?;
+        extend_from(&mut triggers, &bm.triggers, repeat)?;
         if !key.is_empty() {
             match &known_key {
                 Some((src, known)) if *known != key => {
@@ -211,14 +253,22 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], d: &Declaration) -> R
         }
         if let Some(q) = &bm.query_set {
             if !own_query_set {
-                if let Some(first) = query_set_from.replace(base) { return Err(error(d, format!("{child}: @@query_set is in both {first} and {base}; declare one on {child}"))); }
+                if let Some(first) = query_set_from.replace(base) {
+                    if !(Some(first.as_str()) == override_base && cm.query_set.as_ref() == Some(q)) {
+                        return Err(error(d, format!("{child}: @@query_set is in both {first} and {base}; declare one on {child}")));
+                    }
+                }
                 cm.query_set = Some(q.clone());
                 class_source.get_or_insert_with(|| bm.classes_from.clone().unwrap_or_else(|| base.clone()));
             }
         }
         if let Some(m) = &bm.model_methods {
             if !own_methods {
-                if let Some(first) = methods_from.replace(base) { return Err(error(d, format!("{child}: @@model_methods is in both {first} and {base}; declare one on {child}"))); }
+                if let Some(first) = methods_from.replace(base) {
+                    if !(Some(first.as_str()) == override_base && cm.model_methods.as_ref() == Some(m)) {
+                        return Err(error(d, format!("{child}: @@model_methods is in both {first} and {base}; declare one on {child}")));
+                    }
+                }
                 cm.model_methods = Some(m.clone());
                 class_source.get_or_insert_with(|| bm.classes_from.clone().unwrap_or_else(|| base.clone()));
             }
@@ -228,18 +278,16 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], d: &Declaration) -> R
         for x in ir.behavior.declarations.iter().filter(|x| &x.model == base && !x.attribute.starts_with("inherit.")) {
             let key = (x.attribute.clone(), x.field.clone());
             if x.field.as_ref().is_some_and(|f| own_fields.contains(f)) || own_declarations.contains(&key) { continue; }
+            let copied = Declaration { model: child.to_owned(), lowered: false, ..x.clone() };
             if let Some(first) = declaration_from.insert(key, base) {
+                if Some(first.as_str()) == override_base && new_declarations.iter().any(|n| same(n, &copied)) { continue; }
                 return Err(error(d, format!("{child}: @{} is in both {first} and {base}; declare it on {child}", x.attribute)));
             }
-            new_declarations.push(Declaration { model: child.to_owned(), lowered: false, ..x.clone() });
+            new_declarations.push(copied);
         }
     }
-    if class_source.is_some() {
-        if own_query_set || own_methods {
-            return Err(error(d, format!("{child}: @@query_set and @@model_methods must both come from the bases or both be declared on {child}")));
-        }
-        cm.classes_from = class_source;
-    }
+    // The classes of one package: a child with a class of its own looks them all up in its own package.
+    if !own_query_set && !own_methods { cm.classes_from = class_source; }
     fields.extend(cm.fields);
     cm.fields = fields;
     relations.extend(cm.relations);
@@ -290,12 +338,13 @@ fn resolve(ir: &mut SchemaIr, child: &str, waiting: &[String], d: &Declaration, 
         target.fields.push(field);
         target.relations.push(RelationIr {
             name: back, kind: RelKind::One, target: child.to_owned(), from: vec![fk.clone()], to: vec![key.clone()],
-            foreign_key: true, on_delete: None, on_update: None, deferrable: None, fk_name: None, through: None, label: None,
+            foreign_key: true, on_delete: rel.on_delete, on_update: None, deferrable: None, fk_name: None, through: None, label: None,
         });
         let owner = ir.models[ci].relations.iter_mut().find(|r| &r.name == member).ok_or("lost a relation")?;
         owner.from = vec![key];
         owner.to = vec![fk];
         owner.label = None;
+        owner.on_delete = None;
         touched.insert(rel.target.clone());
     }
     Ok(())
@@ -314,16 +363,19 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
     let mut generated = BTreeMap::new();
     for child in &sequence {
         let (d, bases) = &p.extends[child];
-        let waiting = merge(ir, child, bases, d)?;
+        let override_base = p.overrides.get(child).map(|(_, b)| b.as_str());
+        let all: Vec<String> = override_base.map(str::to_owned).into_iter().chain(bases.iter().cloned()).collect();
+        let waiting = merge(ir, child, &all, override_base, d)?;
         touched.insert(child.clone());
         if !p.abstracts.contains_key(child) { resolve(ir, child, &waiting, d, &mut generated, &mut touched)?; }
     }
     for (child, (d, base)) in &p.overrides {
-        merge(ir, child, std::slice::from_ref(base), d)?;
+        if !p.extends.contains_key(child) { merge(ir, child, std::slice::from_ref(base), Some(base.as_str()), d)?; }
         let (bi, ci) = (index(ir, base)?, index(ir, child)?);
         let (table, renamed_from, partition) = (ir.models[bi].table.clone(), ir.models[bi].renamed_from.clone(), ir.models[bi].partition.clone());
+        let base_prefix = prefix_of(&ir.models[bi]).map(str::to_owned);
         let cm = &mut ir.models[ci];
-        if default_table(cm) {
+        if default_table(cm, base_prefix.as_deref()) {
             cm.table = table;
             if cm.renamed_from.is_none() { cm.renamed_from = renamed_from; }
         } else if cm.renamed_from.is_none() {
