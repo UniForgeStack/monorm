@@ -215,6 +215,12 @@ fn json_checks(ty: &TypeIr, ctx: &Ctx<'_>, what: &str, pos: Pos) -> Result<()> {
                     format!("{what}: {}.{} has a @check, @unique or @index, which a json field can't carry yet; use @storage(columns)", ty.name, f.name),
                 )
             }
+            (None, Some(l)) if l.default_now || l.default_sql.is_some() || l.client_default.is_some() => {
+                return err(
+                    pos,
+                    format!("{what}: {}.{} has a dynamic default (@default(now()), @default(dbgenerated(...)) or @client_default), which a json field can't fill; use @storage(columns)", ty.name, f.name),
+                )
+            }
             _ => {}
         }
     }

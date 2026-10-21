@@ -73,10 +73,17 @@ export class NestedType {
   constructor(
     ir: IRType,
     readonly types: ReadonlyMap<string, NestedType>,
+    private readonly enumValues: (name: string) => Readonly<Record<string, string | number>> | undefined = () => undefined,
   ) {
     this.name = ir.name;
     this.subs = ir.fields.map((f) => new Sub(f));
     for (const s of this.subs) this.byName.set(s.name, s);
+  }
+
+  /** Whether `value` is a stored value of the enum `name`; an enum the registry does not know accepts any. */
+  private isMember(name: string, value: string | number): boolean {
+    const members = this.enumValues(name);
+    return members === undefined || Object.values(members).includes(value);
   }
 
   inner(sub: Sub): NestedType {
@@ -131,6 +138,7 @@ export class NestedType {
     const bad = (expected: string) => new TypeError(`${what}: expected ${expected}, got ${describe(value)}`);
     if (sub.enum !== undefined) {
       if (typeof value !== "string" && typeof value !== "number") throw bad(`a value of ${sub.enum}`);
+      if (!this.isMember(sub.enum, value)) throw new TypeError(`${what}: ${JSON.stringify(value)} is not a value of ${sub.enum}`);
       return value;
     }
     switch (sub.type) {
@@ -228,7 +236,7 @@ export class NestedType {
     for (const s of this.subs) {
       const at = `${what}.${s.name}`;
       if (!given.has(s.name)) {
-        if (whole && !s.nullable && s.default === NONE && !s.dynamicDefault) throw new TypeError(`${at}: is required`);
+        if (whole && !s.nullable && s.default === NONE) throw new TypeError(`${at}: is required`);
         if (whole && s.default !== NONE && !s.nullable) out[s.name] = this.jsonLeaf(s, this.decodeLeaf(s, s.default, this.name, s.name, []), at);
         continue;
       }
@@ -300,7 +308,7 @@ export class NestedType {
   decodeLeaf(s: Sub, v: unknown, model: string, field: string, at: readonly (string | number)[]): unknown {
     const bad = (expected: string) => new DecodeError(model, field, at, `expected ${expected}, got ${kind(v)} ${show(v)}`.slice(0, 200));
     if (s.enum !== undefined) {
-      if (typeof v !== "string" && typeof v !== "number") throw bad(`a value of ${s.enum}`);
+      if ((typeof v !== "string" && typeof v !== "number") || !this.isMember(s.enum, v)) throw bad(`a value of ${s.enum}`);
       return v;
     }
     switch (s.type) {
@@ -445,10 +453,10 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 /** The nested types of a schema, each with its value class. */
-export function buildTypes(irs: readonly IRType[]): Map<string, NestedType> {
+export function buildTypes(irs: readonly IRType[], enumValues?: (name: string) => Readonly<Record<string, string | number>> | undefined): Map<string, NestedType> {
   const types = new Map<string, NestedType>();
   for (const ir of irs) {
-    const t = new NestedType(ir, types);
+    const t = new NestedType(ir, types, enumValues);
     types.set(t.name, t);
     const cls = {
       [t.name]: class extends NestedValue {
@@ -671,7 +679,10 @@ export class NestedColumn extends Column<any, string, string, any> {
       return raw === null || raw === undefined ? null : this.info.type.at(this.subPath).fromJson(typeof raw === "string" ? JSON.parse(raw) : raw, this.info.model, this.info.field, this.subPath);
     }
     if (raw === null || raw === undefined || this.info.storage !== "json") return raw;
-    return this.typeHere.decodeLeaf(this.info.type.subAt(this.subPath), raw, this.info.model, this.info.field, this.subPath);
+    const sub = this.info.type.subAt(this.subPath);
+    const { model, field } = this.info;
+    if (sub.list && Array.isArray(raw)) return Object.freeze(raw.map((x, i) => this.typeHere.decodeLeaf(sub, x, model, field, [...this.subPath, i])));
+    return this.typeHere.decodeLeaf(sub, raw, model, field, this.subPath);
   }
 
   private conv(value: unknown): unknown {

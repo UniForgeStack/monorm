@@ -98,6 +98,30 @@ Fields are `name Type @attr...` with no colon. `Type?` is nullable, as before.
 | `@comment("...")` | `@comment("...")` | ours |
 | `@renamed_from("old")` | `@renamed_from("old")` | ours |
 
+### Nested types
+
+`type Name { ... }` is Prisma's composite type block, and it is valid Prisma syntax.
+Its fields use the same syntax as model fields: `name Type[?] @attr...`.
+
+```prisma
+type Address {
+  city String
+  geo  Geo?
+}
+
+model Shop {
+  id       Int      @id
+  address  Address?
+  snapshot Address  @storage(json)
+}
+```
+
+* `@@storage(columns | json)` on a type (ours) sets the default storage of every field of that type.
+  `@storage(columns | json)` (ours) on a field overrides it.
+  The default is `columns`: one column per leaf, named `<field>_<subfield>`.
+* A subfield takes `@map`, `@default`, `@db.*`, `@check` and `@renamed_from`.
+* A type holds no `@id`, no relation and no `autoincrement()` default, and it cannot contain itself.
+
 ### Relations
 
 Prisma requires both sides of a relation to be declared, which the blog example

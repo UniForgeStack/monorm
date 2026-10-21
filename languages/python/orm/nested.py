@@ -74,6 +74,13 @@ class NestedType:
         assert sub.nested is not None
         return self.types[sub.nested]
 
+    def at(self, path: Sequence[str]) -> NestedType:
+        """The type reached through the nested subfields ``path``."""
+        node = self
+        for k in path:
+            node = node.inner(node.by_name[k])
+        return node
+
     def required(self, rel: Sequence[str]) -> bool:
         """Whether the leaf at ``rel`` must be set whenever the type is set."""
         sub = self.by_name[rel[0]]
@@ -171,7 +178,7 @@ class NestedType:
         for s in self.subs:
             at = f"{what}.{s.name}"
             if s.name not in given:
-                if whole and not s.nullable and s.default is _MISSING and not s.dynamic_default:
+                if whole and not s.nullable and s.default is _MISSING:
                     raise ValueError(f"{at}: is required")
                 if whole and s.default is not _MISSING and not s.nullable:
                     out[s.name] = self._json_leaf(s, s.default, at)
@@ -213,7 +220,7 @@ class NestedType:
                     raise ValueError(f"{at}: a datetime needs a timezone")
                 return v.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             case "date":
-                return v.isoformat()
+                return (v.date() if isinstance(v, dt.datetime) else v).isoformat()
             case "uuid":
                 return str(v)
             case "float":
@@ -257,10 +264,12 @@ class NestedType:
                 members = self.enums.get(s.enum)
                 if not isinstance(v, (str, int)) or isinstance(v, bool):
                     raise bad(f"a value of {s.enum}")
-                try:
-                    return members(v) if members is not None else v
-                except ValueError:
+                if members is None:
                     return v
+                try:
+                    return members(v)
+                except ValueError:
+                    raise bad(f"a value of {s.enum}") from None
             if t in ("string", "text"):
                 if not isinstance(v, str):
                     raise bad("a string")
@@ -282,19 +291,27 @@ class NestedType:
                     raise bad("a boolean")
                 return v
             if t == "decimal":
+                if isinstance(v, decimal.Decimal):
+                    return v
                 if isinstance(v, bool) or not isinstance(v, (int, str, float)):
                     raise bad("decimal text")
                 return decimal.Decimal(v if not isinstance(v, float) else repr(v))
             if t == "date_time":
+                if isinstance(v, dt.datetime):
+                    return v.replace(tzinfo=dt.UTC) if v.tzinfo is None else v.astimezone(dt.UTC)
                 if not isinstance(v, str):
                     raise bad("a datetime string")
                 out = dt.datetime.fromisoformat(v)
                 return out.replace(tzinfo=dt.UTC) if out.tzinfo is None else out.astimezone(dt.UTC)
             if t == "date":
+                if isinstance(v, dt.date) and not isinstance(v, dt.datetime):
+                    return v
                 if not isinstance(v, str):
                     raise bad("a date string")
                 return dt.date.fromisoformat(v)
             if t == "uuid":
+                if isinstance(v, uuid.UUID):
+                    return v
                 if not isinstance(v, str):
                     raise bad("a uuid string")
                 return uuid.UUID(v)
@@ -499,9 +516,7 @@ class _Access:
         """A field object standing for the leaf at ``sub``, for the places that read a column's name and type."""
         cache: dict[tuple[str, ...], Any] = self.__dict__.setdefault("_leaf_fields", {})
         if sub not in cache:
-            node = self.nt
-            for k in sub[:-1]:
-                node = node.inner(node.by_name[k])
+            node = self.nt.at(sub[:-1])
             s = node.by_name[sub[-1]]
             f = Enum(s.enum, stored=s.type or "string", nullable=s.nullable) if s.enum else BY_TYPE[s.type or "json"](nullable=s.nullable)
             f.name = f"{self.name}_{'_'.join(sub)}"
@@ -563,9 +578,7 @@ class _Access:
             return None
         if isinstance(raw, (str, bytes)):
             raw = json.loads(raw)
-        node = self.nt
-        for k in sub:
-            node = node.inner(node.by_name[k])
+        node = self.nt.at(sub)
         return node.from_json(raw, self.model.__name__, self.name, sub)
 
 
@@ -675,9 +688,7 @@ class NestedRef(ColumnRef[Any]):
         return not self._sub or not _is_leaf(self._group.nt, self._sub)
 
     def _type_here(self) -> NestedType:
-        node = self._group.nt
-        for k in self._sub:
-            node = node.inner(node.by_name[k])
+        node = self._group.nt.at(self._sub)
         return node
 
     def _ir(self, ctx: IRContext) -> IR:
@@ -690,11 +701,12 @@ class NestedRef(ColumnRef[Any]):
             return self._group.decode_json(raw, self._sub)
         if raw is None or self._group.storage != "json":
             return raw
-        nt = self._group.nt
-        for k in self._sub[:-1]:
-            nt = nt.inner(nt.by_name[k])
-        at = (*self._sub,)
-        return nt._decode_leaf(nt.by_name[self._sub[-1]], raw, self._group.model.__name__, self._group.name, at)
+        nt = self._group.nt.at(self._sub[:-1])
+        leaf = nt.by_name[self._sub[-1]]
+        model, name = self._group.model.__name__, self._group.name
+        if leaf.list and isinstance(raw, list):
+            return tuple(nt._decode_leaf(leaf, x, model, name, (*self._sub, i)) for i, x in enumerate(raw))
+        return nt._decode_leaf(leaf, raw, model, name, self._sub)
 
     def _at(self, root: type[Model], path: tuple[str, ...]) -> NestedRef:
         """The same reference reached from ``root`` through a relation ``path``."""
@@ -743,9 +755,7 @@ class NestedRef(ColumnRef[Any]):
         """A value to compare with a JSON leaf, as the engine binds it (a DateTime or Date as text)."""
         if value is None or isinstance(value, Node) or self._whole or self._group.storage != "json":
             return value
-        nt = self._group.nt
-        for k in self._sub[:-1]:
-            nt = nt.inner(nt.by_name[k])
+        nt = self._group.nt.at(self._sub[:-1])
         return nt.bound(nt.by_name[self._sub[-1]], value, repr(self), True)
 
     def __lt__(self, other: Any) -> Condition:
@@ -776,9 +786,7 @@ class NestedRef(ColumnRef[Any]):
 
 
 def _is_leaf(nt: NestedType, sub: tuple[str, ...]) -> bool:
-    node = nt
-    for k in sub[:-1]:
-        node = node.inner(node.by_name[k])
+    node = nt.at(sub[:-1])
     return node.by_name[sub[-1]].nested is None
 
 

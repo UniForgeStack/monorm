@@ -336,6 +336,44 @@ value, and says so in a warning.
 | `@comment("...")` | column comment |
 | `@renamed_from("old")` | previous column name: the migration renames it instead of dropping |
 
+### Nested types
+
+A `type` block declares a value with named subfields.
+A model field of that type holds the value.
+
+```prisma
+type Geo {
+  lat Float
+  lng Float?
+}
+
+type Address {
+  city   String
+  floor  Int @default(7)
+  opened DateTime
+  geo    Geo?
+}
+
+model Shop {
+  id       Int      @id
+  address  Address?
+  snapshot Address  @storage(json)
+}
+```
+
+* A type holds scalars, enums, other types and lists.
+  A type cannot contain itself, and it holds no `@id`, no relation and no `autoincrement()` default.
+* `@storage(columns)` is the default: one column per leaf, named `<field>_<subfield>`.
+  `@storage(json)` stores the field as one JSON value.
+  `@@storage(...)` on a type sets the default for every field of that type, and `@storage(...)` on a field overrides it.
+* A nullable field in `columns` storage gets a database `CHECK`, so a half-set value never reaches the table.
+  The type needs at least one required subfield for that rule.
+* A JSON field refuses a dynamic default (`@default(now())`, `@client_default(...)`), `@check`, `@unique` and `@index` on a subfield of its type.
+  Use `@storage(columns)` for such a type.
+* `@@index([address.city])` and `@@unique([address.street, address.city])` name a subfield by its dotted path.
+
+The language API is in [python-api.md](../api/python-api.md#nested-types) and [typescript-api.md](../api/typescript-api.md#nested-types).
+
 ### Client defaults
 
 `@default(...)` is the database default.

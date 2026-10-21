@@ -511,9 +511,10 @@ await Doc.objects.filter(...).update(meta=Doc.meta.json_merge({"seen": True}))  
 
 ### Nested types
 
-A `type` block declares a value with named subfields. A model field of that type is stored in
-columns (the default: one column per leaf, named `<field>_<subfield>`) or as one JSON value
-(`@storage(json)`). Both read and write the same way; `examples/nested/schema.prisma` has both.
+A `type` block declares a value with named subfields.
+A model field of that type uses columns (the default: one column per leaf, named `<field>_<subfield>`) or one JSON value (`@storage(json)`).
+Both storages read and write the same way.
+`examples/nested/schema.prisma` has both.
 
 ```python
 Shop(id=1, address=Address(city="Oslo", geo=Geo(lat=1.5)), snapshot=...)   # value classes: immutable, equal by value
@@ -526,25 +527,35 @@ await Shop.objects.filter(...).update(address=Address(city="Bergen", ...))      
 await Shop.objects.filter(...).update(address=None)
 ```
 
-* A value class applies the defaults of its subfields, so a replace resets an omitted subfield.
-  A dict in `insert()` is validated against the type: a missing required subfield is a
-  `ValueError`, an unknown or mistyped one a `TypeError`.
-* A patch (a dict in `update()`) changes only the named subfields, at any depth. It needs at least one subfield,
-  cannot set a non-nullable subfield to `None`, and cannot name a list subfield. A patch needs a present value:
-  to fill a null field, replace it with a whole value.
-* `update_many()` only replaces: a dict for a nested field is a `TypeError`; pass a value class, or use `update()` to patch.
+* A value class applies the defaults of its subfields.
+  A replace therefore resets an omitted subfield.
+  `insert()` checks a dict against the type.
+  A missing required subfield raises `ValueError`.
+  An unknown or mistyped subfield raises `TypeError`.
+* A patch (a dict in `update()`) changes only the named subfields, at any depth.
+  A patch needs at least one subfield.
+  A patch cannot set a non-nullable subfield to `None`, and it cannot name a list subfield.
+  To fill a null field, replace it with a whole value.
+  A partial patch on a null field keeps both behaviours.
+  On `json` storage it writes a partial object, and each read of that row raises `DecodeError`.
+  On `columns` storage the write raises `IntegrityError`, and the field stays null.
+* `update_many()` only replaces.
+  A dict for a nested field raises `TypeError`: pass a value class, or use `update()` to patch.
   `get_or_insert()` refuses a nested field as a lookup key.
-* The leaf columns of a `columns` field are not public: `to_dict()`, `repr()`, the `.pyi` stub and `insert()` /
-  `update()` know `address`, never `address_city`. `load()` of a subfield loads the whole value.
-* A subfield compares as its scalar type (a `DateTime` subfield as a timestamp). An omitted subfield in a
-  whole-value comparison equals `None`. `!=` on a whole field is three-valued: a null field matches neither
-  `==` nor `!=`. A `param()` in a whole-field comparison is an error, and so is `order_by()` of a whole field.
+* The leaf columns of a `columns` field are not public.
+  `to_dict()`, `repr()`, the `.pyi` stub, `insert()` and `update()` know `address`, never `address_city`.
+  `load()` of a subfield loads the whole value.
+* A subfield compares as its scalar type (a `DateTime` subfield as a timestamp).
+  An omitted subfield in a whole-value comparison equals `None`.
+  `!=` on a whole field is three-valued: a null field matches neither `==` nor `!=`.
+  A `param()` in a whole-field comparison is an error, and so is `order_by()` of a whole field.
   A null middle level reads as null in every subfield below it.
-* A JSON value is checked when read. `BigInt` and `Decimal` subfields go in JSON as text and a `DateTime` as UTC text
-  (1 to 6 fraction digits are accepted back). A stored value that does not fit the type raises
-  `DecodeError` with `model`, `field` and `path` (`Shop.snapshot.geo.lat: expected a number, got "x"`).
-* In a `columns` field a nullable level has a database `CHECK` and no column `DEFAULT` below it: the engine applies the
-  default when it sets the group.
+* The engine checks a JSON value when it reads the value.
+  `BigInt` and `Decimal` subfields go in JSON as text, and a `DateTime` goes in as UTC text.
+  The engine accepts 1 to 6 fraction digits of a `DateTime` back.
+  A stored value that does not fit the type raises `DecodeError` with `model`, `field` and `path` (`Shop.snapshot.geo.lat: expected a number, got "x"`).
+* In a `columns` field a nullable level has a database `CHECK` and no column `DEFAULT` below it.
+  The engine applies the default when it sets the group.
 
 ### Full-text search
 

@@ -139,7 +139,7 @@ async def test_filter_by_subfield_whole_value_and_null(shop):
     assert await pks(S.address != None) == [1, 2, 3]  # noqa: E711
     assert await pks(S.address.geo == None) == [3, 4]  # noqa: E711  # a null field has a null middle level too
     assert await pks(S.address == address(classes)) == [1]
-    # the omitted subfield equals null (n2b-3)
+    # the omitted subfield equals null
     assert await pks(S.address.geo == {"lat": 1.5}) == [1]
     assert await pks(S.address.geo == classes["Geo"](lat=9.0, lng=2.5)) == [2]
 
@@ -203,7 +203,7 @@ async def test_patch_changes_only_the_named_subfields(shop):
     await q.filter(S.id == 1).update(address={"floor": 9, "opened": LATER})
     a = (await q.get(S.id == 1)).address
     assert a.floor == 9 and a.opened == LATER and a.city == "Bergen"
-    # a null leaf: SQLite deletes the key, PostgreSQL writes JSON null; both read as None (n2b-5)
+    # a null leaf: SQLite deletes the key, PostgreSQL writes JSON null; both read as None
     await q.filter(S.id == 1).update(address={"geo": {"lng": None}})
     assert (await q.get(S.id == 1)).address.geo == classes["Geo"](lat=1.5, lng=None)
 
@@ -228,7 +228,7 @@ async def test_replace_sets_the_whole_value_and_resets_omitted_subfields(shop):
     a = (await q.get(S.id == 2)).address
     assert a == address(classes, city="Replaced", geo=None)
     assert a.floor == 7  # the value class applies the default
-    await q.filter(S.id == 4).update(address=address(classes, city="Filled"))  # replace sets a null field (n2b-6)
+    await q.filter(S.id == 4).update(address=address(classes, city="Filled"))  # replace sets a null field
     assert (await q.get(S.id == 4)).address.city == "Filled"
 
 

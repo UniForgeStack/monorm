@@ -175,7 +175,7 @@ for (const kind of ["postgres", "sqlite"] as const) {
       assert.equal(a.floor, 9);
       assert.equal(a.opened.getTime(), LATER.getTime());
       assert.equal(a.city, "Bergen");
-      // a null leaf: SQLite deletes the key, PostgreSQL writes JSON null; both read as null (n2b-5)
+      // a null leaf: SQLite deletes the key, PostgreSQL writes JSON null; both read as null
       await q.filter(S.id.eq(1)).update({ address: { geo: { lng: null } } });
       assert.ok((await q.get(S.id.eq(1))).address.geo.equals(new w.Geo({ lat: 1.5, lng: null })));
     });
@@ -195,7 +195,7 @@ for (const kind of ["postgres", "sqlite"] as const) {
       const a = (await q.get(S.id.eq(2))).address;
       assert.ok(a.equals(address(w, { city: "Replaced", geo: null })));
       assert.equal(a.floor, 7);
-      await q.filter(S.id.eq(4)).update({ address: address(w, { city: "Filled" }) }); // replace sets a null field (n2b-6)
+      await q.filter(S.id.eq(4)).update({ address: address(w, { city: "Filled" }) }); // replace sets a null field
       assert.equal((await q.get(S.id.eq(4))).address.city, "Filled");
     });
 
@@ -260,16 +260,16 @@ for (const kind of ["postgres", "sqlite"] as const) {
     try {
       const S = w.classes["JShop"];
       const q = S.objects.using(w.db);
-      const put = async (id: number, json: string): Promise<void> => {
-        await w.db.execute(`INSERT INTO jshop (id, address) VALUES (${id}, '${json}')`);
-      };
-      await put(1, '{"city": 5, "floor": 7, "big": "1", "open": true, "opened": "2024-01-02T03:04:05"}');
+      await w.db.execute(
+        `INSERT INTO jshop (id, address) VALUES
+          (1, '{"city": 5, "floor": 7, "big": "1", "open": true, "opened": "2024-01-02T03:04:05"}'),
+          (2, '{"city": "x", "floor": 7, "big": "1", "open": true, "opened": "2024-01-02T03:04:05", "geo": {"lat": "no"}}'),
+          (3, '{"city": "x", "floor": 7, "big": 9007199254740993, "open": true, "opened": "2024-01-02T03:04:05"}'),
+          (4, '{"city": "x", "floor": 7, "big": "9007199254740993", "open": true, "opened": "2024-01-02T03:04:05.123456Z"}')`,
+      );
       await assert.rejects(q.get(S.id.eq(1)), (e: unknown) => e instanceof DecodeError && /address\.city/.test(e.message) && e.path[0] === "city");
-      await put(2, '{"city": "x", "floor": 7, "big": "1", "open": true, "opened": "2024-01-02T03:04:05", "geo": {"lat": "no"}}');
       await assert.rejects(q.get(S.id.eq(2)), (e: unknown) => e instanceof DecodeError && /address\.geo\.lat/.test(e.message));
-      await put(3, '{"city": "x", "floor": 7, "big": 9007199254740993, "open": true, "opened": "2024-01-02T03:04:05"}');
       await assert.rejects(q.get(S.id.eq(3)), (e: unknown) => e instanceof DecodeError && /big/.test(e.message));
-      await put(4, '{"city": "x", "floor": 7, "big": "9007199254740993", "open": true, "opened": "2024-01-02T03:04:05.123456Z"}');
       const row = await q.get(S.id.eq(4));
       assert.equal(row.address.big, 9007199254740993n);
       assert.equal(row.address.opened.getTime(), Date.parse("2024-01-02T03:04:05.123Z"));

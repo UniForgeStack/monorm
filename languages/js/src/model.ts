@@ -706,7 +706,7 @@ export class Registry {
 
   /** The nested type `name`, with its value class. */
   nestedType(name: string): NestedType {
-    this.built ??= buildTypes([...this.types.values()]);
+    this.built ??= buildTypes([...this.types.values()], (n) => this.enumValues.get(n));
     const t = this.built.get(name);
     if (!t) throw new TypeError(`unknown nested type ${JSON.stringify(name)}`);
     return t;
@@ -714,7 +714,7 @@ export class Registry {
 
   /** The value classes of the nested types, by name. */
   valueClasses(): Record<string, unknown> {
-    this.built ??= buildTypes([...this.types.values()]);
+    this.built ??= buildTypes([...this.types.values()], (n) => this.enumValues.get(n));
     return Object.fromEntries([...this.built].map(([k, t]) => [k, t.cls]));
   }
 
