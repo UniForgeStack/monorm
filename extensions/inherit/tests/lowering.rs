@@ -444,13 +444,44 @@ fn a_child_key_that_differs_from_the_base_key_is_a_conflict() {
 }
 
 #[test]
-fn mixed_own_and_inherited_class_names_are_rejected() {
+fn each_class_name_is_inherited_on_its_own() {
     let mut base = model("Base", vec![field("a", "int")]);
     base["query_set"] = json!("BaseQuery");
+    base["model_methods"] = json!("BaseMethods");
     let mut item = model("Item", vec![key("id")]);
     item["model_methods"] = json!("ItemMethods");
-    let ir = schema(vec![base, item], vec![declare("inherit.abstract", "Base", vec![]), declare("inherit.extends", "Item", vec![json!("Base")])]);
-    assert!(rejected(ir).contains("must both come from the bases or both be declared on Item"));
+    let mut ir = schema(vec![base, item], vec![declare("inherit.abstract", "Base", vec![]), declare("inherit.extends", "Item", vec![json!("Base")])]);
+    lower(&mut ir).unwrap();
+    let item = get(&ir, "Item");
+    assert_eq!((item.query_set.as_deref(), item.model_methods.as_deref()), (Some("BaseQuery"), Some("ItemMethods")));
+    assert_eq!(item.classes_from, None);
+}
+
+#[test]
+fn an_override_may_change_only_its_query_set() {
+    let mut user = model("User", vec![key("id")]);
+    user["query_set"] = json!("UserQuery");
+    user["model_methods"] = json!("UserMethods");
+    let mut my = model("MyUser", vec![]);
+    my["query_set"] = json!("MyQuery");
+    let mut ir = schema(vec![user, my], vec![declare("inherit.override", "MyUser", vec![json!("User")])]);
+    lower(&mut ir).unwrap();
+    let my = get(&ir, "MyUser");
+    assert_eq!((my.query_set.as_deref(), my.model_methods.as_deref()), (Some("MyQuery"), Some("UserMethods")));
+}
+
+#[test]
+fn a_query_set_in_two_bases_is_a_conflict() {
+    let mut a = model("A", vec![field("a", "int")]);
+    a["query_set"] = json!("AQuery");
+    let mut b = model("B", vec![field("b", "int")]);
+    b["query_set"] = json!("BQuery");
+    let ir = schema(
+        vec![a, b, model("Item", vec![key("id")])],
+        vec![declare("inherit.abstract", "A", vec![]), declare("inherit.abstract", "B", vec![]), declare("inherit.extends", "Item", vec![json!(["A", "B"])])],
+    );
+    let message = rejected(ir);
+    assert!(message.contains("@@query_set is in both A and B"), "{message}");
 }
 
 #[test]
@@ -499,4 +530,136 @@ fn a_schema_without_inheritance_is_untouched() {
     let before = serde_json::to_value(&ir).unwrap();
     lower(&mut ir).unwrap();
     assert_eq!(serde_json::to_value(&ir).unwrap(), before);
+}
+
+#[test]
+fn an_override_with_a_map_that_ends_in_its_name_keeps_the_map() {
+    let mut ir = parent();
+    ir.models[2].table = "legacy_myuser".into();
+    lower(&mut ir).unwrap();
+    let my = get(&ir, "MyUser");
+    assert_eq!((my.table.as_str(), my.renamed_from.as_deref()), ("legacy_myuser", Some("user")));
+}
+
+#[test]
+fn an_abstract_map_that_ends_in_its_name_is_rejected() {
+    let mut ir = stamped();
+    ir.models[0].table = "x_stamped".into();
+    let message = rejected(ir);
+    assert!(message.contains("@@map"), "{message}");
+}
+
+#[test]
+fn an_abstract_model_with_an_import_prefix_has_no_map() {
+    let mut ir = stamped();
+    for m in &mut ir.models { m.table = format!("app_{}", m.table); }
+    lower(&mut ir).unwrap();
+    assert_eq!(get(&ir, "Post").table, "app_post");
+}
+
+#[test]
+fn an_abstract_partition_is_rejected() {
+    let mut ir = stamped();
+    ir.models[0].partition = Some(serde_json::from_value(json!({"strategy": "range", "keys": [{"name": "created"}]})).unwrap());
+    let message = rejected(ir);
+    assert!(message.contains("@@partition"), "{message}");
+}
+
+#[test]
+fn a_check_constraint_is_copied_to_each_child() {
+    let mut ir = stamped();
+    ir.models[0].constraints.push(serde_json::from_value(json!({"kind": "check", "expr": "note <> ''"})).unwrap());
+    lower(&mut ir).unwrap();
+    for name in ["Post", "Page"] {
+        let json = serde_json::to_value(&get(&ir, name).constraints).unwrap();
+        assert_eq!(json, json!([{"kind": "check", "expr": "note <> ''"}]), "{name}");
+    }
+}
+
+#[test]
+fn an_explicit_index_name_on_an_abstract_model_with_two_children_is_rejected() {
+    let mut ir = stamped();
+    ir.models[0].indexes.push(serde_json::from_value(json!({"name": "stamped_created", "columns": [{"name": "created"}]})).unwrap());
+    let message = rejected(ir);
+    assert!(message.contains("\"stamped_created\"") && message.contains("two or more children"), "{message}");
+}
+
+#[test]
+fn an_explicit_constraint_name_on_an_abstract_model_with_two_children_is_rejected() {
+    let mut ir = stamped();
+    ir.models[0].constraints.push(serde_json::from_value(json!({"kind": "check", "name": "note_set", "expr": "note <> ''"})).unwrap());
+    assert!(rejected(ir).contains("\"note_set\""));
+}
+
+#[test]
+fn an_explicit_name_is_fine_with_one_child() {
+    let mut ir = stamped();
+    ir.models[0].indexes.push(serde_json::from_value(json!({"name": "stamped_created", "columns": [{"name": "created"}]})).unwrap());
+    ir.models.retain(|m| m.name != "Page");
+    ir.behavior.declarations.retain(|d| d.model != "Page");
+    lower(&mut ir).unwrap();
+    assert_eq!(get(&ir, "Post").indexes[0].name.as_deref(), Some("stamped_created"));
+}
+
+#[test]
+fn a_placeholder_on_delete_is_applied_to_the_generated_foreign_key() {
+    let mut ir = commented();
+    ir.models[1].relations[0].on_delete = Some(orm_contracts::ir::OnDelete::SetNull);
+    lower(&mut ir).unwrap();
+    let comment = get(&ir, "Comment");
+    assert!(comment.relations.iter().all(|r| r.on_delete == Some(orm_contracts::ir::OnDelete::SetNull)), "{:?}", comment.relations);
+    assert!(get(&ir, "Article").relations.iter().all(|r| r.on_delete.is_none()));
+}
+
+/// `AbstractUser` has a placeholder to `Role`; `User` extends it; `MyUser` overrides `User` and extends it again.
+fn user_with_roles() -> SchemaIr {
+    let mut base = model("AbstractUser", vec![field("name", "string")]);
+    let mut roles = relation("roles", "many", "Role", "", "", false);
+    roles["label"] = json!("{model}_roles");
+    base["relations"] = json!([roles]);
+    base["indexes"] = json!([{"name": null, "columns": [{"name": "name"}]}]);
+    base["query_set"] = json!("UserQuery");
+    schema(
+        vec![base, model("User", vec![key("id")]), model("Role", vec![key("id")]), model("MyUser", vec![key("id"), field("nick", "string")])],
+        vec![
+            declare("inherit.abstract", "AbstractUser", vec![]),
+            declare("inherit.extends", "User", vec![json!("AbstractUser")]),
+            declare("inherit.extends", "MyUser", vec![json!("AbstractUser")]),
+            declare("inherit.override", "MyUser", vec![json!("User")]),
+        ],
+    )
+}
+
+#[test]
+fn override_plus_extends_keeps_the_foreign_key_of_the_base() {
+    let mut ir = user_with_roles();
+    lower(&mut ir).unwrap();
+    let role = get(&ir, "Role");
+    assert_eq!(names(role), ["id", "user_roles_id"]);
+    let owning: Vec<_> = role.relations.iter().map(|r| (r.name.as_str(), r.target.as_str())).collect();
+    assert_eq!(owning, [("user_roles", "MyUser")]);
+    let my = get(&ir, "MyUser");
+    assert_eq!(names(my), ["name", "id", "nick"]);
+    let roles = my.relations.iter().filter(|r| r.name == "roles").collect::<Vec<_>>();
+    assert_eq!(roles.len(), 1);
+    assert_eq!((roles[0].from.as_slice(), roles[0].to.as_slice()), (&["id".to_string()][..], &["user_roles_id".to_string()][..]));
+    assert_eq!((my.indexes.len(), my.query_set.as_deref()), (1, Some("UserQuery")));
+    let storage = ir.behavior.storage.as_ref().unwrap();
+    assert_eq!(names(storage.models.iter().find(|m| m.name == "Role").unwrap()), ["id", "user_roles_id"]);
+}
+
+#[test]
+fn override_plus_extends_with_a_field_that_differs_from_the_override_base_is_a_conflict() {
+    let mut ir = user_with_roles();
+    ir.models[1].fields.push(serde_json::from_value(field("name", "int")).unwrap());
+    let message = rejected(ir);
+    assert!(message.contains("MyUser.name: the field is in both User and AbstractUser"), "{message}");
+}
+
+#[test]
+fn override_plus_extends_copies_a_check_once() {
+    let mut ir = user_with_roles();
+    ir.models[0].constraints.push(serde_json::from_value(json!({"kind": "check", "expr": "name <> ''"})).unwrap());
+    lower(&mut ir).unwrap();
+    assert_eq!(get(&ir, "MyUser").constraints.len(), 1);
 }

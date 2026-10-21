@@ -314,6 +314,13 @@ fn errors_point_at_the_problem() {
     }
 }
 
+/// Core knows no extension by name, so the `{model}` error names none.
+#[test]
+fn the_model_placeholder_error_names_no_extension() {
+    let e = fails("model A {\n  id BigInt @id\n  bs B[] @relation(\"{model}_bs\")\n}\nmodel B {\n  id BigInt @id\n}");
+    assert!(e.contains("{model} in a relation name is only expanded") && !e.to_lowercase().contains("inherit"), "{e}");
+}
+
 /// The `prisma` code blocks in the docs parse, and the complete ones compile (the
 /// "every feature" one imports a file that isn't there). The blog example in
 /// prisma-syntax.md is the blog schema.
