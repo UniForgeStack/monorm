@@ -78,6 +78,12 @@ pub struct Requirements {
     pub delete_rewrites: Vec<crate::writes::DeleteRewrite>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instance_guards: Vec<crate::writes::InstanceGuard>,
+    /// Models that have no table: the fields of each, for the generated types.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_models: Vec<crate::ir::TypeModel>,
+    /// A model that took the table of another one: `{"User": "MyUser"}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_overrides: BTreeMap<String, String>,
 }
 impl Requirements {
     /// The proxy ancestors of `model`, nearest first, ending at the root.
@@ -104,7 +110,7 @@ impl Requirements {
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
-            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.schema_contract == 0
+            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
     }
 }
 
@@ -781,6 +787,11 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.write_assignments.extend(n.write_assignments);
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
+    c.type_models.extend(n.type_models);
+    for (base, child) in n.model_overrides {
+        if c.model_overrides.get(&base).is_some_and(|known| known != &child) { return Err(format!("{base} is overridden by two models; rebuild dependent schemas together")); }
+        c.model_overrides.insert(base, child);
+    }
     for (id, version) in n.extensions {
         if c.extensions.get(&id).is_some_and(|v| v != &version) { return Err(format!("incompatible extension {id}; rebuild dependent schemas together")); }
         c.extensions.insert(id, version);

@@ -876,6 +876,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "orm-inherit"
+version = "0.1.0"
+dependencies = [
+ "orm-contracts",
+ "orm-core",
+ "orm-engine",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "orm-locking"
 version = "0.1.0"
 dependencies = [

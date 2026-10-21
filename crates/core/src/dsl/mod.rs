@@ -248,6 +248,9 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
                 return Err(at(&model.name, None, format!("model {} has no @id field after extension lowering", model.name)));
             }
             for relation in &model.relations {
+                if relation.label.is_some() || relation.through.is_none() && relation.from.is_empty() {
+                    return Err(at(&model.name, Some(&relation.name), format!("relation {}.{} has no owning relation after extension lowering", model.name, relation.name)));
+                }
                 if let Some(target) = ir.models.iter().find(|m| m.name == relation.target) {
                     if let Some(to) = relation.to.iter().find(|to| !target.fields.iter().any(|f| &f.name == *to)) {
                         return Err(at(&model.name, Some(&relation.name), format!("relation {}.{}: {} has no field {to} after extension lowering", model.name, relation.name, relation.target)));

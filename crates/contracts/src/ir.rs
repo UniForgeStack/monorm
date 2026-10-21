@@ -461,7 +461,7 @@ pub enum OnDelete {
 
 /// `source.from == target.to` links a source row to its related target rows, or, with
 /// `through`, a row of the join model links them.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct RelationIr {
     pub name: String,
     pub kind: RelKind,
@@ -486,6 +486,17 @@ pub struct RelationIr {
     /// Many-to-many through a join model.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub through: Option<ThroughIr>,
+    /// The `@relation("name")` text of a back relation that has no owning relation yet,
+    /// in a model whose pass derives it (`from` and `to` are empty). A pass consumes it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
+}
+
+/// The fields of a model that has no table. Codegen emits a type for it and no runtime model.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct TypeModel {
+    pub name: String,
+    pub fields: Vec<FieldIr>,
 }
 
 // ---------------------------------------------------------------------------------------

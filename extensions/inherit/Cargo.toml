@@ -1,0 +1,52 @@
+[package]
+name = "orm-inherit"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Abstract models and model overrides for ORM schemas"
+
+[dependencies]
+orm-contracts = { path = "../../crates/contracts" }
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+orm-core = { path = "../../crates/core" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+orm-engine = { path = "../../crates/engine" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[package.metadata.orm-extension]
+id = "orm.inherit"
+version = "0.1.0"
+host_contract = 1
+schema_contract = 2
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+capabilities = ["schema-transformations", "physical-schema"]
+
+[[package.metadata.orm-extension.passes]]
+id = "orm.inherit.expand"
+phase = "declaration"
+rust = "crate::expand"
+effects = ["models.inherit", "storage.inherit"]
+
+# `@@inherit.abstract`: the model has no table and no runtime model.
+[[package.metadata.orm-extension.attributes]]
+name = "inherit.abstract"
+target = "model"
+
+# `value`: one base is a bare name, `@@inherit.extends(A)`; a list is `@@inherit.extends([A, B])`. The pass checks both.
+[[package.metadata.orm-extension.attributes]]
+name = "inherit.extends"
+target = "model"
+[[package.metadata.orm-extension.attributes.positional]]
+kind = "value"
+required = true
+
+[[package.metadata.orm-extension.attributes]]
+name = "inherit.override"
+target = "model"
+[[package.metadata.orm-extension.attributes.positional]]
+kind = "value"
+required = true

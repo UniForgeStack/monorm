@@ -101,6 +101,7 @@ fn relation(name: &str, target: &str, key: &str, foreign_key: bool) -> RelationI
         deferrable: None,
         fk_name: None,
         through: None,
+        label: None,
     }
 }
 fn check_member(model: &ModelIr, name: &str) -> Result<(), String> {

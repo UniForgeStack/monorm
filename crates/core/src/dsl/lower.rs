@@ -1015,6 +1015,26 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
             .collect();
         let back = match back.as_slice() {
             [b] => b,
+            // A model with declarations gets its owning relation from a pass: the pass fills `from`, `to` and `kind`'s key from `label`.
+            [] if deferred_identity.contains(&m.name) => {
+                if member.ty.list && member.ty.optional {
+                    return err(member.ty.pos, format!("{what}: a to-many relation can't be optional"));
+                }
+                return Ok(RelationIr {
+                    name: member.name.clone(),
+                    kind: if member.ty.list { RelKind::Many } else { RelKind::One },
+                    target: target.clone(),
+                    from: vec![],
+                    to: vec![],
+                    foreign_key: false,
+                    on_delete: None,
+                    on_update: None,
+                    deferrable: None,
+                    fk_name: None,
+                    through: None,
+                    label: Some(name.unwrap_or_default()),
+                });
+            }
             [] => {
                 return err(
                     member.pos,
@@ -1064,6 +1084,7 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
             deferrable: None,
             fk_name: None,
             through: None,
+            label: None,
         });
     };
     if member.ty.list {
@@ -1116,6 +1137,7 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
         deferrable,
         fk_name,
         through: None,
+        label: None,
     })
 }
 
@@ -1210,6 +1232,7 @@ fn many_to_many(
         deferrable: None,
         fk_name: None,
         through: Some(ThroughIr { model: join.to_owned(), source: src.clone(), target: dst.clone() }),
+        label: None,
     })
 }
 
