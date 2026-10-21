@@ -6,6 +6,7 @@
 
 use super::*;
 use orm_core::ir::{NestedIr, ObjectField, TypeFieldIr, TypeIr};
+use orm_core::migrate::nested_copy::leaf_json;
 
 /// A nested type on `columns` storage, at `sub` below its model field: the leaf columns under it.
 pub(super) struct Group<'s> {
@@ -44,19 +45,6 @@ fn json_null(d: Dialect) -> &'static str {
 /// SQLite loses the JSON subtype of a `CASE`, so a nested object goes through `json()`.
 fn object_value(d: Dialect, sql: String) -> String {
     if d == Dialect::Sqlite { format!("json({sql})") } else { sql }
-}
-
-/// A leaf value, given as SQL text, as a JSON value.
-fn leaf_json(d: Dialect, ty: ColType, sql: &str) -> String {
-    match (d, ty) {
-        (Dialect::Postgres, ColType::DateTime) => format!("to_char({sql} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')"),
-        (Dialect::Postgres, ColType::Date) => format!("to_char({sql}, 'YYYY-MM-DD')"),
-        (Dialect::Postgres, ColType::BigInt | ColType::Decimal) => format!("{sql}::text"),
-        (Dialect::Sqlite, ColType::BigInt) => format!("CAST({sql} AS TEXT)"),
-        (Dialect::Sqlite, ColType::Bool) => format!("json(CASE WHEN {sql} IS NULL THEN NULL WHEN {sql} THEN 'true' ELSE 'false' END)"),
-        (Dialect::Sqlite, ColType::Json) => format!("json({sql})"),
-        _ => sql.to_owned(),
-    }
 }
 
 /// A value of type `ty`, given as SQL text, as a JSON value. A bound parameter has the type

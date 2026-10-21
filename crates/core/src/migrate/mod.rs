@@ -10,6 +10,7 @@
 pub mod diff;
 pub mod files;
 pub mod model;
+pub mod nested_copy;
 pub mod pg;
 pub mod pull;
 pub mod sqlite;
@@ -89,6 +90,8 @@ pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
     }
     let identity_changed = previous.identities != current.identities;
     let fills = diff::json_backfills(previous, &current, &renames)?;
+    diff::check_copies(previous, &current, &renames)?;
+    diff::check_copies(&current, previous, &renames.reversed())?;
     if current.dialect == crate::dialect::Dialect::Sqlite {
         let mut up = sqlite::steps_with(previous, &current, &renames, &fills)?;
         let mut down = sqlite::steps(&current, previous, &renames.reversed())?;

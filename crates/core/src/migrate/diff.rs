@@ -89,6 +89,9 @@ pub enum Op {
     /// Sets `path` of the JSON object in `column` to `value` in each row where its parent object
     /// exists and the key is missing: a subfield of a `json` nested type that rows lack.
     BackfillJson { table: String, column: String, path: Vec<String>, value: serde_json::Value },
+    /// `UPDATE <table> SET <column> = <expression over the old columns>, ...`: the data of a nested
+    /// type whose storage changed between `columns` and `json`.
+    CopyColumns { table: String, sets: Vec<(String, String)> },
     DropColumn { table: String, column: String },
     AlterColumnType { table: String, column: String, from: String, to: String },
     SetNotNull { table: String, column: String },
@@ -120,6 +123,7 @@ impl Op {
                 format!("changes {table}.{column} from {from} to {to}; existing values must convert")
             }
             Op::SetNotNull { table, column } => format!("fails if {table}.{column} holds NULLs"),
+            Op::CopyColumns { table, .. } => format!("copies the data of a nested type in {table} to its new storage"),
             Op::AddColumn { table, column }
                 if !column.nullable && column.default.is_none() && !column.identity =>
             {
@@ -740,12 +744,22 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
 
     // -- columns ---------------------------------------------------------------------------
     let (mut adds, mut alters, mut drops, mut backfills) = (vec![], vec![], vec![], vec![]);
-    for ((_, n), cols) in pairs.iter().zip(&col_pairs) {
+    for ((o, n), cols) in pairs.iter().zip(&col_pairs) {
         let table = &n.name;
+        let copied = super::nested_copy::copies(o, n, new.dialect).unwrap_or_default();
+        let mut sets = vec![];
         for (oc, nc) in cols {
             match (oc, nc) {
                 (None, Some(nc)) => {
-                    adds.push(Op::AddColumn { table: table.clone(), column: (*nc).clone() });
+                    let copy = copied.iter().find(|(c, _)| *c == nc.name);
+                    if copy.is_some() && !nc.nullable {
+                        // Existing rows have no value until the copy runs.
+                        adds.push(Op::AddColumn { table: table.clone(), column: Column { nullable: true, ..(*nc).clone() } });
+                        alters.push(Op::SetNotNull { table: table.clone(), column: nc.name.clone() });
+                    } else {
+                        adds.push(Op::AddColumn { table: table.clone(), column: (*nc).clone() });
+                    }
+                    sets.extend(copy.cloned());
                     if let Some(b) = n.backfill(&nc.name) {
                         let kept = |c: &String| cols.iter().any(|(o, k)| o.is_some() && k.is_some_and(|k| k.name == *c));
                         if b.others.iter().any(kept) {
@@ -796,6 +810,9 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
                 (None, None) => {}
             }
         }
+        if !sets.is_empty() {
+            backfills.push(Op::CopyColumns { table: table.clone(), sets });
+        }
     }
     ops.extend(adds);
     ops.extend(backfills);
@@ -827,4 +844,17 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Vec<Op> {
         }
     }
     ops
+}
+
+/// Fails when a storage change between the two snapshots has data that no copy can move.
+pub fn check_copies(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<(), String> {
+    for n in &new.tables {
+        let source = old.tables.iter().find(|o| o.name == n.name).or_else(|| {
+            renames.tables.get(&n.name).and_then(|h| old.tables.iter().find(|o| &o.name == h))
+        });
+        if let Some(o) = source {
+            super::nested_copy::copies(o, n, new.dialect)?;
+        }
+    }
+    Ok(())
 }

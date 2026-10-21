@@ -311,6 +311,10 @@ pub fn render(op: &Op, idempotent: bool) -> String {
             let present = others.iter().map(|o| format!("{} IS NOT NULL", ident(o))).collect::<Vec<_>>().join(" OR ");
             format!("UPDATE {} SET {} = {value} WHERE {present}", ident(table), ident(column))
         }
+        Op::CopyColumns { table, sets } => {
+            let sets = sets.iter().map(|(c, e)| format!("{} = {e}", ident(c))).collect::<Vec<_>>().join(", ");
+            format!("UPDATE {} SET {sets}", ident(table))
+        }
         Op::BackfillJson { table, column, path, value } => {
             let key = |p: &[String]| format!("ARRAY[{}]", p.iter().map(|k| quote_literal(k)).collect::<Vec<_>>().join(", "));
             let (parent, last) = path.split_at(path.len() - 1);
@@ -394,6 +398,7 @@ pub fn summary(op: &Op) -> String {
         Op::AddColumn { table, column } => format!("add column {table}.{}", column.name),
         Op::BackfillColumn { table, column, .. } => format!("fill {table}.{column} where its group is set"),
         Op::BackfillJson { table, column, path, .. } => format!("fill {table}.{column}.{} where it is missing", path.join(".")),
+        Op::CopyColumns { table, sets } => format!("copy {table}.{} to the new nested storage", sets.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join(", ")),
         Op::DropColumn { table, column } => format!("drop column {table}.{column}"),
         Op::AlterColumnType { table, column, to, .. } => format!("change type of {table}.{column} to {to}"),
         Op::SetNotNull { table, column } => format!("make {table}.{column} NOT NULL"),

@@ -187,7 +187,8 @@ pub struct Column {
     pub nested: NestedLink,
 }
 
-/// Where a `json` column's value comes from in the schema, and the shape it had.
+/// Where a column's value comes from in the schema: the shape of a `json` column, or the
+/// `(field, path)` of a `columns` leaf.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(transparent)]
 pub struct NestedLink(pub Option<NestedShape>);
@@ -207,9 +208,28 @@ impl PartialEq for NestedLink {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NestedShape {
     pub field: String,
+    /// A snapshot that holds only the shape of a `json` column has no storage.
+    #[serde(default = "json_storage", skip_serializing_if = "is_json_storage")]
+    pub storage: crate::ir::NestedStorage,
+    /// The model field is a list of the type (`json`), or the leaf is an array (`columns`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub list: bool,
+    /// Subfield names from the model field to a `columns` leaf.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<String>,
+    /// The type of a `columns` leaf: the database type does not tell a SQLite BigInt from an Int.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<ColType>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shape: Vec<ShapeEntry>,
+}
+
+fn json_storage() -> crate::ir::NestedStorage {
+    crate::ir::NestedStorage::Json
+}
+
+fn is_json_storage(s: &crate::ir::NestedStorage) -> bool {
+    *s == crate::ir::NestedStorage::Json
 }
 
 /// One subfield of a nested type, by its path of subfield names from the model field.
@@ -225,6 +245,9 @@ pub struct ShapeEntry {
     pub group: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
+    /// The type of a scalar subfield.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<ColType>,
 }
 
 /// A leaf default as the writers store it in a JSON value: BigInt and Decimal as text, a DateTime in UTC with microseconds.
@@ -251,6 +274,7 @@ fn shape_of(types: &[crate::ir::TypeIr], ty: &str, path: &mut Vec<String>, out: 
             list: f.list,
             group: f.type_name.is_some(),
             default: f.leaf.as_ref().and_then(|l| l.default.as_ref().map(|v| json_default(l.ty, v))),
+            ty: f.leaf.as_ref().map(|l| l.ty),
         });
         if let Some(n) = &f.type_name {
             shape_of(types, n, path, out);
@@ -650,10 +674,13 @@ impl Builder<'_> {
                 default,
                 identity: f.auto_increment,
                 comment: f.comment.clone(),
-                nested: NestedLink(f.nested.as_ref().filter(|n| n.storage == crate::ir::NestedStorage::Json).map(|n| {
-                    let mut shape = vec![];
-                    shape_of(&schema.types, &n.ty, &mut vec![], &mut shape);
-                    NestedShape { field: n.field.clone(), list: n.list, shape }
+                nested: NestedLink(f.nested.as_ref().map(|n| match n.storage {
+                    crate::ir::NestedStorage::Json => {
+                        let mut shape = vec![];
+                        shape_of(&schema.types, &n.ty, &mut vec![], &mut shape);
+                        NestedShape { field: n.field.clone(), storage: n.storage, list: n.list, path: vec![], ty: None, shape }
+                    }
+                    crate::ir::NestedStorage::Columns => NestedShape { field: n.field.clone(), storage: n.storage, list: f.array, path: n.path.clone(), ty: Some(f.ty), shape: vec![] },
                 })),
             });
             if f.unique && !f.primary_key {

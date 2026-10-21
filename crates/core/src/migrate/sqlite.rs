@@ -126,16 +126,16 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
         sql.push(create_table(t, &temp, false));
         if let Some(old) = source(t) {
             let old_of = |name: &String| old.column(name).map(|_| name.clone()).or_else(|| renames.renamed_column(t, old, name).cloned());
+            let copied = super::nested_copy::copies(old, t, to.dialect)?;
             let values = t.columns.iter().map(|c| {
-                match old_of(&c.name) {
-                    Some(col) => ident(&col),
-                    None => match t.backfill(&c.name) {
-                        Some(b) => {
-                            let present = b.others.iter().filter_map(old_of).map(|o| format!("{} IS NOT NULL", ident(&o))).collect::<Vec<_>>().join(" OR ");
-                            if present.is_empty() { "NULL".into() } else { format!("CASE WHEN {present} THEN {} END", b.value) }
-                        }
-                        None => c.default.clone().unwrap_or_else(|| "NULL".into()),
-                    },
+                if let Some(col) = old_of(&c.name) { return ident(&col) }
+                if let Some((_, e)) = copied.iter().find(|(n, _)| *n == c.name) { return e.clone() }
+                match t.backfill(&c.name) {
+                    Some(b) => {
+                        let present = b.others.iter().filter_map(old_of).map(|o| format!("{} IS NOT NULL", ident(&o))).collect::<Vec<_>>().join(" OR ");
+                        if present.is_empty() { "NULL".into() } else { format!("CASE WHEN {present} THEN {} END", b.value) }
+                    }
+                    None => c.default.clone().unwrap_or_else(|| "NULL".into()),
                 }
             }).collect::<Vec<_>>().join(", ");
             sql.push(format!("INSERT INTO {} ({}) SELECT {values} FROM {}", ident(&temp), ids(&t.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()), ident(&old.name)));

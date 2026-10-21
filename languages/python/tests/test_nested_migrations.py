@@ -1,6 +1,7 @@
 """Nested types on columns storage migrate as plain columns plus the generated null check."""
 
 import contextlib
+import datetime
 import json
 import os
 
@@ -355,3 +356,139 @@ async def test_applying_a_renamed_subfield_keeps_the_data(tmp_path, dialect):
         await migrate(db, tmp_path, renamed)
         rows = {r["id"]: (r["address_city"], r["address_geo_longitude"]) for r in await db.fetch("SELECT * FROM shop")}
         assert rows == {1: ("A", 2.5), 2: (None, None)}
+
+
+STORAGE = """
+type Geo {
+  lat Float
+  lng Float?
+}
+
+type Everything {
+  s     String
+  i     Int
+  big   BigInt
+  f     Float
+  b     Boolean
+%(dec)s  at    DateTime
+  day   DateTime @db.Date
+  uid   String @db.Uuid
+  extra Json?
+  geo   Geo?
+}
+
+model Shop {
+  id   Int         @id
+  data Everything? %(storage)s
+}
+"""
+ALL_LEAVES = ["s", "i", "big", "f", "b", "dec", "at", "day", "uid", "extra", "geo_lat", "geo_lng"]
+UID = "6f1f4e0a-3c2b-4f6e-9d57-1a2b3c4d5e6f"
+EXPECTED = {
+    1: {
+        "s": "x", "i": 7, "big": "9007199254740993", "f": 1.5, "b": True, "dec": "1234.56",
+        "at": "2026-01-02T03:04:05.123456Z", "day": "2026-01-03", "uid": UID,
+        "extra": {"k": [1, 2]}, "geo": {"lat": 1.5, "lng": 2.5},
+    },
+    2: {
+        "s": "y", "i": -1, "big": "-9007199254740993", "f": 0.25, "b": False, "dec": "0.10",
+        "at": "2026-12-31T23:59:59.000000Z", "day": "2026-12-31", "uid": UID,
+        "extra": None, "geo": None,
+    },
+    3: None,
+}
+
+
+def storage(dialect, where):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    dec = "" if dialect == "sqlite" else "  dec   Decimal\n"  # SQLite has no exact decimal
+    return prefix + STORAGE % {"dec": dec, "storage": "@storage(json)" if where == "json" else ""}
+
+
+def leaves(dialect):
+    return [leaf for leaf in ALL_LEAVES if dialect != "sqlite" or leaf != "dec"]
+
+
+def expected(dialect):
+    return {i: None if doc is None else {k: v for k, v in doc.items() if dialect != "sqlite" or k != "dec"} for i, doc in EXPECTED.items()}
+
+
+def moment(dialect, text):
+    return text if dialect == "sqlite" else text + "+00"
+
+
+async def insert_columns(db, dialect):
+    dec = "" if dialect == "sqlite" else "1234.56, "
+    dec2 = "" if dialect == "sqlite" else "0.10, "
+    rows = {
+        1: "'x', 7, 9007199254740993, 1.5, TRUE, %s'%s', '2026-01-03', '%s', '{\"k\":[1,2]}', 1.5, 2.5"
+        % (dec, moment(dialect, "2026-01-02 03:04:05.123456"), UID),
+        2: "'y', -1, -9007199254740993, 0.25, FALSE, %s'%s', '2026-12-31', '%s', NULL, NULL, NULL"
+        % (dec2, moment(dialect, "2026-12-31 23:59:59"), UID),
+        3: ", ".join(["NULL"] * len(leaves(dialect))),
+    }
+    cols = ", ".join(f"data_{leaf}" for leaf in leaves(dialect))
+    await db.execute(f"INSERT INTO shop (id, {cols}) VALUES " + ", ".join(f"({i}, {v})" for i, v in rows.items()))
+
+
+def plain(value):
+    """A value as a test compares it; a DateTime without a fraction and with a zero one are the same instant."""
+    if isinstance(value, str) and value[:1] in "{[":
+        return json.loads(value)
+    if hasattr(value, "utcoffset") and value.utcoffset() is not None:
+        return value.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f").removesuffix(".000000")
+    if isinstance(value, str) and value.endswith(".000000"):
+        return value.removesuffix(".000000")
+    return value if value is None or isinstance(value, (bool, int, float, dict, list)) else str(value)
+
+
+async def column_rows(db, dialect):
+    rows = await db.fetch("SELECT * FROM shop")
+    return {r["id"]: {leaf: plain(r[f"data_{leaf}"]) for leaf in leaves(dialect)} for r in rows}
+
+
+async def json_rows(db):
+    return {r["id"]: plain(r["data"]) for r in await db.fetch("SELECT id, data FROM shop")}
+
+
+def as_columns(doc, dialect):
+    """The leaf columns that hold the JSON value `doc`: a DateTime column has no `T` and no `Z`."""
+    if doc is None:
+        return {leaf: None for leaf in leaves(dialect)}
+    geo = doc["geo"] or {"lat": None, "lng": None}
+    row = {k: v for k, v in doc.items() if k != "geo"} | {"geo_lat": geo["lat"], "geo_lng": geo["lng"]}
+    row["at"] = row["at"].replace("T", " ").rstrip("Z").removesuffix(".000000")
+    row["big"] = int(row["big"])
+    return row
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_columns_to_json_change_copies_every_leaf_type_and_down_reverses_it(tmp_path, dialect):
+    async with database(dialect, models(storage(dialect, "columns"))) as db:
+        await migrate(db, tmp_path, storage(dialect, "columns"))
+        await insert_columns(db, dialect)
+        before = await column_rows(db, dialect)
+        await migrate(db, tmp_path, storage(dialect, "json"))
+        assert await json_rows(db) == expected(dialect)
+        await Migrator(db, Migrations(tmp_path, models(storage(dialect, "json")))).downgrade()
+        assert await column_rows(db, dialect) == before
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_json_to_columns_change_copies_every_leaf_type_and_down_reverses_it(tmp_path, dialect):
+    docs = expected(dialect)
+    async with database(dialect, models(storage(dialect, "json"))) as db:
+        await migrate(db, tmp_path, storage(dialect, "json"))
+        values = ", ".join(f"({i}, " + ("NULL" if d is None else "'" + json.dumps(d) + "'") + ")" for i, d in docs.items())
+        await db.execute(f"INSERT INTO shop (id, data) VALUES {values}")
+        await migrate(db, tmp_path, storage(dialect, "columns"))
+        assert await column_rows(db, dialect) == {i: as_columns(d, dialect) for i, d in docs.items()}
+        await Migrator(db, Migrations(tmp_path, models(storage(dialect, "columns")))).downgrade()
+        assert await json_rows(db) == docs
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+def test_a_second_make_after_a_storage_change_finds_nothing(tmp_path, dialect):
+    for where in ("columns", "json", "columns"):
+        assert Migrations(tmp_path, models(storage(dialect, where))).make() is not None
+        assert Migrations(tmp_path, models(storage(dialect, where))).make() is None
