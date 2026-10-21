@@ -18,8 +18,32 @@ type Address {
   geo    Geo?
 }
 
+type Wrap {
+  inner Geo?
+}
+
+type Tagged {
+  tag   String
+  inner Geo?
+}
+
 model Shop {
   id       Int      @id
   address  Address?
   snapshot Address  @storage(json)
+}
+
+model Plain {
+  id Int @id
+  g  Geo
+}
+
+model Wrapped {
+  id Int  @id
+  w  Wrap
+}
+
+model Opt {
+  id Int     @id
+  t  Tagged?
 }

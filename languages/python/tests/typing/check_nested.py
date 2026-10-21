@@ -4,7 +4,7 @@ with mypy and pyright. Never executed."""
 from datetime import datetime
 from typing import assert_type
 
-from nested.models import Address, Geo, Shop
+from nested.models import Address, Geo, Opt, Plain, Shop, Tagged, Wrap, Wrapped
 
 from orm import ColumnRef, Condition
 
@@ -17,6 +17,13 @@ def read(shop: Shop) -> None:
     shop.snapshot.floor = 1  # E: a value class is read-only
     shop.snapshot.nope  # E: unknown subfield
     shop.address_city  # E: a leaf name is not an attribute of the model
+
+
+def required_groups(plain: Plain, wrapped: Wrapped, opt: Opt) -> None:
+    assert_type(plain.g, Geo)
+    assert_type(wrapped.w, Wrap)  # a nullable middle level does not make the group nullable
+    assert_type(opt.t, Tagged | None)
+    assert_type(Wrapped.w.inner.lat, ColumnRef[float])
 
 
 def references() -> None:

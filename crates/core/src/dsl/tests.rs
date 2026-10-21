@@ -981,6 +981,24 @@ fn a_default_under_a_nullable_level_has_no_ddl_default() {
 }
 
 #[test]
+fn root_required_marks_the_leaves_of_a_non_null_columns_group() {
+    let src = "type Geo {\n  lat Float\n}\n\ntype Wrap {\n  inner Geo?\n}\n\nmodel S {\n  id Int @id\n  w Wrap\n  g Geo\n  o Geo?\n  j Geo @storage(json)\n}\n";
+    let ir = ok(src);
+    let required = |field: &str| -> Vec<bool> {
+        ir.models[0].fields.iter().filter_map(|f| f.nested.as_ref()).filter(|n| n.field == field).map(|n| n.root_required).collect()
+    };
+    assert_eq!(required("w"), [true]);
+    assert_eq!(required("g"), [true]);
+    assert_eq!(required("o"), [false]);
+    assert_eq!(required("j"), [false]);
+    let w = ir.models[0].fields.iter().find(|f| f.column == "w_inner_lat").unwrap();
+    assert!(w.nested.as_ref().unwrap().under_null, "the middle level is nullable");
+    let json = serde_json::to_value(&ir.models).unwrap().to_string();
+    assert_eq!(json.matches("\"root_required\":true").count(), 2, "{json}");
+    assert!(!json.contains("\"root_required\":false"));
+}
+
+#[test]
 fn a_list_of_scalars_in_a_type_stays_one_column_and_sqlite_rejects_it() {
     let src = "type T {\n  tags String[]\n  n Int\n}\n\nmodel Shop {\n  id Int @id\n  t T\n}\n";
     assert!(nested_sql(src).contains("\"t_tags\" text[]"));

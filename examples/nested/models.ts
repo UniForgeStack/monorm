@@ -7,7 +7,7 @@
 /* eslint-disable */
 import { define, type Column, type Compat, type Expression, type Hop, type In, type Instance, type JsonValue, type Many, type ManyRelatedSet, type ModelClass, type QuerySetOf, type RelatedSet, type RelationPath, type SchemaIR, type Via } from "orm";
 
-const SCHEMA: SchemaIR = {"models":[{"name":"Shop","table":"shop","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"address_city","column":"address_city","type":"string","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["city"],"under_null":true,"present_with":["address_floor","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_floor","column":"address_floor","type":"int","nullable":true,"default":7,"nested":{"type":"Address","storage":"columns","field":"address","path":["floor"],"under_null":true,"present_with":["address_city","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_big","column":"address_big","type":"big_int","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["big"],"under_null":true,"present_with":["address_city","address_floor","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_opened","column":"address_opened","type":"date_time","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["opened"],"under_null":true,"present_with":["address_city","address_floor","address_big","address_geo_lat","address_geo_lng"]}},{"name":"address_geo_lat","column":"address_geo_lat","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lat"],"under_null":true,"present_with":["address_geo_lng"]}},{"name":"address_geo_lng","column":"address_geo_lng","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lng"],"under_null":true,"present_with":["address_geo_lat"]}},{"name":"snapshot","column":"snapshot","type":"json","nested":{"type":"Address","storage":"json","field":"snapshot"}}],"constraints":[{"kind":"check","expr":"(\"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_geo_lat\" IS NOT NULL)"},{"kind":"check","expr":"(\"address_city\" IS NULL AND \"address_floor\" IS NULL AND \"address_big\" IS NULL AND \"address_opened\" IS NULL AND \"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_city\" IS NOT NULL AND \"address_floor\" IS NOT NULL AND \"address_big\" IS NOT NULL AND \"address_opened\" IS NOT NULL)"}]}],"types":[{"name":"Geo","storage":"columns","fields":[{"name":"lat","nullable":false,"leaf":{"name":"lat","column":"lat","type":"float"}},{"name":"lng","nullable":true,"leaf":{"name":"lng","column":"lng","type":"float","nullable":true}}]},{"name":"Address","storage":"columns","fields":[{"name":"city","nullable":false,"leaf":{"name":"city","column":"city","type":"string"}},{"name":"floor","nullable":false,"leaf":{"name":"floor","column":"floor","type":"int","default":7}},{"name":"big","nullable":false,"leaf":{"name":"big","column":"big","type":"big_int"}},{"name":"opened","nullable":false,"leaf":{"name":"opened","column":"opened","type":"date_time"}},{"name":"geo","nullable":true,"type":"Geo"}]}]};
+const SCHEMA: SchemaIR = {"models":[{"name":"Shop","table":"shop","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"address_city","column":"address_city","type":"string","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["city"],"under_null":true,"present_with":["address_floor","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_floor","column":"address_floor","type":"int","nullable":true,"default":7,"nested":{"type":"Address","storage":"columns","field":"address","path":["floor"],"under_null":true,"present_with":["address_city","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_big","column":"address_big","type":"big_int","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["big"],"under_null":true,"present_with":["address_city","address_floor","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_opened","column":"address_opened","type":"date_time","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["opened"],"under_null":true,"present_with":["address_city","address_floor","address_big","address_geo_lat","address_geo_lng"]}},{"name":"address_geo_lat","column":"address_geo_lat","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lat"],"under_null":true,"present_with":["address_geo_lng"]}},{"name":"address_geo_lng","column":"address_geo_lng","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lng"],"under_null":true,"present_with":["address_geo_lat"]}},{"name":"snapshot","column":"snapshot","type":"json","nested":{"type":"Address","storage":"json","field":"snapshot"}}],"constraints":[{"kind":"check","expr":"(\"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_geo_lat\" IS NOT NULL)"},{"kind":"check","expr":"(\"address_city\" IS NULL AND \"address_floor\" IS NULL AND \"address_big\" IS NULL AND \"address_opened\" IS NULL AND \"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_city\" IS NOT NULL AND \"address_floor\" IS NOT NULL AND \"address_big\" IS NOT NULL AND \"address_opened\" IS NOT NULL)"}]},{"name":"Plain","table":"plain","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"g_lat","column":"g_lat","type":"float","nested":{"type":"Geo","storage":"columns","field":"g","path":["lat"],"root_required":true}},{"name":"g_lng","column":"g_lng","type":"float","nullable":true,"nested":{"type":"Geo","storage":"columns","field":"g","path":["lng"],"root_required":true}}]},{"name":"Wrapped","table":"wrapped","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"w_inner_lat","column":"w_inner_lat","type":"float","nullable":true,"nested":{"type":"Wrap","storage":"columns","field":"w","path":["inner","lat"],"under_null":true,"root_required":true,"present_with":["w_inner_lng"]}},{"name":"w_inner_lng","column":"w_inner_lng","type":"float","nullable":true,"nested":{"type":"Wrap","storage":"columns","field":"w","path":["inner","lng"],"under_null":true,"root_required":true,"present_with":["w_inner_lat"]}}],"constraints":[{"kind":"check","expr":"(\"w_inner_lat\" IS NULL AND \"w_inner_lng\" IS NULL) OR (\"w_inner_lat\" IS NOT NULL)"}]},{"name":"Opt","table":"opt","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"t_tag","column":"t_tag","type":"string","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["tag"],"under_null":true,"present_with":["t_inner_lat","t_inner_lng"]}},{"name":"t_inner_lat","column":"t_inner_lat","type":"float","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["inner","lat"],"under_null":true,"present_with":["t_inner_lng"]}},{"name":"t_inner_lng","column":"t_inner_lng","type":"float","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["inner","lng"],"under_null":true,"present_with":["t_inner_lat"]}}],"constraints":[{"kind":"check","expr":"(\"t_inner_lat\" IS NULL AND \"t_inner_lng\" IS NULL) OR (\"t_inner_lat\" IS NOT NULL)"},{"kind":"check","expr":"(\"t_tag\" IS NULL AND \"t_inner_lat\" IS NULL AND \"t_inner_lng\" IS NULL) OR (\"t_tag\" IS NOT NULL)"}]}],"types":[{"name":"Geo","storage":"columns","fields":[{"name":"lat","nullable":false,"leaf":{"name":"lat","column":"lat","type":"float"}},{"name":"lng","nullable":true,"leaf":{"name":"lng","column":"lng","type":"float","nullable":true}}]},{"name":"Address","storage":"columns","fields":[{"name":"city","nullable":false,"leaf":{"name":"city","column":"city","type":"string"}},{"name":"floor","nullable":false,"leaf":{"name":"floor","column":"floor","type":"int","default":7}},{"name":"big","nullable":false,"leaf":{"name":"big","column":"big","type":"big_int"}},{"name":"opened","nullable":false,"leaf":{"name":"opened","column":"opened","type":"date_time"}},{"name":"geo","nullable":true,"type":"Geo"}]},{"name":"Wrap","storage":"columns","fields":[{"name":"inner","nullable":true,"type":"Geo"}]},{"name":"Tagged","storage":"columns","fields":[{"name":"tag","nullable":false,"leaf":{"name":"tag","column":"tag","type":"string"}},{"name":"inner","nullable":true,"type":"Geo"}]}]};
 
 const models = define(SCHEMA, { requiredCapabilities: ["reference-loading"] });
 
@@ -15,7 +15,7 @@ const nested = (models as unknown as { readonly $types: Record<string, unknown> 
 
 // -- Geo -------------------------------------------------------------------------------
 
-/** A `Geo` value: immutable, compared with `equals()`. */
+/** Immutable `Geo` value, compared with `equals()`. */
 export interface Geo {
   readonly lat: number;
   readonly lng: number | null;
@@ -47,7 +47,7 @@ export const Geo = nested["Geo"] as unknown as GeoClass;
 
 // -- Address ---------------------------------------------------------------------------
 
-/** A `Address` value: immutable, compared with `equals()`. */
+/** Immutable `Address` value, compared with `equals()`. */
 export interface Address {
   readonly city: string;
   readonly floor: number;
@@ -88,6 +88,66 @@ export type AddressRef<S extends string, H extends readonly Hop[], O extends boo
 };
 
 export const Address = nested["Address"] as unknown as AddressClass;
+
+// -- Wrap ------------------------------------------------------------------------------
+
+/** Immutable `Wrap` value, compared with `equals()`. */
+export interface Wrap {
+  readonly inner: Geo | null;
+  equals(other: unknown): boolean;
+  toJSON(): Record<string, unknown>;
+}
+
+export interface WrapInput {
+  readonly inner?: Geo | GeoInput | null;
+}
+
+export interface WrapPatch {
+  readonly inner?: Geo | GeoPatch | null;
+}
+
+export interface WrapClass {
+  new (values: WrapInput): Wrap;
+}
+
+/** The columns of a `Wrap` member: the whole value, and one column per subfield. */
+export type WrapRef<S extends string, H extends readonly Hop[], O extends boolean, N extends string, X> = Column<O extends true ? X | null : X, S, N, H> & {
+  readonly inner: GeoRef<S, H, O, "inner", Geo | null | (null extends X ? null : never)>;
+};
+
+export const Wrap = nested["Wrap"] as unknown as WrapClass;
+
+// -- Tagged ----------------------------------------------------------------------------
+
+/** Immutable `Tagged` value, compared with `equals()`. */
+export interface Tagged {
+  readonly tag: string;
+  readonly inner: Geo | null;
+  equals(other: unknown): boolean;
+  toJSON(): Record<string, unknown>;
+}
+
+export interface TaggedInput {
+  readonly tag: In<string>;
+  readonly inner?: Geo | GeoInput | null;
+}
+
+export interface TaggedPatch {
+  readonly tag?: In<string>;
+  readonly inner?: Geo | GeoPatch | null;
+}
+
+export interface TaggedClass {
+  new (values: TaggedInput): Tagged;
+}
+
+/** The columns of a `Tagged` member: the whole value, and one column per subfield. */
+export type TaggedRef<S extends string, H extends readonly Hop[], O extends boolean, N extends string, X> = Column<O extends true ? X | null : X, S, N, H> & {
+  readonly tag: Column<O extends true ? string | null : null extends X ? string | null : string, S, "tag", H>;
+  readonly inner: GeoRef<S, H, O, "inner", Geo | null | (null extends X ? null : never)>;
+};
+
+export const Tagged = nested["Tagged"] as unknown as TaggedClass;
 
 // -- Shop ------------------------------------------------------------------------------
 
@@ -146,4 +206,163 @@ export interface ShopPath<S extends string, H extends readonly Hop[], O extends 
 export interface ShopModel extends ModelClass<ShopSpec>, ShopFields<"Shop", [], false> {}
 
 export const Shop = models["Shop"] as unknown as ShopModel;
+
+// -- Plain -----------------------------------------------------------------------------
+
+/** The column values of a Plain row. */
+export interface PlainData {
+  readonly id: number;
+  readonly g: Geo;
+}
+
+/** A Plain row. To-one relations are typed on rows of queries that load them. */
+export interface Plain extends PlainData, Instance<PlainSpec> {
+}
+
+export type PlainInsert = {
+  id: In<number>;
+  g: Geo | GeoInput;
+};
+
+export interface PlainUpdate {
+  id?: In<number> | Expression<Compat<number>, "Plain" | "~Plain", {}>;
+  g?: Geo | GeoPatch;
+}
+
+export interface PlainUpdateRow {
+  id: In<number>;
+  g?: Geo | GeoInput;
+}
+
+export interface PlainSpec {
+  readonly name: "Plain";
+  readonly row: Plain;
+  readonly data: PlainData;
+  readonly insert: PlainInsert;
+  readonly update: PlainUpdate;
+  readonly updateRow: PlainUpdateRow;
+  readonly pk: number;
+}
+
+export interface PlainFields<S extends string, H extends readonly Hop[], O extends boolean> {
+  readonly id: Column<O extends true ? number | null : number, S, "id", H>;
+  readonly g: GeoRef<S, H, O, "g", Geo>;
+}
+
+export interface PlainPath<S extends string, H extends readonly Hop[], O extends boolean>
+  extends RelationPath<PlainSpec, S, H>,
+    PlainFields<S, H, O> {
+  /** The relation query set for `load()`: `Plain.objects` bound to this relation. */
+  readonly objects: QuerySetOf<PlainSpec, Plain, "Plain", {}, never, Via<H, undefined, false, S>>;
+}
+
+export interface PlainModel extends ModelClass<PlainSpec>, PlainFields<"Plain", [], false> {}
+
+export const Plain = models["Plain"] as unknown as PlainModel;
+
+// -- Wrapped ---------------------------------------------------------------------------
+
+/** The column values of a Wrapped row. */
+export interface WrappedData {
+  readonly id: number;
+  readonly w: Wrap;
+}
+
+/** A Wrapped row. To-one relations are typed on rows of queries that load them. */
+export interface Wrapped extends WrappedData, Instance<WrappedSpec> {
+}
+
+export type WrappedInsert = {
+  id: In<number>;
+  w?: Wrap | WrapInput;
+};
+
+export interface WrappedUpdate {
+  id?: In<number> | Expression<Compat<number>, "Wrapped" | "~Wrapped", {}>;
+  w?: Wrap | WrapPatch;
+}
+
+export interface WrappedUpdateRow {
+  id: In<number>;
+  w?: Wrap | WrapInput;
+}
+
+export interface WrappedSpec {
+  readonly name: "Wrapped";
+  readonly row: Wrapped;
+  readonly data: WrappedData;
+  readonly insert: WrappedInsert;
+  readonly update: WrappedUpdate;
+  readonly updateRow: WrappedUpdateRow;
+  readonly pk: number;
+}
+
+export interface WrappedFields<S extends string, H extends readonly Hop[], O extends boolean> {
+  readonly id: Column<O extends true ? number | null : number, S, "id", H>;
+  readonly w: WrapRef<S, H, O, "w", Wrap>;
+}
+
+export interface WrappedPath<S extends string, H extends readonly Hop[], O extends boolean>
+  extends RelationPath<WrappedSpec, S, H>,
+    WrappedFields<S, H, O> {
+  /** The relation query set for `load()`: `Wrapped.objects` bound to this relation. */
+  readonly objects: QuerySetOf<WrappedSpec, Wrapped, "Wrapped", {}, never, Via<H, undefined, false, S>>;
+}
+
+export interface WrappedModel extends ModelClass<WrappedSpec>, WrappedFields<"Wrapped", [], false> {}
+
+export const Wrapped = models["Wrapped"] as unknown as WrappedModel;
+
+// -- Opt -------------------------------------------------------------------------------
+
+/** The column values of a Opt row. */
+export interface OptData {
+  readonly id: number;
+  readonly t: Tagged | null;
+}
+
+/** A Opt row. To-one relations are typed on rows of queries that load them. */
+export interface Opt extends OptData, Instance<OptSpec> {
+}
+
+export type OptInsert = {
+  id: In<number>;
+  t?: Tagged | TaggedInput | null;
+};
+
+export interface OptUpdate {
+  id?: In<number> | Expression<Compat<number>, "Opt" | "~Opt", {}>;
+  t?: Tagged | TaggedPatch | null;
+}
+
+export interface OptUpdateRow {
+  id: In<number>;
+  t?: Tagged | TaggedInput | null;
+}
+
+export interface OptSpec {
+  readonly name: "Opt";
+  readonly row: Opt;
+  readonly data: OptData;
+  readonly insert: OptInsert;
+  readonly update: OptUpdate;
+  readonly updateRow: OptUpdateRow;
+  readonly pk: number;
+}
+
+export interface OptFields<S extends string, H extends readonly Hop[], O extends boolean> {
+  readonly id: Column<O extends true ? number | null : number, S, "id", H>;
+  readonly t: TaggedRef<S, H, O, "t", Tagged | null>;
+}
+
+export interface OptPath<S extends string, H extends readonly Hop[], O extends boolean>
+  extends RelationPath<OptSpec, S, H>,
+    OptFields<S, H, O> {
+  /** The relation query set for `load()`: `Opt.objects` bound to this relation. */
+  readonly objects: QuerySetOf<OptSpec, Opt, "Opt", {}, never, Via<H, undefined, false, S>>;
+}
+
+export interface OptModel extends ModelClass<OptSpec>, OptFields<"Opt", [], false> {}
+
+export const Opt = models["Opt"] as unknown as OptModel;
 

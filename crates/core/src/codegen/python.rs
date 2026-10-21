@@ -9,7 +9,8 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::ir::{ColType, EnumStorage, FieldIr, NestedStorage, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
+use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
+use super::{groups, has_server_value, sub_has_default, type_requires};
 use crate::schema::{Model, Schema};
 
 pub struct Generated {
@@ -95,44 +96,6 @@ fn file_value_type(m: &Model, f: &FieldIr) -> String {
     value_type(f)
 }
 
-/// A nested field of a model: the `columns` group of its leaf fields, or the one `json` field.
-struct Group<'a> {
-    name: &'a str,
-    ty: &'a str,
-    nullable: bool,
-}
-
-/// The nested fields of `m`, in field order. Their leaf fields stay out of every public shape.
-fn groups<'a>(m: &'a Model) -> Vec<Group<'a>> {
-    let mut out: Vec<Group<'a>> = vec![];
-    for f in m.fields() {
-        let Some(n) = &f.nested else { continue };
-        let under = n.storage == NestedStorage::Columns && n.under_null;
-        match out.iter_mut().find(|g| g.name == n.field) {
-            Some(g) => g.nullable &= under,
-            None => out.push(Group { name: &n.field, ty: &n.ty, nullable: if n.storage == NestedStorage::Json { f.nullable } else { under } }),
-        }
-    }
-    out
-}
-
-fn type_of<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a TypeIr> {
-    ir.types.iter().find(|t| t.name == name)
-}
-
-fn sub_has_default(sf: &TypeFieldIr) -> bool {
-    sf.leaf.as_ref().is_some_and(|l| has_server_value(l) || l.client_default.is_some())
-}
-
-/// Whether a value of `name` needs at least one subfield from the caller.
-fn type_requires(ir: &SchemaIr, name: &str) -> bool {
-    type_of(ir, name).is_some_and(|t| {
-        t.fields.iter().any(|sf| {
-            !sf.nullable && !sf.list && !sub_has_default(sf) && sf.type_name.as_deref().is_none_or(|n| type_requires(ir, n))
-        })
-    })
-}
-
 fn sub_element(sf: &TypeFieldIr) -> String {
     match (&sf.type_name, &sf.leaf) {
         (Some(n), _) => n.clone(),
@@ -202,10 +165,6 @@ fn write_type(body: &mut String, ir: &SchemaIr, t: &TypeIr) {
         }
     }
     body.push('\n');
-}
-
-fn has_server_value(f: &FieldIr) -> bool {
-    f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some() || f.hints.get("composition.key-default").is_some_and(|v| v == "true")
 }
 
 /// Generates `models.py` / `models.pyi` for `ir` (already validated as `schema`).
@@ -582,8 +541,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          #     shapes accepted by insert / update / update_many / get_or_insert;\n\
          #   * a query set class (`UserQuerySet`): typed `insert()`, `insert_many()`,\n\
          #     `get_or_insert()`, `update()`, `update_many()`.\n\n\
-         from collections.abc import Iterable, Sequence\n",
+         from collections.abc import Iterable",
     );
+    pyi.push_str(if body.contains("Sequence[") { ", Sequence\n" } else { "\n" });
     let dt: Vec<&str> = ["date", "datetime"].into_iter().filter(|d| used.contains(d)).collect();
     if !dt.is_empty() {
         writeln!(pyi, "from datetime import {}", dt.join(", ")).unwrap();
@@ -607,9 +567,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
 
     pyi.push_str(
         "\nfrom typing_extensions import Self, Unpack\n\n\
-         from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, NestedRef, NestedValue, QuerySet, RelationPath, Update, UpdateMany\n\
-         from orm import fields as f\n\n",
+         from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, ",
     );
+    for name in ["NestedRef", "NestedValue"] {
+        if body.contains(&format!("({name})")) {
+            write!(pyi, "{name}, ").unwrap();
+        }
+    }
+    pyi.push_str("QuerySet, RelationPath, Update, UpdateMany\nfrom orm import fields as f\n\n");
     for (model, (module, class)) in query_sets.iter().filter(|(m, _)| !inherits(m)) {
         let alias = if used_exts.is_empty() || options.model_extensions(ir, model).is_empty() { "Objects" } else { "UserObjects" };
         writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();

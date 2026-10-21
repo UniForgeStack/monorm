@@ -183,7 +183,7 @@ export class ModelMeta implements Source {
       };
       if (n?.storage === "columns") {
         const group = camel(n.field);
-        const fm: FieldMeta = { ...base, leaf: { group, path: n.path ?? [], underNull: n.under_null ?? false } };
+        const fm: FieldMeta = { ...base, leaf: { group, path: n.path ?? [], underNull: n.under_null ?? false, rootRequired: n.root_required ?? false } };
         this.fieldByIr.set(fm.ir, fm);
         this.fieldList.push(fm);
         const seen = leaves.get(n.field);
@@ -208,7 +208,7 @@ export class ModelMeta implements Source {
       const n = f.nested;
       if (n?.storage !== "columns" || this.publicList.some((p) => p?.ir === n.field)) continue;
       const members = leaves.get(n.field)!;
-      const nullable = members.every((m) => m.leaf!.underNull);
+      const nullable = !members[0]!.leaf!.rootRequired && members.every((m) => m.leaf!.underNull);
       const info: NestedInfo = {
         model: ir.name,
         field: n.field,

@@ -119,3 +119,11 @@ def test_adding_a_defaulted_leaf_to_a_nullable_group_fills_only_present_rows(tmp
     assert "'0'" in sql[fill] and '"address_city" IS NOT NULL' in sql[fill]
     check = next(i for i, s in enumerate(sql) if "ADD CONSTRAINT" in s and '"address_zip" IS NOT NULL' in s)
     assert add < fill < check
+
+
+def test_a_snapshot_without_root_required_gives_no_migration(tmp_path):
+    source = V1.replace("  address Address?\n", "  address Address\n")
+    migs = Migrations(tmp_path, models(source))
+    assert migs.make() is not None
+    assert "root_required" not in next(tmp_path.glob("*/snapshot.json")).read_text()  # the snapshot holds database tables only
+    assert up(tmp_path, source) == []

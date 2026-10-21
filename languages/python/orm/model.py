@@ -547,7 +547,8 @@ def define(
             if group in ns:
                 raise TypeError(f"{m['name']}.{group}: nested field collides with a field")
             first = next(f["nested"] for f in m["fields"] if f["name"] == leaves[0][0])
-            under = all(f["nested"]["under_null"] for f in m["fields"] if f["name"] in dict(leaves))
+            leaf_irs = [f["nested"] for f in m["fields"] if f["name"] in dict(leaves)]
+            under = not first.get("root_required", False) and all(n.get("under_null", False) for n in leaf_irs)
             ns[group] = NestedGroup(group, nested_types[first["type"]], under, tuple(leaves))
         ns.update({r["name"]: _relation(r) for r in m.get("relations", ())})
         if module is not None:

@@ -194,13 +194,13 @@ pub(super) fn expand(m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'
         walk_paths(ctx, ty, &member.name, &mut vec![], &mut paths);
         let mut f = FieldIr::plain(&member.name, ColType::Json);
         f.nullable = optional;
-        f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![], list: member.ty.list, under_null: false, present_with: vec![] });
+        f.nested = Some(NestedIr { ty: ty.name.clone(), storage, field: member.name.clone(), path: vec![], list: member.ty.list, under_null: false, root_required: false, present_with: vec![] });
         return Ok(Expansion { fields: vec![f], checks: vec![], paths });
     }
     if member.ty.list {
         return err(member.pos, format!("{what}: a list of {} needs @storage(json); columns storage holds no list of a type", ty.name));
     }
-    let mut cx = Columns { ctx, items, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, out: Expansion { fields: vec![], checks: vec![], paths }, claimed: vec![] };
+    let mut cx = Columns { ctx, items, what: &what, pos: member.pos, field: &member.name, ty: &ty.name, prefix, root_required: !optional, out: Expansion { fields: vec![], checks: vec![], paths }, claimed: vec![] };
     cx.level(ty, &mut vec![], &mut vec![], false, optional, member.pos)?;
     Ok(cx.out)
 }
@@ -248,6 +248,8 @@ struct Columns<'a> {
     field: &'a str,
     ty: &'a str,
     prefix: Option<String>,
+    /// The model field is non-null.
+    root_required: bool,
     out: Expansion,
     /// Per lowered field: a nullable level has already set its `present_with`.
     claimed: Vec<bool>,
@@ -313,7 +315,7 @@ impl Columns<'_> {
                         }
                         l.check = Some(c.replace("{}", &ident(&l.column)));
                     }
-                    l.nested = Some(NestedIr { ty: self.ty.to_owned(), storage: NestedStorage::Columns, field: self.field.to_owned(), path: names.clone(), list: false, under_null, present_with: vec![] });
+                    l.nested = Some(NestedIr { ty: self.ty.to_owned(), storage: NestedStorage::Columns, field: self.field.to_owned(), path: names.clone(), list: false, under_null, root_required: self.root_required, present_with: vec![] });
                     self.out.paths.insert(dotted, PathTarget::Column(l.name.clone()));
                     self.out.fields.push(l);
                 }

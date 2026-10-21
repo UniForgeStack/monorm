@@ -30,7 +30,7 @@ export type IRSub = {
 };
 export type IRType = { name: string; storage: string; fields: IRSub[] };
 /** On a model field of a nested type: the group it belongs to. */
-export type IRNested = { type: string; storage: "columns" | "json"; field: string; path?: string[]; under_null?: boolean; list?: boolean; present_with?: string[] };
+export type IRNested = { type: string; storage: "columns" | "json"; field: string; path?: string[]; under_null?: boolean; root_required?: boolean; list?: boolean; present_with?: string[] };
 
 const NONE = Symbol("none");
 const TYPE = Symbol("nestedType");

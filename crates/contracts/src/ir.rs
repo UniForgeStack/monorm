@@ -182,6 +182,10 @@ pub struct NestedIr {
     /// the engine applies the default when the group is set.
     #[serde(skip_serializing_if = "is_false", default)]
     pub under_null: bool,
+    /// The model field of a `columns` group is non-null. A nullable middle level can put every
+    /// leaf under a null, so the leaves alone do not tell whether the group is nullable.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub root_required: bool,
     /// Columns of the other leaves below the nearest nullable level, which has a CHECK. A
     /// migration that adds this leaf fills its default in the rows where one of them is set.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]

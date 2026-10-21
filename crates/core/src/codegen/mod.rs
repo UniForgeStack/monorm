@@ -6,6 +6,59 @@ pub mod python;
 #[cfg(feature = "generate-typescript")]
 pub mod typescript;
 
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+use crate::ir::{FieldIr, NestedStorage, SchemaIr, TypeFieldIr, TypeIr};
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+use crate::schema::Model;
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// A nested field of a model: the `columns` group of its leaf fields, or the one `json` field.
+pub(super) struct Group<'a> {
+    pub(super) name: &'a str,
+    pub(super) ty: &'a str,
+    pub(super) nullable: bool,
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// The nested fields of `m`, in field order. Their leaf fields stay out of every public shape.
+pub(super) fn groups<'a>(m: &'a Model) -> Vec<Group<'a>> {
+    let mut out: Vec<Group<'a>> = vec![];
+    for f in m.fields() {
+        let Some(n) = &f.nested else { continue };
+        if out.iter().any(|g| g.name == n.field) {
+            continue;
+        }
+        let nullable = if n.storage == NestedStorage::Json { f.nullable } else { !n.root_required };
+        out.push(Group { name: &n.field, ty: &n.ty, nullable });
+    }
+    out
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+pub(super) fn type_of<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a TypeIr> {
+    ir.types.iter().find(|t| t.name == name)
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+pub(super) fn sub_has_default(sf: &TypeFieldIr) -> bool {
+    sf.leaf.as_ref().is_some_and(|l| has_server_value(l) || l.client_default.is_some())
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// Whether a value of `name` needs at least one subfield from the caller.
+pub(super) fn type_requires(ir: &SchemaIr, name: &str) -> bool {
+    type_of(ir, name).is_some_and(|t| {
+        t.fields.iter().any(|sf| {
+            !sf.nullable && !sf.list && !sub_has_default(sf) && sf.type_name.as_deref().is_none_or(|n| type_requires(ir, n))
+        })
+    })
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+pub(super) fn has_server_value(f: &FieldIr) -> bool {
+    f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some() || f.hints.get("composition.key-default").is_some_and(|v| v == "true")
+}
+
 /// Generator options that are not part of the schema.
 #[derive(Debug, Default, Clone)]
 pub struct Options {
@@ -369,6 +422,19 @@ mod reference_tests {
     }
 
     #[test]
+    fn non_null_group_with_a_nullable_middle_level_is_not_nullable() {
+        let src = "type Geo {\n  lat Float\n}\n\ntype Wrap {\n  inner Geo?\n}\n\ntype Tagged {\n  tag String\n  inner Geo?\n}\n\nmodel S {\n  id Int @id\n  w Wrap\n  t Tagged?\n}\n";
+        let ir = crate::dsl::compile(src, None).unwrap();
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        let py = python::generate(&ir, &schema, "schema.prisma").unwrap().stub;
+        assert!(py.contains("    w: f.Nested[Wrap, _WrapRef]\n"), "{py}");
+        assert!(py.contains("    t: f.Nested[Tagged | None, _TaggedRef]\n"), "{py}");
+        let ts = typescript::generate(&ir, &schema, "schema.prisma", "orm").unwrap();
+        assert!(ts.contains("  readonly w: Wrap;\n"), "{ts}");
+        assert!(ts.contains("  readonly t: Tagged | null;\n"), "{ts}");
+    }
+
+    #[test]
     fn client_defaults_make_insert_fields_optional() {
         let ir = crate::dsl::compile("model A {\n id String @id @client_default(uuid())\n name String\n}", None).unwrap();
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
@@ -376,5 +442,31 @@ mod reference_tests {
         assert!(py.contains("    id: NotRequired[str]\n    name: str\n"), "{py}");
         let ts = typescript::generate(&ir, &schema, "schema.prisma", "orm").unwrap();
         assert!(ts.contains("  id?: In<string>;\n  name: In<string>;\n"), "{ts}");
+    }
+
+    #[test]
+    fn pyi_imports_only_the_names_it_uses() {
+        let ir = crate::dsl::compile("model A {\n id Int @id\n}", None).unwrap();
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        let py = python::generate(&ir, &schema, "schema.prisma").unwrap().stub;
+        for name in ["Sequence", "NestedRef", "NestedValue"] {
+            assert!(!py.contains(name), "{name} in {py}");
+        }
+        let src = "type Geo {\n  lat Float\n  tags String[]\n}\n\nmodel S {\n  id Int @id\n  g Geo\n}\n";
+        let ir = crate::dsl::compile(src, None).unwrap();
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        let py = python::generate(&ir, &schema, "schema.prisma").unwrap().stub;
+        assert!(py.contains("from collections.abc import Iterable, Sequence\n"), "{py}");
+        assert!(py.contains("Model, NestedRef, NestedValue, QuerySet"), "{py}");
+    }
+
+    #[test]
+    fn value_comment_names_the_type_without_a_wrong_article() {
+        let src = "type Address {\n  city String\n}\n\nmodel S {\n  id Int @id\n  a Address\n}\n";
+        let ir = crate::dsl::compile(src, None).unwrap();
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        let ts = typescript::generate(&ir, &schema, "schema.prisma", "orm").unwrap();
+        assert!(ts.contains("/** Immutable `Address` value, compared with `equals()`. */"), "{ts}");
+        assert!(!ts.contains("A `Address`"), "{ts}");
     }
 }

@@ -93,7 +93,7 @@ export interface FieldMeta {
   /** A member of a nested type: a `json` field, or the group a `columns` field stands for. */
   readonly nested?: NestedInfo | undefined;
   /** A stored leaf of a `columns` group: the engine reads and writes it, the model does not show it. */
-  readonly leaf?: { readonly group: string; readonly path: readonly string[]; readonly underNull: boolean } | undefined;
+  readonly leaf?: { readonly group: string; readonly path: readonly string[]; readonly underNull: boolean; readonly rootRequired: boolean } | undefined;
 }
 
 export type RelationKind = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";

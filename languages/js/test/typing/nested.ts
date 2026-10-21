@@ -1,10 +1,13 @@
 /** Static checks of the generated nested types; never run. */
 
-import { Address, Geo, Shop, type AddressPatch } from "../nested/models.js";
+import { Address, Geo, Opt, Plain, Shop, Tagged, Wrap, Wrapped, type AddressPatch } from "../nested/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 declare function same<A, B>(...check: Equal<A, B> extends true ? [] : [error: "types differ"]): void;
 declare const shop: Shop;
+declare const plain: Plain;
+declare const wrapped: Wrapped;
+declare const opt: Opt;
 
 export async function nested() {
   same<typeof shop.address, Address | null>();
@@ -36,4 +39,9 @@ export async function nested() {
   const rows = await Shop.objects.select({ city: Shop.address.city, whole: Shop.snapshot });
   same<typeof rows[number]["whole"], Address>();
   same<typeof rows[number]["city"], string | null>();
+  same<typeof plain.g, Geo>();
+  same<typeof wrapped.w, Wrap>();
+  same<typeof opt.t, Tagged | null>();
+  const lats = await Wrapped.objects.select({ lat: Wrapped.w.inner.lat });
+  same<typeof lats[number]["lat"], number | null>();
 }

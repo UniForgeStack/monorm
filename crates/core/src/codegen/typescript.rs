@@ -21,7 +21,8 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::ir::{ColType, EnumStorage, FieldIr, NestedStorage, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
+use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
+use super::{groups, has_server_value, sub_has_default, type_requires};
 use crate::schema::{Model, Schema};
 
 const WIDTH: usize = 89;
@@ -85,50 +86,8 @@ fn file_input_type(m: &Model, f: &FieldIr) -> String {
     input_type(f)
 }
 
-fn has_server_value(f: &FieldIr) -> bool {
-    f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some() || f.hints.get("composition.key-default").is_some_and(|v| v == "true")
-}
-
 fn quote(s: &str) -> String {
     serde_json::to_string(s).expect("a string serializes")
-}
-
-/// A nested field of a model: the `columns` group of its leaf fields, or the one `json` field.
-struct Group<'a> {
-    name: &'a str,
-    ty: &'a str,
-    nullable: bool,
-}
-
-/// The nested fields of `m`, in field order. Their leaf fields stay out of every public shape.
-fn groups<'a>(m: &'a Model) -> Vec<Group<'a>> {
-    let mut out: Vec<Group<'a>> = vec![];
-    for f in m.fields() {
-        let Some(n) = &f.nested else { continue };
-        let under = n.storage == NestedStorage::Columns && n.under_null;
-        match out.iter_mut().find(|g| g.name == n.field) {
-            Some(g) => g.nullable &= under,
-            None => out.push(Group { name: &n.field, ty: &n.ty, nullable: if n.storage == NestedStorage::Json { f.nullable } else { under } }),
-        }
-    }
-    out
-}
-
-fn type_of<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a TypeIr> {
-    ir.types.iter().find(|t| t.name == name)
-}
-
-fn sub_has_default(sf: &TypeFieldIr) -> bool {
-    sf.leaf.as_ref().is_some_and(|l| has_server_value(l) || l.client_default.is_some())
-}
-
-/// Whether a value of `name` needs at least one subfield from the caller.
-fn type_requires(ir: &SchemaIr, name: &str) -> bool {
-    type_of(ir, name).is_some_and(|t| {
-        t.fields.iter().any(|sf| {
-            !sf.nullable && !sf.list && !sub_has_default(sf) && sf.type_name.as_deref().is_none_or(|n| type_requires(ir, n))
-        })
-    })
 }
 
 fn sub_element(sf: &TypeFieldIr) -> String {
@@ -169,7 +128,7 @@ fn sub_optional(ir: &SchemaIr, sf: &TypeFieldIr) -> bool {
 fn write_type(body: &mut String, ir: &SchemaIr, t: &TypeIr) {
     let name = &t.name;
     writeln!(body, "{}\n", section(name)).unwrap();
-    writeln!(body, "/** A `{name}` value: immutable, compared with `equals()`. */\nexport interface {name} {{").unwrap();
+    writeln!(body, "/** Immutable `{name}` value, compared with `equals()`. */\nexport interface {name} {{").unwrap();
     for sf in &t.fields {
         writeln!(body, "  readonly {}: {};", sf.name, sub_value(sf)).unwrap();
     }
