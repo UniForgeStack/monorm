@@ -1,0 +1,81 @@
+{
+  "date": "2026-10-21T13:34:50.011Z",
+  "git_sha": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+  "runtime": "bun 1.4.2",
+  "machine": "linux x64",
+  "packages": {
+    "pg": "8.23.1",
+    "prisma": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "@prisma/adapter-pg": "7.10.1"
+  },
+  "postgres": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+  "database": "bench",
+  "pool_size": 10,
+  "uptime_before": "13:30:10 up  1:31,  0 user,  load average: 1.67, 1.69, 1.61",
+  "uptime_after": "13:34:50 up  1:35,  0 user,  load average: 1.25, 1.42, 1.51",
+  "orm_artifact": null,
+  "warmup_calls": 50,
+  "contenders": {
+    "orm": {
+      "profile": "postgres",
+      "build": {
+        "features": [
+          "postgres",
+          "profile-postgres"
+        ],
+        "profile": "release",
+        "revision": "c9bbf7cc142e19566bb18fda68294f8f52a6ecdf",
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "capabilities": {
+        "cli": false,
+        "composition": false,
+        "generate-python": false,
+        "generate-typescript": false
+      },
+      "native": "/home/user/monorm/bench/compare/build/orm.node",
+      "prepared_statements": "engine default: prepared once per connection and cached",
+      "insert_note": "orm returns full rows: insertMany(...).returning() has no key-only form",
+      "upsert_note": "onConflict returns a row count, no RETURNING",
+      "pool": 10
+    },
+    "prisma": {
+      "prisma": "7.10.1",
+      "adapter": "@prisma/adapter-pg 7.10.1",
+      "query_engine": "TypeScript query compiler (WASM) with the driver adapter; no Rust query engine",
+      "prepared_statements": "unnamed statements: the pg driver re-parses each call (adapter-pg without statementNameGenerator)",
+      "pool": 10,
+      "insert_note": "bulk inserts use createManyAndReturn with select { id: true }: ids only, orm returns full rows",
+      "upsert_note": "upsert-100 is 100 upserts in one $transaction: Prisma has no bulk upsert, orm and Django send one statement",
+      "find_unique_note": "findUnique calls in one tick are batched by Prisma into one query; this runner issues them one at a time",
+      "update_note": "update-1 uses updateMany (no row read back); update() would add a SELECT"
+    }
+  },
+  "rounds": 20,
+  "iters": 20,
+  "round_loads": [
+    1.53,
+    1.45,
+    1.35,
+    1.27,
+    1.23,
+    1.26,
+    1.34,
+    1.28,
+    1.22,
+    1.41,
+    1.32,
+    1.27,
+    1.21,
+    1.5,
+    1.39,
+    1.3,
+    1.26,
+    1.2,
+    1.39,
+    1.33
+  ],
+  "max_load": 2
+}
