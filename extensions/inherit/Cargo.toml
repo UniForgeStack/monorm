@@ -21,6 +21,7 @@ id = "orm.inherit"
 version = "0.1.0"
 host_contract = 1
 schema_contract = 2
+language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema"]
@@ -50,3 +51,14 @@ target = "model"
 [[package.metadata.orm-extension.attributes.positional]]
 kind = "value"
 required = true
+
+# The extension adds no members to a model; its language code is `model_for` / `modelFor`.
+[package.metadata.orm-extension.python]
+source = "python/orm_inherit"
+query_set = "InheritQuerySet"
+instance = "InheritInstance"
+
+[package.metadata.orm-extension.typescript]
+source = "typescript/src"
+query_set = "inheritQuerySet"
+instance = "InheritInstance"

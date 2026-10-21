@@ -1035,6 +1035,12 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
                     label: Some(name.unwrap_or_default()),
                 });
             }
+            [] if name.as_deref().is_some_and(|n| n.contains("{model}")) => {
+                return err(
+                    member.pos,
+                    format!("{what}: {{model}} in a relation name is only expanded in a relation of an abstract model (@@inherit.abstract); name this relation without it"),
+                )
+            }
             [] => {
                 return err(
                     member.pos,

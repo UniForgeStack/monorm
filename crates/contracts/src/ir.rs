@@ -497,6 +497,10 @@ pub struct RelationIr {
 pub struct TypeModel {
     pub name: String,
     pub fields: Vec<FieldIr>,
+    /// The models that extend this one directly, in schema order; they are the models
+    /// whose generated type includes this one.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub extended_by: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------------------

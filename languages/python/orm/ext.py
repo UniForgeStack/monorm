@@ -9,6 +9,7 @@ from .query import M as ModelT
 from .write import Delete, Returning
 
 if TYPE_CHECKING:
+    from .model import Registry
     from .query import BoundQuerySet, QuerySet
 
 B = TypeVar("B", bound="BoundQuerySet[Any]")
@@ -21,6 +22,7 @@ __all__ = [
     "ModelT",
     "behavior_field",
     "behavior_records",
+    "behavior_value",
     "bound_query",
     "bound_write",
     "hard_delete_statement",
@@ -41,6 +43,13 @@ def behavior_records(model: Any, kind: str) -> list[dict[str, Any]]:
     meta = model._meta
     records: list[dict[str, Any]] = meta.registry._behavior.get(kind, ())
     return [r for r in records if r["model"] == meta.name]
+
+
+def behavior_value(kind: str, registry: Registry | None = None) -> Any:
+    """The prepared behavior record of ``kind`` that is not a list of per-model records, ``None`` if absent."""
+    from .model import registry as default
+
+    return (registry if registry is not None else default)._behavior.get(kind)
 
 
 def behavior_field(model: Any, record: dict[str, Any]) -> ColumnRef[Any]:

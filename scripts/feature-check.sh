@@ -116,6 +116,10 @@ for artifact in $ARTIFACTS; do
     step "$artifact" query-defaults-disabled-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/query-defaults/tests/public/disabled.py"
     step "$artifact" query-defaults-disabled-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs"
   fi
+  if has "$artifact" inherit; then
+    step "$artifact" inherit-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/inherit/tests/public/python.py"
+    step "$artifact" inherit-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/inherit/tests/public/node.mjs"
+  fi
   if has "$artifact" file-storage; then
     # These tests import `orm.adapters`, which needs a native profile.
     step "$artifact" storage-python-unit env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" -m pytest -q -p no:cacheprovider "$ROOT/extensions/file-storage/integration/python/tests"

@@ -67,6 +67,24 @@ fn value_type(f: &FieldIr) -> String {
     }
 }
 
+/// The fields of an abstract model, those of the abstract models it extends first; a redeclared field replaces the inherited one.
+fn abstract_fields<'a>(type_models: &'a [crate::ir::TypeModel], name: &str) -> Vec<&'a FieldIr> {
+    let mut out: Vec<&FieldIr> = Vec::new();
+    for t in type_models.iter().filter(|t| t.extended_by.iter().any(|c| c == name)) {
+        for f in abstract_fields(type_models, &t.name) {
+            out.retain(|g| g.name != f.name);
+            out.push(f);
+        }
+    }
+    if let Some(t) = type_models.iter().find(|t| t.name == name) {
+        for f in t.fields.iter().filter(|f| f.nested.is_none()) {
+            out.retain(|g| g.name != f.name);
+            out.push(f);
+        }
+    }
+    out
+}
+
 /// The type a column is written from (`bigint` columns take numbers, ...).
 fn input_type(f: &FieldIr) -> String {
     format!("In<{}>", value_type(f))
@@ -209,6 +227,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     let model_methods = options.model_methods(ir, schema, '#')?;
     let method_modules: Vec<&str> = model_methods.values().map(|(module, _)| *module).collect::<BTreeSet<_>>().into_iter().collect();
     let methods_of = |model: &str| model_methods.get(model).map(|(module, class)| format!("_m{}.{class}", method_modules.iter().position(|m| m == module).unwrap()));
+    // A class that an abstract model declares takes the model's spec as its type parameter (`class UserQueries<S extends AbstractUserSpec>`).
+    let generic = |model: &str| {
+        query_sets.get(model).is_some_and(|q| !q.2)
+            && ir.models.iter().any(|m| m.name == model && m.classes_from.as_ref().is_some_and(|c| ir.behavior.type_models.iter().any(|t| &t.name == c)))
+    };
+    let query_type = |model: &str, spec: &str| query_set(model).map(|class| if generic(model) { format!("{class}<{spec}>") } else { class });
     let has_queries = |model: &str| query_set(model).is_some() || options.extensions.iter().any(|e| e.applies(ir, model));
     let ext_base = options.ext_import.as_deref().unwrap_or("./orm-ext");
     // names: camelCase must stay unique and clear of the runtime's own
@@ -252,6 +276,26 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 if element_type(sf) == word { used.insert(import); }
             }
         }
+    }
+
+    for t in &ir.behavior.type_models {
+        let name = &t.name;
+        let fields = abstract_fields(&ir.behavior.type_models, name);
+        writeln!(body, "{}\n", section(name)).unwrap();
+        writeln!(body, "/** The column values of the abstract model {name}; a model that extends it has them. */").unwrap();
+        writeln!(body, "export interface {name}Data {{").unwrap();
+        for f in &fields {
+            let ty = value_type(f);
+            for (word, import) in [("Decimal", "Decimal"), ("JsonValue", "JsonValue")] {
+                if ty.split(|c: char| !c.is_alphanumeric()).any(|w| w == word) {
+                    used.insert(import);
+                }
+            }
+            writeln!(body, "  readonly {}: {ty};", camel(&f.name)).unwrap();
+        }
+        writeln!(body, "}}\n").unwrap();
+        writeln!(body, "/** The bound of a query-set class that the abstract model {name} declares: `class Queries<S extends {name}Spec>`. */").unwrap();
+        writeln!(body, "export interface {name}Spec extends ModelSpec {{\n  readonly row: {name}Data;\n  readonly data: {name}Data;\n}}\n").unwrap();
     }
 
     for m in &schema.models {
@@ -440,7 +484,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             }
         }
         if exts.is_empty() {
-            if let Some(class) = query_set(name) { writeln!(body, "  readonly queries: {class};").unwrap(); }
+            if let Some(class) = query_type(name, &spec_name) { writeln!(body, "  readonly queries: {class};").unwrap(); }
             writeln!(body, "}}\n").unwrap();
         } else {
             // `queries` cannot name its own spec, so the extension mixins apply to the base spec
@@ -448,7 +492,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             let mut ctor = format!("new (...args: any[]) => QuerySet<{name}BaseSpec>");
             for (i, e) in &exts { ctor = format!("ReturnType<typeof _e{i}.{}<{ctor}>>", e.members.query_set); }
             let ext_type = format!("InstanceType<{ctor}>");
-            let queries = query_set(name).map_or(ext_type.clone(), |class| format!("{class} & {ext_type}"));
+            let queries = query_type(name, &spec_name).map_or(ext_type.clone(), |class| format!("{class} & {ext_type}"));
             let mut bound = format!("new (...args: any[]) => BoundQuerySet<{name}BaseSpec>");
             let mut any_bound = false;
             for (i, e) in &exts {
@@ -517,6 +561,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         if let Some(class) = query_set(name) {
             // an inherited class is a `QuerySet` of the root spec, which `useQuerySet` rejects for the proxy
             let inherited = query_sets[name.as_str()].2;
+            let class = if generic(name) { format!("{class}<{name}Spec>") } else { class };
             let class = if inherited { format!("(() => {class}) as never") } else { format!("() => {class}") };
             writeln!(body, "useQuerySet({name}, {class});\n").unwrap();
         }
@@ -539,6 +584,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         "QuerySetOf", "RelationPath", "SchemaIR", "Via",
     ];
     types.extend(used.iter().copied());
+    if !ir.behavior.type_models.is_empty() {
+        types.push("ModelSpec");
+    }
     let used_exts: BTreeSet<usize> = schema.models.iter().flat_map(|m| options.model_extensions(ir, &m.ir.name).into_iter().map(|(i, _)| i)).collect();
     if !query_sets.is_empty() || !used_exts.is_empty() {
         types.push("QueriesOf");

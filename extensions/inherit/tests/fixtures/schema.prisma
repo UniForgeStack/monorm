@@ -1,0 +1,34 @@
+datasource db {
+  provider = "sqlite"
+}
+
+model Timestamped {
+  created_at DateTime @default(now())
+  @@inherit.abstract
+}
+
+model AbstractUser {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+  roles Role[] @relation("{model}_roles")
+  @@inherit.abstract
+}
+
+model User {
+  @@inherit.extends(["AbstractUser", "Timestamped"])
+}
+
+model Admin {
+  level Int @default(1)
+  @@inherit.extends(["AbstractUser"])
+}
+
+model Role {
+  id   Int    @id @default(autoincrement())
+  name String
+}
+
+model MyUser {
+  bio String?
+  @@inherit.override("User")
+}

@@ -93,7 +93,7 @@ fn code(id: &str, attribute: &str, language: &str, query_set: &str, instance: &s
     ExtensionCode {
         members: LanguageMembers {
             extension: id.into(), version: "1.0.0".into(), language: language.into(),
-            query_set: query_set.into(), instance: instance.into(), hash: "0".into(), ..Default::default()
+            query_set: query_set.into(), instance: instance.into(), hash: "0".into(), query_set_members: vec!["member".into()], ..Default::default()
         },
         attributes: vec![attribute.into()],
         files,

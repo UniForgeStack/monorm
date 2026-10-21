@@ -347,7 +347,15 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
     }
     for m in ir.models.iter().filter(|m| p.abstracts.contains_key(&m.name)) {
         if !ir.behavior.type_models.iter().any(|t| t.name == m.name) {
-            ir.behavior.type_models.push(TypeModel { name: m.name.clone(), fields: m.fields.clone() });
+            let mut extended_by: Vec<String> = ir.models.iter().map(|c| &c.name)
+                .filter(|c| p.extends.get(*c).is_some_and(|(_, bases)| bases.contains(&m.name))).cloned().collect();
+            // An override takes the abstract bases of the model it replaces.
+            for (child, (_, base)) in &p.overrides {
+                if p.extends.get(base).is_some_and(|(_, bases)| bases.contains(&m.name)) && !extended_by.contains(child) {
+                    extended_by.push(child.clone());
+                }
+            }
+            ir.behavior.type_models.push(TypeModel { name: m.name.clone(), fields: m.fields.clone(), extended_by });
         }
     }
     for (child, (_, base)) in &p.overrides {

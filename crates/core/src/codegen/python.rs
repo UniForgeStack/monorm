@@ -96,6 +96,26 @@ fn file_value_type(m: &Model, f: &FieldIr) -> String {
     value_type(f)
 }
 
+/// The stub bases of a model: the abstract models that extend directly into it, descendants first, else `Model`.
+fn abstract_bases(type_models: &[crate::ir::TypeModel], name: &str) -> String {
+    let bases: Vec<String> = type_models.iter().rev().filter(|t| t.extended_by.iter().any(|c| c == name)).map(|t| format!("{}Fields", t.name)).collect();
+    if bases.is_empty() { "Model".into() } else { bases.join(", ") }
+}
+
+/// The `(name, stub line)` of the fields of an abstract model (`own`) or of all its abstract ancestors.
+fn abstract_lines(type_models: &[crate::ir::TypeModel], name: &str, own: bool) -> Vec<(String, String)> {
+    let line = |f: &FieldIr| (f.name.clone(), format!("{}: f.{}[{}]", f.name, field_class(f), value_type(f)));
+    if own {
+        return type_models.iter().find(|t| t.name == name).map(|t| t.fields.iter().filter(|f| f.nested.is_none()).map(line).collect()).unwrap_or_default();
+    }
+    let mut out = Vec::new();
+    for t in type_models.iter().filter(|t| t.extended_by.iter().any(|c| c == name)) {
+        out.extend(abstract_lines(type_models, &t.name, false));
+        out.extend(abstract_lines(type_models, &t.name, true));
+    }
+    out
+}
+
 fn sub_element(sf: &TypeFieldIr) -> String {
     match (&sf.type_name, &sf.leaf) {
         (Some(n), _) => n.clone(),
@@ -180,6 +200,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     // A proxy takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
     // which the stub cannot combine with the proxy's `QuerySet[Proxy]`, so the stub types its methods as `Any`.
     let inherits = |model: &str| query_sets.get(model).is_some_and(|q| q.2);
+    // A class that an abstract model declares takes the model as its type parameter (`class UserQueries[M: AbstractUserFields]`).
+    let generic = |model: &str| {
+        query_sets.get(model).is_some_and(|q| !q.2)
+            && ir.models.iter().any(|m| m.name == model && m.classes_from.as_ref().is_some_and(|c| ir.behavior.type_models.iter().any(|t| &t.name == c)))
+    };
     let ir_json = super::embedded_schema_json(ir)?;
     if ir_json.contains("\"\"\"") {
         return Err("schema text contains \"\"\" which can't be embedded in the generated module".into());
@@ -192,6 +217,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     exported.extend(names.iter().map(|n| n.to_string()));
     exported.extend(names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]));
     exported.extend(names.iter().map(|n| format!("{n}QuerySet")));
+    exported.extend(ir.behavior.type_models.iter().map(|t| format!("{}Fields", t.name)));
     let composed_names: Vec<_> = schema.models.iter().filter(|m| m.pk_field().hints.get("composition.child").is_some_and(|v| v == "true")).map(|m| &m.ir.name).collect();
     exported.extend(composed_names.iter().map(|n| format!("{n}Attach")));
     let all = exported.iter().map(|n| format!("    \"{n}\",\n")).collect::<String>();
@@ -205,7 +231,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          # schema below. models.pyi carries the static types (columns, relation paths, typed\n\
          # inserts / updates and query sets) for editors and type checkers.\n\n",
     );
-    writeln!(py, "from orm import QuerySet, define{}\n", if query_sets.is_empty() { "" } else { ", use_query_set" }).unwrap();
+    let type_models = &ir.behavior.type_models;
+    writeln!(py, "from orm import {}QuerySet, define{}\n", if type_models.is_empty() { "" } else { "Model, " }, if query_sets.is_empty() { "" } else { ", use_query_set" }).unwrap();
     for (model, (module, class)) in &model_methods {
         writeln!(py, "from {module} import {class} as _{model}Methods").unwrap();
     }
@@ -263,6 +290,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     py.push_str("\n# Typed per model in models.pyi; plain aliases at runtime so the names can be imported.\n");
     let qs: Vec<String> = names.iter().map(|n| format!("{n}QuerySet")).collect();
     if !qs.is_empty() { writeln!(py, "{} = QuerySet", qs.join(" = ")).unwrap(); }
+    // An abstract model has no runtime model; the name only has to import.
+    let abstracts: Vec<String> = type_models.iter().map(|t| format!("{}Fields", t.name)).collect();
+    if !abstracts.is_empty() { writeln!(py, "{} = Model", abstracts.join(" = ")).unwrap(); }
     let mut dicts: Vec<String> =
         names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]).collect();
     dicts.extend(composed_names.iter().map(|n| format!("{n}Attach")));
@@ -280,6 +310,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
                 if t.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == word) {
                     used.insert(import);
                 }
+            }
+        }
+    }
+    for f in type_models.iter().flat_map(|t| &t.fields) {
+        let t = base_type(f);
+        for (word, import) in [("datetime", "datetime"), ("date", "date"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")] {
+            if t.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == word) {
+                used.insert(import);
             }
         }
     }
@@ -307,6 +345,18 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     for t in &ir.types {
         write_type(&mut body, ir, t);
     }
+    for t in type_models {
+        writeln!(body, "{}\n", section(&format!("{}Fields", t.name))).unwrap();
+        writeln!(body, "class {}Fields({}):", t.name, abstract_bases(type_models, &t.name)).unwrap();
+        let inherited = abstract_lines(type_models, &t.name, false);
+        let own = abstract_lines(type_models, &t.name, true);
+        for (name, line) in &own {
+            let clash = inherited.iter().any(|(n, l)| n == name && l != line);
+            writeln!(body, "    {line}{}", if clash { "  # type: ignore[assignment]" } else { "" }).unwrap();
+        }
+        if own.is_empty() { body.push_str("    ...\n"); }
+        body.push('\n');
+    }
     for m in &schema.models {
         let name = &m.ir.name;
         let groups = groups(m);
@@ -314,7 +364,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         let exts = options.model_extensions(ir, name);
         let instances: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}Instance, ")).collect();
         let methods = if model_methods.contains_key(name.as_str()) { format!("_{name}Methods, ") } else { String::new() };
-        writeln!(body, "class {name}({instances}{methods}Model):").unwrap();
+        let bases = abstract_bases(type_models, name);
+        writeln!(body, "class {name}({instances}{methods}{}):", if bases == "Model" { bases } else { format!("{bases}, Model") }).unwrap();
         for method in ir.behavior.methods.iter().filter(|method| method.model == *name) {
             let output = if method.output.is_some() { "str" } else { "None" };
             writeln!(body, "    @staticmethod\n    def {}(value: str) -> {output}: ...", method.name).unwrap();
@@ -323,8 +374,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let field = &m.fields()[file.position].name;
             writeln!(body, "    async def {field}_signed_url(self, *, expires_in: int = 300) -> str: ...\n    def {field}_open(self) -> AsyncIterator[bytes]: ...").unwrap();
         }
+        let inherited = abstract_lines(type_models, name, false);
         for f in m.fields().iter().filter(|f| f.nested.is_none()) {
-            writeln!(body, "    {}: f.{}[{}]", f.name, field_class(f), file_value_type(m, f)).unwrap();
+            let line = format!("{}: f.{}[{}]", f.name, field_class(f), file_value_type(m, f));
+            let clash = inherited.iter().any(|(n, l)| *n == f.name && *l != line);
+            writeln!(body, "    {line}{}", if clash { "  # type: ignore[assignment]" } else { "" }).unwrap();
         }
         for g in &groups {
             writeln!(body, "    {}: f.Nested[{}, _{}Ref]", g.name, or_none(g.ty.to_owned(), g.nullable), g.ty).unwrap();
@@ -516,9 +570,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
              -> UpdateMany[{name}]: ...  # type: ignore[override]\n"
         )
         .unwrap();
-        if !exts.is_empty() || inherits(name) {
+        if !exts.is_empty() || inherits(name) || generic(name) {
             // the user's class first, then the extensions, last in the chain first, as at runtime
-            let user = if query_sets.contains_key(name.as_str()) && !inherits(name) { format!("_{name}UserObjects, ") } else { String::new() };
+            let params = if generic(name) { format!("[{name}]") } else { String::new() };
+            let user = if query_sets.contains_key(name.as_str()) && !inherits(name) { format!("_{name}UserObjects{params}, ") } else { String::new() };
             let any = if inherits(name) { "    def __getattr__(self, name: str) -> Any: ...\n" } else { "" };
             let mixins: String = exts.iter().rev().map(|(i, _)| format!("_ext{i}QuerySet[{name}], ")).collect();
             let bound: String = exts
@@ -591,7 +646,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         writeln!(pyi, "from {module} import {class} as _{model}Methods").unwrap();
     }
     for (model, (module, class, _)) in query_sets.iter().filter(|(m, _)| !inherits(m)) {
-        let alias = if used_exts.is_empty() || options.model_extensions(ir, model).is_empty() { "Objects" } else { "UserObjects" };
+        let alias = if (used_exts.is_empty() || options.model_extensions(ir, model).is_empty()) && !generic(model) { "Objects" } else { "UserObjects" };
         writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();
     }
     if used_exts.iter().any(|i| !options.extensions[*i].members.bound_query_set.is_empty()) {

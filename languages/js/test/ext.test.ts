@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect } from "../src/index.js";
-import { hardDeleteStatement, LANGUAGE_CONTRACT } from "../src/ext.js";
+import { behaviorValue, hardDeleteStatement, LANGUAGE_CONTRACT } from "../src/ext.js";
 import { Author, sqliteRegistry } from "./sqlite/models.js";
 
 test("the hard-delete statement is a delete of the query set", async () => {
@@ -18,4 +18,8 @@ test("the hard-delete statement is a delete of the query set", async () => {
     await db.close();
   }
   assert.equal(LANGUAGE_CONTRACT, 1);
+});
+
+test("a behavior value is undefined without a record", () => {
+  assert.equal(behaviorValue(sqliteRegistry, "model_overrides"), undefined);
 });

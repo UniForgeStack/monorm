@@ -844,6 +844,9 @@ export class Registry {
   /** @internal: normalized context is owned by this candidate. */
   setBehavior(value: unknown): void { this.behavior = detached((value ?? {}) as Record<string, unknown>); }
 
+  /** The prepared behavior record of `kind` that is not a list of per-model records, `undefined` if absent. */
+  behaviorValue(kind: string): unknown { return this.behavior[kind]; }
+
   /** The prepared behavior records of `kind` for one model. */
   behaviorRecords(kind: string, model: string): readonly Readonly<Record<string, unknown>>[] {
     const records = this.behavior[kind];

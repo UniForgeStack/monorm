@@ -249,6 +249,7 @@ fn errors_point_at_the_problem() {
         ),
         (format!("model A {{\n  id BigInt @id\n  b_id BigInt\n  b B @relation(fields: [b_id])\n}}\n{b}"), "needs references:"),
         (format!("model A {{\n  id BigInt @id\n  bs B[]\n}}\n{b}"), "B has no relation to A"),
+        (format!("model A {{\n  id BigInt @id\n  bs B[] @relation(\"{{model}}_bs\")\n}}\n{b}"), "{model} in a relation name is only expanded"),
         (
             format!("model A {{\n  id BigInt @id\n  b_id BigInt\n  b B @relation(fields: [b_id], references: [id], onDelete: cascade)\n}}\n{b}"),
             "unknown referential action cascade",

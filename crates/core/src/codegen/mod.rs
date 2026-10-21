@@ -102,7 +102,12 @@ impl ExtensionCode {
     /// declares an attribute of the extension, or a record the extension prepared names it.
     /// A proxy declares nothing, but the extension prepares the records of its root for it.
     pub fn applies(&self, ir: &crate::ir::SchemaIr, model: &str) -> bool {
-        let id = self.members.extension.as_str();
+        let m = &self.members;
+        let adds_nothing = m.query_set_members.is_empty() && m.instance_members.is_empty() && m.bound_query_set_members.is_empty();
+        if adds_nothing {
+            return false;
+        }
+        let id = m.extension.as_str();
         let b = &ir.behavior;
         b.declarations.iter().any(|d| d.model == model && self.attributes.contains(&d.attribute))
             || b.record_sources(model).any(|source| source == id)
@@ -307,7 +312,7 @@ mod reference_tests {
         ExtensionCode {
             members: orm_contracts::extension::LanguageMembers {
                 extension: "example.language".into(), version: "1.0.0".into(), language: "python".into(),
-                query_set: "TaggedQuerySet".into(), instance: "TaggedInstance".into(), hash: "abc".into(), ..Default::default()
+                query_set: "TaggedQuerySet".into(), instance: "TaggedInstance".into(), hash: "abc".into(), query_set_members: vec!["tagged".into()], ..Default::default()
             },
             attributes: vec!["example.tagged".into()],
             files: vec![("__init__.py".into(), "x = 1\n".into())],
@@ -476,6 +481,64 @@ mod reference_tests {
             let py = python::generate_with(&ir, &schema, "s", &options).unwrap();
             assert!(py.stub.contains(&format!("from app.{name} import {name} as _PostObjects")));
         }
+    }
+
+    /// `User` extends the abstract `AbstractUser`, which declares the query-set class `UserQueries`.
+    fn abstract_user() -> (crate::ir::SchemaIr, crate::schema::Schema) {
+        let mut ir = crate::dsl::compile("model User {\n id Int @id\n email String\n}", None).unwrap();
+        ir.behavior.type_models = serde_json::from_value(serde_json::json!([
+            {"name": "AbstractUser", "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": true},
+                {"name": "email", "column": "email", "type": "string"}], "extended_by": ["User"]},
+            {"name": "Timestamped", "fields": [{"name": "created_at", "column": "created_at", "type": "date_time"}]}
+        ]))
+        .unwrap();
+        ir.models[0].classes_from = Some("AbstractUser".into());
+        ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        (ir, schema)
+    }
+
+    #[test]
+    fn python_abstract_models_become_stub_classes_without_a_runtime_model() {
+        let (ir, schema) = abstract_user();
+        let options = Options { query_sets: [("User".into(), "app.queries:UserQueries".into())].into(), ..Options::default() };
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
+        assert!(py.stub.contains("class AbstractUserFields(Model):") && py.stub.contains("class TimestampedFields(Model):"), "{}", py.stub);
+        assert!(py.stub.contains("class AbstractUserFields(Model):\n") && py.stub.contains("    email: f.String[str]\n"), "{}", py.stub);
+        assert!(py.stub.contains("class User(AbstractUserFields, Model):"), "{}", py.stub);
+        assert!(py.stub.contains("from app.queries import UserQueries as _UserUserObjects") && py.stub.contains("class _UserObjects(_UserUserObjects[User], UserQuerySet)"), "{}", py.stub);
+        assert!(py.module.contains("AbstractUserFields = TimestampedFields = Model"), "{}", py.module);
+        assert!(!py.module.contains("class AbstractUserFields"));
+    }
+
+    #[test]
+    fn typescript_abstract_models_become_a_data_type_and_a_spec_bound() {
+        let (ir, schema) = abstract_user();
+        let options = Options { query_sets: [("User".into(), "./queries.js#UserQueries".into())].into(), ..Options::default() };
+        let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+        assert!(ts.contains("export interface AbstractUserData {") && ts.contains("export interface AbstractUserSpec extends ModelSpec {"), "{ts}");
+        assert!(ts.contains("export interface TimestampedSpec extends ModelSpec {") && ts.contains("readonly createdAt: Date;"), "{ts}");
+        assert!(ts.contains("readonly queries: _q0.UserQueries<UserSpec>;") && ts.contains("useQuerySet(User, () => _q0.UserQueries<UserSpec>);"), "{ts}");
+        assert!(!ts.contains("export const AbstractUser ") && !ts.contains("export const Timestamped "));
+    }
+
+    #[test]
+    fn a_class_of_a_plain_model_is_not_generic() {
+        let (mut ir, schema) = abstract_user();
+        ir.models[0].classes_from = None;
+        let options = Options { query_sets: [("User".into(), "./queries.js#UserQueries".into())].into(), ..Options::default() };
+        let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+        assert!(ts.contains("readonly queries: _q0.UserQueries;") && ts.contains("useQuerySet(User, () => _q0.UserQueries);"), "{ts}");
+    }
+
+    #[test]
+    fn an_extension_without_members_does_not_apply() {
+        let (mut ir, _) = schema();
+        let mut ext = tagged(&mut ir, "Post");
+        assert!(ext.applies(&ir, "Post"));
+        ext.members.query_set_members.clear();
+        assert!(!ext.applies(&ir, "Post"));
     }
 
     #[test]
