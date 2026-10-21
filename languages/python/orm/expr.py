@@ -531,7 +531,7 @@ class Alias:
 
 ALIAS_PLACES = (
     "alias() marks another related row in a filter condition; "
-    "it does not work in an aggregate, order_by(), load() or outer()"
+    "it works only in filter() and exclude()"
 )
 
 

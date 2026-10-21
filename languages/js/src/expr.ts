@@ -1466,7 +1466,7 @@ function aliasId(a: Alias): number {
 }
 
 /** Where an `alias()` has no meaning. */
-export const ALIAS_PLACES = "alias() marks another related row in a filter condition; it does not work in an aggregate, order_by(), load() or outer()";
+export const ALIAS_PLACES = "alias() marks another related row in a filter condition; it works only in filter() and exclude()";
 
 /** Throws when `item` (a column or a relation path) carries an `alias()` tag. */
 export function noAlias(item: unknown): void {

@@ -88,3 +88,10 @@ fn an_alias_outside_a_filter_condition_is_an_error() {
     assert!(err.contains("alias()"), "{err}");
     assert!(plan(json!([title(1, "a")]), json!({})).is_ok());
 }
+
+#[test]
+fn the_alias_message_names_the_only_places_it_works() {
+    let sum = json!({"t":"func","name":"sum","rel":["posts"],"args":[col(&["posts"], &[1], "views")]});
+    let err = plan(json!([]), json!({"annotations":[{"name":"n","expr":sum}]})).unwrap_err();
+    assert!(err.contains("it works only in filter() and exclude()"), "{err}");
+}

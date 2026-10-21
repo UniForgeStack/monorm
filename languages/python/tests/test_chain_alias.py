@@ -129,3 +129,12 @@ def test_a_nested_column_behind_a_path_keeps_the_alias_the_rule_and_the_to_one_s
     assert same.count("EXISTS") == other.count("EXISTS") - 1
     ruled = Stall.objects.filter(Stall.shop.or_null().geo.zip != "b").sql()
     assert 'NOT EXISTS(SELECT 1 FROM "ca_shop"' in ruled
+
+
+def test_the_alias_message_names_the_only_places_it_works():
+    from blog.models import Post
+
+    from orm import outer
+
+    with pytest.raises(orm.QueryError, match=r"it works only in filter\(\) and exclude\(\)"):
+        outer(Post.comments.alias().id)
