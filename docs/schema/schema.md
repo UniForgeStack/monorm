@@ -230,7 +230,8 @@ import "app:orm-auth" (prefix: "auth_")
     `orm-auth = "orm_auth:schema.prisma"` under `[project.entry-points."orm.apps"]` in `pyproject.toml`.
     `pyproject.toml` accepts only this form and rejects a `/` path. A subpackage is `orm_auth.db:schema.prisma`.
   * npm: `"orm": {"app": "./schema.prisma"}` in `package.json`.
-* Resolution happens when you run `orm generate`, `orm makemigrations` and `orm migrate`, not at run time: the generated models embed the compiled schema.
+* Resolution happens when you run `orm generate`, `orm makemigrations` and `orm migrate`, and in `load(path)` and `Migrations(path)`. It reads package metadata and imports no app code.
+  `loads(source)` has no file, so an app import in it is an error: use `load(path)` or generate the models.
   The command line finds the app, and the schema loader gets a map from the name to the file. It does not import the app package.
   * Python: `importlib.metadata` finds the entry point, and `importlib.util.find_spec` finds the package directory. It works for an editable install (`uv pip install -e`).
   * Node: from the directory of the importing schema (its real path), it goes up through `node_modules/<name>/package.json`. This resolves an app that only another app depends on under pnpm's strict layout.

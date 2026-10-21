@@ -13,6 +13,7 @@ from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from . import _capabilities, _extensions, _native
+from ._apps import resolve_apps
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
 from collections.abc import Iterable, Sequence
 
@@ -643,9 +644,10 @@ def load(
 ) -> dict[str, Any]:
     """Compile a schema file (``schema.prisma``) and build its models: no generated code
     needed (generate ``models.py`` / ``.pyi`` for editor and type-checker support).
+    An ``import "app:<name>"`` resolves to the installed app from its package metadata; no app code is imported.
     ``model_methods`` is as for :func:`define`."""
     return define(
-        _native.compile_schema_file(str(path)), registry=registry, module=module, model_methods=model_methods
+        _native.compile_schema_file(str(path), resolve_apps(path)), registry=registry, module=module, model_methods=model_methods
     )
 
 
@@ -915,5 +917,5 @@ def loads(
     model_methods: dict[str, type] | None = None,
 ) -> dict[str, Any]:
     """Like :func:`load`, for schema source text (``import`` paths resolve against the
-    current directory)."""
+    current directory). ``import "app:<name>"`` needs a file: use :func:`load` or generate the models."""
     return define(_native.compile_schema(source), registry=registry, module=module, model_methods=model_methods)

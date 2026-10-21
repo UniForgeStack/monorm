@@ -1,6 +1,6 @@
 """Finds the schema of each installed app that a schema imports with ``import "app:<name>"``.
 
-Build time only (``orm generate``, ``orm migrate``): generated models embed the compiled schema.
+Used by ``orm generate``, ``orm migrate``, ``orm.load(path)`` and ``Migrations(path)``.
 An app declares its schema in an ``orm.apps`` entry point named like its distribution
 (``orm-auth = "orm_auth:schema.prisma"``: the package, a colon, the file name; `pyproject.toml` accepts only this form). No app package is imported.
 """

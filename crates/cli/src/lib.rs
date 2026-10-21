@@ -288,10 +288,22 @@ pub async fn run(argv: &[String], host: Host) -> i32 {
             2
         }
         Err(Failure::Failed(m)) => {
-            eprintln!("error: {m}");
+            eprintln!("error: {}", if host == Host::Binary { app_hint(m) } else { m });
             1
         }
     }
+}
+
+/// Adds the `--app` hint to a "not installed" app error: only the standalone binary takes that flag from the user.
+fn app_hint(mut m: String) -> String {
+    const HEAD: &str = "not installed; install the `";
+    if let Some(i) = m.find(HEAD).map(|i| i + HEAD.len()) {
+        if let Some(j) = m[i..].find("` package") {
+            let name = m[i..i + j].to_owned();
+            m.insert_str(i + j + "` package".len(), &format!(" (or pass --app {name}=PATH)"));
+        }
+    }
+    m
 }
 
 /// [`run`] on a runtime of its own, for callers that aren't async.

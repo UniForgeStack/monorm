@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from orm import _native
+import orm
+from orm import Registry, _native
 from orm._apps import resolve_apps
 from orm._native import SchemaError
 
@@ -102,3 +103,13 @@ def test_an_import_cycle_across_directories_is_scanned_once(tmp_path: Path, monk
     monkeypatch.setattr(Path, "read_text", counting)
     assert resolve_apps(tmp_path / "a/x.prisma") == {}
     assert len(reads) == 2
+
+
+def test_load_resolves_an_installed_app_and_loads_names_the_way_out(site: Path, tmp_path: Path) -> None:
+    install(site, "orm-auth", AUTH, "orm_auth:schema.prisma")
+    install(site, "orm-billing", BILLING, "orm_billing:schema.prisma")
+    schema = project(tmp_path)
+    models = orm.load(schema, registry=Registry())
+    assert sorted(models) == ["Invoice", "Post", "User"]
+    with pytest.raises(SchemaError, match=r'app:orm-auth.*use `load\(path\)` or generate'):
+        orm.loads(PROJECT, registry=Registry())

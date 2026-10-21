@@ -517,7 +517,9 @@ fn schema_imports_share_root_settings_and_preserve_ownership() {
     std::fs::write(&child, "model User {\n id Int @id\n}\n").unwrap();
     assert!(compile_file(&root).unwrap_err().contains("declared twice"));
     std::fs::write(&root, "import \"billing/nested/schema.prisma\"\nimport \"billing/nested/../nested/schema.prisma\"\n").unwrap();
-    assert!(compile_file(&root).unwrap_err().contains("imported more than once"));
+    let twice = compile_file(&root).unwrap_err();
+    assert!(twice.contains("imported more than once, by import \"billing/nested/schema.prisma\" in "), "{twice}");
+    assert!(twice.contains("and by import \"billing/nested/../nested/schema.prisma\" in ") && twice.contains("import a shared app once"), "{twice}");
     std::fs::write(&root, "import \"missing.prisma\"\n").unwrap();
     assert!(compile_file(&root).unwrap_err().contains("import \"missing.prisma\""));
     std::fs::remove_dir_all(dir).unwrap();
