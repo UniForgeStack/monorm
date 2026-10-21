@@ -66,10 +66,12 @@ pub struct CompiledProject {
 struct Loader<'a> {
     apps: &'a Apps,
     units: Vec<SchemaUnit>,
-    seen: std::collections::HashSet<PathBuf>,
+    seen: std::collections::HashMap<PathBuf, String>,
     active: Vec<PathBuf>,
     locations: Vec<(u32, u32, String)>,
     lines: u32,
+    /// The root schema is source text without a file: it has no directory to resolve an app from.
+    sourceless: bool,
 }
 
 impl Loader<'_> {
@@ -79,7 +81,7 @@ impl Loader<'_> {
         format!("{label}:{}:{}: {}", e.pos.line.saturating_sub(*start) + 1, e.pos.col, e.msg)
     }
 
-    fn expand(&mut self, source: &str, origin: &Path, prefix: &str, root: bool, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
+    fn expand(&mut self, source: &str, origin: &Path, via: &str, prefix: &str, root: bool, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
         let canonical = if origin.exists() {
             origin.canonicalize().map_err(|e| e.to_string())?
         } else {
@@ -88,9 +90,10 @@ impl Loader<'_> {
         if self.active.contains(&canonical) {
             return Err(format!("{}: cyclic schema import", origin.display()));
         }
-        if !self.seen.insert(canonical.clone()) {
-            return Err(format!("{}: schema imported more than once", origin.display()));
+        if let Some(first) = self.seen.get(&canonical) {
+            return Err(format!("{}: schema imported more than once, by {first} and by {via}; import a shared app once", origin.display()));
         }
+        self.seen.insert(canonical.clone(), via.to_owned());
         self.active.push(canonical);
         let offset = self.lines;
         self.lines += source.lines().count() as u32 + 1;
@@ -107,7 +110,11 @@ impl Loader<'_> {
                     let imported = match &app {
                         Some(name) => {
                             let file = self.apps.get(name).ok_or_else(|| self.located(syntax::Error { pos: *pos,
-                                msg: format!("import \"app:{name}\": not installed; install the `{name}` package (or pass --app {name}=PATH)") }))?;
+                                msg: if self.sourceless {
+                                    format!("import \"app:{name}\": an app import needs a schema file; use `load(path)` or generate the models")
+                                } else {
+                                    format!("import \"app:{name}\": not installed; install the `{name}` package")
+                                } }))?;
                             file.canonicalize().map_err(|e| self.located(syntax::Error { pos: *pos,
                                 msg: format!("import \"app:{name}\": {}: {e}", file.display()) }))?
                         }
@@ -116,7 +123,8 @@ impl Loader<'_> {
                     if app.is_some() || imported.extension().is_some_and(|e| e == "prisma") {
                         let text = std::fs::read_to_string(&imported)
                             .map_err(|e| self.located(syntax::Error { pos: *pos, msg: format!("import {path:?}: {e}") }))?;
-                        out.extend(self.expand(&text, &imported, &format!("{prefix}{local}"), false, app.as_deref().or(owner))?);
+                        let via = format!("import {path:?} in {}", origin.display());
+                        out.extend(self.expand(&text, &imported, &via, &format!("{prefix}{local}"), false, app.as_deref().or(owner))?);
                         continue;
                     }
                     if !root || !local.is_empty() {
@@ -171,9 +179,9 @@ pub fn compile_project_with(source: &str, origin: Option<&Path>, apps: &Apps) ->
 type IdentityUpdate<'a> = (&'a [(String, String)], &'a [String]);
 
 fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, apps: &Apps) -> Result<CompiledProject, String> {
-    let mut loader = Loader { apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0 };
+    let mut loader = Loader { apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none() };
     let origin = origin.unwrap_or(Path::new("<schema>"));
-    let mut items = loader.expand(source, origin, "", true, None)?;
+    let mut items = loader.expand(source, origin, "the root schema", "", true, None)?;
     let mut declared = std::collections::HashMap::new();
     for item in &items {
         let (name, pos) = match item {

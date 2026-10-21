@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
-import { SchemaError } from "../src/index.js";
+import { Registry, SchemaError, load, loads } from "../src/index.js";
 import { resolveApps } from "../src/apps.js";
 import { native } from "../src/native.js";
 
@@ -103,4 +103,13 @@ test("the command line resolves apps before it runs a command", (t) => {
   const ok = run();
   assert.equal(ok.code, 0, ok.err);
   assert.match(ok.out, /\(3 models\)/);
+});
+
+test("load resolves an installed app and loads names the way out", (t) => {
+  const dir = directory(t);
+  const schema = write(join(dir, "schema.prisma"), PROJECT);
+  pkg(join(dir, "node_modules"), "orm-auth", AUTH);
+  pkg(join(dir, "node_modules"), "orm-billing", BILLING);
+  assert.deepEqual(Object.keys(load(schema, { registry: new Registry() })).sort(), ["Invoice", "Post", "User"]);
+  assert.throws(() => loads(PROJECT, { registry: new Registry() }), /app:orm-auth.*use `load\(path\)` or generate/s);
 });
