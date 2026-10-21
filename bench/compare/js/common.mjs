@@ -1,6 +1,7 @@
 // Shared pieces of the TypeScript benchmark: parameters per case, database reset, state checksum, plain results.
 // The values match ../python/common.py, so every contender writes the same rows.
 import { readFileSync } from "node:fs";
+import { loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,7 +9,9 @@ import pg from "pg";
 
 export const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = dirname(HERE);
-export const POOL_SIZE = 10;
+export const POOL_SIZE = Number(process.env.BENCH_POOL_SIZE ?? 10);
+export const WARMUP_CALLS = 50;
+export const WARMUP_BASE = 1000; // warm-up iteration numbers stay far from the timed range 1..iters
 export const TABLES = ["users", "categories", "tags", "posts", "comments", "post_tags"];
 export const CASES = [
   "read-pk", "read-50", "read-1000", "projection-1000", "filter", "filter-ne-null", "count", "aggregate",
@@ -27,7 +30,7 @@ const NUMBERS = new Set(["id", "author_id", "category_id", "post_id", "tag_id", 
 const EPOCH = Date.UTC(2027, 0, 1);
 export const ts = i => new Date(EPOCH + i * 1000);
 
-export const databaseUrl = () => process.env.BENCH_DATABASE_URL ?? "postgres://postgres:postgres@localhost:55432/bench_nfx1";
+export const databaseUrl = () => process.env.BENCH_DATABASE_URL ?? "postgres://postgres:postgres@localhost:55432/bench";
 export const pkFor = i => ((i * 7919) % 10_000) + 1;
 
 /** `n` new comments for iteration `i`: the same rows for every contender. */
@@ -57,6 +60,19 @@ export const page = (i, size, step) => {
   const o = (i % 9) * step;
   return [o, o + size];
 };
+
+/** Wait until the 1-minute load is at most `limit`; stop the process when it stays above after `patience` seconds. */
+export async function waitQuiet(limit, patience = 300) {
+  const t0 = Date.now();
+  while (loadavg()[0] > limit) {
+    if (Date.now() - t0 > patience * 1000) {
+      console.error(`1-minute load ${loadavg()[0].toFixed(2)} stays above ${limit}: stop`);
+      process.exit(1);
+    }
+    await new Promise(r => setTimeout(r, 5000));
+  }
+  return loadavg()[0];
+}
 
 export async function connect() {
   const c = new pg.Client({ connectionString: databaseUrl() });

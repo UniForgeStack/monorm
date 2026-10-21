@@ -10,6 +10,15 @@ import {
 const { PrismaClient } = await import("../generated/client.ts");
 const pkgVersion = name => JSON.parse(readFileSync(new URL(`../node_modules/${name}/package.json`, import.meta.url), "utf8")).version;
 const big = n => BigInt(n);
+// The generator decides the engine: `prisma-client` with a driver adapter runs the query compiler; `engineType = "binary"|"library"` would load a Rust engine.
+const queryEngine = () => {
+  const schema = readFileSync(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
+  const gen = schema.match(/generator\s+client\s*{[^}]*}/)?.[0] ?? "";
+  const provider = gen.match(/provider\s*=\s*"([^"]+)"/)?.[1] ?? "unknown";
+  const engine = gen.match(/engineType\s*=\s*"([^"]+)"/)?.[1];
+  if (provider === "prisma-client" && !engine) return "TypeScript query compiler (WASM) with the driver adapter; no Rust query engine";
+  return `generator ${provider}${engine ? `, engineType ${engine}` : ""}`;
+};
 
 export async function create(name = "prisma") {
   // The adapter reads a timestamptz as UTC after dropping the session offset, so the session runs in UTC.
@@ -100,12 +109,12 @@ export async function create(name = "prisma") {
       norm: raw => Number(raw.id),
     },
     "bulk-insert-100": {
-      op: r => prisma.comment.createManyAndReturn({ data: r.map(data) }),
+      op: r => prisma.comment.createManyAndReturn({ data: r.map(data), select: { id: true } }),
       setup: i => commentRows(i, 100),
       norm: raw => raw.map(o => Number(o.id)),
     },
     "bulk-insert-1000": {
-      op: r => prisma.comment.createManyAndReturn({ data: r.map(data) }),
+      op: r => prisma.comment.createManyAndReturn({ data: r.map(data), select: { id: true } }),
       setup: i => commentRows(i, 1000),
       norm: raw => raw.map(o => Number(o.id)),
     },
@@ -129,6 +138,7 @@ export async function create(name = "prisma") {
               where: { email: u.email },
               create: { email: u.email, name: u.name, created_at: u.created_at },
               update: { name: u.name },
+              select: { id: true },
             }),
           ),
         ),
@@ -177,10 +187,14 @@ export async function create(name = "prisma") {
       return {
         prisma: version,
         adapter: `@prisma/adapter-pg ${pkgVersion("@prisma/adapter-pg")}`,
-        // Prisma 7's `prisma-client` generator: the TypeScript query compiler (compilerWasm) with the driver adapter, no Rust query engine
-        query_engine: "TypeScript query compiler (WASM), no Rust query engine",
-        prepared_statements: "pg driver default for the adapter (unnamed statements)",
+        query_engine: queryEngine(),
+        // adapter-pg names a statement only when `statementNameGenerator` is set (dist/index.mjs, `name:` in the query config); this runner sets none
+        prepared_statements: "unnamed statements: the pg driver re-parses each call (adapter-pg without statementNameGenerator)",
         pool: POOL_SIZE,
+        insert_note: "bulk inserts use createManyAndReturn with select { id: true }: ids only, orm returns full rows",
+        upsert_note: "upsert-100 is 100 upserts in one $transaction: Prisma has no bulk upsert, orm and Django send one statement",
+        find_unique_note: "findUnique calls in one tick are batched by Prisma into one query; this runner issues them one at a time",
+        update_note: "update-1 uses updateMany (no row read back); update() would add a SELECT",
       };
     },
   };

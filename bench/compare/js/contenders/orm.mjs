@@ -47,6 +47,7 @@ export async function create(name = "orm") {
     return Post.objects.orderBy(Post.id).slice(o, e).load(Post.tags);
   };
 
+  const readPkFilter = i => Post.objects.filter(Post.id.eq(pkFor(i)));
   const run = q => q.all();
   const sql = q => q.sql();
   const camelRow = r => ({ postId: BigInt(r.post_id), authorId: r.author_id === null ? null : BigInt(r.author_id), body: r.body, createdAt: r.created_at });
@@ -85,8 +86,8 @@ export async function create(name = "orm") {
     "read-pk": {
       op: i => Post.objects.get(Post.id.eq(pkFor(i))),
       norm: raw => rows(POST)([raw]),
-      build: i => Post.objects.get(Post.id.eq(pkFor(i))),
-      sql: i => Post.objects.get(Post.id.eq(pkFor(i))).sql(),
+      build: readPkFilter,
+      sql: i => sql(readPkFilter(i)), // the filter form: `get` would run the query
     },
     "read-50": reads(readN(50, 50), POST),
     "read-1000": reads(readN(1000, 1000), POST),
@@ -184,6 +185,8 @@ export async function create(name = "orm") {
         capabilities: meta.capabilities,
         native: process.env.ORM_NATIVE ?? "languages/js/orm.node",
         prepared_statements: "engine default: prepared once per connection and cached",
+        insert_note: "orm returns full rows: insertMany(...).returning() has no key-only form",
+        upsert_note: "onConflict returns a row count, no RETURNING",
         pool: POOL_SIZE,
       };
     },

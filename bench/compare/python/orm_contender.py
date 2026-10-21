@@ -15,7 +15,9 @@ from common import (
     ROOT,
     comment_rows,
     database_url,
+    delete_setup,
     objs,
+    page,
     pk_for,
     plain,
     update_range,
@@ -49,6 +51,8 @@ class OrmContender(Contender):
             "capabilities": meta["capabilities"],
             "prepared_statements": "engine default: prepared once per connection and cached",
             "pool": POOL_SIZE,
+            "insert_note": "orm returns full rows: insert_many(...).returning() has no key-only form",
+            "upsert_note": "on_conflict returns a row count, no RETURNING",
         }
 
 
@@ -56,11 +60,6 @@ User: Any
 Post: Any
 Comment: Any
 Tag: Any
-
-
-def _page(i: int, size: int, step: int) -> tuple[int, int]:
-    o = (i % 9) * step
-    return o, o + size
 
 
 def _filter(threshold: int = 500) -> Any:
@@ -71,15 +70,18 @@ def _cases(db: orm.Database) -> dict[str, Case]:
     def read_pk(i: int) -> Any:
         return Post.objects.get(Post.id == pk_for(i))
 
+    def read_pk_filter(i: int) -> Any:
+        return Post.objects.filter(Post.id == pk_for(i))  # the CPU split builds the query; `get` runs the same statement
+
     def read_n(n: int, step: int) -> Any:
         def build(i: int) -> Any:
-            o, e = _page(i, n, step)
+            o, e = page(i, n, step)
             return Post.objects.order_by(Post.id)[o:e]
 
         return build
 
     def projection(i: int) -> Any:
-        o, e = _page(i, 1000, 1000)
+        o, e = page(i, 1000, 1000)
         return Post.objects.load(Post.id, Post.title).order_by(Post.id)[o:e]
 
     def filter_ne_null(i: int) -> Any:
@@ -94,15 +96,15 @@ def _cases(db: orm.Database) -> dict[str, Case]:
         )
 
     def join(i: int) -> Any:
-        o, e = _page(i, 50, 50)
+        o, e = page(i, 50, 50)
         return Post.objects.order_by(Post.id)[o:e].load(Post.author)
 
     def prefetch(i: int) -> Any:
-        o, e = _page(i, 50, 50)
+        o, e = page(i, 50, 50)
         return User.objects.order_by(User.id)[o:e].load(User.posts)
 
     def m2m(i: int) -> Any:
-        o, e = _page(i, 50, 50)
+        o, e = page(i, 50, 50)
         return Post.objects.order_by(Post.id)[o:e].load(Post.tags)
 
     async def run(q: Any) -> Any:
@@ -149,13 +151,6 @@ def _cases(db: orm.Database) -> dict[str, Case]:
     async def upsert(rows: list[dict[str, Any]]) -> Any:
         return await User.objects.insert_many(rows).on_conflict(User.email, update=True, update_fields=[User.name])
 
-    def delete_setup(i: int, conn: Any) -> int:
-        conn.execute(
-            "INSERT INTO comments (post_id, author_id, body, created_at) "
-            "SELECT 1, NULL, 'del-bench', now() FROM generate_series(1, 100)"
-        )
-        return i
-
     async def delete_100(i: int) -> int:
         return await Comment.objects.filter(Comment.post_id == 1, Comment.body == "del-bench").delete()
 
@@ -189,7 +184,12 @@ def _cases(db: orm.Database) -> dict[str, Case]:
         return [r[0] for r in raw]
 
     return {
-        "read-pk": reads(read_pk, POST),
+        "read-pk": Case(
+            op=lambda i: run(read_pk(i)),
+            norm=lambda raw: objs([raw], POST),
+            build=read_pk_filter,
+            sql=lambda i: sql(read_pk_filter(i)),
+        ),
         "read-50": reads(read_n(50, 50), POST),
         "read-1000": reads(read_n(1000, 1000), POST),
         "projection-1000": Case(

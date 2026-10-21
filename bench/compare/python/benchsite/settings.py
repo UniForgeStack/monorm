@@ -3,8 +3,9 @@
 import os
 from urllib.parse import urlparse
 
+from common import POOL_SIZE
+
 _url = urlparse(os.environ["BENCH_DATABASE_URL"])
-POOL_SIZE = int(os.environ.get("BENCH_POOL_SIZE", "10"))
 
 SECRET_KEY = "benchmark-only"
 DEBUG = False  # DEBUG=True records every query and skews timings

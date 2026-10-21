@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
-import inspect
 import os
 import pathlib
-from collections.abc import Callable, Iterable
+import time
+from collections.abc import Iterable
 from typing import Any
 
 import psycopg
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-DEFAULT_URL = "postgres://postgres:postgres@localhost:55432/bench_nfx1"
-POOL_SIZE = 10
+DEFAULT_URL = "postgres://postgres:postgres@localhost:55432/bench"
+# One pool size for every contender; benchsite/settings.py reads it from the environment.
+POOL_SIZE = int(os.environ.get("BENCH_POOL_SIZE", "10"))
 TABLES = ("users", "categories", "tags", "posts", "comments", "post_tags")
 
 CASES = (
@@ -42,6 +42,9 @@ CASES = (
 )
 CONCURRENT_TASKS = 50
 CONCURRENT_OPS_PER_TASK = 4
+# Untimed calls before the timed ones, with iteration numbers far from the timed range (1..iters).
+WARMUP_CALLS = 50
+WARMUP_BASE = 1000
 
 # Fixed values, so contenders write the same rows (the state checksum includes every column).
 EPOCH = dt.datetime(2027, 1, 1, tzinfo=dt.UTC)
@@ -83,6 +86,21 @@ def update_range(i: int) -> tuple[int, int]:
     return lo, lo + 99
 
 
+def page(i: int, size: int, step: int) -> tuple[int, int]:
+    """The (start, stop) rows of iteration `i`: nine pages of `step` rows, then the first page again."""
+    o = (i % 9) * step
+    return o, o + size
+
+
+def delete_setup(i: int, conn: psycopg.Connection[Any]) -> int:
+    """Untimed: 100 rows for the delete-100 case to remove."""
+    conn.execute(
+        "INSERT INTO comments (post_id, author_id, body, created_at) "
+        "SELECT 1, NULL, 'del-bench', now() FROM generate_series(1, 100)"
+    )
+    return i
+
+
 def connect() -> psycopg.Connection[Any]:
     return psycopg.connect(database_url(), autocommit=True)
 
@@ -113,16 +131,16 @@ def objs(rows: Iterable[Any], fields: tuple[str, ...]) -> list[list[Any]]:
     return [[plain(getattr(o, f)) for f in fields] for o in rows]
 
 
-async def call(fn: Callable[..., Any], *args: Any) -> Any:
-    """Call a sync or async function and await the result when there is one."""
-    out = fn(*args)
-    return await out if inspect.isawaitable(out) else out
-
-
 def p99(values: list[float]) -> float:
     s = sorted(values)
     return s[min(len(s) - 1, int(len(s) * 0.99))]
 
 
-async def gather(coros: list[Any]) -> list[Any]:
-    return list(await asyncio.gather(*coros))
+def wait_quiet(limit: float, patience: float = 300) -> float:
+    """Wait until the 1-minute load is at most `limit`; give up after `patience` seconds. Returns the load."""
+    t0 = time.monotonic()
+    while (load := os.getloadavg()[0]) > limit:
+        if time.monotonic() - t0 > patience:
+            raise SystemExit(f"1-minute load {load:.2f} stayed above {limit} for {patience:.0f} s: stop, quiet the machine, rerun")
+        time.sleep(5)
+    return load

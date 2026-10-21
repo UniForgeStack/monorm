@@ -6,9 +6,9 @@ The dependencies live in this directory only.
 ```bash
 npm install
 node make-prisma-schema.mjs && npx prisma generate   # prisma/ and generated/ come from ../schema.prisma
-export BENCH_DATABASE_URL=postgres://postgres:postgres@localhost:55432/bench_nfx1
+export BENCH_DATABASE_URL=postgres://postgres:postgres@localhost:55432/bench
 node run.mjs check                                   # equality check only
-node run.mjs run --rounds 2 --iters 5                # check, then timing; writes results/smoke
+node run.mjs run --rounds 2 --iters 5                # check, then timing; writes results/smoke (defaults: 20 x 20, --max-load 2)
 bun run.mjs run                                      # ours and Prisma; read-pk, read-1000, bulk-insert-1000
 node run.mjs run --orm-artifact DIR                  # adds orm-all: ORM_NATIVE=DIR/orm.node
 ```

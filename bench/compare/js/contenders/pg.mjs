@@ -19,7 +19,6 @@ export async function create(name = "pg") {
     if (!names.has(text)) names.set(text, `s${names.size}`);
     return client.query({ name: names.get(text), text, values });
   };
-  const sel = fields => fields.join(", ");
 
   const filter = async (threshold = 500) =>
     (await q(`SELECT ${POST_COLS} FROM posts WHERE published AND views > $1 ORDER BY views DESC, id LIMIT 20`, [threshold])).rows;
@@ -185,6 +184,7 @@ export async function create(name = "pg") {
       pg: createRequire(import.meta.url)("pg/package.json").version,
       prepared_statements: "named prepared statements, one name per statement text",
       pool: POOL_SIZE,
+      join_note: "join-to-one uses an inner JOIN: posts.author_id is NOT NULL, so the rows equal the ORMs' joins",
     }),
   };
 }

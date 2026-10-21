@@ -1,10 +1,12 @@
 """Equality check and timing for the Python contenders.
 
-    python run.py check [--contenders a,b] [--cases x,y]
-    python run.py run   [--rounds 2] [--iters 5] [--orm-artifact PATH] [--out DIR]
+    python run.py check [--contenders a,b] [--cases x,y] [--iters N]
+    python run.py run   [--rounds 20] [--iters 20] [--orm-artifact PATH] [--out DIR] [--max-load 2]
 
 Each contender runs in its own process (`worker` mode), one process per contender per round, with the
 database reset before every process. `run` does `check` first and stops when it fails.
+The check runs every case at iteration 0, 1 and `iters`; a timed call runs WARMUP_CALLS untimed calls first.
+`--contenders` limits the check and the timed rounds. Before each round the 1-minute load must be at most `--max-load`.
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
-import importlib
 import importlib.metadata as md
 import json
 import os
@@ -25,7 +26,21 @@ import time
 from pathlib import Path
 from typing import Any
 
-from common import CASES, CONCURRENT_OPS_PER_TASK, CONCURRENT_TASKS, HERE, POOL_SIZE, ROOT, connect, database_url, p99, reset, state
+from common import (
+    CASES,
+    CONCURRENT_OPS_PER_TASK,
+    CONCURRENT_TASKS,
+    HERE,
+    POOL_SIZE,
+    WARMUP_BASE,
+    WARMUP_CALLS,
+    connect,
+    database_url,
+    p99,
+    reset,
+    state,
+    wait_quiet,
+)
 
 BASE = ("orm", "django-sync", "django-async")
 REPO = HERE.parents[2]
@@ -53,16 +68,23 @@ async def worker(args: argparse.Namespace) -> None:
         for name in args.cases.split(","):
             case = c.cases[name]
             if args.mode == "check":
-                arg = case.setup(0, conn)
-                raw = case.op(arg)
-                raw = await raw if asyncio.iscoroutine(raw) or hasattr(raw, "__await__") else raw
-                out["cases"][name] = {"result": json.loads(json.dumps(case.norm(raw), default=str))}
+                results = []
+                for i in check_iterations(args.iters):
+                    raw = case.op(case.setup(i, conn))
+                    raw = await raw if hasattr(raw, "__await__") else raw
+                    results.append(case.norm(raw))
+                out["cases"][name] = {"result": json.loads(json.dumps(results, default=str))}
             else:
                 out["cases"][name] = await time_case(case, conn, args.iters)
     finally:
         conn.close()
         await c.stop()
     Path(args.out).write_text(json.dumps(out))
+
+
+def check_iterations(iters: int) -> list[int]:
+    """The iteration numbers the check compares: the first, the first timed one and the last timed one."""
+    return sorted({0, 1, iters})
 
 
 async def time_case(case: Any, conn: Any, iters: int) -> dict[str, Any]:
@@ -74,7 +96,8 @@ async def time_case(case: Any, conn: Any, iters: int) -> dict[str, Any]:
             raw = await raw
         return (time.perf_counter() - t0) * 1000, raw
 
-    await once(0)  # warm-up: connections, statement caches, imports
+    for k in range(WARMUP_CALLS):  # connections, statement caches, imports
+        await once(WARMUP_BASE + k)
     samples: list[float] = []
     lat: list[float] = []
     for i in range(1, iters + 1):
@@ -97,7 +120,7 @@ async def time_case(case: Any, conn: Any, iters: int) -> dict[str, Any]:
         for i in range(reps):
             case.sql(i)
         sql = (time.perf_counter() - t0) / reps * 1000
-        res["cpu"] = {"build_ms": build, "sql_ms": sql, "decode_ms": None}
+        res["cpu"] = {"build_ms": build, "sql_ms": sql}
     return res
 
 
@@ -123,7 +146,7 @@ def spawn(name: str, cases: list[str], mode: str, iters: int, artifact: str | No
     return data
 
 
-def check(names: list[str], cases: list[str], artifact: str | None) -> dict[str, dict[str, Any]]:
+def check(names: list[str], cases: list[str], artifact: str | None, iters: int) -> dict[str, dict[str, Any]]:
     infos: dict[str, dict[str, Any]] = {}
     failures: list[str] = []
     conn = connect()
@@ -131,7 +154,7 @@ def check(names: list[str], cases: list[str], artifact: str | None) -> dict[str,
         got: dict[str, tuple[Any, dict[str, str]]] = {}
         for n in names:
             reset(conn)
-            data = spawn(n, [case], "check", 0, artifact)
+            data = spawn(n, [case], "check", iters, artifact)
             infos[n] = data["info"]
             got[n] = (data["cases"][case]["result"], state(conn))
         first = names[0]
@@ -146,7 +169,7 @@ def check(names: list[str], cases: list[str], artifact: str | None) -> dict[str,
     return infos
 
 
-def environment(infos: dict[str, dict[str, Any]], artifact: str | None, before: str) -> dict[str, Any]:
+def environment(infos: dict[str, dict[str, Any]], artifact: str | None, before: str, extra: dict[str, Any]) -> dict[str, Any]:
     conn = connect()
     pg = conn.execute("select version()").fetchone()[0]  # type: ignore[index]
     conn.close()
@@ -163,25 +186,36 @@ def environment(infos: dict[str, dict[str, Any]], artifact: str | None, before: 
         "uptime_before": before,
         "uptime_after": uptime(),
         "orm_artifact": artifact,
+        "warmup_calls": WARMUP_CALLS,
         "contenders": infos,
-    }
+    } | extra
 
 
 def uptime() -> str:
     return subprocess.run(["uptime"], capture_output=True, text=True).stdout.strip()
 
 
+def pick(contenders: str, artifact: str | None) -> list[str]:
+    allowed = list(BASE) + (["orm-all"] if artifact else [])
+    names = contenders.split(",") if contenders else allowed
+    unknown = [n for n in names if n not in allowed]
+    if unknown:
+        raise SystemExit(f"unknown contenders {unknown}; available: {allowed}")
+    return names
+
+
 def run(args: argparse.Namespace) -> None:
-    names = list(BASE) + (["orm-all"] if args.orm_artifact else [])
+    names = pick(args.contenders, args.orm_artifact)
     cases = args.cases.split(",") if args.cases else list(CASES)
     before = uptime()
-    infos = check(names, cases, args.orm_artifact)
+    infos = check(names, cases, args.orm_artifact, args.iters)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "environment.json").write_text(json.dumps(environment(infos, args.orm_artifact, before), indent=2))
     conn = connect()
     rounds: dict[str, list[dict[str, Any]]] = {n: [] for n in names}
+    round_loads: list[float] = []
     for r in range(args.rounds):
+        round_loads.append(wait_quiet(args.max_load))
         order = names[r % len(names):] + names[: r % len(names)]  # rotate the contender order every round
         for n in order:
             reset(conn)
@@ -198,12 +232,15 @@ def run(args: argparse.Namespace) -> None:
                 "samples_ms": allsamples,
                 "batch_medians_ms": [p["median_ms"] for p in per],
             }
-            for k in ("cpu", "ops_per_s", "p99_ms"):
+            if "cpu" in per[0]:
+                item["cpu"] = {k: statistics.median(p["cpu"][k] for p in per) for k in per[0]["cpu"]}
+            for k in ("ops_per_s", "p99_ms"):
                 if k in per[0]:
-                    item[k] = per[0][k] if k == "cpu" else statistics.median(p[k] for p in per)
+                    item[k] = statistics.median(p[k] for p in per)
             res[case] = item
         (out / f"{n}.json").write_text(json.dumps(res, indent=2))
-    (out / "environment.json").write_text(json.dumps(environment(infos, args.orm_artifact, before), indent=2))
+    extra = {"rounds": args.rounds, "iters": args.iters, "round_loads": round_loads, "max_load": args.max_load}
+    (out / "environment.json").write_text(json.dumps(environment(infos, args.orm_artifact, before, extra), indent=2))
     print(f"wrote {out}")
 
 
@@ -223,10 +260,11 @@ def main() -> None:
         p = sub.add_parser(c)
         p.add_argument("--cases", default="")
         p.add_argument("--orm-artifact", default=None)
-        p.add_argument("--rounds", type=int, default=2)
-        p.add_argument("--iters", type=int, default=5)
+        p.add_argument("--rounds", type=int, default=20)
+        p.add_argument("--iters", type=int, default=20)
         p.add_argument("--out", default=str(HERE / "results" / "smoke"))
         p.add_argument("--contenders", default="")
+        p.add_argument("--max-load", type=float, default=2.0)
     w = sub.add_parser("worker")
     for k in ("contender", "cases", "mode", "out"):
         w.add_argument(f"--{k}", required=True)
@@ -238,8 +276,7 @@ def main() -> None:
         else:
             asyncio.run(worker(a))
     elif a.cmd == "check":
-        names = a.contenders.split(",") if a.contenders else list(BASE) + (["orm-all"] if a.orm_artifact else [])
-        check(names, a.cases.split(",") if a.cases else list(CASES), a.orm_artifact)
+        check(pick(a.contenders, a.orm_artifact), a.cases.split(",") if a.cases else list(CASES), a.orm_artifact, a.iters)
     else:
         run(a)
 
