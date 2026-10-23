@@ -244,8 +244,8 @@ A comparison of a nullable column is false for a NULL row, and so is its negatio
 Call the method on one comparison (`eq ne lt gt in like between`), before `.not()`:
 `x.gt(20).orNull().not()` is `NOT (x > 20 OR x IS NULL)`.
 A composite key gets one `IS NULL` per key column.
-A combined condition, `.not()` of a condition or a computed value throws `TypeError`.
-A NOT NULL column throws `QueryError`.
+A combined condition or `.not()` of a condition throws `TypeError`.
+A NOT NULL column, or a computed value the ORM can prove non-null, throws `QueryError`.
 
 **The strict null rule.**
 A comparison on a nullable plain column needs `.orNull()` or `.andNotNull()` in two cases:
@@ -260,6 +260,24 @@ A sibling test handles a comparison only in the shape the methods build: an `or`
 `exclude()` stays and follows the rule of `not()`.
 `having()`, a join `on` and an aggregate `filter` run the same check for a positive `ne` or `notIn`.
 `func.case` and `select(...)` do not.
+
+**Computed values.**
+A computed value is nullable unless the ORM can prove it non-null.
+These are non-null: `count()`, `now()`, the ranking window functions, a `coalesce` with a non-null argument, a `case` with a default and non-null branches, a call of a function from the list below on non-null arguments, a literal, a `param()` and an object value of a nested field.
+These are nullable: `max()`, `min()`, `sum()`, `avg()`, `arrayAgg()`, `lag()`, `lead()`, a scalar subquery, a `case` without a default, an array index, a division, a function of a nullable argument, and a value over a to-one path.
+These functions return NULL only when an argument is NULL: `lower`, `upper`, `length`, `concat`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `strpos`, `cardinality`, `abs`, the text search functions and `ts_rank`.
+Any other function or value is nullable.
+The strict rule and the methods run on a function, an aggregate, a window function, a scalar subquery and a `case` the way they run on a column:
+`func.max(Post.views).ne(3n)` throws in `having()`, and `func.lower(User.nick).ne("a").orNull()` keeps the rows where `nick` is NULL.
+`func.coalesce(x, 0n).ne(3n)` and `func.count().ne(0n)` need nothing, and the methods throw `QueryError` on them.
+A JSON path (`Reading.meta.get("k").ne(1n)`), `outer()` and `excluded` are checked by the strict rule as a column is.
+Arithmetic (`x.add(1n)`) is not checked by the strict rule, but the methods work on it.
+A value over a to-one path keeps the rows with no related row, as the path column does.
+`func.lower(Comment.author.name).ne("x")` keeps the comments with no author.
+`.orNull()` on a computed comparison tests each nullable operand: `func.lower(x).eq("a").orNull()` adds `lower(x) IS NULL`.
+A path null rule on a column inside a function applies to the whole value: `func.lower(Comment.author.orNull().name).eq("x")` keeps the comments with no author.
+A path null rule does not reach a column inside an aggregate or a subquery.
+A path null rule reaches a condition that sits inside another expression: `func.coalesce(Post.author.orNull().nick.eq("n"), false)` applies the rule without a check, as in `func.case`.
 
 **Relation paths.**
 A to-one relation `ne` is `not(eq)` on the path and never throws: `Comment.author.ne(alice)` keeps the comments with no author.

@@ -1366,9 +1366,8 @@ impl<'s> Planner<'s> {
         Ok(SExpr::exists(sub))
     }
 
-    /// Whether `e` is a column that sits below the current scope behind to-one hops only.
-    fn is_to_one_column(&self, e: &Expr) -> bool {
-        let Expr::Col { path, .. } = e else { return false };
+    /// Whether `path` sits below the current scope behind to-one hops only.
+    fn is_to_one_path(&self, path: &[String]) -> bool {
         let scope = self.scope();
         if path.len() <= scope.path.len() || !path.starts_with(&scope.path) {
             return false;
@@ -1383,8 +1382,25 @@ impl<'s> Planner<'s> {
         true
     }
 
-    /// A `!=` or `NOT IN` of a to-one path column against values is `NOT (==)` / `NOT IN`:
-    /// it keeps the rows with no related row.
+    /// The to-one path that a value reads below the current scope: its columns outside the scope's
+    /// own row all sit on that one path, behind to-one hops only (a column, a function or an
+    /// arithmetic of such columns). Aggregates are not read here.
+    fn to_one_tail<'a>(&self, e: &'a Expr) -> Option<&'a [String]> {
+        let (mut paths, mut has_not) = (vec![], false);
+        col_paths(e, &mut paths, &mut has_not);
+        let own = &self.scope().path[..];
+        let mut tail: Option<&[String]> = None;
+        for p in paths.into_iter().filter(|p| *p != own) {
+            if tail.is_some_and(|t| t != p) {
+                return None;
+            }
+            tail = Some(p);
+        }
+        tail.filter(|t| self.is_to_one_path(t))
+    }
+
+    /// A `!=` or `NOT IN` of a to-one path value (a column, or a function of one) against values is
+    /// `NOT (==)` / `NOT IN`: it keeps the rows with no related row.
     /// The other side may read columns of the scope's own row, or of the same to-one tail.
     fn to_one_negation(&self, e: &Expr) -> Option<Expr> {
         let plain = |o: &Expr, tail: &[String]| {
@@ -1393,24 +1409,18 @@ impl<'s> Planner<'s> {
             let own = &self.scope().path[..];
             !matches!(o, Expr::Null) && paths.iter().all(|p| *p == own || *p == tail)
         };
-        fn tail_of<'a>(p: &Planner, c: &'a Expr) -> Option<&'a [String]> {
-            match c {
-                Expr::Col { path, .. } if p.is_to_one_column(c) => Some(&path[..]),
-                _ => None,
-            }
-        }
         let positive = match e {
             Expr::Cmp { op: CmpOp::Ne, l, r } => {
-                let flips = |col: &Expr, other: &Expr| tail_of(self, col).is_some_and(|t| plain(other, t));
+                let flips = |col: &Expr, other: &Expr| self.to_one_tail(col).is_some_and(|t| plain(other, t));
                 if !flips(l, r) && !flips(r, l) {
                     return None;
                 }
                 Expr::Cmp { op: CmpOp::Eq, l: l.clone(), r: r.clone() }
             }
-            Expr::In { item, values, neg: true } if tail_of(self, item).is_some_and(|t| values.iter().all(|v| plain(v, t))) => {
+            Expr::In { item, values, neg: true } if self.to_one_tail(item).is_some_and(|t| values.iter().all(|v| plain(v, t))) => {
                 Expr::In { item: item.clone(), values: values.clone(), neg: false }
             }
-            Expr::InSelect { item, select, neg: true } if self.is_to_one_column(item) => {
+            Expr::InSelect { item, select, neg: true } if self.to_one_tail(item).is_some() => {
                 Expr::InSelect { item: item.clone(), select: select.clone(), neg: false }
             }
             _ => return None,

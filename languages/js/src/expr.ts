@@ -451,17 +451,17 @@ export abstract class Condition<S extends string = never, P = {}> extends Expres
    * `ne`, `lt`, `gt`, `in`, `like`, `between`) of a nullable column, inside `not()`:
    * `not(x.gt(20).orNull())` is `NOT (x > 20 OR x IS NULL)`. */
   orNull(): Condition<S, P> {
-    return or(this, ...nullTests(this.nullColumns("orNull"), true)) as never;
+    return or(this, ...nullTests(this.nullValues("orNull"), true)) as never;
   }
 
   /** `(condition AND column IS NOT NULL)`: a NULL row fails. Inside `not()` it keeps NULL
    * rows: `not(x.gt(20).andNotNull())` is `NOT (x > 20 AND x IS NOT NULL)`. */
   andNotNull(): Condition<S, P> {
-    return and(this, ...nullTests(this.nullColumns("andNotNull"), false)) as never;
+    return and(this, ...nullTests(this.nullValues("andNotNull"), false)) as never;
   }
 
   /** @internal The nullable columns this condition compares, once each. */
-  nullColumns(method: string): Column<unknown, string>[] {
+  nullValues(method: string): Node[] {
     throw new TypeError(
       `${method}() applies to one comparison (eq, ne, lt, gt, in, like, between) of a column, not to ${describe(this)}; ` +
         "call it on the comparison itself, before you combine with and() / or() / not()",
@@ -469,42 +469,116 @@ export abstract class Condition<S extends string = never, P = {}> extends Expres
   }
 }
 
-/** The NULL tests a null method adds for each column. Behind a to-one path the missing related
+const NEVER_NULL = new Set(["count", "now", "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile"]);
+const ALWAYS_NULLABLE = new Set(["sum", "avg", "min", "max", "array_agg", "unnest", "lag", "lead", "first_value", "last_value", "nth_value"]);
+const NULL_PRESERVING = new Set([
+  "lower", "upper", "length", "concat", "trim", "ltrim", "rtrim", "replace", "substr", "strpos", "cardinality",
+  "abs", "to_tsvector", "to_tsquery", "plainto_tsquery", "websearch_to_tsquery", "ts_rank",
+]); // prettier-ignore
+const AGGREGATES = new Set(["count", "sum", "avg", "min", "max", "array_agg"]);
+
+/**
+ * Whether the ORM cannot prove `node` non-null: the one rule behind the strict null rule and the
+ * null methods. A column is nullable when its field is. A function is non-null when it is
+ * `count()`, `now()` or a ranking function, a `coalesce` with a non-null argument, or one of a
+ * closed list of null-preserving functions (`lower`, `concat`, `abs`, ...) of non-null arguments.
+ * Every other function is nullable, `element` (an array index, NULL out of range) and the
+ * aggregates included, and so are a scalar subquery, a JSON path, a `case()` with no default,
+ * `div` and `mod` (SQLite divides by zero to NULL) and anything the ORM does not know.
+ */
+export function canBeNull(node: Node): boolean {
+  if (node instanceof Column) return node.canBeNull();
+  if (node instanceof Excluded || node instanceof Outer) return node.column.canBeNull();
+  if (node instanceof Labeled) return canBeNull(node.expr);
+  if (node instanceof Window) return canBeNull(node.func);
+  if (node instanceof Literal) return node.value === null;
+  if (node instanceof Bound || node instanceof Int || node instanceof Config || (node as { constant?: boolean }).constant) return false;
+  if (node instanceof Func) {
+    if (NEVER_NULL.has(node.name)) return false;
+    if (ALWAYS_NULLABLE.has(node.name)) return true;
+    if (node.name === "coalesce") return node.args.every(canBeNull);
+    return !NULL_PRESERVING.has(node.name) || node.args.some(canBeNull);
+  }
+  if (node instanceof Case) {
+    return node.fallback === undefined || node.fallback === null || canBeNull(node.fallback) || node.whens.some(([, v]) => canBeNull(v));
+  }
+  if (node instanceof Arith) return node.op === "div" || node.op === "mod" || canBeNull(node.left) || canBeNull(node.right);
+  return true;
+}
+
+/** The values the strict rule checks. Arithmetic and the other values stay non-strict: the methods
+ * apply to them and are never required. */
+function isStrictValue(node: Node): boolean {
+  return (
+    (node instanceof Column ||
+      node instanceof Func ||
+      node instanceof Window ||
+      node instanceof ScalarSubquery ||
+      node instanceof Case ||
+      node instanceof JsonPath ||
+      node instanceof Outer ||
+      node instanceof Excluded) &&
+    canBeNull(node)
+  );
+}
+
+/** The columns a value reads in the query's own scope: through functions, arithmetic, `case()`,
+ * windows, labels and the conditions among them. An aggregate, a subquery and `outer()` read their
+ * own scope. */
+function leafColumns(node: Node): Column<unknown, string>[] {
+  if (node instanceof Column) return [node];
+  let children: readonly Node[] = [];
+  if (node instanceof Func) children = AGGREGATES.has(node.name) ? [] : node.args;
+  else if (node instanceof Window) children = [...node.func.args, ...node.partition];
+  else if (node instanceof Case) children = [...node.whens.flat(), ...(node.fallback ? [node.fallback] : [])];
+  else if (node instanceof Arith || node instanceof Comparison) children = [node.left, node.right];
+  else if (node instanceof Labeled) children = [node.expr];
+  else if (node instanceof JsonPath) children = [node.item];
+  else if (node instanceof InList) children = [node.item, ...node.values];
+  else if (node instanceof InSelect || node instanceof Like || node instanceof IsNull || node instanceof Not) children = [node.item];
+  else if (node instanceof BoolOp) children = node.items;
+  return children.flatMap(leafColumns);
+}
+
+/** Whether the value reads a column behind a to-one path: a missing related row reads as a NULL,
+ * so the value is nullable and `ne` / `notIn` of it flip as a to-one column does. */
+function isToOneValue(node: Node): boolean {
+  return leafColumns(node).some((c) => c.toOne);
+}
+
+/** The NULL tests a null method adds for each value. Behind a to-one path the missing related
  * row counts as a NULL, so `orNull()` adds `NOT EXISTS (... col IS NOT NULL)`. */
-function nullTests(columns: readonly Column<unknown, string>[], keepsNull: boolean): Condition<any, any>[] {
+function nullTests(values: readonly Node[], keepsNull: boolean): Condition<any, any>[] {
   const out: Condition<any, any>[] = [];
-  for (const c of columns) {
+  for (const c of values) {
+    const toOne = isToOneValue(c);
     if (keepsNull) {
-      if (c.toOne) out.push(new Not(new IsNull(c, true)));
-      else if (c.canBeNull()) out.push(new IsNull(c, false));
-    } else if (c.canBeNull() || c.toOne) {
+      if (toOne) out.push(new Not(new IsNull(c, true)));
+      else if (canBeNull(c)) out.push(new IsNull(c, false));
+    } else if (canBeNull(c) || toOne) {
       out.push(new IsNull(c, true));
     }
   }
   return out;
 }
 
-/** The nullable columns among `nodes`, once each; throws when none is nullable. Behind a to-one
+/** The values among `nodes` that hold a NULL, once each; throws when none does. Behind a to-one
  * path the missing related row is a NULL. */
-function nullableColumns(method: string, nodes: readonly Node[]): Column<unknown, string>[] {
-  const out = new Map<string, Column<unknown, string>>();
+function nullableValues(method: string, nodes: readonly Node[]): Node[] {
+  const out = new Map<string, Node>();
   for (const node of nodes) {
-    if (!(node instanceof Column)) {
-      throw new TypeError(`${method}() applies to a plain column, not to ${describe(node)}`);
-    }
-    if (node.canBeNull() || node.toOne) out.set(node.key, node);
+    if (canBeNull(node) || isToOneValue(node)) out.set(colKey(node), node);
   }
   if (!out.size) {
-    throw new QueryError(`${method}() on ${nodes.map(describe).join(", ")}: the column is NOT NULL, so no row has a NULL to keep or drop`);
+    throw new QueryError(`${method}() on ${nodes.map(describe).join(", ")}: the value is NOT NULL, so no row has a NULL to keep or drop`);
   }
   return [...out.values()];
 }
 
-/** The nullable columns on any side of a comparison; the other sides may be any value. */
-function eitherSide(method: string, owner: Node, nodes: readonly Node[]): Column<unknown, string>[] {
-  const columns = nodes.filter((n) => n instanceof Column);
-  if (!columns.length) throw new TypeError(`${method}() applies to a plain column, not to ${describe(owner)}`);
-  return nullableColumns(method, columns);
+/** The nullable values on any side of a comparison; a constant side adds none. */
+function eitherSide(method: string, owner: Node, nodes: readonly Node[]): Node[] {
+  if (!nodes.length) throw new TypeError(`${method}() applies to a comparison of a value, not to ${describe(owner)}`);
+  return nullableValues(method, nodes);
 }
 
 /** A query used as a value: one column (`in()`, `asScalar()`). */
@@ -558,6 +632,13 @@ function pattern(text: string | ParamRef<string>, make: (text: string) => string
     throw new TypeError(`expected a string, got ${typeof text}`);
   }
   return make(text);
+}
+
+/** A value as a node; a condition used as a value gets its path null rules applied, with no raise
+ * (the strict rule runs where the condition is filtered on, not where it is read). */
+function wrapValue(value: unknown): Node {
+  const node = wrap(value);
+  return node instanceof Condition ? resolveNullRule(node, false, false) : node;
 }
 
 /** A plain value or an expression, as a node. */
@@ -820,15 +901,18 @@ export class Labeled<T, N extends string = string, S extends string = never, P =
 
 /** A SQL function call; build it with {@link func}. */
 export class Func<T, S extends string = never, P = {}> extends Expression<T, S, P> {
+  readonly args: readonly Node[];
+
   constructor(
     readonly name: string,
-    readonly args: readonly Node[] = [],
+    args: readonly Node[] = [],
     readonly rel: RelationPath<ModelSpec, string, readonly Hop[]> | undefined = undefined,
     readonly distinct = false,
     filter: unknown = undefined,
     orderBy: unknown = undefined,
   ) {
     super();
+    this.args = args.map(wrapValue);
     this.filter = filter === undefined ? undefined : resolveNullRule(asCondition(filter));
     this.order = orderings(orderBy);
   }
@@ -949,9 +1033,9 @@ export class Case<T, S extends string = never, P = {}> extends Expression<T, S, 
       if (!Array.isArray(b) || b.length !== 2) {
         throw new TypeError(`case() branches are [condition, value] pairs, got ${String(b)}`);
       }
-      return [resolveNullRule(asCondition(b[0]), false, false), wrap(b[1])] as const;
+      return [resolveNullRule(asCondition(b[0]), false, false), wrapValue(b[1])] as const;
     });
-    this.fallback = fallback === undefined ? undefined : wrap(fallback);
+    this.fallback = fallback === undefined ? undefined : wrapValue(fallback);
   }
 
   ir(ctx: IRContext): IR {
@@ -1658,7 +1742,7 @@ class Comparison extends Condition<any, any> {
     return { t: "cmp", op: this.op, l: this.left.ir(ctx), r: this.right.ir(ctx) };
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
+  override nullValues(method: string): Node[] {
     return eitherSide(method, this, tested(this));
   }
 }
@@ -1690,8 +1774,8 @@ class InSelect extends Condition<any, any> {
     return { t: "in_select", item: this.item.ir(ctx), select: this.query.subqueryIr(ctx, "in()"), neg: this.neg };
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
-    return nullableColumns(method, [this.item]);
+  override nullValues(method: string): Node[] {
+    return nullableValues(method, [this.item]);
   }
 }
 
@@ -1708,8 +1792,8 @@ class InList extends Condition<any, any> {
     return { t: "in", item: this.item.ir(ctx), values: this.values.map((v) => v.ir(ctx)), neg: this.neg };
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
-    return nullableColumns(method, [this.item]);
+  override nullValues(method: string): Node[] {
+    return nullableValues(method, [this.item]);
   }
 }
 
@@ -1725,7 +1809,7 @@ class IsNull extends Condition<any, any> {
     return { t: "is_null", item: this.item.ir(ctx), neg: this.neg };
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
+  override nullValues(method: string): Node[] {
     throw new TypeError(`${method}() does not apply to ${describe(this)}: it is already a NULL test`);
   }
 }
@@ -1745,8 +1829,8 @@ class Like extends Condition<any, any> {
     return { t: "like", item: this.item.ir(ctx), pattern, ci: this.ci, neg: false };
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
-    return nullableColumns(method, [this.item]);
+  override nullValues(method: string): Node[] {
+    return nullableValues(method, [this.item]);
   }
 }
 
@@ -1764,9 +1848,9 @@ class Const extends Condition<never, {}> {
     return { t: "const", value: this.value };
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
-    if (this.column === undefined) return super.nullColumns(method);
-    return nullableColumns(method, [this.column]);
+  override nullValues(method: string): Node[] {
+    if (this.column === undefined) return super.nullValues(method);
+    return nullableValues(method, [this.column]);
   }
 }
 
@@ -1790,8 +1874,8 @@ class Together extends BoolOp {
     super("and", items);
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
-    if (!this.items.every((item) => item instanceof Comparison)) return super.nullColumns(method);
+  override nullValues(method: string): Node[] {
+    if (!this.items.every((item) => item instanceof Comparison)) return super.nullValues(method);
     return eitherSide(method, this, tested(this));
   }
 }
@@ -1812,8 +1896,8 @@ class Negated extends Not {
     super(item);
   }
 
-  override nullColumns(method: string): Column<unknown, string>[] {
-    return this.item.nullColumns(method);
+  override nullValues(method: string): Node[] {
+    return this.item.nullValues(method);
   }
 }
 
@@ -1910,6 +1994,17 @@ function describe(node: unknown): string {
   if (node instanceof Func) return `${node.name}(${node.args.map(describe).join(", ")})`;
   if (node instanceof Arith) return `(${describe(node.left)} ${ARITH[node.op] ?? node.op} ${describe(node.right)})`;
   if (node instanceof Bound) return describe(node.param);
+  if (node instanceof Int) return String(node.value);
+  if (node instanceof ScalarSubquery) return "(subquery).asScalar()";
+  if (node instanceof Case) {
+    const whens = node.whens.map(([c, v]) => `[${describe(c)}, ${describe(v)}]`).join(", ");
+    return `case(${whens}${node.fallback === undefined ? "" : `, default=${describe(node.fallback)}`})`;
+  }
+  if (node instanceof Window) return `${describe(node.func)}.over(...)`;
+  if (node instanceof Labeled) return `${describe(node.expr)}.label(${JSON.stringify(node.name)})`;
+  if (node instanceof JsonPath) return `${describe(node.item)}${node.path.map((k) => `[${JSON.stringify(k)}]`).join("")}${node.text ? ".asText()" : ""}`;
+  if (node instanceof Outer) return `outer(${describe(node.column)})`;
+  if (node instanceof Excluded) return `excluded(${describe(node.column)})`;
   return String(node);
 }
 
@@ -1927,14 +2022,26 @@ function isNegative(leaf: Node): boolean {
   return leaf instanceof Negated || ((leaf instanceof InList || leaf instanceof InSelect) && leaf.neg);
 }
 
-/** The nullable columns a comparison tests. A NOT NULL column behind a to-one path is not a
- * nullable value: a negation keeps the rows with no related row. */
-function strictColumns(leaf: Node): Column<unknown, string>[] {
-  return tested(leaf).filter((n): n is Column<unknown, string> => n instanceof Column && n.canBeNull());
+/** The values a comparison tests that satisfy `keep`. */
+function strictValues(leaf: Node, keep: (node: Node) => boolean): Node[] {
+  return tested(leaf).filter(keep);
 }
 
+/** A nullable column. A NOT NULL column behind a to-one path is not a nullable value: a negation
+ * keeps the rows with no related row. */
+function isNullableColumn(node: Node): node is Column<unknown, string> {
+  return node instanceof Column && node.canBeNull();
+}
+
+const valueIds = new WeakMap<object, number>();
+let valueCount = 0;
+
+/** The name of a value for the null rule: a column by its path, any other value by identity, so two
+ * different values never share a name. */
 function colKey(node: Node): string {
-  return node instanceof Column ? node.key : describe(node);
+  if (node instanceof Column) return node.key;
+  if (!valueIds.has(node)) valueIds.set(node, ++valueCount);
+  return `#${valueIds.get(node)}`;
 }
 
 /** The columns that `items` test for NULL the way the two null methods build it: `col IS NOT NULL`
@@ -1965,17 +2072,21 @@ function nullSiblings(items: readonly Node[], testsNotNull: boolean): string[] {
  */
 export function resolveNullRule(condition: Node, negated = false, strict = true): Node {
   const ruleOf = (leaf: Node, neg: boolean, handled: ReadonlySet<string>): Node => {
-    const ruled = new Map<string, Column<unknown, string>>();
-    for (const c of tested(leaf)) if (c instanceof Column && c.rule && !handled.has(c.key)) ruled.set(c.key, c);
+    // The rule of a ruled column inside a computed value applies to the whole value.
+    const ruled = new Map<string, [Node, NullRule]>();
+    for (const value of tested(leaf)) {
+      if (handled.has(colKey(value))) continue;
+      for (const c of leafColumns(value)) if (c.rule) ruled.set(`${colKey(value)}|${c.rule}`, [value, c.rule]);
+    }
     let out = leaf;
-    for (const c of ruled.values()) {
-      const keepsNull = c.rule === "orNull";
-      const tests = nullTests([c], keepsNull);
+    for (const [value, rule] of ruled.values()) {
+      const keepsNull = rule === "orNull";
+      const tests = nullTests([value], keepsNull);
       if (tests.length) out = keepsNull ? or(out as Condition, ...tests) : and(out as Condition, ...tests);
     }
     if (out !== leaf) return out;
     if (neg && (leaf instanceof PathComparison || leaf instanceof PathMatch)) {
-      const keys = strictColumns(leaf).filter((c) => !handled.has(c.key));
+      const keys = strictValues(leaf, isNullableColumn).filter((c) => !handled.has(colKey(c)));
       if (keys.length) return and(leaf, ...keys.map((c) => new IsNull(c, true)));
     }
     return leaf;
@@ -1993,17 +2104,17 @@ export function resolveNullRule(condition: Node, negated = false, strict = true)
     }
     const ruled = ruleOf(node, neg, handled);
     if (ruled !== node) return ruled;
-    for (const col of strict ? strictColumns(node) : []) {
-      if (handled.has(col.key)) continue;
+    for (const col of strict ? strictValues(node, isStrictValue) : []) {
+      if (handled.has(colKey(col))) continue;
       if (neg) {
         throw new QueryError(
-          `${describe(node)} sits under not() / exclude() and ${col.text} is nullable: add orNull() or andNotNull() to the comparison. ` +
+          `${describe(node)} sits under not() / exclude() and ${describe(col)} is nullable: add orNull() or andNotNull() to the comparison. ` +
             "orNull() drops NULL rows under negation, andNotNull() keeps them",
         );
       }
       if (isNegative(node)) {
         throw new QueryError(
-          `${describe(node)} on the nullable ${col.text} drops NULL rows silently: add orNull() or andNotNull() to the comparison. ` +
+          `${describe(node)} on the nullable ${describe(col)} drops NULL rows silently: add orNull() or andNotNull() to the comparison. ` +
             "orNull() keeps NULL rows, andNotNull() drops them",
         );
       }

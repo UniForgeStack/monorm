@@ -165,6 +165,13 @@ def _wrap(value: Any) -> Node:
     return value if isinstance(value, Node) else Literal(value)
 
 
+def _wrap_value(value: Any) -> Node:
+    """`_wrap` for a value that holds a condition (a function argument, a `case()` value): the
+    path null rules apply to it, and the strict check does not, as in `case()` conditions."""
+    node = _wrap(value)
+    return resolve_null_rule(node, strict=False) if isinstance(node, Condition) else node
+
+
 class Expression(Node, Generic[T]):
     """A SQL value expression whose Python type is ``T``."""
 
@@ -657,7 +664,7 @@ class Func(Expression[T]):
         order_by: Expression[Any] | Ordering | Iterable[Expression[Any] | Ordering] | None = None,
     ) -> None:
         self._name = name
-        self._args = tuple(_wrap(a) for a in args)
+        self._args = tuple(_wrap_value(a) for a in args)
         self._rel = rel
         self._distinct = distinct
         self._filter = None if filter is None else resolve_null_rule(as_condition(filter))
@@ -883,8 +890,8 @@ class Case(Expression[T]):
         for w in whens:
             if not isinstance(w, tuple) or len(w) != 2:
                 raise TypeError(f"case() branches are (condition, value) tuples, got {w!r}")
-        self._whens = [(resolve_null_rule(as_condition(c), strict=False), _wrap(v)) for c, v in whens]
-        self._default = None if default is None else _wrap(default)
+        self._whens = [(resolve_null_rule(as_condition(c), strict=False), _wrap_value(v)) for c, v in whens]
+        self._default = None if default is None else _wrap_value(default)
 
     def _ir(self, ctx: IRContext) -> IR:
         ir: IR = {"t": "case", "whens": [{"cond": c._ir(ctx), "value": v._ir(ctx)} for c, v in self._whens]}
@@ -1459,14 +1466,14 @@ class Condition(Node):
         """``(condition OR column IS NULL)``: a NULL row passes. Apply it to one comparison
         (``==``, ``!=``, ``<``, ``>``, ``in_``, ``like``, ``between``) of a nullable column,
         before ``~``: ``~(x > 20).or_null()`` is ``NOT (x > 20 OR x IS NULL)``."""
-        return or_(self, *_null_tests(self._null_columns("or_null"), keeps_null=True))
+        return or_(self, *_null_tests(self._null_values("or_null"), keeps_null=True))
 
     def and_not_null(self) -> Condition:
         """``(condition AND column IS NOT NULL)``: a NULL row fails. Under ``~`` it keeps NULL
         rows: ``~(x > 20).and_not_null()`` is ``NOT (x > 20 AND x IS NOT NULL)``."""
-        return and_(self, *_null_tests(self._null_columns("and_not_null"), keeps_null=False))
+        return and_(self, *_null_tests(self._null_values("and_not_null"), keeps_null=False))
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+    def _null_values(self, method: str) -> list[Node]:
         raise TypeError(
             f"{method}() applies to one comparison (==, !=, <, >, in_, like, between) of a column, "
             f"not to {self!r}; call it on the comparison itself, before you combine with & | ~"
@@ -1487,43 +1494,129 @@ def _to_one(column: ColumnRef[Any]) -> bool:
     return to_one
 
 
-def _null_tests(columns: Sequence[ColumnRef[Any]], *, keeps_null: bool) -> list[Condition]:
-    """The NULL tests a null method adds for each column. Behind a to-one path the missing
+_NEVER_NULL = frozenset({"count", "now", "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile"})
+_ALWAYS_NULLABLE = frozenset({"sum", "avg", "min", "max", "array_agg", "unnest", "lag", "lead", "first_value", "last_value", "nth_value"})
+_NULL_PRESERVING = frozenset(
+    {
+        "lower", "upper", "length", "concat", "trim", "ltrim", "rtrim", "replace", "substr", "strpos", "cardinality",
+        "abs", "to_tsvector", "to_tsquery", "plainto_tsquery", "websearch_to_tsquery", "ts_rank",
+    }
+)  # fmt: skip
+_AGGREGATES = frozenset({"count", "sum", "avg", "min", "max", "array_agg"})
+
+
+def can_be_null(node: Node) -> bool:
+    """Whether the ORM cannot prove ``node`` non-null: the one rule behind the strict null rule
+    and the null methods. A column is nullable when its field is. A function is non-null when it is
+    ``count()``, ``now()`` or a ranking function, a ``coalesce`` with a non-null argument, or one
+    of a closed list of null-preserving functions (``lower``, ``concat``, ``abs``, ...) of
+    non-null arguments. Every other function is nullable, ``element`` (an array index, NULL out of
+    range) and the aggregates included, and so are a scalar subquery, a JSON path, a ``case()``
+    with no default, ``/`` and ``%`` (SQLite divides by zero to NULL) and anything the ORM does
+    not know."""
+    if isinstance(node, ColumnRef):
+        return node._nullable
+    if isinstance(node, Excluded):
+        return can_be_null(node._column)
+    if isinstance(node, Labeled):
+        return can_be_null(node._inner)
+    if isinstance(node, Window):
+        return can_be_null(node._func)
+    if isinstance(node, Outer):
+        return can_be_null(node._column)
+    if isinstance(node, Literal):
+        return node.value is None
+    if isinstance(node, (Param, _Bound, _Int, _Config)) or getattr(node, "_constant", False):
+        return False
+    if isinstance(node, Func):
+        if node._name in _NEVER_NULL:
+            return False
+        if node._name in _ALWAYS_NULLABLE:
+            return True
+        if node._name == "coalesce":
+            return all(can_be_null(a) for a in node._args)
+        return node._name not in _NULL_PRESERVING or any(can_be_null(a) for a in node._args)
+    if isinstance(node, Case):
+        return node._default is None or any(can_be_null(v) for _, v in node._whens) or can_be_null(node._default)
+    if isinstance(node, Arith):
+        return node.op in ("div", "mod") or can_be_null(node.left) or can_be_null(node.right)
+    return True
+
+
+# The values the strict rule checks. Arithmetic and the other values stay non-strict:
+# the methods apply to them and are never required.
+_STRICT_VALUES = (ColumnRef, Func, Window, ScalarSubquery, Case, JsonPath, Outer, Excluded)
+
+
+def _leaf_columns(node: Node) -> list[ColumnRef[Any]]:
+    """The columns a value reads in the query's own scope: through functions, arithmetic,
+    ``case()``, windows, labels and the conditions among them. An aggregate, a subquery and
+    ``outer()`` read their own scope."""
+    if isinstance(node, ColumnRef):
+        return [node]
+    children: Sequence[Node] = ()
+    if isinstance(node, Func):
+        children = () if node._name in _AGGREGATES else node._args
+    elif isinstance(node, Window):
+        children = (*node._func._args, *node._partition)
+    elif isinstance(node, Case):
+        children = [n for c, v in node._whens for n in (c, v)] + ([] if node._default is None else [node._default])
+    elif isinstance(node, Arith | Comparison):
+        children = (node.left, node.right)
+    elif isinstance(node, Labeled):
+        children = (node._inner,)
+    elif isinstance(node, JsonPath):
+        children = (node._item,)
+    elif isinstance(node, In):
+        children = (node.item, *node.values)
+    elif isinstance(node, InSelect | Like | IsNull | Not):
+        children = (node.item,)
+    elif isinstance(node, BoolOp):
+        children = node.items
+    return [c for n in children for c in _leaf_columns(n)]
+
+
+def _is_to_one_value(node: Node) -> bool:
+    """Whether the value reads a column behind a to-one path: a missing related row reads as a
+    NULL, so the value is nullable and ``!=`` / ``not_in`` of it flip as a to-one column does."""
+    return any(_to_one(c) for c in _leaf_columns(node))
+
+
+def _null_tests(values: Sequence[Node], *, keeps_null: bool) -> list[Condition]:
+    """The NULL tests a null method adds for each value. Behind a to-one path the missing
     related row counts as a NULL, so `or_null()` adds `NOT EXISTS (... col IS NOT NULL)`."""
     out: list[Condition] = []
-    for c in columns:
+    for c in values:
+        to_one = _is_to_one_value(c)
         if keeps_null:
-            if _to_one(c):
+            if to_one:
                 out.append(Not(IsNull(c, neg=True)))
-            elif c._nullable:
+            elif can_be_null(c):
                 out.append(IsNull(c, neg=False))
-        elif c._nullable or _to_one(c):
+        elif can_be_null(c) or to_one:
             out.append(IsNull(c, neg=True))
     return out
 
 
-def _nullable_columns(method: str, nodes: Sequence[Node]) -> list[ColumnRef[Any]]:
-    """The columns among ``nodes`` that hold a NULL, once each; raises when none does.
+def _nullable_values(method: str, nodes: Sequence[Node]) -> list[Node]:
+    """The values among ``nodes`` that hold a NULL, once each; raises when none does.
     Behind a to-one path the missing related row is one."""
-    out: dict[str, ColumnRef[Any]] = {}
+    out: dict[str, Node] = {}
     for node in nodes:
-        if not isinstance(node, ColumnRef):
-            raise TypeError(f"{method}() applies to a plain column, not to {node!r}")
-        if node._nullable or _to_one(node):
-            out.setdefault(repr(node), node)
+        if can_be_null(node) or _is_to_one_value(node):
+            out.setdefault(_ckey(node), node)
     if not out:
         raise QueryError(
-            f"{method}() on {', '.join(map(repr, nodes))}: the column is NOT NULL, so no row has a NULL to keep or drop"
+            f"{method}() on {', '.join(map(repr, nodes))}: the value is NOT NULL, so no row has a NULL to keep or drop"
         )
     return list(out.values())
 
 
-def _either_side(method: str, owner: Condition, nodes: list[Node]) -> list[ColumnRef[Any]]:
-    """The nullable columns on any side of a comparison; the other sides may be any value."""
-    columns = [n for n in nodes if isinstance(n, ColumnRef)]
-    if not columns:
-        raise TypeError(f"{method}() applies to a plain column, not to {owner!r}")
-    return _nullable_columns(method, columns)
+def _either_side(method: str, owner: Condition, nodes: list[Node]) -> list[Node]:
+    """The nullable values on any side of a comparison; a constant side adds none."""
+    if not nodes:
+        raise TypeError(f"{method}() applies to a comparison of a value, not to {owner!r}")
+    return _nullable_values(method, nodes)
 
 
 def _tested(leaf: Condition) -> list[Node]:
@@ -1539,10 +1632,21 @@ def _tested(leaf: Condition) -> list[Node]:
     return []
 
 
-def _strict_columns(leaf: Condition) -> list[ColumnRef[Any]]:
-    """The nullable columns a comparison tests. A NOT NULL column behind a to-one path is not a
-    nullable value: a negation keeps the rows with no related row."""
-    return [n for n in _tested(leaf) if isinstance(n, ColumnRef) and n._nullable]
+def _strict_values(leaf: Condition, keep: Callable[[Node], bool]) -> list[Node]:
+    """The values a comparison tests that satisfy ``keep``."""
+    return [n for n in _tested(leaf) if keep(n)]
+
+
+def _nullable_column(node: Node) -> bool:
+    """A nullable column. A NOT NULL column behind a to-one path is not a nullable value: a
+    negation keeps the rows with no related row."""
+    return isinstance(node, ColumnRef) and node._nullable
+
+
+def _checked_value(node: Node) -> bool:
+    """A nullable value the strict rule checks: a column or a computed value (function,
+    aggregate, window function, scalar subquery, ``case()``, JSON path, ``outer()``)."""
+    return isinstance(node, _STRICT_VALUES) and can_be_null(node)
 
 
 def _is_negative(leaf: Condition) -> bool:
@@ -1582,17 +1686,24 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False, strict: bo
     raises (``func.case()`` and ``select()`` values)."""
 
     def rule_of(leaf: Condition, neg: bool, handled: frozenset[str]) -> Condition:
-        ruled = {c._key: c for c in _tested(leaf) if isinstance(c, ColumnRef) and c._rule and c._key not in handled}
+        # The rule of a ruled column inside a computed value applies to the whole value.
+        ruled: dict[tuple[str, str], tuple[Node, NullRule]] = {}
+        for value in _tested(leaf):
+            if _ckey(value) in handled:
+                continue
+            for c in _leaf_columns(value):
+                if c._rule:
+                    ruled.setdefault((_ckey(value), c._rule), (value, c._rule))
         ruled_leaf = leaf
-        for c in ruled.values():
-            keeps_null = c._rule == "or_null"
-            tests = _null_tests([c], keeps_null=keeps_null)
+        for value, rule in ruled.values():
+            keeps_null = rule == "or_null"
+            tests = _null_tests([value], keeps_null=keeps_null)
             if tests:
                 ruled_leaf = (or_ if keeps_null else and_)(ruled_leaf, *tests)
         if ruled_leaf is not leaf:
             return ruled_leaf
         if neg and isinstance(leaf, (PathComparison, PathMatch)):
-            keys = [c for c in _strict_columns(leaf) if c._key not in handled]
+            keys = [c for c in _strict_values(leaf, _nullable_column) if _ckey(c) not in handled]
             if keys:
                 return and_(leaf, *(IsNull(c, neg=True) for c in keys))
         return leaf
@@ -1610,8 +1721,8 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False, strict: bo
         ruled = rule_of(node, neg, handled)
         if ruled is not node:
             return ruled
-        for col in _strict_columns(node) if strict else ():
-            if col._key in handled:
+        for col in _strict_values(node, _checked_value) if strict else ():
+            if _ckey(col) in handled:
                 continue
             if neg:
                 raise QueryError(
@@ -1640,7 +1751,7 @@ class Comparison(Condition):
     def _ir(self, ctx: IRContext) -> IR:
         return {"t": "cmp", "op": self.op, "l": self.left._ir(ctx), "r": self.right._ir(ctx)}
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+    def _null_values(self, method: str) -> list[Node]:
         return _either_side(method, self, _tested(self))
 
     def __repr__(self) -> str:
@@ -1686,8 +1797,8 @@ class InSelect(Condition):
             "neg": self.neg,
         }
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
-        return _nullable_columns(method, [self.item])
+    def _null_values(self, method: str) -> list[Node]:
+        return _nullable_values(method, [self.item])
 
     def __repr__(self) -> str:
         return f"{self.item!r} {'NOT IN' if self.neg else 'IN'} ({self.select!r})"
@@ -1727,8 +1838,8 @@ class In(Condition):
             "neg": self.neg,
         }
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
-        return _nullable_columns(method, [self.item])
+    def _null_values(self, method: str) -> list[Node]:
+        return _nullable_values(method, [self.item])
 
     def __repr__(self) -> str:
         return f"{self.item!r} {'NOT IN' if self.neg else 'IN'} ({', '.join(map(repr, self.values))})"
@@ -1744,7 +1855,7 @@ class IsNull(Condition):
     def _ir(self, ctx: IRContext) -> IR:
         return {"t": "is_null", "item": self.item._ir(ctx), "neg": self.neg}
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+    def _null_values(self, method: str) -> list[Node]:
         raise TypeError(f"{method}() does not apply to {self!r}: it is already a NULL test")
 
     def __repr__(self) -> str:
@@ -1769,8 +1880,8 @@ class Like(Condition):
             "neg": self.neg,
         }
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
-        return _nullable_columns(method, [self.item])
+    def _null_values(self, method: str) -> list[Node]:
+        return _nullable_values(method, [self.item])
 
     def __repr__(self) -> str:
         return f"{self.item!r} {'NOT ' if self.neg else ''}{'ILIKE' if self.ci else 'LIKE'} {self.pattern!r}"
@@ -1789,10 +1900,10 @@ class Const(Condition):
     def _ir(self, ctx: IRContext) -> IR:
         return {"t": "const", "value": self.value}
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+    def _null_values(self, method: str) -> list[Node]:
         if self.column is None:
-            return super()._null_columns(method)
-        return _nullable_columns(method, [self.column])
+            return super()._null_values(method)
+        return _nullable_values(method, [self.column])
 
     def __repr__(self) -> str:
         return "TRUE" if self.value else "FALSE"
@@ -1822,9 +1933,9 @@ class Together(BoolOp):
     def __init__(self, items: list[Condition]) -> None:
         super().__init__("and", items)
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
+    def _null_values(self, method: str) -> list[Node]:
         if not all(isinstance(item, Comparison) for item in self.items):
-            return super()._null_columns(method)
+            return super()._null_values(method)
         return _either_side(method, self, _tested(self))
 
 
@@ -1869,8 +1980,8 @@ class Negated(Not):
 
     __slots__ = ()
 
-    def _null_columns(self, method: str) -> list[ColumnRef[Any]]:
-        return self.item._null_columns(method)
+    def _null_values(self, method: str) -> list[Node]:
+        return self.item._null_values(method)
 
     def __repr__(self) -> str:
         pairs = [(i.left, i.right) for i in self.item.items if isinstance(i, Comparison)]  # type: ignore[attr-defined]

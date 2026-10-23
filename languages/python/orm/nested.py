@@ -450,6 +450,7 @@ class _ObjectNode(Node):
     """A value of a nested type in a query: ``Expr::Object``."""
 
     __slots__ = ("nt", "value", "what", "json")
+    _constant = True
 
     def __init__(self, nt: NestedType, value: Any, what: str, json: bool) -> None:
         self.nt = nt

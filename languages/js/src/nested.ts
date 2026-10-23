@@ -487,6 +487,9 @@ export interface NestedInfo {
 }
 
 export class ObjectNode extends Expression<unknown, never, {}> {
+  /** @internal A constant: `canBeNull` treats it as non-null. */
+  readonly constant = true;
+
   constructor(
     readonly nt: NestedType,
     readonly value: unknown,

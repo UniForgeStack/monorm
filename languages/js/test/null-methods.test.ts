@@ -1,9 +1,9 @@
 /** `.orNull()` / `.andNotNull()`: a NULL row kept or dropped, on PostgreSQL and SQLite. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, func, loads, not, QueryError, Registry } from "../src/index.js";
-import { differs } from "../src/expr.js";
-import { Comment, Post, User } from "./blog/models.js";
+import { and, connect, func, loads, not, or, outer, param, QueryError, Registry } from "../src/index.js";
+import { differs, Func } from "../src/expr.js";
+import { Comment, Post, Profile, User } from "./blog/models.js";
 
 const source = `
 model Reading {
@@ -11,6 +11,7 @@ model Reading {
   score Int?
   name  String?
   tag   String
+  meta  Json?
   @@map("nm_node_reading")
 }
 
@@ -101,8 +102,151 @@ test("a nullable column reached through a to-many relation takes the method", ()
   assert.throws(() => Post.comments.id.eq(1n).orNull(), /NOT NULL/);
 });
 
-test("a computed value is not checked yet", () => {
-  assert.throws(() => Comment.authorId.add(1n).gt(5n).orNull(), /applies to a plain column/);
+test("a computed value takes the method", () => {
+  const x = Comment.authorId;
+  assert.ok(where(Comment.objects.filter(x.add(1n).gt(5n).orNull())).endsWith('("comments"."author_id" + 1) IS NULL'));
+  assert.ok(where(Comment.objects.filter(func.abs(x).gt(5n).andNotNull())).endsWith("IS NOT NULL"));
+  assert.ok(where(Comment.objects.filter(func.max(x).gt(5n).orNull())).endsWith("IS NULL"));
+  for (const nonNull of [func.coalesce(x, 0n).gt(1n), func.count().gt(1n), func.abs(Comment.id).gt(1n)]) {
+    assert.throws(() => nonNull.orNull(), (e) => e instanceof QueryError && /the value is NOT NULL/.test(e.message));
+    assert.throws(() => nonNull.andNotNull(), /the value is NOT NULL/);
+  }
+  assert.throws(() => func.max(x).isNull().orNull(), /already a NULL test/);
+});
+
+test("the strict rule runs on a computed value", () => {
+  const x = Comment.authorId;
+  assert.ok(Comment.objects.filter(func.coalesce(x, 0n).ne(3n)).sql());
+  assert.ok(Comment.objects.filter(func.coalesce(x, Comment.id).ne(3n)).sql());
+  assert.ok(Comment.objects.filter(not(func.abs(Comment.id).eq(3n))).sql());
+  for (const build of [
+    () => Comment.objects.filter(func.coalesce(x, x).ne(3n)),
+    () => Comment.objects.filter(func.abs(x).ne(3n)),
+    () => Comment.objects.filter(func.max(x).ne(3n)),
+    () => Comment.objects.filter(func.sum(x).ne(3n)),
+    () => Comment.objects.filter(not(func.abs(x).eq(3n))),
+    () => Comment.objects.exclude(func.abs(x).eq(3n)),
+    () => Comment.objects.filter(func.abs(x).notIn([1n, 2n])),
+  ]) {
+    assert.throws(build, /orNull/);
+  }
+});
+
+test("a scalar subquery is nullable", () => {
+  const latest: any = Post.objects.filter(Post.authorId.eq(outer(User.id))).select({ id: Post.id }).limit(1).asScalar();
+  assert.throws(() => User.objects.filter(latest.ne(3n) as never), /orNull\(\) keeps NULL rows/);
+  assert.ok(User.objects.filter(latest.ne(3n).orNull() as never).sql());
+  assert.throws(() => not(latest.eq(3n) as never), /under not\(\)/);
+});
+
+test("a having condition on an aggregate follows the rule", () => {
+  const q = Comment.objects.select({ a: Comment.authorId, n: func.count() }).groupBy(Comment.authorId);
+  assert.ok(q.having(func.count().ne(0n)).sql());
+  assert.throws(() => q.having(func.max(Comment.id).ne(3n)), /orNull\(\) keeps NULL rows/);
+  assert.throws(() => q.having(not(func.sum(Comment.id).gt(3n))), /under not\(\)/);
+  assert.ok(q.having(func.max(Comment.id).ne(3n).orNull()).sql());
+});
+
+test("the strict rule runs in a join on and an aggregate filter on a computed value", () => {
+  const totals = Post.objects.select({ authorId: Post.authorId, views: func.sum(Post.views) }).groupBy(Post.authorId).cte("totals");
+  assert.throws(() => Comment.objects.join(totals, func.abs(Comment.authorId).ne(1n)), /orNull\(\) keeps NULL rows/);
+  assert.ok(Comment.objects.join(totals, func.coalesce(Comment.authorId, 0n).ne(1n)).sql());
+  assert.throws(() => func.count({ filter: func.abs(Comment.authorId).ne(1n) } as never), /orNull\(\) keeps NULL rows/);
+  assert.throws(() => func.count({ filter: not(func.max(Comment.id).eq(1n)) } as never), /under not\(\)/);
+  assert.ok(func.count({ filter: func.coalesce(Comment.authorId, 0n).ne(1n) } as never));
+});
+
+test("the strict rule does not run in case or select on a computed value", () => {
+  const x = Comment.authorId;
+  assert.ok(Comment.objects.select({ f: func.case([func.abs(x).ne(1n), 1], { default: 0 }) }).sql());
+  assert.ok(Comment.objects.select({ f: func.abs(x).ne(1n) as never }).sql());
+});
+
+test("a path null rule reaches a condition nested in a function", () => {
+  const plain = where(Post.objects.filter(func.coalesce(Post.author.name.eq("x"), false as never).eq(true as never) as never));
+  const ruled = where(Post.objects.filter(func.coalesce(Post.author.orNull().name.eq("x"), false as never).eq(true as never) as never));
+  assert.ok(ruled.includes('NOT "t1"."name" IS NOT NULL'));
+  assert.ok(!plain.includes("IS NOT NULL"));
+});
+
+test("a bound parameter and a constant are not nullable", () => {
+  const prepared = Post.objects.filter(Post.id.ne(param("x") as never)).prepare();
+  assert.equal(where({ sql: () => prepared.sql({ x: 3 }) }), '"posts"."id" <> 3');
+  assert.equal(where(Post.objects.filter(not(func.abs(Post.id).eq(3n)))), 'NOT (ABS("posts"."id")) = 3');
+});
+
+test("an array index is nullable", () => {
+  const first = Profile.links.element(1);
+  const fifth = Profile.links.element(5);
+  assert.throws(() => Profile.objects.filter(fifth.ne("a")), /orNull\(\) keeps NULL rows/);
+  assert.throws(() => not(first.eq("a")), /under not\(\)/);
+  assert.ok(where(Profile.objects.filter(fifth.eq("a").orNull())).endsWith("IS NULL"));
+  assert.ok(where(Profile.objects.filter(fifth.eq("a").andNotNull())).endsWith("IS NOT NULL"));
+});
+
+test("a function is nullable unless it is known to keep a non-null input non-null", () => {
+  for (const kept of [func.lower(User.email), func.length(User.email), func.concat(User.email, "x"), func.abs(Comment.id)] as any[]) {
+    assert.throws(() => kept.eq("a").orNull(), /the value is NOT NULL/);
+    assert.ok(Comment.objects.filter(kept.ne("a")));
+  }
+  for (const unknown of [new Func("round", [Comment.id]), new Func("sign", [Comment.id]), func.sum(Comment.id)] as any[]) {
+    assert.throws(() => Comment.objects.filter(unknown.ne(1n)), /orNull\(\) keeps NULL rows/);
+    assert.ok(Comment.objects.filter(unknown.ne(1n).orNull()));
+  }
+});
+
+test("a division is nullable and stays non-strict", () => {
+  const x: any = Comment.id;
+  assert.ok(where(Comment.objects.filter(x.div(2n).gt(1n).orNull())).endsWith("IS NULL"));
+  assert.ok(where(Comment.objects.filter(x.div(2n).eq(1n).andNotNull())).endsWith("IS NOT NULL"));
+  assert.ok(Comment.objects.filter(x.div(2n).ne(1n)));
+  assert.throws(() => x.add(2n).gt(1n).orNull(), /the value is NOT NULL/);
+});
+
+test("a value over a to-one path is nullable and flips like the column", () => {
+  const lower: any = func.lower(Comment.author.name);
+  assert.ok(where(Comment.objects.filter(Comment.author.name.ne("x"))).includes("NOT EXISTS"));
+  assert.equal(where(Comment.objects.filter(lower.ne("x"))).split("NOT EXISTS").length - 1, 1);
+  assert.equal(where(Comment.objects.filter(lower.notIn(["x"]))).split("NOT EXISTS").length - 1, 1);
+  assert.ok(Comment.objects.filter(lower.ne("x").orNull()));
+});
+
+test("a path null rule reaches the whole value, not only the column", () => {
+  const author: any = Comment.author.orNull();
+  const plain = where(Comment.objects.filter(func.lower(Comment.author.name).eq("x") as never));
+  const ruled = where(Comment.objects.filter(func.lower(author.name).eq("x") as never));
+  assert.ok(!plain.includes("IS NOT NULL"));
+  assert.ok(ruled.includes('NOT EXISTS(SELECT 1 FROM "users" AS "t1" WHERE "t1"."id" = "comments"."author_id" AND (LOWER("t1"."name")) IS NOT NULL)'), ruled);
+});
+
+test("an outer() column is strict", () => {
+  const col = outer(Comment.authorId);
+  assert.throws(() => Post.objects.filter(Post.id.ne(col as never)), /orNull\(\) keeps NULL rows/);
+  assert.ok(Post.objects.filter(Post.id.ne(col as never).orNull()));
+  assert.ok(Post.objects.filter(Post.id.ne(outer(Comment.id) as never)));
+});
+
+test("two different computed values are two values for the strict rule", () => {
+  const sub = (n: number): any => Post.objects.filter(Post.authorId.eq(outer(User.id))).select({ id: Post.id }).limit(n).asScalar();
+  const cases: [string, any, any][] = [
+    ["scalar subquery", sub(1), sub(2)],
+    ["case", func.case([Comment.authorId.gt(1n), 1]), func.case([Comment.authorId.gt(2n), 1])],
+    ["window", func.lag(Comment.authorId).over({ orderBy: Comment.id }), func.lag(Comment.authorId).over({ orderBy: Comment.id })],
+  ];
+  for (const [label, a, b] of cases) {
+    const model: any = label === "scalar subquery" ? User : Comment;
+    assert.throws(() => model.objects.filter(or(a.ne(3n), b.isNull()) as never), /orNull\(\) keeps NULL rows/, label);
+    assert.ok(model.objects.filter(or(a.ne(3n), a.isNull()) as never), label);
+  }
+});
+
+test("the message names a subquery, a case and a window value", () => {
+  const sub: any = Post.objects.filter(Post.authorId.eq(outer(User.id))).select({ id: Post.id }).limit(1).asScalar();
+  assert.throws(() => User.objects.filter(sub.ne(3n)), (e) => e instanceof QueryError && /subquery/.test(e.message) && !/\[object/.test(e.message));
+  const kase: any = func.case([Comment.authorId.gt(1n), 1]);
+  assert.throws(() => Comment.objects.filter(kase.ne(3n)), (e) => e instanceof QueryError && /case\(/.test(e.message) && !/\[object/.test(e.message));
+  const win: any = func.lag(Comment.authorId).over({ orderBy: Comment.id });
+  assert.throws(() => Comment.objects.filter(win.ne(3n)), (e) => e instanceof QueryError && /lag\(/.test(e.message) && !/\[object/.test(e.message));
 });
 
 test("a constant in() keeps its column", () => {
@@ -200,6 +344,38 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
+  test(`a computed comparison keeps or drops a NULL row (${provider})`, { skip: !url }, async () => {
+    const { db, Reading } = await setup();
+    try {
+      const [a, b, nul] = await Reading.objects
+        .using(db)
+        .insertMany([
+          { score: 10, name: "ab", tag: "t" },
+          { score: 30, name: "cd", tag: "t" },
+          { score: null, name: null, tag: "t" },
+        ])
+        .returning();
+      const ids = async (c: any) => (await Reading.objects.using(db).filter(c).all()).map((r: any) => Number(r.id)).sort();
+      const of = (...rows: any[]) => rows.map((r) => Number(r.id)).sort();
+      const lower: any = func.lower(Reading.name);
+      assert.throws(() => Reading.objects.using(db).filter(lower.ne("ab")), /orNull\(\) keeps NULL rows/);
+      assert.throws(() => not(lower.eq("ab")), /under not\(\)/);
+      assert.deepEqual(await ids(lower.eq("ab")), of(a));
+      assert.deepEqual(await ids(lower.ne("ab").orNull()), of(b, nul));
+      assert.deepEqual(await ids(lower.ne("ab").andNotNull()), of(b));
+      assert.deepEqual(await ids(lower.eq("ab").orNull().not()), of(b));
+      assert.deepEqual(await ids(lower.eq("ab").andNotNull().not()), of(b, nul));
+      assert.deepEqual(await ids(Reading.score.add(1).gt(20).orNull()), of(b, nul));
+      const safe: any = func.coalesce(Reading.score, 0);
+      assert.deepEqual(await ids(safe.ne(10)), of(b, nul));
+      assert.deepEqual(await ids(not(safe.eq(10))), of(b, nul));
+      assert.throws(() => safe.ne(10).orNull(), /the value is NOT NULL/);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
   test(`a composite key has one IS NULL per column (${provider})`, { skip: !url }, async () => {
     const { db, Item, Line } = await setup();
     try {
@@ -249,6 +425,64 @@ for (const provider of ["sqlite", "postgresql"]) {
       await fresh.labels.set([]);
       assert.deepEqual(await links(note), []);
       assert.deepEqual(await links(other), [a.id]);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
+  test(`a json path is strict (${provider})`, { skip: !url || provider === "sqlite" }, async () => {
+    const { db, Reading } = await setup();
+    try {
+      const [, b, nul] = await Reading.objects
+        .using(db)
+        .insertMany([
+          { name: "a", tag: "t", meta: { k: 1 } },
+          { name: "b", tag: "t", meta: { k: 2 } },
+          { name: "c", tag: "t", meta: null },
+        ])
+        .returning();
+      const ids = async (c: any) => (await Reading.objects.using(db).filter(c).all()).map((r: any) => Number(r.id)).sort();
+      const path: any = Reading.meta.get("k");
+      assert.throws(() => Reading.objects.using(db).filter(path.ne(1)), /orNull\(\) keeps NULL rows/);
+      assert.throws(() => not(path.eq(1)), /under not\(\)/);
+      assert.deepEqual(await ids(path.ne(1).orNull()), [b, nul].map((r) => Number(r.id)).sort());
+      assert.deepEqual(await ids(path.ne(1).andNotNull()), [Number(b.id)]);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
+  test(`the strict rule runs in having, a join on and an aggregate filter on rows (${provider})`, { skip: !url }, async () => {
+    const { db, Reading } = await setup();
+    try {
+      await Reading.objects.using(db).insertMany([
+        { score: 10, name: "a", tag: "g1" },
+        { score: null, name: null, tag: "g2" },
+      ]);
+      const qs = Reading.objects.using(db);
+      const grouped = qs.select({ tag: Reading.tag }).groupBy(Reading.tag);
+      const tags = async (q: any) => (await q.all()).map((r: any) => r.tag).sort();
+      const top: any = func.max(Reading.score);
+      assert.throws(() => grouped.having(top.ne(10)), /orNull\(\) keeps NULL rows/);
+      assert.deepEqual(await tags(grouped.having(top.ne(10).orNull())), ["g2"]);
+      assert.deepEqual(await tags(grouped.having(top.ne(10).andNotNull())), []);
+      assert.deepEqual(await tags(grouped.having(top.eq(10).andNotNull().not())), ["g2"]);
+
+      const totals = Reading.objects.select({ tag: Reading.tag, m: func.max(Reading.score) }).groupBy(Reading.tag).cte("totals");
+      const lower: any = func.lower(Reading.name);
+      const on = (c: any) => and(totals.c.tag.eq(Reading.tag), c);
+      assert.throws(() => qs.join(totals, on(lower.ne("a"))), /orNull\(\) keeps NULL rows/);
+      assert.deepEqual(await tags(qs.join(totals, on(lower.ne("a").orNull())).select({ tag: Reading.tag })), ["g2"]);
+      assert.deepEqual(await tags(qs.join(totals, on(lower.ne("a").andNotNull())).select({ tag: Reading.tag })), []);
+
+      assert.throws(() => func.count({ filter: lower.ne("a") } as never), /orNull\(\) keeps NULL rows/);
+      for (const [method, expected] of [["orNull", 1], ["andNotNull", 0]] as const) {
+        const n = func.count({ filter: lower.ne("a")[method]() } as never);
+        const rows = await qs.select({ n }).all();
+        assert.deepEqual(rows.map((r: any) => Number(r.n)), [expected], method);
+      }
     } finally {
       await db.dropTables();
       await db.close();

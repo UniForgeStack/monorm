@@ -26,6 +26,7 @@ fn render(model: &str, filter: J) -> String {
 fn email(path: &[&str]) -> J { json!({"t":"col","path":path,"name":"email"}) }
 fn text(v: &str) -> J { json!({"t":"text","value":v}) }
 fn cmp(op: &str, l: J, r: J) -> J { json!({"t":"cmp","op":op,"l":l,"r":r}) }
+fn lower(arg: J) -> J { json!({"t":"func","name":"lower","args":[arg]}) }
 fn where_of(sql: &str) -> &str { sql.split_once(" WHERE ").unwrap().1 }
 
 #[test]
@@ -97,4 +98,33 @@ fn a_to_one_ne_against_a_to_many_column_stays_positive() {
         cmp("ne", json!({"t":"col","path":["notes","writer"],"name":"email"}), json!({"t":"col","path":["notes"],"name":"label"})),
     );
     assert!(where_of(&sql).starts_with("EXISTS"), "{sql}");
+}
+
+#[test]
+fn a_function_of_a_to_one_column_flips_like_the_column() {
+    let negated_eq = render("Note", json!({"t":"not","item":cmp("eq", lower(email(&["writer"])), text("a"))}));
+    for sql in [
+        render("Note", cmp("ne", lower(email(&["writer"])), text("a"))),
+        render("Note", cmp("ne", text("a"), lower(email(&["writer"])))),
+        render("Note", cmp("ne", lower(email(&["writer"])), lower(root("label")))),
+    ] {
+        assert!(where_of(&sql).starts_with("NOT EXISTS") && !where_of(&sql).contains("<>"), "{sql}");
+    }
+    assert_eq!(where_of(&render("Note", cmp("ne", lower(email(&["writer"])), text("a")))), where_of(&negated_eq));
+    let items = json!([text("a")]);
+    let not_in = render("Note", json!({"t":"in","item":lower(email(&["writer"])),"values":items,"neg":true}));
+    assert!(where_of(&not_in).starts_with("NOT EXISTS") && !where_of(&not_in).contains("NOT IN"), "{not_in}");
+}
+
+#[test]
+fn a_function_of_a_to_many_column_does_not_flip() {
+    let sql = render("Writer", cmp("ne", lower(json!({"t":"col","path":["notes"],"name":"label"})), text("a")));
+    assert!(where_of(&sql).starts_with("EXISTS") && where_of(&sql).contains("<>"), "{sql}");
+}
+
+#[test]
+fn a_function_of_a_to_one_column_with_not_in_a_subquery_flips() {
+    let select = json!({"model":"Writer","columns":[{"t":"expr","expr":{"t":"col","path":[],"name":"nick"},"name":"nick"}]});
+    let not_in = render("Note", json!({"t":"in_select","item":lower(email(&["writer"])),"select":select,"neg":true}));
+    assert!(where_of(&not_in).starts_with("NOT EXISTS") && !where_of(&not_in).contains("NOT IN"), "{not_in}");
 }

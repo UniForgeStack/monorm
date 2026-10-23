@@ -197,3 +197,29 @@ def test_a_path_rule_applies_in_a_case_condition_and_a_select_value():
         assert 'NOT EXISTS(SELECT 1 FROM "users"' in sql and '"name" IS NOT NULL' in sql
     # A path rule that is not set keeps the plain value and never raises in these places.
     assert "NOT EXISTS" not in Comment.objects.select(func.case((Comment.author.name == "x", 1), default=0).label("flag")).sql()
+
+
+async def test_a_function_of_a_to_one_column_gives_the_rows_of_the_column_form(rows):
+    _, Note, _, (n1, n2, n3, n4, n5), notes, _ = rows
+    lower = func.lower
+    assert await notes(lower(Note.writer.email) != "a") == ids(n2, n3, n4)
+    assert await notes(lower(Note.writer.email).not_in(["a"])) == ids(n2, n3, n4)
+    assert await notes(~(lower(Note.writer.email) == "a")) == ids(n2, n3, n4)
+    nick = lower(Note.writer.nick)
+    with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows"):
+        await notes(nick != "n")
+    assert await notes((nick != "n").or_null()) == ids(n2, n3, n4)
+    assert await notes((nick != "n").and_not_null()) == ids(n2)
+    assert await notes(~(nick == "n").or_null()) == ids(n2)
+    assert await notes(~(nick == "n").and_not_null()) == ids(n2, n3, n4)
+    assert await notes((lower(Note.writer.email) != "a").or_null()) == ids(n2, n3, n4)
+
+
+async def test_a_path_rule_reaches_a_function_of_the_path_column(rows):
+    _, Note, _, _, notes, _ = rows
+    lower = func.lower
+    for rule in ("or_null", "and_not_null"):
+        w = getattr(Note.writer, rule)()
+        for build in (lambda f: f != "n", lambda f: f == "n", lambda f: ~(f == "n"), lambda f: f.not_in(["n"])):
+            column = await notes(build(w.nick))
+            assert await notes(build(lower(w.nick))) == column, rule

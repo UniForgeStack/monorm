@@ -164,6 +164,31 @@ for (const provider of ["sqlite", "postgresql"]) {
     assert.deepEqual(await notes(Note.writer.andNotNull().eq(w1)), of(n1, n5));
   });
 
+  await run("a function of a to-one column gives the rows of the column form", async ({ Note, n: [, n2, n3, n4], notes }) => {
+    const lower: any = (c: any) => func.lower(c);
+    assert.deepEqual(await notes(lower(Note.writer.email).ne("a")), of(n2, n3, n4));
+    assert.deepEqual(await notes(lower(Note.writer.email).notIn(["a"])), of(n2, n3, n4));
+    assert.deepEqual(await notes(not(lower(Note.writer.email).eq("a"))), of(n2, n3, n4));
+    const nick = lower(Note.writer.nick);
+    await assert.rejects(async () => notes(nick.ne("n")), KEEPS);
+    assert.deepEqual(await notes(nick.ne("n").orNull()), of(n2, n3, n4));
+    assert.deepEqual(await notes(nick.ne("n").andNotNull()), of(n2));
+    assert.deepEqual(await notes(not(nick.eq("n").orNull())), of(n2));
+    assert.deepEqual(await notes(not(nick.eq("n").andNotNull())), of(n2, n3, n4));
+    assert.deepEqual(await notes(lower(Note.writer.email).ne("a").orNull()), of(n2, n3, n4));
+  });
+
+  await run("a path rule reaches a function of the path column", async ({ Note, notes }) => {
+    for (const rule of ["orNull", "andNotNull"]) {
+      const w: any = Note.writer[rule]();
+      const builds: ((f: any) => any)[] = [(f) => f.ne("n"), (f) => f.eq("n"), (f) => not(f.eq("n")), (f) => f.notIn(["n"])];
+      for (const build of builds) {
+        const column = await notes(build(w.nick));
+        assert.deepEqual(await notes(build(func.lower(w.nick))), column, rule);
+      }
+    }
+  });
+
   await run("a method on one comparison wins over the path", async ({ Note, n: [, n2, n3, n4], notes }) => {
     assert.deepEqual(await notes(Note.writer.orNull().nick.ne("n").andNotNull()), of(n2));
     assert.deepEqual(await notes(Note.writer.andNotNull().nick.ne("n").orNull()), of(n2, n3, n4));
