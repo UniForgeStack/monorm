@@ -36,6 +36,21 @@ The output has one JSON file per contender (median, samples, batch medians, CPU 
 
 `--orm-artifact PATH` adds a row `orm-all`: it starts the `orm` runner with `PYTHONPATH=PATH/py` and `ORM_PROFILE=custom`, the `all` extension artifact of `scripts/feature-check.sh`.
 
+## Profile one case
+
+```bash
+cd bench/compare/js
+node run.mjs profile --cases projection-1000 --contenders orm,pg   # options: --iters 200, --top 25, --out results/profile
+```
+
+The `profile` command runs one case per contender in its own process, under the V8 CPU profiler (Node only, a 100 µs sampling interval).
+The profiler records the timed calls and their setup, after the warm-up.
+For each contender, it writes `<contender>-<case>.cpuprofile` and `<contender>-<case>.top.txt` to the output directory, and prints the text.
+The text gives the top functions by self time, then the self time by script.
+`(program)` is native code with no JS frame (for `orm`, the addon converts the rows), and `(idle)` is the wait for the database.
+The profiler slows the calls, so do not compare its medians with the medians of `run`.
+Open the `.cpuprofile` in Chrome DevTools (Performance) for the full call tree.
+
 ## Read the numbers with care
 
 - The `orm` wheel must be a release build with the postgres profile. A debug tooling build (the dev venv) runs, but its timings are not valid.

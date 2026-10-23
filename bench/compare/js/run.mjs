@@ -3,12 +3,15 @@
 //   node run.mjs check [--contenders a,b] [--cases x,y]
 //   node run.mjs run   [--rounds 20] [--iters 20] [--max-load 2] [--orm-artifact DIR] [--contenders a,b] [--out DIR]
 //   bun run.mjs run    (ours and Prisma; read-pk, read-1000 and bulk-insert-1000 only)
+//   node run.mjs profile --cases x [--contenders a,b] [--iters 200] [--top 25] [--out DIR]
 //
 // Each contender runs in its own process (`worker`), once per round, with the database reset before every process.
 // `run` does `check` first and stops when it fails; the check compares result and database state at iterations
 // 0, 1 and the last one. Before each round the runner waits until the 1-minute load is at most `--max-load`.
 // Each case runs WARMUP_CALLS untimed calls first, then `--iters` timed calls. `--orm-artifact DIR` adds `orm-all`: the `orm` runner with
 // ORM_NATIVE=DIR/orm.node, the `all` extension artifact of scripts/feature-check.sh.
+// `profile` runs one case per contender with the V8 CPU profiler on its timed calls and their setup (Node only); it writes
+// `<contender>-<case>.cpuprofile` (open it in Chrome DevTools) and `<contender>-<case>.top.txt`, the self-time top list.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,7 +68,7 @@ async function worker(a) {
         }
         out.cases[name] = { result: results };
       } else {
-        out.cases[name] = await timeCase(kase, conn, a.iters);
+        out.cases[name] = await timeCase(kase, conn, a.iters, a.profileFile);
       }
     }
   } finally {
@@ -75,7 +78,7 @@ async function worker(a) {
   writeFileSync(a.out, json(out));
 }
 
-async function timeCase(kase, conn, iters) {
+async function timeCase(kase, conn, iters, profileFile) {
   const once = async i => {
     const arg = await (kase.setup ?? (x => x))(i, conn);
     const t0 = performance.now();
@@ -87,11 +90,15 @@ async function timeCase(kase, conn, iters) {
   for (let k = 0; k < WARMUP_CALLS; k++) await once(WARMUP_BASE + k);
   const samples = [];
   const lat = [];
-  for (let i = 1; i <= iters; i++) {
-    const [ms, raw] = await once(i);
-    samples.push(ms);
-    if (kase.concurrent) for (const [, ls] of raw) lat.push(...ls);
-  }
+  const timed = async () => {
+    for (let i = 1; i <= iters; i++) {
+      const [ms, raw] = await once(i);
+      samples.push(ms);
+      if (kase.concurrent) for (const [, ls] of raw) lat.push(...ls);
+    }
+  };
+  if (profileFile) await profiled(timed, profileFile);
+  else await timed();
   const res = { samples_ms: samples, median_ms: median(samples) };
   if (kase.concurrent) {
     res.ops_per_s = (CONCURRENT_TASKS * CONCURRENT_OPS_PER_TASK) / (res.median_ms / 1000);
@@ -109,16 +116,33 @@ async function timeCase(kase, conn, iters) {
   return res;
 }
 
+/** Runs `fn` under the V8 sampling profiler and writes the `.cpuprofile` to `file`. */
+async function profiled(fn, file) {
+  const { Session } = await import("node:inspector/promises");
+  const s = new Session();
+  s.connect();
+  await s.post("Profiler.enable");
+  await s.post("Profiler.setSamplingInterval", { interval: 100 }); // microseconds
+  await s.post("Profiler.start");
+  try {
+    await fn();
+  } finally {
+    const { profile } = await s.post("Profiler.stop");
+    writeFileSync(file, JSON.stringify(profile));
+    s.disconnect();
+  }
+}
+
 // ---- parent ---------------------------------------------------------------------------------------------------
 
-function spawn(name, cases, mode, iters, artifact) { // `iters`: a count when timing, a comma list when checking
+function spawn(name, cases, mode, iters, artifact, extra = []) { // `iters`: a count when timing, a comma list when checking
   const env = { ...process.env, BENCH_DATABASE_URL: databaseUrl() };
   if (name === "orm-all") {
     if (!artifact) throw new Error("orm-all needs --orm-artifact");
     env.ORM_NATIVE = join(artifact, "orm.node");
   }
   const out = join(tmpdir(), `bench-js-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
-  const cmd = [join(HERE, "run.mjs"), "worker", "--contender", name, "--cases", cases.join(","), "--mode", mode, "--iters", String(iters), "--out", out];
+  const cmd = [join(HERE, "run.mjs"), "worker", "--contender", name, "--cases", cases.join(","), "--mode", mode, "--iters", String(iters), "--out", out, ...extra];
   const p = spawnSync(process.execPath, cmd, { env, encoding: "utf8", maxBuffer: 1 << 28 });
   if (p.status !== 0 || p.error) throw new Error(`${name} worker failed:\n${p.error ?? ""}\n${p.stdout.slice(-2000)}\n${p.stderr.slice(-4000)}`);
   const data = JSON.parse(readFileSync(out, "utf8"));
@@ -216,6 +240,47 @@ async function run(a) {
   console.log(`wrote ${a.out}`);
 }
 
+/** The self time per function (and per script) of a `.cpuprofile`, as a short text table. */
+function topList(profile, top, header) {
+  const byId = new Map(profile.nodes.map(n => [n.id, n]));
+  const self = new Map();
+  profile.samples.forEach((id, k) => self.set(id, (self.get(id) ?? 0) + (profile.timeDeltas[k + 1] ?? 0)));
+  const total = [...self.values()].reduce((x, y) => x + y, 0);
+  const fns = new Map();
+  const files = new Map();
+  for (const [id, us] of self) {
+    const { functionName, url, lineNumber } = byId.get(id).callFrame;
+    const file = url ? url.replace(/^file:\/\//, "").replace(`${REPO}/`, "") : "";
+    const fn = `${functionName || "(anonymous)"}${file ? ` ${file}:${lineNumber + 1}` : ""}`;
+    fns.set(fn, (fns.get(fn) ?? 0) + us);
+    const where = file ? file.replace(/^.*node_modules\/((@[^/]+\/)?[^/]+)\/.*$/, "node_modules/$1") : functionName.startsWith("(") ? functionName : "(native or builtin)";
+    files.set(where, (files.get(where) ?? 0) + us);
+  }
+  const rows = (m, n) => [...m].sort((x, y) => y[1] - x[1]).slice(0, n)
+    .map(([k, us]) => `${(us / 1000).toFixed(1).padStart(9)} ms ${((100 * us) / total).toFixed(1).padStart(5)}%  ${k}`);
+  return [header, `sampled ${(total / 1000).toFixed(1)} ms; self time`, ...rows(fns, top), "", "by script", ...rows(files, 10), ""].join("\n");
+}
+
+async function profile(a) {
+  if (IS_BUN) throw new Error("profile runs on Node only");
+  const cases = a.cases.split(",");
+  if (cases.length !== 1 || !cases[0]) throw new Error("profile takes one case: --cases <case>");
+  const [kase] = cases;
+  mkdirSync(a.out, { recursive: true });
+  const conn = await connect();
+  for (const n of pick(a)) {
+    await reset(conn);
+    const file = join(a.out, `${n}-${kase}.cpuprofile`);
+    const data = spawn(n, cases, "time", a.iters, a.artifact, ["--profile-file", file]);
+    const ms = data.cases[kase].median_ms;
+    const text = topList(JSON.parse(readFileSync(file, "utf8")), a.top, `${n} ${kase}: ${a.iters} calls, median ${ms.toFixed(3)} ms (profiler on)`);
+    writeFileSync(join(a.out, `${n}-${kase}.top.txt`), text);
+    console.log(text);
+  }
+  await conn.end();
+  console.log(`wrote ${a.out}`);
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 const { values: v } = parseArgs({
   args: rest,
@@ -224,15 +289,18 @@ const { values: v } = parseArgs({
     contenders: { type: "string", default: "" },
     "orm-artifact": { type: "string" },
     rounds: { type: "string", default: "20" },
-    iters: { type: "string", default: "20" },
+    iters: { type: "string", default: cmd === "profile" ? "200" : "20" },
+    top: { type: "string", default: "25" },
+    "profile-file": { type: "string" },
     "max-load": { type: "string", default: "2" },
-    out: { type: "string", default: join(HERE, "results", "smoke") },
+    out: { type: "string", default: join(HERE, "results", cmd === "profile" ? "profile" : "smoke") },
     contender: { type: "string" },
     mode: { type: "string" },
   },
 });
-const a = { cases: v.cases, contenders: v.contenders, artifact: v["orm-artifact"], rounds: Number(v.rounds), iters: Number(v.iters), checkAt: v.iters, maxLoad: Number(v["max-load"]), out: v.out, contender: v.contender, mode: v.mode };
+const a = { cases: v.cases, contenders: v.contenders, artifact: v["orm-artifact"], rounds: Number(v.rounds), iters: Number(v.iters), checkAt: v.iters, maxLoad: Number(v["max-load"]), out: v.out, contender: v.contender, mode: v.mode, top: Number(v.top), profileFile: v["profile-file"] };
 if (cmd === "worker") await worker(a);
 else if (cmd === "check") await check(pick(a), a.cases ? a.cases.split(",") : defaultCases(), a.artifact, a.iters);
 else if (cmd === "run") await run(a);
-else throw new Error("usage: run.mjs check|run");
+else if (cmd === "profile") await profile(a);
+else throw new Error("usage: run.mjs check|run|profile");

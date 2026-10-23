@@ -140,7 +140,9 @@ export class ModelMeta implements Source {
   readonly key: readonly FieldMeta[];
   /** Makes instances: `new meta.Row()`, then the fields are assigned in schema order. */
   readonly Row: new () => Row;
-  private partialRow: (new () => Row) | undefined;
+  /** Partial-instance constructors by the shape of a result, and by its loaded public fields. */
+  private partialByShape = new WeakMap<object, new () => Row>();
+  private partialByFields = new Map<string, new () => Row>();
   /** The prototype of paths that reach this model (`User.posts` for `Post`). */
   readonly pathProto: object;
   readonly model: ModelClass<ModelSpec> & Record<string, unknown>;
@@ -455,16 +457,34 @@ export class ModelMeta implements Source {
     return Row;
   }
 
-  /** Makes partial instances: like `Row`, but an absent field throws `NotLoaded`. Built on first use. */
-  get PartialRow(): new () => Row {
-    return (this.partialRow ??= this.makePartialRow());
+  /**
+   * Makes partial instances of `shape`: like `Row`, but an absent field throws `NotLoaded`. Built on
+   * first use per set of loaded fields; those get no accessor, so the row is built with plain stores.
+   */
+  private partialRow(shape: NonNullable<NativeShape>): new () => Row {
+    let ctor = this.partialByShape.get(shape);
+    if (ctor !== undefined) return ctor;
+    const loaded = new Set<string>();
+    for (const f of shape) {
+      const field = this.fieldList[f.field]!;
+      if (f.public && field.leaf === undefined) loaded.add(field.name);
+    }
+    const key = [...loaded].sort().join(",");
+    ctor = this.partialByFields.get(key);
+    if (ctor === undefined) {
+      ctor = this.makePartialRow(loaded);
+      this.partialByFields.set(key, ctor);
+    }
+    this.partialByShape.set(shape, ctor);
+    return ctor;
   }
 
-  /** Field accessors live only here, so whole-model rows keep plain assignment. */
-  private makePartialRow(): new () => Row {
+  /** Field accessors live only here, so whole-model rows and loaded fields keep plain assignment. */
+  private makePartialRow(loaded: ReadonlySet<string>): new () => Row {
     const meta = this;
     const proto = Object.create(this.Row.prototype) as Record<string, unknown>;
     for (const f of this.publicList) {
+      if (loaded.has(f.name)) continue;
       Object.defineProperty(proto, f.name, {
         get() { throw new NotLoaded(`${meta.name}.${f.name} was not loaded`); },
         set(this: Row, value: unknown) { Object.defineProperty(this, f.name, { value, writable: true, configurable: true, enumerable: true }); },
@@ -479,7 +499,7 @@ export class ModelMeta implements Source {
   /** The instance for the row in `values` starting at `start`. */
   instance(values: unknown[], start: number, db: Database | undefined, shape?: NativeShape): Row {
     if (this.modelMethods !== undefined) this.applyMethods();
-    const o = shape ? new this.PartialRow() : new this.Row();
+    const o = shape ? new (this.partialRow(shape))() : new this.Row();
     const fields = this.fieldList;
     const cells = this.groups.length ? new Map<string, Map<string, unknown>>() : undefined;
     const put = (f: FieldMeta, v: unknown) => {

@@ -52,6 +52,11 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.deepEqual(partial.toJSON(), { name: "ann", note: null });
       assert.equal(partial.pk, author.pk);
       assert.throws(() => partial.bio, NotLoaded);
+      // Loaded fields are plain stores: the prototype has no NotLoaded accessor for them.
+      assert.equal(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(partial), "name"), undefined);
+      assert.deepEqual(Object.getOwnPropertyDescriptor(partial, "name"), { value: "ann", writable: true, enumerable: true, configurable: true });
+      partial.bio = "set"; assert.equal(partial.bio, "set"); delete partial.bio;
+      assert.throws(() => partial.bio, NotLoaded);
       assert.throws(() => a.load(Author.name, Author.name), TypeError);
       await partial.update({ name: "changed" }); assert.deepEqual(partial.toJSON(), { name: "changed", note: null });
       await partial.load(Author.bio, { reload: true }); assert.deepEqual(partial.toJSON(), { name: "changed", note: null, bio: "large" });
