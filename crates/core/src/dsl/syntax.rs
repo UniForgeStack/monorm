@@ -24,7 +24,14 @@
 //!            | IDENT ("." IDENT)* args?           (names and calls: Cascade, now(), raw("..."))
 //!            | "[" (value ("," value)*)? ","? "]"
 //!            | "{" (key ":" value ("," key ":" value)*)? ","? "}"
+//!            | "(" value ")"                        (a group, in expressions)
+//!            | value "." IDENT args?                (a method call, in expressions)
+//!            | ("-" | "~") value                    (negation, not)
+//!            | value OP value                       (OP: * / + - == != < <= > >= & |)
 //! ```
+//!
+//! The operators bind, tightest first: methods, unary `-`, `* /`, `+ -`, comparisons, `~`, `&`, `|`.
+//! Comparisons do not chain. An expression stays on one line. `parse_expression` parses one.
 //!
 //! Strings are `"..."` with `\"`, `\\`, `\n`, `\t` escapes, or `"""..."""` taken
 //! verbatim (for SQL bodies). Comments are `// ...`.
@@ -39,6 +46,8 @@ use std::fmt;
 pub struct Pos {
     pub line: u32,
     pub col: u32,
+    /// The source length from here to the end of the operand, when it is on one line; else 0.
+    pub len: u32,
 }
 
 impl fmt::Display for Pos {
@@ -122,7 +131,7 @@ impl<'a> Lexer<'a> {
             }
             return Ok((pos, Tok::Ident(s)));
         }
-        if c.is_ascii_digit() || (c == '-' && self.rest[1..].starts_with(|d: char| d.is_ascii_digit())) {
+        if c.is_ascii_digit() {
             let mut s = String::new();
             s.push(c);
             self.bump();
@@ -172,7 +181,10 @@ impl<'a> Lexer<'a> {
             }
             return Ok((pos, Tok::Str(s)));
         }
-        for p in ["@@", "[]", "@", "{", "}", "(", ")", "[", "]", ",", ":", "?", ".", "=", "-"] {
+        for p in [
+            "@@", "[]", "==", "!=", "<=", ">=", "@", "{", "}", "(", ")", "[", "]", ",", ":", "?", ".", "=", "-", "<", ">", "&", "|",
+            "~", "+", "*", "/",
+        ] {
             if self.rest.starts_with(p) {
                 for _ in 0..p.len() {
                     self.bump();
@@ -207,17 +219,93 @@ fn dedent(s: &str) -> String {
 // Syntax tree
 // ---------------------------------------------------------------------------------------
 
+/// A binary operator of an expression. `|` and `&` are the boolean operators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinOp {
+    Or,
+    And,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl BinOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Or => "|",
+            BinOp::And => "&",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Str(String),
     Num(String),
     Bool(bool),
     /// `name`, `Cascade`, `now()`, `raw("...")`, `created_at(sort: Desc)`
-    Path(Vec<String>, Option<Args>),
-    /// `-created_at`: a descending index key; only index key lists take it.
-    Desc(Box<Value>),
+    Path(Path, Option<Args>),
+    /// `-created_at`: a descending index key; an expression reads it as a negation. The position is the operand's.
+    Desc(Box<(Pos, Value)>),
     List(Vec<(Pos, Value)>),
     Object(Vec<(String, Pos, Value)>),
+    /// `a == 1`, `a & b`: the position is the operator's.
+    Binary(BinOp, Pos, Box<(Pos, Value)>, Box<(Pos, Value)>),
+    /// `~a`
+    Not(Pos, Box<(Pos, Value)>),
+    /// `-(a + b)`; `-a` is `Desc`, which an expression reads as a negation.
+    Neg(Pos, Box<(Pos, Value)>),
+    /// `lower(name).startswith("a")`: a method on a call or a group. A method on a plain
+    /// name is part of its `Path`.
+    Method(Box<(Pos, Value)>, String, Pos, Args),
+}
+
+/// A dotted name. The parser keeps where each name is (`a . b` has spaces); a path that the
+/// compiler writes has no positions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Path {
+    names: Vec<String>,
+    positions: Vec<Pos>,
+}
+
+impl Path {
+    pub fn new(names: Vec<String>) -> Self {
+        Path { names, positions: vec![] }
+    }
+
+    pub fn as_slice(&self) -> &[String] {
+        &self.names
+    }
+
+    /// The position of name `i`, with its source length.
+    pub fn position(&self, i: usize) -> Option<Pos> {
+        self.positions.get(i).copied()
+    }
+}
+
+impl std::ops::Deref for Path {
+    type Target = [String];
+
+    fn deref(&self) -> &[String] {
+        &self.names
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -296,11 +384,31 @@ struct Parser<'a> {
     prev_end: Pos,
     /// Inside a model: `"""` strings are refused.
     in_model: bool,
+    /// The first token that starts on a later line than the token before it, or spans lines.
+    first_break: Option<Pos>,
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
+    /// A parser at the first token of `source`, which starts on `line`.
+    fn new(source: &'a str, line: u32) -> Result<Self> {
+        let mut lexer = Lexer { chars: source.chars().peekable(), rest: source, pos: Pos { line, col: 1, len: 0 } };
+        let (pos, tok) = lexer.next()?;
+        let end = lexer.pos;
+        Ok(Parser { lexer, tok, pos, end, prev_end: Pos::default(), in_model: false, first_break: None })
+    }
+
+    /// `start` with the source length up to the end of the last consumed token.
+    fn extent(&self, start: Pos) -> Pos {
+        let len = if self.prev_end.line == start.line { self.prev_end.col.saturating_sub(start.col) } else { 0 };
+        Pos { len, ..start }
+    }
+
     fn advance(&mut self) -> Result<(Pos, Tok)> {
         let (pos, tok) = self.lexer.next()?;
+        let breaks = pos.line != self.pos.line || self.lexer.pos.line != pos.line;
+        if self.first_break.is_none() && tok != Tok::Eof && breaks {
+            self.first_break = Some(pos);
+        }
         self.prev_end = std::mem::replace(&mut self.end, self.lexer.pos);
         let prev = std::mem::replace(&mut self.tok, tok);
         let prev_pos = std::mem::replace(&mut self.pos, pos);
@@ -553,7 +661,7 @@ impl Parser<'_> {
                     return err(vpos, "positional argument after named arguments");
                 }
                 let v = self.value()?;
-                args.positional.push((vpos, v));
+                args.positional.push((self.extent(vpos), v));
             }
             if !self.eat(",")? {
                 break;
@@ -594,13 +702,100 @@ impl Parser<'_> {
     }
 
     fn value(&mut self) -> Result<Value> {
+        let line = self.pos.line;
+        self.expr(0, line)
+    }
+
+    /// The operator at the current token, with its binding power.
+    fn binary_op(&self) -> Option<(BinOp, u8)> {
+        let Tok::Punct(p) = &self.tok else { return None };
+        Some(match *p {
+            "|" => (BinOp::Or, 1),
+            "&" => (BinOp::And, 2),
+            "==" => (BinOp::Eq, 4),
+            "!=" => (BinOp::Ne, 4),
+            "<" => (BinOp::Lt, 4),
+            "<=" => (BinOp::Le, 4),
+            ">" => (BinOp::Gt, 4),
+            ">=" => (BinOp::Ge, 4),
+            "+" => (BinOp::Add, 5),
+            "-" => (BinOp::Sub, 5),
+            "*" => (BinOp::Mul, 6),
+            "/" => (BinOp::Div, 6),
+            _ => return None,
+        })
+    }
+
+    /// Precedence climbing. Tightest first: unary `-`, `* /`, `+ -`, comparisons, `~`, `&`, `|`.
+    /// An expression stays on the line where it starts.
+    fn expr(&mut self, min: u8, line: u32) -> Result<Value> {
+        let start = self.pos;
+        let mut lhs = if self.is("~") {
+            let tilde = self.pos;
+            self.advance()?;
+            self.same_line(line)?;
+            let operand = self.pos;
+            // `~` is looser than a comparison: `~a == 1` is `~(a == 1)`.
+            let inner = self.expr(4, line)?;
+            Value::Not(tilde, Box::new((self.extent(operand), inner)))
+        } else {
+            self.operand(line)?
+        };
+        loop {
+            if self.pos.line == line {
+                self.reject_word_operator()?;
+            }
+            let Some((op, power)) = self.binary_op() else { break };
+            if power < min {
+                break;
+            }
+            let op_pos = self.pos;
+            if op_pos.line != line {
+                return err(op_pos, "an expression must be on one line");
+            }
+            let left = (self.extent(start), lhs);
+            self.advance()?;
+            self.same_line(line)?;
+            let rhs_pos = self.pos;
+            let rhs = self.expr(power + 1, line)?;
+            let right = (self.extent(rhs_pos), rhs);
+            if power == 4 && self.binary_op().is_some_and(|(_, next)| next == 4) {
+                return err(self.pos, "comparisons do not chain; join them with `&`");
+            }
+            lhs = Value::Binary(op, op_pos, Box::new(left), Box::new(right));
+        }
+        Ok(lhs)
+    }
+
+    /// `and` and `or` are not operators; the error names the symbol to write.
+    fn reject_word_operator(&self) -> Result<()> {
+        let Tok::Ident(word) = &self.tok else { return Ok(()) };
+        let symbol = match word.as_str() {
+            "and" => "&",
+            "or" => "|",
+            _ => return Ok(()),
+        };
+        err(self.pos, format!("`{word}` is not an operator; use `{symbol}`"))
+    }
+
+    fn same_line(&self, line: u32) -> Result<()> {
+        if self.pos.line != line {
+            return err(self.pos, "an expression must be on one line");
+        }
+        Ok(())
+    }
+
+    /// A literal, a name or call, a list, an object, a group, or `-` and one of those; then
+    /// any `.method(...)` after a call or a group.
+    fn operand(&mut self, line: u32) -> Result<Value> {
         let pos = self.pos;
         if self.is("[") {
             self.advance()?;
             let mut items = vec![];
             while !self.is("]") {
                 let p = self.pos;
-                items.push((p, self.value()?));
+                let item = self.value()?;
+                items.push((self.extent(p), item));
                 if !self.eat(",")? {
                     break;
                 }
@@ -615,31 +810,76 @@ impl Parser<'_> {
         if self.is("{") {
             return Ok(Value::Object(self.object()?));
         }
+        if self.is("(") {
+            self.advance()?;
+            self.same_line(line)?;
+            let inner = self.expr(0, line)?;
+            self.same_line(line)?;
+            self.expect(")")?;
+            return self.methods(pos, inner);
+        }
         if self.eat("-")? {
-            return match self.value()? {
-                v @ Value::Path(..) => Ok(Value::Desc(Box::new(v))),
+            self.same_line(line)?;
+            let operand_start = self.pos;
+            let operand = self.operand(line)?;
+            let operand_pos = self.extent(operand_start);
+            return match operand {
+                v @ Value::Path(..) => Ok(Value::Desc(Box::new((operand_pos, v)))),
+                Value::Num(n) if !n.starts_with('-') => Ok(Value::Num(format!("-{n}"))),
+                v @ (Value::Num(_) | Value::Method(..) | Value::Binary(..) | Value::Not(..) | Value::Neg(..) | Value::Desc(_)) => {
+                    Ok(Value::Neg(pos, Box::new((operand_pos, v))))
+                }
                 _ => err(pos, "`-` goes before a field name, e.g. -created_at"),
             };
         }
-        match self.advance()? {
-            (_, Tok::Str(s)) => Ok(Value::Str(s)),
-            (p, Tok::Text(_)) if self.in_model => {
-                err(p, "\"\"\" strings only go in top-level blocks; put the SQL in a `function` block or use \"...\"")
+        if let Tok::Ident(word) = &self.tok {
+            if word == "not" && self.pos.line == line && self.operand_follows()? {
+                return err(pos, "`not` is not an operator; use `~`");
             }
-            (_, Tok::Text(s)) => Ok(Value::Str(s)),
-            (_, Tok::Num(n)) => Ok(Value::Num(n)),
-            (_, Tok::Ident(s)) if s == "true" => Ok(Value::Bool(true)),
-            (_, Tok::Ident(s)) if s == "false" => Ok(Value::Bool(false)),
-            (_, Tok::Ident(s)) => {
-                let mut path = vec![s];
-                while self.eat(".")? {
-                    path.push(self.ident("a name after `.`")?.1);
-                }
-                let args = if self.is("(") { Some(self.args()?) } else { None };
-                Ok(Value::Path(path, args))
-            }
-            (_, t) => err(pos, format!("expected a value, found {}", describe(&t))),
         }
+        let value = match self.advance()? {
+            (_, Tok::Str(s)) => Value::Str(s),
+            (p, Tok::Text(_)) if self.in_model => {
+                return err(p, "\"\"\" strings only go in top-level blocks; put the SQL in a `function` block or use \"...\"")
+            }
+            (_, Tok::Text(s)) => Value::Str(s),
+            (_, Tok::Num(n)) => Value::Num(n),
+            (_, Tok::Ident(s)) if s == "true" => Value::Bool(true),
+            (_, Tok::Ident(s)) if s == "false" => Value::Bool(false),
+            (_, Tok::Ident(s)) => {
+                let mut path = Path { positions: vec![self.extent(pos)], names: vec![s] };
+                while self.eat(".")? {
+                    let (at, name) = self.ident("a name after `.`")?;
+                    path.positions.push(self.extent(at));
+                    path.names.push(name);
+                }
+                let called = self.is("(");
+                let args = if called { Some(self.args()?) } else { None };
+                let path = Value::Path(path, args);
+                return if called { self.methods(pos, path) } else { Ok(path) };
+            }
+            (_, t) => return err(pos, format!("expected a value, found {}", describe(&t))),
+        };
+        Ok(value)
+    }
+
+    /// True if the token after the current identifier starts an operand.
+    fn operand_follows(&mut self) -> Result<bool> {
+        let mut probe = self.lexer.clone();
+        Ok(matches!(probe.next()?.1, Tok::Ident(_) | Tok::Num(_) | Tok::Str(_) | Tok::Punct("(" | "~")))
+    }
+
+    /// `.name(args)` after a call or a group.
+    fn methods(&mut self, pos: Pos, mut receiver: Value) -> Result<Value> {
+        while self.is(".") {
+            let receiver_pair = (self.extent(pos), receiver);
+            self.advance()?;
+            let (name_pos, name) = self.ident("a method name after `.`")?;
+            let name_pos = self.extent(name_pos);
+            let args = self.args()?;
+            receiver = Value::Method(Box::new(receiver_pair), name, name_pos, args);
+        }
+        Ok(receiver)
     }
 }
 
@@ -657,13 +897,34 @@ pub fn parse(source: &str) -> Result<Vec<Item>> {
     parse_at(source, 1)
 }
 
+/// Parses one expression: the whole of `text` (line 1, column 1) and nothing else.
+pub fn parse_expression(text: &str) -> Result<(Pos, Value)> {
+    let mut p = Parser::new(text, 1)?;
+    let start = p.pos;
+    let value = match p.value() {
+        Ok(v) => v,
+        // A line break outranks a failure that comes after it.
+        Err(e) => {
+            return match p.first_break {
+                Some(b) if (b.line, b.col) <= (e.pos.line, e.pos.col) => err(b, "an expression must be on one line"),
+                _ => Err(e),
+            }
+        }
+    };
+    if p.tok != Tok::Eof {
+        p.reject_word_operator()?;
+        return err(p.pos, format!("unexpected {} after the expression", describe(&p.tok)));
+    }
+    let broken = p.first_break.or((p.prev_end.line != start.line).then_some(start));
+    if let Some(at) = broken {
+        return err(at, "an expression must be on one line");
+    }
+    Ok((p.extent(start), value))
+}
+
 /// Start each imported file in a distinct source-map line range.
 pub(super) fn parse_at(source: &str, line: u32) -> Result<Vec<Item>> {
-    let mut lexer = Lexer { chars: source.chars().peekable(), rest: source, pos: Pos { line, col: 1 } };
-    let (pos, tok) = lexer.next()?;
-    let end = lexer.pos;
-    let mut p = Parser { lexer, tok, pos, end, prev_end: Pos::default(), in_model: false };
-    p.file()
+    Parser::new(source, line)?.file()
 }
 
 #[cfg(test)]

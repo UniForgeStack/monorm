@@ -414,7 +414,7 @@ pub(super) fn resolve_paths(b: &Attr, paths: &Paths, model: &str, dialect: Diale
     if let Some((_, Value::List(items))) = out.args.positional.first_mut() {
         for (p, v) in items.iter_mut() {
             let inner = match v {
-                Value::Desc(i) => i.as_mut(),
+                Value::Desc(i) => &mut i.1,
                 v => v,
             };
             let Value::Path(path, key_args) = inner else { continue };
@@ -423,14 +423,14 @@ pub(super) fn resolve_paths(b: &Attr, paths: &Paths, model: &str, dialect: Diale
             }
             let dotted = path.join(".");
             match paths.get(&dotted) {
-                Some(PathTarget::Column(name)) => *path = vec![name.clone()],
+                Some(PathTarget::Column(name)) => *path = Path::new(vec![name.clone()]),
                 Some(PathTarget::Json { column, sub, leaf }) => {
                     // The planner renders the same text, so the database can use the index for a filter.
                     let expr = dialect.json_subfield_sql(&ident(column), sub, *leaf);
                     let mut args = key_args.take().unwrap_or(Args { pos: *p, ..Default::default() });
                     args.positional.insert(0, (*p, Value::Str(expr)));
                     expression = true;
-                    *path = vec!["sql".to_owned()];
+                    *path = Path::new(vec!["sql".to_owned()]);
                     *key_args = Some(args);
                 }
                 Some(PathTarget::Group) => return err(*p, format!("{model}: @@{}: {dotted} is a nested type, not a scalar; name one of its subfields", b.name)),

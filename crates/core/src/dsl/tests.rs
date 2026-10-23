@@ -372,6 +372,26 @@ fn documented_schemas_parse() {
 }
 
 #[test]
+fn negative_numbers_compile_in_enum_values_and_defaults() {
+    let ir = ok(r#"
+enum Level {
+  low  @value(-1)
+  high @value(10)
+  @@storage(int)
+}
+
+model Item {
+  id    BigInt @id
+  n     Int    @default(-1)
+  level Level
+}
+"#);
+    let v = serde_json::to_value(&ir).unwrap();
+    assert_eq!(v["enums"][0]["values"][0], json!({"name": "low", "value": -1}));
+    assert_eq!(v["models"][0]["fields"][1]["default"], json!(-1));
+}
+
+#[test]
 fn enums_arrays_decimals() {
     let ir = ok(r#"
 enum Role {

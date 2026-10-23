@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use super::syntax::{err, Args, Attr, EnumDecl, Item, Member, ModelDecl, Pos, Props, Result, TypeRef, Value};
+use super::syntax::{err, Args, Attr, EnumDecl, Item, Member, ModelDecl, Path, Pos, Props, Result, TypeRef, Value};
 use crate::behavior::ArgumentKind;
 use crate::ext::{ExtensionDef, TypeDef};
 use crate::ir::{
@@ -177,9 +177,11 @@ fn json_of(pos: Pos, v: &Value) -> Result<serde_json::Value> {
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Num(n) => serde_json::from_str(n).map_err(|e| super::syntax::Error { pos, msg: e.to_string() })?,
         Value::List(items) => serde_json::Value::Array(items.iter().map(|(p, v)| json_of(*p, v)).collect::<Result<_>>()?),
-        Value::Object(_) | Value::Path(..) => return err(pos, "expected a literal"),
+        Value::Object(_) | Value::Path(..) | Value::Binary(..) | Value::Not(..) | Value::Neg(..) | Value::Method(..) => {
+            return err(pos, "expected a literal")
+        }
         Value::Desc(inner) => {
-            let name = match inner.as_ref() { Value::Path(p, _) => p.join("."), _ => "field".into() };
+            let name = match &inner.1 { Value::Path(p, _) => p.join("."), _ => "field".into() };
             return err(pos, format!("`-{name}` (descending) only goes in an index key list; elsewhere quote it: \"-{name}\""));
         }
     })
@@ -1283,6 +1285,48 @@ fn many_to_many(
     })
 }
 
+/// What follows the field or expression of an index or exclusion key.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyOptions {
+    pub desc: bool,
+    pub nulls: Option<Nulls>,
+    pub opclass: Option<String>,
+    pub collation: Option<String>,
+    /// The exclusion operator; only an exclusion key has it.
+    pub op: Option<String>,
+}
+
+/// The options of one key: a leading `-` (`minus`) or `sort:`, then `nulls:`, `ops:`, `collate:`
+/// and, with `with_op`, `op:`. The first `lead` positional arguments are not options.
+pub(super) fn key_options(p: Pos, args: &Args, what: &str, minus: bool, lead: usize, with_op: bool) -> Result<KeyOptions> {
+    if args.positional.len() > lead {
+        return err(p, format!("{what}: key options are named (sort:, nulls:, ops:, collate:{})", if with_op { ", op:" } else { "" }));
+    }
+    let mut n = Named::new(format!("{what} key"), args);
+    let desc = match n.name("sort")?.as_deref() {
+        None => minus,
+        Some(_) if minus => return err(p, format!("{what}: give `-` or sort:, not both")),
+        Some("Asc") => false,
+        Some("Desc") => true,
+        Some(o) => return err(p, format!("sort must be Asc or Desc, not {o}")),
+    };
+    let nulls = match n.name("nulls")?.as_deref() {
+        None => None,
+        Some("first") => Some(Nulls::First),
+        Some("last") => Some(Nulls::Last),
+        Some(o) => return err(p, format!("nulls must be first or last, not {o}")),
+    };
+    let opclass = match n.get("ops") {
+        None => None,
+        Some((op, v @ Value::Path(path, Some(_)))) if path.len() == 1 && path[0] == "raw" => Some(raw_sql(op, v, what)?),
+        Some((op, v)) => Some(name_of(op, v, &format!("{what}: ops"))?),
+    };
+    let collation = n.str("collate")?;
+    let op = if with_op { n.str("op")? } else { None };
+    n.finish()?;
+    Ok(KeyOptions { desc, nulls, opclass, collation, op })
+}
+
 /// `[field, -field, field(sort: Desc, ops: raw("x")), sql("expr", ...)]` -> index keys
 /// (and the exclusion operator of each, when `with_op`).
 fn keys(pos: Pos, v: Option<&Value>, what: &str, with_op: bool) -> Result<Vec<(IndexColumnIr, Option<String>)>> {
@@ -1295,7 +1339,7 @@ fn keys(pos: Pos, v: Option<&Value>, what: &str, with_op: bool) -> Result<Vec<(I
     let mut out = vec![];
     for (p, item) in items {
         let (minus, item) = match item {
-            Value::Desc(inner) => (true, inner.as_ref()),
+            Value::Desc(inner) => (true, &inner.1),
             item => (false, item),
         };
         let (field, expr, args) = match item {
@@ -1314,31 +1358,7 @@ fn keys(pos: Pos, v: Option<&Value>, what: &str, with_op: bool) -> Result<Vec<(I
             }
             _ => return err(*p, format!("{what}: a key is a field name or sql(\"...\")")),
         };
-        if args.positional.len() > usize::from(expr.is_some()) {
-            return err(*p, format!("{what}: key options are named (sort:, nulls:, ops:, collate:{})", if with_op { ", op:" } else { "" }));
-        }
-        let mut n = Named::new(format!("{what} key"), &args);
-        let desc = match n.name("sort")?.as_deref() {
-            None => minus,
-            Some(_) if minus => return err(*p, format!("{what}: give `-` or sort:, not both")),
-            Some("Asc") => false,
-            Some("Desc") => true,
-            Some(o) => return err(*p, format!("sort must be Asc or Desc, not {o}")),
-        };
-        let nulls = match n.name("nulls")?.as_deref() {
-            None => None,
-            Some("first") => Some(Nulls::First),
-            Some("last") => Some(Nulls::Last),
-            Some(o) => return err(*p, format!("nulls must be first or last, not {o}")),
-        };
-        let opclass = match n.get("ops") {
-            None => None,
-            Some((op, v @ Value::Path(path, Some(_)))) if path.len() == 1 && path[0] == "raw" => Some(raw_sql(op, v, what)?),
-            Some((op, v)) => Some(name_of(op, v, &format!("{what}: ops"))?),
-        };
-        let collation = n.str("collate")?;
-        let op = if with_op { n.str("op")? } else { None };
-        n.finish()?;
+        let KeyOptions { desc, nulls, opclass, collation, op } = key_options(*p, &args, what, minus, usize::from(expr.is_some()), with_op)?;
         if with_op && op.is_none() {
             return err(*p, format!("{what}: each key needs op: \"=\" / \"&&\" / ..."));
         }

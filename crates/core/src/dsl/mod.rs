@@ -26,6 +26,7 @@
 //! [`compile`] turns a file into the [`SchemaIr`] every binding consumes. The full
 //! reference is `docs/schema/schema.md`; `docs/schema/prisma-syntax.md` has the design.
 
+pub mod expr;
 mod lower;
 mod syntax;
 
@@ -61,6 +62,8 @@ pub struct CompiledProject {
     pub units: Vec<SchemaUnit>,
     /// Source files and database catalog resources read by compilation.
     pub inputs: Vec<PathBuf>,
+    /// Warnings of schema expressions, such as a null test on a column that is never null.
+    pub warnings: Vec<expr::Warning>,
 }
 
 struct Loader<'a> {
@@ -281,7 +284,7 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
     let mut inputs: Vec<_> = loader.units.iter().map(|unit| unit.path.clone()).collect();
     inputs.extend(catalog_inputs.into_inner());
     if ir.identities.is_some() { inputs.push(path); }
-    Ok(CompiledProject { ir, units: loader.units, inputs })
+    Ok(CompiledProject { ir, units: loader.units, inputs, warnings: vec![] })
 }
 
 pub fn compile_project_file(path: &Path) -> Result<CompiledProject, String> {
