@@ -11,6 +11,7 @@ dictionaries consumed by the native engine (see ``crates/core/src/ir.rs``).
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
+from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, Union, Unpack, overload
@@ -548,6 +549,10 @@ def no_alias(item: Any) -> None:
         raise QueryError(f"{item!r}: {ALIAS_PLACES}")
 
 
+# Set while `_ckey` builds a value key: a column then prints the aliases of its path.
+_KEYING: ContextVar[bool] = ContextVar("orm_value_key", default=False)
+
+
 class ColumnRef(Expression[T]):
     """A column of ``root``'s model, or of a model reached from it through ``path``."""
 
@@ -596,11 +601,6 @@ class ColumnRef(Expression[T]):
         return ir
 
     @property
-    def _key(self) -> str:
-        """``repr()`` plus the aliases: two aliases of one column are two columns."""
-        return repr(self) + "".join(f"#{id(a)}" for a in self._alias if a is not None)
-
-    @property
     def _nullable(self) -> bool:
         """Whether the ORM cannot prove the column non-null."""
         return bool(self._field.nullable)
@@ -611,7 +611,10 @@ class ColumnRef(Expression[T]):
         return self.desc()
 
     def __repr__(self) -> str:
-        return ".".join((self._root.__name__, *self._path, self._field.name))
+        text = ".".join((self._root.__name__, *self._path, self._field.name))
+        if _KEYING.get():
+            text += "".join(f"#{id(a)}" for a in self._alias if a is not None)
+        return text
 
 
 class Excluded(Expression[T]):
@@ -688,6 +691,8 @@ class Func(Expression[T]):
 
     def __repr__(self) -> str:
         args = [repr(a) for a in self._args] + ([repr(self._rel)] if self._rel is not None else [])
+        if self._distinct:
+            args.append("distinct=True")
         if self._order:
             args.append(f"order_by={self._order!r}")
         if self._filter is not None:
@@ -1656,7 +1661,12 @@ def _is_negative(leaf: Condition) -> bool:
 
 
 def _ckey(e: object) -> str:
-    return e._key if isinstance(e, ColumnRef) else repr(e)
+    """The identity of a value for the null rule: its ``repr()`` with the aliases of its columns."""
+    token = _KEYING.set(True)
+    try:
+        return repr(e)
+    finally:
+        _KEYING.reset(token)
 
 
 def _null_siblings(items: Sequence[Condition], tests_not_null: bool) -> set[str]:

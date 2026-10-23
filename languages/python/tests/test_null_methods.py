@@ -1,5 +1,7 @@
 """`.or_null()` / `.and_not_null()`: a NULL row kept or dropped, on PostgreSQL and SQLite."""
 
+from datetime import datetime
+
 import pytest
 from blog.models import Comment, Post, Profile, User
 
@@ -55,6 +57,14 @@ model NoteLabel {
   note     Note   @relation(fields: [note_id], references: [id])
   label    Label? @relation(fields: [label_id], references: [id])
   @@map("nm_note_label")
+}
+"""
+
+ARRAY_SCHEMA = """
+model Tagged {
+  id    BigInt   @id @default(autoincrement())
+  links String[] @default([])
+  @@map("nm_tagged")
 }
 """
 
@@ -123,7 +133,7 @@ def test_a_computed_value_takes_the_method():
 @pytest.fixture(params=["sqlite", "postgres"])
 async def models(request):
     registry = orm.Registry()
-    source = SCHEMA if request.param == "postgres" else 'datasource db {\n  provider = "sqlite"\n}\n' + SCHEMA
+    source = SCHEMA + ARRAY_SCHEMA if request.param == "postgres" else 'datasource db {\n  provider = "sqlite"\n}\n' + SCHEMA
     m = orm.loads(source, registry=registry)
     url = "sqlite://:memory:" if request.param == "sqlite" else DATABASE_URL
     try:
@@ -451,6 +461,89 @@ def test_a_division_is_nullable_and_stays_non_strict():
         (x + 2 > 1).or_null()
 
 
+KEEPS_NULL = r"or_null\(\) keeps NULL rows"
+fn, x = orm.func, Comment.author_id
+comment = User.comments.alias()
+
+
+def _grouped(cond):
+    return Comment.objects.select(x, fn.count()).group_by(x).having(cond)
+
+
+def _filtered(cond):
+    return Comment.objects.filter(cond)
+
+
+def _of_user(cond):
+    return User.objects.filter(cond)
+
+
+def _max(n):
+    return lambda: fn.max(Comment.id, filter=x == n)
+
+
+def _array_agg(order):
+    return lambda: fn.array_agg(x, order_by=order)
+
+
+def _sum(distinct):
+    return lambda: fn.sum(x, distinct=distinct)
+
+
+def _concat(value):
+    return lambda: fn.concat(x, value)
+
+
+def _at(microsecond):
+    return _concat(datetime(2020, 1, 1, microsecond=microsecond))
+
+
+def _abs_of_a_new_alias():
+    return fn.abs(User.comments.alias().author_id)
+
+
+def _abs_of_the_alias():
+    return fn.abs(comment.author_id)
+
+
+def _abs_of_the_path():
+    return fn.abs(User.comments.author_id)
+
+
+ONE_VALUE = [
+    pytest.param(_grouped, _max(1), id="aggregate filter"),
+    pytest.param(_grouped, _array_agg(Comment.id.desc()), id="aggregate order"),
+    pytest.param(_grouped, _sum(True), id="aggregate distinct"),
+    pytest.param(_filtered, _concat("..."), id="text with ..."),
+    pytest.param(_filtered, _concat("[object x"), id="text with [object "),
+    pytest.param(_filtered, _concat("(subquery)"), id="text with (subquery)"),
+    pytest.param(_filtered, lambda: fn.to_tsvector("english", x), id="search config"),
+    pytest.param(_of_user, _abs_of_the_alias, id="alias"),
+]
+
+TWO_VALUES = [
+    pytest.param(_grouped, _max(1), _max(2), id="aggregate filter"),
+    pytest.param(_grouped, _array_agg(Comment.id), _array_agg(Comment.id.desc()), id="aggregate order"),
+    pytest.param(_grouped, _sum(True), _sum(False), id="aggregate distinct"),
+    pytest.param(_of_user, _abs_of_a_new_alias, _abs_of_a_new_alias, id="two aliases"),
+    pytest.param(_of_user, _abs_of_the_alias, _abs_of_the_path, id="alias and path"),
+    pytest.param(_filtered, _at(1000), _at(1001), id="date"),
+    pytest.param(_filtered, _concat(["a,b"]), _concat(["a", "b"]), id="array"),
+    pytest.param(_filtered, _concat(1), _concat(1.0), id="int and float"),
+]
+
+
+@pytest.mark.parametrize(("use", "build"), ONE_VALUE)
+def test_two_nodes_of_one_computed_value_are_one_value_for_the_strict_rule(use, build):
+    assert use((build() != 3) | build().is_null()) is not None
+
+
+@pytest.mark.parametrize(("use", "left", "right"), TWO_VALUES)
+def test_two_computed_values_that_differ_in_one_part_are_two_values_for_the_strict_rule(use, left, right):
+    with pytest.raises(QueryError, match=KEEPS_NULL):
+        use((left() != 3) | right().is_null())
+
+
 def test_a_value_over_a_to_one_path_is_nullable_and_flips_like_the_column():
     lower = orm.func.lower
     column = where(Comment.objects.filter(Comment.author.name != "x"))
@@ -538,3 +631,93 @@ async def test_the_strict_rule_runs_in_having_a_join_on_and_an_aggregate_filter_
     for method, expected in (("or_null", 1), ("and_not_null", 0)):
         n = fn.count(filter=getattr(lower != "a", method)()).label("n")
         assert [tuple(r) for r in await qs.select(n)] == [(expected,)], method
+
+
+async def test_two_separate_nodes_of_one_value_pair_a_ne_with_an_is_null(models):
+    db, Reading, *_ = models
+    _, b, null = await Reading.objects.using(db).insert_many(
+        [{"name": "a", "tag": "t"}, {"name": "b", "tag": "t"}, {"name": None, "tag": "t"}]
+    ).returning()
+    fn = orm.func
+    rows = await Reading.objects.using(db).filter((fn.lower(Reading.name) != "a") | fn.lower(Reading.name).is_null())
+    assert {r.id for r in rows} == {b.id, null.id}
+
+
+async def test_an_array_index_keeps_or_drops_a_null_row(models):
+    db, _, _, _, m = models
+    if db.url.startswith("sqlite://"):
+        pytest.skip("sqlite has no arrays")
+    Tagged = m["Tagged"]
+    _, b, short = await Tagged.objects.using(db).insert_many(
+        [
+            {"links": ["a", "x"]},
+            {"links": ["b", "y"]},
+            {"links": []},
+        ]
+    ).returning()
+
+    async def ids(condition):
+        return {r.id for r in await Tagged.objects.using(db).filter(condition)}
+
+    second = Tagged.links[2]
+    assert await ids((second != "x").or_null()) == {b.id, short.id}
+    assert await ids((second != "x").and_not_null()) == {b.id}
+    assert await ids(~(second == "x").or_null()) == {b.id}
+    assert await ids(~(second == "x").and_not_null()) == {b.id, short.id}
+
+
+async def test_a_sqlite_division_by_zero_is_a_null_row(models):
+    db, Reading, *_ = models
+    if not db.url.startswith("sqlite://"):
+        pytest.skip("only sqlite returns NULL for a division by zero")
+    a, zero, null = await Reading.objects.using(db).insert_many(
+        [{"score": 2, "tag": "t"}, {"score": 0, "tag": "t"}, {"score": None, "tag": "t"}]
+    ).returning()
+
+    async def ids(condition):
+        return {r.id for r in await Reading.objects.using(db).filter(condition)}
+
+    ratio = Reading.score / Reading.score
+    assert await ids((ratio != 5).or_null()) == {a.id, zero.id, null.id}
+    assert await ids((ratio != 5).and_not_null()) == {a.id}
+    assert await ids((ratio == 1).or_null()) == {a.id, zero.id, null.id}
+    assert await ids((ratio == 1).and_not_null()) == {a.id}
+    assert await ids(~(ratio == 1).or_null()) == set()
+    assert await ids(~(ratio == 1).and_not_null()) == {zero.id, null.id}
+
+
+async def test_an_outer_value_keeps_or_drops_a_null_row(models):
+    db, Reading, _, _, m = models
+    Note = m["Note"]
+    await Note.objects.using(db).insert_many([{"id": 1}])
+    _, b, null = await Reading.objects.using(db).insert_many(
+        [{"score": 1, "tag": "t"}, {"score": 5, "tag": "t"}, {"score": None, "tag": "t"}]
+    ).returning()
+
+    async def ids(method):
+        inner = Note.objects.filter(getattr(Note.id != orm.outer(Reading.score), method)())
+        return {r.id for r in await Reading.objects.using(db).filter(orm.exists(inner))}
+
+    assert await ids("or_null") == {b.id, null.id}
+    assert await ids("and_not_null") == {b.id}
+
+
+async def test_an_excluded_value_keeps_or_drops_a_null_row(models):
+    db, Reading, *_ = models
+    await Reading.objects.using(db).insert_many(
+        [{"id": 1, "score": 1, "tag": "old"}, {"id": 2, "score": 2, "tag": "old"}]
+    )
+    rows = [{"id": 1, "score": 1, "tag": "new"}, {"id": 2, "score": None, "tag": "new"}]
+    for method, second in [("or_null", "x"), ("and_not_null", "y")]:
+        changed = getattr(orm.excluded(Reading.score) != 1, method)()
+        await (
+            Reading.objects.using(db)
+            .insert_many(rows)
+            .on_conflict(
+                Reading.id,
+                update=True,
+                update_values={"tag": orm.func.case((changed, "x"), default="y")},
+            )
+        )
+        got = {r.id: r.tag for r in await Reading.objects.using(db).order_by(Reading.id)}
+        assert got == {1: "y", 2: second}, method

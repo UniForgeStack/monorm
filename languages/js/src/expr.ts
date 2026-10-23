@@ -2033,15 +2033,95 @@ function isNullableColumn(node: Node): node is Column<unknown, string> {
   return node instanceof Column && node.canBeNull();
 }
 
-const valueIds = new WeakMap<object, number>();
-let valueCount = 0;
+const nodeIds = new WeakMap<object, number>();
+let nodeCount = 0;
 
-/** The name of a value for the null rule: a column by its path, any other value by identity, so two
- * different values never share a name. */
+function identity(node: object): number {
+  let id = nodeIds.get(node);
+  if (id === undefined) nodeIds.set(node, (id = ++nodeCount));
+  return id;
+}
+
+/** `tag(part,...)`, or `undefined` when a part has no key. Every part is a string, a number, a
+ * `tag(...)` or a quoted string, so two different parts never give one key. */
+function keyOf(tag: string, ...parts: (string | undefined)[]): string | undefined {
+  return parts.includes(undefined) ? undefined : `${tag}(${parts.join(",")})`;
+}
+
+/** The key of a literal value, or `undefined` for a value with no exact text (bytes, an object). */
+function literalKey(value: unknown): string | undefined {
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "string":
+      return JSON.stringify(value);
+    case "boolean":
+      return String(value);
+    case "number":
+      return Object.is(value, -0) ? "-0" : String(value);
+    case "bigint":
+      return `${value}n`;
+  }
+  if (value instanceof Date) return `date(${value.getTime()})`;
+  if (value instanceof Decimal) return `decimal(${JSON.stringify(value.toString())})`;
+  if (Array.isArray(value)) return keyOf("list", ...value.map((v) => literalKey(v)));
+  return undefined;
+}
+
+function orderKey(o: Ordering<string, unknown>): string | undefined {
+  return keyOf("order", valueKey(o.expr), String(o.descending), JSON.stringify(o.nulls ?? null));
+}
+
+/**
+ * The key of a value or a condition: every part that gives its SQL, and nothing else. Two nodes
+ * with one key are one value. `undefined` for a node that the function does not know and for a
+ * subquery or a window, which it does not compare.
+ */
+function valueKey(node: unknown): string | undefined {
+  if (typeof node === "string") return JSON.stringify(node);
+  if (node instanceof Column) return keyOf("col", JSON.stringify(node.key));
+  if (node instanceof Literal) return keyOf("lit", literalKey(node.value));
+  if (node instanceof Bound) return node.transform === undefined ? valueKey(node.param) : undefined;
+  if (node instanceof ParamRef) return keyOf("param", JSON.stringify(node.name));
+  if (node instanceof Int) return keyOf("int", String(node.value));
+  if (node instanceof Config) return keyOf("config", JSON.stringify(node.value));
+  if (node instanceof Excluded) return keyOf("excluded", valueKey(node.column));
+  if (node instanceof Outer) return keyOf("outer", valueKey(node.column));
+  if (node instanceof Labeled) return keyOf("label", valueKey(node.expr), JSON.stringify(node.name));
+  if (node instanceof Arith) return keyOf("arith", JSON.stringify(node.op), valueKey(node.left), valueKey(node.right));
+  if (node instanceof JsonPath) {
+    return keyOf("json", valueKey(node.item), JSON.stringify(node.path), String(node.text));
+  }
+  if (node instanceof Case) {
+    const whens = node.whens.map(([c, v]) => keyOf("when", valueKey(c), valueKey(v)));
+    return keyOf("case", keyOf("whens", ...whens), node.fallback === undefined ? "none" : valueKey(node.fallback));
+  }
+  if (node instanceof Func) {
+    const rel = node.rel === undefined ? "none" : keyOf("rel", String(identity(node.rel[PATH].root)), JSON.stringify(node.rel[PATH].path));
+    return keyOf(
+      "func",
+      JSON.stringify(node.name),
+      keyOf("args", ...node.args.map((a) => valueKey(a))),
+      String(node.distinct),
+      node.filter === undefined ? "none" : valueKey(node.filter),
+      keyOf("orders", ...node.order.map((o) => orderKey(o))),
+      rel,
+    );
+  }
+  if (node instanceof Comparison) return keyOf("cmp", JSON.stringify(node.op), valueKey(node.left), valueKey(node.right));
+  if (node instanceof InList) return keyOf("in", String(node.neg), valueKey(node.item), keyOf("values", ...node.values.map((v) => valueKey(v))));
+  if (node instanceof Like) return keyOf("like", String(node.ci), valueKey(node.item), valueKey(node.pattern));
+  if (node instanceof IsNull) return keyOf("isnull", String(node.neg), valueKey(node.item));
+  if (node instanceof Const) return keyOf("const", String(node.value));
+  if (node instanceof BoolOp) return keyOf(node.op, ...node.items.map((i) => valueKey(i)));
+  if (node instanceof Not) return keyOf("not", valueKey(node.item));
+  return undefined;
+}
+
+/** The name of a value for the null rule: a column by its path and its `alias()` tags, any other
+ * value by its {@link valueKey}, so two separate `func.lower(x)` nodes are one value. A node that
+ * `valueKey` cannot name keeps its identity: two such nodes are two values. */
 function colKey(node: Node): string {
-  if (node instanceof Column) return node.key;
-  if (!valueIds.has(node)) valueIds.set(node, ++valueCount);
-  return `#${valueIds.get(node)}`;
+  return valueKey(node) ?? `@${identity(node)}`;
 }
 
 /** The columns that `items` test for NULL the way the two null methods build it: `col IS NOT NULL`

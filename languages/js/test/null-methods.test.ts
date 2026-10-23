@@ -1,7 +1,7 @@
 /** `.orNull()` / `.andNotNull()`: a NULL row kept or dropped, on PostgreSQL and SQLite. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { and, connect, func, loads, not, or, outer, param, QueryError, Registry } from "../src/index.js";
+import { and, connect, exists, excluded, func, loads, not, or, outer, param, QueryError, Registry } from "../src/index.js";
 import { differs, Func } from "../src/expr.js";
 import { Comment, Post, Profile, User } from "./blog/models.js";
 
@@ -52,6 +52,14 @@ model NoteLabel {
   note    Note   @relation(fields: [noteId], references: [id])
   label   Label? @relation(fields: [labelId], references: [id])
   @@map("nm_node_note_label")
+}
+`;
+
+const arraySource = `
+model Tagged {
+  id    BigInt   @id @default(autoincrement())
+  links String[] @default([])
+  @@map("nm_node_tagged")
 }
 `;
 
@@ -281,12 +289,70 @@ test("differs keeps a NULL row and passes a NULL test through", () => {
   assert.equal(where(User.objects.filter(differs(User.email, "a") as never)), '"users"."email" <> \'a\'');
 });
 
+const keepsNull = /orNull\(\) keeps NULL rows/;
+const grouped = (cond: any) => Comment.objects.select({ a: Comment.authorId, n: func.count() }).groupBy(Comment.authorId).having(cond);
+const filtered = (cond: any) => Comment.objects.filter(cond);
+const ofUser = (cond: any) => User.objects.filter(cond);
+
+test("two nodes of one computed value are one value for the strict rule", () => {
+  const comment = User.comments.alias();
+  const cases: [string, (cond: any) => unknown, () => any][] = [
+    ["aggregate filter", grouped, () => func.max(Comment.id, { filter: Comment.authorId.eq(1n) })],
+    ["aggregate order", grouped, () => func.arrayAgg(Comment.authorId, { orderBy: Comment.id.desc() })],
+    ["aggregate distinct", grouped, () => func.sum(Comment.authorId, { distinct: true })],
+    ["text with ...", filtered, () => func.concat(Comment.authorId as never, "...")],
+    ["text with [object ", filtered, () => func.concat(Comment.authorId as never, "[object x")],
+    ["text with (subquery)", filtered, () => func.concat(Comment.authorId as never, "(subquery)")],
+    ["search config", filtered, () => func.toTsvector("english", Comment.authorId as never)],
+    ["alias", ofUser, () => func.abs(comment.authorId)],
+  ];
+  for (const [label, use, build] of cases) {
+    assert.ok(use(or(build().ne(3n), build().isNull())), label);
+  }
+});
+
+test("two computed values that differ in one part are two values for the strict rule", () => {
+  const cases: [string, (cond: any) => unknown, () => any, () => any][] = [
+    [
+      "aggregate filter",
+      grouped,
+      () => func.max(Comment.id, { filter: Comment.authorId.eq(1n) }),
+      () => func.max(Comment.id, { filter: Comment.authorId.eq(2n) }),
+    ],
+    [
+      "aggregate order",
+      grouped,
+      () => func.arrayAgg(Comment.authorId, { orderBy: Comment.id }),
+      () => func.arrayAgg(Comment.authorId, { orderBy: Comment.id.desc() }),
+    ],
+    ["aggregate distinct", grouped, () => func.sum(Comment.authorId, { distinct: true }), () => func.sum(Comment.authorId)],
+    ["two aliases", ofUser, () => func.abs(User.comments.alias().authorId), () => func.abs(User.comments.alias().authorId)],
+    ["alias and path", ofUser, () => func.abs(User.comments.alias().authorId), () => func.abs(User.comments.authorId)],
+    [
+      "date",
+      filtered,
+      () => func.concat(Comment.authorId as never, new Date(1000) as never),
+      () => func.concat(Comment.authorId as never, new Date(1001) as never),
+    ],
+    [
+      "array",
+      filtered,
+      () => func.concat(Comment.authorId as never, ["a,b"] as never),
+      () => func.concat(Comment.authorId as never, ["a", "b"] as never),
+    ],
+    ["bigint and number", filtered, () => func.concat(Comment.authorId as never, 1n as never), () => func.concat(Comment.authorId as never, 1 as never)],
+  ];
+  for (const [label, use, left, right] of cases) {
+    assert.throws(() => use(or(left().ne(3n), right().isNull())), keepsNull, label);
+  }
+});
+
 for (const provider of ["sqlite", "postgresql"]) {
   const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];
 
   async function setup(): Promise<{ db: any; Reading: any; Item: any; Line: any; models: any }> {
     const registry = new Registry();
-    const models = loads(`datasource db {\n  provider = "${provider}"\n}\n${source}`, { registry });
+    const models = loads(`datasource db {\n  provider = "${provider}"\n}\n${source}${provider === "sqlite" ? "" : arraySource}`, { registry });
     const db = await connect(url!, { registry, default: false });
     await db.dropTables();
     await db.createTables();
@@ -482,6 +548,112 @@ for (const provider of ["sqlite", "postgresql"]) {
         const n = func.count({ filter: lower.ne("a")[method]() } as never);
         const rows = await qs.select({ n }).all();
         assert.deepEqual(rows.map((r: any) => Number(r.n)), [expected], method);
+      }
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
+  test(`two separate nodes of one value pair a ne with an isNull (${provider})`, { skip: !url }, async () => {
+    const { db, Reading } = await setup();
+    try {
+      const [, b, nul] = await Reading.objects
+        .using(db)
+        .insertMany([{ name: "a", tag: "t" }, { name: "b", tag: "t" }, { name: null, tag: "t" }])
+        .returning();
+      const rows = await Reading.objects
+        .using(db)
+        .filter(or(func.lower(Reading.name).ne("a"), func.lower(Reading.name).isNull()))
+        .all();
+      assert.deepEqual(rows.map((r: any) => Number(r.id)).sort(), [b, nul].map((r) => Number(r.id)).sort());
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
+  test(`an array index keeps or drops a NULL row (${provider})`, { skip: !url || provider === "sqlite" }, async () => {
+    const { db, models } = await setup();
+    const Tagged = models["Tagged"];
+    try {
+      const [, b, short] = await Tagged.objects
+        .using(db)
+        .insertMany([
+          { links: ["a", "x"] },
+          { links: ["b", "y"] },
+          { links: [] },
+        ])
+        .returning();
+      const ids = async (c: any) => (await Tagged.objects.using(db).filter(c).all()).map((r: any) => Number(r.id)).sort();
+      const of = (...rows: any[]) => rows.map((r) => Number(r.id)).sort();
+      const second: any = Tagged.links.element(2);
+      assert.deepEqual(await ids(second.ne("x").orNull()), of(b, short));
+      assert.deepEqual(await ids(second.ne("x").andNotNull()), of(b));
+      assert.deepEqual(await ids(not(second.eq("x").orNull())), of(b));
+      assert.deepEqual(await ids(not(second.eq("x").andNotNull())), of(b, short));
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
+  test(`a sqlite division by zero is a NULL row (${provider})`, { skip: !url || provider !== "sqlite" }, async () => {
+    const { db, Reading } = await setup();
+    try {
+      const [a, zero, nul] = await Reading.objects
+        .using(db)
+        .insertMany([{ score: 2, tag: "t" }, { score: 0, tag: "t" }, { score: null, tag: "t" }])
+        .returning();
+      const ids = async (c: any) => (await Reading.objects.using(db).filter(c).all()).map((r: any) => Number(r.id)).sort();
+      const of = (...rows: any[]) => rows.map((r) => Number(r.id)).sort();
+      const ratio: any = Reading.score.div(Reading.score);
+      assert.deepEqual(await ids(ratio.ne(5).orNull()), of(a, zero, nul));
+      assert.deepEqual(await ids(ratio.ne(5).andNotNull()), of(a));
+      assert.deepEqual(await ids(ratio.eq(1).orNull()), of(a, zero, nul));
+      assert.deepEqual(await ids(ratio.eq(1).andNotNull()), of(a));
+      assert.deepEqual(await ids(not(ratio.eq(1).orNull())), []);
+      assert.deepEqual(await ids(not(ratio.eq(1).andNotNull())), of(zero, nul));
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
+  test(`an outer() value keeps or drops a NULL row (${provider})`, { skip: !url }, async () => {
+    const { db, Reading, models } = await setup();
+    try {
+      const Note = models["Note"];
+      await Note.objects.using(db).insertMany([{ id: 1 }]);
+      const [, b, nul] = await Reading.objects
+        .using(db)
+        .insertMany([{ score: 1, tag: "t" }, { score: 5, tag: "t" }, { score: null, tag: "t" }])
+        .returning();
+      const ids = async (method: "orNull" | "andNotNull") => {
+        const inner = Note.objects.filter((Note.id.ne(outer(Reading.score)) as any)[method]());
+        return (await Reading.objects.using(db).filter(exists(inner)).all()).map((r: any) => Number(r.id)).sort();
+      };
+      assert.deepEqual(await ids("orNull"), [b, nul].map((r) => Number(r.id)).sort());
+      assert.deepEqual(await ids("andNotNull"), [Number(b.id)]);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+
+  test(`an excluded() value keeps or drops a NULL row (${provider})`, { skip: !url }, async () => {
+    const { db, Reading } = await setup();
+    try {
+      await Reading.objects.using(db).insertMany([{ id: 1, score: 1, tag: "old" }, { id: 2, score: 2, tag: "old" }]);
+      const rows = [{ id: 1, score: 1, tag: "new" }, { id: 2, score: null, tag: "new" }];
+      for (const [method, second] of [["orNull", "x"], ["andNotNull", "y"]] as const) {
+        const changed = (excluded(Reading.score).ne(1) as any)[method]();
+        await Reading.objects
+          .using(db)
+          .insertMany(rows)
+          .onConflict(Reading.id, { update: true, updateValues: { tag: func.case([changed, "x"], { default: "y" }) } });
+        const got = (await Reading.objects.using(db).orderBy(Reading.id).all()).map((r: any) => r.tag);
+        assert.deepEqual(got, ["y", second], method);
       }
     } finally {
       await db.dropTables();
