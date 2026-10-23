@@ -1,0 +1,52 @@
+{
+  "name": "orm-auth",
+  "version": "0.1.0",
+  "description": "Users, roles, permissions and passwords for the orm package: one schema, no native code",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./queries.js": {
+      "types": "./dist/src/queries.d.ts",
+      "default": "./dist/src/queries.js"
+    },
+    "./methods.js": {
+      "types": "./dist/src/methods.d.ts",
+      "default": "./dist/src/methods.js"
+    },
+    "./schema.prisma": "./schema.prisma",
+    "./package.json": "./package.json"
+  },
+  "orm": {
+    "app": "./schema.prisma"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test --test-concurrency=1 \"dist/test/**/*.test.js\"",
+    "test:bun": "bun test ./test/"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.0"
+  },
+  "peerDependencies": {
+    "orm": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "orm": "file:../../../languages/js",
+    "typescript": "^5.9.0"
+  },
+  "files": [
+    "dist/src",
+    "schema.prisma"
+  ]
+}

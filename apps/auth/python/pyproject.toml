@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orm-auth"
+version = "0.1.0"
+description = "Users, roles, permissions and passwords for the ORM"
+requires-python = ">=3.11"
+dependencies = ["orm", "argon2-cffi>=23.1"]
+
+[project.entry-points."orm.apps"]
+orm-auth = "orm_auth:schema.prisma"
+
+[tool.setuptools.packages.find]
+include = ["orm_auth*"]
+
+[tool.setuptools.package-data]
+orm_auth = ["schema.prisma", "py.typed"]

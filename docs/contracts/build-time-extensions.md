@@ -138,6 +138,11 @@ The frontend type-checks the embedded TypeScript with `tsc` from `languages/js/n
 Run `npm install` in `languages/js` before the first build, or the frontend fails with `TS2688: Cannot find type definition file for 'node'`.
 Python extensions also need `mypy` and `pyright` on `PATH`.
 
+### The `ext` modules
+
+`orm.ext` (Python) and `orm/ext` (TypeScript) are the host surface for extension code.
+`database_of(instance)` and `databaseOf(instance)` give the database that loaded an instance, or none.
+
 ### The full profile
 
 `languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.

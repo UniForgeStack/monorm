@@ -7,6 +7,7 @@
 # tracking (timestamps, soft-delete, locking) inherit all
 # (default: every one). Each artifact selects only extension crates; the manifests turn on
 # the host Cargo features, so no cargo command here passes --features.
+# The auth app (apps/auth) uses `inherit`: its Python and TypeScript tests run on each artifact that has it.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
 set -uo pipefail
 
@@ -58,11 +59,11 @@ step() {
 rm -rf "$LOGS" "$MATRIX"
 mkdir -p "$LOGS"
 
-# One Python environment for every artifact: orm, its dev tools and the storage packages.
+# One Python environment for every artifact: orm, its dev tools, the storage packages and the auth app.
 VENV=$WORK/venv
 if [ ! -x "$VENV/bin/python" ]; then uv venv -q --python "${PYTHON:-python3}" "$VENV" || exit 1; fi
 PY=$VENV/bin/python
-uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/integration/python" || exit 1
+uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/integration/python" -e "$ROOT/apps/auth/python" || exit 1
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 (cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
@@ -119,6 +120,10 @@ for artifact in $ARTIFACTS; do
   if has "$artifact" inherit; then
     step "$artifact" inherit-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/inherit/tests/public/python.py"
     step "$artifact" inherit-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/inherit/tests/public/node.mjs"
+    # The app tests use the built `languages/js/dist` that the npm step above leaves.
+    step "$artifact" auth-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom sh -c "cd '$ROOT' && '$PY' -m pytest -q -p no:cacheprovider apps/auth/python/tests"
+    step "$artifact" auth-npm env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm install --no-audit --no-fund -s && npm test"
+    step "$artifact" auth-bun env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm run -s test:bun"
   fi
   if has "$artifact" file-storage; then
     # These tests import `orm.adapters`, which needs a native profile.

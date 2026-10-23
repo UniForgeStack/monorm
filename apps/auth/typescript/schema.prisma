@@ -1,0 +1,43 @@
+model AbstractUser {
+  id           Int          @id @default(autoincrement())
+  username     String       @unique
+  email        String
+  password     String
+  is_active    Boolean      @default(true)
+  is_superuser Boolean      @default(false)
+  last_login   DateTime?
+  date_joined  DateTime     @default(now())
+  roles        Role[]       @relation(through: "{model}Role")
+  permissions  Permission[] @relation(through: "{model}Permission")
+  @@inherit.abstract
+  @@query_set("UserQueries")
+  @@model_methods("UserMethods")
+}
+
+model User {
+  @@inherit.extends("AbstractUser")
+}
+
+model Role {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  permissions Permission[] @relation(through: RolePermission)
+}
+
+model Permission {
+  id       Int    @id @default(autoincrement())
+  label    String
+  codename String
+  name     String
+  roles    Role[] @relation(through: RolePermission)
+  @@unique([label, codename])
+}
+
+model RolePermission {
+  id            Int        @id @default(autoincrement())
+  role_id       Int
+  permission_id Int
+  role          Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  permission    Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+  @@unique([role_id, permission_id])
+}

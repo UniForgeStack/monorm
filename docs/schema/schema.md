@@ -259,6 +259,19 @@ beside their schema files. Generate from the main schema so every module receive
 the same database settings and prefixes. TypeScript generation currently writes
 one combined module from the same compiled schema.
 
+#### Apps
+
+An app is a schema import plus a language package.
+The schema holds the models.
+The package holds the code that works with them (model methods, query sets, helper functions).
+The package declares where its schema is, so `import "app:<name>"` needs no path.
+An app has no native code.
+The Python package and the npm package of an app each hold a copy of the schema file.
+Keep the copies equal. The tests of `orm-auth` check this.
+An app that uses `@@inherit.abstract` needs a build with the `orm.inherit` extension.
+
+The first app is [`orm-auth`](../apps/auth.md): users, roles, permissions and passwords.
+
 ### Fields
 
 `name Type[?] @attr...`, where `?` makes the column nullable.

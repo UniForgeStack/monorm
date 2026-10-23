@@ -9,6 +9,7 @@ from .query import M as ModelT
 from .write import Delete, Returning
 
 if TYPE_CHECKING:
+    from .db import Database
     from .model import Registry
     from .query import BoundQuerySet, QuerySet
 
@@ -25,6 +26,7 @@ __all__ = [
     "behavior_value",
     "bound_query",
     "bound_write",
+    "database_of",
     "hard_delete_statement",
 ]
 
@@ -61,6 +63,12 @@ def behavior_field(model: Any, record: dict[str, Any]) -> ColumnRef[Any]:
 def hard_delete_statement(qs: QuerySet[Any]) -> Delete[Any]:
     """``DELETE`` the matching rows of ``qs`` with the planner's delete rewrite off."""
     return Delete.build(qs, hard=True)
+
+
+def database_of(instance: Any) -> Database | None:
+    """The database that loaded ``instance``; ``None`` when no database did."""
+    db: Database | None = instance.__dict__.get("_db")
+    return db
 
 
 def bound_query(bound: B, change: Callable[[QuerySet[Any]], QuerySet[Any]]) -> B:

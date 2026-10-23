@@ -24,3 +24,4 @@ build/
 .mypy_cache/
 .pytest_cache/
 .test-artifacts/
+apps/auth/typescript/dist/

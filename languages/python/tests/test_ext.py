@@ -28,3 +28,13 @@ def test_behavior_lookup_is_empty_without_records():
 
 def test_behavior_value_is_none_without_a_record():
     assert ext.behavior_value("model_overrides") is None
+
+
+async def test_database_of_gives_the_database_that_loaded_the_instance(db):
+    [ann] = await User.objects.using(db).insert_many([{"email": "ext-db-of@example.com", "name": "Ann"}]).returning()
+    try:
+        loaded = await User.objects.using(db).get(User.id == ann.id)
+        assert ext.database_of(loaded) is db
+        assert ext.database_of(User.__new__(User)) is None
+    finally:
+        await User.objects.using(db).filter(User.id == ann.id).delete()

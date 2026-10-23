@@ -37,6 +37,14 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 The same doc describes the extension contract: manifests, passes, native behavior profiles.
 Protected writes, client defaults, cursor pagination and the N+1 finder are core features, not extensions.
 
+## Apps
+
+An app is a schema that you import with `import "app:<name>"`, and a package for each language ([schema.md](schema/schema.md#apps)).
+
+| App | What |
+|---|---|
+| [auth.md](apps/auth.md) | `orm-auth`: users, roles, permissions and passwords |
+
 ## Performance
 
 | Doc | What |

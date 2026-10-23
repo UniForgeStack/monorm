@@ -1,9 +1,10 @@
 /** The host surface for extension language code, next to the public `orm` API. */
-import { registry as defaultRegistry, type ModelMeta, type Registry } from "./model.js";
+import { DB, registry as defaultRegistry, type ModelMeta, type Registry } from "./model.js";
 import type { ModelSpec } from "./meta.js";
 import { QuerySet } from "./query.js";
 import type { BoundQuerySet } from "./bound.js";
 import type { Row } from "./model.js";
+import type { Database } from "./db.js";
 
 export { hardDeleteStatement } from "./query.js";
 
@@ -17,6 +18,9 @@ export type BoundQuerySetCtor = new (...args: any[]) => BoundQuerySet<ModelSpec,
 
 /** The model of a bound query set. */
 export const boundMeta: (bound: object) => ModelMeta = ((bound: { meta: ModelMeta }) => bound.meta) as never;
+
+/** The database that loaded `instance`; `undefined` when no database did. */
+export const databaseOf = (instance: object): Database | undefined => (instance as { [DB]?: Database })[DB];
 
 /** Run `op` on the query set of the rows of `bound`, fill its objects from the returned rows and give the changed objects in input order. */
 export function boundWrite<R>(bound: BoundQuerySet<ModelSpec, R>, op: (qs: QuerySet<ModelSpec>) => PromiseLike<unknown>): Promise<R[]> {

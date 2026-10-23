@@ -34,6 +34,7 @@ file-storage, generic-relations, tracking: timestamps, soft-delete and locking, 
 the extension manifests select the Cargo features, never a hand-set `--features`.
 On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
 and inherit public scripts, and once the `extensions/file-storage` packages and their end-to-end scripts.
+On each artifact that has `inherit` it also runs the `apps/auth` Python, `npm test` and bun tests.
 CI runs it (`.github/workflows/feature-check.yml`). Run it before you commit a change
 to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code:
 
