@@ -14,6 +14,7 @@ model AbstractUser {
   id    Int    @id @default(autoincrement())
   email String @unique
   roles Role[] @relation("{model}_roles")
+  teams Team[] @relation(through: "{model}Team")
   @@inherit.abstract
   @@query_set("UserQueries")
   @@model_methods("UserMethods")
@@ -28,6 +29,10 @@ model User {
   @@inherit.extends(["AbstractUser", "Timestamped"])
 }
 
+model Admin {
+  @@inherit.extends("AbstractUser")
+}
+
 model MyUser {
   bio String?
   @@inherit.override("User")
@@ -40,17 +45,58 @@ model MyUser {
   The child keeps its own table name.
   A field that two bases declare, or a class that two bases declare, is an error unless the child declares its own.
 - `{model}` in a relation name of an abstract model becomes the lower-case child name (`User` gives `Role.user_roles`).
-  The pass adds the back-relation field on the target.
-  On a concrete model, `{model}` in a relation name is an error.
-- `@@inherit.override("User")`: the child copies `User` and takes its table.
-  `User` gets no table and no runtime model.
-  Relations to `User` point to the child, and the migration changes the table and keeps its rows.
-  Two models that override the same model is an error.
-  If the override has its own `@@map`, the migration renames the base table to that name.
-  To remove such an override, use two steps.
-  First, replace the `@@map` with `@@renamed_from("<mapped name>")` on the override and migrate: the table gets its default name back.
-  Then remove the override and migrate.
-  If you remove both at once, the base model comes back with its default table name, the migration cannot match the renamed table, and it creates a new table and drops the old one with its rows.
+  The pass adds this back relation on the target.
+  In a concrete model, `{model}` in a relation name is an error.
+- A list relation with no `through:` stays one-to-many.
+  The target gets a nullable foreign key for each child (`Role.user_roles_id`).
+  A role belongs to one user only.
+- A child can redeclare a primary key field and change its type and default (`id String @id @default(uuid())`).
+  A primary key on another field is an error.
+  Redeclare the primary key field of the base (`id`) instead.
+
+### A many-to-many relation
+
+`through: "{model}Team"` on a list relation of an abstract model makes the relation many-to-many.
+The pass generates one join model for each child.
+In the name of the join model, `{model}` becomes the name of the child (`UserTeam` for `User`, `AdminTeam` for `Admin`).
+The pass sets `through` on the relation of the child and on the back relation of the target.
+`{model}` in a `through:` name is an error in a relation that no pass derives, for example in a concrete model.
+
+- The join table is `<child table>_<field>`, where `<field>` is the name of the relation field (`auth_user_teams` for `User.teams` when `User` has the table `auth_user`).
+- The join model has an `id` (auto-increment primary key) and two required foreign key fields.
+  A foreign key field is named from the lower-case model name, an underscore, and the name of the primary key field (`user_id`, `team_id`).
+  Each foreign key has `onDelete: Cascade`.
+- The pair of foreign keys has a `@@unique` constraint.
+  The migration names it from the join table and the two fields (`auth_user_teams_user_id_team_id_key`).
+  The migration shortens a name of more than 63 characters.
+  Each join table has its own name, so two children never share a constraint name.
+- With no relation name, the back relation on the target has the lower-case child name, an underscore, and the field name (`Team.user_teams`, `Team.admin_teams`).
+- The join model has no extra fields.
+  For extra fields, write the join model by hand.
+- A join model needs a one-field primary key on the child and on the target.
+  A composite primary key is an error.
+- A join model name that matches an existing model is an error.
+
+### An override
+
+A child with `@@inherit.override("User")` copies `User` and takes its table.
+`User` gets no table and no runtime model.
+Relations to `User` point to the child, and the migration changes the table and keeps its rows.
+A generated join model of `User` keeps its name and its table, and points to the child, so the link rows stay.
+A hand-written `through:` relation on `User` and its join model follow the child in the same way.
+
+- An override cannot change the type of the primary key of `User`.
+  The length of the primary key is part of the type (`@db.VarChar(36)`).
+  The foreign keys that point to `User` keep the old type.
+  The error message is "`MyUser.id`: an override cannot change the key type of `User`; incoming foreign keys keep it".
+- Two overrides of the same model are an error.
+- If the override has its own `@@map`, the migration renames the base table to that name.
+- To remove such an override, use two migrations.
+  In the first migration, replace the `@@map` with `@@renamed_from("<mapped name>")` on the override.
+  The table gets its default name back.
+  In the second migration, remove the override.
+  If you make both changes in one migration, the base model comes back with its default table name.
+  The migration cannot match the renamed table, so it creates a new table and drops the old table with its rows.
 
 ## Get the active model
 

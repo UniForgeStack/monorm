@@ -995,6 +995,36 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
         let join = name_of(tp, v, &what)?;
         let through_fields = n.names("through_fields")?;
         n.finish()?;
+        if join.contains("{model}") {
+            // A model with deferred identity gets its join model from a pass, which fills the relation from `join_label`.
+            if !deferred_identity.contains(&m.name) {
+                return err(
+                    member.pos,
+                    format!("{what}: {{model}} in a through: name is only expanded in a relation that an extension pass derives; name the join model without it"),
+                );
+            }
+            if !member.ty.list || member.ty.optional {
+                return err(member.ty.pos, format!("{what}: a many-to-many relation is a list: {target}[]"));
+            }
+            if !through_fields.is_empty() {
+                return err(tp, format!("{what}: through_fields: does not go with a through: name that has {{model}}"));
+            }
+            return Ok(RelationIr {
+                name: member.name.clone(),
+                kind: RelKind::Many,
+                target: target.clone(),
+                from: vec![],
+                to: vec![],
+                foreign_key: false,
+                on_delete: None,
+                on_update: None,
+                deferrable: None,
+                fk_name: None,
+                through: None,
+                label: Some(name.unwrap_or_default()),
+                join_label: Some(join),
+            });
+        }
         return many_to_many(m, member, &what, tp, &join, &through_fields, models);
     }
     let from = field_list(&mut n, "fields")?;
@@ -1040,6 +1070,7 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
                     fk_name: None,
                     through: None,
                     label: Some(name.unwrap_or_default()),
+                    join_label: None,
                 });
             }
             [] if name.as_deref().is_some_and(|n| n.contains("{model}")) => {
@@ -1098,6 +1129,7 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
             fk_name: None,
             through: None,
             label: None,
+            join_label: None,
         });
     };
     if member.ty.list {
@@ -1151,6 +1183,7 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
         fk_name,
         through: None,
         label: None,
+        join_label: None,
     })
 }
 
@@ -1246,6 +1279,7 @@ fn many_to_many(
         fk_name: None,
         through: Some(ThroughIr { model: join.to_owned(), source: src.clone(), target: dst.clone() }),
         label: None,
+        join_label: None,
     })
 }
 

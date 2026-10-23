@@ -16,8 +16,9 @@ FIXTURE = ROOT.joinpath("fixtures/schema.prisma").read_text()
 async def run(provider: str, url: str) -> None:
     registry = orm.Registry()
     models = orm.loads(FIXTURE.replace('"sqlite"', f'"{provider}"'), registry=registry)
-    assert sorted(models) == ["Admin", "MyUser", "Role"], sorted(models)
+    assert sorted(models) == ["Admin", "AdminTeam", "MyUser", "Role", "Team", "UserTeam"], sorted(models)
     MyUser, Admin, Role = models["MyUser"], models["Admin"], models["Role"]
+    Team, UserTeam, AdminTeam = models["Team"], models["UserTeam"], models["AdminTeam"]
     assert model_for("User", registry) is MyUser
     assert model_for("Admin", registry) is Admin
     assert model_for("Role", registry) is Role
@@ -36,6 +37,15 @@ async def run(provider: str, url: str) -> None:
         )
         assert [r.name for r in await user.roles.using(db).all()] == ["staff"]
         assert [r.name for r in await admin.roles.using(db).all()] == ["root"]
+        teams = await Team.objects.using(db).insert_many([{"name": "ops"}, {"name": "dev"}, {"name": "qa"}]).returning()
+        await UserTeam.objects.using(db).insert_many(
+            [{"user_id": user.pk, "team_id": teams[0].pk}, {"user_id": user.pk, "team_id": teams[1].pk}]
+        )
+        await AdminTeam.objects.using(db).insert_many([{"admin_id": admin.pk, "team_id": teams[2].pk}])
+        assert sorted(t.name for t in await user.teams.using(db).all()) == ["dev", "ops"]
+        assert [t.name for t in await admin.teams.using(db).all()] == ["qa"]
+        assert [u.email for u in await teams[0].user_teams.using(db).all()] == ["a@b.c"]
+        assert [a.email for a in await teams[2].admin_teams.using(db).all()] == ["x@y.z"]
     finally:
         await db.close()
 

@@ -241,9 +241,19 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], override_base: Option
         if !key.is_empty() {
             match &known_key {
                 Some((src, known)) if *known != key => {
-                    return Err(error(d, format!("{child}: the primary key of {base} ({}) differs from the one of {src} ({})", key.join(", "), known.join(", "))));
+                    let hint = if src == child { format!("; redeclare `{}` in {child} to change its type or default", key.join("`, `")) } else { String::new() };
+                    return Err(error(d, format!("{child}: the primary key of {base} ({}) differs from the one of {src} ({}){hint}", key.join(", "), known.join(", "))));
                 }
-                Some(_) => {}
+                Some(_) => {
+                    if Some(base.as_str()) == override_base {
+                        for name in &key {
+                            let (Some(own), Some(old)) = (cm.fields.iter().find(|f| &f.name == name), bm.fields.iter().find(|f| &f.name == name)) else { continue };
+                            if own_fields.contains(name) && (own.ty != old.ty || own.db_type != old.db_type || own.max_length != old.max_length || own.array != old.array || own.enum_name != old.enum_name) {
+                                return Err(error(d, format!("`{child}.{name}`: an override cannot change the key type of `{base}`; incoming foreign keys keep it")));
+                            }
+                        }
+                    }
+                }
                 None => {
                     known_key = Some((base.clone(), key));
                     cm.primary_key = bm.primary_key.clone();
@@ -303,7 +313,7 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], override_base: Option
     Ok(waiting)
 }
 
-/// Give each inherited to-many relation its owning relation and foreign key field on the target model.
+/// Give each inherited to-many relation its owning relation and foreign key field on the target model, or its join model.
 fn resolve(ir: &mut SchemaIr, child: &str, waiting: &[String], d: &Declaration, generated: &mut BTreeMap<(String, String), String>, touched: &mut BTreeSet<String>) -> Result<(), String> {
     for member in waiting {
         let ci = index(ir, child)?;
@@ -315,6 +325,10 @@ fn resolve(ir: &mut SchemaIr, child: &str, waiting: &[String], d: &Declaration, 
         let key_field = ir.models[ci].fields.iter().find(|f| f.name == key).cloned().ok_or_else(|| error(d, format!("{child}: unknown key field {key}")))?;
         let label = rel.label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| format!("{{model}}_{member}"));
         let back = label.replace("{model}", &child.to_lowercase());
+        if rel.join_label.is_some() {
+            join_model(ir, child, &rel, &back, d, generated, touched)?;
+            continue;
+        }
         let fk = format!("{back}_{key}");
         if ir.behavior.lowered_models.contains(&rel.target) {
             return Err(error(d, format!("{}: inheritance across schema batches is not supported", rel.target)));
@@ -338,7 +352,7 @@ fn resolve(ir: &mut SchemaIr, child: &str, waiting: &[String], d: &Declaration, 
         target.fields.push(field);
         target.relations.push(RelationIr {
             name: back, kind: RelKind::One, target: child.to_owned(), from: vec![fk.clone()], to: vec![key.clone()],
-            foreign_key: true, on_delete: rel.on_delete, on_update: None, deferrable: None, fk_name: None, through: None, label: None,
+            foreign_key: true, on_delete: rel.on_delete, on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
         });
         let owner = ir.models[ci].relations.iter_mut().find(|r| &r.name == member).ok_or("lost a relation")?;
         owner.from = vec![key];
@@ -348,6 +362,105 @@ fn resolve(ir: &mut SchemaIr, child: &str, waiting: &[String], d: &Declaration, 
         touched.insert(rel.target.clone());
     }
     Ok(())
+}
+
+/// Give a many-to-many relation of `child` its join model, `through:` and back relation on the target.
+fn join_model(
+    ir: &mut SchemaIr, child: &str, rel: &RelationIr, back: &str, d: &Declaration,
+    generated: &mut BTreeMap<(String, String), String>, touched: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let (member, join) = (rel.name.as_str(), rel.join_label.as_deref().ok_or("lost a join name")?);
+    let ci = index(ir, child)?;
+    if ir.behavior.lowered_models.contains(&rel.target) {
+        return Err(error(d, format!("{}: inheritance across schema batches is not supported", rel.target)));
+    }
+    let ti = index(ir, &rel.target)?;
+    let join_name = join.replace("{model}", child);
+    if ir.models.iter().any(|m| m.name == join_name) {
+        return Err(error(d, format!("{child}.{member}: the join model {join_name} already exists; name it differently with {{model}} in through:")));
+    }
+    if let Some(other) = generated.get(&(rel.target.clone(), back.to_owned())) {
+        return Err(error(d, format!("{other}.{member} and {child}.{member} both generate {}.{back}; put {{model}} in the relation name", rel.target)));
+    }
+    check_member(&ir.models[ti], back)?;
+    let one_key = |m: &ModelIr| -> Result<FieldIr, String> {
+        match m.key_fields().as_slice() {
+            [one] => m.fields.iter().find(|f| f.name == *one).cloned().ok_or_else(|| error(d, format!("{}: unknown key field {one}", m.name))),
+            _ => Err(error(d, format!("{child}.{member}: a generated join model needs a one-field primary key on {child} and {}", rel.target))),
+        }
+    };
+    let (child_key, target_key) = (one_key(&ir.models[ci])?, one_key(&ir.models[ti])?);
+    let (child_side, target_side) = (child.to_lowercase(), rel.target.to_lowercase());
+    if child_side == target_side {
+        return Err(error(d, format!("{child}.{member}: a generated join model needs two different models; write the join model and through: yourself")));
+    }
+    let table = format!("{}_{member}", ir.models[ci].table);
+    let side_field = |side: &str, key: &FieldIr| {
+        let mut f = FieldIr::plain(&format!("{side}_{}", key.name), key.ty);
+        f.nullable = false;
+        f.enum_name = key.enum_name.clone();
+        f.max_length = key.max_length;
+        f.db_type = key.db_type.clone();
+        f.read_sql = key.read_sql.clone();
+        f.write_sql = key.write_sql.clone();
+        f.requires = key.requires.clone();
+        f
+    };
+    let (source, target) = (side_field(&child_side, &child_key), side_field(&target_side, &target_key));
+    let mut id = FieldIr::plain("id", ColType::Int);
+    id.nullable = false;
+    id.primary_key = true;
+    id.auto_increment = true;
+    let link = |side: &str, field: &FieldIr, to: &str, key: &FieldIr| RelationIr {
+        name: side.to_owned(), kind: RelKind::One, target: to.to_owned(), from: vec![field.name.clone()], to: vec![key.name.clone()],
+        foreign_key: true, on_delete: Some(OnDelete::Cascade), on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
+    };
+    let model = ModelIr {
+        name: join_name.clone(), table: table.clone(), primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
+        protected_write: false, query_set: None, model_methods: None, classes_from: None, indexes: vec![], triggers: vec![],
+        relations: vec![link(&child_side, &source, child, &child_key), link(&target_side, &target, &rel.target, &target_key)],
+        constraints: vec![ConstraintIr::Unique {
+            name: None, fields: vec![source.name.clone(), target.name.clone()],
+            nulls_not_distinct: false, deferrable: None,
+        }],
+        fields: vec![id, source.clone(), target.clone()],
+    };
+    let (child_key, target_key) = (child_key.name, target_key.name);
+    generated.insert((rel.target.clone(), back.to_owned()), child.to_owned());
+    ir.models.push(model);
+    ir.models[ti].relations.push(RelationIr {
+        name: back.to_owned(), kind: RelKind::Many, target: child.to_owned(), from: vec![target_key.clone()], to: vec![child_key.clone()],
+        foreign_key: false, on_delete: None, on_update: None, deferrable: None, fk_name: None,
+        through: Some(ThroughIr { model: join_name.clone(), source: target.name.clone(), target: source.name.clone() }), label: None, join_label: None,
+    });
+    let owner = ir.models[ci].relations.iter_mut().find(|r| r.name == member).ok_or("lost a relation")?;
+    owner.from = vec![child_key];
+    owner.to = vec![target_key];
+    owner.through = Some(ThroughIr { model: join_name.clone(), source: source.name, target: target.name });
+    owner.label = None;
+    owner.join_label = None;
+    touched.insert(rel.target.clone());
+    touched.insert(join_name);
+    Ok(())
+}
+
+/// Merge `child`, then resolve it. A join model reads the key of its target, so a target that extends a base steps first.
+fn step(
+    ir: &mut SchemaIr, p: &Parsed, child: &str, started: &mut BTreeSet<String>,
+    generated: &mut BTreeMap<(String, String), String>, touched: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if !started.insert(child.to_owned()) { return Ok(()); }
+    let (d, bases) = &p.extends[child];
+    let override_base = p.overrides.get(child).map(|(_, b)| b.as_str());
+    let all: Vec<String> = override_base.map(str::to_owned).into_iter().chain(bases.iter().cloned()).collect();
+    for base in all.iter().filter(|b| p.extends.contains_key(*b)) { step(ir, p, base, started, generated, touched)?; }
+    let waiting = merge(ir, child, &all, override_base, d)?;
+    touched.insert(child.to_owned());
+    if p.abstracts.contains_key(child) { return Ok(()); }
+    let ci = index(ir, child)?;
+    let targets: Vec<String> = ir.models[ci].relations.iter().filter(|r| r.join_label.is_some() && waiting.contains(&r.name)).map(|r| r.target.clone()).collect();
+    for target in targets.iter().filter(|t| p.extends.contains_key(*t)) { step(ir, p, target, started, generated, touched)?; }
+    resolve(ir, child, &waiting, d, generated, touched)
 }
 
 fn run(ir: &mut SchemaIr) -> Result<(), String> {
@@ -361,14 +474,8 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
     })?;
     let mut touched: BTreeSet<String> = BTreeSet::new();
     let mut generated = BTreeMap::new();
-    for child in &sequence {
-        let (d, bases) = &p.extends[child];
-        let override_base = p.overrides.get(child).map(|(_, b)| b.as_str());
-        let all: Vec<String> = override_base.map(str::to_owned).into_iter().chain(bases.iter().cloned()).collect();
-        let waiting = merge(ir, child, &all, override_base, d)?;
-        touched.insert(child.clone());
-        if !p.abstracts.contains_key(child) { resolve(ir, child, &waiting, d, &mut generated, &mut touched)?; }
-    }
+    let mut started = BTreeSet::new();
+    for child in &sequence { step(ir, &p, child, &mut started, &mut generated, &mut touched)?; }
     for (child, (d, base)) in &p.overrides {
         if !p.extends.contains_key(child) { merge(ir, child, std::slice::from_ref(base), Some(base.as_str()), d)?; }
         let (bi, ci) = (index(ir, base)?, index(ir, child)?);

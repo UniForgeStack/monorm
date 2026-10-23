@@ -490,6 +490,10 @@ pub struct RelationIr {
     /// in a model whose pass derives it (`from` and `to` are empty). A pass consumes it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub label: Option<String>,
+    /// The join model name template (`through: "{model}Role"`) of a many-to-many relation that has no
+    /// join model yet, set together with `label`. A pass consumes it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub join_label: Option<String>,
 }
 
 /// The fields of a model that has no table. Codegen emits a type for it and no runtime model.

@@ -258,6 +258,11 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
                 return Err(at(&model.name, None, format!("model {} has no @id field after extension lowering", model.name)));
             }
             for relation in &model.relations {
+                if relation.join_label.is_some() {
+                    return Err(at(&model.name, Some(&relation.name), format!(
+                        "relation {}.{}: {{model}} in a through: name is only expanded in a relation that an extension pass derives; name the join model without it",
+                        model.name, relation.name)));
+                }
                 if relation.label.is_some() || relation.through.is_none() && relation.from.is_empty() {
                     let named = relation.label.as_deref().filter(|l| !l.is_empty()).map(|l| format!(" named {l:?}")).unwrap_or_default();
                     return Err(at(&model.name, Some(&relation.name), format!(

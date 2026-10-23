@@ -11,6 +11,7 @@ model AbstractUser {
   id    Int    @id @default(autoincrement())
   email String @unique
   roles Role[] @relation("{model}_roles")
+  teams Team[] @relation(through: "{model}Team")
   @@inherit.abstract
 }
 
@@ -24,6 +25,11 @@ model Admin {
 }
 
 model Role {
+  id   Int    @id @default(autoincrement())
+  name String
+}
+
+model Team {
   id   Int    @id @default(autoincrement())
   name String
 }

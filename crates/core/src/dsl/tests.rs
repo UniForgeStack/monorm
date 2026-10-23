@@ -321,6 +321,29 @@ fn the_model_placeholder_error_names_no_extension() {
     assert!(e.contains("{model} in a relation name is only expanded") && !e.to_lowercase().contains("inherit"), "{e}");
 }
 
+/// A `{model}` join name on a model with deferred identity waits for a pass, and the join model need not exist.
+#[test]
+fn a_through_name_with_the_model_placeholder_lowers_on_a_deferred_model_only() {
+    let source = "model A {\n  id Int @id\n  bs B[] @relation(through: \"{model}B\")\n}\nmodel B {\n  id Int @id\n}";
+    let load = |_: &str| Err("no imports".to_owned());
+    let proxies = std::collections::HashSet::new();
+    let lower_with = |deferred: &[&str], source: &str| {
+        let deferred = deferred.iter().map(|m| m.to_string()).collect();
+        lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies }.lower(syntax::parse(source).unwrap()).map_err(|e| e.msg)
+    };
+    let ir = lower_with(&["A"], source).unwrap();
+    let r = &ir.models[0].relations[0];
+    assert_eq!((r.kind, r.target.as_str(), r.join_label.as_deref(), r.label.as_deref()), (crate::ir::RelKind::Many, "B", Some("{model}B"), Some("")));
+    assert!(r.through.is_none() && r.from.is_empty() && ir.models.len() == 2);
+
+    let e = lower_with(&[], source).unwrap_err();
+    assert!(e.contains("{model} in a through: name is only expanded in a relation that an extension pass derives") && !e.to_lowercase().contains("inherit"), "{e}");
+    let e = lower_with(&["A"], &source.replace("B[]", "B")).unwrap_err();
+    assert!(e.contains("a many-to-many relation is a list"), "{e}");
+    let e = lower_with(&["A"], &source.replace("through:", "through_fields: [a, b], through:")).unwrap_err();
+    assert!(e.contains("through_fields: does not go with"), "{e}");
+}
+
 /// The `prisma` code blocks in the docs parse, and the complete ones compile (the
 /// "every feature" one imports a file that isn't there). The blog example in
 /// prisma-syntax.md is the blog schema.

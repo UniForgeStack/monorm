@@ -21,7 +21,7 @@ const { modelFor } = await import(pathToFileURL(join(dir, 'index.js')).href);
 
 async function run(provider, url) {
   const registry = new Registry();
-  const { MyUser, Admin, Role, ...rest } = loads(fixture.replace('"sqlite"', `"${provider}"`), { registry });
+  const { MyUser, Admin, Role, Team, UserTeam, AdminTeam, ...rest } = loads(fixture.replace('"sqlite"', `"${provider}"`), { registry });
   assert.deepEqual(Object.keys(rest), []);
   assert.equal(modelFor('User', registry), MyUser);
   assert.equal(modelFor('Admin', registry), Admin);
@@ -40,6 +40,13 @@ async function run(provider, url) {
     await Role.objects.using(db).insertMany([{ name: 'staff', userRolesId: user.pk }, { name: 'root', adminRolesId: admin.pk }]);
     assert.deepEqual((await user.roles.using(db).all()).map((r) => r.name), ['staff']);
     assert.deepEqual((await admin.roles.using(db).all()).map((r) => r.name), ['root']);
+    const teams = await Team.objects.using(db).insertMany([{ name: 'ops' }, { name: 'dev' }, { name: 'qa' }]).returning();
+    await UserTeam.objects.using(db).insertMany([{ userId: user.pk, teamId: teams[0].pk }, { userId: user.pk, teamId: teams[1].pk }]);
+    await AdminTeam.objects.using(db).insertMany([{ adminId: admin.pk, teamId: teams[2].pk }]);
+    assert.deepEqual((await user.teams.using(db).all()).map((t) => t.name).sort(), ['dev', 'ops']);
+    assert.deepEqual((await admin.teams.using(db).all()).map((t) => t.name), ['qa']);
+    assert.deepEqual((await teams[0].userTeams.using(db).all()).map((u) => u.email), ['a@b.c']);
+    assert.deepEqual((await teams[2].adminTeams.using(db).all()).map((a) => a.email), ['x@y.z']);
   } finally {
     await db.close();
   }

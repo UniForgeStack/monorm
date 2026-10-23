@@ -305,3 +305,95 @@ fn postgres_removing_an_override_with_its_own_map_keeps_the_rows_in_two_steps() 
         conn.batch("DROP SCHEMA inherit_two_step CASCADE".into()).await.unwrap();
     });
 }
+
+/// `AbstractUser.roles` is a generated many-to-many (`UserRole`, table `user_roles`); `MyUser` extends the base and overrides `User`.
+fn plan_join(dialect: &str, overriding: bool, previous: &DbSchema) -> (Vec<Step>, DbSchema) {
+    let key = json!({"name": "id", "column": "id", "type": "int", "primary_key": true, "auto_increment": true});
+    let roles = json!({"name": "roles", "kind": "many", "target": "Role", "from": "", "to": "", "foreign_key": false, "label": "", "join_label": "{model}Role"});
+    let mut base = json!({"name": "AbstractUser", "table": "abstractuser", "fields": [{"name": "name", "column": "name", "type": "string"}]});
+    base["relations"] = json!([roles]);
+    let mut models = vec![
+        base,
+        json!({"name": "User", "table": "user", "fields": [key.clone()]}),
+        json!({"name": "Role", "table": "role", "fields": [key.clone(), {"name": "label", "column": "label", "type": "string"}]}),
+    ];
+    let mut declarations = vec![declare("inherit.abstract", "AbstractUser", &[]), declare("inherit.extends", "User", &["AbstractUser"])];
+    if overriding {
+        models.push(json!({"name": "MyUser", "table": "myuser", "fields": [key, {"name": OWN, "column": OWN, "type": "string", "nullable": true}]}));
+        declarations.push(declare("inherit.extends", "MyUser", &["AbstractUser"]));
+        declarations.push(declare("inherit.override", "MyUser", &["User"]));
+    }
+    expand_and_plan(dialect, models, declarations, previous)
+}
+
+const JOIN_SEED: &str = "INSERT INTO \"user\" (id, name) VALUES (1, 'a'), (2, 'b');
+    INSERT INTO role (id, label) VALUES (1, 'admin'), (2, 'editor'), (3, 'viewer');
+    INSERT INTO user_roles (user_id, role_id) VALUES (1, 1), (1, 2), (2, 2), (2, 3)";
+
+#[test]
+fn sqlite_a_generated_join_model_keeps_its_link_rows_under_an_override() {
+    let db = sqlite_db();
+    let (up, v1) = plan_join("sqlite", false, &DbSchema::default());
+    assert!(up.iter().any(|s| s.sql.contains("RENAME TO \"user_roles\"")), "{:?}", sql(&up));
+    sqlite_apply(&db, &up);
+    db.execute_batch(JOIN_SEED).unwrap();
+    assert!(db.execute_batch("INSERT INTO user_roles (user_id, role_id) VALUES (1, 1)").is_err());
+
+    let (up, _) = plan_join("sqlite", true, &v1);
+    assert!(up.iter().all(|s| !s.sql.contains("user_roles") || s.sql.contains("__orm_new_user_roles")), "{:?}", sql(&up));
+    sqlite_apply(&db, &up);
+    assert_eq!(columns(&db, "user"), ["name", "id", OWN]);
+    assert_eq!(sqlite_count(&db, "SELECT role_id FROM user_roles ORDER BY id"), [1, 2, 2, 3]);
+    assert_eq!(sqlite_count(&db, "SELECT user_id FROM user_roles ORDER BY id"), [1, 1, 2, 2]);
+    assert!(sqlite_count(&db, "SELECT name FROM sqlite_schema WHERE name LIKE '%myuser_role%'").is_empty());
+    assert!(sqlite_count(&db, "SELECT 1 FROM pragma_foreign_key_check").is_empty());
+}
+
+#[test]
+fn postgres_a_generated_join_model_keeps_its_link_rows_under_an_override() {
+    let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let conn = orm_engine::db::connect(&url, 1).await.unwrap();
+        conn.batch("DROP SCHEMA IF EXISTS inherit_join CASCADE; CREATE SCHEMA inherit_join; SET search_path TO inherit_join, public".into()).await.unwrap();
+        let (up, v1) = plan_join("postgres", false, &DbSchema::default());
+        for step in &up { conn.batch(step.sql.clone()).await.unwrap(); }
+        conn.batch(JOIN_SEED.into()).await.unwrap();
+        let before = names(conn.query_text(PG_KEYS.into()).await.unwrap());
+        assert_eq!(before, ["user_roles_role_id_fkey", "user_roles_user_id_fkey"]);
+
+        let (up, _) = plan_join("postgres", true, &v1);
+        assert!(up.iter().all(|s| !s.sql.contains("DROP TABLE") && !s.sql.contains("CREATE TABLE") && !s.sql.contains("DROP CONSTRAINT")), "{:?}", sql(&up));
+        for step in &up { conn.batch(step.sql.clone()).await.unwrap(); }
+        assert_eq!(names(conn.query_text(PG_KEYS.into()).await.unwrap()), before);
+        assert_eq!(names(conn.query_text("SELECT user_id::text || '-' || role_id FROM user_roles ORDER BY id".into()).await.unwrap()), ["1-1", "1-2", "2-2", "2-3"]);
+        conn.batch("DROP SCHEMA inherit_join CASCADE".into()).await.unwrap();
+    });
+}
+
+/// The unique names that the pass gives the join tables of `children`, which share one abstract base with a many-to-many list relation.
+fn generated_join_uniques(children: &[&str]) -> Vec<String> {
+    let key = json!({"name": "id", "column": "id", "type": "int", "primary_key": true, "auto_increment": true});
+    let permissions = json!({"name": "permissions", "kind": "many", "target": "Permission", "from": "", "to": "", "foreign_key": false, "label": "", "join_label": "{model}Permission"});
+    let mut base = json!({"name": "AbstractMembership", "table": "abstractmembership", "fields": [key.clone()]});
+    base["relations"] = json!([permissions]);
+    let mut models = vec![base, json!({"name": "Permission", "table": "permission", "fields": [key]})];
+    models.extend(children.iter().map(|c| json!({"name": c, "table": c.to_lowercase(), "fields": []})));
+    let mut declarations = vec![declare("inherit.abstract", "AbstractMembership", &[])];
+    declarations.extend(children.iter().map(|c| declare("inherit.extends", c, &["AbstractMembership"])));
+    let (_, snapshot) = expand_and_plan("postgres", models, declarations, &DbSchema::default());
+    let mut names: Vec<String> = snapshot.tables.iter().filter(|t| t.name.ends_with("_permissions")).flat_map(|t| t.uniques.iter().map(|u| u.name.clone())).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_generated_join_model_unique_name_differs_per_child() {
+    assert_eq!(generated_join_uniques(&["Member", "Guest"]), ["guest_permissions_guest_id_permission_id_key", "member_permissions_member_id_permission_id_key"]);
+}
+
+/// The default unique name of this join table is longer than the 63 characters that Postgres keeps.
+#[test]
+fn a_generated_join_model_unique_name_fits_the_identifier_limit() {
+    let uniques = generated_join_uniques(&["OrganizationMembership"]);
+    assert!(uniques.len() == 1 && uniques[0].len() <= 63 && uniques[0].starts_with("organizationmembership_permissions_"), "{uniques:?}");
+}

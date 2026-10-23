@@ -663,3 +663,224 @@ fn override_plus_extends_copies_a_check_once() {
     lower(&mut ir).unwrap();
     assert_eq!(get(&ir, "MyUser").constraints.len(), 1);
 }
+
+/// `AbstractUser.roles Role[] @relation(through: "{model}Role")`, extended by `User` and `Admin`.
+fn user_roles() -> SchemaIr {
+    let mut base = model("AbstractUser", vec![key("id"), field("email", "string")]);
+    let mut roles = relation("roles", "many", "Role", "", "", false);
+    roles["label"] = json!("");
+    roles["join_label"] = json!("{model}Role");
+    base["relations"] = json!([roles]);
+    schema(
+        vec![base, model("User", vec![]), model("Admin", vec![field("level", "int")]), model("Role", vec![key("id"), field("name", "string")])],
+        vec![
+            declare("inherit.abstract", "AbstractUser", vec![]),
+            declare("inherit.extends", "User", vec![json!("AbstractUser")]),
+            declare("inherit.extends", "Admin", vec![json!("AbstractUser")]),
+        ],
+    )
+}
+
+fn through_of(m: &ModelIr, relation: &str) -> (String, String, String) {
+    let t = m.relations.iter().find(|r| r.name == relation).unwrap().through.clone().unwrap_or_else(|| panic!("{}.{relation} has no through", m.name));
+    (t.model, t.source, t.target)
+}
+
+#[test]
+fn a_join_model_is_named_from_its_own_child() {
+    let mut ir = user_roles();
+    ir.models.retain(|m| m.name != "User" && m.name != "Admin");
+    ir.models.push(serde_json::from_value(model("MyUser", vec![])).unwrap());
+    ir.behavior.declarations.retain(|d| d.attribute != "inherit.extends");
+    ir.behavior.declarations.push(serde_json::from_value(declare("inherit.extends", "MyUser", vec![json!("AbstractUser")])).unwrap());
+    lower(&mut ir).unwrap();
+    let mut all: Vec<_> = ir.models.iter().map(|m| m.name.as_str()).collect();
+    all.sort();
+    assert_eq!(all, ["MyUser", "MyUserRole", "Role"]);
+    assert_eq!(get(&ir, "MyUserRole").table, "myuser_roles");
+    assert_eq!(through_of(get(&ir, "MyUser"), "roles"), ("MyUserRole".into(), "myuser_id".into(), "role_id".into()));
+    assert_eq!(through_of(get(&ir, "Role"), "myuser_roles"), ("MyUserRole".into(), "role_id".into(), "myuser_id".into()));
+}
+
+#[test]
+fn a_through_template_gives_each_child_its_own_join_model() {
+    let mut ir = user_roles();
+    ir.models[1].table = "auth_user".into();
+    lower(&mut ir).unwrap();
+    let mut all: Vec<_> = ir.models.iter().map(|m| m.name.as_str()).collect();
+    all.sort();
+    assert_eq!(all, ["Admin", "AdminRole", "Role", "User", "UserRole"]);
+    let join = get(&ir, "UserRole");
+    assert_eq!((join.table.as_str(), names(join)), ("auth_user_roles", vec!["id", "user_id", "role_id"]));
+    assert_eq!(get(&ir, "AdminRole").table, "admin_roles");
+    assert!(join.fields.iter().all(|f| !f.nullable));
+    let links: Vec<_> = join.relations.iter().map(|r| (r.name.as_str(), r.target.as_str(), r.from[0].as_str(), r.to[0].as_str(), r.foreign_key, r.on_delete)).collect();
+    assert_eq!(links, [
+        ("user", "User", "user_id", "id", true, Some(orm_contracts::ir::OnDelete::Cascade)),
+        ("role", "Role", "role_id", "id", true, Some(orm_contracts::ir::OnDelete::Cascade)),
+    ]);
+    // No explicit name: core derives it per table and shortens it to the identifier limit.
+    let unique: Vec<_> = [join, get(&ir, "AdminRole")].iter().map(|m| match &m.constraints[..] {
+        [orm_contracts::ir::ConstraintIr::Unique { name, fields, .. }] => (name.clone(), fields.clone()),
+        other => panic!("{other:?}"),
+    }).collect();
+    assert_eq!(unique[0], (None, vec!["user_id".to_string(), "role_id".to_string()]));
+    assert_eq!(unique[1], (None, vec!["admin_id".to_string(), "role_id".to_string()]));
+    assert_eq!(through_of(get(&ir, "User"), "roles"), ("UserRole".into(), "user_id".into(), "role_id".into()));
+    assert_eq!(through_of(get(&ir, "Admin"), "roles"), ("AdminRole".into(), "admin_id".into(), "role_id".into()));
+    let role = get(&ir, "Role");
+    assert_eq!(names(role), ["id", "name"]);
+    assert_eq!(through_of(role, "user_roles"), ("UserRole".into(), "role_id".into(), "user_id".into()));
+    assert_eq!(through_of(role, "admin_roles"), ("AdminRole".into(), "role_id".into(), "admin_id".into()));
+    let back = role.relations.iter().find(|r| r.name == "user_roles").unwrap();
+    assert_eq!((back.target.as_str(), back.from.as_slice(), back.to.as_slice(), back.foreign_key), ("User", &["id".to_string()][..], &["id".to_string()][..], false));
+    assert!(ir.models.iter().flat_map(|m| &m.relations).all(|r| r.label.is_none() && r.join_label.is_none()));
+    let storage = ir.behavior.storage.as_ref().unwrap();
+    assert!(["UserRole", "AdminRole"].iter().all(|n| storage.models.iter().any(|m| &m.name == n)));
+}
+
+#[test]
+fn a_generated_join_model_name_that_exists_is_an_error() {
+    let mut ir = user_roles();
+    ir.models.push(serde_json::from_value(model("UserRole", vec![key("id")])).unwrap());
+    let message = rejected(ir);
+    assert!(message.contains("the join model UserRole already exists"), "{message}");
+}
+
+#[test]
+fn a_plain_model_list_relation_stays_one_to_many_with_a_nullable_key() {
+    let mut ir = user_roles();
+    ir.models[0].relations[0].join_label = None;
+    ir.models[0].relations[0].label = Some("{model}_roles".into());
+    lower(&mut ir).unwrap();
+    assert!(ir.models.iter().all(|m| m.name != "UserRole"));
+    let role = get(&ir, "Role");
+    let mut cols = names(role);
+    cols.sort();
+    assert_eq!(cols, ["admin_roles_id", "id", "name", "user_roles_id"]);
+    assert!(role.fields.iter().filter(|f| f.name.ends_with("_roles_id")).all(|f| f.nullable));
+    assert!(ir.models.iter().flat_map(|m| &m.relations).all(|r| r.through.is_none()));
+}
+
+fn string_key(name: &str) -> Value {
+    json!({"name": name, "column": name, "type": "string", "primary_key": true})
+}
+
+#[test]
+fn a_join_model_follows_a_child_key_type() {
+    let mut ir = user_roles();
+    ir.models[1].fields.insert(0, serde_json::from_value(string_key("id")).unwrap());
+    lower(&mut ir).unwrap();
+    let join = get(&ir, "UserRole");
+    assert_eq!(join.fields[1].ty, get(&ir, "User").fields.iter().find(|f| f.name == "id").unwrap().ty);
+    assert_ne!(join.fields[1].ty, join.fields[2].ty);
+}
+
+#[test]
+fn a_join_target_that_takes_its_key_from_a_base_still_gets_its_join_model() {
+    let mut ir = user_roles();
+    // `Admin` sorts before `Role`, so `Admin.roles` is resolved before `Role` has merged its key.
+    ir.models.iter_mut().find(|m| m.name == "Role").unwrap().fields.retain(|f| !f.primary_key);
+    ir.models.push(serde_json::from_value(model("Identified", vec![key("id")])).unwrap());
+    ir.behavior.declarations.push(serde_json::from_value(declare("inherit.abstract", "Identified", vec![])).unwrap());
+    ir.behavior.declarations.push(serde_json::from_value(declare("inherit.extends", "Role", vec![json!("Identified")])).unwrap());
+    lower(&mut ir).unwrap();
+    assert_eq!(names(get(&ir, "AdminRole")), ["id", "admin_id", "role_id"]);
+    assert_eq!(names(get(&ir, "Role")), ["id", "name"]);
+}
+
+/// `User` extends `AbstractUser` (join model `UserRole`); `MyUser` overrides `User`.
+fn overridden_user_roles() -> SchemaIr {
+    let mut ir = user_roles();
+    ir.models.retain(|m| m.name != "Admin");
+    ir.models.push(serde_json::from_value(model("MyUser", vec![field("nick", "string")])).unwrap());
+    ir.behavior.declarations.retain(|d| d.model != "Admin");
+    ir.behavior.declarations.push(serde_json::from_value(declare("inherit.override", "MyUser", vec![json!("User")])).unwrap());
+    ir
+}
+
+#[test]
+fn an_override_keeps_the_join_model_and_points_it_to_the_child() {
+    let mut ir = overridden_user_roles();
+    lower(&mut ir).unwrap();
+    let mut all: Vec<_> = ir.models.iter().map(|m| m.name.as_str()).collect();
+    all.sort();
+    assert_eq!(all, ["MyUser", "Role", "UserRole"]);
+    let join = get(&ir, "UserRole");
+    assert_eq!(join.table, "user_roles");
+    assert_eq!(join.relations.iter().map(|r| r.target.as_str()).collect::<Vec<_>>(), ["MyUser", "Role"]);
+    assert_eq!(through_of(get(&ir, "MyUser"), "roles"), ("UserRole".into(), "user_id".into(), "role_id".into()));
+    let back = get(&ir, "Role").relations.iter().find(|r| r.name == "user_roles").unwrap().clone();
+    assert_eq!((back.target.as_str(), back.through.unwrap().model.as_str().to_owned()), ("MyUser", "UserRole".to_owned()));
+}
+
+#[test]
+fn a_hand_written_through_relation_survives_an_override() {
+    let mut user = model("User", vec![key("id")]);
+    let mut roles = relation("roles", "many", "Role", "id", "id", false);
+    roles["through"] = json!({"model": "UserRole", "source": "user_id", "target": "role_id"});
+    user["relations"] = json!([roles]);
+    let mut join = model("UserRole", vec![key("id"), field("user_id", "int"), field("role_id", "int")]);
+    join["relations"] = json!([relation("user", "one", "User", "user_id", "id", true), relation("role", "one", "Role", "role_id", "id", true)]);
+    let mut role = model("Role", vec![key("id")]);
+    let mut users = relation("users", "many", "User", "id", "id", false);
+    users["through"] = json!({"model": "UserRole", "source": "role_id", "target": "user_id"});
+    role["relations"] = json!([users]);
+    let mut ir = schema(
+        vec![user, role, join, model("MyUser", vec![field("nick", "string")])],
+        vec![declare("inherit.override", "MyUser", vec![json!("User")])],
+    );
+    lower(&mut ir).unwrap();
+    assert_eq!(get(&ir, "UserRole").relations[0].target, "MyUser");
+    assert_eq!(through_of(get(&ir, "MyUser"), "roles").0, "UserRole");
+    assert_eq!(get(&ir, "Role").relations[0].target, "MyUser");
+}
+
+#[test]
+fn an_override_cannot_change_the_key_type() {
+    let mut ir = parent();
+    ir.models[2].fields.insert(0, serde_json::from_value(string_key("id")).unwrap());
+    let message = rejected(ir);
+    assert!(message.contains("`MyUser.id`: an override cannot change the key type of `User`; incoming foreign keys keep it"), "{message}");
+    let mut same = parent();
+    same.models[2].fields.insert(0, serde_json::from_value(key("id")).unwrap());
+    lower(&mut same).unwrap();
+}
+
+#[test]
+fn an_override_cannot_change_the_key_length() {
+    let sized = |length: u32| {
+        let mut f = string_key("id");
+        f["max_length"] = json!(length);
+        serde_json::from_value(f).unwrap()
+    };
+    let mut ir = parent();
+    ir.models[0].fields[0] = sized(36);
+    ir.models[2].fields.insert(0, sized(64));
+    let message = rejected(ir);
+    assert!(message.contains("`MyUser.id`: an override cannot change the key type of `User`; incoming foreign keys keep it"), "{message}");
+    let mut same = parent();
+    same.models[0].fields[0] = sized(36);
+    same.models[2].fields.insert(0, sized(36));
+    lower(&mut same).unwrap();
+}
+
+#[test]
+fn a_child_may_redeclare_the_key_and_change_its_type() {
+    let mut ir = user_roles();
+    ir.models[1].fields.insert(0, serde_json::from_value(string_key("id")).unwrap());
+    lower(&mut ir).unwrap();
+    let user = get(&ir, "User");
+    assert_eq!(user.fields.iter().filter(|f| f.primary_key).count(), 1);
+    let mut cols = names(user);
+    cols.sort();
+    assert_eq!(cols, ["email", "id"]);
+}
+
+#[test]
+fn a_key_on_another_field_says_to_redeclare_the_base_key() {
+    let mut ir = user_roles();
+    ir.models[1].fields.insert(0, serde_json::from_value(string_key("uuid")).unwrap());
+    let message = rejected(ir);
+    assert!(message.contains("differs from the one of User (uuid)") && message.contains("redeclare `id`"), "{message}");
+}

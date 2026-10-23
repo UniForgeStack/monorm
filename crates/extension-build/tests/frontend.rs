@@ -21,6 +21,9 @@ fn main() {
     let ir = dsl::compile("model User {\n id Int @id\n name String @example.rename(to: \"public_name\")\n secret String? @example.hide\n}\nmodel UserView {\n @@example.proxy(parent: \"User\")\n}", None).unwrap();
     let missing_identity = dsl::compile("model User {\n id Int @id\n}\nmodel UserView {\n id Int @example.hide\n @@example.proxy(parent: \"User\")\n}", None).err().unwrap();
     assert!(missing_identity.ends_with(":4:1: model UserView has no @id field after extension lowering"), "{missing_identity}");
+    // A model with a declaration passes core, but no pass here derives its join model.
+    let unexpanded = dsl::compile("model Team {\n id Int @id\n}\nmodel UserView {\n id Int @id\n teams Team[] @relation(through: \"{model}Team\")\n @@example.proxy(parent: \"Team\")\n}", None).err().unwrap();
+    assert!(unexpanded.ends_with(":6:2: relation UserView.teams: {model} in a through: name is only expanded in a relation that an extension pass derives; name the join model without it"), "{unexpanded}");
     assert_eq!(ir.models[0].fields[1].name, "public_name");
     assert_eq!(ir.models[0].fields[1].column, "name");
     let json = serde_json::to_string(&ir).unwrap();
