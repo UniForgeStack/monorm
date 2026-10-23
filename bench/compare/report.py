@@ -63,7 +63,7 @@ def load(directory: Path, prefix: str = "") -> Result:
         elif name.startswith("bun-"):
             continue
         out[name] = json.loads(path.read_text())
-    order = ["orm", "orm-all", "django-sync", "django-async", "prisma", "pg"]
+    order = ["orm", "orm-all", "django-sync", "django-async", "sqlalchemy-sync", "sqlalchemy-async", "prisma", "drizzle", "pg"]
     return dict(sorted(out.items(), key=lambda kv: order.index(kv[0]) if kv[0] in order else len(order)))
 
 

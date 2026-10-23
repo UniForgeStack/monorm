@@ -42,7 +42,7 @@ from common import (
     wait_quiet,
 )
 
-BASE = ("orm", "django-sync", "django-async")
+BASE = ("orm", "django-sync", "django-async", "sqlalchemy-sync", "sqlalchemy-async")
 REPO = HERE.parents[2]
 
 
@@ -51,6 +51,10 @@ def make(name: str) -> Any:
         from orm_contender import OrmContender
 
         return OrmContender(name)
+    if name.startswith("sqlalchemy"):
+        from sqlalchemy_contender import SqlalchemyContender
+
+        return SqlalchemyContender(asynchronous=name == "sqlalchemy-async")
     from django_contender import DjangoContender
 
     return DjangoContender(asynchronous=name == "django-async")
@@ -173,7 +177,7 @@ def environment(infos: dict[str, dict[str, Any]], artifact: str | None, before: 
     conn = connect()
     pg = conn.execute("select version()").fetchone()[0]  # type: ignore[index]
     conn.close()
-    pkgs = {p: md.version(p) for p in ("orm", "django", "psycopg", "psycopg-binary", "psycopg-pool", "asgiref")}
+    pkgs = {p: md.version(p) for p in ("orm", "django", "psycopg", "psycopg-binary", "psycopg-pool", "asgiref", "sqlalchemy", "asyncpg", "greenlet")}
     return {
         "date": dt.datetime.now(dt.UTC).isoformat(),
         "git_sha": subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip(),
@@ -271,8 +275,8 @@ def main() -> None:
     w.add_argument("--iters", type=int, default=0)
     a = ap.parse_args()
     if a.cmd == "worker":
-        if a.contender == "django-sync":
-            drive(worker(a))  # the sync ORM refuses to run while an event loop is running
+        if a.contender in ("django-sync", "sqlalchemy-sync"):
+            drive(worker(a))  # the sync ORMs run without an event loop; Django's refuses to run while an event loop is running
         else:
             asyncio.run(worker(a))
     elif a.cmd == "check":

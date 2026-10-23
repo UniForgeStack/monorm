@@ -4,7 +4,8 @@ This folder holds the shared schema and seed, the Python and TypeScript contende
 There is no Rust runner yet.
 
 - `schema.prisma` is the model. `schema.sql` is the same schema as SQL. `seed.sql` loads 1,000 users, 20 categories, 10,000 posts, 50,000 comments, 50 tags and 30,000 post-tag links.
-- `python/run.py` runs the contenders `orm`, `django-sync` and `django-async` (and `orm-all`, see below).
+- `python/run.py` runs the contenders `orm`, `django-sync`, `django-async`, `sqlalchemy-sync` (psycopg) and `sqlalchemy-async` (asyncpg) (and `orm-all`, see below).
+- `js/run.mjs` runs the contenders `orm`, `prisma`, `drizzle` and `pg` on Node, and `orm`, `prisma` and `drizzle` on Bun.
 
 ## Full run
 
@@ -23,7 +24,7 @@ The database is `bench` (`BENCH_DB_NAME` changes it); the run drops and recreate
 ```bash
 createdb -h localhost -p 55432 -U postgres bench          # a database of your own
 export BENCH_DATABASE_URL=postgres://postgres:postgres@localhost:55432/bench
-uv pip install django==6.1.2 'psycopg[binary]==3.3.6' psycopg-pool==3.3.3 asgiref==3.12.1   # into a venv of its own that has the `orm` wheel
+uv pip install django==6.1.2 'psycopg[binary]==3.3.6' psycopg-pool==3.3.3 asgiref==3.12.1 'sqlalchemy[asyncio]==2.1.6' asyncpg==0.32.0   # into a venv of its own that has the `orm` wheel
 cd bench/compare/python
 python run.py check                                       # equality of results and database state, per case
 python run.py run --rounds 2 --iters 5                    # check first, then timing; writes results/smoke/ (defaults: 20 x 20)
@@ -55,8 +56,9 @@ Open the `.cpuprofile` in Chrome DevTools (Performance) for the full call tree.
 
 - The `orm` wheel must be a release build with the postgres profile. A debug tooling build (the dev venv) runs, but its timings are not valid.
 - Django has no async `atomic()`. The `tx-5` case on `django-async` runs a sync function through `sync_to_async`. Django async calls also serialize on one thread.
-- The sync ORM cannot run in an event loop. The `django-sync` process runs without one; its `concurrent` case uses 50 threads.
-- The CPU split is the time to build the query and to render its SQL (`.sql()` of `orm` inlines values, `str(queryset.query)` of Django does too). The decode time is not reachable in either library and is not measured. Treat the split as approximate.
-- `filter-ne-null` is an extra case: `exclude(category_id=3)` in Django keeps the NULL rows, and `(Post.category_id != 3).or_null()` is the same in `orm`.
-- Prepared statements: `orm` prepares once per connection and caches. psycopg prepares after 5 runs of a statement. `adapter-pg` of Prisma sends unnamed statements.
-- `orm` returns full rows from `bulk-insert-*` (`returning()` has no key-only form); Prisma selects ids only. `summary.md` prints this and the other per-contender notes.
+- The sync ORMs run without an event loop: Django refuses to run in one. The `django-sync` and `sqlalchemy-sync` processes run without one; their `concurrent` case uses 50 threads.
+- SQLAlchemy opens one session per operation, and the session begins a transaction on first use: a read runs BEGIN, SELECT, ROLLBACK.
+- The CPU split is the time to build the query and to render its SQL (`.sql()` of `orm` inlines values, `str(queryset.query)` of Django does too; SQLAlchemy `compile()` and Drizzle `toSQL()` keep placeholders; the SQLAlchemy split compiles anew each time and skips the compiled cache that real calls use). The decode time is not reachable in either library and is not measured. Treat the split as approximate.
+- `filter-ne-null` is an extra case: `exclude(category_id=3)` in Django keeps the NULL rows, and `(Post.category_id != 3).or_null()` is the same in `orm`. SQLAlchemy uses `is_distinct_from(3)`; Prisma and Drizzle add an explicit `IS NULL` branch.
+- Prepared statements: `orm` prepares once per connection and caches. psycopg prepares after 5 runs of a statement. `adapter-pg` of Prisma and Drizzle send unnamed statements. The asyncpg dialect of SQLAlchemy caches prepared statements per connection.
+- `orm` returns full rows from `bulk-insert-*` (`returning()` has no key-only form); SQLAlchemy returns full instances too; Prisma and Drizzle select ids only. `summary.md` prints this and the other per-contender notes.

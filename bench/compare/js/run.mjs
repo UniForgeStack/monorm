@@ -2,7 +2,7 @@
 //
 //   node run.mjs check [--contenders a,b] [--cases x,y]
 //   node run.mjs run   [--rounds 20] [--iters 20] [--max-load 2] [--orm-artifact DIR] [--contenders a,b] [--out DIR]
-//   bun run.mjs run    (ours and Prisma; read-pk, read-1000 and bulk-insert-1000 only)
+//   bun run.mjs run    (ours, Prisma and Drizzle; read-pk, read-1000 and bulk-insert-1000 only)
 //   node run.mjs profile --cases x [--contenders a,b] [--iters 200] [--top 25] [--out DIR]
 //
 // Each contender runs in its own process (`worker`), once per round, with the database reset before every process.
@@ -29,7 +29,7 @@ const REPO = join(HERE, "..", "..", "..");
 const json = v => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? Number(x) : x));
 const thenable = x => x !== null && typeof x === "object" && typeof x.then === "function";
 
-const baseContenders = () => (IS_BUN ? ["orm", "prisma"] : ["orm", "prisma", "pg"]);
+const baseContenders = () => (IS_BUN ? ["orm", "prisma", "drizzle"] : ["orm", "prisma", "drizzle", "pg"]);
 const defaultCases = () => (IS_BUN ? BUN_CASES : CASES);
 const prefix = IS_BUN ? "bun-" : "";
 
@@ -190,7 +190,7 @@ async function environment(infos, artifact, before, extra) {
     git_sha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: REPO, encoding: "utf8" }).stdout.trim(),
     runtime: IS_BUN ? `bun ${Bun.version}` : `node ${process.version}`,
     machine: `${process.platform} ${process.arch}`,
-    packages: { pg: version("pg"), prisma: version("prisma"), "@prisma/client": version("@prisma/client"), "@prisma/adapter-pg": version("@prisma/adapter-pg") },
+    packages: { pg: version("pg"), prisma: version("prisma"), "@prisma/client": version("@prisma/client"), "@prisma/adapter-pg": version("@prisma/adapter-pg"), "drizzle-orm": version("drizzle-orm") },
     postgres: pgVersion,
     database: databaseUrl().split("/").pop(),
     pool_size: POOL_SIZE,

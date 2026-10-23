@@ -11,7 +11,7 @@ Mark each number you report as measured (and say if the machine was loaded), est
 | [`copy_insert.py`](copy_insert.py) | PostgreSQL COPY versus batched `insert_many()` through Python on the blog models | Runs on any PostgreSQL build |
 | [`aggregates_pagination.py`](aggregates_pagination.py) | Scalar versus LATERAL relation aggregates with an unindexed parent sort, LIMIT 20 and OFFSET 10; 100,000 users / 1,000,000 posts by default | Runs on any build (PostgreSQL) |
 | [`rust-compare/`](rust-compare) | `orm-engine` (typed IR and JSON IR) against SeaORM 2.0.4 and Diesel-async, in Rust only; `diagnose` adds raw SQLx and a streaming read | Not applicable (engine only) |
-| [`compare/`](compare) | Our ORM against Django (sync and async), Prisma 7 and `pg` on one schema: 20 cases, equality check, release builds, `run.sh` and `report.py` | `orm-all` row uses the `all` extension artifact |
+| [`compare/`](compare) | Our ORM against Django and SQLAlchemy (sync and async), Prisma 7, Drizzle and `pg` on one schema: 20 cases, equality check, release builds, `run.sh` and `report.py` | `orm-all` row uses the `all` extension artifact |
 | [`shared-behavior/`](shared-behavior) | Paired A/B of `Database.lock` advisory locks: the earlier Python/TypeScript key hashing against the Rust helper, through the public API | Not applicable (core) |
 | [`build-time-extensions/`](build-time-extensions) | The cost gate of build-time extensions: handwritten built-in controls against generated extension code, Python and Node, PostgreSQL and SQLite; allocation and artifact-size probes | This is the extension benchmark |
 

@@ -6,7 +6,7 @@ All entries are measured results on the recorded machines, not new measurements.
 “Current” identifies the retained engine or implementation, not a fresh run of HEAD.
 The [Python and TypeScript comparison](#python-and-typescript-versus-django-and-prisma--2026-10-21)
 compares the Python API with Django and the TypeScript API with Prisma and raw `pg`.
-No benchmark here compares them with SQLAlchemy or Drizzle.
+No recorded run includes SQLAlchemy or Drizzle yet; `bench/compare/` has those contenders.
 
 | Section | Status | Engine / implementation measured | Comparison it supports |
 |---|---|---|---|

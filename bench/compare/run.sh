@@ -88,7 +88,8 @@ ALL=$BUILD/all
 build_python() {
   [ -x "$PY" ] || uv venv -q -p "$PYTHON" "$VENV"
   uv pip install -q --python "$PY" maturin==1.15.0 mypy==2.4.0 pyright==1.1.414 \
-    django==6.1.2 "psycopg[binary]==3.3.6" psycopg-pool==3.3.3 asgiref==3.12.1
+    django==6.1.2 "psycopg[binary]==3.3.6" psycopg-pool==3.3.3 asgiref==3.12.1 \
+    "sqlalchemy[asyncio]==2.1.6" asyncpg==0.32.0
   rm -rf "$BUILD/wheels" && mkdir -p "$BUILD/wheels"
   # The default profile of the shipped wheel: postgres, release.
   (cd "$ROOT/languages/python/packaging/postgres" && "$VENV/bin/maturin" build --release -q -i "$PY" -o "$BUILD/wheels")
