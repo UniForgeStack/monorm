@@ -23,6 +23,14 @@ languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema"]
 
+# Adds the field before the logical passes, so a proxy of the model copies it.
+[[package.metadata.orm-extension.passes]]
+id = "orm.soft-delete.fields"
+phase = "declaration"
+rust = "crate::add_fields"
+after = ["orm.inherit.expand"]
+effects = ["models.soft_delete", "storage.soft_delete"]
+
 [[package.metadata.orm-extension.passes]]
 id = "orm.soft-delete.prepare"
 phase = "behavior"
@@ -30,7 +38,18 @@ rust = "crate::prepare"
 after = ["orm.locking.prepare", "orm.timestamps.prepare"]
 effects = ["behavior.read_defaults", "behavior.delete_rewrites", "storage.soft_delete_triggers"]
 
-# `deleted_at DateTime? @soft_delete.deleted_at(mode: "application")`.
+# `@@soft_delete.deleted_at("deleted_at", map: "_deleted_at", mode: "application")`: adds the field.
+[[package.metadata.orm-extension.attributes]]
+name = "soft_delete.deleted_at"
+target = "model"
+[[package.metadata.orm-extension.attributes.positional]]
+kind = "string"
+[package.metadata.orm-extension.attributes.arguments.mode]
+kind = "string"
+[package.metadata.orm-extension.attributes.arguments.map]
+kind = "string"
+
+# The field form; the pass rejects it with the model attribute to write instead.
 [[package.metadata.orm-extension.attributes]]
 name = "soft_delete.deleted_at"
 target = "field"

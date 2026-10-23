@@ -117,7 +117,7 @@ for (const dialect of ["sqlite", "postgres"]) {
 model Item {
   id      Int       @id
   name    String
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@map("bw_item")
 }`;
 

@@ -16,7 +16,7 @@ import { loadsSoftDelete } from "./soft-delete-ext.js";
 const SCHEMA = `model Post {
   id         Int       @id
   title      String
-  deleted_at DateTime? @soft_delete.deleted_at
+  @@soft_delete.deleted_at
   @@map("proxy_members_post")
 }
 

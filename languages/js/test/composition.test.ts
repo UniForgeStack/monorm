@@ -131,10 +131,10 @@ for (const provider of ["sqlite", "postgresql"]) {
   });
 }
 
-for (const [field, extension] of [
-  ["version Int @default(0) @locking.version", "orm.locking"],
-  ["deleted DateTime? @soft_delete.deleted_at", "orm.soft-delete"],
-  ["changed DateTime @default(now()) @timestamps.updated_at", "orm.timestamps"],
+for (const [attribute, extension] of [
+  ['@@locking.version', "orm.locking"],
+  ['@@soft_delete.deleted_at("deleted")', "orm.soft-delete"],
+  ['@@timestamps.updated_at("changed")', "orm.timestamps"],
 ] as const) {
   test(`a role on a composed model is rejected (${extension})`, { skip: !enabled || !hasExtension(extension) }, () => {
     const roleSource = `datasource db {\n provider = "sqlite"\n}
@@ -144,7 +144,7 @@ model Person {
 }
 model Employee {
  salary Int
- ${field}
+ ${attribute}
  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
  @@map("composition06_node_role_employees")
 }

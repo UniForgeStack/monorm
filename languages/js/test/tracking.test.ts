@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, of, Registry, scope, VersionConflict, type Database } from "../src/index.js";
+import { connect, loads, of, Registry, scope, VersionConflict, type Database } from "../src/index.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
 import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
 
@@ -26,7 +26,7 @@ for (const dialect of ["sqlite", "postgres"]) {
 model Note {
   id      Int      @id
   views   Int      @default(0)
-  changed DateTime @default(now()) @timestamps.updated_at(mode: "${mode}")
+  @@timestamps.updated_at("changed", mode: "${mode}")
   @@map("tracking_node_notes")
 }`);
       const notes = models.Note!.objects.using(db);
@@ -49,15 +49,15 @@ model Note {
       const [db, models] = await open(dialect, `
 model Author {
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "${mode}")
   books   Book[]
+  @@soft_delete.deleted_at("deleted", mode: "${mode}")
   @@map("tracking_node_authors")
 }
 model Book {
   id        Int       @id
   author_id Int
   author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
-  removed   DateTime? @soft_delete.deleted_at(mode: "${mode}")
+  @@soft_delete.deleted_at("removed", mode: "${mode}")
   @@map("tracking_node_books")
 }`);
       const Author = models.Author!, authors = Author.objects.using(db);
@@ -95,8 +95,8 @@ model Book {
   const versionedSoftDelete = `
 model Doc {
   id      Int       @id
-  version Int       @default(0) @locking.version
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
+  @@locking.version
   @@map("tracking_node_soft_docs")
 }`;
 
@@ -131,7 +131,7 @@ model Doc {
 model Doc {
   id      Int    @id
   title   String
-  version Int    @default(0) @locking.version
+  @@locking.version
   @@map("tracking_node_partial_docs")
 }`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
@@ -154,7 +154,7 @@ model Doc {
 model Doc {
   id      Int       @id
   shop    Int
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@query.filter("tenant", "shop == scope.shop")
   @@map("tracking_node_tenant_docs")
 }`);
@@ -187,7 +187,7 @@ model Doc {
 model Doc {
   id      Int       @id
   shop    Int
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@query.filter("tenant", "shop == scope.shop")
   @@map("tracking_node_tenant_hard_docs")
 }`);
@@ -207,7 +207,7 @@ model Doc {
 model Doc {
   id      Int       @id
   title   String
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@map("tracking_node_upsert_soft_docs")
 }`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
@@ -226,7 +226,7 @@ model Doc {
 model Doc {
   id      Int       @id
   title   String
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@map("tracking_node_upsert_bypass_docs")
 }`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
@@ -260,7 +260,7 @@ model PostTag {
   tag_id  Int
   post    Post      @relation(fields: [post_id], references: [id])
   tag     Tag       @relation(fields: [tag_id], references: [id])
-  deleted DateTime? @soft_delete.deleted_at(mode: "${mode}")
+  @@soft_delete.deleted_at("deleted", mode: "${mode}")
   @@map("tracking_node_join_post_tags")
 }`);
       const { Post, Tag, PostTag } = models as Models & Record<string, any>;
@@ -287,7 +287,7 @@ model PostTag {
     await assert.rejects(open(dialect, `
 model Doc {
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@query.filter("deleted", "id > 0")
   @@map("tracking_node_clash_docs")
 }`), /default name is set by both orm\.soft-delete default "deleted" and orm\.query-defaults default "deleted"/);
@@ -297,8 +297,8 @@ model Doc {
     const [db, models] = await open(dialect, `
 model Author {
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
   books   Book[]
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@map("tracking_node_ref_authors")
 }
 model Book {
@@ -337,7 +337,7 @@ model Book {
     const [db, models] = await open(dialect, `
 model Page {
   id         Int       @id
-  deleted_at DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at(mode: "application")
   @@map("tracking_node_two_word_pages")
 }`);
     const Page = models.Page!, pages = Page.objects.using(db);
@@ -365,16 +365,16 @@ model Page {
   const cascadeVersioned = `
 model Author {
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "database")
   books   Book[]
+  @@soft_delete.deleted_at("deleted", mode: "database")
   @@map("tracking_node_cascade_authors")
 }
 model Book {
   id        Int       @id
   author_id Int
   author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
-  version   Int       @default(0) @locking.version
-  removed   DateTime? @soft_delete.deleted_at(mode: "database")
+  @@soft_delete.deleted_at("removed", mode: "database")
+  @@locking.version
   @@map("tracking_node_cascade_books")
 }`;
   const cascadeSkip = { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") };
@@ -435,7 +435,7 @@ model Book {
 model Doc {
   id      Int    @id
   title   String
-  version Int    @default(0) @locking.version
+  @@locking.version
   @@map("tracking_node_docs")
 }`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
@@ -461,8 +461,8 @@ model Doc {
 model Doc {
   id      Int      @id
   title   String
-  ${mode === undefined ? "" : `changed DateTime @default(now()) @timestamps.updated_at(mode: "${mode}")`}
-  ${version ? "version Int @default(0) @locking.version" : ""}
+  ${mode === undefined ? "" : `@@timestamps.updated_at("changed", mode: "${mode}")`}
+  ${version ? '@@locking.version' : ""}
   @@map("tracking_node_upsert_docs")
 }`;
 
@@ -537,8 +537,8 @@ for (const dialect of ["sqlite", "postgres"]) {
 model Doc {
  id Int @id
  title String
- version Int @default(0) @locking.version
- ${mode === null ? "" : `deleted DateTime? @soft_delete.deleted_at(mode: "${mode}")`}
+ ${mode === null ? "" : `@@soft_delete.deleted_at("deleted", mode: "${mode}")`}
+ @@locking.version
  @@map("tracking_node_proxy_docs")
 }
 model Draft {
@@ -577,7 +577,7 @@ model Review {
 model Doc {
  id Int @id
  title String
- version Int @default(0) @locking.version
+ @@locking.version
  @@map("tracking_node_explicit_docs")
 }`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
@@ -591,5 +591,218 @@ model Doc {
       await docs.filter(Doc.id.eq(1)).update({ version: 7 });
       assert.equal((await docs.get(Doc.id.eq(1))).version, 7);
     } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+const TRACKING = [
+  { extension: "orm.timestamps", attribute: "@@timestamps.updated_at", name: "updated_at", field: "updatedAt", customName: "edited_at", customField: "editedAt" },
+  { extension: "orm.soft-delete", attribute: "@@soft_delete.deleted_at", name: "deleted_at", field: "deletedAt", customName: "removed_at", customField: "removedAt" },
+  { extension: "orm.locking", attribute: "@@locking.version", name: "version", field: "version", customName: "revision", customField: "revision" },
+];
+const trackingSchema = (attribute: string) => `
+model Story {
+  id Int @id
+  ${attribute}
+  @@map("tracking_node_story")
+}`;
+const inheritedSchema = (attributes: string) => `
+model Base {
+  id    Int    @id
+  title String
+  ${attributes}
+  @@inherit.abstract
+}
+model Mid {
+  @@inherit.extends(["Base"])
+  @@inherit.abstract
+}
+model Child {
+  name String?
+  @@inherit.extends(["Base"])
+  @@map("tracking_node_inherited_child")
+}
+model Grandchild {
+  @@inherit.extends(["Mid"])
+  @@map("tracking_node_inherited_grandchild")
+}`;
+const trackingFields = async (source: string) => {
+  const registry = new Registry();
+  const models = await loadsSoftDelete('datasource db { provider = "sqlite" }\n' + source, { registry }) as unknown as Models;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    return Object.keys(await models.Story!.objects.using(db).insert({ id: 1 })).filter((k) => k !== "id");
+  } finally { await db.close(); }
+};
+
+for (const { extension, attribute, name, field, customName, customField } of TRACKING) {
+  test(`${attribute} adds the field with its default or given name, TypeScript shows camelCase`, { skip: !hasExtension(extension) }, async () => {
+    assert.ok((await trackingFields(trackingSchema(attribute))).includes(field));
+    const custom = await trackingFields(trackingSchema(`${attribute}("${customName}")`));
+    assert.ok(custom.includes(customField) && !custom.includes(field));
+  });
+
+  test(`${attribute} with a field of the same name is an error that names both`, { skip: !hasExtension(extension) }, () => {
+    const source = `model Story {\n  id Int @id\n  ${customName} Int\n  ${attribute}("${customName}")\n}\n`;
+    assert.throws(() => loads(source, { registry: new Registry() }), (e: Error) => e.message.includes(`Story.${customName}`) && e.message.includes(attribute.slice(2)) && e.message.includes("already exists"));
+  });
+
+  test(`${attribute} with a field on the same column is an error that names both`, { skip: !hasExtension(extension) }, () => {
+    const source = `model Story {\n  id Int @id\n  taken Int @map("${name}")\n  ${attribute}\n}\n`;
+    assert.throws(() => loads(source, { registry: new Registry() }), (e: Error) => e.message.includes(`adds the field Story.${name}, but the field Story.taken already uses the column ${name}`));
+  });
+
+  test(`${attribute} on an abstract or extends base reaches each concrete child`, { skip: !hasExtension(extension, "orm.inherit") }, async () => {
+    const [db, models] = await open("sqlite", inheritedSchema(attribute));
+    try {
+      assert.deepEqual(Object.keys(models).sort(), ["Child", "Grandchild"]);
+      for (const [id, model] of [[1, "Child"], [2, "Grandchild"]] as const) {
+        assert.ok(field in await models[model]!.objects.using(db).insert({ id, title: "a" }), `${model} has ${field}`);
+      }
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+for (const model of ["Child", "Grandchild"]) {
+  test(`a concrete child maintains the tracking fields of its base (${model})`, { skip: !hasExtension("orm.inherit", "orm.timestamps", "orm.soft-delete", "orm.locking") }, async () => {
+    const attributes = '@@timestamps.updated_at("changed", mode: "application")\n  @@soft_delete.deleted_at(mode: "application")\n  @@locking.version';
+    const [db, models] = await open("sqlite", inheritedSchema(attributes));
+    const Model = models[model]!, rows = Model.objects.using(db);
+    try {
+      await rows.insert({ id: 1, title: "a", changed: OLD });
+      await rows.filter(Model.id.eq(1)).update({ title: "b" });
+      const row = await rows.get(Model.id.eq(1));
+      assert.deepEqual([row.title, row.version], ["b", 1]);
+      assert.ok(row.changed > OLD);
+      assert.equal(await rows.filter(Model.id.eq(1)).delete(), 1);
+      assert.equal(await rows.count(), 0);
+      assert.equal(await rows.allWithDeleted().count(), 1);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+test("the added fields have the documented types and defaults", { skip: !hasExtension("orm.timestamps", "orm.soft-delete", "orm.locking") }, async () => {
+  const [db, models] = await open("sqlite", `
+model Story {
+  id Int @id
+  @@timestamps.updated_at
+  @@soft_delete.deleted_at
+  @@locking.version
+  @@map("tracking_node_story_all")
+}`);
+  try {
+    const row = await models.Story!.objects.using(db).insert({ id: 1 });
+    assert.ok(row.updatedAt instanceof Date);
+    assert.equal(row.deletedAt, null);
+    assert.equal(row.version, 0);
+  } finally { await db.dropTables(); await db.close(); }
+});
+
+for (const dialect of ["sqlite", "postgres"]) {
+  for (const [upsert, kept] of [[undefined, false], ["drop", false], ["pick", true]] as const) {
+    const argument = upsert === undefined ? "" : `, upsert: "${upsert}"`;
+    const label = `upsert ${upsert ?? "default"} ${kept ? "keeps" : "drops"} the field in the default upsert list (${dialect})`;
+
+    test(`timestamps ${label}`, { skip: !hasExtension("orm.timestamps") }, async () => {
+      const [db, models] = await open(dialect, `
+model Doc {
+  id    Int    @id
+  title String
+  @@timestamps.updated_at("changed", mode: "application"${argument})
+  @@map("tracking_node_timestamps_upsert")
+}`);
+      const Doc = models.Doc!, docs = Doc.objects.using(db);
+      try {
+        await docs.insert({ id: 1, title: "a", changed: OLD });
+        await docs.insert({ id: 1, title: "b", changed: OLD }).onConflict(Doc.id, { update: true });
+        const row = await docs.get(Doc.id.eq(1));
+        assert.equal(row.title, "b");
+        assert.equal(row.changed.getTime() === OLD.getTime(), kept);
+        await docs.insert({ id: 1, title: "c", changed: OLD }).onConflict(Doc.id, { update: true, updateFields: [Doc.title, Doc.changed] });
+        assert.equal((await docs.get(Doc.id.eq(1))).changed.getTime(), OLD.getTime());
+      } finally { await db.dropTables(); await db.close(); }
+    });
+
+    test(`locking ${label}`, { skip: !hasExtension("orm.locking") }, async () => {
+      const [db, models] = await open(dialect, `
+model Doc {
+  id    Int    @id
+  title String
+  @@locking.version("rev"${argument})
+  @@map("tracking_node_locking_upsert")
+}`);
+      const Doc = models.Doc!, docs = Doc.objects.using(db);
+      try {
+        await docs.insert({ id: 1, title: "a", rev: 7 });
+        await docs.insert({ id: 1, title: "b", rev: 3 }).onConflict(Doc.id, { update: true });
+        const row = await docs.get(Doc.id.eq(1));
+        assert.deepEqual([row.title, row.rev], ["b", kept ? 3 : 8]);
+        await docs.insert({ id: 1, title: "c", rev: 5 }).onConflict(Doc.id, { update: true, updateFields: [Doc.title, Doc.rev] });
+        assert.equal((await docs.get(Doc.id.eq(1))).rev, 5);
+      } finally { await db.dropTables(); await db.close(); }
+    });
+  }
+}
+
+for (const dialect of ["sqlite", "postgres"]) {
+  test(`a timestamps map argument keeps the live column (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
+    const [db, models] = await open(dialect, 'model Story {\n  id Int @id\n  @@timestamps.updated_at(map: "_updated_at")\n  @@map("tracking_node_story_map_ts")\n}\n');
+    try {
+      const stories = models.Story!.objects.using(db);
+      await stories.insertMany([{ id: 1 }, { id: 2, updatedAt: OLD }]);
+      await db.execute('DELETE FROM tracking_node_story_map_ts WHERE "_updated_at" IS NOT NULL AND id = 1');
+      assert.deepEqual((await stories.all()).map((s: { id: number }) => s.id), [2]);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a soft-delete map argument keeps the live column (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+    const [db, models] = await open(dialect, 'model Story {\n  id Int @id\n  @@soft_delete.deleted_at(map: "_deleted_at")\n  @@map("tracking_node_story_map_sd")\n}\n');
+    try {
+      const Story = models.Story!;
+      const stories = Story.objects.using(db);
+      const ids = async (qs: any) => (await qs.orderBy(Story.id.asc()).all()).map((s: { id: number }) => s.id);
+      await stories.insertMany([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      assert.equal(await stories.filter(Story.id.eq(1)).delete(), 1);
+      await db.execute('UPDATE tracking_node_story_map_sd SET "_deleted_at" = CURRENT_TIMESTAMP WHERE id = 2');
+      assert.deepEqual(await ids(stories), [3]);
+      await db.execute('DELETE FROM tracking_node_story_map_sd WHERE "_deleted_at" IS NOT NULL');
+      assert.deepEqual(await ids(stories.allWithDeleted()), [3]);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a locking map argument keeps the live column (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
+    const [db, models] = await open(dialect, 'model Story {\n  id Int @id\n  @@locking.version(map: "rev")\n  @@map("tracking_node_story_map_lk")\n}\n');
+    try {
+      const Story = models.Story!;
+      const stories = Story.objects.using(db);
+      await stories.insertMany([{ id: 1 }, { id: 2, version: 3 }]);
+      await db.execute("UPDATE tracking_node_story_map_lk SET rev = 7 WHERE id = 1");
+      assert.equal((await stories.get(Story.id.eq(1))).version, 7);
+      await db.execute("DELETE FROM tracking_node_story_map_lk WHERE rev = 3");
+      assert.deepEqual((await stories.all()).map((s: { id: number }) => s.id), [1]);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+const OLD_FIELD_ATTRIBUTES = [
+  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: "changed DateTime @default(now()) @timestamps.updated_at", field: "changed", line: '@@timestamps.updated_at("changed")', note: "" },
+  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: 'updated_at DateTime @default(now()) @timestamps.updated_at(mode: "application")', field: "updated_at", line: '@@timestamps.updated_at(mode: "application")', note: "" },
+  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: "editedAt DateTime @default(now()) @timestamps.updated_at", field: "editedAt", line: '@@timestamps.updated_at("edited_at", map: "editedAt")', note: "" },
+  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: 'changed DateTime @default(now()) @map("_changed") @timestamps.updated_at(mode: "database")', field: "changed", line: '@@timestamps.updated_at("changed", map: "_changed", mode: "database")', note: "" },
+  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: "deleted_at DateTime? @soft_delete.deleted_at", field: "deleted_at", line: "@@soft_delete.deleted_at", note: "" },
+  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: 'removed DateTime? @soft_delete.deleted_at(mode: "database")', field: "removed", line: '@@soft_delete.deleted_at("removed", mode: "database")', note: "" },
+  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: "_deleted_at DateTime? @soft_delete.deleted_at", field: "_deleted_at", line: '@@soft_delete.deleted_at(map: "_deleted_at")', note: "" },
+  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: 'deleted_at DateTime? @map("_deleted_at") @soft_delete.deleted_at', field: "deleted_at", line: '@@soft_delete.deleted_at(map: "_deleted_at")', note: "" },
+  { extension: "orm.locking", attribute: "locking.version", old: "version Int @default(0) @locking.version", field: "version", line: "@@locking.version", note: "" },
+  { extension: "orm.locking", attribute: "locking.version", old: "rev Int @default(0) @locking.version", field: "rev", line: '@@locking.version("rev")', note: "" },
+  { extension: "orm.locking", attribute: "locking.version", old: "version BigInt @default(0) @locking.version", field: "version", line: "@@locking.version", note: "; the added field has the type Int, not BigInt; change the type by hand" },
+];
+
+for (const { extension, attribute, old, field, line, note } of OLD_FIELD_ATTRIBUTES) {
+  test(`the old field attribute "${old}" fails with the replacement line`, { skip: !hasExtension(extension) }, () => {
+    assert.throws(
+      () => loads(`model Story {\n  id Int @id\n  ${old}\n}\n`, { registry: new Registry() }),
+      (e: Error) => e.message.endsWith(`@${attribute}: a field attribute is no longer supported; delete the field Story.${field} and write ${line} in the model block${note}`),
+    );
   });
 }

@@ -61,7 +61,7 @@ class TransactionRequired(ORMError, RuntimeError):
 
 
 class VersionConflict(ORMError):
-    """An instance ``update()`` or ``delete()`` found a newer ``@locking.version`` of
+    """An instance ``update()`` or ``delete()`` found a newer ``@@locking.version`` of
     its row: another writer changed the row after it was loaded."""
 
 

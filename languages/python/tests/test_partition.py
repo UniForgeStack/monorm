@@ -122,7 +122,7 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
     if not {"proxy-models", "query-defaults"}.issubset(capabilities) or not has_extension("orm.soft-delete"):
         pytest.skip("requires combined proxy, query-defaults and soft-delete artifact")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
-    source = source.replace("deleted DateTime?", "deleted DateTime? @soft_delete.deleted_at")
+    source = source.replace("deleted DateTime?", '@@soft_delete.deleted_at("deleted")')
     source = source.replace(
         '@@map("partition_proxy_reward")',
         '@@map("partition_proxy_reward")\n @@query.filter("tenant", "shop == scope.shop and deleted == null")',

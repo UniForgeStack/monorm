@@ -1,11 +1,13 @@
-//! `@soft_delete.deleted_at`: the ORM soft-deletes rows instead of deleting them.
-//! Database mode adds row triggers, so a raw `DELETE` soft-deletes too and the soft delete
-//! cascades to soft-delete children.
-use orm_contracts::{dialect::Dialect, extension::{Declaration, ReadDefault}, ir::{ColType, ModelIr, OnDelete, SchemaIr, TriggerIr}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
+//! `@@soft_delete.deleted_at`: the model gets a nullable `deleted_at` field, and the ORM
+//! soft-deletes rows instead of deleting them.
+//! Database mode adds row triggers, so a raw `DELETE` soft-deletes too
+//! and the soft delete cascades to soft-delete children.
+use orm_contracts::{dialect::Dialect, extension::ReadDefault, ir::{ColType, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{error, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "orm.soft-delete";
 const DEFAULT: &str = "deleted";
+const TRACKED: Tracked = Tracked { attribute: "soft_delete.deleted_at", field: "deleted_at" };
 
 /// Who keeps the column current for writers outside the ORM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,8 +36,9 @@ struct SoftDelete {
     mode: Mode,
 }
 
-fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
-    format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
+/// Runs before the logical passes, so a proxy of the model copies the field too.
+pub fn add_fields(ir: &mut SchemaIr) -> Result<(), String> {
+    TRACKED.add_fields(ir, FieldIr::plain(TRACKED.field, ColType::DateTime))
 }
 
 /// The field a delete-time assignment of this model increments, if any: the version bump of a soft delete.
@@ -122,18 +125,15 @@ fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[
 }
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
-    let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute.starts_with("soft_delete.")).cloned().collect();
     // Models of an earlier batch keep their records; their mode is unknown (Application is a placeholder), and only the models of this batch use it.
     let mut roles: Vec<SoftDelete> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE)
         .map(|d| SoftDelete { model: d.model.clone(), field: d.field.clone(), mode: Mode::Application }).collect();
     let mut added = vec![];
-    for d in &declarations {
-        if d.attribute != "soft_delete.deleted_at" { return Err(error(d, "unknown soft_delete attribute")); }
-        let name = d.field.clone().ok_or_else(|| error(d, "is a field attribute"))?;
+    for d in &TRACKED.declarations(ir)? {
+        let name = TRACKED.field_name(d)?;
         let mode = Mode::parse(d.arguments.get("mode")).map_err(|e| error(d, e))?;
         let model = ir.models.iter().find(|m| m.name == d.model).ok_or_else(|| error(d, "unknown model"))?;
-        let field = model.fields.iter().find(|f| f.name == name).ok_or_else(|| error(d, "unknown field"))?;
-        if field.ty != ColType::DateTime || field.array || !field.nullable { return Err(error(d, format!("{}.{name} must be a nullable DateTime field", d.model))); }
+        if !model.fields.iter().any(|f| f.name == name) { return Err(error(d, "unknown field")); }
         if roles.iter().any(|s| s.model == d.model) { return Err(error(d, format!("{} has more than one soft-delete field", d.model))); }
         roles.push(SoftDelete { model: d.model.clone(), field: name, mode });
         added.push(d.model.clone());
@@ -197,22 +197,25 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orm_contracts::extension::Declaration;
 
-    fn schema(dialect: &str, mode: &str, nullable: bool) -> SchemaIr {
+    fn at(model: &str, line: u32, positional: serde_json::Value, arguments: serde_json::Value, field: Option<&str>) -> Declaration {
+        serde_json::from_value(serde_json::json!({"attribute": "soft_delete.deleted_at", "model": model, "field": field, "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": line, "column": 3}})).unwrap()
+    }
+
+    /// The input of `add_fields`: Author, Book and Note without a soft-delete field, with `declarations` and a version record on Author and Book.
+    fn declared(dialect: &str, declarations: Vec<Declaration>) -> SchemaIr {
         let lock = |model: &str| serde_json::json!({"source": "orm.locking", "model": model, "field": "version", "on": ["update", "upsert", "delete_rewrite"], "value": "increment"});
-        let at = |model: &str, line: u32| serde_json::json!({"attribute": "soft_delete.deleted_at", "model": model, "field": "deleted", "positional": [], "arguments": {"mode": mode}, "location": {"file": "schema.prisma", "line": line, "column": 3}});
-        serde_json::from_value(serde_json::json!({
+        let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
             "dialect": dialect,
             "models": [
                 {"name": "Author", "table": "authors", "fields": [
                     {"name": "id", "column": "id", "type": "int", "primary_key": true},
-                    {"name": "deleted", "column": "deleted_at", "type": "date_time", "nullable": nullable},
                     {"name": "version", "column": "rev", "type": "int"}
                 ]},
                 {"name": "Book", "table": "books", "fields": [
                     {"name": "id", "column": "id", "type": "int", "primary_key": true},
                     {"name": "author_id", "column": "writer", "type": "int"},
-                    {"name": "deleted", "column": "removed_at", "type": "date_time", "nullable": true},
                     {"name": "version", "column": "lock", "type": "int"}
                 ], "relations": [{"name": "author", "kind": "one", "target": "Author", "from": "author_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]},
                 {"name": "Note", "table": "notes", "fields": [
@@ -220,8 +223,27 @@ mod tests {
                     {"name": "author_id", "column": "author_id", "type": "int"}
                 ], "relations": [{"name": "author", "kind": "one", "target": "Author", "from": "author_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}
             ],
-            "behavior": {"schema_contract": 2, "declarations": [at("Author", 3), at("Book", 9)], "write_assignments": [lock("Author"), lock("Book")]}
-        })).unwrap()
+            "behavior": {"schema_contract": 2, "write_assignments": [lock("Author"), lock("Book")]}
+        })).unwrap();
+        ir.behavior.declarations = declarations;
+        ir
+    }
+
+    /// The state after `add_fields`: Author and Book declare `@@soft_delete.deleted_at("deleted")` and have the field `deleted`; Note has no soft delete.
+    fn schema(dialect: &str, mode: &str) -> SchemaIr {
+        let named = |model: &str, line: u32| at(model, line, serde_json::json!(["deleted"]), serde_json::json!({"mode": mode}), None);
+        let mut ir = declared(dialect, vec![named("Author", 3), named("Book", 9)]);
+        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        add_fields(&mut ir).unwrap();
+        ir.behavior.storage = None;
+        ir
+    }
+
+    fn added(positional: serde_json::Value) -> Result<SchemaIr, String> {
+        let mut ir = declared("postgres", vec![at("Author", 3, positional, serde_json::json!({}), None)]);
+        orm_contracts::extension::capture_storage(&mut ir)?;
+        add_fields(&mut ir)?;
+        Ok(ir)
     }
 
     fn prepared(ir: &mut SchemaIr) -> Result<(), String> {
@@ -236,16 +258,65 @@ mod tests {
     }
 
     #[test]
+    fn the_model_attribute_adds_a_nullable_deleted_at_field_to_logical_and_physical_models() {
+        let ir = added(serde_json::json!([])).unwrap();
+        for model in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
+            let f = model.fields.last().unwrap();
+            assert_eq!((f.name.as_str(), f.column.as_str(), f.ty, f.nullable, f.default_now), ("deleted_at", "deleted_at", ColType::DateTime, true, false));
+        }
+        let ir = added(serde_json::json!(["removed_at"])).unwrap();
+        assert_eq!(ir.models[0].fields.last().unwrap().name, "removed_at");
+        let err = added(serde_json::json!(["removedAt"])).unwrap_err();
+        assert_eq!(err, "schema.prisma:3:3: @soft_delete.deleted_at: the field name must be a snake_case string");
+    }
+
+    #[test]
+    fn map_sets_the_column_of_the_deleted_at_field() {
+        let mut ir = declared("postgres", vec![at("Author", 3, serde_json::json!([]), serde_json::json!({"map": "_deleted_at"}), None)]);
+        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        add_fields(&mut ir).unwrap();
+        for model in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
+            let f = model.fields.last().unwrap();
+            assert_eq!((f.name.as_str(), f.column.as_str()), ("deleted_at", "_deleted_at"));
+        }
+    }
+
+    #[test]
+    fn the_field_attribute_fails_with_the_replacement_line() {
+        let cases = [
+            ("deleted", serde_json::json!({}), "@@soft_delete.deleted_at(\"deleted\")"),
+            ("deleted_at", serde_json::json!({"mode": "application"}), "@@soft_delete.deleted_at(mode: \"application\")"),
+            ("removed_at", serde_json::json!({"mode": "database"}), "@@soft_delete.deleted_at(\"removed_at\", mode: \"database\")"),
+            ("deleted_at", serde_json::json!({}), "@@soft_delete.deleted_at"),
+        ];
+        for (field, arguments, line) in cases {
+            let mut ir = declared("postgres", vec![at("Author", 3, serde_json::json!([]), arguments, Some(field))]);
+            orm_contracts::extension::capture_storage(&mut ir).unwrap();
+            let err = add_fields(&mut ir).unwrap_err();
+            assert_eq!(err, format!("schema.prisma:3:3: @soft_delete.deleted_at: a field attribute is no longer supported; delete the field Author.{field} and write {line} in the model block"));
+        }
+    }
+
+    #[test]
+    fn a_field_with_the_same_name_is_an_error_that_names_both() {
+        let mut ir = declared("postgres", vec![at("Author", 3, serde_json::json!([]), serde_json::json!({}), None)]);
+        ir.models[0].fields.push(FieldIr::plain("deleted_at", ColType::DateTime));
+        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        let err = add_fields(&mut ir).unwrap_err();
+        assert_eq!(err, "schema.prisma:3:3: @soft_delete.deleted_at: adds the field Author.deleted_at, which already exists; remove that field or name another field with @@soft_delete.deleted_at(\"other_name\")");
+    }
+
+    #[test]
     fn preparation_changes_only_its_declared_effects_once() {
-        let effects = orm_contracts::extension::pass_effects(&schema("postgres", "database", true), prepare).unwrap();
+        let effects = orm_contracts::extension::pass_effects(&schema("postgres", "database"), prepare).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults", "behavior.storage", "models"]);
-        let effects = orm_contracts::extension::pass_effects(&schema("postgres", "application", true), prepare).unwrap();
+        let effects = orm_contracts::extension::pass_effects(&schema("postgres", "application"), prepare).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults"]);
     }
 
     #[test]
     fn each_soft_delete_model_gets_a_deleted_read_default() {
-        let mut ir = schema("postgres", "application", true);
+        let mut ir = schema("postgres", "application");
         prepared(&mut ir).unwrap();
         let defaults: Vec<_> = ir.behavior.read_defaults.iter().map(|d| (d.source.as_str(), d.name.as_str(), d.model.as_str())).collect();
         assert_eq!(defaults, [("orm.soft-delete", "deleted", "Author"), ("orm.soft-delete", "deleted", "Book")]);
@@ -256,7 +327,7 @@ mod tests {
     #[test]
     fn each_soft_delete_model_gets_a_delete_rewrite_with_the_default_filter() {
         for mode in ["application", "database"] {
-            let mut ir = schema("postgres", mode, true);
+            let mut ir = schema("postgres", mode);
             prepared(&mut ir).unwrap();
             let rewrites: Vec<_> = ir.behavior.delete_rewrites.iter().map(|d| (d.source.as_str(), d.model.as_str(), d.field.as_str())).collect();
             assert_eq!(rewrites, [("orm.soft-delete", "Author", "deleted"), ("orm.soft-delete", "Book", "deleted")]);
@@ -266,7 +337,7 @@ mod tests {
 
     #[test]
     fn a_proxy_gets_the_delete_rewrite_of_its_root() {
-        let mut ir = schema("postgres", "application", true);
+        let mut ir = schema("postgres", "application");
         orm_contracts::extension::capture_storage(&mut ir).unwrap();
         ir.behavior.lowered_models.push("AuthorView".into());
         let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
@@ -279,7 +350,7 @@ mod tests {
 
     #[test]
     fn a_model_has_one_soft_delete_field() {
-        let mut ir = schema("postgres", "application", true);
+        let mut ir = schema("postgres", "application");
         let again = ir.behavior.declarations[0].clone();
         ir.behavior.declarations.push(again);
         assert_eq!(prepared(&mut ir).unwrap_err(), "schema.prisma:3:3: @soft_delete.deleted_at: Author has more than one soft-delete field");
@@ -287,7 +358,7 @@ mod tests {
 
     #[test]
     fn a_proxy_must_keep_the_soft_delete_field() {
-        let mut ir = schema("postgres", "application", true);
+        let mut ir = schema("postgres", "application");
         orm_contracts::extension::capture_storage(&mut ir).unwrap();
         ir.behavior.lowered_models.push("AuthorView".into());
         let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
@@ -304,26 +375,26 @@ mod tests {
             "attribute": attribute, "model": "Author", "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 6, "column": 1}})).unwrap();
         for filter in ["deleted == null", "( deleted==null )", "deleted is null"] {
             for d in [declare("query.filter", serde_json::json!(["live", filter]), serde_json::json!({})), declare("query.defaults", serde_json::json!([]), serde_json::json!({"filter": filter}))] {
-                let mut ir = schema("postgres", "application", true);
+                let mut ir = schema("postgres", "application");
                 ir.behavior.declarations.push(d);
                 let err = prepared(&mut ir).unwrap_err();
                 assert!(err.starts_with("schema.prisma:6:1: @query.") && err.contains("Author already hides soft-deleted rows by default; remove this filter"), "{err}");
             }
         }
-        let mut ir = schema("postgres", "application", true);
+        let mut ir = schema("postgres", "application");
         ir.behavior.declarations.push(declare("query.filter", serde_json::json!(["mine", "deleted == null and id > 0"]), serde_json::json!({})));
         prepared(&mut ir).unwrap();
     }
 
     #[test]
     fn triggers_bump_the_version_the_write_assignments_name_not_a_locking_declaration() {
-        let mut ir = schema("postgres", "database", true);
+        let mut ir = schema("postgres", "database");
         ir.behavior.write_assignments.retain(|a| a.model != "Book");
         ir.behavior.declarations.push(serde_json::from_value(serde_json::json!({"attribute": "locking.version", "model": "Book", "field": "version", "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": 4, "column": 3}})).unwrap());
         prepared(&mut ir).unwrap();
         let cascade = ir.models[0].triggers[1].body.as_deref().unwrap();
         assert!(!cascade.contains("\"lock\""), "{cascade}");
-        let mut ir = schema("postgres", "database", true);
+        let mut ir = schema("postgres", "database");
         ir.behavior.write_assignments.iter_mut().filter(|a| a.model == "Author").for_each(|a| a.on = vec![WriteKind::Update]);
         prepared(&mut ir).unwrap();
         assert!(!ir.models[0].triggers[0].body.as_deref().unwrap().contains("\"rev\""));
@@ -332,7 +403,7 @@ mod tests {
     #[test]
     fn to_one_references_to_a_soft_delete_model_are_typed_nullable() {
         use orm_core::codegen::{python, typescript, Options};
-        let mut ir = schema("postgres", "application", true);
+        let mut ir = schema("postgres", "application");
         prepared(&mut ir).unwrap();
         ir.behavior.declarations.clear();
         ir.behavior.storage = None;
@@ -347,26 +418,26 @@ mod tests {
 
     #[test]
     fn database_mode_adds_delete_and_cascade_triggers() {
-        let mut ir = schema("postgres", "database", true);
+        let mut ir = schema("postgres", "database");
         prepared(&mut ir).unwrap();
         assert_eq!(ir.behavior.delete_rewrites[1].model, "Book");
         for author in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
             let names: Vec<_> = author.triggers.iter().map(|t| t.name.as_str()).collect();
             assert_eq!(names, ["soft_delete", "soft_delete_cascade"]);
-            assert_eq!(author.triggers[0].when.as_deref(), Some("OLD.\"deleted_at\" IS NULL AND pg_trigger_depth() = 0"));
-            assert_eq!(author.triggers[0].body.as_deref(), Some("BEGIN UPDATE \"authors\" SET \"deleted_at\" = now(), \"rev\" = \"rev\" + 1 WHERE \"id\" = OLD.\"id\"; RETURN NULL; END;"));
+            assert_eq!(author.triggers[0].when.as_deref(), Some("OLD.\"deleted\" IS NULL AND pg_trigger_depth() = 0"));
+            assert_eq!(author.triggers[0].body.as_deref(), Some("BEGIN UPDATE \"authors\" SET \"deleted\" = now(), \"rev\" = \"rev\" + 1 WHERE \"id\" = OLD.\"id\"; RETURN NULL; END;"));
             // Note has no soft delete, so only Book is soft-deleted with its author.
-            assert_eq!(author.triggers[1].body.as_deref(), Some("BEGIN UPDATE \"books\" SET \"removed_at\" = NEW.\"deleted_at\", \"lock\" = \"lock\" + 1 WHERE \"writer\" = NEW.\"id\" AND \"removed_at\" IS NULL; RETURN NULL; END;"));
+            assert_eq!(author.triggers[1].body.as_deref(), Some("BEGIN UPDATE \"books\" SET \"deleted\" = NEW.\"deleted\", \"lock\" = \"lock\" + 1 WHERE \"writer\" = NEW.\"id\" AND \"deleted\" IS NULL; RETURN NULL; END;"));
         }
         assert_eq!(ir.models[1].triggers.len(), 1);
         let up = migration(&ir);
-        assert!(up.contains(&"CREATE TRIGGER \"soft_delete\" BEFORE DELETE ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted_at\" IS NULL AND pg_trigger_depth() = 0) EXECUTE FUNCTION \"authors_soft_delete\"()".to_owned()), "{up:?}");
-        assert!(up.contains(&"CREATE TRIGGER \"soft_delete_cascade\" AFTER UPDATE OF \"deleted_at\" ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted_at\" IS NULL AND NEW.\"deleted_at\" IS NOT NULL) EXECUTE FUNCTION \"authors_soft_delete_cascade\"()".to_owned()), "{up:?}");
+        assert!(up.contains(&"CREATE TRIGGER \"soft_delete\" BEFORE DELETE ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted\" IS NULL AND pg_trigger_depth() = 0) EXECUTE FUNCTION \"authors_soft_delete\"()".to_owned()), "{up:?}");
+        assert!(up.contains(&"CREATE TRIGGER \"soft_delete_cascade\" AFTER UPDATE OF \"deleted\" ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL) EXECUTE FUNCTION \"authors_soft_delete_cascade\"()".to_owned()), "{up:?}");
     }
 
     #[test]
     fn application_mode_adds_no_ddl() {
-        let mut ir = schema("sqlite", "application", true);
+        let mut ir = schema("sqlite", "application");
         prepared(&mut ir).unwrap();
         assert_eq!(ir.behavior.delete_rewrites.len(), 2);
         assert!(ir.behavior.storage.as_ref().unwrap().models.iter().all(|m| m.triggers.is_empty()));
@@ -375,7 +446,7 @@ mod tests {
     #[test]
     fn proxies_inherit_soft_delete_role_without_duplicate_triggers() {
         for mode in ["application", "database"] {
-            let mut ir = schema("postgres", mode, true);
+            let mut ir = schema("postgres", mode);
             orm_contracts::extension::capture_storage(&mut ir).unwrap();
             ir.behavior.lowered_models.push("AuthorView".into());
             let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
@@ -394,24 +465,22 @@ mod tests {
 
     #[test]
     fn wrong_declarations_fail_with_their_location() {
-        let err = prepared(&mut schema("postgres", "database", false)).unwrap_err();
-        assert_eq!(err, "schema.prisma:3:3: @soft_delete.deleted_at: Author.deleted must be a nullable DateTime field");
-        let err = prepared(&mut schema("postgres", "later", true)).unwrap_err();
+        let err = prepared(&mut schema("postgres", "later")).unwrap_err();
         assert!(err.ends_with("mode must be \"database\" or \"application\""), "{err}");
     }
 
     #[test]
     fn sqlite_delete_soft_deletes_cascades_and_purges_a_deleted_row() {
-        let mut ir = schema("sqlite", "database", true);
+        let mut ir = schema("sqlite", "database");
         prepared(&mut ir).unwrap();
         let db = rusqlite::Connection::open_in_memory().unwrap();
         for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
         db.execute_batch("INSERT INTO authors (id, rev) VALUES (1, 0), (2, 0); INSERT INTO books (id, writer, lock) VALUES (1, 1, 0), (2, 2, 0); INSERT INTO notes (id, author_id) VALUES (1, 1)").unwrap();
         let deleted = |db: &rusqlite::Connection, sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(db.execute("DELETE FROM authors WHERE id = 1", []).unwrap(), 0);
-        assert_eq!(deleted(&db, "SELECT count(*) FROM authors WHERE deleted_at IS NOT NULL"), 1);
-        assert_eq!(deleted(&db, "SELECT count(*) FROM books WHERE removed_at IS NOT NULL AND writer = 1"), 1);
-        assert_eq!(deleted(&db, "SELECT count(*) FROM books WHERE removed_at IS NULL"), 1);
+        assert_eq!(deleted(&db, "SELECT count(*) FROM authors WHERE deleted IS NOT NULL"), 1);
+        assert_eq!(deleted(&db, "SELECT count(*) FROM books WHERE deleted IS NOT NULL AND writer = 1"), 1);
+        assert_eq!(deleted(&db, "SELECT count(*) FROM books WHERE deleted IS NULL"), 1);
         assert_eq!(deleted(&db, "SELECT count(*) FROM notes"), 1);
         assert_eq!(deleted(&db, "SELECT rev FROM authors WHERE id = 1"), 1);
         assert_eq!(deleted(&db, "SELECT lock FROM books WHERE id = 1"), 1);

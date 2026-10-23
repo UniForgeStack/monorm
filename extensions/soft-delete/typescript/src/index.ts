@@ -19,7 +19,7 @@ function deletedAt(qs: { readonly meta: AnyQuerySet["meta"] }): Deleted {
   let field = fields.get(meta);
   if (field === undefined) {
     const record = behaviorRecords(qs as AnyQuerySet, "delete_rewrites").find((r) => r["source"] === SOURCE);
-    if (record === undefined) throw new TypeError(`${meta.name} has no @soft_delete.deleted_at field`);
+    if (record === undefined) throw new TypeError(`${meta.name} has no @@soft_delete.deleted_at attribute`);
     field = behaviorField(meta, record);
     fields.set(meta, field);
   }
@@ -29,7 +29,7 @@ function deletedAt(qs: { readonly meta: AnyQuerySet["meta"] }): Deleted {
 export function softDeleteQuerySet<B extends QuerySetCtor>(Base: B) {
   return class SoftDelete extends Base {
     /**
-     * `DELETE` every matching row also for a model with `@soft_delete.deleted_at`. In
+     * `DELETE` every matching row also for a model with `@@soft_delete.deleted_at`. In
      * database mode, the trigger soft-deletes a live row, so this deletes only rows that are
      * already soft-deleted.
      */

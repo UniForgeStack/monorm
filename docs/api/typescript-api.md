@@ -724,8 +724,8 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   To reload an instance, use `post.load({ reload: true })`.
 * A model with a composite primary key (`@@id([shop, id])`) has an object `pk` keyed by field name, `{ shop: 1, id: 7 }`.
   Writes, `load({ reload: true })`, `updateMany()`, `batches()` and `paginate()` use the whole key.
-* With the column-role extensions (`schema-extensions.md`): `@timestamps.updated_at` and
-  `@locking.version` are set on each update; on a `@soft_delete.deleted_at` model,
+* With the column-role extensions (`schema-extensions.md`): `@@timestamps.updated_at` and
+  `@@locking.version` fields are set on each update; on a `@@soft_delete.deleted_at` model,
   `delete()` soft-deletes, and `hardDelete()`, `undelete()`, `allWithDeleted()` and
   `deletedOnly()` exist (from the soft-delete extension's generated code). Plain reads hide
   deleted rows; those methods bypass only the `"deleted"` default (on a query set, `withoutDefaults("deleted")` does the same; a bare

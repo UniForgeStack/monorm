@@ -2,6 +2,7 @@
 
 import os
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import pytest
 
@@ -49,7 +50,7 @@ async def test_updated_at_is_set_on_orm_updates_and_by_the_trigger(dialect, mode
 model Note {{
   id      Int      @id
   views   Int      @default(0)
-  changed DateTime @default(now()) @timestamps.updated_at(mode: "{mode}")
+  @@timestamps.updated_at("changed", mode: "{mode}")
   @@map("tracking_notes")
 }}
 """,
@@ -77,15 +78,15 @@ model Note {{
 SOFT_DELETE = """
 model Author {{
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "{mode}")
   books   Book[]
+  @@soft_delete.deleted_at("deleted", mode: "{mode}")
   @@map("tracking_authors")
 }}
 model Book {{
   id        Int       @id
   author_id Int
   author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
-  removed   DateTime? @soft_delete.deleted_at(mode: "{mode}")
+  @@soft_delete.deleted_at("removed", mode: "{mode}")
   @@map("tracking_books")
 }}
 """
@@ -132,8 +133,8 @@ async def test_soft_delete_updates_instead_of_deleting(dialect, mode):
 VERSIONED_SOFT_DELETE = """
 model Doc {
   id      Int       @id
-  version Int       @default(0) @locking.version
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
+  @@locking.version
   @@map("tracking_soft_docs")
 }
 """
@@ -161,7 +162,7 @@ TENANT_SOFT_DELETE = """
 model Doc {
   id      Int       @id
   shop    Int
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@query.filter("tenant", "shop == scope.shop")
   @@map("tracking_tenant_docs")
 }
@@ -247,16 +248,16 @@ async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
 CASCADE_VERSIONED = """
 model Author {
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "database")
   books   Book[]
+  @@soft_delete.deleted_at("deleted", mode: "database")
   @@map("tracking_authors")
 }
 model Book {
   id        Int       @id
   author_id Int
   author    Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
-  version   Int       @default(0) @locking.version
-  removed   DateTime? @soft_delete.deleted_at(mode: "database")
+  @@soft_delete.deleted_at("removed", mode: "database")
+  @@locking.version
   @@map("tracking_books")
 }
 """
@@ -342,7 +343,7 @@ async def test_a_stale_instance_write_raises_version_conflict(dialect):
 model Doc {
   id      Int    @id
   title   String
-  version Int    @default(0) @locking.version
+  @@locking.version
   @@map("tracking_docs")
 }
 """,
@@ -374,8 +375,8 @@ model Doc {
 
 
 def upsert_doc(mode: str | None = None, *, version: bool = False) -> str:
-    changed = f'changed DateTime @default(now()) @timestamps.updated_at(mode: "{mode}")' if mode is not None else ""
-    version_field = "version Int @default(0) @locking.version" if version else ""
+    changed = f'@@timestamps.updated_at("changed", mode: "{mode}")' if mode is not None else ""
+    version_field = '@@locking.version' if version else ""
     return f"""
 model Doc {{
   id      Int      @id
@@ -494,7 +495,7 @@ model PostTag {
   tag_id  Int
   post    Post      @relation(fields: [post_id], references: [id])
   tag     Tag       @relation(fields: [tag_id], references: [id])
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@map("tracking_join_post_tags")
 }
 """
@@ -536,7 +537,7 @@ async def test_a_stale_proxy_instance_checks_the_loaded_version(dialect, operati
     if mode is not None:
         source = source.replace(
             "  title   String",
-            f'  deleted DateTime? @soft_delete.deleted_at(mode: "{mode}")\n  title   String',
+            f'  title   String\n  @@soft_delete.deleted_at("deleted", mode: "{mode}")',
         )
     db, models = await connect(
         dialect,
@@ -598,45 +599,320 @@ async def test_an_instance_rejects_an_explicit_version(dialect):
 
 @requires("model-composition")
 @pytest.mark.parametrize(
-    "extension,field",
+    "extension,field,attribute",
     [
-        ("orm.timestamps", "changed DateTime @default(now()) @timestamps.updated_at"),
-        ("orm.soft-delete", "deleted DateTime? @soft_delete.deleted_at"),
-        ("orm.locking", "version Int @default(0) @locking.version"),
+        ("orm.timestamps", "changed", '@@timestamps.updated_at("changed")'),
+        ("orm.soft-delete", "deleted", '@@soft_delete.deleted_at("deleted")'),
+        ("orm.locking", "version", '@@locking.version'),
     ],
 )
 @pytest.mark.parametrize("owner", ["Person", "Employee", "Manager"])
-def test_composed_ownership_chain_rejects_tracking_records(extension, field, owner):
+def test_composed_ownership_chain_rejects_tracking_records(extension, field, attribute, owner):
     if not has_extension(extension):
         pytest.skip(f"requires {extension}")
     source = f"""
 model Person {{
  id Int @id
- {field if owner == "Person" else ""}
+ {attribute if owner == "Person" else ""}
 }}
 model Employee {{
  salary Int
- {field if owner == "Employee" else ""}
+ {attribute if owner == "Employee" else ""}
  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
 }}
 model Manager {{
  level Int
- {field if owner == "Manager" else ""}
+ {attribute if owner == "Manager" else ""}
  @@composition.model(parent: "Employee", parentRef: "employee", childRef: "manager")
 }}
 """
     with pytest.raises(orm.SchemaError) as error:
         orm.loads(source, registry=orm.Registry())
     message = str(error.value)
-    assert owner in message and field.split()[0] in message and extension in message
+    assert owner in message and field in message and extension in message
     assert "Employee" in message or "Manager" in message
+
+
+class Tracking(NamedTuple):
+    extension: str
+    attribute: str
+    default: str
+    custom: str
+
+
+TRACKING = [
+    Tracking("orm.timestamps", "@@timestamps.updated_at", "updated_at", "edited_at"),
+    Tracking("orm.soft-delete", "@@soft_delete.deleted_at", "deleted_at", "removed_at"),
+    Tracking("orm.locking", "@@locking.version", "version", "revision"),
+]
+each_tracking = pytest.mark.parametrize("tracking", TRACKING, ids=lambda tracking: tracking.default)
+
+
+def tracking_schema(attribute: str) -> str:
+    return f"""
+model Story {{
+  id Int @id
+  {attribute}
+  @@map("tracking_story")
+}}
+"""
+
+
+@each_tracking
+def test_the_model_attribute_adds_the_field_with_its_default_or_given_name(tracking):
+    if not has_extension(tracking.extension):
+        pytest.skip(f"requires {tracking.extension}")
+    fields = lambda source: list(loads_soft_delete(source, registry=orm.Registry())["Story"]._meta.fields)
+    assert fields(tracking_schema(tracking.attribute)) == ["id", tracking.default]
+    assert fields(tracking_schema(f'{tracking.attribute}("{tracking.custom}")')) == ["id", tracking.custom]
+
+
+@requires("orm.timestamps")
+@requires("orm.soft-delete")
+@requires("orm.locking")
+async def test_the_added_fields_have_the_documented_types_and_defaults():
+    db, models = await connect(
+        "sqlite",
+        """
+model Story {
+  id Int @id
+  @@timestamps.updated_at
+  @@soft_delete.deleted_at
+  @@locking.version
+  @@map("tracking_story_all")
+}
+""",
+    )
+    try:
+        row = await models["Story"].objects.using(db).insert(id=1)
+        assert row.updated_at is not None and row.deleted_at is None and row.version == 0
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("orm.timestamps")
+@pytest.mark.parametrize("dialect", DATABASES)
+@pytest.mark.parametrize("upsert,kept", [(None, False), ("drop", False), ("pick", True)])
+async def test_timestamps_upsert_pick_keeps_the_field_in_the_default_upsert_list(dialect, upsert, kept):
+    argument = "" if upsert is None else f', upsert: "{upsert}"'
+    db, models = await connect(
+        dialect,
+        f"""
+model Doc {{
+  id    Int    @id
+  title String
+  @@timestamps.updated_at("changed", mode: "application"{argument})
+  @@map("tracking_story_upsert")
+}}
+""",
+    )
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", changed=OLD)
+        await docs.insert(id=1, title="b", changed=OLD).on_conflict(Doc.id, update=True)
+        row = await docs.get(Doc.id == 1)
+        assert row.title == "b"
+        assert (as_utc(row.changed) == OLD) is kept
+        await docs.insert(id=1, title="c", changed=OLD).on_conflict(Doc.id, update=True, update_fields=[Doc.title, Doc.changed])
+        assert as_utc((await docs.get(Doc.id == 1)).changed) == OLD
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("orm.locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+@pytest.mark.parametrize("upsert,kept", [(None, False), ("drop", False), ("pick", True)])
+async def test_locking_upsert_pick_keeps_the_field_in_the_default_upsert_list(dialect, upsert, kept):
+    argument = "" if upsert is None else f', upsert: "{upsert}"'
+    db, models = await connect(
+        dialect,
+        f"""
+model Doc {{
+  id    Int    @id
+  title String
+  @@locking.version("rev"{argument})
+  @@map("tracking_locking_upsert")
+}}
+""",
+    )
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", rev=7)
+        await docs.insert(id=1, title="b", rev=3).on_conflict(Doc.id, update=True)
+        row = await docs.get(Doc.id == 1)
+        assert (row.title, row.rev) == ("b", 3 if kept else 8)
+        await docs.insert(id=1, title="c", rev=5).on_conflict(Doc.id, update=True, update_fields=[Doc.title, Doc.rev])
+        assert (await docs.get(Doc.id == 1)).rev == 5
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("orm.timestamps")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_timestamps_map_argument_keeps_the_live_column(dialect):
+    db, models = await connect(dialect, 'model Story {\n  id Int @id\n  @@timestamps.updated_at(map: "_updated_at")\n  @@map("tracking_story_map_ts")\n}\n')
+    try:
+        stories = models["Story"].objects.using(db)
+        await stories.insert_many([{"id": 1}, {"id": 2, "updated_at": OLD}])
+        await db.execute("DELETE FROM tracking_story_map_ts WHERE \"_updated_at\" IS NOT NULL AND id = 1")
+        assert [s.id for s in await stories.all()] == [2]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("orm.soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_soft_delete_map_argument_keeps_the_live_column(dialect):
+    db, models = await connect(dialect, 'model Story {\n  id Int @id\n  @@soft_delete.deleted_at(map: "_deleted_at")\n  @@map("tracking_story_map_sd")\n}\n')
+    try:
+        stories = models["Story"].objects.using(db)
+        await stories.insert_many([{"id": 1}, {"id": 2}, {"id": 3}])
+        assert await stories.filter(models["Story"].id == 1).delete() == 1
+        await db.execute('UPDATE tracking_story_map_sd SET "_deleted_at" = CURRENT_TIMESTAMP WHERE id = 2')
+        assert [s.id for s in await stories.all()] == [3]
+        await db.execute('DELETE FROM tracking_story_map_sd WHERE "_deleted_at" IS NOT NULL')
+        assert [s.id for s in await stories.all_with_deleted()] == [3]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("orm.locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_locking_map_argument_keeps_the_live_column(dialect):
+    db, models = await connect(dialect, 'model Story {\n  id Int @id\n  @@locking.version(map: "rev")\n  @@map("tracking_story_map_lk")\n}\n')
+    try:
+        stories = models["Story"].objects.using(db)
+        await stories.insert_many([{"id": 1}, {"id": 2, "version": 3}])
+        await db.execute("UPDATE tracking_story_map_lk SET rev = 7 WHERE id = 1")
+        assert (await stories.get(models["Story"].id == 1)).version == 7
+        await db.execute("DELETE FROM tracking_story_map_lk WHERE rev = 3")
+        assert [s.id for s in await stories.all()] == [1]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.parametrize(
+    "extension,attribute,old,field,line,note",
+    [
+        ("orm.timestamps", "timestamps.updated_at", "changed DateTime @default(now()) @timestamps.updated_at", "changed", '@@timestamps.updated_at("changed")', ""),
+        ("orm.timestamps", "timestamps.updated_at", 'updated_at DateTime @default(now()) @timestamps.updated_at(mode: "application")', "updated_at", '@@timestamps.updated_at(mode: "application")', ""),
+        ("orm.timestamps", "timestamps.updated_at", "editedAt DateTime @default(now()) @timestamps.updated_at", "editedAt", '@@timestamps.updated_at("edited_at", map: "editedAt")', ""),
+        ("orm.timestamps", "timestamps.updated_at", 'changed DateTime @default(now()) @map("_changed") @timestamps.updated_at(mode: "database")', "changed", '@@timestamps.updated_at("changed", map: "_changed", mode: "database")', ""),
+        ("orm.soft-delete", "soft_delete.deleted_at", "deleted_at DateTime? @soft_delete.deleted_at", "deleted_at", "@@soft_delete.deleted_at", ""),
+        ("orm.soft-delete", "soft_delete.deleted_at", 'removed DateTime? @soft_delete.deleted_at(mode: "database")', "removed", '@@soft_delete.deleted_at("removed", mode: "database")', ""),
+        ("orm.soft-delete", "soft_delete.deleted_at", "_deleted_at DateTime? @soft_delete.deleted_at", "_deleted_at", '@@soft_delete.deleted_at(map: "_deleted_at")', ""),
+        ("orm.soft-delete", "soft_delete.deleted_at", 'deleted_at DateTime? @map("_deleted_at") @soft_delete.deleted_at', "deleted_at", '@@soft_delete.deleted_at(map: "_deleted_at")', ""),
+        ("orm.locking", "locking.version", "version Int @default(0) @locking.version", "version", "@@locking.version", ""),
+        ("orm.locking", "locking.version", "rev Int @default(0) @locking.version", "rev", '@@locking.version("rev")', ""),
+        ("orm.locking", "locking.version", "version BigInt @default(0) @locking.version", "version", "@@locking.version", "; the added field has the type Int, not BigInt; change the type by hand"),
+    ],
+)
+def test_the_old_field_attribute_fails_with_the_replacement_line(extension, attribute, old, field, line, note):
+    if not has_extension(extension):
+        pytest.skip(f"requires {extension}")
+    source = f"model Story {{\n  id Int @id\n  {old}\n}}\n"
+    with pytest.raises(orm.SchemaError) as error:
+        orm.loads(source, registry=orm.Registry())
+    assert str(error.value).endswith(
+        f"@{attribute}: a field attribute is no longer supported; delete the field Story.{field} and write {line} in the model block{note}"
+    )
+
+
+@each_tracking
+def test_a_field_of_the_same_name_is_an_error_that_names_both(tracking):
+    if not has_extension(tracking.extension):
+        pytest.skip(f"requires {tracking.extension}")
+    source = f'model Story {{\n  id Int @id\n  {tracking.custom} Int\n  {tracking.attribute}("{tracking.custom}")\n}}\n'
+    with pytest.raises(orm.SchemaError) as error:
+        orm.loads(source, registry=orm.Registry())
+    message = str(error.value)
+    assert f"Story.{tracking.custom}" in message
+    assert tracking.attribute.removeprefix("@@") in message and "already exists" in message
+
+
+@each_tracking
+def test_a_field_on_the_same_column_is_an_error_that_names_both(tracking):
+    if not has_extension(tracking.extension):
+        pytest.skip(f"requires {tracking.extension}")
+    source = f'model Story {{\n  id Int @id\n  taken Int @map("{tracking.default}")\n  {tracking.attribute}\n}}\n'
+    with pytest.raises(orm.SchemaError) as error:
+        orm.loads(source, registry=orm.Registry())
+    message = str(error.value)
+    assert f"adds the field Story.{tracking.default}, but the field Story.taken already uses the column {tracking.default}" in message
+
+
+def inherited_schema(attributes: str) -> str:
+    return f"""
+model Base {{
+  id    Int    @id
+  title String
+  {attributes}
+  @@inherit.abstract
+}}
+model Mid {{
+  @@inherit.extends(["Base"])
+  @@inherit.abstract
+}}
+model Child {{
+  name String?
+  @@inherit.extends(["Base"])
+  @@map("tracking_inherited_child")
+}}
+model Grandchild {{
+  @@inherit.extends(["Mid"])
+  @@map("tracking_inherited_grandchild")
+}}
+"""
+
+
+@requires("orm.inherit")
+@each_tracking
+def test_a_tracking_attribute_on_a_base_reaches_each_concrete_child(tracking):
+    if not has_extension(tracking.extension):
+        pytest.skip(f"requires {tracking.extension}")
+    models = loads_soft_delete(inherited_schema(tracking.attribute), registry=orm.Registry())
+    assert sorted(models) == ["Child", "Grandchild"]
+    for name in models:
+        assert tracking.default in models[name]._meta.fields
+
+
+@requires("orm.inherit")
+@requires("orm.timestamps")
+@requires("orm.soft-delete")
+@requires("orm.locking")
+@pytest.mark.parametrize("name", ["Child", "Grandchild"])
+async def test_a_concrete_child_maintains_the_tracking_fields_of_its_base(name):
+    attributes = '@@timestamps.updated_at("changed", mode: "application")\n  @@soft_delete.deleted_at(mode: "application")\n  @@locking.version'
+    db, models = await connect("sqlite", inherited_schema(attributes))
+    Model = models[name]
+    try:
+        rows = Model.objects.using(db)
+        await rows.insert(id=1, title="a", changed=OLD)
+        await rows.filter(Model.id == 1).update(title="b")
+        row = await rows.get(Model.id == 1)
+        assert (row.title, row.version) == ("b", 1)
+        assert as_utc(row.changed) > OLD
+        assert await rows.filter(Model.id == 1).delete() == 1
+        assert await rows.count() == 0
+        assert await rows.all_with_deleted().count() == 1
+    finally:
+        await db.drop_tables()
+        await db.close()
 
 
 UPSERT_SOFT_DELETE = """
 model Doc {
   id      Int       @id
   title   String
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@map("tracking_upsert_soft_docs")
 }
 """
@@ -711,7 +987,7 @@ async def test_add_restores_a_soft_deleted_link_and_inserts_the_missing_ones(dia
 CLASHING_DEFAULT = """
 model Doc {
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@query.filter("deleted", "id > 0")
   @@map("tracking_clash_docs")
 }
@@ -729,8 +1005,8 @@ async def test_a_user_default_named_deleted_clashes_with_the_soft_delete_default
 REFERENCE_TO_SOFT_DELETED = """
 model Author {
   id      Int       @id
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
   books   Book[]
+  @@soft_delete.deleted_at("deleted", mode: "application")
   @@map("tracking_ref_authors")
 }
 model Book {

@@ -18,13 +18,32 @@ languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = []
 
+# Adds the field before the logical passes, so a proxy of the model copies it.
+[[package.metadata.orm-extension.passes]]
+id = "orm.locking.fields"
+phase = "declaration"
+rust = "crate::add_fields"
+after = ["orm.inherit.expand"]
+effects = ["models.locking", "storage.locking"]
+
 [[package.metadata.orm-extension.passes]]
 id = "orm.locking.prepare"
 phase = "behavior"
 rust = "crate::prepare"
 effects = ["behavior.write_assignments.locking", "behavior.instance_guards"]
 
-# `version Int @default(0) @locking.version`.
+# `@@locking.version("version", map: "_version", upsert: "pick")`: adds the field.
+[[package.metadata.orm-extension.attributes]]
+name = "locking.version"
+target = "model"
+[[package.metadata.orm-extension.attributes.positional]]
+kind = "string"
+[package.metadata.orm-extension.attributes.arguments.upsert]
+kind = "string"
+[package.metadata.orm-extension.attributes.arguments.map]
+kind = "string"
+
+# The field form; the pass rejects it with the model attribute to write instead.
 [[package.metadata.orm-extension.attributes]]
 name = "locking.version"
 target = "field"

@@ -97,8 +97,8 @@ const rolesSource = `
 model Doc {
   id      Int       @id
   title   String
-  version Int       @default(0) @locking.version
-  deleted DateTime? @soft_delete.deleted_at(mode: "application")
+  @@soft_delete.deleted_at("deleted", mode: "application")
+  @@locking.version
   @@map("proxy_role_docs")
 }
 model Draft {

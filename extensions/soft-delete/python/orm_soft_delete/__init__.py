@@ -1,4 +1,4 @@
-"""Soft delete language members for models with ``@soft_delete.deleted_at``."""
+"""Soft delete language members for models with ``@@soft_delete.deleted_at``."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _deleted_at(model: Any) -> ColumnRef[Any]:
     if column is None:
         records = [r for r in behavior_records(cls, "delete_rewrites") if r["source"] == _SOURCE]
         if not records:
-            raise TypeError(f"{cls.__name__} has no @soft_delete.deleted_at field")
+            raise TypeError(f"{cls.__name__} has no @@soft_delete.deleted_at attribute")
         column = _FIELDS[cls] = behavior_field(cls, records[0])
     return column
 

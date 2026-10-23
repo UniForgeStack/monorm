@@ -12,7 +12,7 @@ import { hasExtension } from "./artifact-caps.js";
 const SCHEMA = `model Post {
   id         Int       @id
   title      String
-  deleted_at DateTime? @soft_delete.deleted_at
+  @@soft_delete.deleted_at
 }
 
 model Tag {

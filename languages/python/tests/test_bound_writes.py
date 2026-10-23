@@ -88,7 +88,7 @@ async def test_a_bound_write_above_the_parameter_cap_is_a_query_error(clean):
 
 
 SOURCE = (
-    'model Doc {\n  id Int @id\n  title String\n  deleted DateTime? @soft_delete.deleted_at(mode: "application")\n}\n'
+    'model Doc {\n  id Int @id\n  title String\n  @@soft_delete.deleted_at("deleted", mode: "application")\n}\n'
 )
 
 

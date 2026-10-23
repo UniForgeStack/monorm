@@ -6,16 +6,25 @@ Select the crate in the `orm-extension-build` configuration (see `build-time-ext
 
 | Crate | Extension id | Attribute |
 |---|---|---|
-| `orm-timestamps` (`extensions/timestamps`) | `orm.timestamps` | `@timestamps.updated_at(mode:)` |
-| `orm-soft-delete` (`extensions/soft-delete`) | `orm.soft-delete` | `@soft_delete.deleted_at(mode:)` |
-| `orm-locking` (`extensions/locking`) | `orm.locking` | `@locking.version` |
+| `orm-timestamps` (`extensions/timestamps`) | `orm.timestamps` | `@@timestamps.updated_at(name, map:, mode:, upsert:)` |
+| `orm-soft-delete` (`extensions/soft-delete`) | `orm.soft-delete` | `@@soft_delete.deleted_at(name, map:, mode:)` |
+| `orm-locking` (`extensions/locking`) | `orm.locking` | `@@locking.version(name, map:, upsert:)` |
 
-You declare the column; the attribute gives it the role.
+The model attribute adds the column and gives it the role.
+The optional first argument is the snake_case field name; the default is `updated_at`, `deleted_at` or `version`.
+TypeScript shows the camelCase name.
+The column has the field name, or the `map:` argument: `@@soft_delete.deleted_at(map: "_deleted_at")` keeps a live column `_deleted_at`.
+A model that already has a field of that name, or a field on that column, fails the build with an error that names both fields.
+On an `abstract` or `extends` base (the inherit extension), the attribute reaches each concrete child.
+The old field attributes (`@timestamps.updated_at`, `@soft_delete.deleted_at`, `@locking.version`) fail the build with the exact model-attribute line to use.
+The line keeps the old column: an old field with `@map("x")` prints `map: "x"`, and an old field `editedAt` prints `@@timestamps.updated_at("edited_at", map: "editedAt")`.
+`@@locking.version` always adds an `Int` field.
+For an old `BigInt` version field, the line has a note: change the type by hand.
 A build without the extension fails a schema with its attribute: "not compiled into this artifact; rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)".
 
 ## Modes
 
-`@timestamps.updated_at` and `@soft_delete.deleted_at` take `mode: "database"` (the default) or `mode: "application"`.
+`@@timestamps.updated_at` and `@@soft_delete.deleted_at` take `mode: "database"` (the default) or `mode: "application"`.
 
 * Database mode adds row triggers to the migration, so every writer gets the behavior, also raw SQL.
 * Application mode adds no DDL. Only ORM writes get the behavior.
@@ -30,14 +39,17 @@ An upsert sets `updated_at` and the version in its `DO UPDATE` clause in both mo
 
 ```prisma
 model Note {
-  id         Int      @id
-  title      String
-  updated_at DateTime @default(now()) @timestamps.updated_at
+  id    Int    @id
+  title String
+  @@timestamps.updated_at
 }
 ```
 
+* The attribute adds `updated_at DateTime @default(now())`.
+* `upsert: "drop"` (the default) leaves the field out of the default upsert update list; `upsert: "pick"` puts it in.
+  An explicit `update_fields` wins.
 * Each ORM update (query set `update()`, instance `update()`, `update_many()`) sets the field to the current time, unless the update sets the field.
-* An insert uses the field default; give `@default(now())`.
+* An insert uses the field default.
 * Database mode, Postgres: a `BEFORE UPDATE ... FOR EACH ROW WHEN (NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at)` trigger sets `NEW.updated_at := now()`.
   An update that writes a value that differs from the stored value keeps its value.
   An update that writes the stored value again (a same-value write) gets the current time.
@@ -53,27 +65,28 @@ The API follows django-safedelete.
 ```prisma
 model Author {
   id         Int       @id
-  deleted_at DateTime? @soft_delete.deleted_at
   books      Book[]
+  @@soft_delete.deleted_at
 }
 model Book {
   id         Int       @id
   author_id  Int
   author     Author    @relation(fields: [author_id], references: [id], onDelete: Cascade)
-  deleted_at DateTime? @soft_delete.deleted_at
+  @@soft_delete.deleted_at
 }
 ```
 
-* The field is a nullable `DateTime`. One field for each model.
+* The attribute adds a nullable `DateTime?` field.
+  One field for each model.
 * `delete()` on a query set or an instance sends `UPDATE ... SET deleted_at = <now> WHERE ... AND deleted_at IS NULL`, never `DELETE`.
   The count and `RETURNING` are the rows that the call soft-deleted; rows that are already soft-deleted do not count.
 * The members below come from the soft-delete extension's generated code (`orm_ext/orm_soft_delete`, `orm-ext/orm-soft-delete`).
-  A model gets them when it declares `@soft_delete.deleted_at`; other models, and proxy models, do not.
+  A model gets them when it declares `@@soft_delete.deleted_at`; other models, and proxy models, do not.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
   On a query set, it bypasses only the `"deleted"` default, so the other default filters (a tenant filter) still apply.
   An instance `hard_delete()` uses a bare bypass, so it drops all defaults: a tenant filter and its scope check too. It deletes the row it holds.
-  An instance `hard_delete()` does not check the version, also with `@locking.version`.
+  An instance `hard_delete()` does not check the version, also with `@@locking.version`.
 * `undelete()` on a query set clears the field of the matching soft-deleted rows; on an instance, it clears the field of its row.
   On a query set, it bypasses only the `"deleted"` default, like `all_with_deleted()`.
 * The extension adds the read default `"deleted"` (`deleted_at IS NULL`) to each soft-delete model.
@@ -90,7 +103,7 @@ model Book {
   On Postgres, the statement reports 0 rows.
   On SQLite, a `batch` counts the write of the trigger, so a raw `DELETE` of 3 live rows reports 3.
   A second `DELETE` deletes the soft-deleted row.
-  With `@locking.version`, the trigger also adds `version = version + 1`.
+  With `@@locking.version`, the trigger also adds `version = version + 1`.
 * Cascade, database mode: a cancelled delete does not fire `ON DELETE CASCADE`.
   For each soft-delete child with `onDelete: Cascade`, the parent gets an `AFTER UPDATE OF deleted_at` trigger.
   When the parent row becomes soft-deleted, the trigger sets the same time on the live child rows.
@@ -145,11 +158,12 @@ No changelog file exists, so this note is the record.
 model Doc {
   id      Int    @id
   title   String
-  version Int    @default(0) @locking.version
+  @@locking.version
 }
 ```
 
-* The field is a required `Int` or `BigInt`. One field for each model.
+* The attribute adds `version Int @default(0)`.
+  One field for each model.
 * Each ORM write that updates a row (query set `update()`, instance `update()`, `update_many()`, a soft delete, `undelete()`, and the `DO UPDATE` branch of an upsert) adds `version = version + 1`, unless the write sets the field.
 * An insert stores the version that it names (`insert(version=7)`, `insert_many(version=5)`); the default is 0.
 * An instance `update()` or `delete()` also matches the loaded version: `WHERE pk = ... AND version = <loaded>`.

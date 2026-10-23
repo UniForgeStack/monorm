@@ -283,7 +283,7 @@ async def test_a_column_named_qs_is_reserved():
 
 @pytest.mark.skipif(not has_extension("orm.soft-delete"), reason="requires a selected soft-delete native artifact")
 async def test_a_soft_deleted_object_is_refreshed_because_of_applies_no_default():
-    source = 'model Doc {\n  id Int @id\n  title String\n  deleted DateTime? @soft_delete.deleted_at(mode: "application")\n}\n'
+    source = 'model Doc {\n  id Int @id\n  title String\n  @@soft_delete.deleted_at("deleted", mode: "application")\n}\n'
     registry = orm.Registry()
     Doc = loads_soft_delete(source, registry=registry)["Doc"]
     db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)

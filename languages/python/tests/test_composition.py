@@ -188,14 +188,14 @@ async def test_composed_writes_read_the_scope(provider):
 
 
 @pytest.mark.parametrize(
-    "field,extension",
+    "attribute,extension",
     [
-        ("version Int @default(0) @locking.version", "orm.locking"),
-        ("deleted DateTime? @soft_delete.deleted_at", "orm.soft-delete"),
-        ("changed DateTime @default(now()) @timestamps.updated_at", "orm.timestamps"),
+        ('@@locking.version', "orm.locking"),
+        ('@@soft_delete.deleted_at("deleted")', "orm.soft-delete"),
+        ('@@timestamps.updated_at("changed")', "orm.timestamps"),
     ],
 )
-def test_a_tracking_attribute_on_a_composed_model_is_rejected(field, extension):
+def test_a_tracking_attribute_on_a_composed_model_is_rejected(attribute, extension):
     if not has_extension(extension):
         pytest.skip(f"requires the {extension} extension")
     source = f"""
@@ -205,7 +205,7 @@ model Person {{
 }}
 model Employee {{
  salary Int
- {field}
+ {attribute}
  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
  @@map("composition06_role_employees")
 }}

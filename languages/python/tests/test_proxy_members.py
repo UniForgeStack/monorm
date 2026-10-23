@@ -21,7 +21,7 @@ SCHEMA = """\
 model PmPost {
   id      Int       @id
   title   String
-  deleted DateTime? @soft_delete.deleted_at
+  @@soft_delete.deleted_at("deleted")
   @@map("proxy_members_post")
 }
 

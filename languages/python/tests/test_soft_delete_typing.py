@@ -19,7 +19,7 @@ SCHEMA = """\
 model Post {
   id      Int       @id
   title   String
-  deleted DateTime? @soft_delete.deleted_at
+  @@soft_delete.deleted_at("deleted")
 }
 
 model Tag {
