@@ -171,7 +171,13 @@ model Doc {
   When the row is gone, `update()` raises `DoesNotExist`.
 * The instance must have the version field loaded.
 * The version enters writes only: a read or `lock()` through `post.qs()` refreshes a stale object.
-  Bound writes (`post.qs().update()`, `orm.of(posts).delete()`) have no version check yet.
+  Bound writes (`post.qs().update()`, `orm.of(posts).delete()`, `undelete()`, `hard_delete()`) match the pairs `(pk, version)` of the loaded objects and raise `VersionConflict` when a row has another version.
+  A write of one object needs no transaction.
+  A write of several objects runs in a transaction (a savepoint inside one transaction).
+  A conflict rolls the transaction back, changes no row and restores the objects.
+  The public `update`, `delete` and `undelete` methods come from the host.
+  An object that a filter or a delete leaves out is not a conflict.
+  Two objects of one row with two versions are a conflict.
 * Instance `update()` rejects an explicit version field with `TypeError`.
   Use `Model.objects.filter(pk=...).update(version=...)` in Python or `Model.objects.filter({ pk: ... }).update({ version: ... })` in TypeScript for an intentional query-set override.
   An explicit upsert update list may also override the version.

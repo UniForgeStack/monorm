@@ -1729,15 +1729,21 @@ class BoundQuerySet(Generic[M]):
     returns the matched objects in input order and an unmatched object stays unchanged.
     """
 
-    __slots__ = ("_objs", "_qs", "_explicit_db")
+    __slots__ = ("_objs", "_qs", "_explicit_db", "_guarded")
 
-    def __init__(self, objs: tuple[M, ...], qs: QuerySet[M], explicit_db: bool = False) -> None:
+    def __init__(self, objs: tuple[M, ...], qs: QuerySet[M], explicit_db: bool = False, guarded: bool = False) -> None:
         self._objs = objs
         self._qs = qs
         self._explicit_db = explicit_db
+        self._guarded = guarded
 
     def _clone(self, qs: QuerySet[M], explicit_db: bool | None = None) -> Self:
-        return type(self)(self._objs, qs, self._explicit_db if explicit_db is None else explicit_db)
+        return type(self)(self._objs, qs, self._explicit_db if explicit_db is None else explicit_db, self._guarded)
+
+    def _guard(self) -> Self:
+        """This set, marked as guarded: its filters match the loaded guard values of the rows, so a
+        write extension adds no such check."""
+        return type(self)(self._objs, self._qs, self._explicit_db, True)
 
     def filter(self, *conditions: ConditionLike) -> Self:
         return self._clone(self._qs.filter(*conditions))

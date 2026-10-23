@@ -108,10 +108,12 @@ impl ExtensionCode {
     /// Whether the model gets the members of this extension: it, or one of its fields,
     /// declares an attribute of the extension, or a record the extension prepared names it.
     /// A proxy declares nothing, but the extension prepares the records of its root for it.
-    /// An extension that adds no query-set, instance or bound query-set member never applies.
+    /// An extension that adds no query-set or instance member and names no bound query-set export never applies.
+    /// The manifest always names a query-set and an instance export, so only a bound export counts by its name:
+    /// its members can all be private, and the model still needs the class.
     pub fn applies(&self, ir: &crate::ir::SchemaIr, model: &str) -> bool {
         let m = &self.members;
-        let adds_nothing = m.query_set_members.is_empty() && m.instance_members.is_empty() && m.bound_query_set_members.is_empty();
+        let adds_nothing = m.query_set_members.is_empty() && m.instance_members.is_empty() && m.bound_query_set.is_empty();
         if adds_nothing {
             return false;
         }
@@ -547,6 +549,22 @@ mod reference_tests {
         assert!(ext.applies(&ir, "Post"));
         ext.members.query_set_members.clear();
         assert!(!ext.applies(&ir, "Post"));
+    }
+
+    #[test]
+    fn a_bound_export_with_only_private_members_still_applies() {
+        let (mut ir, schema) = schema();
+        let mut ext = tagged(&mut ir, "Post");
+        ext.members.query_set_members.clear();
+        ext.members.bound_query_set = "TaggedBoundQuerySet".into();
+        assert!(ext.applies(&ir, "Post") && !ext.applies(&ir, "User"));
+        let py = python::generate_with(&ir, &schema, "schema.prisma", &Options { extensions: vec![ext.clone()], ..Options::default() }).unwrap();
+        assert!(py.module.contains("members={\"Post\": (\"example.language\",)}"), "{}", py.module);
+        ext.members.language = "typescript".into();
+        ext.members.query_set = "taggedQuerySet".into();
+        ext.members.bound_query_set = "taggedBoundQuerySet".into();
+        let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &Options { extensions: vec![ext], ..Options::default() }).unwrap();
+        assert!(ts.contains("members: { \"Post\": [\"example.language\"] }"), "{ts}");
     }
 
     #[test]

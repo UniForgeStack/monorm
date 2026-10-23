@@ -42,10 +42,16 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     private readonly objs: readonly Row[],
     private readonly inner: QuerySet<ModelSpec>,
     private readonly items: readonly LoadItem<ModelSpec>[] = [],
+    private readonly guarded = false,
   ) {}
 
   private next(inner: QuerySet<ModelSpec>, items = this.items): never {
-    return new (this.constructor as typeof BoundQuerySet)(this.meta, this.objs, inner, items) as never;
+    return new (this.constructor as typeof BoundQuerySet)(this.meta, this.objs, inner, items, this.guarded) as never;
+  }
+
+  /** @internal This set, marked as guarded: its filters match the loaded guard values of the rows, so a write extension adds no such check. */
+  _guard(): this {
+    return new (this.constructor as typeof BoundQuerySet)(this.meta, this.objs, this.inner, this.items, true) as never;
   }
 
   /** Keep the objects whose row also matches all `conditions`. */
@@ -120,7 +126,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     if (this.distinct().length > 1 && this.meta.key.some((f) => names.includes(f.name))) {
       throw new TypeError("a bound update of 2 or more objects cannot assign a key field: the rows cannot be matched to the objects afterwards");
     }
-    return this.write((qs) => qs.update(values as never, { returning: true }) as unknown as PromiseLike<Row[]>);
+    return this._write((qs) => qs.update(values as never, { returning: true }) as unknown as PromiseLike<Row[]>);
   }
 
   /**
@@ -128,11 +134,11 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
    * delete rewrite, updated), filled from the returned rows.
    */
   async delete(): Promise<R[]> {
-    return this.write((qs) => qs.delete({ returning: true }) as unknown as PromiseLike<Row[]>);
+    return this._write((qs) => qs.delete({ returning: true }) as unknown as PromiseLike<Row[]>);
   }
 
   /** @internal Run `op` on the query set of the objects' rows and fill the objects from the rows it returns; `extra` fields are read back for a partial object too. */
-  async write(op: (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>, extra: readonly string[] = []): Promise<R[]> {
+  async _write(op: (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>, extra: readonly string[] = []): Promise<R[]> {
     const { meta } = this;
     const first = this.distinct();
     let query = this.inner.using(this.database()).filter(this.keyFilter(first) as never);
@@ -218,7 +224,8 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
   }
 }
 
-function rowKey(meta: ModelMeta, row: Row): string {
+/** @internal */
+export function rowKey(meta: ModelMeta, row: Row): string {
   return meta.key.map((f) => { const k = key(fieldValue(row, f.name)); return `${typeof k}:${String(k)}`; }).join("\0");
 }
 

@@ -750,10 +750,11 @@ class Model:
         return bound.load(*(ColumnRef(type(self), (), self._meta.fields[n]) for n in self._meta.expand(names)))
 
     def _versioned(self, bound: BoundQuerySet[Self]) -> BoundQuerySet[Self]:
-        """With instance guards, match only the loaded values of the row."""
+        """With instance guards, match only the loaded values of the row. The set is marked as guarded,
+        so a bound-write extension does not add the same check."""
         for name in self._meta.guards:
             bound = bound.filter(ColumnRef(type(self), (), self._meta.fields[name]) == getattr(self, name))
-        return bound
+        return bound._guard() if self._meta.guards else bound
 
     async def _raise_if_changed(self) -> None:
         """No row matched a guarded write: raise when the row has other guard values."""

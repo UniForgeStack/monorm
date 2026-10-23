@@ -671,10 +671,10 @@ function metaOf(o: Row): ModelMeta {
   return (o.constructor as unknown as { meta: ModelMeta }).meta;
 }
 
-/** @internal The loaded value of an instance guard field; a guarded write needs it. */
-function loadedVersion(o: Row, version: FieldMeta): unknown {
-  const value = Object.hasOwn(o, version.name) ? o[version.name] : (o[INTERNAL] as Record<string, unknown> | undefined)?.[version.name];
-  if (value === undefined) throw new NotLoaded(`${metaOf(o).name}.${version.name} was not loaded`);
+/** @internal The loaded value of a field of an instance; throws `NotLoaded` when the field is not loaded. */
+export function loadedValue(o: Row, field: { readonly name: string }): unknown {
+  const value = Object.hasOwn(o, field.name) ? o[field.name] : (o[INTERNAL] as Record<string, unknown> | undefined)?.[field.name];
+  if (value === undefined) throw new NotLoaded(`${metaOf(o).name}.${field.name} was not loaded`);
   return value;
 }
 
@@ -685,7 +685,7 @@ function rowBound(o: Row): BoundQuerySet<ModelSpec, Row> {
 
 /** Run a write on the row of the bound set; the objects are filled from the returned rows. */
 function writeOf(bound: BoundQuerySet<ModelSpec, Row>, op: (qs: QuerySet<ModelSpec>) => unknown, extra: readonly string[]): Promise<Row[]> {
-  return (bound as unknown as { write(op: unknown, extra: readonly string[]): Promise<Row[]> }).write(op, extra);
+  return (bound as unknown as { _write(op: unknown, extra: readonly string[]): Promise<Row[]> })._write(op, extra);
 }
 
 /** The fields that a write must read back: the guard fields, so the next write sees their values. */
@@ -693,12 +693,12 @@ function guardFields(meta: ModelMeta): readonly string[] {
   return meta.guards.map((f) => f.ir);
 }
 
-/** With instance guards, match only the loaded values of the row. */
+/** With instance guards, match only the loaded values of the row. The set is marked as guarded, so a bound-write extension does not add the same check. */
 function guardBound(o: Row): BoundQuerySet<ModelSpec, Row> {
   const meta = metaOf(o);
   let bound = rowBound(o);
-  for (const f of meta.guards) bound = bound.filter(meta.column(f).eq(loadedVersion(o, f) as never) as never) as never;
-  return bound;
+  for (const f of meta.guards) bound = bound.filter(meta.column(f).eq(loadedValue(o, f) as never) as never) as never;
+  return meta.guards.length ? bound._guard() : bound;
 }
 
 /** No row matched a guarded write: throw when the row has other guard values. */
@@ -706,7 +706,7 @@ async function throwIfChanged(o: Row): Promise<void> {
   const meta = metaOf(o);
   for (const f of meta.guards) {
     const column = meta.column(f);
-    const changed = rowBound(o).filter(differs(column, loadedVersion(o, f)) as never);
+    const changed = rowBound(o).filter(differs(column, loadedValue(o, f)) as never);
     if (await changed.exists()) throw new VersionConflict(`${meta.name} ${show(o["pk"])} was changed since it was loaded`);
   }
 }

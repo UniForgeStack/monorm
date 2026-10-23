@@ -14,6 +14,7 @@ id = "orm.locking"
 version = "0.1.0"
 host_contract = 1
 schema_contract = 2
+language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = []
@@ -47,3 +48,15 @@ kind = "string"
 [[package.metadata.orm-extension.attributes]]
 name = "locking.version"
 target = "field"
+
+[package.metadata.orm-extension.python]
+source = "python/orm_locking"
+query_set = "LockingQuerySet"
+instance = "LockingInstance"
+bound_query_set = "LockingBoundQuerySet"
+
+[package.metadata.orm-extension.typescript]
+source = "typescript/src"
+query_set = "lockingQuerySet"
+bound_query_set = "lockingBoundQuerySet"
+instance = "LockingInstance"

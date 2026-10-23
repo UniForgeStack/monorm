@@ -502,7 +502,15 @@ await post.qs().delete()
 * A bound write (`update()`, `delete()`) is one statement: above the parameter cap of the database (32,766 on SQLite, 65,535 on PostgreSQL) it raises `QueryError` before it runs, so split a very large set. An update that assigns a key field of 2 or more distinct objects raises `TypeError` before it runs: the rows cannot be matched back to the objects. One object may change its key.
 * `await post.load(reload=True)` does not reload a label such as `func.count(Post.comments).label("n")`: the instance does not know the label's expression.
 * The version enters writes only: reads and `lock()` refresh a stale object.
-  Bound writes (`update()`, `delete()`) have no version check yet.
+  A bound write (`update()`, `delete()`, `undelete()`, `hard_delete()`) on a model with locking matches the loaded version of each object.
+  The write raises `orm.VersionConflict` when a row has another version.
+  A write of several objects runs in a transaction (a savepoint inside one transaction).
+  A conflict rolls the transaction back, changes no row and restores the objects.
+  An object that a filter hides, or whose row is gone from the table, is not a conflict.
+  A soft delete by another writer changes the version, so it is a conflict.
+  The host `IN` list binds the key of each object.
+  The pair filter binds the key and the version again: three parameters for each object.
+  An update of one field binds `3 × objects + 2` parameters, so it takes up to 10,921 objects on SQLite and 21,844 on PostgreSQL.
 
 `refresh()` is removed from instances. Migrate as follows:
 

@@ -76,8 +76,7 @@ export function softDeleteBoundQuerySet<B extends BoundQuerySetCtor>(Base: B) {
     /** Clear the soft-delete field of the soft-deleted rows of the objects, filling the objects. */
     undelete<T extends AnyBound>(this: T): Promise<ObjectsOf<T>> {
       const column = deletedAt({ meta: boundMeta(this) });
-      const rows = this.withoutDefaults(DEFAULT).filter(column.column.isNotNull() as never);
-      return boundWrite(rows, (qs) => qs.update({ [column.name]: null } as never, { returning: true })) as never;
+      return boundWrite(this.withoutDefaults(DEFAULT), (qs) => qs.filter(column.column.isNotNull() as never).update({ [column.name]: null } as never, { returning: true })) as never;
     }
 
     /** The objects' rows with the soft-deleted ones. The other defaults stay. */

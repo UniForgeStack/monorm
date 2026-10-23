@@ -1,4 +1,4 @@
-"""Load a schema with the generated soft-delete extension members, as a generated models module does."""
+"""Load a schema with the generated language members of the soft-delete and locking extensions, as a generated models module does."""
 
 import importlib
 import json
@@ -13,34 +13,48 @@ from orm import _native
 from orm.model import define
 
 ID = "orm.soft-delete"
-_module: ModuleType | None = None
+EXTENSIONS = {"orm.soft-delete": "orm_soft_delete", "orm.locking": "orm_locking"}
+_modules: dict[str, ModuleType] | None = None
 
 
-def soft_delete_module() -> ModuleType:
-    """The `orm_ext` package that `orm generate` writes for the loaded artifact, made once for the session."""
-    global _module
-    if _module is None:
-        root = Path(tempfile.mkdtemp(prefix="orm-soft-delete-"))
+def extension_modules() -> dict[str, ModuleType]:
+    """The `orm_ext` packages that `orm generate` writes for the loaded artifact, made once for the session."""
+    global _modules
+    if _modules is None:
+        root = Path(tempfile.mkdtemp(prefix="orm-extensions-"))
         (root / "schema.prisma").write_text("model Probe {\n  id Int @id\n}\n")
         code = _native.cli(
             ["--schema", str(root / "schema.prisma"), "generate", "python", "-o", str(root / "models.py")]
         )
         assert code == 0, "orm generate failed"
         sys.path.insert(0, str(root))
-        _module = importlib.import_module("orm_ext.orm_soft_delete")
-    return _module
+        _modules = {}
+        for extension, package in EXTENSIONS.items():
+            if (root / "orm_ext" / package).is_dir():
+                _modules[extension] = importlib.import_module(f"orm_ext.{package}")
+    return _modules
+
+
+def soft_delete_module() -> ModuleType:
+    return extension_modules()[ID]
 
 
 def loads_soft_delete(source: str, *, registry: orm.Registry | None = None) -> dict[str, Any]:
-    """`orm.loads`, with the soft-delete members on each model the extension has a record for, a proxy too."""
+    """`orm.loads`, with the members of each generated extension on each model it has a record for, a proxy too."""
     ir = _native.compile_schema(source)
     behavior = json.loads(ir).get("behavior", {})
-    models = {d["model"] for d in behavior.get("declarations", ()) if d["attribute"].startswith("soft_delete.")}
-    for rows in (v for v in behavior.values() if isinstance(v, list)):
-        models |= {r["model"] for r in rows if isinstance(r, dict) and r.get("source") == ID and "model" in r}
+    modules = extension_modules()
+    members: dict[str, list[str]] = {}
+    for extension in modules:
+        prefix = extension.split(".")[1].replace("-", "_") + "."
+        names = {d["model"] for d in behavior.get("declarations", ()) if d["attribute"].startswith(prefix)}
+        for rows in (v for v in behavior.values() if isinstance(v, list)):
+            names |= {r["model"] for r in rows if isinstance(r, dict) and r.get("source") == extension and "model" in r}
+        for name in names:
+            members.setdefault(name, []).append(extension)
     return define(
         ir,
         registry=registry,
-        extensions={ID: soft_delete_module()},
-        members={name: (ID,) for name in sorted(models)},
+        extensions=dict(modules),
+        members={name: tuple(sorted(ids, key=list(modules).index)) for name, ids in sorted(members.items())},
     )

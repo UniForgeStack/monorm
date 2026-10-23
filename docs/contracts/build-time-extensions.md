@@ -143,6 +143,19 @@ Python extensions also need `mypy` and `pyright` on `PATH`.
 `orm.ext` (Python) and `orm/ext` (TypeScript) are the host surface for extension code.
 `database_of(instance)` and `databaseOf(instance)` give the database that loaded an instance, or none.
 
+A bound query set mixin reads the objects of a bound write with these helpers (the Python name, then the TypeScript name):
+
+* `bound_objects(bound)` gives the objects in input order. `boundGroups(bound)` gives them in groups, one group for each primary key.
+* `bound_model(bound)` and `boundMeta(bound)` give the model.
+* `bound_guarded(bound)` and `boundGuarded(bound)` are true for the set of an instance write.
+  That set matches the loaded guard values already, so a mixin adds no check of its own.
+* `bound_fresh(bound, objs, *columns)` and `boundFresh(bound, objs, ...columns)` read the current row of each object.
+  They give `(object, row)` pairs and leave the objects as they are.
+* `bound_atomic(bound)` and `boundAtomic(bound, fn)` run a block in a transaction, or in a savepoint inside one.
+  When the block fails, the write rolls back and the objects get the state that they had before.
+* `loadedValue(object, field)` (TypeScript only) gives the loaded value of a field and throws `NotLoaded` when it is not loaded.
+* `key_condition(model, key)` (Python only) gives the condition of the row with the primary key `key`.
+
 ### The full profile
 
 `languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.

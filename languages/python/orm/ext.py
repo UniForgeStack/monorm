@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Protocol, Sequence, TypeVar
 
-from .expr import ColumnRef
+from .expr import ColumnRef, Condition
 from .query import M as ModelT
 from .write import Delete, Returning
 
@@ -24,10 +25,16 @@ __all__ = [
     "behavior_field",
     "behavior_records",
     "behavior_value",
+    "bound_atomic",
+    "bound_fresh",
+    "bound_guarded",
+    "bound_model",
+    "bound_objects",
     "bound_query",
     "bound_write",
     "database_of",
     "hard_delete_statement",
+    "key_condition",
 ]
 
 
@@ -83,3 +90,61 @@ async def bound_write(
     """Run the ``RETURNING`` write that ``build`` makes of the bound query; fill the objects
     whose rows it returns and give them in input order."""
     return await bound._write(build)
+
+
+def bound_objects(bound: BoundQuerySet[ModelT]) -> tuple[ModelT, ...]:
+    """The objects of ``bound`` in input order."""
+    return bound._objs
+
+
+def bound_model(bound: BoundQuerySet[ModelT]) -> type[ModelT]:
+    """The model that ``bound`` queries."""
+    return bound._qs._model
+
+
+def bound_guarded(bound: BoundQuerySet[Any]) -> bool:
+    """Whether ``bound`` is the set of an instance write: it matches the loaded guard values of
+    its row already, so a bound-write extension adds no such check."""
+    return bound._guarded
+
+
+def key_condition(model: type[ModelT], key: Any) -> Condition:
+    """The condition of the row with the primary key ``key``."""
+    from .model import key_match
+
+    return key_match(model, (), model._meta.key, key)
+
+
+async def bound_fresh(
+    bound: BoundQuerySet[ModelT], objs: Sequence[ModelT], *columns: ColumnRef[Any]
+) -> list[tuple[ModelT, ModelT]]:
+    """Each of ``objs`` whose row the filters of ``bound`` keep, with a new instance of that row that
+    has ``columns`` loaded and nothing else. The ``objs`` stay as they are."""
+    query = bound._qs.using(bound._database()).filter(bound._condition(list(dict.fromkeys(o.pk for o in objs))))
+    rows = {row.pk: row for row in await query._clone(_loads=()).load(*columns)}
+    return [(o, rows[o.pk]) for o in objs if o.pk in rows]
+
+
+def _snapshot(o: Any) -> dict[str, Any]:
+    """The state of an object; a merge changes the ``_orm_internal`` dict in place, so copy it."""
+    data = dict(o.__dict__)
+    if "_orm_internal" in data:
+        data["_orm_internal"] = dict(data["_orm_internal"])
+    return data
+
+
+@asynccontextmanager
+async def bound_atomic(bound: BoundQuerySet[Any]) -> AsyncIterator[None]:
+    """Run the block in a transaction (a savepoint in one). When the block raises, its writes roll
+    back, and the objects of ``bound`` get the state that they had before the block."""
+    from .db import resolve
+
+    before = [(o, _snapshot(o)) for o in bound._objs]
+    try:
+        async with resolve(bound._database()).transaction():
+            yield
+    except BaseException:
+        for o, data in before:
+            o.__dict__.clear()
+            o.__dict__.update(data)
+        raise

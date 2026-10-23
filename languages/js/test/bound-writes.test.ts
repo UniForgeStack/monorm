@@ -1,4 +1,4 @@
-/** Bound query sets: `of()` writes, no version check and soft delete on SQLite and Postgres. */
+/** Bound query sets: `of()` writes and soft delete on SQLite and Postgres. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, of, Registry, type Database } from "../src/index.js";
@@ -99,7 +99,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`bound update and delete do not check versions: the last write wins (${dialect})`, async () => {
+  test(`bound update and delete of a model without locking: the last write wins (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {
       const notes = Note.objects.using(db);
