@@ -26,7 +26,7 @@ python examples/blog/demo.py sqlite://:memory:
 cd languages/js && npm install && npm run build:native && npm run build
 ```
 
-Released packages need one native profile: `pip install 'orm[postgres]'`, `orm[sqlite]`, `orm[combined]` or `orm[tooling]`.
+Released packages need one native profile: `pip install 'orm[postgres]'`, `orm[sqlite]`, `orm[combined]`, `orm[tooling]` or `orm[full]` (tooling plus every first-party extension).
 
 ## Where to read next
 

@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.flush()
     if not hasattr(_native, "cli"):
         raise RuntimeError(
-            "CLI is unavailable in this runtime profile; install orm[tooling] and set ORM_PROFILE=tooling"
+            "CLI is unavailable in this runtime profile; install orm[tooling] or orm[full] and set ORM_PROFILE"
         )
     args = sys.argv[1:] if argv is None else list(argv)
     try:

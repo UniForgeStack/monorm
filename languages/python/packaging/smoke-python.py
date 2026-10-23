@@ -19,6 +19,13 @@ from orm import _native as _again
 assert _again is _native
 os.environ["ORM_PROFILE"] = _selector
 assert hasattr(_native, "cli") == metadata["capabilities"]["cli"]
+FULL_EXTENSIONS = {
+    "composition", "file-storage", "orm.generic", "orm.inherit", "orm.locking",
+    "orm.proxy", "orm.query-defaults", "orm.soft-delete", "orm.timestamps",
+}
+extensions = set(json.loads(_native.native_artifact())["extensions"])
+assert extensions == (FULL_EXTENSIONS if _selector == "full" else set()), extensions
+assert metadata["capabilities"]["composition"] == (_selector == "full")
 assert hasattr(_native, "generate_python") == metadata["capabilities"]["generate-python"]
 assert hasattr(_native, "generate_typescript") is False  # only Node exposes its generator
 
@@ -31,11 +38,13 @@ else:
 
 
 def source(backend):
+    # `@@proxy.of` is an extension attribute that only `full` accepts.
+    view = "\nmodel ProbeView {\n  @@proxy.of(Probe)\n}" if metadata["profile"] == "full" else ""
     return f'''datasource db {{ provider = "{backend}" }}
 model Probe {{
   id BigInt @id @default(autoincrement())
   name String @unique
-}}'''
+}}{view}'''
 
 
 async def run():
@@ -52,7 +61,8 @@ async def run():
             continue
         if backend == "postgres" and not os.environ.get("ORM_TEST_DATABASE_URL"):
             continue
-        Probe = orm.loads(source(provider), registry=registry)["Probe"]
+        models = orm.loads(source(provider), registry=registry)
+        Probe = models["Probe"]
         url = os.environ["ORM_TEST_DATABASE_URL"] if backend == "postgres" else "sqlite://:memory:"
         db = await orm.connect(url, registry=registry, default=False)
         try:
@@ -64,6 +74,8 @@ async def run():
             assert await Probe.objects.using(db).count() == 2
             await first.update(name="changed")
             assert (await Probe.objects.using(db).get(Probe.id == first.id)).name == "changed"
+            if metadata["profile"] == "full":
+                assert await models["ProbeView"].objects.using(db).count() == 2
             await db.drop_tables()
         finally:
             await db.close()

@@ -5,14 +5,15 @@ not install drivers, TLS, CLI or generators. A native profile supplies one engin
 for the entire process. Profile selection is fixed during initialization; existing
 schemas, objects, pools and transactions cannot switch engines.
 
-| Profile | Databases | CLI | Generators | Feature adapters |
-| --- | --- | --- | --- | --- |
-| postgres | PostgreSQL | no | no | none |
-| sqlite | SQLite | no | no | none |
-| combined | PostgreSQL + SQLite | no | no | none |
-| tooling | PostgreSQL + SQLite | yes | Python + TypeScript | none |
+| Profile | Databases | CLI | Generators | Feature adapters | Extensions |
+| --- | --- | --- | --- | --- | --- |
+| postgres | PostgreSQL | no | no | none | none |
+| sqlite | SQLite | no | no | none | none |
+| combined | PostgreSQL + SQLite | no | no | none | none |
+| tooling | PostgreSQL + SQLite | yes | Python + TypeScript | none | none |
+| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | all nine first-party |
 
-Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]` or `orm[tooling]`.
+Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]`, `orm[tooling]` or `orm[full]`.
 These extras select complete distributions, not changes to an installed binary.
 Each native wheel owns a unique `orm_native_<profile>._native` namespace.
 Installing `orm[postgres,sqlite]` installs two engines, not a combined engine. Use
@@ -23,7 +24,7 @@ ambiguous install, an incompatible ABI or version, or an unexpected backend or a
 set. A change to the environment after initialization does not change the engine.
 
 Node installs use `orm` alongside `@orm/native-postgres`, `@orm/native-sqlite`,
-`@orm/native-combined` or `@orm/native-tooling`. Optional peers do not install every
+`@orm/native-combined`, `@orm/native-tooling` or `@orm/native-full`. Optional peers do not install every
 profile. Each selected profile's optional dependencies are **platform artifacts**,
 not additional database features. Supported prebuilt targets are darwin-arm64,
 linux-x64 (glibc) and win32-x64. Unsupported targets require a source build. The
@@ -38,10 +39,11 @@ export ORM_PROFILE=sqlite
 npm install orm @orm/native-sqlite
 ```
 
-`python -m orm` and `npx orm` require the tooling profile. The standalone `orm`
-binary does not use a profile. All runtime profiles contain the migration and schema
-APIs. Each binding exposes a generator only when the build selects it. The tooling
-profile contains both generators, so each language CLI generates both languages.
+`python -m orm` and `npx orm` require the tooling or the full profile.
+The standalone `orm` binary does not use a profile.
+All runtime profiles contain the migration and schema APIs.
+Each binding exposes a generator only when the build selects it.
+The tooling profile contains both generators, so each language CLI generates both languages.
 
 ```bash
 python -m pip install 'orm[tooling]'
@@ -50,6 +52,32 @@ python -m orm generate
 npm install orm @orm/native-tooling
 npx orm generate typescript
 ```
+
+## The full profile
+
+The `full` profile is the `tooling` profile plus every first-party extension:
+`orm.proxy`, `orm.query-defaults`, the model-composition extension (`composition`), `file-storage`, `orm.generic`, `orm.timestamps`, `orm.soft-delete`, `orm.locking` and `orm.inherit`.
+It has the generators because only the artifact that holds the extensions can write their `orm_ext/` files during `orm generate`.
+
+```bash
+python -m pip install 'orm[full]'     # orm-native-full
+npm install orm @orm/native-full
+export ORM_PROFILE=full               # only when more than one profile is installed
+```
+
+The build goes through `orm-extension-build`, never with hand-set host features.
+The inputs are `build.json` in `languages/python/packaging/full/` and in `languages/js/packaging/full/`.
+`python languages/python/packaging/build-full-wheel.py [wheel-dir]` builds the wheel.
+`node languages/js/packaging/build-node-profile.mjs full --release` builds the Node package.
+Both commands need `cargo`, `mypy` and `pyright` on `PATH`, and the wheel build needs `maturin`.
+Run `npm install` in `languages/js` first: the frontend type-checks the embedded TypeScript with its `tsc`.
+`profile_metadata()["build"]["features"]` lists the host features only (with `profile-full`).
+`native_artifact()["extensions"]` (`nativeArtifact().extensions` in Node) lists the compiled extensions.
+`profile_metadata()["capabilities"]["composition"]` is `true` for `full` only.
+The file-storage language packages stay separate.
+Add `orm-file-storage` (Python) or `@orm/file-storage` (Node) for file fields.
+CI records the size of every native wheel and package in the job summary.
+There is no size limit.
 
 ## Exact source builds
 
@@ -129,6 +157,8 @@ exactly their selected adapters and dependencies. No query-time plugin discovery
 `languages/python/packaging/check-dependencies.py` audits isolated graphs for every binding/profile,
 including backend SQL-builder unification and absence of CLI/TLS/unused drivers.
 `languages/python/packaging/check-wheel.py` checks thin/native wheel payload separation.
+`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or all nine for `full`.
+The `full` run also defines a schema with `@@proxy.of`.
 `languages/js/packaging/check-node-install.mjs` packs and installs one native profile offline,
 checks the dependency lock and runs installed-package smoke tests. Python
 `languages/python/packaging/smoke-python.py` runs against fresh installed wheels. Set

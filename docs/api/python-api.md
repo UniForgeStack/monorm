@@ -29,7 +29,7 @@ composition, file fields, generic relations) have their own docs: see [README.md
 | `crates/engine/` | Rust crate `orm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
 | `crates/cli/` | Rust crate `orm-cli`: the `orm` command line, run as the `orm` binary, `python -m orm` and `npx orm` |
 | `languages/python/native/` | Rust crate `orm-python` (PyO3) on top of `orm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `orm_native_<profile>._native`; `orm._native` forwards to the selected profile |
-| `languages/python/packaging/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation), `custom` (an extension build): [`optional-packaging.md`](../contracts/optional-packaging.md) |
+| `languages/python/packaging/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation), `full` (tooling plus every first-party extension), `custom` (an extension build): [`optional-packaging.md`](../contracts/optional-packaging.md) |
 | `languages/js/`, `languages/js/native/` | The TypeScript package on the same engine: [`typescript-api.md`](typescript-api.md) |
 | `examples/blog/` | `schema.prisma`, the `models.py` / `models.pyi` generated from it, its migrations, `demo.py` |
 | `languages/python/tests/` | SQL shape tests (no DB), Postgres end-to-end tests, mypy + pyright stub checks |
@@ -46,7 +46,7 @@ python examples/blog/demo.py sqlite://:memory:
 ```
 
 `orm` needs exactly one native profile: install `orm[postgres]`, `orm[sqlite]`,
-`orm[combined]` or `orm[tooling]`. Set `ORM_PROFILE` when more than one is installed;
+`orm[combined]`, `orm[tooling]` or `orm[full]`. Set `ORM_PROFILE` when more than one is installed;
 `ORM_PROFILE=custom` selects an extension build ([`build-time-extensions.md`](../contracts/build-time-extensions.md)).
 
 ## Models: the generated module

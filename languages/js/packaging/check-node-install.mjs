@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const profile = process.argv[2];
-if (!["postgres", "sqlite", "combined", "tooling"].includes(profile)) throw new Error("expected named profile");
+if (!["postgres", "sqlite", "combined", "tooling", "full"].includes(profile)) throw new Error("expected named profile");
 const packs = join(root, "target", "npm-packs"), install = join(root, "target", "node-installs", profile);
 mkdirSync(packs, { recursive: true }); mkdirSync(install, { recursive: true });
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";

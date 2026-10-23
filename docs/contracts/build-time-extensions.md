@@ -134,6 +134,22 @@ The message names the namespace of the attribute.
 Protected writes (`@@protected_write`), client defaults, cursor pagination, the N+1 finder and reference loaders are in the core.
 They need no extension.
 
+The frontend type-checks the embedded TypeScript with `tsc` from `languages/js/node_modules`.
+Run `npm install` in `languages/js` before the first build, or the frontend fails with `TS2688: Cannot find type definition file for 'node'`.
+Python extensions also need `mypy` and `pyright` on `PATH`.
+
+### The full profile
+
+`languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.
+They select the nine first-party extensions.
+They set `prepare_only` and `binding_features` to `["profile-full"]`.
+`profile-full` has the features of `profile-tooling`: the backends, `cli`, both generators and `reference-loading`.
+It also gives the profile its name in `profile_metadata()`.
+`build-full-wheel.py` and `build-node-profile.mjs full` run the steps above.
+The Python script then runs `maturin build --release` in the emitted workspace.
+The Node script runs `cargo build -p orm-node` there.
+[Static native profiles](optional-packaging.md#the-full-profile) has the list of the nine extensions, the install lines and the rest of the contract.
+
 ## Application source modules
 
 Instead of a dependency, `modules` accepts an application source module:

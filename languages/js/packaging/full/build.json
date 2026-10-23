@@ -1,0 +1,51 @@
+{
+  "host": "../../../..",
+  "output": "../../../../target/full-profile/node",
+  "prepare_only": true,
+  "bindings": [
+    "node"
+  ],
+  "binding_features": {
+    "node": [
+      "profile-full"
+    ]
+  },
+  "dependencies": {
+    "proxy": {
+      "package": "orm-proxy",
+      "path": "../../../../extensions/proxy"
+    },
+    "query_defaults": {
+      "package": "orm-query-defaults",
+      "path": "../../../../extensions/query-defaults"
+    },
+    "composition": {
+      "package": "orm-model-composition",
+      "path": "../../../../extensions/model-composition"
+    },
+    "file_storage": {
+      "package": "orm-file-storage-extension",
+      "path": "../../../../extensions/file-storage"
+    },
+    "generic": {
+      "package": "orm-generic",
+      "path": "../../../../extensions/generic"
+    },
+    "timestamps": {
+      "package": "orm-timestamps",
+      "path": "../../../../extensions/timestamps"
+    },
+    "soft_delete": {
+      "package": "orm-soft-delete",
+      "path": "../../../../extensions/soft-delete"
+    },
+    "locking": {
+      "package": "orm-locking",
+      "path": "../../../../extensions/locking"
+    },
+    "inherit": {
+      "package": "orm-inherit",
+      "path": "../../../../extensions/inherit"
+    }
+  }
+}
