@@ -101,6 +101,10 @@ pub struct Requirements {
 #[serde(deny_unknown_fields)]
 pub struct PackageStamp {
     pub version: String,
+    /// SHA-256 of the raw installed `orm-extension.toml` bytes (lowercase hex).
+    /// Empty only for schemas generated before package locks carried a hash.
+    #[serde(default)]
+    pub manifest_hash: String,
     /// The passes that ran, in order.
     #[serde(default)]
     pub passes: Vec<String>,

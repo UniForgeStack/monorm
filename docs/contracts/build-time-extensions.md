@@ -322,5 +322,18 @@ A version fits when its major equals the engine major and its minor is at most t
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.
 The loader runs library passes and compiled passes in one pass order.
-The IR records each library that ran in `Requirements.packages`: its version, its passes and its attribute names.
+The IR records each library that ran in `Requirements.packages`: its version, its passes, its attribute names, and `manifest_hash` (the lowercase hexadecimal SHA-256 of the raw `orm-extension.toml` bytes).
+The generated models embed this lock in their compiled schema.
+The hash excludes native library bytes, so the same models work across platforms.
+
+Run `orm check` in CI to compare the lock against installed extension packages.
+A changed version or manifest, or a missing package, fails with the locked and installed identities and a run `orm generate` hint.
+Unused installed packages add no lock requirement.
+Python and npm commands discover packages as they do for generation; the standalone binary takes repeated `--extension ID=MANIFEST` options.
+Use `check -o FILE` (or `--out FILE`) for a custom models path; a missing explicit path fails with a regeneration hint.
+All hosts check `models.py` and `models.ts` beside the schema when they carry a generated header, and skip other files.
+Rust models are outside this lock check.
+Python schema facades are checked through their shared `_orm_models.py`.
+With no generated models file, the command compiles the schema as usual.
+`load()` and `loads()` carry package stamps in their IR but perform no lock comparison.
 `tests/outside-extension/` is a library in its own workspace.

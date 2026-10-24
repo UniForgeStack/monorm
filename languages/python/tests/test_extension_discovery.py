@@ -111,3 +111,15 @@ def test_the_command_line_lowers_the_schema_with_an_installed_outside_library(
     capfd.readouterr()
     assert cli(["sqlmigrate", "1"]) == 0
     assert '"tag"' in capfd.readouterr().out
+
+    assert cli(["generate"]) == 0
+    assert cli(["check"]) == 0
+    original = manifest.read_text()
+    manifest.write_text(original + "\n# changed after generation\n")
+    capfd.readouterr()
+    assert cli(["check"]) == 1
+    error = capfd.readouterr().err
+    assert "acme.outside" in error and "run `orm generate`" in error
+    assert "locked" in error and "installed" in error
+    manifest.write_text(original)
+    assert cli(["check"]) == 0

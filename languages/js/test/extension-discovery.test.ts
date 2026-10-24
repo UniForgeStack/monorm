@@ -128,4 +128,14 @@ test("an installed outside library lowers the schema through load(), loads() and
   run("check");
   run("makemigrations");
   assert.ok(run("sqlmigrate", "1").includes('"tag"'), "the migration adds the column of the pass");
+  run("generate");
+  run("check");
+  const original = readFileSync(manifest, "utf8");
+  writeFileSync(manifest, original + "\n# changed after generation\n");
+  const stale = spawnSync(process.execPath, [CLI, "check"], { cwd: root, encoding: "utf8" });
+  assert.equal(stale.status, 1, stale.stderr);
+  assert.match(stale.stderr, /acme.outside/);
+  assert.match(stale.stderr, /run `orm generate`/);
+  writeFileSync(manifest, original);
+  run("check");
 });

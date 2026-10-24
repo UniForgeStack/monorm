@@ -190,9 +190,8 @@ fn the_app_flags_of_the_user_win_over_later_ones() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn extension_flag_gives_the_loader_an_installed_library() {
-    let dir = std::env::temp_dir().join(format!("orm-cli-extension-{}", std::process::id()));
+fn extension_fixture(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("orm-cli-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/outside-extension");
@@ -204,6 +203,13 @@ fn extension_flag_gives_the_loader_an_installed_library() {
     std::fs::copy(target.join("debug").join(&library), dir.join(&library)).unwrap();
     std::fs::copy(root.join("orm-extension.toml"), dir.join("orm-extension.toml")).unwrap();
     std::fs::write(dir.join("schema.prisma"), "model Post {\n  id Int @id\n  @@outside.tag(\"blue\")\n}\n").unwrap();
+
+    dir
+}
+
+#[test]
+fn extension_flag_gives_the_loader_an_installed_library() {
+    let dir = extension_fixture("extension");
 
     let missing = orm(&dir, &["check", "--schema", "schema.prisma"]);
     assert_eq!(missing.status.code(), Some(1));
@@ -223,4 +229,115 @@ fn extension_flag_gives_the_loader_an_installed_library() {
     assert!(sql.status.success(), "{}", text(&sql.stderr));
     assert!(text(&sql.stdout).contains("\"tag\""), "{}", text(&sql.stdout));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_skips_handwritten_defaults_and_rust_models_on_every_host() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-check-defaults-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema = dir.join("schema.prisma");
+    std::fs::write(&schema, SCHEMA).unwrap();
+    for name in ["models.py", "models.ts", "models.rs"] {
+        std::fs::write(dir.join(name), "handwritten models\n").unwrap();
+    }
+    for host in [orm_cli::Host::Binary, orm_cli::Host::Python, orm_cli::Host::Node] {
+        let args = vec!["check".into(), "--schema".into(), schema.display().to_string()];
+        assert_eq!(orm_cli::run_blocking(&args, host), 0);
+    }
+    // Rust output is outside this slice, including Rust's non-JSON Unicode escapes.
+    std::fs::write(dir.join("models.rs"), "const JSON: &'static str = \"\\u{301}\";\n").unwrap();
+    assert!(orm(&dir, &["check"]).status.success());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn check_reads_generated_defaults_from_other_languages_on_every_host() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-check-hosts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema = dir.join("schema.prisma");
+    std::fs::write(&schema, SCHEMA).unwrap();
+    for (name, header) in [
+        ("models.py", "# Generated from schema.prisma by `python -m orm generate`. Do not edit.\n"),
+        ("models.ts", "// Generated from schema.prisma by `orm generate typescript`. Do not edit.\n"),
+    ] {
+        std::fs::write(dir.join(name), header).unwrap();
+        for host in [orm_cli::Host::Binary, orm_cli::Host::Python, orm_cli::Host::Node] {
+            let args = vec!["check".into(), "--schema".into(), schema.display().to_string()];
+            assert_eq!(orm_cli::run_blocking(&args, host), 1, "{name}");
+        }
+        std::fs::remove_file(dir.join(name)).unwrap();
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn check_rejects_a_missing_explicit_output() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-check-explicit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("schema.prisma"), SCHEMA).unwrap();
+    let result = orm(&dir, &["check", "-o", "typo.py"]);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(text(&result.stderr).contains("no generated models at typo.py; run `orm generate`"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn check_compares_extension_locks_and_python_facades() {
+    let dir = extension_fixture("check-lock");
+    let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "-o", "out/models.ts"]);
+    assert!(generated.status.success(), "{}", text(&generated.stderr));
+    // The lock comes from the same schema bytes consumed by define().
+    let models = std::fs::read_to_string(dir.join("out/models.ts")).unwrap();
+    assert!(models.contains("manifest_hash"), "{models}");
+    // Independently measured with shasum -a 256 on the fixture's raw bytes.
+    assert!(models.contains("b11fe866c1fea126c36a23e07fbae9f1461d767377d0b096a26274bb9899a4f5"));
+    let original = std::fs::read_to_string(dir.join("orm-extension.toml")).unwrap();
+    for output in ["out/models.ts", "models.py"] {
+        let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "-o", output]);
+        assert!(generated.status.success(), "{}", text(&generated.stderr));
+        let check = || orm(&dir, &["check", "--extension", "acme.outside=orm-extension.toml", "--out", output]);
+        assert!(check().status.success());
+        for changed in [original.replace("0.1.0", "0.2.0"), format!("{original}\n# manifest changed\n")] {
+            std::fs::write(dir.join("orm-extension.toml"), &changed).unwrap();
+            let stale = check();
+            assert_eq!(stale.status.code(), Some(1));
+            let error = text(&stale.stderr);
+            for expected in ["acme.outside", "locked", "0.1.0", "installed", "hash", "run `orm generate`"] {
+                assert!(error.contains(expected), "missing {expected}: {error}");
+            }
+            if changed.contains("0.2.0") { assert!(error.contains("0.2.0"), "{error}"); }
+        }
+        std::fs::write(dir.join("orm-extension.toml"), &original).unwrap();
+        let missing = orm(&dir, &["check", "-o", output]);
+        assert_eq!(missing.status.code(), Some(1));
+        let error = text(&missing.stderr);
+        assert!(error.contains("acme.outside") && error.contains("not installed") && error.contains("run `orm generate`"), "{error}");
+        // Installation alone never adds a lock requirement.
+        std::fs::write(dir.join("unused.toml"), "id = \"acme.unused\"\nversion = \"9.0.0\"\n").unwrap();
+        let unused = orm(&dir, &["check", "-o", output, "--extension", "acme.outside=orm-extension.toml", "--extension", "acme.unused=unused.toml"]);
+        assert!(unused.status.success(), "{}", text(&unused.stderr));
+    }
+
+    std::fs::write(dir.join("app.prisma"), "model AppItem {\n id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("consumer.prisma"), "import \"app:sample\"\nmodel Consumer {\n id Int @id\n}\n").unwrap();
+    let app = orm(&dir, &["generate", "python", "--schema", "consumer.prisma", "--app", "sample=app.prisma", "-o", "app-models.py"]);
+    assert!(app.status.success(), "{}", text(&app.stderr));
+    let app_check = orm(&dir, &["check", "--schema", "consumer.prisma", "--app", "sample=app.prisma", "-o", "app-models.py"]);
+    assert!(app_check.status.success(), "{}", text(&app_check.stderr));
+
+    // Default paths and the shared Python schema behind generated facades.
+    std::fs::create_dir_all(dir.join("multi")).unwrap();
+    std::fs::write(dir.join("multi/schema.prisma"), "import \"../schema.prisma\"\nmodel Other {\n id Int @id\n}\n").unwrap();
+    let multi = orm(&dir, &["generate", "python", "--schema", "multi/schema.prisma", "--extension", "acme.outside=orm-extension.toml"]);
+    assert!(multi.status.success(), "{}", text(&multi.stderr));
+    assert!(dir.join("multi/_orm_models.py").is_file());
+    let current = orm(&dir, &["check", "--schema", "multi/schema.prisma", "--extension", "acme.outside=orm-extension.toml"]);
+    assert!(current.status.success(), "{}", text(&current.stderr));
+    std::fs::write(dir.join("orm-extension.toml"), format!("{original}\n# changed\n")).unwrap();
+    let stale = orm(&dir, &["check", "--schema", "multi/schema.prisma", "--extension", "acme.outside=orm-extension.toml"]);
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(text(&stale.stderr).contains("run `orm generate`"));
+    std::fs::write(dir.join("orm-extension.toml"), &original).unwrap();
+
+    std::fs::remove_dir_all(dir).unwrap();
 }

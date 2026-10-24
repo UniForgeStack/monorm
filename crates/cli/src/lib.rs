@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! orm [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>
-//!   check                                         compile the schema and report errors
+//!   check [-o FILE]                               compile the schema and check the package lock
 //!   compile [-o ir.json]                          the compiled schema (JSON IR)
 //!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
 //!   makemigrations [name] [--empty] [--check]
@@ -34,6 +34,8 @@
 //! Output goes to the process's stdout and stderr. Exit codes: 0 success, 1 failure
 //! (an invalid schema, a migration error, a database error, `makemigrations --check`
 //! finding changes, `drift` finding differences), 2 bad usage.
+
+mod package_lock;
 
 use std::path::{Path, PathBuf};
 
@@ -72,7 +74,7 @@ impl Host {
     }
 }
 
-const COMMANDS: &str = "  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check                                    compile the schema and report errors
+const COMMANDS: &str = "  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check [-o FILE]                          compile the schema and check the package lock
   compile [-o ir.json]                     print or write the compiled schema (JSON IR)
   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
                                            the models module from the schema; TARGET is
@@ -375,7 +377,8 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             println!("wrote {}", path.display());
         }
         "check" => {
-            args.allow(command, &[], 0)?;
+            args.allow(command, &["-o", "--out"], 0)?;
+            package_lock::check(&schema, args.opt(&["-o", "--out"]), &args.installed()?).map_err(Failure::Failed)?;
             let (ir, _) = load(&schema, &args)?;
             println!("{}: ok ({} models)", schema.display(), ir.models.len());
         }

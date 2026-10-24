@@ -1,5 +1,6 @@
 //! Extensions that ship their passes as native libraries: select, check, load and run them.
 //! It names no extension. The passes of libraries and the passes compiled into the artifact run in one order.
+use sha2::{Digest, Sha256};
 use orm_contracts::abi::{AbiVersionFn, Buffer, FreeFn, RunPassFn, SYMBOL_ABI_VERSION, SYMBOL_FREE, SYMBOL_RUN_PASS, STATUS_OK, STATUS_PANIC};
 use orm_contracts::extension::{attribute_namespace, PackageStamp, ABI_VERSION, SCHEMA_CONTRACT, SCHEMA_CONTRACT_VERSION};
 use orm_contracts::ir::SchemaIr;
@@ -27,6 +28,8 @@ static LIBRARIES: Mutex<BTreeMap<PathBuf, Arc<Native>>> = Mutex::new(BTreeMap::n
 /// An installed extension that the schema selected.
 pub struct Dynamic {
     pub manifest: Manifest,
+    /// SHA-256 of the raw manifest bytes, independent of the parsed contract shape.
+    pub manifest_hash: String,
     dir: PathBuf,
     path: PathBuf,
 }
@@ -86,7 +89,7 @@ fn parse_manifest(id: &str, path: &Path, text: &str, header: &Header) -> Result<
         header.check_versions().err().unwrap_or_else(|| format!("extension {id}: {}: {e}", path.display()))
     })?;
     let dir = path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
-    Ok(Dynamic { manifest, dir, path: path.to_path_buf() })
+    Ok(Dynamic { manifest, manifest_hash: format!("{:x}", Sha256::digest(text.as_bytes())), dir, path: path.to_path_buf() })
 }
 
 /// Reads `manifest`, the file that `id` names.
@@ -168,7 +171,7 @@ impl Plan {
         ir.behavior.completed_passes.clear();
         for d in &self.dynamic {
             let attributes = d.manifest.attributes.iter().map(|a| a.name.clone()).collect();
-            ir.behavior.packages.insert(d.manifest.id.clone(), PackageStamp { version: d.manifest.version.clone(), passes: vec![], attributes });
+            ir.behavior.packages.insert(d.manifest.id.clone(), PackageStamp { version: d.manifest.version.clone(), manifest_hash: d.manifest_hash.clone(), passes: vec![], attributes });
         }
         for pass in &self.order {
             match owner_of.get(pass.id.as_str()) {
