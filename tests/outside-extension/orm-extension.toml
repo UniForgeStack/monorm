@@ -18,4 +18,4 @@ required = true
 [[passes]]
 id = "acme.outside.tag"
 phase = "declaration"
-effects = ["models.outside"]
+effects = ["models.outside", "behavior.storage"]

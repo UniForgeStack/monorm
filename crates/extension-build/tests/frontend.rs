@@ -82,6 +82,14 @@ fn core_only_build_adds_no_composition() {
     let artifact: serde_json::Value = serde_json::from_slice(&fs::read(output.join("artifact.json")).unwrap()).unwrap();
     assert_eq!(artifact["extensions"], serde_json::json!({}));
     assert_eq!(fs::read_to_string(output.join("manifests.json")).unwrap().trim(), "[]");
+    // The emitted CLI/core tests build this library in its own workspace.
+    for file in ["src/lib.rs", "orm-extension.toml"] {
+        let fixture = PathBuf::from("tests/outside-extension").join(file);
+        assert_eq!(fs::read(output.join(&fixture)).unwrap(), fs::read(host.join(&fixture)).unwrap());
+    }
+    let result = Command::new("cargo").args(["metadata", "--offline", "--format-version", "1", "--manifest-path"])
+        .arg(output.join("tests/outside-extension/Cargo.toml")).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     for generated in ["engine-composition.rs", "python-methods.rs", "crates/core/build.rs", "crates/core/composition-inputs.json"] {
         assert!(!output.join(generated).exists(), "{generated}");
     }

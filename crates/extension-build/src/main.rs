@@ -122,6 +122,15 @@ fn build() -> Result<(), String> {
     }
     for dir in ["core", "engine", "cli"] { copy_tree(&config.host.join("crates").join(dir), &config.output.join("crates").join(dir))?; }
     for binding in &config.bindings { copy_tree(&config.host.join(binding_dir(binding)), &config.output.join(binding_dir(binding)))?; }
+    // The emitted CLI/core tests build the outside library against the host SDK.
+    let fixture = Path::new("tests/outside-extension");
+    if config.host.join(fixture).is_dir() {
+        copy_tree(&config.host.join(fixture), &config.output.join(fixture))?;
+        let path = config.output.join(fixture).join("Cargo.toml");
+        let mut manifest: toml::Value = toml::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        manifest["dependencies"]["orm-contracts"]["path"] = toml::Value::String(config.host.join("crates/contracts").to_string_lossy().into());
+        fs::write(path, toml::to_string(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    }
     // The orm-core and orm-engine tests read these host files; copy them so the snapshot tests run.
     for file in ["examples/blog/schema.prisma", "examples/sqlite/schema.prisma", "docs/schema/prisma-syntax.md", "docs/schema/schema.md"] {
         let (from, to) = (config.host.join(file), config.output.join(file));
