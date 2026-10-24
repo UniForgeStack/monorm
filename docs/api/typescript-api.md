@@ -941,9 +941,7 @@ const result = Post.objects.load(Post.author).inspect();
 assert.equal(result.statementCount, 1);
 assert.equal(result.hasBatching, false);
 assert.equal(result.statements[0]!.joinsCount, 1);
-assert.equal(result.statements[0]!.correlatedCount, 0);
-assert.equal(result.statements[0]!.uncorrelatedCount, 0);
-assert.equal(result.statements[0]!.cteCount, 0);
+assert.deepStrictEqual(result.statements[0], statementInspection({ joinsCount: 1 }));
 
 const insert = Tag.objects.insertMany(rows, { batchSize: 100 }).returning();
 const planned = insert.inspect();
@@ -954,7 +952,7 @@ const structure = prepared.inspect({ minimum: 5 });
 
 The exported `QueryInspection` and `StatementInspection` interfaces contain only these counters. `statementCount` counts planned templates, including nested prefetches and composed writes. Empty parents can skip prefetches and key batches can repeat templates; use `db.onQuery()` to count actual statements. N+1 reports collapse some intentional batching and are not raw execution counts.
 
-Correlation follows dependencies on enclosing query columns, including implicit relation filters/aggregates and LATERAL queries. The flat statement counters `correlatedCount` and `uncorrelatedCount` count each nested subquery once according to its own dependencies. `cteCount` counts CTE definitions separately (a recursive CTE counts once); subqueries inside CTE bodies still contribute to the subquery counters. Correlation does not imply physical execution per row; use `explain()` for database strategy. PostgreSQL can share relation aggregates with LATERAL; SQLite can use separate correlated scalar subqueries.
+Correlation follows dependencies on enclosing query columns, including implicit relation filters/aggregates and LATERAL queries. A subquery has a shape: the way the outer query uses its result. A `scalar*` subquery is a value, such as `(SELECT COUNT(*) ...)` or `ARRAY(SELECT ...)`. A `set*` subquery is the argument of `IN`, `EXISTS`, `ANY` or `ALL`. A `derived*` subquery is a `FROM` or `JOIN` item (`LATERAL` included). Each shape has a `Correlated` and an `Uncorrelated` counter, such as `derivedCorrelated`. Each nested subquery counts once, according to its own dependencies. `statementInspection({ joinsCount: 1, derivedCorrelated: 1 })` builds an expected statement with zeros filled in, for `deepStrictEqual`. `cteCount` counts CTE definitions separately (a recursive CTE counts once); subqueries inside CTE bodies still contribute to the subquery counters. Correlation does not imply physical execution per row; use `explain()` for database strategy. PostgreSQL can share relation aggregates with LATERAL; SQLite can use separate correlated scalar subqueries.
 
 Ordinary planning and execution collect no inspection metadata. Keep exact SQL assertions for rendering and result assertions for correctness. `insertMany(..., { copy: true })` and many-to-many `relation.insert()` orchestration do not expose planner inspection; inspect the model and explicit link statements separately.
 

@@ -53,9 +53,7 @@ async def test_composed_create_attach_update_delete(provider):
         result = insert.inspect()
         assert result.statement_count == 4  # three owners and the logical identity read
         assert not result.has_batching
-        assert result.statements[-1].joins_count == 1
-        assert result.statements[-1].correlated_count == 2
-        assert result.statements[-1].uncorrelated_count == 0
+        assert result.statements[-1] == orm.StatementInspection(joins_count=1, scalar_correlated=2)
         alice = await insert
         assert (alice.name, alice.salary, alice.level) == ("Alice", 20, 1)
         counts = [await m.objects.using(db).count() for m in (Person, Employee, Manager)]

@@ -20,13 +20,42 @@ pub struct InsertOptions {
     pub without_defaults: orm_core::ir::Bypass,
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Debug, PartialEq, Eq, Serialize)]
 pub struct Statement {
     pub has_batching: bool,
     pub joins_count: usize,
-    pub correlated_count: usize,
-    pub uncorrelated_count: usize,
+    pub scalar_correlated: usize,
+    pub scalar_uncorrelated: usize,
+    pub set_correlated: usize,
+    pub set_uncorrelated: usize,
+    pub derived_correlated: usize,
+    pub derived_uncorrelated: usize,
     pub cte_count: usize,
+}
+impl Statement {
+    fn count(&mut self, shape: Shape, correlated: bool) {
+        let field = match (shape, correlated) {
+            (Shape::Scalar, true) => &mut self.scalar_correlated,
+            (Shape::Scalar, false) => &mut self.scalar_uncorrelated,
+            (Shape::Set, true) => &mut self.set_correlated,
+            (Shape::Set, false) => &mut self.set_uncorrelated,
+            (Shape::Derived, true) => &mut self.derived_correlated,
+            (Shape::Derived, false) => &mut self.derived_uncorrelated,
+        };
+        *field += 1;
+    }
+}
+
+/// How the enclosing query uses a subquery's result.
+#[derive(Default, Clone, Copy)]
+enum Shape {
+    /// A value: `(SELECT COUNT(*) ...)`, `ARRAY(SELECT ...)`.
+    #[default]
+    Scalar,
+    /// A set: `IN`, `EXISTS`, `ANY`, `ALL`.
+    Set,
+    /// A `FROM` or `JOIN` item, `LATERAL` included.
+    Derived,
 }
 #[derive(Default, Debug, Serialize)]
 pub struct Inspection {
@@ -58,6 +87,7 @@ struct Scope {
     children: Vec<Scope>,
     union_branch: bool,
     cte: bool,
+    shape: Shape,
 }
 
 /// SeaQuery hides statement fields. Its QueryBuilder traversal visits the actual
@@ -69,11 +99,14 @@ struct Visitor {
     joins: RefCell<usize>,
     ctes: Cell<usize>,
     next_is_cte: Cell<bool>,
+    /// Set by the expression visitor just before it descends into a subquery.
+    next_shape: Cell<Shape>,
 }
 impl Visitor {
     fn nested(&self, query: &SubQueryStatement, sql: &mut impl SqlWriter) {
         self.scopes.borrow_mut().push(Scope {
             cte: self.next_is_cte.replace(false),
+            shape: self.next_shape.take(),
             ..Scope::default()
         });
         match query {
@@ -101,13 +134,10 @@ impl Visitor {
             let mut references = scope.columns;
             for child in scope.children {
                 let counted = !child.union_branch && !child.cte;
+                let shape = child.shape;
                 let free = dependencies(child, &visible, counts);
                 if counted {
-                    if free.iter().any(|r| visible.contains(r)) {
-                        counts.correlated_count += 1;
-                    } else {
-                        counts.uncorrelated_count += 1;
-                    }
+                    counts.count(shape, free.iter().any(|r| visible.contains(r)));
                 }
                 references.extend(free);
             }
@@ -202,6 +232,7 @@ impl QueryBuilder for Visitor {
             .insert(alias.to_string());
         match table {
             TableRef::SubQuery(query, _) => {
+                self.next_shape.set(Shape::Derived);
                 self.nested(&SubQueryStatement::SelectStatement((**query).clone()), sql)
             }
             TableRef::FunctionCall(func, _) => self.prepare_function_arguments(func, sql),
@@ -231,13 +262,31 @@ impl QueryBuilder for Visitor {
         });
     }
     fn prepare_expr(&self, expr: &Expr, sql: &mut impl SqlWriter) {
-        // Visit template operands once, regardless of placeholder repetition.
-        if let Expr::CustomWithExpr(_, exprs) = expr {
-            for expr in exprs {
-                self.prepare_expr(expr, sql);
+        match expr {
+            // Visit template operands once, regardless of placeholder repetition.
+            Expr::CustomWithExpr(_, exprs) => {
+                for expr in exprs {
+                    self.prepare_expr(expr, sql);
+                }
             }
-        } else {
-            self.prepare_expr_common(expr, sql);
+            Expr::SubQuery(oper, _) => {
+                self.next_shape.set(if oper.is_some() {
+                    Shape::Set
+                } else {
+                    Shape::Scalar
+                });
+                self.prepare_expr_common(expr, sql);
+            }
+            Expr::Binary(left, BinOper::In | BinOper::NotIn, right) => match right.as_ref() {
+                // `x IN (SELECT ...)` is a binary operator whose right side is a bare subquery.
+                Expr::SubQuery(None, query) => {
+                    self.prepare_expr(left, sql);
+                    self.next_shape.set(Shape::Set);
+                    self.prepare_query_statement(query, sql);
+                }
+                _ => self.prepare_expr_common(expr, sql),
+            },
+            _ => self.prepare_expr_common(expr, sql),
         }
     }
 }
@@ -302,6 +351,53 @@ mod tests {
         statement(&select.into_sub_query_statement(), false)
     }
 
+    /// The statement with one counted subquery. The six cases are written out, not
+    /// built with `Statement::count`, so a wrong arm in `count` fails the tests.
+    fn one_subquery(shape: Shape, correlated: bool) -> Statement {
+        match (shape, correlated) {
+            (Shape::Scalar, true) => Statement {
+                scalar_correlated: 1,
+                ..Statement::default()
+            },
+            (Shape::Scalar, false) => Statement {
+                scalar_uncorrelated: 1,
+                ..Statement::default()
+            },
+            (Shape::Set, true) => Statement {
+                set_correlated: 1,
+                ..Statement::default()
+            },
+            (Shape::Set, false) => Statement {
+                set_uncorrelated: 1,
+                ..Statement::default()
+            },
+            (Shape::Derived, true) => Statement {
+                derived_correlated: 1,
+                ..Statement::default()
+            },
+            (Shape::Derived, false) => Statement {
+                derived_uncorrelated: 1,
+                ..Statement::default()
+            },
+        }
+    }
+
+    /// A subquery on the table `c`. It reads the table `p` of `parent_select` when correlated.
+    fn child_select(correlated: bool) -> SelectStatement {
+        let mut child = Query::select();
+        child.expr(Expr::col(("c", "id"))).from(Alias::new("c"));
+        if correlated {
+            child.and_where(Expr::col(("c", "p")).eq(Expr::col(("p", "id"))));
+        }
+        child
+    }
+
+    fn parent_select() -> SelectStatement {
+        let mut parent = Query::select();
+        parent.column(("p", "id")).from(Alias::new("p"));
+        parent
+    }
+
     #[test]
     fn lateral_and_from_placement_do_not_imply_correlation() {
         for lateral in [false, true] {
@@ -328,10 +424,13 @@ mod tests {
                 } else {
                     root.from_subquery(child, Alias::new("derived"));
                 }
-                let result = inspect(root);
-                assert_eq!(result.joins_count, usize::from(lateral));
-                assert_eq!(result.correlated_count, usize::from(correlated));
-                assert_eq!(result.uncorrelated_count, usize::from(!correlated));
+                assert_eq!(
+                    inspect(root),
+                    Statement {
+                        joins_count: usize::from(lateral),
+                        ..one_subquery(Shape::Derived, correlated)
+                    }
+                );
             }
         }
     }
@@ -349,9 +448,14 @@ mod tests {
             .union(UnionType::All, branch)
             .to_owned();
         let root = Query::select().expr(Expr::exists(derived)).to_owned();
-        let result = inspect(root);
-        assert_eq!(result.correlated_count, 1);
-        assert_eq!(result.uncorrelated_count, 1);
+        assert_eq!(
+            inspect(root),
+            Statement {
+                set_correlated: 1,
+                set_uncorrelated: 1,
+                ..Statement::default()
+            }
+        );
     }
 
     #[test]
@@ -364,9 +468,7 @@ mod tests {
             .expr(Expr::exists(child))
             .from(Alias::new("same"))
             .to_owned();
-        let result = inspect(root);
-        assert_eq!(result.correlated_count, 0);
-        assert_eq!(result.uncorrelated_count, 1);
+        assert_eq!(inspect(root), one_subquery(Shape::Set, false));
     }
 
     #[test]
@@ -391,12 +493,16 @@ mod tests {
             .with_cte(with)
             .to_owned();
         let result = inspect(root);
-        assert_eq!(result.cte_count, 1);
-        assert_eq!(result.correlated_count, 1);
-        assert_eq!(result.uncorrelated_count, 0);
+        assert_eq!(
+            result,
+            Statement {
+                cte_count: 1,
+                ..one_subquery(Shape::Set, true)
+            }
+        );
         let json = serde_json::to_value(result).unwrap();
         assert_eq!(json["cte_count"], 1);
-        assert_eq!(json["correlated_count"], 1);
+        assert_eq!(json["set_correlated"], 1);
         assert!(json.get("subqueries").is_none());
     }
 
@@ -412,9 +518,175 @@ mod tests {
             .expr(Expr::exists(child))
             .with_cte(with)
             .to_owned();
-        let result = inspect(root);
-        assert_eq!(result.cte_count, 1);
-        assert_eq!(result.correlated_count, 0);
-        assert_eq!(result.uncorrelated_count, 1);
+        assert_eq!(
+            inspect(root),
+            Statement {
+                cte_count: 1,
+                ..one_subquery(Shape::Set, false)
+            }
+        );
+    }
+
+    #[test]
+    fn every_shape_and_correlation_cell_counts_once() {
+        type Place = fn(&mut SelectStatement, Expr);
+        let places: [(&str, Place); 3] = [
+            ("select", |query, expr| {
+                query.expr(expr);
+            }),
+            ("where", |query, expr| {
+                query.and_where(expr);
+            }),
+            ("order by", |query, expr| {
+                query.order_by_expr(expr, Order::Asc);
+            }),
+        ];
+        for correlated in [false, true] {
+            let scalar = |select: SelectStatement| {
+                Expr::SubQuery(None, Box::new(select.into_sub_query_statement()))
+            };
+            let shapes: [(Shape, &str, Box<dyn Fn() -> Expr>); 7] = [
+                (
+                    Shape::Scalar,
+                    "scalar",
+                    Box::new(move || scalar(child_select(correlated))),
+                ),
+                (
+                    Shape::Scalar,
+                    "scalar compared",
+                    Box::new(move || Expr::val(1).eq(scalar(child_select(correlated)))),
+                ),
+                (
+                    Shape::Scalar,
+                    "scalar in a value list",
+                    Box::new(move || {
+                        Expr::val(1).is_in([scalar(child_select(correlated)), Expr::val(2)])
+                    }),
+                ),
+                (
+                    Shape::Set,
+                    "exists",
+                    Box::new(move || Expr::exists(child_select(correlated))),
+                ),
+                (
+                    Shape::Set,
+                    "in",
+                    Box::new(move || Expr::val(1).in_subquery(child_select(correlated))),
+                ),
+                (
+                    Shape::Set,
+                    "not in",
+                    Box::new(move || Expr::val(1).not_in_subquery(child_select(correlated))),
+                ),
+                (
+                    Shape::Set,
+                    "any",
+                    Box::new(move || {
+                        Expr::val(1).eq(Expr::SubQuery(
+                            Some(SubQueryOper::Any),
+                            Box::new(child_select(correlated).into_sub_query_statement()),
+                        ))
+                    }),
+                ),
+            ];
+            for (place, put) in &places {
+                for (shape, name, make) in &shapes {
+                    let mut query = parent_select();
+                    put(&mut query, make());
+                    assert_eq!(
+                        inspect(query),
+                        one_subquery(*shape, correlated),
+                        "{name} in {place}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_subquery_and_array_wrapper_are_classified() {
+        let all = Expr::val(1).eq(Expr::SubQuery(
+            Some(SubQueryOper::All),
+            Box::new(child_select(true).into_sub_query_statement()),
+        ));
+        let array = Expr::cust_with_expr(
+            "ARRAY($1)",
+            Expr::SubQuery(
+                None,
+                Box::new(child_select(false).into_sub_query_statement()),
+            ),
+        );
+        assert_eq!(
+            inspect(parent_select().expr(all).expr(array).to_owned()),
+            Statement {
+                scalar_uncorrelated: 1,
+                set_correlated: 1,
+                ..Statement::default()
+            }
+        );
+    }
+
+    #[test]
+    fn json_agg_subquery_is_scalar() {
+        for correlated in [false, true] {
+            let argument = if correlated { ("p", "id") } else { ("c", "id") };
+            let child = Query::select()
+                .expr(Func::cust(Alias::new("json_agg")).arg(Expr::col(argument)))
+                .from(Alias::new("c"))
+                .to_owned();
+            let parent = parent_select()
+                .expr(Expr::SubQuery(
+                    None,
+                    Box::new(child.into_sub_query_statement()),
+                ))
+                .to_owned();
+            assert_eq!(inspect(parent), one_subquery(Shape::Scalar, correlated));
+        }
+    }
+
+    #[test]
+    fn value_lists_are_not_subqueries() {
+        for list in [vec![], vec![1, 2]] {
+            let query = parent_select()
+                .and_where(Expr::val(1).is_in(list.clone()))
+                .and_where(Expr::val(1).is_not_in(list))
+                .to_owned();
+            assert_eq!(inspect(query), Statement::default());
+        }
+    }
+
+    #[test]
+    fn derived_in_from_and_join_counts_by_correlation() {
+        for correlated in [false, true] {
+            let mut from = parent_select();
+            from.from_subquery(child_select(correlated), Alias::new("d"));
+            assert_eq!(inspect(from), one_subquery(Shape::Derived, correlated));
+            for lateral in [false, true] {
+                let mut join = parent_select();
+                if lateral {
+                    join.join_lateral(
+                        JoinType::LeftJoin,
+                        child_select(correlated),
+                        Alias::new("d"),
+                        Expr::val(true),
+                    );
+                } else {
+                    join.join_subquery(
+                        JoinType::LeftJoin,
+                        child_select(correlated),
+                        Alias::new("d"),
+                        Expr::val(true),
+                    );
+                }
+                assert_eq!(
+                    inspect(join),
+                    Statement {
+                        joins_count: 1,
+                        ..one_subquery(Shape::Derived, correlated)
+                    },
+                    "lateral {lateral}, correlated {correlated}"
+                );
+            }
+        }
     }
 }

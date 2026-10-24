@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { NotLoaded, QueryError, connect, exists, func, getDatabase, of, outer, window } from "../src/index.js";
+import { NotLoaded, QueryError, connect, exists, func, getDatabase, of, outer, statementInspection, window } from "../src/index.js";
 import { DB } from "../src/model.js";
 import { Comment, Post, User } from "./blog/models.js";
 import { DATABASE_URL, useDatabase } from "./helpers.js";
@@ -405,7 +405,7 @@ test("to-one prefetch", async () => {
   await seed();
   const toOne = Comment.post.objects.asPrefetch().load(Post.author.objects.asPrefetch());
   const comments = await Comment.objects.load(toOne, Comment.author.objects.asPrefetch()).orderBy(Comment.id).all();
-  assert.equal(Comment.objects.load(toOne).inspect().statements[0]!.joinsCount, 0);
+  assert.deepStrictEqual(Comment.objects.load(toOne).inspect().statements[0], statementInspection());
   assert.deepEqual(comments.map((x) => [x.post.title, x.post.author.name]), [["a2", "Alice"], ["a2", "Alice"], ["b1", "Bob"]]);
   assert.equal(comments[0]!.post, comments[1]!.post); // one object per related row
   assert.deepEqual(comments.map((x) => x.author?.name ?? null), ["Bob", null, "Alice"]);

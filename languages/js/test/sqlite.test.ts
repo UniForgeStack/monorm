@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { connect, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, Migrator, outer, QueryError, Registry, SchemaError } from "../src/index.js";
+import { connect, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, Migrator, outer, QueryError, Registry, SchemaError, statementInspection } from "../src/index.js";
 import { User } from "./blog/models.js";
 import { Author, Book, Status, sqliteRegistry } from "./sqlite/models.js";
 
@@ -23,7 +23,7 @@ test("SQLite has no array_agg and no LATERAL join", async () => {
     assert.deepEqual(rows.map((r) => [r.name, Number(r.n), r.p]), [["A", 2, 7], ["B", 1, 3], ["C", 0, null]]);
     const page = Author.objects.using(db).select({ id: Author.id, n: func.count(Author.books), p: func.max(Author.books.pages) })
       .orderBy(Author.name).limit(10).offset(1);
-    assert.equal(page.inspect().statements[0]!.correlatedCount, 2);
+    assert.deepStrictEqual(page.inspect().statements, [statementInspection({ scalarCorrelated: 2 })]);
     assert.ok(!page.sql().includes("LATERAL"));
     assert.deepEqual((await page.all()).map((r) => [r.id, Number(r.n), r.p]), [[b!.id, 1, 3], [c!.id, 0, null]]);
   } finally {

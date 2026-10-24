@@ -75,8 +75,7 @@ async def test_exists_expression(clean):
     (alice, bob, carol), _ = await seed()
     popular = exists(Post.objects.filter(Post.author_id == outer(User.id), Post.views >= 50))
     query = User.objects.filter(popular)
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     assert {u.name for u in await query} == {"Alice", "Bob"}
     assert {u.name for u in await User.objects.filter(~popular)} == {"Carol"}
     # In select(): a boolean per row.
@@ -84,8 +83,7 @@ async def test_exists_expression(clean):
     assert [tuple(r) for r in rows] == [("Alice", True), ("Bob", True), ("Carol", False)]
     # Uncorrelated.
     query = User.objects.filter(exists(Post.objects.filter(Post.views > 1000)))
-    assert query.inspect().statements[0].correlated_count == 0
-    assert query.inspect().statements[0].uncorrelated_count == 1
+    assert query.inspect().statements[0] == orm.StatementInspection(set_uncorrelated=1)
     assert len(await query) == 0
     # A select() with group_by / having.
     many = exists(
@@ -106,12 +104,7 @@ async def test_scalar_subquery(clean):
         .as_scalar()
     )
     query = User.objects.select(User, latest.label("latest")).order_by(User.id)
-    result = query.inspect()
-    assert result.statement_count == 1
-    assert not result.has_batching
-    assert result.statements[0].joins_count == 0
-    assert result.statements[0].correlated_count == 1
-    assert result.statements[0].uncorrelated_count == 0
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=1),))
     rows = await query
     assert [(u.name, t) for u, t in rows] == [("Alice", "a3"), ("Bob", "b1"), ("Carol", None)]
     assert rows[0].latest == "a3" and rows[0].user == alice
@@ -128,7 +121,7 @@ async def test_scalar_subquery_in_update(clean):
     (alice, bob, carol), _ = await seed()
     n_comments = Comment.objects.filter(Comment.post_id == outer(Post.id)).select(func.count()).as_scalar()
     statement = Post.objects.update(views=n_comments)
-    assert statement.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 1, 0, 0),))
+    assert statement.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=1),))
     await statement
     views = {p.title: p.views for p in await Post.objects.all()}
     assert views == {"a1": 0, "a2": 2, "a3": 0, "b1": 1}
@@ -762,13 +755,7 @@ async def test_cte_select_and_subqueries(clean):
     assert [tuple(r) for r in await totals.select(func.max(totals.c.views).label("best"))] == [(100,)]
     # A CTE read from a subquery: declared on the statement, once.
     heavy = User.objects.filter(User.id.in_(totals.select(totals.c.author_id).filter(totals.c.views > 80)))
-    result = heavy.inspect()
-    assert result.statement_count == 1
-    assert not result.has_batching
-    assert result.statements[0].joins_count == 0
-    assert result.statements[0].correlated_count == 0
-    assert result.statements[0].uncorrelated_count == 1
-    assert result.statements[0].cte_count == 1
+    assert heavy.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(set_uncorrelated=1, cte_count=1),))
     assert [u.name for u in await heavy] == ["Bob"]
     assert heavy.sql().count("WITH") == 1
     big = exists(totals.select(totals.c.n).filter(totals.c.author_id == outer(User.id), totals.c.views > 50))
@@ -828,12 +815,9 @@ async def test_cte_errors(clean):
 async def test_nested_prefetch(clean, observe_queries):
     (alice, bob, carol), _ = await seed()
     query = User.objects.load(User.posts.comments, User.comments).order_by(User.id)
-    result = query.inspect()
-    assert result.statement_count == 4  # root, posts, posts' comments, users' comments
-    assert result.has_batching
-    assert [s.has_batching for s in result.statements] == [False, True, True, True]
-    assert all(s.joins_count == 0 for s in result.statements)
-    assert all((s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements)
+    batched = orm.StatementInspection(has_batching=True)
+    # root, posts, posts' comments, users' comments
+    assert query.inspect() == orm.QueryInspection(4, True, (orm.StatementInspection(), batched, batched, batched))
     with observe_queries(clean) as events:
         users = await query
         assert len(events) == 4  # independent of the number of parents
@@ -849,12 +833,8 @@ async def test_to_one_prefetch(clean, observe_queries):
     await seed()
     to_one = Comment.post.objects.as_prefetch().load(Post.author.objects.as_prefetch())
     query = Comment.objects.load(to_one, Comment.author.objects.as_prefetch()).order_by(Comment.id)
-    result = query.inspect()
-    assert result.statement_count == 4
-    assert result.has_batching
-    assert [s.has_batching for s in result.statements] == [False, True, True, True]
-    assert all(s.joins_count == 0 for s in result.statements)
-    assert all((s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements)
+    batched = orm.StatementInspection(has_batching=True)
+    assert query.inspect() == orm.QueryInspection(4, True, (orm.StatementInspection(), batched, batched, batched))
     with observe_queries(clean) as events:
         comments = await query
         assert len(events) == 4
@@ -870,8 +850,8 @@ async def test_filtered_prefetch(clean, observe_queries):
         2,
         True,
         (
-            orm.StatementInspection(False, 0, 0, 0, 0),
-            orm.StatementInspection(True, 0, 0, 0, 0),
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True),
         ),
     )
     with observe_queries(clean) as events:
@@ -893,17 +873,16 @@ async def test_sliced_prefetch_is_per_parent(clean, observe_queries):
     await seed()
     top = User.posts.objects.order_by(Post.views.desc()).load(Post.comments)[:2]
     query = User.objects.load(top.label("top")).order_by(User.id)
-    result = query.inspect()
-    assert result.statement_count == 3
-    assert result.has_batching
-    assert [s.has_batching for s in result.statements] == [False, True, True]
-    assert all(s.joins_count == 0 for s in result.statements)
     # Per-parent slicing uses one windowed subquery, not a query for each user.
-    assert [(s.correlated_count, s.uncorrelated_count) for s in result.statements] == [
-        (0, 0),
-        (0, 1),
-        (0, 0),
-    ]
+    assert query.inspect() == orm.QueryInspection(
+        3,
+        True,
+        (
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            orm.StatementInspection(has_batching=True),
+        ),
+    )
     with observe_queries(clean) as events:
         users = await query
         assert len(events) == 3
@@ -920,11 +899,17 @@ async def test_relation_query_set_with_joins_and_nested_query_set(clean, observe
         User.comments.objects.load(Comment.post.author),
         User.posts.objects.load(Post.comments.objects.filter(Comment.author_id.is_null())),
     ).order_by(User.id)
-    result = query.inspect()
-    assert result.statement_count == 4
-    assert result.has_batching
-    assert [s.joins_count for s in result.statements] == [0, 2, 0, 0]
-    assert all((s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements)
+    batched = orm.StatementInspection(has_batching=True)
+    assert query.inspect() == orm.QueryInspection(
+        4,
+        True,
+        (
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True, joins_count=2),
+            batched,
+            batched,
+        ),
+    )
     with observe_queries(clean) as events:
         users = await query
         assert len(events) == 4
@@ -969,8 +954,8 @@ async def test_prefetch_query_reading_a_cte(clean, observe_queries):
         2,
         True,
         (
-            orm.StatementInspection(False, 0, 0, 0, 0),
-            orm.StatementInspection(True, 0, 0, 1, 1),
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True, set_uncorrelated=1, cte_count=1),
         ),
     )
     with observe_queries(clean) as events:
@@ -983,7 +968,7 @@ async def test_correlated_in_subquery(clean):
     await seed()
     commented = Comment.objects.filter(Comment.author_id == outer(User.id)).select(Comment.post_id)
     query = User.objects.filter(exists(Post.objects.filter(Post.id.in_(commented)))).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 2, 0, 0),))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(set_correlated=2),))
     rows = await query
     assert [u.name for u in rows] == ["Alice", "Bob"]
 
@@ -1018,11 +1003,8 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
 
     qs = User.objects.load(User.posts.comments).order_by(User.id)
     query = qs.using(db)
-    result = query.inspect()
-    assert result.statement_count == 3
-    assert result.has_batching
-    assert [s.has_batching for s in result.statements] == [False, True, True]
-    assert all(s.joins_count == 0 for s in result.statements)
+    batched = orm.StatementInspection(has_batching=True)
+    assert query.inspect() == orm.QueryInspection(3, True, (orm.StatementInspection(), batched, batched))
     with observe_queries(db) as events:
         got = await query
     # 12 user keys in batches of 5, then 36 post keys in batches of 5.
@@ -1037,8 +1019,8 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
         2,
         True,
         (
-            orm.StatementInspection(False, 0, 0, 0, 0),
-            orm.StatementInspection(True, 0, 0, 1, 0),
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
         ),
     )
     with observe_queries(db) as events:
@@ -1050,9 +1032,7 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
     # To-one, with repeated keys.
     to_one = Comment.post.objects.as_prefetch().load(Post.author.objects.as_prefetch())
     query = Comment.objects.load(to_one).order_by(Comment.id).using(db)
-    assert query.inspect().statement_count == 3
-    assert query.inspect().has_batching
-    assert all(s.joins_count == 0 for s in query.inspect().statements)
+    assert query.inspect() == orm.QueryInspection(3, True, (orm.StatementInspection(), batched, batched))
     with observe_queries(db) as events:
         cs = await query
     assert len(events) == 1 + 4 + 3  # 18 distinct post keys, then 12 author keys
@@ -1066,11 +1046,9 @@ async def test_prefetch_beyond_the_parameter_limit(clean, observe_queries):
     await db.execute("INSERT INTO users (email, name) SELECT 'u' || g || '@x.io', 'u' FROM generate_series(1, 70000) g")
     await db.execute("INSERT INTO posts (author_id, title, body) SELECT id, 't', '' FROM users WHERE id % 10000 = 0")
     query = User.objects.load(User.posts)
-    result = query.inspect()
-    assert result.statement_count == 2
-    assert result.has_batching
-    assert [s.has_batching for s in result.statements] == [False, True]
-    assert all(s.joins_count == 0 for s in result.statements)
+    assert query.inspect() == orm.QueryInspection(
+        2, True, (orm.StatementInspection(), orm.StatementInspection(has_batching=True))
+    )
     with observe_queries(db) as events:
         users = await query
     assert len(events) == 3  # root + two key batches, rather than 70,000 queries

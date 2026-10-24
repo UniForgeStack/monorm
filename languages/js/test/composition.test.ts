@@ -1,7 +1,7 @@
 /** Model composition through the public API; needs an artifact with orm-model-composition selected. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, IntegrityError, TransactionAborted, loads, Registry, type InspectedStatement } from "../src/index.js";
+import { connect, IntegrityError, TransactionAborted, loads, Registry, statementInspection, type InspectedStatement } from "../src/index.js";
 import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
 
 const enabled = (artifactCapabilities()).includes("model-composition");
@@ -55,9 +55,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       const insert = objects(Manager).insert({ name: "Alice", salary: 20, level: 1 });
       assert.equal(insert.inspect().statementCount, 4); // three owners and the logical identity read
       assert.equal(insert.inspect().hasBatching, false);
-      assert.equal(insert.inspect().statements[3]!.joinsCount, 1);
-      assert.equal(insert.inspect().statements[3]!.correlatedCount, 2);
-      assert.equal(insert.inspect().statements[3]!.uncorrelatedCount, 0);
+      assert.deepStrictEqual(insert.inspect().statements[3], statementInspection({ joinsCount: 1, scalarCorrelated: 2 }));
       const alice = await insert;
       assert.deepEqual([alice["name"], alice["salary"], alice["level"]], ["Alice", 20, 1]);
       assert.deepEqual(await counts(Person, Employee, Manager), [1, 1, 1]);

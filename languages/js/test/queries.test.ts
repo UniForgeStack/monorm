@@ -18,6 +18,7 @@ import {
   getDatabase,
   not,
   param,
+  statementInspection,
 } from "../src/index.js";
 import { Comment, Post, User } from "./blog/models.js";
 import { DATABASE_URL, LAST_WEEK, YESTERDAY, collect, names, otherDatabase, seed, useDatabase } from "./helpers.js";
@@ -367,7 +368,7 @@ test("select the model with aggregates over relations", async () => {
   assert.equal(rows[0]!.user.id, alice.id);
   const page = User.objects.select({ user: User, posts: func.count(User.posts), views: func.sum(User.posts.views) })
     .orderBy(User.name).offset(1).limit(2);
-  assert.equal(page.inspect().statements[0]!.correlatedCount, 2);
+  assert.deepStrictEqual(page.inspect().statements, [statementInspection({ scalarCorrelated: 2 })]);
   assert.deepEqual((await page.all()).map((r) => [r.user.name, r.posts, r.views]), [["Bob", 1n, 100n], ["Carol", 0n, null]]);
   // Per-aggregate filter and distinct inside one shared subquery, next to another relation.
   const shared = await User.objects
@@ -577,7 +578,7 @@ test("relation equals instance", async () => {
   const { alice, bob, carol, a1, a2, b1 } = await seed();
   const qs = Post.objects.filter(Post.author.eq(alice)).orderBy(Post.id);
   assert.equal(qs.sql(), Post.objects.filter(Post.authorId.eq(alice.id)).orderBy(Post.id).sql());
-  assert.equal(qs.inspect().statements[0]!.joinsCount, 0);
+  assert.deepStrictEqual(qs.inspect().statements, [statementInspection()]);
   assert.deepEqual((await qs.all()).map((p) => p.id), [a1.id, a2.id]);
   assert.deepEqual((await Post.objects.filter(Post.author.ne(alice)).all()).map((p) => p.id), [b1.id]);
   assert.equal(await Post.objects.filter(Post.author.eq(carol)).count(), 0);

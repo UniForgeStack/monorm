@@ -153,7 +153,7 @@ async def test_instances_are_read_only(clean):
 async def test_result_cache(clean, observe_queries):
     await User.objects.insert(email="a@example.com", name="A")
     qs = User.objects.filter(User.name != "Z")
-    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 0, 0, 0),))
+    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(),))
     with observe_queries(clean) as events:
         first = await qs
     assert len(events) == 1
@@ -245,12 +245,7 @@ async def test_nested_and_reverse_paths(clean):
 async def test_load_to_one(clean, observe_queries):
     await seed()
     query = Comment.objects.load(Comment.post.author, Comment.author).order_by(Comment.id)
-    result = query.inspect()
-    assert result.statement_count == 1
-    assert not result.has_batching
-    assert result.statements[0].joins_count == 3
-    assert result.statements[0].correlated_count == 0
-    assert result.statements[0].uncorrelated_count == 0
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=3),))
     with observe_queries(clean) as events:
         comments = await query
         assert len(events) == 1
@@ -273,12 +268,9 @@ async def test_unloaded_to_one_raises(clean):
 async def test_load_to_many(clean, observe_queries):
     await seed()
     query = User.objects.load(User.posts).order_by(User.name)
-    result = query.inspect()
-    assert result.statement_count == 2
-    assert result.has_batching
-    assert all(s.joins_count == 0 for s in result.statements)
-    assert [s.has_batching for s in result.statements] == [False, True]
-    assert all((s.correlated_count, s.uncorrelated_count) == (0, 0) for s in result.statements)
+    assert query.inspect() == orm.QueryInspection(
+        2, True, (orm.StatementInspection(), orm.StatementInspection(has_batching=True))
+    )
     with observe_queries(clean) as events:
         users = await query
         assert len(events) == 2
@@ -511,7 +503,7 @@ async def test_select_rows(clean):
         .group_by(Post.author_id)
         .order_by(Post.author_id)
     )
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 0, 0, 0),))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(),))
     rows = await query
     assert rows == [(alice.id, 2, 55), (bob.id, 1, 100)]
     r = rows[0]
@@ -569,12 +561,9 @@ async def test_select_model_with_relation_aggregates(clean):
     query = User.objects.select(User, func.count(User.posts).label("posts"), func.sum(User.posts.views)).order_by(
         User.id
     )
-    result = query.inspect()
-    assert result.statement_count == 1
-    assert not result.has_batching
-    assert result.statements[0].joins_count == 1
-    assert result.statements[0].correlated_count == 1
-    assert result.statements[0].uncorrelated_count == 0
+    assert query.inspect() == orm.QueryInspection(
+        1, False, (orm.StatementInspection(joins_count=1, derived_correlated=1),)
+    )
     rows = await query
     assert [(u.name, n, v) for u, n, v in rows] == [
         ("Alice", 2, 55),
@@ -583,18 +572,13 @@ async def test_select_model_with_relation_aggregates(clean):
     ]
     assert rows[0].user == alice and rows[0].posts == 2
     page = query.order_by(User.name).offset(1).limit(2)
-    assert page.inspect().statements[0].correlated_count == 2
+    assert page.inspect().statements[0] == orm.StatementInspection(scalar_correlated=2)
     assert [(u.name, n, v) for u, n, v in await page] == [("Bob", 1, 100), ("Carol", 0, None)]
     # Two counts over different relations don't multiply each other (no JOIN fan-out).
     query = User.objects.select(User.name, func.count(User.posts), func.count(User.comments).label("c")).order_by(
         User.id
     )
-    result = query.inspect()
-    assert result.statement_count == 1
-    assert not result.has_batching
-    assert result.statements[0].joins_count == 0
-    assert result.statements[0].correlated_count == 2
-    assert result.statements[0].uncorrelated_count == 0
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=2),))
     rows = await query
     assert rows == [("Alice", 2, 1), ("Bob", 1, 1), ("Carol", 0, 0)]
     # Per-aggregate filter and distinct inside one shared subquery, next to another relation.
@@ -605,12 +589,9 @@ async def test_select_model_with_relation_aggregates(clean):
         func.count(User.posts.views, distinct=True),
         func.count(User.comments).label("comments"),
     ).order_by(User.id)
-    result = query.inspect()
-    assert result.statement_count == 1
-    assert not result.has_batching
-    assert result.statements[0].joins_count == 1
-    assert result.statements[0].correlated_count == 2
-    assert result.statements[0].uncorrelated_count == 0
+    assert query.inspect() == orm.QueryInspection(
+        1, False, (orm.StatementInspection(joins_count=1, scalar_correlated=1, derived_correlated=1),)
+    )
     rows = await query
     assert rows == [
         ("Alice", 1, 50, 2, 1),
@@ -645,12 +626,8 @@ async def test_batches(clean, observe_queries):
     sizes = [len(b) async for b in Post.objects.batches(10)]
     assert sizes == [10, 10, 5]
     query = Post.objects.filter(Post.views == 0)
-    result = query.inspect()
-    assert result.statement_count == 1
-    assert not result.has_batching  # iterate() repeats this template at runtime
-    assert result.statements[0].joins_count == 0
-    assert result.statements[0].correlated_count == 0
-    assert result.statements[0].uncorrelated_count == 0
+    # iterate() repeats this template at runtime, so it is not batching.
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(),))
     with observe_queries(clean) as events:
         seen = [p.id async for p in query.iterate(batch_size=7)]
     assert len(events) == 4
@@ -752,7 +729,7 @@ async def test_relation_equals_instance(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     qs = Post.objects.filter(Post.author == alice).order_by(Post.id)
     assert qs.sql() == Post.objects.filter(Post.author_id == alice.id).order_by(Post.id).sql()
-    assert qs.inspect().statements[0].joins_count == 0
+    assert qs.inspect().statements[0] == orm.StatementInspection()
     assert [p.id for p in await qs] == [a1.id, a2.id]
     assert [p.id for p in await Post.objects.filter(Post.author != alice)] == [b1.id]
     assert await Post.objects.filter(Post.author == carol).count() == 0
@@ -760,10 +737,8 @@ async def test_relation_equals_instance(clean):
     assert "IS NOT NULL" in Post.objects.filter(Post.author != None).sql()  # noqa: E711
     comment = await Comment.objects.insert(post=b1, author=alice, body="hi")
     nested = Comment.objects.filter(Comment.post.author == bob)
-    result = nested.inspect()
-    assert result.statements[0].correlated_count == 1
-    assert result.statements[0].uncorrelated_count == 0  # reaches posts, not users
-    assert result.statements[0].joins_count == 0
+    # One correlated subquery into posts, none into users.
+    assert nested.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     expected = await Comment.objects.filter(Comment.post_id == b1.id).order_by(Comment.id)
     assert comment in expected
     assert await nested.order_by(Comment.id) == expected

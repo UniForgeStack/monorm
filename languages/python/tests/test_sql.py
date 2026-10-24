@@ -19,7 +19,7 @@ def where(qs) -> str:
 
 def test_to_many_filter_is_exists():
     query = User.objects.filter(User.posts.created_at < Y)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 0, 1, 0, 0),))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(set_correlated=1),))
     sql = query.sql()
     assert sql == (
         f'{USER_COLS} WHERE EXISTS(SELECT 1 FROM "posts" AS "t1" '
@@ -30,7 +30,7 @@ def test_to_many_filter_is_exists():
 
 def test_same_filter_call_means_same_related_row():
     query = User.objects.filter(User.posts.views > 10, User.posts.published == True)  # noqa: E712
-    assert query.inspect().statements[0].correlated_count == 1
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     w = where(query)
     assert '"t1"."views" > 10 AND "t1"."published" = TRUE' in w
 
@@ -38,17 +38,18 @@ def test_same_filter_call_means_same_related_row():
 def test_separate_filter_calls_mean_the_same_related_row():
     split = User.objects.filter(User.posts.views > 10).filter(User.posts.published == True)  # noqa: E712
     together = User.objects.filter(User.posts.views > 10, User.posts.published == True)  # noqa: E712
-    assert split.inspect().statements[0].correlated_count == 1
+    assert split.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     assert split.sql() == together.sql()
 
 
 def test_alias_asks_for_another_related_row():
     other = User.posts.alias()
     query = User.objects.filter(User.posts.views > 10, other.published == True)  # noqa: E712
-    assert query.inspect().statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=2)
     one_alias = User.objects.filter(other.views > 10, other.published == True)  # noqa: E712
-    assert one_alias.inspect().statements[0].correlated_count == 1
-    assert User.objects.filter(User.posts.alias().views > 10, User.posts.alias().published == True).inspect().statements[0].correlated_count == 2  # noqa: E712, E501
+    assert one_alias.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
+    two_aliases = User.objects.filter(User.posts.alias().views > 10, User.posts.alias().published == True)  # noqa: E712
+    assert two_aliases.inspect().statements[0] == orm.StatementInspection(set_correlated=2)
 
 
 def test_alias_tags_the_last_hop_only():
@@ -63,9 +64,9 @@ def test_alias_tags_the_last_hop_only():
 
 def test_or_and_not_are_barriers_for_a_shared_related_row():
     query = User.objects.filter(User.posts.views > 10, (User.posts.title == "a") | (User.posts.title == "b"))
-    assert query.inspect().statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=2)
     query = User.objects.filter(User.posts.views > 100).exclude(User.posts.published == True)  # noqa: E712
-    assert query.inspect().statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=2)
     assert "NOT EXISTS" in where(query)
 
 
@@ -92,35 +93,33 @@ def test_alias_is_for_filter_conditions_only():
 
 def test_or_inside_one_relation_shares_subquery():
     query = User.objects.filter((User.posts.views > 10) | (User.posts.title == "x"))
-    assert query.inspect().statements[0].correlated_count == 1
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     assert " OR " in where(query)
 
 
 def test_or_with_local_column_keeps_rows_without_related():
     query = User.objects.filter(or_(User.email == "a", User.posts.views > 10))
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     w = where(query)
     assert w.startswith('"users"."email" = \'a\' OR EXISTS(')
 
 
 def test_exclude_is_not_exists():
     query = User.objects.exclude(User.posts.published == False)  # noqa: E712
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     w = where(query)
     assert w.startswith("NOT EXISTS(")
 
 
 def test_negation_stays_outside_subquery():
     query = User.objects.filter(and_(User.posts.views > 10, ~(User.posts.published == True)))  # noqa: E712
-    assert query.inspect().statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=2)
     assert "NOT EXISTS" in where(query)
 
 
 def test_nested_relation_nests_subqueries():
     query = User.objects.filter(User.posts.comments.body.contains("50%"))
-    assert query.inspect().statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=2)
     w = where(query)
     assert '"t2"."post_id" = "t1"."id"' in w
     assert "LIKE E'%50\\\\%%'" in w  # escaped % (debug rendering inlines values)
@@ -128,9 +127,7 @@ def test_nested_relation_nests_subqueries():
 
 def test_to_one_filter():
     query = Post.objects.filter(Post.author.email == "a@b.c")
-    assert query.inspect().statements[0].joins_count == 0
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     w = where(query)
     assert (
         w == 'EXISTS(SELECT 1 FROM "users" AS "t1" WHERE "t1"."id" = "posts"."author_id" AND "t1"."email" = \'a@b.c\')'
@@ -139,8 +136,7 @@ def test_to_one_filter():
 
 def test_column_to_column_across_relation():
     query = Post.objects.filter(Post.comments.created_at < Post.created_at)
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     w = where(query)
     assert '"t1"."created_at" < "posts"."created_at"' in w
 
@@ -148,7 +144,7 @@ def test_column_to_column_across_relation():
 def test_to_one_load_and_order_use_left_joins():
     query = Comment.objects.load(Comment.post.author).order_by(Comment.post.title.desc())
     assert query.inspect() == orm.QueryInspection(
-        1, False, (orm.StatementInspection(False, 2, 0, 0, 0),)
+        1, False, (orm.StatementInspection(joins_count=2),)
     )  # ordering reuses the load's join
     sql = query.sql()
     assert 'LEFT JOIN "posts" AS "j1" ON "j1"."id" = "comments"."post_id"' in sql
@@ -296,21 +292,17 @@ def test_select_group_by_having():
 
 def test_aggregate_over_relation_is_a_correlated_subquery():
     query = User.objects.select(User.id, func.count(User.posts))
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(scalar_correlated=1)
     one = query.sql()
     assert one == (
         'SELECT "users"."id", (SELECT COUNT(*) FROM "posts" AS "a1" WHERE "a1"."author_id" = "users"."id") FROM "users"'
     )
     # Aggregates over different relations stay separate subqueries.
     two = User.objects.select(User.id, func.count(User.posts), func.count(User.comments).label("c")).inspect()
-    assert two.statements[0].joins_count == 0
-    assert two.statements[0].correlated_count == 2
+    assert two.statements[0] == orm.StatementInspection(scalar_correlated=2)
     # Two hops join inside the subquery; in WHERE it filters per row, no EXISTS / JOIN outside.
     query = User.objects.filter(func.count(User.posts.comments) > 3)
-    assert query.inspect().statements[0].joins_count == 1
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(joins_count=1, scalar_correlated=1)
     w = where(query)
     assert w == (
         '(SELECT COUNT(*) FROM "posts" AS "a1" INNER JOIN "comments" AS "a2" ON "a2"."post_id" = "a1"."id" '
@@ -320,7 +312,9 @@ def test_aggregate_over_relation_is_a_correlated_subquery():
 
 def test_same_relation_aggregates_share_one_lateral_join():
     query = User.objects.select(User.id, func.count(User.posts), func.max(User.posts.views))
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 1, 0, 0),))
+    assert query.inspect() == orm.QueryInspection(
+        1, False, (orm.StatementInspection(joins_count=1, derived_correlated=1),)
+    )
     sql = query.sql()
     assert sql == (
         'SELECT "users"."id", "l1"."c1", "l1"."c2" FROM "users" LEFT JOIN LATERAL '
@@ -333,23 +327,21 @@ def test_same_relation_aggregates_share_one_lateral_join():
         func.sum(User.posts.views, distinct=True),
         func.count(User.comments).label("comments"),
     )
-    result = query.inspect()
-    assert result.statements[0].joins_count == 1
-    assert result.statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(
+        joins_count=1, scalar_correlated=1, derived_correlated=1
+    )
     sql = query.sql()
     assert 'COUNT(*) FILTER (WHERE "a2"."views" > 10) AS "c1"' in sql and 'SUM(DISTINCT "a2"."views")' in sql
     assert '(SELECT COUNT(*) FROM "comments"' in sql
     # Filter-only and grouped uses keep the correlated subqueries.
     filtered = User.objects.filter(func.count(User.posts) > 1, func.sum(User.posts.views) > 1).select(User.id).inspect()
-    assert filtered.statements[0].joins_count == 0
-    assert filtered.statements[0].correlated_count == 2
+    assert filtered.statements[0] == orm.StatementInspection(scalar_correlated=2)
     grouped = (
         User.objects.select(User.id, func.count(User.posts), func.sum(User.posts.views), func.count().label("all"))
         .group_by(User.id)
         .inspect()
     )
-    assert grouped.statements[0].joins_count == 0
-    assert grouped.statements[0].correlated_count == 2
+    assert grouped.statements[0] == orm.StatementInspection(scalar_correlated=2)
 
 
 def test_lateral_join_comes_after_the_to_one_joins():
@@ -373,8 +365,7 @@ def test_an_aggregate_with_an_outer_only_filter_is_not_a_lateral_member():
         User.name, func.count(User.posts, filter=User.name == "Alice"), func.max(User.posts.views)
     )
     assert "LATERAL" not in query.sql()
-    assert query.inspect().statements[0].joins_count == 0
-    assert query.inspect().statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(scalar_correlated=2)
 
 
 def _two_posts_aggregates(*extra):
@@ -423,14 +414,13 @@ def test_paginated_relation_aggregates_keep_scalar_subqueries(limit, offset):
         assert f"LIMIT {limit}" in sql
     if offset is not None:
         assert f"OFFSET {offset}" in sql
-    assert query.inspect().statements[0].joins_count == 0
-    assert query.inspect().statements[0].correlated_count == 2
+    assert query.inspect().statements[0] == orm.StatementInspection(scalar_correlated=2)
     assert "LATERAL" in ordered.sql()
 
 
 def test_select_to_one_columns_join_and_to_many_is_rejected():
     query = Post.objects.select(Post.title, Post.author.name.label("author"))
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 0, 0, 0),))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=1),))
     sql = query.sql()
     assert sql == (
         'SELECT "posts"."title", "j1"."name" FROM "posts" LEFT JOIN "users" AS "j1" ON "j1"."id" = "posts"."author_id"'
@@ -441,8 +431,9 @@ def test_select_to_one_columns_join_and_to_many_is_rejected():
 
 def test_subquery_and_distinct():
     inner = User.objects.filter(User.name == "A").select(User.id)
-    assert Post.objects.filter(Post.author_id.in_(inner)).inspect().statements[0].correlated_count == 0
-    assert Post.objects.filter(Post.author_id.in_(inner)).inspect().statements[0].uncorrelated_count == 1
+    assert Post.objects.filter(Post.author_id.in_(inner)).inspect().statements[0] == orm.StatementInspection(
+        set_uncorrelated=1
+    )
     assert where(Post.objects.filter(Post.author_id.in_(inner))) == (
         '"posts"."author_id" IN (SELECT "users"."id" FROM "users" WHERE "users"."name" = \'A\')'
     )
@@ -482,8 +473,7 @@ def test_exists_with_outer_correlates():
     from orm import exists, outer
 
     query = User.objects.filter(exists(Post.objects.filter(Post.author_id == outer(User.id))))
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
     w = where(query)
     assert w == 'EXISTS(SELECT 1 FROM "posts" WHERE "posts"."author_id" = "users"."id")'
 
@@ -493,8 +483,7 @@ def test_subquery_over_the_same_table_gets_an_alias():
 
     avg = Post.objects.filter(Post.author_id == outer(Post.author_id)).select(func.avg(Post.views)).as_scalar()
     query = Post.objects.filter(Post.views > avg)
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(scalar_correlated=1)
     w = where(query)
     assert 'FROM "posts" AS "s1" WHERE "s1"."author_id" = "posts"."author_id"' in w
 
@@ -513,9 +502,7 @@ def test_window_function_sql():
 def test_cte_sql():
     totals = Post.objects.select(Post.author_id, func.count().label("n")).group_by(Post.author_id).cte("totals")
     query = User.objects.filter(User.id.in_(totals.select(totals.c.author_id).filter(totals.c.n > 2)))
-    assert query.inspect().statements[0].correlated_count == 0
-    assert query.inspect().statements[0].uncorrelated_count == 1
-    assert query.inspect().statements[0].cte_count == 1
+    assert query.inspect().statements[0] == orm.StatementInspection(set_uncorrelated=1, cte_count=1)
     sql = query.sql()
     assert sql.startswith(
         'WITH "totals" ("author_id", "n") AS (SELECT "posts"."author_id" AS "author_id", COUNT(*) AS "n" '
@@ -529,9 +516,7 @@ def test_recursive_cte_joins_itself():
         "chain", recursive=lambda c: User.objects.filter(User.id == c.c.id + 1)
     )
     query = User.objects.from_(chain)
-    assert query.inspect().statements[0].correlated_count == 0
-    assert query.inspect().statements[0].uncorrelated_count == 0
-    assert query.inspect().statements[0].cte_count == 1
+    assert query.inspect().statements[0] == orm.StatementInspection(cte_count=1)
     sql = query.sql()
     assert sql.startswith('WITH RECURSIVE "chain"')
     assert 'FROM "users", "chain" WHERE "users"."id" = "chain"."id" + 1' in sql
@@ -542,9 +527,7 @@ def test_many_to_many_filter_is_one_exists_through_the_join_table():
     from blog.models import Tag
 
     query = Post.objects.filter(Post.tags.name == "x")
-    assert query.inspect().statements[0].joins_count == 1
-    assert query.inspect().statements[0].correlated_count == 1
-    assert query.inspect().statements[0].uncorrelated_count == 0
+    assert query.inspect().statements[0] == orm.StatementInspection(joins_count=1, set_correlated=1)
     w = where(query)
     assert w == (
         'EXISTS(SELECT 1 FROM "tags" AS "t1" INNER JOIN "post_tags" AS "t2" ON "t2"."tag_id" = "t1"."id" '
@@ -555,12 +538,13 @@ def test_many_to_many_filter_is_one_exists_through_the_join_table():
         '(SELECT COUNT(*) FROM "tags" AS "a1" INNER JOIN "post_tags" AS "a2" ON "a2"."tag_id" = "a1"."id" '
         'WHERE "a2"."post_id" = "posts"."id")' in sql
     )
-    assert Tag.objects.filter(Tag.posts.author.name == "A").inspect().statements[0].correlated_count == 2
+    nested = Tag.objects.filter(Tag.posts.author.name == "A")
+    assert nested.inspect().statements[0] == orm.StatementInspection(joins_count=1, set_correlated=2)
 
 
 def test_has_one_joins_on_the_other_side():
     query = User.objects.load(User.profile)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 0, 0, 0),))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=1),))
     sql = query.sql()
     assert 'LEFT JOIN "profiles" AS "j1" ON "j1"."user_id" = "users"."id"' in sql
 

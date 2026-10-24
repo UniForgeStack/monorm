@@ -81,3 +81,4 @@ export { Migration, MigrationError, Migrations, Migrator, Pulled, pull } from ".
 export type { Drift, Plan, Status, Step, SchemaSource } from "./migrations.js";
 
 export type { QueryInspection, StatementInspection } from "./inspection.js";
+export { statementInspection } from "./inspection.js";

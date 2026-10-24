@@ -3,20 +3,38 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .query import QuerySet
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class StatementInspection:
-    has_batching: bool
-    joins_count: int
-    correlated_count: int
-    uncorrelated_count: int
-    cte_count: int
+    """Structure of one planned statement.
+
+    A subquery has a shape: the way the outer query uses its result.
+    ``scalar_*`` is a value.
+    ``set_*`` is ``IN``, ``EXISTS``, ``ANY`` or ``ALL``.
+    ``derived_*`` is a ``FROM`` or ``JOIN`` item (``LATERAL`` included).
+    Each shape counts ``_correlated`` and ``_uncorrelated`` subqueries.
+    A CTE counts in ``cte_count``.
+    """
+
+    has_batching: bool = False
+    joins_count: int = 0
+    scalar_correlated: int = 0
+    scalar_uncorrelated: int = 0
+    set_correlated: int = 0
+    set_uncorrelated: int = 0
+    derived_correlated: int = 0
+    derived_uncorrelated: int = 0
+    cte_count: int = 0
+
+    def __repr__(self) -> str:
+        shown = ", ".join(f"{f.name}={v!r}" for f in fields(self) if (v := getattr(self, f.name)))
+        return f"StatementInspection({shown})"
 
 
 @dataclass(frozen=True)
@@ -40,13 +58,7 @@ class QueryInspection:
             data["statement_count"],
             data["has_batching"],
             tuple(
-                StatementInspection(
-                    s["has_batching"],
-                    s["joins_count"],
-                    s["correlated_count"],
-                    s["uncorrelated_count"],
-                    s["cte_count"],
-                )
+                StatementInspection(**{f.name: s[f.name] for f in fields(StatementInspection)})
                 for s in data["statements"]
             ),
         )

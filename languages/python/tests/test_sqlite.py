@@ -101,10 +101,7 @@ async def test_array_agg_is_postgres_only(sqlite):
         .select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages))
         .inspect()
     )
-    assert result.statement_count == 1
-    assert result.statements[0].joins_count == 0
-    assert result.statements[0].correlated_count == 2
-    assert result.statements[0].uncorrelated_count == 0
+    assert result == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=2),))
     page = (
         Author.objects.using(db)
         .select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages))
@@ -112,7 +109,7 @@ async def test_array_agg_is_postgres_only(sqlite):
         .limit(10)
         .offset(1)
     )
-    assert page.inspect().statements[0].correlated_count == 2
+    assert page.inspect().statements[0] == orm.StatementInspection(scalar_correlated=2)
     assert "LATERAL" not in page.sql()
     assert [tuple(r) for r in await page] == [(b.id, 1, 3), (c.id, 0, None)]
     rows = (

@@ -212,11 +212,16 @@ async def test_bound_load_onto_loaded_instances(clean):
     users = await User.objects.order_by(User.id)
     top = User.posts.objects.filter(Post.published)[:1].label("top")
     result = User.objects.load(User.posts.comments, top).inspect()
-    assert result.statement_count == 4  # root plus three prefetch templates
-    assert result.has_batching
-    assert [s.has_batching for s in result.statements] == [False, True, True, True]
-    assert all(s.joins_count == 0 for s in result.statements)
-    assert sum(s.uncorrelated_count for s in result.statements) == 1
+    assert result == orm.QueryInspection(  # root plus three prefetch templates
+        4,
+        True,
+        (
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            orm.StatementInspection(has_batching=True),
+            orm.StatementInspection(has_batching=True),
+        ),
+    )
     await orm.of(users).load(User.posts.comments, top)
     assert [p.title for p in users[0].posts.cached] == ["draft", "hit", "quiet"]
     assert [c.body for c in users[0].posts.cached[1].comments.cached] == ["a", "b"]
@@ -234,8 +239,8 @@ async def test_bound_load_to_one_and_many_to_many(clean):
         2,
         True,
         (
-            orm.StatementInspection(False, 1, 0, 0, 0),
-            orm.StatementInspection(True, 1, 0, 0, 0),
+            orm.StatementInspection(joins_count=1),
+            orm.StatementInspection(has_batching=True, joins_count=1),
         ),
     )
     await orm.of(loaded).load(Post.author, Post.tags)
@@ -459,7 +464,7 @@ async def test_a_factory_needs_only_describe_and_insert(clean):
 async def test_only_through_a_to_one_path(clean):
     await seed()
     qs = Comment.objects.load(Comment.body, Comment.post.title)
-    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 1, 0, 0, 0),))
+    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=1),))
     sql = qs.sql()
     assert '"title"' in sql and '"views"' not in sql and '"published"' not in sql
     comment = await Comment.objects.insert(post=(await Post.objects.get(Post.title == "hit")), body="x")
@@ -476,7 +481,7 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
     _, _, posts = await seed()
     await Comment.objects.insert(post=posts[0], body="x")
     query = Comment.objects.load(Comment.post.author.name)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(False, 2, 0, 0, 0),))
+    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=2),))
     (c,) = await query
     assert c.post.author.name == "Alice" and c.body == "x" and c.post.title == posts[0].title
     with pytest.raises(orm.NotLoaded):
@@ -496,8 +501,8 @@ async def test_load_a_column_through_a_to_many_path(clean, observe_queries):
         2,
         True,
         (
-            orm.StatementInspection(False, 0, 0, 0, 0),
-            orm.StatementInspection(True, 0, 0, 0, 0),
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True),
         ),
     )
     with observe_queries(clean) as events:
@@ -592,10 +597,10 @@ async def test_bound_load_one_stores_a_row_or_none(clean, observe_queries):
         4,
         True,
         (
-            orm.StatementInspection(False, 0, 0, 0, 0),
-            orm.StatementInspection(True, 0, 0, 1, 0),
-            orm.StatementInspection(True, 0, 0, 1, 0),
-            orm.StatementInspection(True, 0, 0, 1, 0),
+            orm.StatementInspection(),
+            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
         ),
     )
     with observe_queries(clean) as events:

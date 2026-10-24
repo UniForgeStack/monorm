@@ -1738,10 +1738,21 @@ TLS on, the TLS cost hides the difference)
 ## Query inspection counters
 
 `inspect()` returns immutable `QueryInspection` results. Each
-`StatementInspection` exposes flat `has_batching`, `joins_count`,
-`correlated_count`, `uncorrelated_count`, and `cte_count` fields. CTE definitions
-count separately from subqueries; a recursive CTE counts once, and subqueries
-inside its body still contribute to the subquery counts.
+`StatementInspection` is a frozen, keyword-only dataclass.
+It has flat `has_batching`, `joins_count`, `cte_count` and six subquery counts.
+A subquery has a shape and a correlation.
+The shape is how the outer query uses its result:
+
+* `scalar_*`: a value, such as `(SELECT COUNT(*) ...)`, `ARRAY(SELECT ...)` or `(SELECT json_agg(...))`.
+* `set_*`: `IN`, `EXISTS`, `ANY` or `ALL`.
+* `derived_*`: a `FROM` or `JOIN` item, `LATERAL` included.
+
+Each shape has `_correlated` and `_uncorrelated`.
+Every field defaults to `0` or `False`.
+A test can write `inspection == StatementInspection(joins_count=1, derived_correlated=1)`.
+`repr()` shows only the non-zero fields, so the failure output of a test is shorter.
+CTE definitions count in `cte_count`, not as subqueries.
+A recursive CTE counts once, and subqueries inside its body still contribute to the subquery counts.
 
 ## Not done yet
 

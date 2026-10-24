@@ -373,15 +373,16 @@ export function inspectionTypes() {
   same<typeof result.statements, readonly StatementInspection[]>();
   const first = result.statements[0];
   same<typeof first, StatementInspection | undefined>();
-  same<typeof result.statements[0]["correlatedCount"], number>();
-  same<typeof result.statements[0]["uncorrelatedCount"], number>();
+  same<typeof result.statements[0]["scalarCorrelated"], number>();
+  same<typeof result.statements[0]["setUncorrelated"], number>();
+  same<typeof result.statements[0]["derivedCorrelated"], number>();
   same<typeof result.statements[0]["cteCount"], number>();
   // @ts-expect-error immutable result
   result.statementCount = 2;
   // @ts-expect-error immutable statements
   result.statements.push(result.statements[0]!);
   // @ts-expect-error immutable counters
-  result.statements[0]!.correlatedCount = 0;
+  result.statements[0]!.scalarCorrelated = 0;
   same<ReturnType<ReturnType<typeof Tag.objects.insert>["inspect"]>, QueryInspection>();
   const update = Tag.objects.update({ name: "x" }).inspect();
   same<typeof update, QueryInspection>();

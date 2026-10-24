@@ -123,14 +123,9 @@ async def test_prepared_has_and_prefetch(clean, observe_queries):
         .prepare()
     )
     result = top.inspect(min=10, k=1)
-    assert result.statement_count == 2
-    assert result.has_batching
-    assert [s.has_batching for s in result.statements] == [False, True]
-    assert all(s.joins_count == 0 for s in result.statements)
-    assert [(s.correlated_count, s.uncorrelated_count) for s in result.statements] == [
-        (0, 0),
-        (0, 1),
-    ]
+    assert result == orm.QueryInspection(
+        2, True, (orm.StatementInspection(), orm.StatementInspection(has_batching=True, derived_uncorrelated=1))
+    )
     with observe_queries(clean) as events:
         users = await top(min=10, k=1)
     assert len(events) == 2
