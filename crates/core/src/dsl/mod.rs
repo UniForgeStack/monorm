@@ -28,6 +28,7 @@
 
 pub mod expr;
 mod lower;
+mod render;
 mod syntax;
 
 use std::path::{Path, PathBuf};
@@ -39,6 +40,7 @@ pub use syntax::Pos;
 
 /// Compiles schema source. `origin` is the file it came from: error messages name it
 /// and `import` paths resolve against its directory.
+/// It drops the warnings; `compile_project` returns them.
 pub fn compile(source: &str, origin: Option<&Path>) -> Result<SchemaIr, String> {
     compile_project(source, origin).map(|project| project.ir)
 }
@@ -99,10 +101,21 @@ struct Loader<'a> {
 }
 
 impl Loader<'_> {
+    /// The file that holds `line` of the joined source, and the line where that file starts.
+    fn file_of(&self, line: u32) -> (&str, u32) {
+        let (start, _, label) = self.locations.iter().find(|(start, end, _)| line >= *start && line < *end).unwrap_or(&self.locations[0]);
+        (label, *start)
+    }
+
     fn located(&self, e: syntax::Error) -> String {
-        let (start, _, label) = self.locations.iter().find(|(start, end, _)| e.pos.line >= *start && e.pos.line < *end)
-            .unwrap_or(&self.locations[0]);
-        format!("{label}:{}:{}: {}", e.pos.line.saturating_sub(*start) + 1, e.pos.col, e.msg)
+        let (label, start) = self.file_of(e.pos.line);
+        format!("{label}:{}:{}: {}", e.pos.line.saturating_sub(start) + 1, e.pos.col, e.msg)
+    }
+
+    /// The file a diagnostic is in, and its span with the line counted from the top of that file.
+    fn located_span(&self, span: expr::Span) -> (String, expr::Span) {
+        let (label, start) = self.file_of(span.line);
+        (label.to_string(), expr::Span { line: span.line.saturating_sub(start) + 1, ..span })
     }
 
     fn expand(&mut self, source: &str, origin: &Path, via: &str, prefix: &str, root: bool, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
@@ -174,7 +187,7 @@ impl Loader<'_> {
                             } else if name == "map" {
                                 m.blocks.push(syntax::Attr { pos: m.pos, name: "map".into(), args: syntax::Args {
                                     pos: m.pos, positional: vec![(m.pos, syntax::Value::Str(format!("{prefix}{}", m.name.to_lowercase())))],
-                                    named: vec![],
+                                    named: vec![], named_values: vec![],
                                 } });
                             }
                         }
@@ -271,7 +284,11 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
         None => msg,
     };
     let proxies: std::collections::HashSet<String> = declarations.iter().filter(|d| d.attribute == "proxy.of").map(|d| d.model.clone()).collect();
-    let mut ir = lower::Lowering { load: &load, deferred_identity: &deferred_identity, proxies: &proxies }.lower(items).map_err(|e| loader.located(e))?;
+    let (mut ir, diagnostics) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, proxies: &proxies }.lower(items).map_err(|e| loader.located(e))?;
+    let warnings = diagnostics.into_iter().map(|d| {
+        let (file, span) = loader.located_span(d.span);
+        expr::Warning { file, span, message: d.message }
+    }).collect();
     ir.identities = identities;
     if !declarations.is_empty() {
         ir.behavior.schema_contract = crate::behavior::SCHEMA_CONTRACT;
@@ -308,7 +325,7 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
     let mut inputs: Vec<_> = loader.units.iter().map(|unit| unit.path.clone()).collect();
     inputs.extend(catalog_inputs.into_inner());
     if ir.identities.is_some() { inputs.push(path); }
-    Ok(CompiledProject { ir, units: loader.units, inputs, warnings: vec![] })
+    Ok(CompiledProject { ir, units: loader.units, inputs, warnings })
 }
 
 pub fn compile_project_file(path: &Path) -> Result<CompiledProject, String> {
@@ -321,10 +338,12 @@ pub fn compile_project_file_with(path: &Path, installed: &Installed) -> Result<C
 }
 
 /// Compiles and validates a schema file.
+/// It drops the warnings; `compile_project_file` returns them.
 pub fn compile_file(path: &Path) -> Result<SchemaIr, String> {
     compile_file_with(path, &Installed::new())
 }
 
+/// `compile_file` with installed apps and extensions. It drops the warnings; `compile_project_file_with` returns them.
 pub fn compile_file_with(path: &Path, installed: &Installed) -> Result<SchemaIr, String> {
     compile_project_file_with(path, installed).map(|project| project.ir)
 }

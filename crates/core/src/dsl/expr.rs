@@ -215,16 +215,16 @@ pub struct Warning {
     pub message: String,
 }
 
-impl Diagnostic {
-    pub fn in_file(&self, file: &str) -> Warning {
-        Warning { file: file.to_string(), span: self.span, message: self.message.clone() }
-    }
-}
-
 #[derive(Debug)]
 pub struct Checked {
     pub root: Node,
     pub warnings: Vec<Diagnostic>,
+}
+
+impl fmt::Display for Warning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}: warning: {}", self.file, self.span.line, self.span.column, self.message)
+    }
 }
 
 impl fmt::Display for Diagnostic {
@@ -360,7 +360,7 @@ fn join_spans(first: Span, last: Span) -> Span {
 
 /// The options of an index or exclusion key; `lead` positional arguments come before them.
 fn options_of(pos: Pos, args: &Args, minus: bool, lead: usize) -> Result<KeyOptions, Error> {
-    key_options(pos, args, "index", minus, lead, true).map_err(|e| Diagnostic { span: span_at(e.pos, 1), message: e.msg })
+    key_options(pos, args, "index", minus, lead, false).map_err(|e| Diagnostic { span: span_at(e.pos, 1), message: e.msg })
 }
 
 fn fail<T>(span: Span, message: impl Into<String>) -> Result<T, Error> {

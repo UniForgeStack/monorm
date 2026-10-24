@@ -98,7 +98,7 @@ pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &
             if models.contains_key(name.as_str()) {
                 return err(*pos, format!("{what}: a type holds no relation; {name} is a model"));
             }
-            let leaf = field(t, member, ctx)?;
+            let leaf = field(t, member, ctx, None)?;
             if leaf.primary_key {
                 return err(member.pos, format!("{what}: a type holds no @id"));
             }
@@ -442,6 +442,7 @@ pub(super) fn resolve_paths(b: &Attr, paths: &Paths, model: &str, dialect: Diale
     if expression && out.name == "unique" {
         out.name = "index".to_owned();
         out.args.named.push(("unique".to_owned(), b.pos, Value::Bool(true)));
+        out.args.named_values.push(b.pos);
     }
     Ok(out)
 }

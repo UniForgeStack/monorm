@@ -53,6 +53,20 @@ fn binary() {
 }
 
 #[test]
+fn a_warning_prints_with_its_file_line_and_column() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-warning-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("schema.prisma"), "import \"library.prisma\"\n").unwrap();
+    std::fs::write(dir.join("library.prisma"), "\nmodel Item {\n  id Int @id\n  qty Int @check(\"qty > 0\")\n}\n").unwrap();
+    let check = orm(&dir, &["check", "--schema", "schema.prisma"]);
+    assert!(check.status.success(), "{}", text(&check.stderr));
+    let stderr = text(&check.stderr);
+    assert!(stderr.contains("library.prisma:4:") && stderr.contains("warning:") && stderr.contains("raw("), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn schema_module_output_collisions_fail_before_writing() {
     let dir = std::env::temp_dir().join(format!("orm-cli-import-collision-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

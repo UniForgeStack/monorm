@@ -361,16 +361,14 @@ fn the_parser_seam_returns_a_value_tree_without_a_schema() {
 }
 
 #[test]
-fn a_diagnostic_becomes_a_warning_with_file_line_column_and_length() {
+fn a_warning_has_line_column_and_length() {
     let checked = check_text(&ir(), "Post", Context::Check, "a == null").unwrap();
-    let warning = checked.warnings[0].in_file("schema.prisma");
     assert_eq!(
-        warning,
-        Warning {
-            file: "schema.prisma".into(),
+        checked.warnings,
+        [Diagnostic {
             span: Span { line: 1, column: 1, len: 1 },
             message: "`a` is not nullable, so `a == null` is always false".into()
-        }
+        }]
     );
     let project = crate::dsl::compile_project(SCHEMA, None).unwrap();
     assert!(project.warnings.is_empty());

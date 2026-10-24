@@ -139,6 +139,18 @@ impl Js {
         }
     }
 
+    /// `process.emitWarning(message, kind)`.
+    pub fn emit_warning(self, message: &str, kind: &str) -> napi::Result<()> {
+        let mut global = ptr::null_mut();
+        call!(napi_get_global(self.0, &mut global))?;
+        let process = self.get(global, "process")?;
+        let emit = self.get(process, "emitWarning")?;
+        let args = [self.str(message)?, self.str(kind)?];
+        let mut out = ptr::null_mut();
+        call!(napi_call_function(self.0, process, emit, 2, args.as_ptr(), &mut out))?;
+        Ok(())
+    }
+
     // -- creating -------------------------------------------------------------------------
 
     pub fn null(self) -> napi::Result<V> {

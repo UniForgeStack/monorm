@@ -8,6 +8,7 @@ from ._native import (
     LockNotAvailable,
     QueryError,
     SchemaError,
+    SchemaWarning,
     TransactionAborted,
     WriteProtected,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "LockNotAvailable",
     "QueryError",
     "SchemaError",
+    "SchemaWarning",
     "DoesNotExist",
     "MultipleObjectsReturned",
     "NotLoaded",

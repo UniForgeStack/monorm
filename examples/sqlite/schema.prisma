@@ -21,7 +21,7 @@ model Book {
   id        BigInt @id @default(autoincrement())
   author_id BigInt
   title     String
-  pages     Int    @default(0) @check("pages >= 0")
+  pages     Int    @default(0) @check(raw("pages >= 0"))
   status    Status @default(draft)
   metadata  Json?
   author    Author @relation(fields: [author_id], references: [id], onDelete: Cascade)

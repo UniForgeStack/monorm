@@ -1210,12 +1210,25 @@ pub fn native_artifact() -> napi::Result<String> {
     serde_json::to_string(&orm_core::behavior::artifact()).map_err(|e| schema_err(e.to_string()))
 }
 
-#[napi]
-pub fn compile_schema(source: String, path: Option<String>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
-    let apps = installed(None, extensions);
-    let ir = orm_core::dsl::compile_project_with(&source, path.as_deref().map(std::path::Path::new), &apps).map(|project| project.ir).map_err(schema_err)?;
-    let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
+/// Schema expression warnings go to `process.emitWarning(message, "SchemaWarning")`.
+fn emit_warnings(env: &Env, project: &orm_core::dsl::CompiledProject) -> napi::Result<()> {
+    for warning in &project.warnings {
+        Js(env.raw()).emit_warning(&warning.to_string(), "SchemaWarning")?;
+    }
+    Ok(())
+}
+
+fn compiled(env: &Env, project: orm_core::dsl::CompiledProject) -> napi::Result<String> {
+    emit_warnings(env, &project)?;
+    let (ir, _) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(schema_err)
+}
+
+#[napi]
+pub fn compile_schema(env: &Env, source: String, path: Option<String>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
+    let apps = installed(None, extensions);
+    let project = orm_core::dsl::compile_project_with(&source, path.as_deref().map(std::path::Path::new), &apps).map_err(schema_err)?;
+    compiled(env, project)
 }
 
 /// `npx orm`: the `orm` command line (`orm_cli`). Resolves to the exit code; output
@@ -1267,17 +1280,17 @@ fn installed(apps: Option<std::collections::HashMap<String, String>>, extensions
 }
 
 #[napi]
-pub fn compile_schema_file(path: String, apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
+pub fn compile_schema_file(env: &Env, path: String, apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
     let apps = installed(apps, extensions);
-    let ir = orm_core::dsl::compile_file_with(std::path::Path::new(&path), &apps).map_err(schema_err)?;
-    let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
-    serde_json::to_string(&ir).map_err(schema_err)
+    let project = orm_core::dsl::compile_project_file_with(std::path::Path::new(&path), &apps).map_err(schema_err)?;
+    compiled(env, project)
 }
 
 /// `models.ts` source for a schema file; the runtime is imported from `runtime`.
 #[cfg(feature = "generate-typescript")]
 #[napi]
 pub fn generate_typescript(
+    env: &Env,
     path: String,
     runtime: Option<String>,
     query_sets: Option<std::collections::HashMap<String, String>>,
@@ -1288,6 +1301,7 @@ pub fn generate_typescript(
     let p = std::path::Path::new(&path);
     let apps = installed(apps, extensions);
     let project = orm_core::dsl::compile_project_file_with(p, &apps).map_err(schema_err)?;
+    emit_warnings(env, &project)?;
     let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = orm_core::codegen::Options {

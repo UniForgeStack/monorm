@@ -1,7 +1,9 @@
 //! Syntax tree -> schema IR.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use super::expr::{Context, Diagnostic, Span};
 use super::syntax::{err, Args, Attr, EnumDecl, Item, Member, ModelDecl, Path, Pos, Props, Result, TypeRef, Value};
 use crate::behavior::ArgumentKind;
 use crate::ext::{ExtensionDef, TypeDef};
@@ -14,6 +16,8 @@ use crate::migrate::pg::ident;
 
 mod nested;
 use nested::Paths;
+#[cfg(test)]
+mod tests;
 
 /// Reads the named arguments of one attribute, rejecting unknown or repeated ones.
 struct Named<'a> {
@@ -33,6 +37,13 @@ impl<'a> Named<'a> {
             self.used.insert(k.as_str());
             (*p, v)
         })
+    }
+
+    /// The source extent (start and length) of the value of `key`; the position of the key when
+    /// `named_values` has no entry for it.
+    fn extent(&self, key: &str) -> Option<Pos> {
+        let i = self.args.named.iter().position(|(k, _, _)| k == key)?;
+        Some(self.args.named_values.get(i).copied().unwrap_or(self.args.named[i].1))
     }
 
     fn str(&mut self, key: &'a str) -> Result<Option<String>> {
@@ -267,6 +278,56 @@ fn native_type(name: &str, ty: ColType) -> Option<(&'static str, bool)> {
     Some((sql, same))
 }
 
+/// A native expression of a check, filter or key. It waits until every model is lowered, so it can name any field.
+struct PendingExpr {
+    model: String,
+    context: Context,
+    pos: Pos,
+    value: Value,
+}
+
+/// The native expressions of one schema, and the warnings found while lowering.
+#[derive(Default)]
+struct Pendings {
+    list: RefCell<Vec<PendingExpr>>,
+    warnings: RefCell<Vec<Diagnostic>>,
+}
+
+/// The first character of the text that stands in an IR slot for a pending expression.
+const MARK: char = '\u{1}';
+
+impl Pendings {
+    /// The text that stands in the IR for the expression until `resolve_pending` replaces it.
+    fn defer(&self, model: &str, context: Context, pos: Pos, value: &Value) -> String {
+        let mut list = self.list.borrow_mut();
+        list.push(PendingExpr { model: model.to_owned(), context, pos, value: value.clone() });
+        format!("{MARK}{}", list.len() - 1)
+    }
+
+    fn warn(&self, pos: Pos, message: String) {
+        let span = Span { line: pos.line, column: pos.col, len: pos.len.max(1) };
+        self.warnings.borrow_mut().push(Diagnostic { span, message });
+    }
+}
+
+/// The SQL of a check or an index filter. A plain string warns and stays as written, `raw("...")`
+/// stays as written, and any other value is a native expression. `pos` is the extent of `v`.
+fn expression(pending: Option<&Pendings>, model: &str, context: Context, what: &str, pos: Pos, v: &Value) -> Result<String> {
+    match v {
+        Value::Str(s) => {
+            if let Some(pending) = pending {
+                pending.warn(pos, format!("{what}: this SQL text is not checked; write raw(\"...\") to keep it as SQL, or write a native expression"));
+            }
+            Ok(s.clone())
+        }
+        Value::Path(path, Some(_)) if path.as_slice() == ["raw"] => raw_sql(pos, v, what),
+        _ => match pending {
+            Some(pending) => Ok(pending.defer(model, context, pos, v)),
+            None => err(pos, format!("{what}: a native expression is not available here; write raw(\"...\")")),
+        },
+    }
+}
+
 const FIELD_ATTRS: &str = "@id, @unique, @default, @client_default, @map, @db.*, @check, @comment, @renamed_from";
 
 pub struct Lowering<'l> {
@@ -286,12 +347,13 @@ struct Ctx<'l> {
     /// Position and `@map` of each type member, by type and subfield name; `TypeFieldIr` holds neither.
     members: HashMap<(String, String), nested::TypeMember>,
     proxies: &'l HashSet<String>,
+    pending: Pendings,
 }
 
 impl Lowering<'_> {
-    pub fn lower(&self, items: Vec<Item>) -> Result<SchemaIr> {
+    pub fn lower(&self, items: Vec<Item>) -> Result<(SchemaIr, Vec<Diagnostic>)> {
         let mut ir = SchemaIr::default();
-        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), proxies: self.proxies };
+        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), proxies: self.proxies, pending: Pendings::default() };
         for def in ExtensionDef::builtin() {
             for (name, t) in &def.types {
                 ctx.types.insert(name.clone(), (def.name.clone(), t.clone()));
@@ -370,12 +432,13 @@ impl Lowering<'_> {
                 m.relations.push(r);
             }
             for block in &decl.blocks {
-                model_block(m, &nested::resolve_paths(block, paths, &decl.name, ir.dialect)?)?;
+                model_block(m, &nested::resolve_paths(block, paths, &decl.name, ir.dialect)?, Some(&ctx.pending))?;
             }
         }
         ir.models = lowered;
         lower_partitions(&items, &mut ir)?;
-        Ok(ir)
+        let warnings = resolve_pending(&mut ir, &ctx.pending)?;
+        Ok((ir, warnings))
     }
 }
 
@@ -467,7 +530,7 @@ fn enum_block(e: &EnumDecl) -> Result<EnumIr> {
 
 /// `datasource db { provider = "postgresql" extensions = [...] }`
 fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
-    let args = Args { pos, positional: vec![], named: props.clone() };
+    let args = Args { pos, positional: vec![], named: props.clone(), named_values: vec![] };
     let mut n = Named::new("datasource", &args);
     match n.get("provider") {
         Some((_, Value::Str(p))) if p == "postgresql" || p == "postgres" => {}
@@ -504,7 +567,7 @@ fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
 }
 
 fn function(pos: Pos, name: &str, props: &Props) -> Result<FunctionIr> {
-    let args = Args { pos, positional: vec![], named: props.to_vec() };
+    let args = Args { pos, positional: vec![], named: props.to_vec(), named_values: vec![] };
     let mut n = Named::new(format!("function {name}"), &args);
     let body = n.str("body")?;
     let f = FunctionIr {
@@ -579,7 +642,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
             paths.extend(expansion.paths);
             continue;
         }
-        ir.fields.push(field(m, member, ctx)?);
+        ir.fields.push(field(m, member, ctx, Some(&ctx.pending))?);
         origins.push(member);
     }
     check_collisions(&ir, &origins)?;
@@ -654,7 +717,7 @@ fn composite_id(ir: &mut ModelIr, a: &Attr) -> Result<()> {
     Ok(())
 }
 
-fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>) -> Result<FieldIr> {
+fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pendings>) -> Result<FieldIr> {
     let TypeRef { pos, name, args, list, optional } = &member.ty;
     let what = format!("{}.{}", m.name, member.name);
     let mut f = FieldIr {
@@ -833,7 +896,13 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>) -> Result<FieldIr> {
         match a.name.as_str() {
             "id" => f.primary_key = flag(a)?,
             "unique" => f.unique = flag(a)?,
-            "check" => f.check = Some(text(a)?),
+            "check" => {
+                if a.args.positional.len() != 1 || !a.args.named.is_empty() {
+                    return err(a.pos, format!("{what}: @check takes one argument"));
+                }
+                let (pos, v) = &a.args.positional[0];
+                f.check = Some(expression(pending, &m.name, Context::Check, &format!("{what}: @check"), *pos, v)?);
+            }
             "comment" => f.comment = Some(text(a)?),
             "map" => f.column = text(a)?,
             "renamed_from" => f.renamed_from = Some(text(a)?),
@@ -1302,7 +1371,8 @@ pub(super) fn key_options(p: Pos, args: &Args, what: &str, minus: bool, lead: us
     if args.positional.len() > lead {
         return err(p, format!("{what}: key options are named (sort:, nulls:, ops:, collate:{})", if with_op { ", op:" } else { "" }));
     }
-    let mut n = Named::new(format!("{what} key"), args);
+    let label = if with_op { format!("{what}: exclusion key") } else { format!("{what} key") };
+    let mut n = Named::new(label.clone(), args);
     let desc = match n.name("sort")?.as_deref() {
         None => minus,
         Some(_) if minus => return err(p, format!("{what}: give `-` or sort:, not both")),
@@ -1322,14 +1392,20 @@ pub(super) fn key_options(p: Pos, args: &Args, what: &str, minus: bool, lead: us
         Some((op, v)) => Some(name_of(op, v, &format!("{what}: ops"))?),
     };
     let collation = n.str("collate")?;
-    let op = if with_op { n.str("op")? } else { None };
+    let op = if with_op {
+        n.str("op")?
+    } else if let Some((op, _)) = n.get("op") {
+        return err(op, format!("{label}: op: is for exclusion keys; use @@exclude"));
+    } else {
+        None
+    };
     n.finish()?;
     Ok(KeyOptions { desc, nulls, opclass, collation, op })
 }
 
 /// `[field, -field, field(sort: Desc, ops: raw("x")), sql("expr", ...)]` -> index keys
 /// (and the exclusion operator of each, when `with_op`).
-fn keys(pos: Pos, v: Option<&Value>, what: &str, with_op: bool) -> Result<Vec<(IndexColumnIr, Option<String>)>> {
+fn keys(m: &ModelIr, pending: Option<&Pendings>, pos: Pos, v: Option<&Value>, what: &str, with_op: bool) -> Result<Vec<(IndexColumnIr, Option<String>)>> {
     let Some(Value::List(items)) = v else {
         return err(pos, format!("{what}: the first argument is a list of keys, e.g. [author_id, created_at(sort: Desc)]"));
     };
@@ -1338,10 +1414,12 @@ fn keys(pos: Pos, v: Option<&Value>, what: &str, with_op: bool) -> Result<Vec<(I
     }
     let mut out = vec![];
     for (p, item) in items {
-        let (minus, item) = match item {
-            Value::Desc(inner) => (true, &inner.1),
-            item => (false, item),
+        let (minus, operand_pos, item) = match item {
+            Value::Desc(inner) => (true, inner.0, &inner.1),
+            item => (false, *p, item),
         };
+        // A leading `-` on a function call is negation; on a field it is `sort: Desc`.
+        let mut negated = None;
         let (field, expr, args) = match item {
             Value::Path(path, _) if minus && path.len() == 1 && path[0] == "sql" => {
                 return err(*p, format!("{what}: an expression key takes sort: Desc, not `-`"));
@@ -1353,18 +1431,80 @@ fn keys(pos: Pos, v: Option<&Value>, what: &str, with_op: bool) -> Result<Vec<(I
                 };
                 (None, Some(e.clone()), args.clone())
             }
+            Value::Path(path, Some(_)) if path.len() == 1 && !m.fields.iter().any(|f| f.name == path[0]) && super::expr::function(&path[0]).is_some() => {
+                if minus {
+                    negated = Some(Value::Neg(*p, Box::new((operand_pos, item.clone()))));
+                }
+                (None, None, Args::default())
+            }
             Value::Path(path, args) if path.len() == 1 => {
                 (Some(path[0].clone()), None, args.clone().unwrap_or(Args { pos: *p, ..Default::default() }))
             }
-            _ => return err(*p, format!("{what}: a key is a field name or sql(\"...\")")),
+            Value::Binary(..) | Value::Method(..) | Value::Neg(..) | Value::Not(..) => (None, None, Args::default()),
+            _ => return err(*p, format!("{what}: a key is a field name, an expression or sql(\"...\")")),
         };
+        if field.is_none() && expr.is_none() {
+            if (minus && negated.is_none()) || with_op || !args.named.is_empty() {
+                let why = if with_op { "an exclusion key needs op:, so write it as sql(\"...\", op: \"...\")" } else { "an expression key takes no options, so write it as sql(\"...\", sort: Desc, ...)" };
+                return err(*p, format!("{what}: {why}"));
+            }
+            let Some(pending) = pending else { return err(*p, format!("{what}: a native expression key is not available here; write sql(\"...\")")) };
+            out.push((IndexColumnIr { field: None, expr: Some(pending.defer(&m.name, Context::IndexKey, *p, negated.as_ref().unwrap_or(item))), opclass: None, collation: None, desc: false, nulls: None }, None));
+            continue;
+        }
         let KeyOptions { desc, nulls, opclass, collation, op } = key_options(*p, &args, what, minus, usize::from(expr.is_some()), with_op)?;
         if with_op && op.is_none() {
-            return err(*p, format!("{what}: each key needs op: \"=\" / \"&&\" / ..."));
+            return err(*p, format!("{what}: each exclusion key needs op: \"=\" / \"&&\" / ..."));
         }
         out.push((IndexColumnIr { field, expr, opclass, collation, desc, nulls }, op));
     }
     Ok(out)
+}
+
+/// The `where:` of an index or an exclusion.
+fn filter(n: &mut Named<'_>, pending: Option<&Pendings>, model: &str, what: &str) -> Result<Option<String>> {
+    let Some(extent) = n.extent("where") else { return Ok(None) };
+    let Some((_, value)) = n.get("where") else { return Ok(None) };
+    Ok(Some(expression(pending, model, Context::IndexFilter, &format!("{what}: where"), extent, value)?))
+}
+
+/// Checks every pending expression against the whole schema, lowers it to SQL text and puts the
+/// text in the IR slot that holds its marker. Returns the warnings, in source order.
+fn resolve_pending(ir: &mut SchemaIr, pending: &Pendings) -> Result<Vec<Diagnostic>> {
+    let list = pending.list.take();
+    let mut warnings = pending.warnings.take();
+    let as_error = |d: Diagnostic| super::syntax::Error { pos: Pos { line: d.span.line, col: d.span.column, len: 0 }, msg: d.message };
+    let mut texts = Vec::with_capacity(list.len());
+    for e in &list {
+        let checked = super::expr::check(ir, &e.model, e.context, e.pos, &e.value).map_err(as_error)?;
+        warnings.extend(checked.warnings);
+        texts.push(super::render::render(ir, ir.dialect, &checked.root).map_err(as_error)?);
+    }
+    let fill = |slot: &mut String| {
+        if let Some(i) = slot.strip_prefix(MARK).and_then(|n| n.parse::<usize>().ok()) {
+            *slot = texts[i].clone();
+        }
+    };
+    let fill_key = |key: &mut IndexColumnIr| key.expr.iter_mut().for_each(fill);
+    for m in &mut ir.models {
+        m.fields.iter_mut().filter_map(|f| f.check.as_mut()).for_each(fill);
+        for ix in &mut m.indexes {
+            ix.columns.iter_mut().for_each(fill_key);
+            ix.where_.iter_mut().for_each(fill);
+        }
+        for c in &mut m.constraints {
+            match c {
+                ConstraintIr::Check { expr, .. } => fill(expr),
+                ConstraintIr::Exclude { elements, where_, .. } => {
+                    elements.iter_mut().for_each(|e| fill_key(&mut e.column));
+                    where_.iter_mut().for_each(fill);
+                }
+                _ => {}
+            }
+        }
+    }
+    warnings.sort_by_key(|w| (w.span.line, w.span.column));
+    Ok(warnings)
 }
 
 /// `type: Gin` (Prisma's names) or `type: hnsw` -> the access method.
@@ -1372,7 +1512,7 @@ fn method(n: &mut Named<'_>) -> Result<Option<String>> {
     Ok(n.name("type")?.map(|t| t.to_lowercase()))
 }
 
-fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
+fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<()> {
     let what = format!("{}: @@{}", m.name, b.name);
     let first = b.args.positional.first().map(|(_, v)| v);
     let extra_positional = |max: usize| -> Result<()> {
@@ -1390,7 +1530,7 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
             for strategy in ["list", "range", "hash"] {
                 if let Some((p, v)) = n.get(strategy) {
                     if partition.is_some() { return err(p, format!("{what}: give one strategy")); }
-                    let keys = keys(p, Some(v), &what, false)?.into_iter().map(|(k, _)| k).collect();
+                    let keys = keys(m, None, p, Some(v), &what, false)?.into_iter().map(|(k, _)| k).collect();
                     partition = Some(PartitionKeyIr { strategy: strategy.into(), keys });
                 }
             }
@@ -1400,7 +1540,7 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
         "map" | "comment" | "renamed_from" | "protected_write" | "query_set" | "model_methods" => {}
         "index" => {
             extra_positional(1)?;
-            let columns: Vec<IndexColumnIr> = keys(b.pos, first, &what, false)?.into_iter().map(|(k, _)| k).collect();
+            let columns: Vec<IndexColumnIr> = keys(m, pending, b.pos, first, &what, false)?.into_iter().map(|(k, _)| k).collect();
             // `@@index([col])` is the column's own index
             if let ([c], []) = (columns.as_slice(), b.args.named.as_slice()) {
                 if c.expr.is_none() && c.opclass.is_none() && c.collation.is_none() && !c.desc && c.nulls.is_none() {
@@ -1424,7 +1564,7 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
                 columns,
                 unique: n.bool("unique")?,
                 method,
-                where_: n.sql("where")?,
+                where_: filter(&mut n, pending, &m.name, &what)?,
                 include: n.names("include")?,
                 with,
                 nulls_not_distinct: n.bool("nulls_not_distinct")?,
@@ -1458,17 +1598,17 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
         }
         "check" => {
             extra_positional(1)?;
-            let Some(Value::Str(expr)) = first else {
-                return err(b.pos, format!("{what}: takes the SQL expression as a string"));
+            let Some((pos, value)) = b.args.positional.first() else {
+                return err(b.pos, format!("{what}: takes an expression, e.g. @@check(price > 0)"));
             };
             let mut n = Named::new(what.clone(), &b.args);
-            let c = ConstraintIr::Check { name: n.str("name")?, expr: expr.clone() };
+            let c = ConstraintIr::Check { name: n.str("name")?, expr: expression(pending, &m.name, Context::Check, &what, *pos, value)? };
             n.finish()?;
             m.constraints.push(c);
         }
         "exclude" => {
             extra_positional(1)?;
-            let ks = keys(b.pos, first, &what, true)?;
+            let ks = keys(m, pending, b.pos, first, &what, true)?;
             let mut n = Named::new(what.clone(), &b.args);
             let method = method(&mut n)?.unwrap_or_else(|| "gist".into());
             // `=` on a plain column inside GiST needs btree_gist.
@@ -1484,7 +1624,7 @@ fn model_block(m: &mut ModelIr, b: &Attr) -> Result<()> {
                     .into_iter()
                     .map(|(column, op)| ExcludeElementIr { column, operator: op.unwrap_or_default() })
                     .collect(),
-                where_: n.sql("where")?,
+                where_: filter(&mut n, pending, &m.name, &what)?,
                 deferrable: deferrable(&mut n)?,
                 requires,
             };
@@ -1772,7 +1912,7 @@ fn lower_partitions(items: &[Item], ir: &mut SchemaIr) -> Result<()> {
                     let [(_, Value::Str(s))] = block.args.positional.as_slice() else { return err(block.pos, "expected one string"); };
                     if !block.args.named.is_empty() { return err(block.pos, "expected one string"); }
                     if block.name == "comment" { objects.comment = Some(s.clone()); } else { objects.renamed_from = Some(s.clone()); }
-                } else { model_block(&mut objects, block)?; }
+                } else { model_block(&mut objects, block, None)?; }
             }
             ir.partitions.push(PartitionIr { of, bound, objects });
         }

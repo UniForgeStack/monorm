@@ -313,6 +313,8 @@ pub struct Args {
     pub pos: Pos,
     pub positional: Vec<(Pos, Value)>,
     pub named: Vec<(String, Pos, Value)>,
+    /// The position and source extent of each value in `named`, in the same order.
+    pub named_values: Vec<Pos>,
 }
 
 #[derive(Debug, Clone)]
@@ -654,11 +656,13 @@ impl<'a> Parser<'a> {
             if named {
                 let (_, key) = self.ident("an argument name")?;
                 self.expect(":")?;
+                let value_start = self.pos;
                 let v = self.value()?;
                 if args.named.iter().any(|(k, _, _)| *k == key) {
                     return err(vpos, format!("argument {key} given twice"));
                 }
                 args.named.push((key, vpos, v));
+                args.named_values.push(self.extent(value_start));
             } else {
                 if !args.named.is_empty() {
                     return err(vpos, "positional argument after named arguments");

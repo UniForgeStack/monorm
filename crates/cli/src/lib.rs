@@ -250,7 +250,15 @@ fn config(host: Host) -> Config {
 }
 
 fn load(path: &Path, args: &Args) -> Result<(orm_core::ir::SchemaIr, orm_core::schema::Schema)> {
-    dsl::compile_file_with(path, &args.installed()?).and_then(dsl::check).map_err(Failure::Failed)
+    let project = dsl::compile_project_file_with(path, &args.installed()?).map_err(Failure::Failed)?;
+    print_warnings(&project);
+    dsl::check(project.ir).map_err(Failure::Failed)
+}
+
+fn print_warnings(project: &dsl::CompiledProject) {
+    for warning in &project.warnings {
+        eprintln!("{warning}");
+    }
 }
 
 fn write(path: &Path, text: &str) -> Result<()> {
@@ -451,6 +459,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         (None, _, Host::Binary) => return Err(Failure::Usage("generate needs a language: python, typescript or rust".into())),
     };
     let project = dsl::compile_project_file_with(schema, &args.installed()?).map_err(Failure::Failed)?;
+    print_warnings(&project);
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, extensions: orm_core::behavior::extension_code(language), ..codegen::Options::default() };

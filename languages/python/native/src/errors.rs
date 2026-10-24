@@ -1,7 +1,7 @@
 use orm_engine::db::{DbError, ErrorKind};
 use orm_engine::Error;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyException, PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use pyo3::PyErr;
 
@@ -26,6 +26,7 @@ create_exception!(
 );
 create_exception!(_native, QueryError, PyValueError, "The query IR does not match the schema.");
 create_exception!(_native, SchemaError, PyValueError, "The schema file or IR is invalid.");
+create_exception!(_native, SchemaWarning, PyUserWarning, "A schema expression compiles, but probably does not do what it says.");
 create_exception!(
     _native,
     MigrationError,

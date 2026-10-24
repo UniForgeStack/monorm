@@ -329,7 +329,7 @@ fn a_through_name_with_the_model_placeholder_lowers_on_a_deferred_model_only() {
     let proxies = std::collections::HashSet::new();
     let lower_with = |deferred: &[&str], source: &str| {
         let deferred = deferred.iter().map(|m| m.to_string()).collect();
-        lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies }.lower(syntax::parse(source).unwrap()).map_err(|e| e.msg)
+        lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies }.lower(syntax::parse(source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
     };
     let ir = lower_with(&["A"], source).unwrap();
     let r = &ir.models[0].relations[0];
@@ -573,6 +573,23 @@ fn schema_imports_share_root_settings_and_preserve_ownership() {
     assert!(twice.contains("and by import \"billing/nested/../nested/schema.prisma\" in ") && twice.contains("import a shared app once"), "{twice}");
     std::fs::write(&root, "import \"missing.prisma\"\n").unwrap();
     assert!(compile_file(&root).unwrap_err().contains("import \"missing.prisma\""));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_warning_in_an_imported_file_names_that_file_and_its_own_line() {
+    let dir = std::env::temp_dir().join(format!("orm-import-warning-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("billing")).unwrap();
+    let root = dir.join("schema.prisma");
+    std::fs::write(&root, "datasource db {\n provider = \"postgresql\"\n}\nimport \"billing/schema.prisma\"\nmodel User {\n id Int @id\n age Int @check(\"age > 0\")\n}\n").unwrap();
+    std::fs::write(dir.join("billing/schema.prisma"), "// one\n// two\nmodel Invoice {\n id Int @id\n total Int\n @@check(\"total >= 0\")\n}\n").unwrap();
+    let project = compile_project_file(&root).unwrap();
+    let at = |file: &str| project.warnings.iter().filter(|w| w.file.ends_with(file)).collect::<Vec<_>>();
+    let (billing, main) = (at("billing/schema.prisma"), at("schema.prisma").into_iter().filter(|w| !w.file.contains("billing")).collect::<Vec<_>>());
+    assert_eq!(project.warnings.len(), 2, "{:?}", project.warnings);
+    assert_eq!((billing[0].span.line, billing[0].span.column), (6, 10), "{:?}", billing[0]);
+    assert_eq!(main[0].span.line, 7, "{:?}", main[0]);
+    assert!(billing[0].message.contains("raw("));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

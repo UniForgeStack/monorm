@@ -1030,10 +1030,25 @@ fn native_artifact() -> PyResult<String> {
 /// from, for error messages and `import` resolution.
 #[pyfunction]
 #[pyo3(signature = (source, path = None, extensions = None))]
-fn compile_schema(source: &str, path: Option<&str>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
+fn compile_schema(py: Python<'_>, source: &str, path: Option<&str>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
     let apps = installed(None, extensions);
-    let ir = orm_core::dsl::compile_project_with(source, path.map(std::path::Path::new), &apps).map(|project| project.ir).map_err(schema_err)?;
-    let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
+    let project = orm_core::dsl::compile_project_with(source, path.map(std::path::Path::new), &apps).map_err(schema_err)?;
+    compiled(py, project)
+}
+
+/// Schema expression warnings go through `warnings.warn` as `SchemaWarning`.
+fn emit_warnings(py: Python<'_>, project: &orm_core::dsl::CompiledProject) -> PyResult<()> {
+    let category = py.get_type::<errors::SchemaWarning>();
+    for warning in &project.warnings {
+        let message = std::ffi::CString::new(warning.to_string().replace('\0', "")).unwrap_or_default();
+        PyErr::warn(py, &category, &message, 1)?;
+    }
+    Ok(())
+}
+
+fn compiled(py: Python<'_>, project: orm_core::dsl::CompiledProject) -> PyResult<String> {
+    emit_warnings(py, &project)?;
+    let (ir, _) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(|e| schema_err(e.to_string()))
 }
 
@@ -1046,11 +1061,10 @@ fn installed(apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>
 
 #[pyfunction]
 #[pyo3(signature = (path, apps = None, extensions = None))]
-fn compile_schema_file(path: &str, apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
+fn compile_schema_file(py: Python<'_>, path: &str, apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
     let apps = installed(apps, extensions);
-    let ir = orm_core::dsl::compile_file_with(std::path::Path::new(path), &apps).map_err(schema_err)?;
-    let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
-    serde_json::to_string(&ir).map_err(|e| schema_err(e.to_string()))
+    let project = orm_core::dsl::compile_project_file_with(std::path::Path::new(path), &apps).map_err(schema_err)?;
+    compiled(py, project)
 }
 
 /// `(models.py, models.pyi)` source for a schema file.
@@ -1058,6 +1072,7 @@ fn compile_schema_file(path: &str, apps: Option<std::collections::BTreeMap<Strin
 #[pyfunction]
 #[pyo3(signature = (path, query_sets = None, model_methods = None, apps = None, extensions = None))]
 fn generate_python(
+    py: Python<'_>,
     path: &str,
     query_sets: Option<std::collections::BTreeMap<String, String>>,
     model_methods: Option<std::collections::BTreeMap<String, String>>,
@@ -1066,6 +1081,7 @@ fn generate_python(
 ) -> PyResult<(String, String)> {
     let p = std::path::Path::new(path);
     let project = orm_core::dsl::compile_project_file_with(p, &installed(apps, extensions)).map_err(schema_err)?;
+    emit_warnings(py, &project)?;
     let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default(), model_methods: model_methods.unwrap_or_default(), ..Default::default() };
@@ -1173,6 +1189,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("QueryError", py.get_type::<errors::QueryError>())?;
     m.add("WriteProtected", py.get_type::<errors::WriteProtected>())?;
     m.add("SchemaError", py.get_type::<errors::SchemaError>())?;
+    m.add("SchemaWarning", py.get_type::<errors::SchemaWarning>())?;
     m.add("MigrationError", py.get_type::<errors::MigrationError>())?;
     Ok(())
 }

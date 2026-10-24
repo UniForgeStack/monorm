@@ -520,8 +520,8 @@ async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
     first, _ = models()
     second, _ = models(
         SOURCE.replace(
-            '  pages     Int    @default(0) @check("pages >= 0")',
-            '  pages     Int    @default(0) @check("pages >= 10")',
+            '  pages     Int    @default(0) @check(raw("pages >= 0"))',
+            '  pages     Int    @default(0) @check(raw("pages >= 10"))',
         )
     )
     directory = str(tmp_path / "migrations")
