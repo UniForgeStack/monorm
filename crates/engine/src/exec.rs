@@ -66,6 +66,10 @@ pub async fn run_in(conn: &dyn Executor, target: Target, plan: Plan, own_tx: boo
             let rows = conn.query(sql, args).await?;
             Outcome::Exists(!rows.is_empty() && rows.get_bool(0, 0)?)
         }
+        Plan::RowUpdate(s, returning) => {
+            let (sql, args) = db::build(d, &s);
+            count_or_rows(conn, sql, args, returning).await?
+        }
         Plan::Update(s, returning) => {
             let (sql, args) = db::build(d, &s);
             count_or_rows(conn, sql, args, returning).await?
@@ -95,6 +99,7 @@ pub fn sql(target: Target, plan: &Plan) -> String {
         Plan::Select(p) => db::to_string(d, &p.stmt),
         Plan::Count(s) | Plan::Exists(s) => db::to_string(d, s),
         Plan::Update(s, _) => db::to_string(d, s),
+        Plan::RowUpdate(s, _) => db::to_string(d, s),
         Plan::Delete(s, _) => db::to_string(d, s),
         Plan::Insert(s, _) => db::to_string(d, s),
         #[cfg(feature = "model-composition")]
@@ -111,6 +116,7 @@ pub fn statement(target: Target, plan: &Plan) -> String {
         Plan::Select(p) => db::build(d, &p.stmt).0,
         Plan::Count(s) | Plan::Exists(s) => db::build(d, s).0,
         Plan::Update(s, _) => db::build(d, s).0,
+        Plan::RowUpdate(s, _) => db::build(d, s).0,
         Plan::Delete(s, _) => db::build(d, s).0,
         Plan::Insert(s, _) => db::build(d, s).0,
         #[cfg(feature = "model-composition")]

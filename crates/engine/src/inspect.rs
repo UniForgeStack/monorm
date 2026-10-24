@@ -327,6 +327,7 @@ fn append(plan: &Plan, batching: bool, statements: &mut Vec<Statement>) {
         }
         Plan::Count(s) | Plan::Exists(s) => s.clone().into_sub_query_statement(),
         Plan::Update(s, _) => s.clone().into_sub_query_statement(),
+        Plan::RowUpdate(s, _) => s.clone().inspection_statement().into_sub_query_statement(),
         Plan::Delete(s, _) => s.clone().into_sub_query_statement(),
         Plan::Insert(s, _) => s.clone().into_sub_query_statement(),
         #[cfg(feature = "model-composition")]

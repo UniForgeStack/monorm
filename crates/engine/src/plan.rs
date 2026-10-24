@@ -38,6 +38,8 @@ use orm_core::schema::{Model, Schema};
 use orm_core::writes::{AssignValue, WriteKind as AssignKind};
 
 mod nested;
+mod update;
+use update::RowUpdate;
 
 const ALIAS_PLACES: &str = "alias() marks another related row in a filter condition; it works only in filter() and exclude()";
 
@@ -146,6 +148,8 @@ pub enum Plan {
     Exists(SelectStatement),
     /// The model and column types of the returned rows when the update has `RETURNING`.
     Update(UpdateStatement, Option<Returned>),
+    /// A row-assignment update and the model and column types of its returned rows.
+    RowUpdate(RowUpdate, Option<Returned>),
     /// The model and column types of the returned rows when the delete has `RETURNING`.
     Delete(DeleteStatement, Option<Returned>),
     /// The model and column types of the returned rows when the insert has `RETURNING`.
@@ -633,6 +637,17 @@ fn relation_aggregates(cut: &Cut, e: &Expr, out: &mut Vec<Vec<String>>) {
     }
 }
 
+/// Shared relation paths, in first-use order, for both SELECT and UPDATE planning.
+fn shared_aggregate_paths(paths: &[Vec<String>]) -> Vec<Vec<String>> {
+    let mut shared: Vec<Vec<String>> = vec![];
+    for path in paths {
+        if paths.iter().filter(|p| *p == path).count() > 1 && !shared.contains(path) {
+            shared.push(path.clone());
+        }
+    }
+    shared
+}
+
 /// Collects every column path referenced by `e`; sets `has_not` if `e` contains a `NOT`.
 /// Aggregates and subqueries are opaque: an aggregate over a relation is its own
 /// correlated subquery, so its paths don't make the surrounding condition an `EXISTS`.
@@ -949,7 +964,12 @@ impl<'s> Planner<'s> {
                     stmt.with_cte(w);
                 }
                 within_param_cap(target, &stmt)?;
-                Plan::Update(stmt, types.map(|(types, shape)| (p.root, types, shape)))
+                let returned = types.map(|(types, shape)| (p.root, types, shape));
+                if stmt.has_row_values() {
+                    Plan::RowUpdate(stmt, returned)
+                } else {
+                    Plan::Update(stmt.into_statement(), returned)
+                }
             }
             Operation::Delete(q) => {
                 #[cfg(feature = "model-composition")]
@@ -2435,11 +2455,9 @@ impl<'s> Planner<'s> {
                 relation_aggregates(&cut, expr, &mut paths);
             }
         }
-        for path in &paths {
-            if paths.iter().filter(|p| *p == path).count() > 1 && !self.lateral.iter().any(|g| g.path == *path) {
-                let alias = self.alias("l");
-                self.lateral.push(LateralGroup { path: path.clone(), alias, sub: None, columns: 0 });
-            }
+        for path in shared_aggregate_paths(&paths) {
+            let alias = self.alias("l");
+            self.lateral.push(LateralGroup { path, alias, sub: None, columns: 0 });
         }
     }
 
@@ -3085,31 +3103,129 @@ impl<'s> Planner<'s> {
         self.instance_shape(self.root, names, &[])
     }
 
-    pub fn update(&mut self, q: &Update) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
+    /// Wrapped aggregates use the SELECT planner's shared aggregate columns. The
+    /// projection stays outside the aggregate scan so CASE and scalar wrappers
+    /// keep their meaning even when the relation has no rows.
+    fn wrapped_update_assignments(&mut self, stmt: &mut RowUpdate, set: &[Assignment], values: &[SExpr]) -> Result<bool> {
+        let base = self.scope().path.clone();
+        let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
+        let paths: Vec<Vec<Vec<String>>> = set.iter().map(|a| {
+            let mut paths = vec![];
+            relation_aggregates(&cut, &a.value, &mut paths);
+            paths
+        }).collect();
+        let shared = shared_aggregate_paths(&paths.iter().flatten().cloned().collect::<Vec<_>>());
+        let grouped: Vec<_> = paths.iter().map(|paths| paths.iter().any(|p| shared.contains(p))).collect();
+        if !set.iter().zip(&grouped).any(|(a, grouped)| *grouped && !matches!(&a.value, Expr::Func { name, .. } if is_aggregate(name))) {
+            return Ok(false);
+        }
+        for path in shared {
+            let alias = self.alias("l");
+            self.lateral.push(LateralGroup { path, alias, sub: None, columns: 0 });
+        }
+        let root = self.model(self.root);
+        let mut sub = Query::select();
+        let mut columns = vec![];
+        self.lateral_open = true;
+        let result = (|| -> Result<()> {
+            for (a, grouped) in set.iter().zip(&grouped) {
+                if *grouped {
+                    let f = root.field(&a.field).map_err(query_err)?;
+                    sub.expr(self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?);
+                    columns.push(f.column.clone());
+                }
+            }
+            Ok(())
+        })();
+        self.lateral_open = false;
+        let groups = std::mem::take(&mut self.lateral);
+        result?;
+        for group in groups {
+            if let Some((scan, _)) = group.sub {
+                sub.from_subquery(scan, Alias::new(group.alias));
+            }
+        }
+        let mut row = Some((columns, SExpr::SubQuery(None, Box::new(sub.into()))));
+        for ((a, value), grouped) in set.iter().zip(values).zip(grouped) {
+            if grouped {
+                if let Some((columns, value)) = row.take() {
+                    stmt.row_value(columns, value);
+                }
+            } else {
+                stmt.value(root.field(&a.field).map_err(query_err)?.column.clone(), value.clone());
+            }
+        }
+        Ok(true)
+    }
+
+    /// Whole assignment aggregates can project directly from their shared scan.
+    fn update_assignments(&mut self, stmt: &mut RowUpdate, set: &[Assignment], values: Vec<SExpr>) -> Result<()> {
+        if self.wrapped_update_assignments(stmt, set, &values)? {
+            return Ok(());
+        }
+        let root = self.model(self.root);
+        let base = self.scope().path.clone();
+        let cut = Cut { schema: self.schema, model: self.scope().model, base: &base };
+        let agg_path: Vec<_> = set.iter().map(|a| {
+            let mut paths = vec![];
+            if matches!(&a.value, Expr::Func { name, .. } if is_aggregate(name)) {
+                relation_aggregates(&cut, &a.value, &mut paths);
+            }
+            paths.into_iter().next()
+        }).collect();
+        let mut used = vec![false; set.len()];
+        for (i, (a, value)) in set.iter().zip(values).enumerate() {
+            if used[i] { continue; }
+            let members: Vec<_> = match &agg_path[i] {
+                Some(path) => (i..set.len()).filter(|&j| agg_path[j].as_ref() == Some(path)).collect(),
+                None => vec![],
+            };
+            if members.len() < 2 {
+                stmt.value(root.field(&a.field).map_err(query_err)?.column.clone(), value);
+                continue;
+            }
+            let pushed = self.scopes.len();
+            let mut sub = self.open_hops(agg_path[i].as_ref().expect("aggregate path"))?;
+            let mut columns = vec![];
+            let result = (|| -> Result<()> {
+                for &j in &members {
+                    let Expr::Func { name, args, rel, distinct, filter, order_by } = &set[j].value else { unreachable!() };
+                    let call = AggCall { name, args, count_rows: rel.is_some(), distinct: *distinct, filter: filter.as_deref(), order_by };
+                    sub.expr(self.agg_call(&call, pushed)?);
+                    columns.push(root.field(&set[j].field).map_err(query_err)?.column.clone());
+                    used[j] = true;
+                }
+                Ok(())
+            })();
+            self.scopes.truncate(pushed);
+            result?;
+            stmt.row_value(columns, SExpr::SubQuery(None, Box::new(sub.into())));
+        }
+        Ok(())
+    }
+
+    pub fn update(&mut self, q: &Update) -> Result<(RowUpdate, Option<ReturnColumns>)> {
         let root = self.model(self.root);
         #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
-        let mut stmt = Query::update();
-        stmt.table(Alias::new(root.table()));
+        let mut stmt = RowUpdate::new(root.table());
         if q.set.is_empty() {
             return Err(Error::query("update() needs at least one field"));
         }
         let (set, nested) = self.nested_sets(&q.set)?;
         #[cfg(feature = "composition")]
-        for (a, v) in set.iter().zip(self.set_values(&set)?) {
-            stmt.value(Alias::new(&root.field(&a.field).map_err(query_err)?.column), v);
-        }
+        let values = self.set_values(&set)?;
         #[cfg(not(feature = "composition"))]
-        for a in &set {
+        let values = set.iter().map(|a| {
             let f = root.field(&a.field).map_err(query_err)?;
-            let v = self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
-            stmt.value(Alias::new(&f.column), v);
-        }
+            self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
+        }).collect::<Result<Vec<_>>>()?;
+        self.update_assignments(&mut stmt, &set, values)?;
         for (column, v) in nested {
-            stmt.value(Alias::new(column), v);
+            stmt.value(column.to_owned(), v);
         }
         for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name)) {
-            stmt.value(Alias::new(column), v);
+            stmt.value(column.to_owned(), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
             stmt.and_where(w);
