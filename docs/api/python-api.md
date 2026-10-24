@@ -259,7 +259,8 @@ It is never SQL negation: write `0 - Post.views` for that.
 Expressions: `== != < <= > >=` (with `== None` meaning `IS NULL`), `.in_()`,
 `.not_in()`, `.is_null()` / `.is_not_null()`, `.between()`, `.like()` / `.ilike()` / `.contains()` /
 `.icontains()` / `.startswith()` / `.endswith()` (only on string columns; wildcards in
-the argument are escaped), `+ - * /`. Combine with `& | ~` or `and_() / or_() / not_()`.
+the argument are escaped; in a raw `.like()` / `.ilike()` pattern `\` escapes `%` and `_` on both
+PostgreSQL and SQLite), `+ - * /`. Combine with `& | ~` or `and_() / or_() / not_()`.
 A boolean column is a condition by itself: `filter(Post.published)`. Using Python's
 `and` / `or` / `not` on expressions raises `TypeError` instead of silently doing the
 wrong thing.

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from blog.models import User
+
 import orm
 
 SOURCE = Path(__file__).resolve().parents[3].joinpath("examples/sqlite/schema.prisma").read_text()
@@ -844,3 +846,32 @@ async def test_indexed_relation_labels(sqlite):
         Author.objects.using(db).load(Author.books.objects[0])
     with pytest.raises(orm.QueryError, match="to-many"):
         await Book.objects.using(db).load(Book.author.objects[0].label("person"))
+
+
+def test_sql_shape_sends_escape_on_sqlite_only():
+    _, m = models()
+    Author = m["Author"]
+    for build in (lambda M: M.name.contains("a%"), lambda M: M.name.startswith("a"), lambda M: M.name.endswith("a")):
+        assert "ESCAPE '\\'" in Author.objects.filter(build(Author)).sql()
+        assert "ESCAPE" not in User.objects.filter(build(User)).sql()
+    assert "ESCAPE '\\'" in Author.objects.filter(Author.name.icontains("a")).sql()
+    assert "ESCAPE" not in User.objects.filter(User.name.icontains("a")).sql()
+    assert "ESCAPE '\\'" in Author.objects.filter(Author.name.like("a_")).sql()
+
+
+async def test_like_helpers_match_the_escaped_text(sqlite):
+    db, m, _ = sqlite
+    Author = m["Author"]
+    objects = Author.objects.using(db)
+    await objects.insert_many(
+        [{"email": f"e{i}", "name": n} for i, n in enumerate(["50% off", "50x off", "a_b", "axb", "C:\\dir"])]
+    )
+
+    async def names(cond):
+        return await objects.filter(cond).order_by(Author.id).select(Author.name).scalars()
+
+    assert await names(Author.name.contains("50%")) == ["50% off"]
+    assert await names(Author.name.startswith("a_")) == ["a_b"]
+    assert await names(Author.name.icontains("A_B")) == ["a_b"]
+    assert await names(Author.name.endswith("\\dir")) == ["C:\\dir"]
+    assert await names(Author.name.like("50_ off")) == ["50% off", "50x off"]

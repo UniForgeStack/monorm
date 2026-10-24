@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { connect, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, Migrator, outer, QueryError, Registry, SchemaError } from "../src/index.js";
+import { User } from "./blog/models.js";
 import { Author, Book, Status, sqliteRegistry } from "./sqlite/models.js";
 
 test("SQLite has no array_agg and no LATERAL join", async () => {
@@ -418,4 +419,27 @@ test("SQLite indexed relation labels", async () => {
     assert.ok(empty.every((a) => a.outside === null));
     await assert.rejects(async () => { await Book.objects.using(db).load(Book.author.objects.at(0).label("person")); }, /to-many/);
   } finally { await db.close(); }
+});
+
+test("SQLite LIKE helpers send the escape character", async () => {
+  for (const cond of [Author.name.contains("a%"), Author.name.icontains("a"), Author.name.like("a_")]) {
+    assert.ok(Author.objects.filter(cond).sql().includes("ESCAPE '\\'"));
+  }
+  for (const cond of [User.name.contains("a%"), User.name.icontains("a")]) {
+    assert.ok(!User.objects.filter(cond).sql().includes("ESCAPE"));
+  }
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const objects = Author.objects.using(db);
+    await objects.insertMany(["50% off", "50x off", "a_b", "axb", "C:\\dir"].map((name, i) => ({ email: `e${i}`, name })));
+    const names = async (qs: { all(): Promise<readonly { name: string }[]> }) => (await qs.all()).map((r) => r.name);
+    assert.deepEqual(await names(objects.filter(Author.name.contains("50%")).orderBy(Author.id)), ["50% off"]);
+    assert.deepEqual(await names(objects.filter(Author.name.startsWith("a_")).orderBy(Author.id)), ["a_b"]);
+    assert.deepEqual(await names(objects.filter(Author.name.icontains("A_B")).orderBy(Author.id)), ["a_b"]);
+    assert.deepEqual(await names(objects.filter(Author.name.endsWith("\\dir")).orderBy(Author.id)), ["C:\\dir"]);
+    assert.deepEqual(await names(objects.filter(Author.name.like("50_ off")).orderBy(Author.id)), ["50% off", "50x off"]);
+  } finally {
+    await db.close();
+  }
 });

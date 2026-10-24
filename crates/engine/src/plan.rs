@@ -228,6 +228,13 @@ fn is_char_n(f: &FieldIr) -> bool {
     f.db_type.as_deref().is_some_and(|t| t == "char" || t.starts_with("char(")) && !f.array
 }
 
+/// SQLite has no default `LIKE` escape character; Postgres defaults to `\`, and sea-query
+/// wraps the pattern of an `ILIKE ... ESCAPE` in parentheses, which Postgres rejects.
+fn like_pattern(dialect: Dialect, text: String) -> LikeExpr {
+    let pattern = LikeExpr::new(text);
+    if dialect == Dialect::Sqlite { pattern.escape('\\') } else { pattern }
+}
+
 /// A text literal that reads the same under either `standard_conforming_strings`. `$` is
 /// escaped as well: the template pass reads `$<digits>` as a slot.
 fn key_literal(s: &str) -> Result<String> {
@@ -1586,10 +1593,10 @@ impl<'s> Planner<'s> {
                 if *ci && !self.caps.ilike {
                     // LOWER(x) LIKE LOWER(pattern), for databases without ILIKE.
                     let lowered = template(self.target.dialect, "LOWER($1)", vec![item]);
-                    let pattern = LikeExpr::new(text.to_lowercase());
+                    let pattern = like_pattern(self.target.dialect, text.to_lowercase());
                     return Ok(if *neg { lowered.not_like(pattern) } else { lowered.like(pattern) });
                 }
-                let pattern = LikeExpr::new(text);
+                let pattern = like_pattern(self.target.dialect, text);
                 match (ci, neg) {
                     (false, false) => item.like(pattern),
                     (false, true) => item.not_like(pattern),
@@ -3914,4 +3921,44 @@ pub fn unique_row_update(schema: &Schema, target: Target, op: &Operation, params
     let mut pinned = vec![];
     for filter in &update.filters { pins(filter, model, params, &mut pinned)?; }
     Ok(pinned.iter().any(|&p| model.fields()[p].unique) || model.key.iter().all(|k| pinned.contains(k)))
+}
+
+#[cfg(test)]
+mod key_literal_tests {
+    use super::key_literal;
+
+    #[test]
+    fn hostile_keys_stay_inside_one_escape_string() {
+        for (key, want) in [
+            ("a'); x--\\", r"E'a''); x--\\'"),
+            ("$1", r"E'\x241'"),
+            ("a\nb", "E'a\nb'"),
+            ("--;", "E'--;'"),
+            ("'", "E''''"),
+            ("\\'", r"E'\\'''"),
+            ("", "E''"),
+        ] {
+            assert_eq!(key_literal(key).unwrap(), want, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn no_unescaped_quote_or_backslash_or_dollar_survives() {
+        let out = key_literal("'\\$'\\").unwrap();
+        let body = &out[2..out.len() - 1];
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\'' => assert_eq!(chars.next(), Some('\''), "lone quote in {out}"),
+                '\\' => assert!(matches!(chars.next(), Some('\\' | 'x')), "lone backslash in {out}"),
+                '$' => panic!("raw dollar in {out}"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn nul_is_rejected() {
+        assert!(key_literal("a\0b").unwrap_err().to_string().contains("NUL"));
+    }
 }
