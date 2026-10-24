@@ -11,8 +11,12 @@ from orm import func
 
 
 async def users():
-    alice = await User.objects.insert(email="alice@example.com", name="Alice")
-    bob = await User.objects.insert(email="bob@example.com", name="Bob")
+    alice, bob = await User.objects.insert_many(
+        [
+            {"email": "alice@example.com", "name": "Alice"},
+            {"email": "bob@example.com", "name": "Bob"},
+        ]
+    ).returning()
     return alice, bob
 
 
@@ -91,8 +95,9 @@ async def test_int_enum(clean):
 
 async def test_array_columns(clean):
     alice, bob = await users()
-    a = await Profile.objects.insert(user=alice, links=["https://a.example", "https://b.example"])
-    b = await Profile.objects.insert(user=bob)
+    a, b = await Profile.objects.insert_many(
+        [{"user": alice, "links": ["https://a.example", "https://b.example"]}, {"user": bob}]
+    ).returning()
     assert a.links == ["https://a.example", "https://b.example"] and b.links == []
     assert await Profile.objects.filter(Profile.links.has("https://a.example")).count() == 1
     assert await Profile.objects.filter(Profile.links.has_all(["https://a.example", "https://x"])).count() == 0

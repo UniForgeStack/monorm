@@ -29,8 +29,10 @@ class TagQueries extends QuerySet<TagSpec> {
 const posts = () => Post.objects as unknown as PostQueries;
 
 async function seed() {
-  const alice = await User.objects.insert({ email: "alice@example.com", name: "Alice" });
-  const bob = await User.objects.insert({ email: "bob@example.com", name: "Bob" });
+  const [alice, bob] = (await User.objects.insertMany([
+    { email: "alice@example.com", name: "Alice" },
+    { email: "bob@example.com", name: "Bob" },
+  ]).returning()) as [User, User];
   const rows = await Post.objects.insertMany([
     { author: alice, title: "draft", body: "...", views: 50 },
     { author: alice, title: "hit", body: "...", published: true, views: 90 },

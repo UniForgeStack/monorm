@@ -120,8 +120,10 @@ test("onConflict rejects bad options", async () => {
   assert.throws(() => many.onConflict(User.email, { update: true }), /already given/);
   // Composite targets: one unique constraint over two columns.
   const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
-  const tag = await Tag.objects.insert({ name: "t" });
+  const [post, tag] = await Promise.all([
+    Post.objects.insert({ author: alice, title: "t", body: "b" }),
+    Tag.objects.insert({ name: "t" }),
+  ]);
   await PostTag.objects.insert({ post, tag });
   assert.equal(await PostTag.objects.insert({ post, tag }).onConflict([PostTag.postId, PostTag.tagId], { update: false }), 0);
 });
@@ -190,8 +192,10 @@ test("getOrInsert names a row the filters hide", async () => {
 
 test("getOrInsert on a related set", async () => {
   const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
-  const tag = await Tag.objects.insert({ name: "a" });
+  const [post, tag] = await Promise.all([
+    Post.objects.insert({ author: alice, title: "t", body: "b" }),
+    Tag.objects.insert({ name: "a" }),
+  ]);
   const [link, created] = await post.postTags.getOrInsert({ tag });
   const [again, createdAgain] = await post.postTags.getOrInsert({ tag });
   assert.ok(created && !createdAgain);
@@ -203,8 +207,10 @@ test("getOrInsert on a related set", async () => {
 
 test("add with throughDefaults", async () => {
   const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
-  const [t1, t2, t3] = (await Tag.objects.insertMany([{ name: "a" }, { name: "b" }, { name: "c" }]).returning()) as [Tag, Tag, Tag];
+  const [post, [t1, t2, t3]] = (await Promise.all([
+    Post.objects.insert({ author: alice, title: "t", body: "b" }),
+    Tag.objects.insertMany([{ name: "a" }, { name: "b" }, { name: "c" }]).returning(),
+  ])) as [Post, [Tag, Tag, Tag]];
   await post.tags.add(t1, t2, { throughDefaults: { position: 1 } });
   // An existing link keeps its values.
   await post.tags.add(t2, t3, { throughDefaults: { position: 2 } });
@@ -228,8 +234,10 @@ test("add with throughDefaults", async () => {
 
 test("throughDefaults cannot set the link keys", async () => {
   const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
-  const tag = await Tag.objects.insert({ name: "a" });
+  const [post, tag] = await Promise.all([
+    Post.objects.insert({ author: alice, title: "t", body: "b" }),
+    Tag.objects.insert({ name: "a" }),
+  ]);
   for (const key of ["tagId", "postId", "post"]) {
     await assert.rejects(post.tags.add(tag, { throughDefaults: { [key]: 1 } }), /link's key/);
   }
@@ -241,8 +249,10 @@ test("throughDefaults cannot set the link keys", async () => {
 
 test("add rejects an unknown option", async () => {
   const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
-  const tag = await Tag.objects.insert({ name: "a" });
+  const [post, tag] = await Promise.all([
+    Post.objects.insert({ author: alice, title: "t", body: "b" }),
+    Tag.objects.insert({ name: "a" }),
+  ]);
   await post.tags.add(tag);
   await assert.rejects(post.tags.add(tag, { throughDefault: {} } as never), /throughDefaults only/);
 });

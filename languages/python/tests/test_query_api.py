@@ -22,8 +22,12 @@ def custom():
 
 
 async def seed():
-    alice = await User.objects.insert(email="alice@example.com", name="Alice")
-    bob = await User.objects.insert(email="bob@example.com", name="Bob")
+    alice, bob = await User.objects.insert_many(
+        [
+            {"email": "alice@example.com", "name": "Alice"},
+            {"email": "bob@example.com", "name": "Bob"},
+        ]
+    ).returning()
     posts = await Post.objects.insert_many(
         [
             {"author": alice, "title": "draft", "body": "...", "views": 50},

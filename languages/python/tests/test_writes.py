@@ -13,6 +13,17 @@ import orm
 from orm import func
 from conftest import DATABASE_URL
 
+
+async def run_setup(*statements):
+    """Run independent lazy ORM statements in a TaskGroup, returning results in order."""
+    async def run(statement):
+        return await statement
+
+    async with asyncio.TaskGroup() as setup:
+        tasks = [setup.create_task(run(statement)) for statement in statements]
+    return tuple(task.result() for task in tasks)
+
+
 # -- insert_many batches ----------------------------------------------------------------------
 
 
@@ -332,8 +343,10 @@ async def test_on_conflict_rejects_bad_options(clean):
         many.on_conflict(User.email, update=True)
     # Composite targets: one unique constraint over two columns.
     alice = await User.objects.insert(email="a@x.io", name="A")
-    post = await Post.objects.insert(author=alice, title="t", body="b")
-    tag = await Tag.objects.insert(name="t")
+    post, tag = await run_setup(
+        Post.objects.insert(author=alice, title="t", body="b"),
+        Tag.objects.insert(name="t"),
+    )
     link = {"post": post, "tag": tag}
     await PostTag.objects.insert(**link)
     assert await PostTag.objects.insert(**link).on_conflict(PostTag.post_id, PostTag.tag_id, update=False) == 0
@@ -388,8 +401,10 @@ async def test_get_or_insert_names_a_row_the_filters_hide(clean):
 
 async def test_get_or_insert_on_a_related_set(clean):
     alice = await User.objects.insert(email="a@x.io", name="A")
-    post = await Post.objects.insert(author=alice, title="t", body="b")
-    tag = await Tag.objects.insert(name="a")
+    post, tag = await run_setup(
+        Post.objects.insert(author=alice, title="t", body="b"),
+        Tag.objects.insert(name="a"),
+    )
     link, created = await post.post_tags.get_or_insert(tag=tag)
     again, created_again = await post.post_tags.get_or_insert(tag=tag)
     assert created and not created_again and link.post_id == post.id and again.id == link.id
@@ -409,10 +424,12 @@ async def test_get_or_insert_checks_the_lookup(clean):
 
 async def test_add_with_through_defaults(clean):
     alice = await User.objects.insert(email="a@x.io", name="A")
-    post = await Post.objects.insert(author=alice, title="t", body="b")
-    t1, t2, t3, t4 = await Tag.objects.insert_many(
-        [{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]
-    ).returning()
+    post, (t1, t2, t3, t4) = await run_setup(
+        Post.objects.insert(author=alice, title="t", body="b"),
+        Tag.objects.insert_many(
+            [{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]
+        ).returning(),
+    )
     await post.tags.add(t1, t2, through_defaults={"position": 1})
     # An existing link keeps its values.
     await post.tags.add(t2, t3, through_defaults={"position": 2})
@@ -425,8 +442,10 @@ async def test_add_with_through_defaults(clean):
 
 async def test_through_defaults_cannot_set_the_link_keys(clean):
     alice = await User.objects.insert(email="a@x.io", name="A")
-    post = await Post.objects.insert(author=alice, title="t", body="b")
-    tag = await Tag.objects.insert(name="a")
+    post, tag = await run_setup(
+        Post.objects.insert(author=alice, title="t", body="b"),
+        Tag.objects.insert(name="a"),
+    )
     for key in ("tag_id", "post_id", "post"):
         with pytest.raises(TypeError, match="link's key"):
             await post.tags.add(tag, through_defaults={key: 1})
