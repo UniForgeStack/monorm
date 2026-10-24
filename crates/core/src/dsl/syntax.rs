@@ -9,7 +9,7 @@
 //!            | "type" IDENT "{" member* "}"         (a nested type; members as in a model)
 //!            | "enum" IDENT "{" (IDENT attr* | "@@" NAME args?)* "}"
 //!            | "datasource" IDENT "{" prop* "}"
-//!            | "generator" IDENT "{" prop* "}"      (read and ignored)
+//!            | "generator" IDENT "{" prop* "}"      (only `extensions = [...]` is read)
 //!            | "function" IDENT "{" prop* "}"
 //!            | "import" STRING
 //! prop      := IDENT "=" value
@@ -369,6 +369,8 @@ pub enum Item {
     Type(ModelDecl),
     Enum(EnumDecl),
     Datasource { pos: Pos, props: Props },
+    /// `generator name { ... }`: only the `extensions` key is read.
+    Generator { props: Props },
     Function { pos: Pos, name: String, props: Props },
     Partition { pos: Pos, name: String, props: Props, blocks: Vec<Attr> },
     Import { pos: Pos, path: String, prefix: String },
@@ -477,7 +479,8 @@ impl<'a> Parser<'a> {
                 // Prisma's own generators (`prisma-client-js`, ...) may share the file.
                 "generator" => {
                     self.ident("a generator name")?;
-                    self.props("generator")?;
+                    let props = self.props("generator")?;
+                    items.push(Item::Generator { props });
                 }
                 "partition" => {
                     let (_, name) = self.ident("a partition name")?;
@@ -967,10 +970,11 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 5);
         let Item::Datasource { props, .. } = &items[0] else { panic!() };
         assert_eq!(props[0].2, Value::Str("postgresql".into()));
-        let Item::Model(m) = &items[1] else { panic!() };
+        assert!(matches!(&items[1], Item::Generator { .. }));
+        let Item::Model(m) = &items[2] else { panic!() };
         assert_eq!(m.members[1].ty.name, "String");
         assert!(m.members[1].ty.optional && !m.members[1].ty.list);
         assert_eq!(m.members[1].attrs[1].name, "db.VarChar");
@@ -978,7 +982,7 @@ mod tests {
         assert_eq!(m.blocks[0].name, "index");
         assert_eq!(m.blocks[0].args.named.len(), 2);
         assert_eq!(m.blocks[1].name, "map");
-        let Item::Function { props, .. } = &items[2] else { panic!() };
+        let Item::Function { props, .. } = &items[3] else { panic!() };
         assert_eq!(props[1].2, Value::Str("BEGIN\n  RETURN NEW;\nEND;".into()));
     }
 

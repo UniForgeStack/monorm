@@ -24,6 +24,7 @@ import sys
 
 from . import _native
 from ._apps import resolve_apps
+from ._packages import resolve_extensions
 from ._native import SchemaError
 
 
@@ -38,11 +39,14 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     try:
         apps = resolve_apps(_native.cli_schema(args))
+        extensions = resolve_extensions()
     except SchemaError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     for name, path in apps.items():
         args += ["--app", f"{name}={path}"]
+    for ident, manifest in extensions.items():
+        args += ["--extension", f"{ident}={manifest}"]
     found = _native.cli_migrate_args(args)
     if found is not None:
         schema, directory, url, target = found

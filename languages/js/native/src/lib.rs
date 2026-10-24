@@ -1211,8 +1211,9 @@ pub fn native_artifact() -> napi::Result<String> {
 }
 
 #[napi]
-pub fn compile_schema(source: String, path: Option<String>) -> napi::Result<String> {
-    let ir = orm_core::dsl::compile(&source, path.as_deref().map(std::path::Path::new)).map_err(schema_err)?;
+pub fn compile_schema(source: String, path: Option<String>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
+    let apps = installed(None, extensions);
+    let ir = orm_core::dsl::compile_project_with(&source, path.as_deref().map(std::path::Path::new), &apps).map(|project| project.ir).map_err(schema_err)?;
     let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(schema_err)
 }
@@ -1256,9 +1257,18 @@ pub fn find_migration(dir: String, name: String) -> napi::Result<Vec<String>> {
     Ok(vec![m.name, m.path.to_string_lossy().into_owned()])
 }
 
+/// The installed apps and extension manifests that Node found, as the loader reads them.
+fn installed(apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> orm_core::dsl::Installed {
+    let mut installed: orm_core::dsl::Installed = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
+    let mut extensions: Vec<_> = extensions.unwrap_or_default().into_iter().map(|(id, file)| (id, file.into())).collect();
+    extensions.sort();
+    installed.extensions = extensions;
+    installed
+}
+
 #[napi]
-pub fn compile_schema_file(path: String, apps: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
-    let apps = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
+pub fn compile_schema_file(path: String, apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
+    let apps = installed(apps, extensions);
     let ir = orm_core::dsl::compile_file_with(std::path::Path::new(&path), &apps).map_err(schema_err)?;
     let (ir, _) = orm_core::dsl::check(ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(schema_err)
@@ -1273,9 +1283,10 @@ pub fn generate_typescript(
     query_sets: Option<std::collections::HashMap<String, String>>,
     model_methods: Option<std::collections::HashMap<String, String>>,
     apps: Option<std::collections::HashMap<String, String>>,
+    extensions: Option<std::collections::HashMap<String, String>>,
 ) -> napi::Result<String> {
     let p = std::path::Path::new(&path);
-    let apps = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
+    let apps = installed(apps, extensions);
     let project = orm_core::dsl::compile_project_file_with(p, &apps).map_err(schema_err)?;
     let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

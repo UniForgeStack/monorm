@@ -1,6 +1,6 @@
 //! Shared by the tracking extensions (timestamps, soft-delete, locking): a model attribute adds
 //! the field that it tracks, and a field attribute fails with the model attribute to write instead.
-use crate::{extension::Declaration, ir::{ColType, FieldIr, SchemaIr}, writes::UpsertDefault};
+use crate::{extension::{attribute_namespace, Declaration}, ir::{ColType, FieldIr, SchemaIr}, writes::UpsertDefault};
 
 /// The prefix of every tracking error: `file:line:column: @attribute: message`.
 pub fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
@@ -19,11 +19,6 @@ fn snake_case(s: &str) -> Option<String> {
         out.push(c.to_ascii_lowercase());
     }
     is_snake_case(&out).then_some(out)
-}
-
-/// The part of an attribute name before the dot: `timestamps` for `timestamps.updated_at`.
-fn namespace(attribute: &str) -> &str {
-    attribute.split_once('.').map_or(attribute, |(namespace, _)| namespace)
 }
 
 /// The `upsert` argument: whether the default `on_conflict(update=True)` column list keeps the field.
@@ -45,8 +40,8 @@ pub struct Tracked {
 impl Tracked {
     /// The declarations of this attribute in the batch. Another attribute of its namespace fails.
     pub fn declarations(&self, ir: &SchemaIr) -> Result<Vec<Declaration>, String> {
-        let own = namespace(self.attribute);
-        let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| !d.lowered && namespace(&d.attribute) == own).cloned().collect();
+        let own = attribute_namespace(self.attribute);
+        let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| !d.lowered && attribute_namespace(&d.attribute) == own).cloned().collect();
         match declarations.iter().find(|d| d.attribute != self.attribute) {
             Some(d) => Err(error(d, format!("unknown {own} attribute"))),
             None => Ok(declarations),

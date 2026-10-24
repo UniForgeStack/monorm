@@ -1,0 +1,21 @@
+id = "acme.outside"
+version = "0.1.0"
+schema_contract = "2.0"
+abi = "0.1"
+library = "outside_extension"
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+
+# `@@outside.tag("label")` adds the text field `tag` with the argument as its default.
+[[attributes]]
+name = "outside.tag"
+target = "model"
+
+[[attributes.positional]]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.tag"
+phase = "declaration"
+effects = ["models.outside"]

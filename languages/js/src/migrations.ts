@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { resolveApps } from "./apps.js";
+import { resolveExtensions } from "./packages.js";
 import { connect, inTransaction, restoreCause, type Database } from "./db.js";
 import { MigrationError } from "./errors.js";
 import { Registry, load, registry as defaultRegistry } from "./model.js";
@@ -79,7 +80,7 @@ function nativeSchema(schema: SchemaSource): NativeSchema {
     return schema.native();
   }
   if (typeof schema === "string") {
-    return call(() => new (native().Schema)(native().compileSchemaFile(schema, resolveApps(schema))));
+    return call(() => new (native().Schema)(native().compileSchemaFile(schema, resolveApps(schema), resolveExtensions(schema))));
   }
   return schema;
 }

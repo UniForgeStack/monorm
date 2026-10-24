@@ -2,9 +2,17 @@
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use crate::ir::{ColType, SchemaIr, ValueType};
+pub use crate::version::ContractVersion;
 
-pub const HOST_CONTRACT: u32 = 1;
-pub const SCHEMA_CONTRACT: u32 = 2;
+/// The static Rust API of an extension crate; a library has the C ABI instead.
+pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
+/// The IR records. A library of the same major and a lower or equal minor fits.
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 0);
+/// The C ABI that `orm_contracts::extension!` writes.
+pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 1);
+/// The stamps of an IR and an artifact keep the major only.
+pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
+pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -52,6 +60,9 @@ pub struct Requirements {
     pub declarations: Vec<Declaration>,
     #[serde(default)]
     pub extensions: BTreeMap<String, String>,
+    /// The extensions that ran as libraries, by id. `extensions` and `completed_passes` keep only the compiled ones.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packages: BTreeMap<String, PackageStamp>,
     #[serde(default)]
     pub completed_passes: Vec<String>,
     #[serde(default)]
@@ -85,6 +96,19 @@ pub struct Requirements {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_overrides: BTreeMap<String, String>,
 }
+/// What the IR records about an extension that ran as a library.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PackageStamp {
+    pub version: String,
+    /// The passes that ran, in order.
+    #[serde(default)]
+    pub passes: Vec<String>,
+    /// The attribute names of the manifest: a lowered declaration of one of them needs no compiled manifest.
+    #[serde(default)]
+    pub attributes: Vec<String>,
+}
+
 impl Requirements {
     /// The proxy ancestors of `model`, nearest first, ending at the root.
     /// `None` when the proxy parents form a cycle.
@@ -108,7 +132,7 @@ impl Requirements {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.specializations.is_empty()
+        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
     }
@@ -323,8 +347,16 @@ pub struct Specialization {
 pub struct Manifest {
     pub id: String,
     pub version: String,
-    pub host_contract: u32,
-    pub schema_contract: u32,
+    /// The static Rust API. A manifest of a library has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_contract: Option<ContractVersion>,
+    pub schema_contract: ContractVersion,
+    /// The C ABI of the library. Only the manifest of a library has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abi: Option<ContractVersion>,
+    /// The library file name; the loader adds the platform prefix and suffix when the name has no extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library: Option<String>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
@@ -349,6 +381,19 @@ pub struct Manifest {
     pub typescript: Option<LanguageSection>,
 }
 impl Manifest {
+    /// Whether the passes of this manifest run from a native library.
+    pub fn is_dynamic(&self) -> bool { self.abi.is_some() }
+
+    /// The contract versions against this engine; the error names both versions.
+    pub fn check_contracts(&self) -> Result<(), String> {
+        self.schema_contract.check("schema contract", SCHEMA_CONTRACT_VERSION, &self.id)?;
+        match (self.abi, self.host_contract) {
+            (Some(abi), _) => abi.check("ABI", ABI_VERSION, &self.id),
+            (None, Some(host)) => host.check("host contract", HOST_CONTRACT_VERSION, &self.id),
+            (None, None) => Err(format!("{}: a manifest with no `abi` needs `host_contract`", self.id)),
+        }
+    }
+
     /// The language section of `language` (`python` or `typescript`).
     pub fn language_section(&self, language: &str) -> Option<&LanguageSection> {
         match language { "python" => self.python.as_ref(), "typescript" => self.typescript.as_ref(), _ => None }
@@ -439,8 +484,9 @@ pub enum Phase { Declaration, Logical, Storage, Behavior, Validation, Generation
 pub struct Pass {
     pub id: String,
     pub phase: Phase,
-    /// Compiler entry point: `fn(&mut SchemaIr) -> Result<(), String>`.
-    pub rust: String,
+    /// Compiler entry point: `fn(&mut SchemaIr) -> Result<(), String>`. A pass of a library has none; the loader calls it by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<String>,
     #[serde(default)]
     pub after: Vec<String>,
     /// Exclusive effects, e.g. `model.User.field.name.type`.
@@ -518,21 +564,26 @@ pub struct QueryContract<'a> {
     pub shape: &'a ResultShape,
 }
 
+/// The part of an attribute name before the dot: `timestamps` for `timestamps.updated_at`.
+pub fn attribute_namespace(attribute: &str) -> &str {
+    attribute.split_once('.').map_or(attribute, |(namespace, _)| namespace)
+}
+
 pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Option<&str>) -> Result<(), String> {
     let fail = |d: &Declaration, msg: String| format!("{}:{}:{}: @{}: {msg}",
         d.location.file, d.location.line, d.location.column, d.attribute);
     for d in &ir.behavior.declarations {
+        // A library lowered it, and its manifest is not in this artifact.
+        if d.lowered && ir.behavior.packages.values().any(|p| p.attributes.contains(&d.attribute)) { continue; }
         // One name can have a model entry (`@@x`) and a field entry (`@x`).
         let named = || manifests.iter().flat_map(|m| m.attributes.iter().map(move |a| (m, a))).filter(|(_, a)| a.name == d.attribute);
         let found = named().find(|(_, a)| (a.target == AttributeTarget::Field) == d.field.is_some()).or_else(|| named().next());
         let (m, a) = found.ok_or_else(|| {
             let prefix = if d.field.is_some() { "@" } else { "@@" };
-            let namespace = d.attribute.split_once('.').map_or(d.attribute.as_str(), |(n, _)| n);
-            fail(d, format!("not compiled into this artifact; rebuild with its extension (namespace {prefix}{namespace}.*, see docs/README.md)"))
+            let namespace = attribute_namespace(&d.attribute);
+            fail(d, format!("not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace {prefix}{namespace}.*, see docs/README.md)"))
         })?;
-        if m.host_contract != HOST_CONTRACT || m.schema_contract != SCHEMA_CONTRACT {
-            return Err(fail(d, format!("{} requires incompatible host/schema contracts; rebuild", m.id)));
-        }
+        if let Err(e) = m.check_contracts() { return Err(fail(d, e)); }
         if !m.databases.iter().any(|s| s == ir.dialect.name()) {
             return Err(fail(d, format!("{} does not support {}", m.id, ir.dialect.name())));
         }
@@ -876,7 +927,7 @@ mod tests {
     #[test]
     fn a_disabled_extension_error_names_the_namespace_and_the_readme() {
         let error = validate_declarations(&schema(crate::dialect::Dialect::Sqlite), &[], None).unwrap_err();
-        assert_eq!(error, "schema.prisma:3:7: @app.trim: not compiled into this artifact; rebuild with its extension (namespace @app.*, see docs/README.md)");
+        assert_eq!(error, "schema.prisma:3:7: @app.trim: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace @app.*, see docs/README.md)");
     }
 
     #[test]
@@ -988,6 +1039,49 @@ mod tests {
         let artifact = Artifact { exports: vec!["app.trim".into()], ..Artifact::default() };
         let error = check_requirements(&ir, &artifact).unwrap_err();
         assert!(error.starts_with("User: stale or missing specialization f") && error.contains("rebuild"), "{error}");
+    }
+
+    #[test]
+    fn the_state_of_another_artifact_fails_the_requirements() {
+        let state = |change: &dyn Fn(&mut SchemaIr)| {
+            let mut ir = SchemaIr::default();
+            ir.behavior.schema_contract = SCHEMA_CONTRACT;
+            change(&mut ir);
+            ir
+        };
+        let storage = |ir: &mut SchemaIr| ir.behavior.storage = Some(PhysicalSchema { models: vec![] });
+        let artifact = Artifact::default();
+        let error = check_requirements(&state(&|ir| { ir.behavior.extensions.insert("acme.lib".into(), "1.0.0".into()); }), &artifact).unwrap_err();
+        assert!(error.contains("acme.lib@1.0.0") && error.contains("rebuild"), "{error}");
+        let mut other = state(&|_| {});
+        other.behavior.schema_contract = SCHEMA_CONTRACT + 1;
+        let error = check_requirements(&other, &artifact).unwrap_err();
+        assert!(error.contains(&format!("schema contract {}", SCHEMA_CONTRACT + 1)) && error.contains("rebuild"), "{error}");
+        let error = check_requirements(&state(&storage), &artifact).unwrap_err();
+        assert!(error.contains("physical schema") && error.contains("rebuild"), "{error}");
+        let capable = Artifact { capabilities: vec!["physical-schema".into()], ..Artifact::default() };
+        assert!(check_requirements(&state(&storage), &capable).is_ok());
+    }
+
+    #[test]
+    fn a_manifest_of_another_contract_version_names_both_versions_and_the_fix() {
+        let check = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut value = serde_json::to_value(manifest(&["python"], &["sqlite"])).unwrap();
+            change(&mut value);
+            serde_json::from_value::<Manifest>(value).unwrap().check_contracts()
+        };
+        let next_minor = |v: ContractVersion| format!("{}.{}", v.major, v.minor + 1);
+        assert!(check(&|_| {}).is_ok());
+        let error = check(&|v| v["schema_contract"] = format!("{}.0", SCHEMA_CONTRACT_VERSION.major + 1).into()).unwrap_err();
+        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.0") && error.contains("major versions differ"), "{error}");
+        let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
+        assert!(error.contains("schema contract 2.1 is newer than this engine (schema contract 2.0)") && error.contains("update the ORM"), "{error}");
+        let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
+        assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
+        let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
+        assert!(error.contains("ABI 0.2 is newer than this engine (ABI 0.1)") && error.contains("update the ORM"), "{error}");
+        let error = check(&|v| { v.as_object_mut().unwrap().remove("host_contract"); }).unwrap_err();
+        assert!(error.contains("app: a manifest with no `abi` needs `host_contract`"), "{error}");
     }
 
     #[test]

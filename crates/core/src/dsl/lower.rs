@@ -345,7 +345,7 @@ impl Lowering<'_> {
                     datasource_block(&mut ir, *pos, props)?;
                 }
                 Item::Function { pos, name, props } => ir.functions.push(function(*pos, name, props)?),
-                Item::Model(_) | Item::Type(_) | Item::Enum(_) | Item::Import { .. } | Item::Partition { .. } => {}
+                Item::Model(_) | Item::Type(_) | Item::Enum(_) | Item::Import { .. } | Item::Partition { .. } | Item::Generator { .. } => {}
             }
         }
 
@@ -1594,6 +1594,37 @@ fn declaration_value(pos: Pos, value: &Value, kind: Option<ArgumentKind>) -> Res
         }
         value => json_of(pos, value)?,
     })
+}
+
+/// The namespaces (`outside` of `@@outside.tag`) of the behavioral attributes that the items use.
+pub(super) fn used_namespaces(items: &[Item]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut add = |attrs: &[Attr]| for a in attrs {
+        if let Some((namespace, _)) = a.name.split_once('.').filter(|(namespace, _)| *namespace != "db") { out.insert(namespace.to_owned()); }
+    };
+    for item in items {
+        if let Item::Model(m) = item {
+            add(&m.blocks);
+            for member in &m.members { add(&member.attrs); }
+        }
+    }
+    out
+}
+
+/// The `extensions = ["id", ...]` of every `generator` block.
+pub(super) fn generator_extensions(items: &[Item]) -> Result<Vec<String>> {
+    let mut out = vec![];
+    for item in items {
+        let Item::Generator { props } = item else { continue };
+        for (key, pos, value) in props.iter().filter(|(key, _, _)| key == "extensions") {
+            let Value::List(list) = value else { return err(*pos, format!("generator {key} is a list of extension ids, for example [\"acme.audit\"]")) };
+            for (pos, id) in list {
+                let Value::Str(id) = id else { return err(*pos, "generator extensions are strings: write each id in quotes") };
+                if !out.contains(id) { out.push(id.clone()); }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Preserve namespaced behavioral declarations before ordinary schema lowering.

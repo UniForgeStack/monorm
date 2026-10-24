@@ -198,7 +198,7 @@ fn build() -> Result<(), String> {
         // Paths use Cargo's dependency alias. No extension identity branch is added to the host.
         let rust_alias = alias.replace('-', "_");
         let crate_name = package["name"].as_str().unwrap().replace('-', "_");
-        for path in manifest.passes.iter_mut().map(|p| &mut p.rust).chain(manifest.exports.iter_mut().map(|e| &mut e.rust)) {
+        for path in manifest.passes.iter_mut().filter_map(|p| p.rust.as_mut()).chain(manifest.exports.iter_mut().map(|e| &mut e.rust)) {
             let (prefix, suffix) = path.split_once("::").ok_or_else(|| format!("{alias}: export path must name a crate and function"))?;
             if prefix != rust_alias && prefix != crate_name && prefix != "crate" {
                 return Err(format!("{alias}: Rust path {path} must name its owning crate"));

@@ -188,9 +188,9 @@ interface Addon {
   prepareSchema(schemaJson: string, contextJson?: string): string;
   nativeArtifact(): string;
   profileMetadata(): string;
-  compileSchema(source: string, path?: string | null): string;
-  compileSchemaFile(path: string, apps?: Record<string, string> | null): string;
-  generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null, modelMethods?: Record<string, string> | null, apps?: Record<string, string> | null): string;
+  compileSchema(source: string, path?: string | null, extensions?: Record<string, string> | null): string;
+  compileSchemaFile(path: string, apps?: Record<string, string> | null, extensions?: Record<string, string> | null): string;
+  generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null, modelMethods?: Record<string, string> | null, apps?: Record<string, string> | null, extensions?: Record<string, string> | null): string;
   setDecimalClass(ctor: unknown): void;
   cli(argv: string[]): Promise<number>;
   cliSchema(argv: string[]): string;

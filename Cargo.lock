@@ -814,8 +814,10 @@ dependencies = [
 name = "orm-contracts"
 version = "0.1.0"
 dependencies = [
+ "semver",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -824,6 +826,7 @@ version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "chrono",
+ "libloading",
  "orm-contracts",
  "orm-proxy-runtime",
  "serde",

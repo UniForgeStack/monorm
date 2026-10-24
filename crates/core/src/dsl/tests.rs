@@ -1154,8 +1154,8 @@ fn app_imports_read_the_schema_an_installed_app_declares() {
     std::fs::write(billing.join("schema.prisma"), "model Invoice {\n id Int @id\n user_id Int\n user User @relation(fields: [user_id], references: [id])\n @@query_set(\"InvoiceQueries\")\n}\n").unwrap();
     let root = dir.join("project/schema.prisma");
     std::fs::write(&root, "datasource db {\n provider = \"sqlite\"\n}\nimport \"app:orm-auth\" (prefix: \"auth_\")\nmodel Post {\n id Int @id\n}\n").unwrap();
-    let apps: Apps = [("orm-auth".to_owned(), auth.join("schema.prisma")), ("orm-billing".to_owned(), billing.join("schema.prisma"))].into();
-    let project = compile_project_file_with(&root, &apps).unwrap();
+    let installed: Installed = [("orm-auth".to_owned(), auth.join("schema.prisma")), ("orm-billing".to_owned(), billing.join("schema.prisma"))].into();
+    let project = compile_project_file_with(&root, &installed).unwrap();
     let tables: Vec<_> = project.ir.models.iter().map(|m| (m.name.as_str(), m.table.as_str())).collect();
     assert_eq!(tables, [("Invoice", "auth_b_invoice"), ("User", "auth_user"), ("Post", "post")]);
     assert!(check(project.ir).is_ok());
@@ -1176,7 +1176,23 @@ fn an_app_import_without_an_installed_app_names_the_package() {
     std::fs::write(&root, "model A {\n id Int @id\n}\nimport \"app:orm-auth\"\n").unwrap();
     let error = compile_file(&root).unwrap_err();
     assert!(error.contains("schema.prisma:4:") && error.contains("app:orm-auth") && error.contains("install the `orm-auth` package"), "{error}");
-    let apps: Apps = [("orm-auth".to_owned(), dir.join("gone.prisma"))].into();
-    assert!(compile_file_with(&root, &apps).unwrap_err().contains("gone.prisma"));
+    let installed: Installed = [("orm-auth".to_owned(), dir.join("gone.prisma"))].into();
+    assert!(compile_file_with(&root, &installed).unwrap_err().contains("gone.prisma"));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_generator_block_lists_extension_ids_and_ignores_other_keys() {
+    let mut items = super::syntax::parse("generator client {\n provider = \"orm\"\n extensions = [\"acme.audit\", \"acme.tag\"]\n}\nmodel A {\n id Int @id\n @@acme.tag(\"x\")\n}\n").unwrap();
+    assert_eq!(super::lower::generator_extensions(&items).unwrap(), ["acme.audit", "acme.tag"]);
+    assert_eq!(super::lower::used_namespaces(&items).into_iter().collect::<Vec<_>>(), ["acme"]);
+    items = super::syntax::parse("generator client {\n extensions = \"acme.audit\"\n}\n").unwrap();
+    assert!(super::lower::generator_extensions(&items).unwrap_err().msg.contains("list of extension ids"));
+    items = super::syntax::parse("generator client {\n extensions = [acme]\n}\n").unwrap();
+    assert!(super::lower::generator_extensions(&items).unwrap_err().msg.contains("strings"));
+}
+
+#[test]
+fn a_generator_block_compiles_when_it_names_no_extension() {
+    assert!(compile("generator client {\n provider = \"orm\"\n}\nmodel A {\n id Int @id\n}\n", None).is_ok());
 }

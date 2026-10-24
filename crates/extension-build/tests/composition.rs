@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 
 fn manifest(id: &str, pass: &str, after: &[&str], effects: &[&str]) -> Manifest {
     Manifest {
-        id: id.into(), version: "1.0.0".into(), host_contract: HOST_CONTRACT,
-        schema_contract: SCHEMA_CONTRACT, language_contract: None, python: None, typescript: None, dependencies: BTreeMap::new(),
+        id: id.into(), version: "1.0.0".into(), host_contract: Some(HOST_CONTRACT_VERSION), abi: None, library: None,
+        schema_contract: SCHEMA_CONTRACT_VERSION, language_contract: None, python: None, typescript: None, dependencies: BTreeMap::new(),
         capabilities: vec![], requires: vec![], languages: vec!["python".into(), "typescript".into()],
         databases: vec!["postgres".into(), "sqlite".into()], attributes: vec![], exports: vec![],
-        passes: vec![Pass { id: pass.into(), phase: Phase::Logical, rust: "extension::lower".into(),
+        passes: vec![Pass { id: pass.into(), phase: Phase::Logical, rust: Some("extension::lower".into()),
             after: after.iter().map(|s| (*s).into()).collect(),
             effects: effects.iter().map(|s| (*s).into()).collect() }],
     }

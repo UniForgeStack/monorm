@@ -20,7 +20,7 @@ The old field attributes (`@timestamps.updated_at`, `@soft_delete.deleted_at`, `
 The line keeps the old column: an old field with `@map("x")` prints `map: "x"`, and an old field `editedAt` prints `@@timestamps.updated_at("edited_at", map: "editedAt")`.
 `@@locking.version` always adds an `Int` field.
 For an old `BigInt` version field, the line has a note: change the type by hand.
-A build without the extension fails a schema with its attribute: "not compiled into this artifact; rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)".
+A build without the extension fails a schema with its attribute: "not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)".
 
 ## Modes
 

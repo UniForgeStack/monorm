@@ -1,5 +1,8 @@
 //! Versioned host contracts. This crate depends on neither bindings nor extensions.
 pub mod dialect;
+pub mod version;
+pub mod abi;
+pub mod resolve;
 pub mod ir;
 pub mod extension;
 pub mod features;

@@ -1,0 +1,19 @@
+# An extension built outside the ORM workspace: it depends on orm-contracts only, as a package of another team would.
+[package]
+name = "outside-extension"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+orm-contracts = { path = "../../crates/contracts" }
+
+[features]
+# These two report an ABI that this engine rejects.
+abi-major = []
+abi-newer = []

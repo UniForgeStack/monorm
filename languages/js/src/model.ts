@@ -13,7 +13,9 @@ import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } fro
 import { Column, PATH, RelationPath, and, differs, type Condition, type NullRule, type PathState, type Source } from "./expr.js";
 import { NestedColumn, buildTypes, decodeJsonCell, type IRNested, type IRType, type NestedInfo, type NestedType } from "./nested.js";
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
+
 import { resolveApps } from "./apps.js";
+import { resolveExtensions } from "./packages.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
@@ -1033,12 +1035,12 @@ export function define(
  * (and so without static types: generate `models.ts` for those).
  */
 export function load(path: string, options: { readonly registry?: Registry } = {}): Record<string, ModelClass<ModelSpec> & Record<string, unknown>> {
-  return define(call(() => native().compileSchemaFile(path, resolveApps(path))), options);
+  return define(call(() => native().compileSchemaFile(path, resolveApps(path), resolveExtensions(path))), options);
 }
 
 /** Like {@link load}, for schema source text. `import "app:<name>"` needs a file: use {@link load} or generate the models. */
 export function loads(source: string, options: { readonly registry?: Registry } = {}): Record<string, ModelClass<ModelSpec> & Record<string, unknown>> {
-  return define(call(() => native().compileSchema(source, null)), options);
+  return define(call(() => native().compileSchema(source, null, resolveExtensions())), options);
 }
 
 /** The metadata of a model object, if `x` is one. */

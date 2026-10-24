@@ -1,5 +1,5 @@
 //! A proxy takes the native spec of its nearest ancestor unless it has its own.
-use orm_contracts::{extension::{Export, ExportKind, Manifest, HOST_CONTRACT, SCHEMA_CONTRACT}, ir::{ColType, SchemaIr}};
+use orm_contracts::{extension::{Export, ExportKind, Manifest, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_VERSION}, ir::{ColType, SchemaIr}};
 use orm_extension_build::native::{generate, NativeSpec};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 fn manifest() -> Manifest {
     let export = |id: &str, kind, output| Export { id: id.into(), rust: format!("app::{}", id.replace('.', "_")), kind, input: ColType::String, output };
     Manifest {
-        id: "app".into(), version: "1.0.0".into(), host_contract: HOST_CONTRACT, schema_contract: SCHEMA_CONTRACT,
+        id: "app".into(), version: "1.0.0".into(), host_contract: Some(HOST_CONTRACT_VERSION), abi: None, library: None, schema_contract: SCHEMA_CONTRACT_VERSION,
         language_contract: None, python: None, typescript: None, dependencies: BTreeMap::new(), capabilities: vec![], requires: vec![],
         languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()],
         attributes: vec![], passes: vec![],

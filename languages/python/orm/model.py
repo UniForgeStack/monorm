@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from . import _capabilities, _extensions, _native
 from ._apps import resolve_apps
+from ._packages import resolve_extensions
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
 from collections.abc import Iterable, Sequence
 
@@ -647,7 +648,7 @@ def load(
     An ``import "app:<name>"`` resolves to the installed app from its package metadata; no app code is imported.
     ``model_methods`` is as for :func:`define`."""
     return define(
-        _native.compile_schema_file(str(path), resolve_apps(path)), registry=registry, module=module, model_methods=model_methods
+        _native.compile_schema_file(str(path), resolve_apps(path), resolve_extensions()), registry=registry, module=module, model_methods=model_methods
     )
 
 
@@ -919,4 +920,4 @@ def loads(
 ) -> dict[str, Any]:
     """Like :func:`load`, for schema source text (``import`` paths resolve against the
     current directory). ``import "app:<name>"`` needs a file: use :func:`load` or generate the models."""
-    return define(_native.compile_schema(source), registry=registry, module=module, model_methods=model_methods)
+    return define(_native.compile_schema(source, None, resolve_extensions()), registry=registry, module=module, model_methods=model_methods)

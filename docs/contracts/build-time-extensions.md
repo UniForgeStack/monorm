@@ -128,7 +128,7 @@ Use the artifact with `PYTHONPATH=$DIR/py ORM_PROFILE=custom` in Python and `ORM
 Without `prepare_only`, the frontend builds the release libraries itself.
 `scripts/feature-check.sh all` does the same steps and runs every suite on the result.
 A schema that uses an extension attribute on an artifact without that extension fails during definition:
-`@proxy.of: not compiled into this artifact; rebuild with its extension (namespace @@proxy.*, see docs/README.md)`.
+`@proxy.of: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace @@proxy.*, see docs/README.md)`.
 The message names the namespace of the attribute.
 
 Protected writes (`@@protected_write`), client defaults, cursor pagination, the N+1 finder and reference loaders are in the core.
@@ -193,7 +193,8 @@ Use the frontend for a changed selection rather than editing generated files.
 
 A crate declares `[package.metadata.orm-extension]`, either inline or as `manifest = "orm-extension.toml"` referencing a resource inside its package.
 The version must match its Cargo package version.
-Required fields include `id`, `version`, `host_contract`, `schema_contract`, `languages` (`python`, `typescript`), and `databases` (`postgres`, `sqlite`).
+Required fields include `id`, `version`, `host_contract` (not for a library), `schema_contract`, `languages` (`python`, `typescript`), and `databases` (`postgres`, `sqlite`).
+Contract versions are strings, `"major.minor"`: the majors must be equal, and an extension minor must not be above the engine minor.
 Optional lists describe host `capabilities`, semver extension `dependencies`, `attributes`, `passes`, and `exports`.
 Unknown metadata fields are errors.
 
@@ -310,3 +311,16 @@ See `bench/build-time-extensions/` for paired baseline comparisons, allocation m
 Warm framework cost must be below 1%;
 definition, build duration and artifact size are reported separately.
 Timing intervals that cross the limit remain inconclusive.
+
+## Installed libraries
+
+A manifest with `abi` (a `"major.minor"` string, currently `"0.1"`) and `library` (the file name; the loader adds the platform prefix and suffix) is a library.
+It has no `host_contract` and no language section: the loader runs only its passes.
+The crate is a `cdylib` built with `panic = "unwind"` that ends with `orm_contracts::extension!(("<pass id>", pass_fn), ...)`.
+The macro exports `orm_ext_abi_version`, `orm_ext_run_pass` and `orm_ext_free`.
+A version fits when its major equals the engine major and its minor is at most the engine minor.
+This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
+Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.
+The loader runs library passes and compiled passes in one pass order.
+The IR records each library that ran in `Requirements.packages`: its version, its passes and its attribute names.
+`tests/outside-extension/` is a library in its own workspace.

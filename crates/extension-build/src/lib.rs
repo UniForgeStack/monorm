@@ -1,7 +1,7 @@
 //! Build frontend for fixed native composition. Cargo owns package resolution.
 pub use orm_contracts::extension::QUERY_DEFAULTS;
-use orm_contracts::extension::{AttributeTarget, Manifest, Pass, HOST_CONTRACT, LANGUAGE_CONTRACT, SCHEMA_CONTRACT};
-use std::collections::{BTreeMap, BTreeSet};
+use orm_contracts::extension::{Manifest, Pass};
+use std::collections::BTreeMap;
 
 #[derive(Debug)]
 pub struct Composition {
@@ -23,79 +23,12 @@ impl Composition {
             .filter(|feature| self.has_capability(feature)).map(|feature| (*feature).to_owned()).collect()
     }
 
-    pub fn resolve(mut manifests: Vec<Manifest>) -> Result<Self, String> {
-        manifests.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut extensions = BTreeMap::new();
-        let mut attributes = BTreeMap::new();
-        let mut exports = BTreeSet::new();
-        let mut passes = BTreeMap::new();
-        let mut effects: BTreeMap<&str, &str> = BTreeMap::new();
-        for m in &manifests {
-            if m.host_contract != HOST_CONTRACT || m.schema_contract != SCHEMA_CONTRACT {
-                return Err(format!("{}: incompatible host/schema contracts; rebuild", m.id));
-            }
-            let sections: Vec<_> = m.language_sections().collect();
-            if !sections.is_empty() && m.language_contract != Some(LANGUAGE_CONTRACT) {
-                return Err(format!("{}: incompatible language contract; rebuild", m.id));
-            }
-            for (language, section) in sections { language::validate_section(m, language, section)?; }
-            for capability in &m.capabilities {
-                if !orm_contracts::extension::HOST_CAPABILITIES.contains(&capability.as_str()) {
-                    return Err(format!("{} requires unavailable host capability {capability}; rebuild with a compatible host contract", m.id));
-                }
-            }
-            let version = semver::Version::parse(&m.version).map_err(|e| format!("{}: {e}", m.id))?;
-            if extensions.insert(&m.id, version).is_some() {
-                return Err(format!("duplicate extension {}", m.id));
-            }
-            for a in &m.attributes {
-                if !a.name.contains('.') { return Err(format!("{}: attribute {} must be namespaced", m.id, a.name)); }
-                if let Some(owner) = attributes.insert((&a.name, a.target == AttributeTarget::Field), &m.id) {
-                    return Err(format!("attribute {} has duplicate owners {owner} and {}", a.name, m.id));
-                }
-            }
-            for e in &m.exports {
-                rust_path(&e.rust)?;
-                if !exports.insert(&e.id) { return Err(format!("duplicate export {}", e.id)); }
-            }
-            for p in &m.passes {
-                rust_path(&p.rust)?;
-                if passes.insert(p.id.clone(), p.clone()).is_some() { return Err(format!("duplicate pass {}", p.id)); }
-                for effect in &p.effects {
-                    for (existing, owner) in &effects {
-                        if *existing == effect || existing.starts_with(&format!("{effect}.")) || effect.starts_with(&format!("{existing}.")) {
-                            return Err(format!("conflicting effect {effect} / {existing}: {owner} and {}", p.id));
-                        }
-                    }
-                    effects.insert(effect, &p.id);
-                }
-            }
+    pub fn resolve(manifests: Vec<Manifest>) -> Result<Self, String> {
+        if let Some(m) = manifests.iter().find(|m| m.is_dynamic()) {
+            return Err(format!("{}: a library cannot be compiled into an artifact; the loader runs it", m.id));
         }
-        for m in &manifests {
-            for (id, requirement) in &m.dependencies {
-                let version = extensions.get(id).ok_or_else(|| format!("{} requires missing extension {id}", m.id))?;
-                let requirement = semver::VersionReq::parse(requirement).map_err(|e| e.to_string())?;
-                if !requirement.matches(version) { return Err(format!("{} requires {id}@{requirement}, resolved {version}", m.id)); }
-            }
-        }
-        for p in passes.values() {
-            // An `after` pass that no selected extension provides is skipped: it orders only passes that are present.
-            for id in &p.after {
-                let Some(dependency) = passes.get(id) else { continue };
-                if dependency.phase > p.phase { return Err(format!("{} depends on later phase {id}", p.id)); }
-            }
-        }
-        let present: BTreeSet<String> = passes.keys().cloned().collect();
-        let mut ordered = vec![];
-        let mut complete = BTreeSet::new();
-        while !passes.is_empty() {
-            let earliest = passes.values().map(|p| p.phase).min().unwrap();
-            let next = passes.values().find(|p| p.phase == earliest && p.after.iter().all(|id| complete.contains(id) || !present.contains(id))).map(|p| p.id.clone());
-            let Some(next) = next else { return Err(format!("pass dependency cycle: {:?}", passes.keys().collect::<Vec<_>>())); };
-            complete.insert(next.clone());
-            ordered.push(passes.remove(&next).unwrap());
-        }
-        Ok(Self { manifests, passes: ordered, languages: vec![] })
+        let resolved = orm_contracts::resolve::resolve(manifests, &language::validate_section)?;
+        Ok(Self { manifests: resolved.manifests, passes: resolved.passes, languages: vec![] })
     }
 
     pub fn pass_ids(&self) -> Vec<&str> { self.passes.iter().map(|p| p.id.as_str()).collect() }
@@ -133,6 +66,9 @@ impl Composition {
         let artifact = serde_json::to_string(&artifact).map_err(|e| e.to_string())?;
         let binding = if native.is_some() { "bind(ir)?;" } else { "" };
         let language = language::source(&self.languages)?;
+        let rust_paths = self.passes.iter()
+            .map(|p| p.rust.as_deref().ok_or_else(|| format!("pass {} has no `rust` path", p.id)))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut source = format!(r#"
 use crate::ir::SchemaIr;
 use crate::behavior::{{Artifact, Manifest, SCHEMA_CONTRACT, validate_declarations, validate_requirements, capture_storage}};
@@ -158,8 +94,8 @@ pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> 
         if !self.passes.is_empty() {
             source.push_str("    capture_storage(ir)?;\n    let previous: Vec<_> = ir.behavior.declarations.iter().filter(|d| d.lowered).cloned().collect();\n    ir.behavior.declarations.retain(|d| !d.lowered);\n    ir.behavior.completed_passes.clear();\n");
         }
-        for p in &self.passes {
-            source.push_str(&format!("    let () = {}(ir)?;\n    ir.behavior.completed_passes.push({:?}.into());\n", p.rust, p.id));
+        for (p, rust) in self.passes.iter().zip(&rust_paths) {
+            source.push_str(&format!("    let () = {}(ir)?;\n    ir.behavior.completed_passes.push({:?}.into());\n", rust, p.id));
         }
         if !self.passes.is_empty() {
             source.push_str("    for declaration in &mut ir.behavior.declarations { declaration.lowered = true; }\n    ir.behavior.declarations.extend(previous);\n");
@@ -175,6 +111,11 @@ pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> 
     Ok(())
 }}
 "#, serde_json::to_string(&versions).map_err(|e| e.to_string())?));
+        source.push_str("pub fn run_pass(_ir: &mut SchemaIr, id: &str) -> Result<bool, String> {\n    match id {\n");
+        for (p, rust) in self.passes.iter().zip(&rust_paths) {
+            source.push_str(&format!("        {:?} => {{ let () = {}(_ir)?; Ok(true) }}\n", p.id, rust));
+        }
+        source.push_str("        _ => Ok(false),\n    }\n}\n");
         source.push_str(&language);
         if let Some(native) = native {
             source.push_str(&native.core);
@@ -185,13 +126,7 @@ pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> 
     }
 }
 
-/// Reject source injection in metadata before emitting Rust paths.
-pub fn rust_path(path: &str) -> Result<(), String> {
-    if path.split("::").any(|part| {
-        part.is_empty() || !part.bytes().enumerate().all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
-    }) { return Err(format!("invalid Rust export path {path:?}")); }
-    Ok(())
-}
+pub use orm_contracts::resolve::rust_path;
 
 pub mod language;
 

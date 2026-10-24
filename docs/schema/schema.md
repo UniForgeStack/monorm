@@ -173,7 +173,8 @@ END;
   `args` (the SQL argument list, e.g. `"a integer, b text"`), `language` (default
   `plpgsql`), `volatility` (`immutable` / `stable` / `volatile`), `security_definer`,
   `body`. The formatter removes the indentation inside it, which SQL doesn't mind.
-* `generator` blocks (Prisma Client's) are read and ignored. `type` and `view`
+* `generator` blocks (Prisma Client's) are read, and only `extensions = ["id", ...]` has an effect:
+  it selects installed extension libraries by id (see [Installed extension libraries](#installed-extension-libraries)). `type` and `view`
   aren't supported yet; `enum` is below.
 
 A model's table is the model name in lower case, or `@@map("name")`.
@@ -676,7 +677,7 @@ Behavior (new attributes, proxies, defaults) comes from build-time extensions, b
 
 A namespaced attribute belongs to a build-time extension crate.
 The artifact must be built with that crate ([build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions));
-otherwise definition fails with `@<name>: not compiled into this artifact; rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)`.
+otherwise definition fails with `@<name>: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)`.
 
 | Attribute | Extension | Doc |
 |---|---|---|
@@ -687,6 +688,25 @@ otherwise definition fails with `@<name>: not compiled into this artifact; rebui
 | `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic-relations | [generic-identities.md](generic-identities.md) |
 
 `@client_default`, enum subsets in proxies (`Status(ACTIVE)`) and `@@protected_write` are core syntax.
+
+### Installed extension libraries
+
+An extension can also ship as a native library that the loader opens at run time, so the ORM needs no rebuild.
+The package has an `orm-extension.toml` with `abi` and `library` and no `host_contract` (fields: [build-time-extensions.md](../contracts/build-time-extensions.md#installed-libraries)).
+A schema selects a library by the namespace of an attribute it uses, or by `generator client { extensions = ["acme.outside"] }`.
+An extension that the schema does not use is not loaded and adds no stamp.
+
+* Python: an `orm.extensions` entry point named like the extension id; its value is the package that holds the manifest.
+* Node and Bun: a direct dependency whose `package.json` has `"orm": {"extension": "<id>"}`; the manifest is in the package root.
+  The lookup starts at the project of the schema file, or at the working directory when there is no file (`loads(source)`).
+  Python reads the interpreter environment.
+* The standalone `orm` binary does not look for packages: `orm generate --extension acme.outside=path/to/orm-extension.toml`. `--extension` can repeat; the Python and Node commands add it themselves.
+* `load(path)` and `loads(source)` resolve extensions the same way. No extension code runs in the language runtime.
+* The loader reads the id, versions and attribute names of every installed manifest, and reads the rest of a manifest only when the schema selects its package.
+  A manifest that does not parse fails a schema only when that schema can need it: the schema selects it by id, or uses an attribute namespace that no other package owns.
+* The loader opens each library file once for each process and keeps it by its canonical path. A change to the file on disk has no effect until the process restarts.
+  The manifest must still agree with the `abi` that the library reports, on every load.
+* An extension that is not installed is an error that names the id and `--extension`. An ABI major that differs, or a library minor above the engine minor, is an error that names both versions.
 
 ## Code generation
 

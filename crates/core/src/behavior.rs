@@ -25,6 +25,8 @@ fn build_artifact() -> Artifact {
     for (_, capability) in compiled.into_iter().filter(|(on, _)| *on) {
         if !artifact.capabilities.iter().any(|c| c == capability) { artifact.capabilities.push(capability.into()); }
     }
+    // The loader is in every build, and a library pass can record storage.
+    if !artifact.capabilities.iter().any(|c| c == "physical-schema") { artifact.capabilities.push("physical-schema".into()); }
     artifact
 }
 
@@ -63,12 +65,32 @@ pub fn extension_code(language: &str) -> Vec<crate::codegen::ExtensionCode> {
 }
 
 pub fn prepare(ir: &mut crate::ir::SchemaIr, language: Option<&str>) -> Result<(), String> {
+    prepare_with(ir, language, None)
+}
+
+/// [`prepare`] with the plan of the installed extension libraries that the schema selected.
+/// The plan runs their passes and the compiled passes in one order.
+pub fn prepare_with(ir: &mut crate::ir::SchemaIr, language: Option<&str>, plan: Option<&crate::loader::Plan>) -> Result<(), String> {
     if ir.behavior.storage.is_none() && (!ir.behavior.field_storage.is_empty() || !ir.behavior.owner_links.is_empty()) { return Err("storage ownership contributions require an explicit physical schema".into()); }
-    #[cfg(feature = "composition")]
-    { composition::prepare(ir, language)?; }
-    #[cfg(not(feature = "composition"))]
-    { validate_declarations(ir, &[], language)?; }
+    if let Some(plan) = plan {
+        plan.lower(ir, language, &run_static_pass)?;
+        #[cfg(feature = "composition")]
+        { composition::bind(ir)?; }
+    } else {
+        #[cfg(feature = "composition")]
+        { composition::prepare(ir, language)?; }
+        #[cfg(not(feature = "composition"))]
+        { validate_declarations(ir, &[], language)?; }
+    }
     check_requirements(ir, artifact())
+}
+
+/// Runs the compiled pass `id`; false when this artifact has no such pass.
+fn run_static_pass(ir: &mut crate::ir::SchemaIr, id: &str) -> Result<bool, String> {
+    #[cfg(feature = "composition")]
+    { composition::run_pass(ir, id) }
+    #[cfg(not(feature = "composition"))]
+    { let _ = (ir, id); Ok(false) }
 }
 
 #[cfg(feature = "composition")]

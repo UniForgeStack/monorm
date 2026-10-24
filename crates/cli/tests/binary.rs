@@ -175,3 +175,38 @@ fn the_app_flags_of_the_user_win_over_later_ones() {
     assert!(text(&out.stdout).contains("(2 models)"), "{}", text(&out.stdout));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn extension_flag_gives_the_loader_an_installed_library() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-extension-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/outside-extension");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("cli-outside");
+    let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["build", "--offline", "--quiet", "--manifest-path"]).arg(root.join("Cargo.toml")).arg("--target-dir").arg(&target).status().unwrap();
+    assert!(build.success(), "the outside extension did not build");
+    let library = format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    std::fs::copy(target.join("debug").join(&library), dir.join(&library)).unwrap();
+    std::fs::copy(root.join("orm-extension.toml"), dir.join("orm-extension.toml")).unwrap();
+    std::fs::write(dir.join("schema.prisma"), "model Post {\n  id Int @id\n  @@outside.tag(\"blue\")\n}\n").unwrap();
+
+    let missing = orm(&dir, &["check", "--schema", "schema.prisma"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(text(&missing.stderr).contains("outside.tag"), "{}", text(&missing.stderr));
+    assert_eq!(orm(&dir, &["check", "--extension", "acme.outside"]).status.code(), Some(2));
+
+    let ok = orm(&dir, &["check", "--schema", "schema.prisma", "--extension", "acme.outside=orm-extension.toml"]);
+    assert!(ok.status.success(), "{}", text(&ok.stderr));
+    let generated = orm(&dir, &["generate", "--schema", "schema.prisma", "--extension", "acme.outside=orm-extension.toml", "-o", "out/models.ts"]);
+    assert!(generated.status.success(), "{}", text(&generated.stderr));
+    assert!(std::fs::read_to_string(dir.join("out/models.ts")).unwrap().contains("tag"));
+
+    let manifest = ["--extension", "acme.outside=orm-extension.toml"];
+    let made = orm(&dir, &[&["makemigrations", "--schema", "schema.prisma"][..], &manifest].concat());
+    assert!(made.status.success(), "{}", text(&made.stderr));
+    let sql = orm(&dir, &[&["sqlmigrate", "1", "--schema", "schema.prisma"][..], &manifest].concat());
+    assert!(sql.status.success(), "{}", text(&sql.stderr));
+    assert!(text(&sql.stdout).contains("\"tag\""), "{}", text(&sql.stdout));
+    let _ = std::fs::remove_dir_all(&dir);
+}

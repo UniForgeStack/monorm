@@ -21,6 +21,7 @@ pub mod schema;
 pub mod features;
 
 pub mod behavior;
+pub mod loader;
 
 #[cfg(feature = "composition")]
 pub mod ownership;

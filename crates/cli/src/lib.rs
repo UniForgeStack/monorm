@@ -28,6 +28,8 @@
 //!
 //! `--app NAME=PATH` (repeatable) gives the schema file of an installed app for `import "app:NAME"`;
 //! `python -m orm` and `npx orm` add it for the apps they find.
+//! `--extension ID=MANIFEST` (repeatable) gives the `orm-extension.toml` of an installed extension package;
+//! they add it for the extensions they find. The schema selects the extensions it uses.
 //!
 //! Output goes to the process's stdout and stderr. Exit codes: 0 success, 1 failure
 //! (an invalid schema, a migration error, a database error, `makemigrations --check`
@@ -123,7 +125,7 @@ struct Args {
 }
 
 const FLAGS: [&str; 6] = ["--empty", "--check", "--down", "--force", "-h", "--help"];
-const VALUED: [&str; 15] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app"];
+const VALUED: [&str; 16] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -162,7 +164,7 @@ impl Args {
     /// Only these options (besides the global ones) and at most `max` positionals
     /// after the command.
     fn allow(&self, command: &str, options: &[&str], max: usize) -> Result<()> {
-        let global = ["--schema", "--dir", "--url", "--app"];
+        let global = ["--schema", "--dir", "--url", "--app", "--extension"];
         if let Some((k, _)) = self.options.iter().find(|(k, _)| !global.contains(&k.as_str()) && !options.contains(&k.as_str())) {
             return Err(Failure::Usage(format!("{command} doesn't take {k}")));
         }
@@ -172,16 +174,23 @@ impl Args {
         Ok(())
     }
 
-    /// The `--app NAME=PATH` options: the installed apps that `import "app:NAME"` reads.
-    fn apps(&self) -> Result<dsl::Apps> {
-        let mut apps = dsl::Apps::new();
+    /// The `--app NAME=PATH` and `--extension ID=MANIFEST` options: what the host found installed.
+    fn installed(&self) -> Result<dsl::Installed> {
+        let mut installed = dsl::Installed::new();
         for (key, value) in &self.options {
             if key != "--app" { continue; }
             let (name, path) = value.as_deref().and_then(|v| v.split_once('=')).filter(|(n, p)| !n.is_empty() && !p.is_empty())
                 .ok_or_else(|| Failure::Usage("--app needs NAME=PATH".into()))?;
-            apps.entry(name.to_owned()).or_insert_with(|| PathBuf::from(path));
+            installed.apps.entry(name.to_owned()).or_insert_with(|| PathBuf::from(path));
         }
-        Ok(apps)
+        for (key, value) in &self.options {
+            if key != "--extension" { continue; }
+            let (id, path) = value.as_deref().and_then(|v| v.split_once('=')).filter(|(n, p)| !n.is_empty() && !p.is_empty())
+                .ok_or_else(|| Failure::Usage("--extension needs ID=MANIFEST".into()))?;
+            let entry = (id.to_owned(), PathBuf::from(path));
+            if !installed.extensions.contains(&entry) { installed.extensions.push(entry); }
+        }
+        Ok(installed)
     }
 
     fn arg(&self, i: usize) -> Option<&str> {
@@ -241,7 +250,7 @@ fn config(host: Host) -> Config {
 }
 
 fn load(path: &Path, args: &Args) -> Result<(orm_core::ir::SchemaIr, orm_core::schema::Schema)> {
-    dsl::compile_file_with(path, &args.apps()?).and_then(dsl::check).map_err(Failure::Failed)
+    dsl::compile_file_with(path, &args.installed()?).and_then(dsl::check).map_err(Failure::Failed)
 }
 
 fn write(path: &Path, text: &str) -> Result<()> {
@@ -351,7 +360,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             }
             let path = orm_core::identity::manifest_path(&schema);
             let previous = if path.exists() { orm_core::identity::read(&path).map_err(Failure::Failed)? } else { Default::default() };
-            let manifest = dsl::generate_identities_with(&schema, &renames, &restores, &args.apps()?).map_err(Failure::Failed)?;
+            let manifest = dsl::generate_identities_with(&schema, &renames, &restores, &args.installed()?).map_err(Failure::Failed)?;
             let changes = orm_core::identity::changes(&previous, &manifest);
             if changes.is_empty() { println!("no identity changes"); }
             for change in changes { println!("{change}"); }
@@ -441,7 +450,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         (None, _, Host::Node) => "typescript",
         (None, _, Host::Binary) => return Err(Failure::Usage("generate needs a language: python, typescript or rust".into())),
     };
-    let project = dsl::compile_project_file_with(schema, &args.apps()?).map_err(Failure::Failed)?;
+    let project = dsl::compile_project_file_with(schema, &args.installed()?).map_err(Failure::Failed)?;
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, extensions: orm_core::behavior::extension_code(language), ..codegen::Options::default() };

@@ -1063,7 +1063,7 @@ program as `python -m orm` and the standalone `orm` binary, with the same comman
 Under `npx`, `generate` writes TypeScript and `package.json`'s `"orm"` key is read first.
 The command line resolves `import "app:orm-auth"` in a schema from `node_modules/orm-auth/package.json` (`"orm": {"app": "./schema.prisma"}`),
 and passes it to the Rust loader as `--app orm-auth=<file>`; the standalone binary takes that flag from you
-(see [`schema.md`](../schema/schema.md#installed-app-import)). `load(path)` and `Migrations` resolve an app the same way, from its package metadata, and import no app code.
+(see [`schema.md`](../schema/schema.md#installed-app-import)). Installed extension libraries go the same way, as `--extension <id>=<manifest>` (see [`schema.md`](../schema/schema.md#installed-extension-libraries)). `load(path)` and `Migrations` resolve an app the same way, from its package metadata, and import no app code.
 `Migrations` and `Migrator` are the programmatic API; they call the same Rust migrator
 (`crates/engine/src/migrate.rs`). `await pull(db)` reads a live database into a `Pulled`
 (`schema`, `gaps`, `differences`, `write(path)`), `migrator.baseline()` marks the first
