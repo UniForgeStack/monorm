@@ -5,9 +5,9 @@
 // update / updateMany take, the columns and relation paths, and the model object.
 
 /* eslint-disable */
-import { define, type Column, type Compat, type Expression, type Hop, type In, type Instance, type JsonValue, type Many, type ManyRelatedSet, type ModelClass, type QuerySetOf, type RelatedSet, type RelationPath, type SchemaIR, type Via } from "../../src/index.js";
+import { define, type Column, type Compat, type Expression, type Hop, type In, type IndexRef, type Instance, type JsonValue, type Many, type ManyRelatedSet, type ModelClass, type QuerySetOf, type RelatedSet, type RelationPath, type SchemaIR, type Via } from "../../src/index.js";
 
-const SCHEMA: SchemaIR = {"models":[{"name":"Shop","table":"shop","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"address_city","column":"address_city","type":"string","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["city"],"under_null":true,"present_with":["address_floor","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_floor","column":"address_floor","type":"int","nullable":true,"default":7,"nested":{"type":"Address","storage":"columns","field":"address","path":["floor"],"under_null":true,"present_with":["address_city","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_big","column":"address_big","type":"big_int","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["big"],"under_null":true,"present_with":["address_city","address_floor","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_opened","column":"address_opened","type":"date_time","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["opened"],"under_null":true,"present_with":["address_city","address_floor","address_big","address_geo_lat","address_geo_lng"]}},{"name":"address_geo_lat","column":"address_geo_lat","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lat"],"under_null":true,"present_with":["address_geo_lng"]}},{"name":"address_geo_lng","column":"address_geo_lng","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lng"],"under_null":true,"present_with":["address_geo_lat"]}},{"name":"snapshot","column":"snapshot","type":"json","nested":{"type":"Address","storage":"json","field":"snapshot"}}],"constraints":[{"kind":"check","expr":"(\"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_geo_lat\" IS NOT NULL)"},{"kind":"check","expr":"(\"address_city\" IS NULL AND \"address_floor\" IS NULL AND \"address_big\" IS NULL AND \"address_opened\" IS NULL AND \"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_city\" IS NOT NULL AND \"address_floor\" IS NOT NULL AND \"address_big\" IS NOT NULL AND \"address_opened\" IS NOT NULL)"}]},{"name":"Plain","table":"plain","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"g_lat","column":"g_lat","type":"float","nested":{"type":"Geo","storage":"columns","field":"g","path":["lat"],"root_required":true}},{"name":"g_lng","column":"g_lng","type":"float","nullable":true,"nested":{"type":"Geo","storage":"columns","field":"g","path":["lng"],"root_required":true}}]},{"name":"Wrapped","table":"wrapped","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"w_inner_lat","column":"w_inner_lat","type":"float","nullable":true,"nested":{"type":"Wrap","storage":"columns","field":"w","path":["inner","lat"],"under_null":true,"root_required":true,"present_with":["w_inner_lng"]}},{"name":"w_inner_lng","column":"w_inner_lng","type":"float","nullable":true,"nested":{"type":"Wrap","storage":"columns","field":"w","path":["inner","lng"],"under_null":true,"root_required":true,"present_with":["w_inner_lat"]}}],"constraints":[{"kind":"check","expr":"(\"w_inner_lat\" IS NULL AND \"w_inner_lng\" IS NULL) OR (\"w_inner_lat\" IS NOT NULL)"}]},{"name":"Opt","table":"opt","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"t_tag","column":"t_tag","type":"string","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["tag"],"under_null":true,"present_with":["t_inner_lat","t_inner_lng"]}},{"name":"t_inner_lat","column":"t_inner_lat","type":"float","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["inner","lat"],"under_null":true,"present_with":["t_inner_lng"]}},{"name":"t_inner_lng","column":"t_inner_lng","type":"float","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["inner","lng"],"under_null":true,"present_with":["t_inner_lat"]}}],"constraints":[{"kind":"check","expr":"(\"t_inner_lat\" IS NULL AND \"t_inner_lng\" IS NULL) OR (\"t_inner_lat\" IS NOT NULL)"},{"kind":"check","expr":"(\"t_tag\" IS NULL AND \"t_inner_lat\" IS NULL AND \"t_inner_lng\" IS NULL) OR (\"t_tag\" IS NOT NULL)"}]}],"types":[{"name":"Geo","storage":"columns","fields":[{"name":"lat","nullable":false,"leaf":{"name":"lat","column":"lat","type":"float"}},{"name":"lng","nullable":true,"leaf":{"name":"lng","column":"lng","type":"float","nullable":true}}]},{"name":"Address","storage":"columns","fields":[{"name":"city","nullable":false,"leaf":{"name":"city","column":"city","type":"string"}},{"name":"floor","nullable":false,"leaf":{"name":"floor","column":"floor","type":"int","default":7}},{"name":"big","nullable":false,"leaf":{"name":"big","column":"big","type":"big_int"}},{"name":"opened","nullable":false,"leaf":{"name":"opened","column":"opened","type":"date_time"}},{"name":"geo","nullable":true,"type":"Geo"}]},{"name":"Wrap","storage":"columns","fields":[{"name":"inner","nullable":true,"type":"Geo"}]},{"name":"Tagged","storage":"columns","fields":[{"name":"tag","nullable":false,"leaf":{"name":"tag","column":"tag","type":"string"}},{"name":"inner","nullable":true,"type":"Geo"}]}]};
+const SCHEMA: SchemaIR = {"models":[{"name":"Shop","table":"shop","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"address_city","column":"address_city","type":"string","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["city"],"under_null":true,"present_with":["address_floor","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_floor","column":"address_floor","type":"int","nullable":true,"default":7,"nested":{"type":"Address","storage":"columns","field":"address","path":["floor"],"under_null":true,"present_with":["address_city","address_big","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_big","column":"address_big","type":"big_int","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["big"],"under_null":true,"present_with":["address_city","address_floor","address_opened","address_geo_lat","address_geo_lng"]}},{"name":"address_opened","column":"address_opened","type":"date_time","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["opened"],"under_null":true,"present_with":["address_city","address_floor","address_big","address_geo_lat","address_geo_lng"]}},{"name":"address_geo_lat","column":"address_geo_lat","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lat"],"under_null":true,"present_with":["address_geo_lng"]}},{"name":"address_geo_lng","column":"address_geo_lng","type":"float","nullable":true,"nested":{"type":"Address","storage":"columns","field":"address","path":["geo","lng"],"under_null":true,"present_with":["address_geo_lat"]}},{"name":"snapshot","column":"snapshot","type":"json","nested":{"type":"Address","storage":"json","field":"snapshot"}}],"constraints":[{"kind":"check","expr":"(\"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_geo_lat\" IS NOT NULL)"},{"kind":"check","expr":"(\"address_city\" IS NULL AND \"address_floor\" IS NULL AND \"address_big\" IS NULL AND \"address_opened\" IS NULL AND \"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_city\" IS NOT NULL AND \"address_floor\" IS NOT NULL AND \"address_big\" IS NOT NULL AND \"address_opened\" IS NOT NULL)"}]},{"name":"Plain","table":"plain","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"g_lat","column":"g_lat","type":"float","nested":{"type":"Geo","storage":"columns","field":"g","path":["lat"],"root_required":true}},{"name":"g_lng","column":"g_lng","type":"float","nullable":true,"nested":{"type":"Geo","storage":"columns","field":"g","path":["lng"],"root_required":true}}]},{"name":"Wrapped","table":"wrapped","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"w_inner_lat","column":"w_inner_lat","type":"float","nullable":true,"nested":{"type":"Wrap","storage":"columns","field":"w","path":["inner","lat"],"under_null":true,"root_required":true,"present_with":["w_inner_lng"]}},{"name":"w_inner_lng","column":"w_inner_lng","type":"float","nullable":true,"nested":{"type":"Wrap","storage":"columns","field":"w","path":["inner","lng"],"under_null":true,"root_required":true,"present_with":["w_inner_lat"]}}],"constraints":[{"kind":"check","expr":"(\"w_inner_lat\" IS NULL AND \"w_inner_lng\" IS NULL) OR (\"w_inner_lat\" IS NOT NULL)"}]},{"name":"Opt","table":"opt","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"t_tag","column":"t_tag","type":"string","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["tag"],"under_null":true,"present_with":["t_inner_lat","t_inner_lng"]}},{"name":"t_inner_lat","column":"t_inner_lat","type":"float","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["inner","lat"],"under_null":true,"present_with":["t_inner_lng"]}},{"name":"t_inner_lng","column":"t_inner_lng","type":"float","nullable":true,"nested":{"type":"Tagged","storage":"columns","field":"t","path":["inner","lng"],"under_null":true,"present_with":["t_inner_lat"]}}],"constraints":[{"kind":"check","expr":"(\"t_inner_lat\" IS NULL AND \"t_inner_lng\" IS NULL) OR (\"t_inner_lat\" IS NOT NULL)"},{"kind":"check","expr":"(\"t_tag\" IS NULL AND \"t_inner_lat\" IS NULL AND \"t_inner_lng\" IS NULL) OR (\"t_tag\" IS NOT NULL)"}]},{"name":"Slugged","table":"slugged","fields":[{"name":"id","column":"id","type":"int","primary_key":true,"index":true},{"name":"slug","column":"slug","type":"string"}],"indexes":[{"name":"slugged_slug","columns":[{"field":"slug"}],"unique":true},{"name":"slugged_slug_id","columns":[{"field":"slug"},{"field":"id"}],"unique":true}]},{"name":"Titled","table":"titled","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"title","column":"title","type":"string"}],"indexes":[{"name":"titled_title","columns":[{"field":"title"}],"unique":true}]}],"types":[{"name":"Geo","storage":"columns","fields":[{"name":"lat","nullable":false,"leaf":{"name":"lat","column":"lat","type":"float"}},{"name":"lng","nullable":true,"leaf":{"name":"lng","column":"lng","type":"float","nullable":true}}]},{"name":"Address","storage":"columns","fields":[{"name":"city","nullable":false,"leaf":{"name":"city","column":"city","type":"string"}},{"name":"floor","nullable":false,"leaf":{"name":"floor","column":"floor","type":"int","default":7}},{"name":"big","nullable":false,"leaf":{"name":"big","column":"big","type":"big_int"}},{"name":"opened","nullable":false,"leaf":{"name":"opened","column":"opened","type":"date_time"}},{"name":"geo","nullable":true,"type":"Geo"}]},{"name":"Wrap","storage":"columns","fields":[{"name":"inner","nullable":true,"type":"Geo"}]},{"name":"Tagged","storage":"columns","fields":[{"name":"tag","nullable":false,"leaf":{"name":"tag","column":"tag","type":"string"}},{"name":"inner","nullable":true,"type":"Geo"}]}]};
 
 const models = define(SCHEMA, { requiredCapabilities: ["reference-loading"] });
 
@@ -365,4 +365,121 @@ export interface OptPath<S extends string, H extends readonly Hop[], O extends b
 export interface OptModel extends ModelClass<OptSpec>, OptFields<"Opt", [], false> {}
 
 export const Opt = models["Opt"] as unknown as OptModel;
+
+// -- Slugged ---------------------------------------------------------------------------
+
+/** The column values of a Slugged row. */
+export interface SluggedData {
+  readonly id: number;
+  readonly slug: string;
+}
+
+/** A Slugged row. To-one relations are typed on rows of queries that load them. */
+export interface Slugged extends SluggedData, Instance<SluggedSpec> {
+}
+
+export type SluggedInsert = {
+  id: In<number>;
+  slug: In<string>;
+};
+
+export interface SluggedUpdate {
+  id?: In<number> | Expression<Compat<number>, "Slugged" | "~Slugged", {}>;
+  slug?: In<string> | Expression<Compat<string>, "Slugged" | "~Slugged", {}>;
+}
+
+export interface SluggedUpdateRow {
+  id: In<number>;
+  slug?: In<string>;
+}
+
+export interface SluggedSpec {
+  readonly name: "Slugged";
+  readonly row: Slugged;
+  readonly data: SluggedData;
+  readonly insert: SluggedInsert;
+  readonly update: SluggedUpdate;
+  readonly updateRow: SluggedUpdateRow;
+  readonly pk: number;
+}
+
+export interface SluggedFields<S extends string, H extends readonly Hop[], O extends boolean> {
+  readonly id: Column<O extends true ? number | null : number, S, "id", H>;
+  readonly slug: Column<O extends true ? string | null : string, S, "slug", H>;
+}
+
+export interface SluggedPath<S extends string, H extends readonly Hop[], O extends boolean>
+  extends RelationPath<SluggedSpec, S, H>,
+    SluggedFields<S, H, O> {
+  /** The relation query set for `load()`: `Slugged.objects` bound to this relation. */
+  readonly objects: QuerySetOf<SluggedSpec, Slugged, "Slugged", {}, never, Via<H, undefined, false, S>>;
+}
+
+export interface SluggedModel extends ModelClass<SluggedSpec>, SluggedFields<"Slugged", [], false> {
+  /** The unique indexes, for `onConflict(columns, { index })`. */
+  readonly indexes: {
+    readonly slugged_slug: IndexRef<"Slugged">;
+    readonly slugged_slug_id: IndexRef<"Slugged">;
+  };
+}
+
+export const Slugged = models["Slugged"] as unknown as SluggedModel;
+
+// -- Titled ----------------------------------------------------------------------------
+
+/** The column values of a Titled row. */
+export interface TitledData {
+  readonly id: number;
+  readonly title: string;
+}
+
+/** A Titled row. To-one relations are typed on rows of queries that load them. */
+export interface Titled extends TitledData, Instance<TitledSpec> {
+}
+
+export type TitledInsert = {
+  id: In<number>;
+  title: In<string>;
+};
+
+export interface TitledUpdate {
+  id?: In<number> | Expression<Compat<number>, "Titled" | "~Titled", {}>;
+  title?: In<string> | Expression<Compat<string>, "Titled" | "~Titled", {}>;
+}
+
+export interface TitledUpdateRow {
+  id: In<number>;
+  title?: In<string>;
+}
+
+export interface TitledSpec {
+  readonly name: "Titled";
+  readonly row: Titled;
+  readonly data: TitledData;
+  readonly insert: TitledInsert;
+  readonly update: TitledUpdate;
+  readonly updateRow: TitledUpdateRow;
+  readonly pk: number;
+}
+
+export interface TitledFields<S extends string, H extends readonly Hop[], O extends boolean> {
+  readonly id: Column<O extends true ? number | null : number, S, "id", H>;
+  readonly title: Column<O extends true ? string | null : string, S, "title", H>;
+}
+
+export interface TitledPath<S extends string, H extends readonly Hop[], O extends boolean>
+  extends RelationPath<TitledSpec, S, H>,
+    TitledFields<S, H, O> {
+  /** The relation query set for `load()`: `Titled.objects` bound to this relation. */
+  readonly objects: QuerySetOf<TitledSpec, Titled, "Titled", {}, never, Via<H, undefined, false, S>>;
+}
+
+export interface TitledModel extends ModelClass<TitledSpec>, TitledFields<"Titled", [], false> {
+  /** The unique indexes, for `onConflict(columns, { index })`. */
+  readonly indexes: {
+    readonly titled_title: IndexRef<"Titled">;
+  };
+}
+
+export const Titled = models["Titled"] as unknown as TitledModel;
 

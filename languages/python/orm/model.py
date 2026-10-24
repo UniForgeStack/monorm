@@ -19,6 +19,7 @@ from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionCon
 from collections.abc import Iterable, Sequence
 
 from .expr import ColumnRef, Condition, RelationPath, and_, differs
+from .index import _Indexes
 from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, ManyToMany, Relation, String, key_items
 from .nested import NestedGroup, NestedJson, NestedType, _Access, build_types, leaf_names
 
@@ -118,6 +119,8 @@ class ModelMeta:
         self.guards: tuple[str, ...] = ()
         # Fields that the default `on_conflict(update=True)` list leaves out (`write_assignments`).
         self.upsert_drop: frozenset[str] = frozenset()
+        # The unique indexes `Model.indexes` offers (`on_conflict(index=...)`).
+        self.index_names: tuple[str, ...] = ()
         # Fields that a proxy declares non-null over a nullable stored column.
         self.narrowed: frozenset[str] = frozenset()
         # The class of `objects` (`use_query_set`): `None` for QuerySet, or a "module:Class"
@@ -354,6 +357,9 @@ class Registry:
             meta.key = _key_fields(meta.name, fields, ir.get("primary_key"))
             meta.schema_ir = ir
             meta.filtered = read_flags[meta.name]["filtered"]
+            meta.index_names = tuple(read_flags[meta.name]["indexes"])
+            if isinstance(getattr(model, "indexes", None), (_Indexes, type(None))):
+                setattr(model, "indexes", _Indexes(model, meta.index_names))
             behavior = prepared.get("behavior", {})
             meta.guards = tuple(
                 dict.fromkeys(d["field"] for d in behavior.get("instance_guards", ()) if d["model"] == meta.name)

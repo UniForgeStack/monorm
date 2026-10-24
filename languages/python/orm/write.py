@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import warnings
 import json
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, overload
 
 from .inspection import QueryInspection, _inspect, _native as _inspection_native
 from . import _native
-from .expr import ColumnRef, ConditionLike, Expression, IRContext, Ordering, as_condition
+from .expr import ColumnRef, Expression, IRContext, Ordering
 from .errors import QueryError
+from .index import IndexRef
 from .fields import BelongsTo
 
 if TYPE_CHECKING:
@@ -224,6 +225,18 @@ def _field_names(model: type[Model], columns: tuple[ColumnRef[Any], ...], what: 
     return names
 
 
+def _index_names(model: type[Any], index: IndexRef | Sequence[IndexRef] | None) -> list[str] | None:
+    if index is None:
+        return None
+    refs = [index] if isinstance(index, IndexRef) else index
+    if not isinstance(refs, (list, tuple)) or not all(isinstance(r, IndexRef) for r in refs):
+        raise TypeError(f"on_conflict(index=...) takes {model.__name__}.indexes.<name> or a list of them, got {index!r}")
+    foreign = [r for r in refs if r._model is not model]
+    if foreign:
+        raise TypeError(f"on_conflict(index={foreign[0]!r}) is not an index of {model.__name__}")
+    return [r.name for r in refs]
+
+
 class _Insert:
     __slots__ = (
         "_qs",
@@ -231,7 +244,7 @@ class _Insert:
         "_rows",
         "_provided",
         "_conflict",
-        "_where",
+        "_indexes",
         "_update",
         "_set",
         "_batch_size",
@@ -248,7 +261,7 @@ class _Insert:
         update: list[str] | None = None,
         set_: tuple[list[dict[str, Any]], list[Any]] | None = None,
         batch_size: int | None = None,
-        where: dict[str, Any] | None = None,
+        indexes: list[str] | None = None,
     ) -> None:
         if batch_size is not None and (
             isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1
@@ -259,7 +272,7 @@ class _Insert:
         self._rows = rows
         self._provided = provided
         self._conflict = conflict
-        self._where = where  # partial unique index predicate (IR), parameters in `_set`
+        self._indexes = indexes  # names of the unique indexes the conflict target takes predicates from
         self._update = update  # None: DO NOTHING
         self._set = set_  # DO UPDATE assignments (IR) and their parameters
         self._batch_size = batch_size
@@ -269,7 +282,7 @@ class _Insert:
         self,
         cls: type[Any],
         columns: tuple[ColumnRef[Any], ...],
-        where: ConditionLike | None,
+        index: IndexRef | Sequence[IndexRef] | None,
         update: bool,
         update_fields: Iterable[ColumnRef[Any]] | None,
         update_values: Mapping[str, Any] | None,
@@ -287,13 +300,13 @@ class _Insert:
             raise TypeError(
                 "on_conflict(update=False) skips conflicting rows; it takes no update_fields or update_values"
             )
-        params: list[Any] = []
-        where_ir = None if where is None else as_condition(where)._ir(IRContext(model, params))
-        set_: tuple[list[dict[str, Any]], list[Any]] | None = None if where_ir is None else ([], params)
+        indexes = _index_names(model, index)
         if not update:
             return cls(
-                self._qs, self._fields, self._rows, self._provided, target, None, set_, self._batch_size, where_ir
+                self._qs, self._fields, self._rows, self._provided, target, None, None, self._batch_size, indexes
             )
+        params: list[Any] = []
+        set_: tuple[list[dict[str, Any]], list[Any]] | None = None
         fields = None if update_fields is None else _field_names(model, tuple(update_fields), "update_fields")
         if fields is not None and not fields:
             raise TypeError("on_conflict(update_fields=[]) updates nothing; use update=False to skip conflicting rows")
@@ -314,7 +327,7 @@ class _Insert:
                     f"on_conflict() updates {', '.join(sorted(overlap))} in both update_fields and update_values"
                 )
         return cls(
-            self._qs, self._fields, self._rows, self._provided, target, fields or [], set_, self._batch_size, where_ir
+            self._qs, self._fields, self._rows, self._provided, target, fields or [], set_, self._batch_size, indexes
         )
 
     def inspect(self) -> QueryInspection:
@@ -329,7 +342,7 @@ class _Insert:
             "conflict": self._conflict,
             "update": self._update,
             "set": self._set[0] if self._set else [],
-            "filter": self._where,
+            "indexes": self._indexes,
             "without_defaults": self._qs._without_defaults,
         }
         from .db import _with_scope
@@ -362,7 +375,7 @@ class _Insert:
             self._set,
             self._qs._db,
             self._batch_size,
-            self._where,
+            self._indexes,
             returning=returning,
             without_defaults=self._qs._without_defaults,
         )
@@ -379,8 +392,8 @@ class _Insert:
                 options.append(f"update_fields=[{', '.join(self._update)}]")
             if self._set and self._set[0]:
                 options.append(f"update_values={{{', '.join(a['field'] + ': ...' for a in self._set[0])}}}")
-            if self._where is not None:
-                options.append("where=...")
+            if self._indexes is not None:
+                options.append(f"index=[{', '.join(self._indexes)}]")
             clause = f" on_conflict({', '.join([*self._conflict, *options])})"
         return f"<{type(self).__name__} {self._qs.model.__name__} x{len(self._rows)}{clause}>"
 
@@ -394,7 +407,7 @@ class InsertOne(_Insert, Generic[M]):
     def on_conflict(
         self,
         *columns: ColumnRef[Any],
-        where: ConditionLike | None = None,
+        index: IndexRef | Sequence[IndexRef] | None = None,
         update: Literal[True],
         update_fields: Iterable[ColumnRef[Any]] | None = None,
         update_values: Mapping[str, Any] | None = None,
@@ -403,7 +416,7 @@ class InsertOne(_Insert, Generic[M]):
     def on_conflict(
         self,
         *columns: ColumnRef[Any],
-        where: ConditionLike | None = None,
+        index: IndexRef | Sequence[IndexRef] | None = None,
         update: bool,
         update_fields: Iterable[ColumnRef[Any]] | None = None,
         update_values: Mapping[str, Any] | None = None,
@@ -411,14 +424,17 @@ class InsertOne(_Insert, Generic[M]):
     def on_conflict(
         self,
         *columns: ColumnRef[Any],
-        where: ConditionLike | None = None,
+        index: IndexRef | Sequence[IndexRef] | None = None,
         update: bool,
         update_fields: Iterable[ColumnRef[Any]] | None = None,
         update_values: Mapping[str, Any] | None = None,
     ) -> UpsertOne[Any]:
-        """Handle a row that violates the unique constraint on ``columns``; ``where`` is
-        the predicate of a partial unique index (``ON CONFLICT (...) WHERE ...``). Without
-        ``where``, the one unique schema index with exactly these plain columns gives it.
+        """Handle a row that violates the unique constraint on ``columns``. ``index`` is a
+        unique index of the model on exactly these columns, or a list of them
+        (``Task.indexes.task_one_open``); the predicates of the schema go in the target
+        (``ON CONFLICT (...) WHERE ...``). Without ``index``, the one unique schema index
+        with exactly these plain columns gives it. If any matching index has no predicate,
+        no predicate is sent; two or more matching indexes that are all partial are an error.
 
         ``update=False`` keeps the existing row (``DO NOTHING``). ``update=True`` updates
         it: ``update_fields`` copy the new values, ``update_values`` set values or
@@ -426,7 +442,7 @@ class InsertOne(_Insert, Generic[M]):
         neither, every given field except the conflict columns is overwritten, but not a
         field whose write assignment drops it from the upsert. The update also runs the upsert
         write assignments of the model unless the call sets their fields. ``await`` gives the affected-row count; ``.returning()`` the row."""
-        return self._with_conflict(UpsertOne, columns, where, update, update_fields, update_values)  # type: ignore[no-any-return]
+        return self._with_conflict(UpsertOne, columns, index, update, update_fields, update_values)  # type: ignore[no-any-return]
 
     def __await__(self) -> Generator[Any, None, M]:
         self._used = True
@@ -464,20 +480,23 @@ class InsertMany(_Insert, Generic[M]):
     def on_conflict(
         self,
         *columns: ColumnRef[Any],
-        where: ConditionLike | None = None,
+        index: IndexRef | Sequence[IndexRef] | None = None,
         update: bool,
         update_fields: Iterable[ColumnRef[Any]] | None = None,
         update_values: Mapping[str, Any] | None = None,
     ) -> InsertMany[M]:
-        """Handle rows that violate the unique constraint on ``columns``; ``where`` is
-        the predicate of a partial unique index (``ON CONFLICT (...) WHERE ...``). Without
-        ``where``, the one unique schema index with exactly these plain columns gives it.
+        """Handle rows that violate the unique constraint on ``columns``. ``index`` is a
+        unique index of the model on exactly these columns, or a list of them
+        (``Task.indexes.task_one_open``); the predicates of the schema go in the target
+        (``ON CONFLICT (...) WHERE ...``). Without ``index``, the one unique schema index
+        with exactly these plain columns gives it. If any matching index has no predicate,
+        no predicate is sent; two or more matching indexes that are all partial are an error.
 
         ``update=False`` skips conflicting rows (``DO NOTHING``). ``update=True``
         updates them: ``update_fields`` copy the new values, ``update_values`` set values
         or expressions such as ``{"views": Post.views + excluded(Post.views)}``. With
         neither, every given field except the conflict columns is overwritten."""
-        return self._with_conflict(InsertMany, columns, where, update, update_fields, update_values)  # type: ignore[no-any-return]
+        return self._with_conflict(InsertMany, columns, index, update, update_fields, update_values)  # type: ignore[no-any-return]
 
     def returning(self) -> InsertReturning[list[M]]:
         """``RETURNING`` the rows: ``await`` gives the instances in input order; rows
@@ -538,7 +557,7 @@ class CopyInsert(Generic[M]):
     def on_conflict(
         self,
         *columns: ColumnRef[Any],
-        where: ConditionLike | None = None,
+        index: IndexRef | Sequence[IndexRef] | None = None,
         update: bool,
         update_fields: Iterable[ColumnRef[Any]] | None = None,
         update_values: Mapping[str, Any] | None = None,

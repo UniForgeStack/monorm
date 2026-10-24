@@ -87,6 +87,20 @@ export interface ModelClass<M extends ModelSpec> {
   readonly "~spec"?: M;
 }
 
+/**
+ * A unique index of one model, for `onConflict(columns, { index })`: `Task.indexes.task_one_open`.
+ * The name is the index `map:` name, or the generated name of an unnamed index.
+ */
+export class IndexRef<M extends string = string> {
+  /** @internal Brands the reference with its model, so another model's index does not type-check. */
+  declare readonly "~model"?: M;
+  constructor(readonly model: M, readonly name: string) {}
+
+  toString(): string {
+    return `${this.model}.indexes.${this.name}`;
+  }
+}
+
 /** What every instance has, besides its columns and relations. Instances are snapshots
  * of a row: columns are read-only, writes are explicit statements. */
 export interface Instance<M extends ModelSpec> {
@@ -120,6 +134,8 @@ export class ModelMeta implements Source {
   declare attachInputFields?: readonly FieldMeta[];
   /** The engine's read flag: reads of this model are filtered by default; set once by `define()`. */
   filtered = false;
+  /** The names of the unique indexes `onConflict({ index })` takes; set once by `define()`. */
+  indexNames: readonly string[] = [];
   /** Fields whose loaded value an instance update or delete must match (`instance_guards`); set once by `define()`. */
   guards: readonly FieldMeta[] = [];
   /** IR names of fields that the default `onConflict` update list leaves out (`write_assignments`); set once by `define()`. */
@@ -1023,8 +1039,17 @@ export function define(
     reg.add(meta);
     out[m.name] = meta.model;
   }
-  const flags = JSON.parse(reg.prepareFrom(prepared).readFlags()) as Record<string, { filtered: boolean }>;
-  for (const name of Object.keys(out)) reg.get(name).filtered = flags[name]?.filtered ?? false;
+  const flags = JSON.parse(reg.prepareFrom(prepared).readFlags()) as Record<string, { filtered: boolean; indexes?: string[] }>;
+  for (const name of Object.keys(out)) {
+    const meta = reg.get(name);
+    meta.filtered = flags[name]?.filtered ?? false;
+    meta.indexNames = flags[name]?.indexes ?? [];
+    // a field named `indexes` keeps its column
+    if (!("indexes" in meta.model)) {
+      const refs = Object.fromEntries(meta.indexNames.map((n) => [n, new IndexRef(name, n)]));
+      Object.defineProperty(meta.model, "indexes", { value: Object.freeze(refs), enumerable: true });
+    }
+  }
   destination.publish(reg);
   Object.defineProperty(out, "$types", { value: reg.valueClasses() });
   return out;

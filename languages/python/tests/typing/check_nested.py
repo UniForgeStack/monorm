@@ -4,9 +4,9 @@ with mypy and pyright. Never executed."""
 from datetime import datetime
 from typing import assert_type
 
-from nested.models import Address, Geo, Opt, Plain, Shop, Tagged, Wrap, Wrapped
+from nested.models import Address, Geo, Opt, Plain, Shop, Slugged, Tagged, Wrap, Wrapped
 
-from orm import ColumnRef, Condition
+from orm import ColumnRef, Condition, IndexRef
 
 
 def read(shop: Shop) -> None:
@@ -54,3 +54,13 @@ def writes() -> None:
     Shop.objects.update(address={"floor": "x"})  # E: floor is an int
     Shop.objects.update(snapshot=None)  # E: snapshot is not nullable
     Shop.objects.update(address_city="x")  # E: a leaf name cannot be set
+
+
+def indexes() -> None:
+    assert_type(Slugged.indexes.slugged_slug, IndexRef)
+    assert_type(Slugged.indexes["any-name"], IndexRef)
+    Slugged.objects.insert(id=1, slug="a").on_conflict(Slugged.slug, index=Slugged.indexes.slugged_slug, update=False)
+    Slugged.objects.insert(id=1, slug="a").on_conflict(Slugged.slug, index=[Slugged.indexes.slugged_slug], update=False)
+    Slugged.indexes.nope  # E: no unique index of that name
+    Slugged.indexes.slugged_id_idx  # E: a non-unique index is not offered
+    Plain.indexes  # E: a model without a unique index has no indexes member

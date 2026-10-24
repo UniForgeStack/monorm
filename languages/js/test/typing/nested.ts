@@ -1,6 +1,7 @@
 /** Static checks of the generated nested types; never run. */
 
-import { Address, Geo, Opt, Plain, Shop, Tagged, Wrap, Wrapped, type AddressPatch } from "../nested/models.js";
+import type { IndexRef } from "../../src/index.js";
+import { Address, Geo, Opt, Plain, Shop, Slugged, Tagged, Titled, Wrap, Wrapped, type AddressPatch } from "../nested/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 declare function same<A, B>(...check: Equal<A, B> extends true ? [] : [error: "types differ"]): void;
@@ -44,4 +45,18 @@ export async function nested() {
   same<typeof opt.t, Tagged | null>();
   const lats = await Wrapped.objects.select({ lat: Wrapped.w.inner.lat });
   same<typeof lats[number]["lat"], number | null>();
+}
+
+export async function indexes() {
+  same<typeof Slugged.indexes.slugged_slug, IndexRef<"Slugged">>();
+  await Slugged.objects.insert({ id: 1, slug: "a" }).onConflict(Slugged.slug, { index: Slugged.indexes.slugged_slug, update: false });
+  await Slugged.objects.insert({ id: 1, slug: "a" }).onConflict(Slugged.slug, { index: [Slugged.indexes.slugged_slug], update: false });
+  // @ts-expect-error an index of another model
+  await Slugged.objects.insert({ id: 1, slug: "a" }).onConflict(Slugged.slug, { index: Titled.indexes.titled_title, update: false });
+  // @ts-expect-error no unique index of that name
+  Slugged.indexes.nope;
+  // @ts-expect-error a non-unique index is not offered
+  Slugged.indexes.slugged_id_idx;
+  // @ts-expect-error a model without a unique index has no indexes member
+  Plain.indexes;
 }

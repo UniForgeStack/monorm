@@ -137,7 +137,7 @@ export interface NativeEngine extends NativeInspector {
     tx: NativeTransaction | null,
     allowed?: readonly string[],
     batchSize?: number | null,
-    conflictWhere?: string | null,
+    conflictIndexes?: readonly string[] | null,
     trace?: NativeTrace | null,
     returning?: boolean,
     scope?: string | null,

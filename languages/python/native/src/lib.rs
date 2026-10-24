@@ -57,8 +57,8 @@ fn inspect_insert(schema: &schema::Schema, target: Target, model: &str, fields: 
     options: &str, params: &[Bound<'_, PyAny>], batch_size: Option<usize>, returning: bool) -> PyResult<String> {
     let opts: orm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(|e| query_err(e.to_string()))?;
     let conflict = opts.conflict.map(|target| match opts.update {
-        Some(update) => Conflict::Update { target, filter: opts.filter, update, set: opts.set },
-        None => Conflict::Nothing { target, filter: opts.filter },
+        Some(update) => Conflict::Update { target, index: orm_engine::exec::index_target(opts.indexes), update, set: opts.set },
+        None => Conflict::Nothing { target, index: orm_engine::exec::index_target(opts.indexes) },
     });
     let values = convert_rows(schema, model, fields, rows, true)?;
     let params = orm_engine::params::Scoped { params: &PyParams(params), scope: &opts.scope };
@@ -536,12 +536,12 @@ impl Engine {
     /// With `conflict` (unique field names) rows hitting that constraint update the
     /// `update` fields from the new row and apply the `set` assignments (JSON list of
     /// `{"field", "value"}` IR, parameters in `params`), or are skipped if `update` is
-    /// None. `conflict_where` (condition IR, parameters in `params`) is the predicate of a
-    /// partial unique index.
+    /// None. `conflict_indexes` names the unique indexes whose predicates the conflict
+    /// target carries (None: the index on exactly the conflict columns).
     /// Rows beyond the parameter limit, or beyond `batch_size`, go to further statements
     /// in one transaction (inside `tx` when given). `without_defaults` (JSON: `false`,
     /// `true` or a list of names) skips defaults of the model in the DO UPDATE condition.
-    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_where = None, trace = None, returning = true, scope = None, without_defaults = "false"))]
+    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_indexes = None, trace = None, returning = true, scope = None, without_defaults = "false"))]
     #[allow(clippy::too_many_arguments)]
     fn insert<'py>(
         &self,
@@ -557,7 +557,7 @@ impl Engine {
         db: Option<Bound<'py, PyAny>>,
         allowed: Vec<String>,
         batch_size: Option<usize>,
-        conflict_where: Option<&str>,
+        conflict_indexes: Option<Vec<String>>,
         trace: Option<&Bound<'py, Trace>>,
         returning: bool,
         scope: Option<&str>,
@@ -569,13 +569,10 @@ impl Engine {
             Some(json) => serde_json::from_str(json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
             None => vec![],
         };
-        let filter: Option<ir::Expr> = match conflict_where {
-            Some(json) => Some(serde_json::from_str(json).map_err(|e| query_err(format!("invalid condition IR: {e}")))?),
-            None => None,
-        };
+        let index = orm_engine::exec::index_target(conflict_indexes);
         let conflict = conflict.map(|target| match update {
-            Some(update) => Conflict::Update { target, filter, update, set },
-            None => Conflict::Nothing { target, filter },
+            Some(update) => Conflict::Update { target, index, update, set },
+            None => Conflict::Nothing { target, index },
         });
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
         let scope = serde_json::from_str(scope.unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;

@@ -142,14 +142,43 @@ async def test_bulk_writes(sqlite, observe_queries):
             [{"email": "n1@x.io", "name": "N"}, {"email": "u1@x.io", "name": "N"}], batch_size=1
         )
     assert not await Author.objects.using(db).filter(Author.email == "n1@x.io").exists()
-    # A boolean partial-index predicate: SQLite matches it only as a literal.
-    await db.execute("CREATE UNIQUE INDEX authors_active_name ON author (name) WHERE active")
-    for _ in range(2):
-        await (
-            Author.objects.using(db)
-            .insert(email="v@x.io", name="U0")
-            .on_conflict(Author.name, where=Author.active, update=False)
-        )
+
+
+PEOPLE = """
+    datasource db { provider = "sqlite" }
+    model Person {
+      id     BigInt  @id @default(autoincrement())
+      name   String
+      active Boolean @default(true)
+      shown  Boolean @default(true)
+      @@index([name], unique: true, where: raw("active"), map: "person_name_active")
+      @@index([name], unique: true, where: raw("shown"), map: "person_name_shown")
+    }
+"""
+
+
+async def test_on_conflict_index_matches_a_boolean_predicate_and_takes_one_index(observe_queries):
+    registry, m = models(PEOPLE)
+    Person = m["Person"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        people = Person.objects.using(db)
+        # SQLite matches a boolean partial-index predicate only as written in the schema.
+        with observe_queries(db) as events:
+            for _ in range(2):
+                await people.insert(name="U0").on_conflict(Person.name, index=Person.indexes.person_name_active, update=False)
+        assert 'ON CONFLICT ("name") WHERE active DO NOTHING' in events[0].sql
+        assert await people.count() == 1
+        with pytest.raises(orm.QueryError, match="matches 2 unique indexes of Person"):
+            await people.insert(name="U1").on_conflict(Person.name, update=False)
+        with pytest.raises(orm.QueryError, match="SQLite takes one index"):
+            await people.insert(name="U1").on_conflict(
+                Person.name, index=[Person.indexes.person_name_active, Person.indexes.person_name_shown], update=False
+            )
+    finally:
+        await db.drop_tables()
+        await db.close()
 
 
 async def test_outer_through_a_relation_path(sqlite):
@@ -752,9 +781,12 @@ async def test_on_conflict_infers_the_partial_unique_index():
         row, created = await accounts.get_or_insert(email="c@x.io")
         again, created_again = await accounts.get_or_insert(email="c@x.io")
         assert (created, created_again, again.id) == (True, False, row.id)
-        # Two indexes with the same columns: no guess, today's SQL.
-        with pytest.raises(orm.DatabaseError):
+        # Two indexes with the same columns: no guess; the error names the candidates.
+        with pytest.raises(orm.QueryError, match="twice_email_idx, twice_other"):
             await Twice.objects.using(db).insert(email="a@x.io").on_conflict(Twice.email, update=False)
+        await Twice.objects.using(db).insert(email="a@x.io").on_conflict(
+            Twice.email, index=Twice.indexes.twice_other, update=False
+        )
     finally:
         await db.close()
 

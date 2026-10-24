@@ -10,6 +10,7 @@ use sea_query::{InsertStatement, UpdateStatement, Value};
 use crate::db::{self, BoxFuture, Cell, DbError, DbResult, Executor, RowSet};
 use crate::error::{query_err, Error, Result};
 use crate::params::{null_of, Params};
+pub use crate::plan::OnConflictTarget;
 use crate::plan::{self, Plan, PrefetchPlan, SelectPlan};
 use orm_core::dialect::{Dialect, Target};
 use orm_core::ir::{self, ValueType};
@@ -343,13 +344,18 @@ pub fn field_types(schema: &Schema, model: &str, fields: &[String]) -> Result<Ve
     fields.iter().map(|f| m.field(f).map(|f| f.value_type())).collect::<std::result::Result<_, _>>().map_err(query_err)
 }
 
-/// What an insert does with rows hitting a unique constraint (field names; `filter`, the
-/// partial unique index's predicate, and `set` are IR whose parameters are the insert's
-/// `params`).
+/// What an insert does with rows hitting a unique constraint (field names; `index` names the
+/// unique indexes whose predicates the target carries; `set` is IR whose parameters are the
+/// insert's `params`).
 #[derive(Clone)]
 pub enum Conflict {
-    Nothing { target: Vec<String>, filter: Option<ir::Expr> },
-    Update { target: Vec<String>, filter: Option<ir::Expr>, update: Vec<String>, set: Vec<ir::Assignment> },
+    Nothing { target: Vec<String>, index: OnConflictTarget },
+    Update { target: Vec<String>, index: OnConflictTarget, update: Vec<String>, set: Vec<ir::Assignment> },
+}
+
+/// The conflict target of the index names a binding passes (None: infer).
+pub fn index_target(indexes: Option<Vec<String>>) -> OnConflictTarget {
+    indexes.map_or(OnConflictTarget::Infer, OnConflictTarget::Indexes)
 }
 
 /// `INSERT ... RETURNING` every column. `rows` hold a value per field (`None`: the
@@ -390,8 +396,8 @@ fn plan_insert_with(
     }
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let on_conflict = conflict.map(|c| match c {
-        Conflict::Nothing { target, filter } => plan::OnConflict::Nothing(target, filter),
-        Conflict::Update { target, filter, update, set } => plan::OnConflict::Update(target, filter, update, set),
+        Conflict::Nothing { target, index } => plan::OnConflict::Nothing(target, index),
+        Conflict::Update { target, index, update, set } => plan::OnConflict::Update(target, index, update, set),
     });
     let (stmt, types): (InsertStatement, _) =
         plan::plan_insert(schema, target, model, fields, rows, on_conflict, params, returning, without_defaults)?;

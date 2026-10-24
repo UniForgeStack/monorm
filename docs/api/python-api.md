@@ -1149,7 +1149,7 @@ await post.load(Post.views, reload=True)         # some fields
   `bench/copy_insert.py` compares it with `insert_many(rows)`: 200,000 posts in
   about 1.2 s against 1.8 s, so about x1.5 (measured 2026-10-09 on a loaded machine,
   Postgres in Docker, best of 3; the batched insert also built the instances).
-* `on_conflict(*columns, where=None, update, update_fields=None, update_values=None)`:
+* `on_conflict(*columns, index=None, update, update_fields=None, update_values=None)`:
   `columns` are the columns of one unique constraint (several for a composite one;
   unpack a list with `*cols`). `update` is required and keyword-only.
   `update=False` keeps the existing row (`DO NOTHING`). `update=True` updates it:
@@ -1160,16 +1160,26 @@ await post.load(Post.views, reload=True)         # some fields
   option, every field passed to the insert except the conflict columns is
   overwritten, so `created_at` isn't reset to `now()`. An empty `update_fields` or
   `update_values`, and either one with `update=False`, raise `TypeError`.
-* `on_conflict(*columns, where=cond, update=...)` picks a partial unique index:
-  `.on_conflict(Task.shop, Task.task_type, where=Task.deleted_at.is_null(), update=False)` gives
-  `ON CONFLICT (shop, task_type) WHERE "tasks"."deleted_at" IS NULL`. The database
-  uses the condition to find the index, so the condition goes into the SQL text with
-  its values written out, not as parameters. A boolean column (`where=Task.active`)
-  gives the bare column, the form SQLite needs. Without `where`, the schema decides:
-  when exactly one `@@index([...], unique: true, where: ...)` has these plain
-  columns (no expression, no sort), its `where` text goes into the conflict target.
-  So `insert()`, `insert_many()` and `get_or_insert()` use that partial index. An
-  explicit `where=` wins. With no such index, or with several, there is no predicate.
+* `on_conflict(*columns, index=Model.indexes.name, update=...)` names a unique index of the
+  model on exactly these columns:
+  `.on_conflict(Task.shop, Task.task_type, index=Task.indexes.task_one_open, update=False)`.
+  `index=` also takes a list (Postgres only; SQLite takes one index).
+  `Model.indexes.<name>` has one entry per `@@index([...], unique: true)` of the schema,
+  named by its `map:` name, or else `<table>_<columns>_idx`. The predicate comes from the
+  schema only: `ON CONFLICT (shop, task_type) WHERE <predicate>`, written as in the schema,
+  never from a call value. A list gives `WHERE (a) AND (b)`. A name that is not a unique
+  index of the model on exactly the conflict columns raises `QueryError` before the
+  database. A reference to another model's index raises `TypeError`. `index=` supplies a
+  predicate; it is not an exclusive selector: the conflict still fires for every unique
+  index that the target covers. Without `index=`, the one unique index on exactly these
+  plain columns (no expression, no sort) gives the predicate, so `insert()`,
+  `insert_many()` and `get_or_insert()` use it. If any matching index has no predicate,
+  no predicate is sent. When two or more matching indexes are all partial, the call
+  raises `QueryError` and lists the candidates: pass `index=`. `index=` can name only
+  an index that the schema declares. To name an index that you made by hand in the
+  database, declare it in the schema first. The next migration then emits
+  `CREATE UNIQUE INDEX` without `IF NOT EXISTS`, so drop the old index first. `orm pull`
+  writes such an index into the schema as `where: raw(...)`.
 * `get_or_insert(defaults=..., **lookup)` reads the row that matches `lookup`.
   When there is none, it inserts `lookup` and `defaults` with
   `ON CONFLICT (lookup) DO NOTHING`, and reads again when a concurrent insert wins.

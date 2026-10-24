@@ -43,6 +43,12 @@ pub(super) fn declares_generic(ir: &SchemaIr, query_sets: &std::collections::BTr
 }
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// Whether `Model.indexes` can hold the unique indexes of `m`: no field or relation is named `indexes` once `name` maps the names.
+pub(super) fn indexes_free(m: &Model, name: impl Fn(&str) -> String) -> bool {
+    !m.fields().iter().any(|f| name(&f.name) == "indexes") && !m.ir.relations.iter().any(|r| name(&r.name) == "indexes")
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 pub(super) fn type_of<'a>(ir: &'a SchemaIr, name: &str) -> Option<&'a TypeIr> {
     ir.types.iter().find(|t| t.name == name)
 }
@@ -291,6 +297,27 @@ mod reference_tests {
         assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("--model-methods") );
         options.model_methods = [("Nope".to_string(), "a:B".to_string())].into();
         assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("no model Nope"));
+    }
+
+    #[test]
+    fn unique_indexes_reach_both_generators() {
+        let src = "model Task {\n id Int @id\n slug String\n @@index([slug], unique: true, map: \"task_slug\")\n @@index([slug, id], unique: true, map: \"a-b\")\n @@index([id])\n}\n\
+                   model Odd {\n id Int @id\n code String\n @@index([code], unique: true, map: \"odd-name\")\n}\n\
+                   model Shadow {\n id Int @id\n indexes Int\n @@index([indexes], unique: true, map: \"shadow_indexes\")\n}\n\
+                   model Plain {\n id Int @id\n}";
+        let ir = crate::dsl::compile(src, None).unwrap();
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        let py = python::generate(&ir, &schema, "schema.prisma").unwrap().stub;
+        assert!(py.contains("    indexes: ClassVar[_TaskIndexes]"));
+        assert!(py.contains("class _TaskIndexes:\n    task_slug: IndexRef\n    def __getitem__(self, name: str) -> IndexRef: ...\n"));
+        assert!(py.contains("class _OddIndexes:\n    def __getitem__(self, name: str) -> IndexRef: ...\n"));
+        assert!(!py.contains("a-b: IndexRef") && !py.contains("_ShadowIndexes") && !py.contains("_PlainIndexes"));
+        assert!(py.contains(" IndexRef, "));
+        let ts = typescript::generate(&ir, &schema, "schema.prisma", "orm").unwrap();
+        assert!(ts.contains("readonly indexes: {\n    readonly task_slug: IndexRef<\"Task\">;\n    readonly \"a-b\": IndexRef<\"Task\">;\n  };"));
+        assert!(ts.contains("readonly \"odd-name\": IndexRef<\"Odd\">;"));
+        assert!(!ts.contains("IndexRef<\"Shadow\">") && !ts.contains("IndexRef<\"Plain\">"));
+        assert!(ts.contains("type IndexRef"));
     }
 
     #[test]

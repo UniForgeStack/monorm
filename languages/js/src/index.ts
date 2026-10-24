@@ -44,7 +44,7 @@ export {
   window,
 } from "./expr.js";
 export type { AggregateOptions, CaseDefault, Many, Compat, Operand, OrderOptions } from "./expr.js";
-export { ModelMeta, Registry, column, define, describe, load, loads, registry } from "./model.js";
+export { IndexRef, ModelMeta, Registry, column, define, describe, load, loads, registry } from "./model.js";
 export type { FieldInfo, ModelInfo, RelationInfo } from "./model.js";
 export type { Instance, ModelClass, Row, SchemaIR } from "./model.js";
 export { BoundQuerySet, of } from "./bound.js";

@@ -30,6 +30,7 @@ from .errors import (
     VersionConflict,
     WriteProtected,
 )
+from .index import IndexRef
 from .pagination import Page
 from .expr import (
     ColumnRef,
@@ -116,6 +117,7 @@ __all__ = [
     "Returning",
     "Expression",
     "ColumnRef",
+    "IndexRef",
     "RelationPath",
     "Condition",
     "Ordering",

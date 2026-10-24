@@ -45,7 +45,7 @@ import {
 } from "./expr.js";
 import { NotLoaded, QueryError, TransactionRequired } from "./errors.js";
 import { irNames, type DefaultNames, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
-import { DB, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
+import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
@@ -249,8 +249,16 @@ export interface OnConflictOptions<M extends ModelSpec, U extends boolean = bool
   readonly update: U;
   readonly updateFields?: readonly OwnColumn<M>[];
   readonly updateValues?: M["update"];
-  /** The predicate of a partial unique index: `ON CONFLICT (...) WHERE ...`. Without it, the one unique schema index with exactly these plain columns gives it. */
-  readonly where?: Expression<boolean | null, string, unknown>;
+  /**
+   * The unique index, or the list of unique indexes, of the model on exactly these columns:
+   * `Task.indexes.task_one_open`. Its schema predicate goes into the conflict target
+   * (`ON CONFLICT (...) WHERE ...`). The conflict still fires for any unique index it
+   * covers: `index` supplies the predicate, it does not select one index. Without it, the one
+   * unique schema index with exactly these plain columns gives the predicate. If any matching
+   * index has no predicate, no predicate is sent; two or more matching indexes that are all
+   * partial reject with QueryError. A list works on Postgres only.
+   */
+  readonly index?: IndexRef<M["name"]> | readonly IndexRef<M["name"]>[];
 }
 
 /** A checked single-row insert (`QuerySet.prepareInsert`). */
@@ -1718,7 +1726,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     let update: string[] | null = null;
     let set: string | null = null;
     const params: unknown[] = [];
-    let conflictWhere: string | null = null;
+    let conflictIndexes: string[] | null = null;
     this.checkBatchSize(batchSize);
     if (onConflict) {
       const o = onConflict.options as OnConflictOptions<M>;
@@ -1729,8 +1737,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       if (typeof o?.update !== "boolean") {
         throw new TypeError("onConflict needs { update: true } or { update: false }");
       }
-      if (o.where !== undefined) {
-        conflictWhere = JSON.stringify(asCondition(o.where).ir(new IRContext(this.meta, params)));
+      if (o.index !== undefined) {
+        conflictIndexes = (Array.isArray(o.index) ? o.index : [o.index]).map((ref: unknown) => {
+          if (!(ref instanceof IndexRef) || ref.model !== this.meta.name) {
+            throw new TypeError(`onConflict { index } takes ${this.meta.name}.indexes.<name> or a list of them`);
+          }
+          return ref.name;
+        });
       }
       if (!o.update && (o.updateFields !== undefined || o.updateValues !== undefined)) {
         throw new TypeError("onConflict { update: false } skips conflicting rows; it takes no updateFields or updateValues");
@@ -1761,23 +1774,23 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     }
     const [scopeJson, scopedParams] = withScope("{}", params);
     const scope: Record<string, number> = (JSON.parse(scopeJson) as { scope?: Record<string, number> }).scope ?? {};
-    return { prepared, conflict, update, set, params: scopedParams, conflictWhere, scope };
+    return { prepared, conflict, update, set, params: scopedParams, conflictIndexes, scope };
   }
 
   protected inspectInsert(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null): QueryInspection {
-    const { prepared, conflict, update, set, params, conflictWhere, scope } = this.insertPlan(rows, onConflict, batchSize);
+    const { prepared, conflict, update, set, params, conflictIndexes, scope } = this.insertPlan(rows, onConflict, batchSize);
     if (!prepared.rows.length) return emptyInspection();
-    const options = JSON.stringify({ conflict, update, set: set ? JSON.parse(set) : [], filter: conflictWhere ? JSON.parse(conflictWhere) : null, scope, without_defaults: this.state.withoutDefaults });
+    const options = JSON.stringify({ conflict, update, set: set ? JSON.parse(set) : [], indexes: conflictIndexes, scope, without_defaults: this.state.withoutDefaults });
     return call(() => inspection(inspector(this.meta, this.state.db).inspectInsert(this.meta.name, prepared.fields, prepared.rows, options, params, batchSize, returning)));
   }
 
   /** @internal */
   protected async insertRows(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null): Promise<M["row"][] | number> {
-    const { prepared, conflict, update, set, params, conflictWhere, scope } = this.insertPlan(rows, onConflict, batchSize);
+    const { prepared, conflict, update, set, params, conflictIndexes, scope } = this.insertPlan(rows, onConflict, batchSize);
     if (!prepared.rows.length) return returning ? [] : 0;
     const db = this.db();
     const res = await db_wait(db, (tx, allowed, trace) =>
-      db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictWhere, trace, returning, JSON.stringify(scope), JSON.stringify(this.state.withoutDefaults)),
+      db.engine.insert(this.meta.name, prepared.fields, prepared.rows, conflict, update, set, params, tx, allowed, batchSize, conflictIndexes, trace, returning, JSON.stringify(scope), JSON.stringify(this.state.withoutDefaults)),
       ["insert", this.meta.name, prepared.fields, conflict],
     );
     return returning ? (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][]) : (res as number);

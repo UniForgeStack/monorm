@@ -446,6 +446,28 @@ pub fn object_name(parts: &[&str]) -> String {
     format!("{}{suffix}", &name[..cut])
 }
 
+/// The database name of an index: its `map:` name, else `<table>_<keys>_idx`.
+pub fn index_name(m: &Model, ix: &crate::ir::IndexIr) -> Result<String> {
+    if let Some(n) = &ix.name {
+        return Ok(n.clone());
+    }
+    let keys = ix
+        .columns
+        .iter()
+        .map(|c| match (&c.field, &c.expr) {
+            (Some(f), None) => m.field(f).map(|f| f.column.clone()).map_err(|e| e.to_string()),
+            (None, Some(e)) => Ok(expr_tag(e)),
+            _ => Err(format!("model {}: each index key needs exactly one of field / expr", m.ir.name)),
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(object_name(&[m.table(), &keys.join("_"), "idx"]))
+}
+
+/// The names of the unique indexes of the model: the values `Model.indexes` offers.
+pub fn unique_index_names(m: &Model) -> Vec<String> {
+    m.ir.indexes.iter().filter(|ix| ix.unique).filter_map(|ix| index_name(m, ix).ok()).collect()
+}
+
 /// Stable short tag for expressions in generated names.
 fn expr_tag(expr: &str) -> String {
     format!("expr{:08x}", fnv1a(&normalize_ws(expr)))
@@ -774,12 +796,8 @@ impl Builder<'_> {
             if let Some(w) = &ix.where_ {
                 self.require_expr(w, "index predicate");
             }
-            let name = match &ix.name {
-                Some(n) => n.clone(),
-                None => object_name(&[&t, &Self::keys_tag(&keys), "idx"]),
-            };
             table.indexes.push(Index {
-                name: self.claim(name, m)?,
+                name: self.claim(index_name(m, ix)?, m)?,
                 unique: ix.unique,
                 method,
                 keys,

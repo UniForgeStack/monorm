@@ -15,7 +15,7 @@ pub struct InsertOptions {
     pub conflict: Option<Vec<String>>,
     pub update: Option<Vec<String>>,
     pub set: Vec<orm_core::ir::Assignment>,
-    pub filter: Option<orm_core::ir::Expr>,
+    pub indexes: Option<Vec<String>>,
     #[serde(default)]
     pub without_defaults: orm_core::ir::Bypass,
 }

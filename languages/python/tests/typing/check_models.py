@@ -76,7 +76,9 @@ async def check() -> None:
     await User.objects.get_or_insert(emial="a")  # E: a misspelled lookup key
     await User.objects.get_or_insert(email=1)  # E: a lookup value of the wrong type
     await User.objects.get_or_insert(email="a", defaults={"nme": "A"})  # E: a misspelled default key
-    await User.objects.insert(email="a", name="A").on_conflict(User.email, where=User.name == "A", update=False)
+    await User.objects.insert(email="a", name="A").on_conflict(User.email, update=False)
+    await User.objects.insert(email="a", name="A").on_conflict(User.email, where=User.name == "A", update=False)  # E: where= was removed
+    await User.objects.insert(email="a", name="A").on_conflict(User.email, index="user_email", update=False)  # E: an index is a Model.indexes member
     async for p in Post.objects.order_by(Post.created_at.desc())[:10]:
         assert_type(p, Post)
     assert_type(-Post.created_at, Ordering)

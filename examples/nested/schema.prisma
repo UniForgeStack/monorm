@@ -1,4 +1,5 @@
 // Source of truth for examples/nested: nested value types on both storages.
+// Slugged and Titled hold the unique indexes that the typing checks read as `Model.indexes`.
 // models.py / models.pyi / models.ts next to this file are generated from it.
 
 datasource db {
@@ -46,4 +47,18 @@ model Wrapped {
 model Opt {
   id Int     @id
   t  Tagged?
+}
+
+model Slugged {
+  id   Int    @id
+  slug String
+  @@index([slug], unique: true, map: "slugged_slug")
+  @@index([slug, id], unique: true, map: "slugged_slug_id")
+  @@index([id])
+}
+
+model Titled {
+  id    Int    @id
+  title String
+  @@index([title], unique: true, map: "titled_title")
 }

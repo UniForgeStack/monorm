@@ -62,64 +62,6 @@ test("insertMany batchSize is checked", async () => {
   await assert.rejects(User.objects.insertMany([], { batchSize: 0 }), TypeError);
 });
 
-// -- upserts on a partial unique index -------------------------------------------------------
-
-async function withAnonIndex(f: () => Promise<void>): Promise<void> {
-  const db = getDatabase();
-  await db.execute("CREATE UNIQUE INDEX comments_anon_body ON comments (post_id, body) WHERE author_id IS NULL");
-  try {
-    await f();
-  } finally {
-    await db.execute("DROP INDEX comments_anon_body");
-  }
-}
-
-test("onConflict where picks a partial unique index", () =>
-  withAnonIndex(async () => {
-    const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-    const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
-    const first = await Comment.objects.insert({ post, body: "hi" });
-    await assert.rejects(
-      Comment.objects.insert({ post, body: "hi" }).onConflict([Comment.postId, Comment.body], { update: false }),
-      /no unique or exclusion constraint/,
-    );
-    const where = Comment.authorId.isNull();
-    assert.equal(await Comment.objects.insert({ post, body: "hi" }).onConflict([Comment.postId, Comment.body], { where, update: false }).returning(), null);
-    const row = await Comment.objects
-      .insert({ post, body: "hi" })
-      .onConflict([Comment.postId, Comment.body], { where, update: true, updateValues: { body: "hi again" } })
-      .returning();
-    assert.equal(row.id, first.id);
-    assert.equal(row.body, "hi again");
-    await Comment.objects.insertMany([
-      { post, author: alice, body: "hi" },
-      { post, author: alice, body: "hi" },
-    ]);
-    assert.equal(await Comment.objects.count(), 3);
-  }));
-
-test("onConflict where with a boolean column", async () => {
-  // The predicate is SQL text: a parameter would stop matching the index from the sixth
-  // run of the prepared statement, when Postgres plans it generically.
-  await getDatabase().execute("CREATE UNIQUE INDEX posts_published_title ON posts (author_id, title) WHERE published");
-  const db = await connect(DATABASE_URL, { maxConnections: 1, default: false });
-  try {
-    const posts = Post.objects.using(db);
-    const alice = await User.objects.using(db).insert({ email: "a@x.io", name: "A" });
-    for (let i = 0; i < 8; i++) {
-      await posts
-        .insert({ author: alice, title: "t", body: `b${i}`, published: true })
-        .onConflict([Post.authorId, Post.title], { where: Post.published.eq(true), update: true, updateFields: [Post.body] });
-    }
-    assert.deepEqual((await posts).map((p) => p.body), ["b7"]);
-  } finally {
-    await db.close();
-    await getDatabase().execute("DROP INDEX posts_published_title");
-  }
-});
-
-// -- getOrInsert ----------------------------------------------------------------------------------
-
 // -- insert results and onConflict options ---------------------------------------------------
 
 test("insertMany gives a count; returning gives the rows", async () => {

@@ -1504,27 +1504,6 @@ impl<'s> Planner<'s> {
         }
     }
 
-    /// A partial unique index's predicate: [`Self::cond`], with `col = TRUE` as the bare
-    /// column, the only form of a boolean predicate that SQLite matches to the index.
-    fn index_cond(&mut self, e: &Expr) -> Result<SExpr> {
-        match e {
-            Expr::And { items } => Ok(fold(items.iter().map(|i| self.index_cond(i)).collect::<Result<_>>()?, true)),
-            Expr::Cmp { op: CmpOp::Eq, l, r } if matches!(**l, Expr::Col { .. }) && self.is_true(r)? => {
-                let hint = self.hint_of(l);
-                self.value(l, hint)
-            }
-            _ => self.cond(e),
-        }
-    }
-
-    fn is_true(&self, e: &Expr) -> Result<bool> {
-        Ok(match e {
-            Expr::Const { value } => *value,
-            Expr::Param { i } => matches!(self.params.value(*i, None)?, sea_query::Value::Bool(Some(true))),
-            _ => false,
-        })
-    }
-
     fn leaf(&mut self, e: &Expr) -> Result<SExpr> {
         Ok(match e {
             Expr::Cmp { op, l, r } => {
@@ -3334,12 +3313,14 @@ pub fn current_filter_json(schema: &Schema, select_json: &str) -> Result<serde_j
     }).collect()
 }
 
-/// The static read flags of each model, `{model: {filtered, fields, related}}`, for bindings.
+/// The static read flags of each model, `{model: {filtered, fields, related, indexes}}`, for
+/// bindings. `indexes` are the names of its unique indexes.
 pub fn read_flags_json(schema: &Schema) -> serde_json::Value {
     schema.models.iter().map(|m| (m.ir.name.clone(), serde_json::json!({
         "filtered": m.read_flags.filtered,
         "fields": m.read_flags.fields,
         "related": m.read_flags.related,
+        "indexes": orm_core::migrate::model::unique_index_names(m),
     }))).collect::<serde_json::Map<_, _>>().into()
 }
 
@@ -3569,35 +3550,111 @@ fn no_lock(q: &Select, what: &str) -> Result<()> {
     }
 }
 
-/// The predicate of the only unique index whose keys are exactly `conflict`, all plain
-/// fields. The text is copied as written: SQLite rejects `active = 1` for `WHERE active`.
-fn inferred_index_where(indexes: &[orm_core::ir::IndexIr], conflict: &[String]) -> Option<String> {
-    let mut found = indexes.iter().filter(|ix| {
-        ix.unique
-            && ix.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"))
-            && ix.columns.len() == conflict.len()
-            && ix.columns.iter().all(|c| {
-                c.expr.is_none() && c.opclass.is_none() && c.collation.is_none() && !c.desc && c.nulls.is_none()
-                    && c.field.as_ref().is_some_and(|f| conflict.contains(f))
-            })
-            && conflict.iter().all(|f| ix.columns.iter().any(|c| c.field.as_ref() == Some(f)))
-    });
-    let first = found.next()?;
-    if found.next().is_some() { return None; }
-    first.where_.clone()
+/// Whether `ix` is a unique btree index on exactly the plain fields `conflict`.
+fn indexes_conflict_columns(ix: &orm_core::ir::IndexIr, conflict: &[String]) -> bool {
+    ix.unique
+        && ix.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"))
+        && ix.columns.len() == conflict.len()
+        && ix.columns.iter().all(|c| {
+            c.expr.is_none() && c.opclass.is_none() && c.collation.is_none() && !c.desc && c.nulls.is_none()
+                && c.field.as_ref().is_some_and(|f| conflict.contains(f))
+        })
+        && conflict.iter().all(|f| ix.columns.iter().any(|c| c.field.as_ref() == Some(f)))
+}
+
+/// The predicate text of the arbiter indexes of `ON CONFLICT (<conflict>)`, from the schema only.
+/// `Infer` uses the unique indexes on exactly these columns, `Indexes` the ones it names.
+/// A predicate is copied as written: SQLite rejects `active = 1` for `WHERE active`.
+fn conflict_predicate(
+    m: &orm_core::schema::Model,
+    dialect: Dialect,
+    conflict: &[String],
+    target: &OnConflictTarget,
+) -> Result<Option<String>> {
+    let named: Vec<(String, &orm_core::ir::IndexIr)> = m
+        .ir
+        .indexes
+        .iter()
+        .filter_map(|ix| orm_core::migrate::model::index_name(m, ix).ok().map(|n| (n, ix)))
+        .collect();
+    let chosen: Vec<&orm_core::ir::IndexIr> = match target {
+        OnConflictTarget::Infer => {
+            let found: Vec<_> = named.iter().filter(|(_, ix)| indexes_conflict_columns(ix, conflict)).collect();
+            // A plain unique index covers every row, including all partial candidates.
+            if found.iter().any(|(_, ix)| ix.where_.is_none()) {
+                return Ok(None);
+            }
+            if found.len() > 1 {
+                let names: Vec<_> = found.iter().map(|(n, _)| n.as_str()).collect();
+                return Err(Error::query(format!(
+                    "on_conflict({}) matches {} unique indexes of {}: {}; name one with index=",
+                    conflict.join(", "), found.len(), m.ir.name, names.join(", "),
+                )));
+            }
+            found.into_iter().map(|(_, ix)| *ix).collect()
+        }
+        OnConflictTarget::Indexes(names) => {
+            if names.is_empty() {
+                return Err(Error::query("on_conflict(index=...) needs at least one index"));
+            }
+            if dialect == Dialect::Sqlite && names.len() > 1 {
+                return Err(Error::query("on_conflict(index=[...]) on SQLite takes one index; it infers a partial index from one predicate"));
+            }
+            let mut chosen: Vec<&orm_core::ir::IndexIr> = Vec::new();
+            for name in names {
+                let Some((_, ix)) = named.iter().find(|(n, _)| n == name) else {
+                    let known: Vec<_> = named.iter().filter(|(_, ix)| ix.unique).map(|(n, _)| n.as_str()).collect();
+                    return Err(Error::query(format!(
+                        "{name} is not an index of {}; its unique indexes: {}", m.ir.name,
+                        if known.is_empty() { "none".to_owned() } else { known.join(", ") },
+                    )));
+                };
+                if !ix.unique {
+                    return Err(Error::query(format!("index {name} of {} is not unique", m.ir.name)));
+                }
+                if !indexes_conflict_columns(ix, conflict) {
+                    return Err(Error::query(format!(
+                        "index {name} of {} is not a unique btree index on exactly the conflict columns ({})",
+                        m.ir.name, conflict.join(", "),
+                    )));
+                }
+                if chosen.iter().any(|c| std::ptr::eq(*c, *ix)) {
+                    return Err(Error::query(format!("index {name} is listed twice")));
+                }
+                chosen.push(ix);
+            }
+            chosen
+        }
+    };
+    let preds: Vec<&str> = chosen.iter().filter_map(|ix| ix.where_.as_deref()).collect();
+    Ok(match preds.as_slice() {
+        [] => None,
+        [one] => Some((*one).to_owned()),
+        many => Some(many.iter().map(|p| format!("({p})")).collect::<Vec<_>>().join(" AND ")),
+    })
+}
+
+/// Which unique index the conflict target of an insert names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum OnConflictTarget {
+    /// The one unique index on exactly the conflict columns.
+    #[default]
+    Infer,
+    /// These unique indexes, by name: their predicates (and only those) go in the target.
+    Indexes(Vec<String>),
 }
 
 /// What an insert does with rows that hit a unique constraint.
 ///
-/// The optional condition is `ON CONFLICT (<fields>) WHERE <condition>`: the predicate of
-/// a partial unique index, which the database needs to pick that index.
+/// The target is `ON CONFLICT (<fields>) WHERE <predicate>`: the predicate of a partial
+/// unique index, from the schema, which the database needs to pick that index.
 pub enum OnConflict {
     /// `ON CONFLICT (<fields>) DO NOTHING`: such rows are skipped (and not returned).
-    Nothing(Vec<String>, Option<Expr>),
+    Nothing(Vec<String>, OnConflictTarget),
     /// `ON CONFLICT (<fields>) DO UPDATE SET <col> = EXCLUDED.<col>, ..., <field> = <expr>, ...`.
     /// The expressions see the existing row as the model's columns and the proposed
     /// row as `EXCLUDED`; their parameters are the ones passed to `plan_insert`.
-    Update(Vec<String>, Option<Expr>, Vec<String>, Vec<Assignment>),
+    Update(Vec<String>, OnConflictTarget, Vec<String>, Vec<Assignment>),
 }
 
 /// `INSERT INTO <table> (<fields>) VALUES ... [ON CONFLICT ...] [RETURNING <all columns>]`.
@@ -3694,31 +3751,18 @@ pub fn plan_insert(
                 })
                 .collect()
         };
-        // The predicate goes in as SQL literals: the database infers a partial index only
-        // from a predicate it can read, and a parameter is unknown to a generic plan
-        // (Postgres, from the sixth run of a prepared statement) and to SQLite.
-        // Without a predicate, the one unique index with exactly these plain columns names it.
-        let index_where = |conflict: &[String], filter: Option<Expr>| -> Result<Option<SExpr>> {
-            let Some(filter) = filter else { return Ok(inferred_index_where(&m.ir.indexes, conflict).map(SExpr::cust)) };
-            let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
-            let mut probe = Query::select();
-            probe.expr(SExpr::val(1)).and_where(planner.index_cond(&filter)?);
-            let sql = crate::db::to_string(target.dialect, &probe);
-            let (_, cond) = sql.split_once(" WHERE ").expect("a WHERE clause");
-            Ok(Some(SExpr::cust(cond.to_owned())))
-        };
         let clause = match oc {
-            OnConflict::Nothing(conflict, filter) => {
+            OnConflict::Nothing(conflict, index) => {
                 let mut clause = sea_query::OnConflict::columns(columns(&conflict)?);
-                clause.target_and_where_option(index_where(&conflict, filter)?);
+                clause.target_and_where_option(conflict_predicate(m, target.dialect, &conflict, &index)?.map(SExpr::cust));
                 clause.do_nothing().to_owned()
             }
-            OnConflict::Update(conflict, filter, update, set) => {
+            OnConflict::Update(conflict, index, update, set) => {
                 if update.is_empty() && set.is_empty() {
                     return Err(Error::query("on_conflict(..., update=True) has no columns to update"));
                 }
                 let mut clause = sea_query::OnConflict::columns(columns(&conflict)?);
-                clause.target_and_where_option(index_where(&conflict, filter)?);
+                clause.target_and_where_option(conflict_predicate(m, target.dialect, &conflict, &index)?.map(SExpr::cust));
                 clause.update_columns(columns(&update)?);
                 let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
                 planner.allow_excluded = true;

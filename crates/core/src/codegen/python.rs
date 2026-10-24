@@ -401,7 +401,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             }
         }
         let objects = if !exts.is_empty() || query_sets.contains_key(name.as_str()) { format!("_{name}Objects") } else { format!("{name}QuerySet") };
-        writeln!(body, "\n    objects: ClassVar[{objects}]\n").unwrap();
+        writeln!(body, "\n    objects: ClassVar[{objects}]").unwrap();
+        let indexes = if super::indexes_free(m, str::to_owned) { crate::migrate::model::unique_index_names(m) } else { vec![] };
+        if !indexes.is_empty() {
+            writeln!(body, "    indexes: ClassVar[_{name}Indexes]").unwrap();
+        }
+        body.push('\n');
         if let keys @ [_, _, ..] = m.key_fields().as_slice() {
             let parts: Vec<String> = keys.iter().map(|f| value_type(f)).collect();
             writeln!(body, "    @property\n    def pk(self) -> tuple[{}]: ...\n", parts.join(", ")).unwrap();
@@ -427,6 +432,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         writeln!(body, "    @property\n    def objects(self) -> {objects}: ...").unwrap();
         body.push('\n');
+        if !indexes.is_empty() {
+            writeln!(body, "class _{name}Indexes:").unwrap();
+            for index in indexes.iter().filter(|n| super::is_python_ident(n)) {
+                writeln!(body, "    {index}: IndexRef").unwrap();
+            }
+            writeln!(body, "    def __getitem__(self, name: str) -> IndexRef: ...").unwrap();
+            body.push('\n');
+        }
 
         // insert / update shapes; a to-one relation can be given instead of its key
         let belongs = |field: &str| {
@@ -633,6 +646,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         "\nfrom typing_extensions import Self, Unpack\n\n\
          from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, ",
     );
+    if body.contains("-> IndexRef: ...") {
+        pyi.push_str("IndexRef, ");
+    }
     for name in ["NestedRef", "NestedValue"] {
         if body.contains(&format!("({name})")) {
             write!(pyi, "{name}, ").unwrap();

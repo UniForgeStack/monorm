@@ -40,17 +40,82 @@ fn batch_size_caps_the_rows_per_statement() {
     assert!(err.is_err());
 }
 
-#[test]
-fn conflict_target_takes_a_partial_index_predicate() {
-    const PARTIAL: &str = "model Doc {\n id BigInt @id @default(autoincrement())\n slug String\n deleted_at DateTime?\n}\n";
-    let (_, schema) = dsl::check(dsl::compile(PARTIAL, None).unwrap()).unwrap();
-    let target = Target::new(Dialect::Postgres);
-    let filter = serde_json::from_value(serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted_at"}, "neg": false})).unwrap();
-    let conflict = exec::Conflict::Nothing { target: vec!["slug".into()], filter: Some(filter) };
+const INDEXED: &str = r#"model Doc {
+ id BigInt @id @default(autoincrement())
+ slug String
+ title String
+ deleted_at DateTime?
+ hidden Boolean @default(false)
+ @@index([slug], unique: true, where: raw("deleted_at IS NULL"), map: "doc_slug_live")
+ @@index([slug], unique: true, where: raw("hidden = false"), map: "doc_slug_visible")
+ @@index([title], unique: true, map: "doc_title")
+ @@index([title, slug], map: "doc_title_slug")
+}
+model Solo {
+ id BigInt @id @default(autoincrement())
+ slug String
+ deleted_at DateTime?
+ @@index([slug], unique: true, where: raw("deleted_at IS NULL"))
+}
+"#;
+
+fn conflict_sql(dialect: Dialect, model: &str, field: &str, index: exec::OnConflictTarget) -> Result<String, String> {
+    let (_, schema) = dsl::check(dsl::compile(INDEXED, None).unwrap()).unwrap();
+    let target = Target::new(dialect);
+    let conflict = exec::Conflict::Nothing { target: vec![field.into()], index };
     let rows = vec![vec![Some(Value::String(Some("a".into())))]];
-    let plan = exec::plan_insert(&schema, target, "Doc", &["slug".into()], rows, Some(conflict), &NoParams, &Default::default()).unwrap();
-    let sql = exec::statement(target, &plan);
-    assert!(sql.contains(r#"ON CONFLICT ("slug") WHERE "doc"."deleted_at" IS NULL DO NOTHING"#), "{sql}");
+    exec::plan_insert(&schema, target, model, &[field.into()], rows, Some(conflict), &NoParams, &Default::default())
+        .map(|plan| exec::statement(target, &plan))
+        .map_err(|e| e.to_string())
+}
+
+fn names(list: &[&str]) -> exec::OnConflictTarget {
+    exec::OnConflictTarget::Indexes(list.iter().map(|n| n.to_string()).collect())
+}
+
+#[test]
+fn conflict_target_takes_the_predicate_of_the_named_index() {
+    let sql = conflict_sql(Dialect::Postgres, "Doc", "slug", names(&["doc_slug_live"])).unwrap();
+    assert!(sql.contains(r#"ON CONFLICT ("slug") WHERE deleted_at IS NULL DO NOTHING"#), "{sql}");
+}
+
+#[test]
+fn a_list_of_indexes_sends_the_and_of_their_predicates() {
+    let sql = conflict_sql(Dialect::Postgres, "Doc", "slug", names(&["doc_slug_live", "doc_slug_visible"])).unwrap();
+    assert!(sql.contains(r#"ON CONFLICT ("slug") WHERE (deleted_at IS NULL) AND (hidden = false) DO NOTHING"#), "{sql}");
+    assert!(!sql.contains("ON CONSTRAINT"), "{sql}");
+}
+
+#[test]
+fn a_list_of_indexes_is_an_error_on_sqlite() {
+    let err = conflict_sql(Dialect::Sqlite, "Doc", "slug", names(&["doc_slug_live", "doc_slug_visible"])).unwrap_err();
+    assert!(err.contains("one index"), "{err}");
+}
+
+#[test]
+fn a_named_index_must_be_a_unique_index_on_the_conflict_columns() {
+    let unknown = conflict_sql(Dialect::Postgres, "Doc", "slug", names(&["nope"])).unwrap_err();
+    assert!(unknown.contains("not an index of Doc") && unknown.contains("doc_slug_live"), "{unknown}");
+    let other_model = conflict_sql(Dialect::Postgres, "Solo", "slug", names(&["doc_slug_live"])).unwrap_err();
+    assert!(other_model.contains("not an index of Solo"), "{other_model}");
+    let not_unique = conflict_sql(Dialect::Postgres, "Doc", "title", names(&["doc_title_slug"])).unwrap_err();
+    assert!(not_unique.contains("not unique"), "{not_unique}");
+    let other_columns = conflict_sql(Dialect::Postgres, "Doc", "title", names(&["doc_slug_live"])).unwrap_err();
+    assert!(other_columns.contains("exactly the conflict columns"), "{other_columns}");
+    let empty = conflict_sql(Dialect::Postgres, "Doc", "slug", names(&[])).unwrap_err();
+    assert!(empty.contains("at least one"), "{empty}");
+    let twice = conflict_sql(Dialect::Postgres, "Doc", "slug", names(&["doc_slug_live", "doc_slug_live"])).unwrap_err();
+    assert!(twice.contains("twice"), "{twice}");
+}
+
+#[test]
+fn inference_takes_the_only_matching_index_and_refuses_two_partial_ones() {
+    let one = conflict_sql(Dialect::Postgres, "Solo", "slug", exec::OnConflictTarget::Infer).unwrap();
+    assert!(one.contains("WHERE deleted_at IS NULL DO NOTHING"), "{one}");
+    let two = conflict_sql(Dialect::Postgres, "Doc", "slug", exec::OnConflictTarget::Infer).unwrap_err();
+    assert!(two.contains("doc_slug_live") && two.contains("doc_slug_visible") && two.contains("index="), "{two}");
+    let plain = conflict_sql(Dialect::Postgres, "Doc", "title", exec::OnConflictTarget::Infer).unwrap();
+    assert!(plain.contains(r#"ON CONFLICT ("title") DO NOTHING"#), "{plain}");
 }
 
 #[test]

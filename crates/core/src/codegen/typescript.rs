@@ -249,6 +249,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     }
     let ir_json = super::embedded_schema_json(ir)?;
     let mut used: BTreeSet<&str> = BTreeSet::new();
+    let mut used_index = false;
     let mut body = String::new();
 
     for e in &schema.enums {
@@ -544,10 +545,20 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         )
         .unwrap();
         let methods: Vec<_> = ir.behavior.methods.iter().filter(|method| method.model == *name).collect();
-        if methods.is_empty() {
+        let indexes = if super::indexes_free(m, camel) { crate::migrate::model::unique_index_names(m) } else { vec![] };
+        if methods.is_empty() && indexes.is_empty() {
             writeln!(body, "export interface {name}Model extends ModelClass<{name}Spec>, {name}Fields<{}, [], false> {{}}\n", quote(name)).unwrap();
         } else {
             writeln!(body, "export interface {name}Model extends ModelClass<{name}Spec>, {name}Fields<{}, [], false> {{", quote(name)).unwrap();
+            if !indexes.is_empty() {
+                writeln!(body, "  /** The unique indexes, for `onConflict(columns, {{ index }})`. */\n  readonly indexes: {{").unwrap();
+                for index in &indexes {
+                    let key = if super::is_js_ident(index) { index.clone() } else { quote(index) };
+                    writeln!(body, "    readonly {key}: IndexRef<{}>;", quote(name)).unwrap();
+                }
+                writeln!(body, "  }};").unwrap();
+                used_index = true;
+            }
             for method in methods {
                 let output = if method.output.is_some() { "string" } else { "void" };
                 writeln!(body, "  {}(value: string): {output};", camel(&method.name)).unwrap();
@@ -581,6 +592,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         "QuerySetOf", "RelationPath", "SchemaIR", "Via",
     ];
     types.extend(used.iter().copied());
+    if used_index {
+        types.push("IndexRef");
+    }
     if !ir.behavior.type_models.is_empty() {
         types.push("ModelSpec");
     }

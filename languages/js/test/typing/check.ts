@@ -236,7 +236,9 @@ export async function writes() {
   const [got, created] = await User.objects.getOrInsert({ email: "a" }, { defaults: { name: "A" } });
   same<typeof got, User>();
   same<typeof created, boolean>();
-  await User.objects.insert({ email: "a", name: "A" }).onConflict(User.email, { where: User.name.isNull(), update: false });
+  await User.objects.insert({ email: "a", name: "A" }).onConflict(User.email, { update: false });
+  // @ts-expect-error `where` is gone: name a schema index with `index`
+  User.objects.insert({ email: "a", name: "A" }).onConflict(User.email, { where: User.name.isNull(), update: false });
   // @ts-expect-error a required field is missing
   User.objects.insert({ email: "a" });
   // @ts-expect-error an unknown field

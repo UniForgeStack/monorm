@@ -86,79 +86,126 @@ async def test_insert_many_batch_size_is_checked(clean):
 
 # -- upserts on a partial unique index --------------------------------------------------------
 
+NOTES = """
+    datasource db { provider = "postgresql" }
+    model Note {
+      id      BigInt  @id @default(autoincrement())
+      slug    String
+      body    String  @default("")
+      live    Boolean @default(true)
+      shown   Boolean @default(true)
+      @@index([slug], unique: true, where: raw("live"), map: "notes_slug_live")
+      @@index([slug], unique: true, where: raw("shown"), map: "notes_slug_shown")
+      @@index([body], unique: true, map: "notes_body")
+      @@index([body, slug], map: "notes_body_slug")
+    }
+    model Solo {
+      id     BigInt  @id @default(autoincrement())
+      slug   String
+      body   String  @default("")
+      active Boolean @default(true)
+      @@index([slug], unique: true, where: raw("active"), map: "solo_slug_active")
+    }
+"""
+
 
 @pytest.fixture
-async def anon_index(clean):
-    """One anonymous comment per post and body: a partial unique index."""
-    await clean.execute("CREATE UNIQUE INDEX comments_anon_body ON comments (post_id, body) WHERE author_id IS NULL")
-    yield clean
-    await clean.execute("DROP INDEX comments_anon_body")
+async def notes():
+    registry = orm.Registry()
+    classes = orm.loads(NOTES, registry=registry)
+    db = await orm.connect(DATABASE_URL, registry=registry, default=False, max_connections=1)
+    await db.create_tables()
+    yield db, classes["Note"], classes["Solo"]
+    await db.drop_tables()
+    await db.close()
 
 
-async def test_on_conflict_where_picks_a_partial_index(anon_index):
-    alice = await User.objects.insert(email="a@x.io", name="A")
-    post = await Post.objects.insert(author=alice, title="t", body="b")
-    first = await Comment.objects.insert(post=post, body="hi")
-    with pytest.raises(orm.DatabaseError, match="no unique or exclusion constraint"):
-        await Comment.objects.insert(post=post, body="hi").on_conflict(Comment.post_id, Comment.body, update=False)
-    where = Comment.author_id.is_null()
-    assert (
-        await Comment.objects.insert(post=post, body="hi")
-        .on_conflict(Comment.post_id, Comment.body, where=where, update=False)
-        .returning()
-        is None
+async def test_model_indexes_offer_the_unique_indexes(notes):
+    _, Note, Solo = notes
+    assert [i.name for i in Note.indexes] == ["notes_slug_live", "notes_slug_shown", "notes_body"]
+    assert Solo.indexes.solo_slug_active.name == "solo_slug_active"
+    with pytest.raises(
+        AttributeError,
+        match="Note has no unique index 'notes_body_slug'; its unique indexes: notes_slug_live, notes_slug_shown, notes_body$",
+    ):
+        Note.indexes.notes_body_slug
+
+
+def test_a_field_named_indexes_keeps_its_column():
+    Shadow = orm.loads(
+        """
+        datasource db { provider = "sqlite" }
+        model Shadow {
+          id      Int    @id
+          indexes String
+          @@index([indexes], unique: true, map: "shadow_indexes")
+        }
+    """,
+        registry=orm.Registry(),
+    )["Shadow"]
+    assert isinstance(Shadow.indexes, orm.ColumnRef)
+
+
+async def test_on_conflict_index_picks_a_partial_index(notes, observe_queries):
+    db, Note, _ = notes
+    notes_ = Note.objects.using(db)
+    first = await notes_.insert(slug="a", body="x")
+    skipped = (
+        notes_.insert(slug="a", body="it's").on_conflict(Note.slug, index=Note.indexes.notes_slug_live, update=False)
     )
-    later = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    with observe_queries(db) as events:
+        assert await skipped.returning() is None
+    # The target carries the schema predicate; the user value stays a parameter.
+    assert 'ON CONFLICT ("slug") WHERE live DO NOTHING' in events[0].sql and "it's" not in events[0].sql
     again = await (
-        Comment.objects.insert(post=post, body="hi", created_at=later)
-        .on_conflict(Comment.post_id, Comment.body, where=where, update=True, update_fields=[Comment.created_at])
+        notes_.insert(slug="a", body="y")
+        .on_conflict(Note.slug, index=Note.indexes.notes_slug_live, update=True, update_values={"body": "z"})
         .returning()
     )
-    assert again.id == first.id and again.created_at == later
-    # The other rows of the index predicate's complement are not unique.
-    await Comment.objects.insert_many([{"post": post, "author": alice, "body": "hi"}] * 2)
-    assert await Comment.objects.count() == 3
+    assert again.id == first.id and again.body == "z"
+    # Rows outside the index predicate are not unique.
+    await notes_.insert_many([{"slug": "a", "body": f"b{i}", "live": False, "shown": False} for i in range(2)])
+    assert await notes_.count() == 3
 
 
-async def test_on_conflict_where_with_set_parameters(anon_index):
-    alice = await User.objects.insert(email="a@x.io", name="A")
-    post = await Post.objects.insert(author=alice, title="t", body="b")
-    await Comment.objects.insert(post=post, body="hi")
-    row = await (
-        Comment.objects.insert(post=post, body="hi")
-        .on_conflict(
-            Comment.post_id,
-            Comment.body,
-            where=Comment.author_id.is_null(),
-            update=True,
-            update_values={"body": "hi again"},
-        )
+async def test_on_conflict_index_list_takes_the_and_of_the_predicates(notes, observe_queries):
+    db, Note, _ = notes
+    notes_ = Note.objects.using(db)
+    both = [Note.indexes.notes_slug_live, Note.indexes.notes_slug_shown]
+    await notes_.insert_many(
+        [{"slug": "a", "body": "a", "shown": False}, {"slug": "b", "body": "b", "live": False}]
+    )
+    # A row live and shown conflicts with a row that is live (but hidden) and with one shown (but not live).
+    with observe_queries(db) as events:
+        assert await notes_.insert_many([{"slug": "a", "body": "c"}, {"slug": "b", "body": "d"}]).on_conflict(
+            Note.slug, index=both, update=False
+        ) == 0
+    assert 'ON CONFLICT ("slug") WHERE (live) AND (shown) DO NOTHING' in events[0].sql
+    assert "ON CONSTRAINT" not in events[0].sql
+    rows = await (
+        notes_.insert_many([{"slug": "a", "body": "e"}, {"slug": "b", "body": "f"}])
+        .on_conflict(Note.slug, index=both, update=True, update_fields=[Note.body])
         .returning()
     )
-    assert row.body == "hi again"
+    assert sorted(r.body for r in rows) == ["e", "f"]
+    assert sorted([n.body for n in await notes_]) == ["e", "f"]
 
 
-async def test_on_conflict_where_with_a_boolean_column(clean):
+async def test_on_conflict_index_with_a_boolean_column(notes):
     # The predicate is SQL text: a parameter would stop matching the index from the
     # sixth run of the prepared statement, when Postgres plans it generically.
-    await clean.execute("CREATE UNIQUE INDEX posts_published_title ON posts (author_id, title) WHERE published")
-    db = await orm.connect(DATABASE_URL, max_connections=1, default=False)
-    try:
-        posts = Post.objects.using(db)
-        alice = await User.objects.using(db).insert(email="a@x.io", name="A")
-        for i in range(8):
-            await posts.insert(author=alice, title="t", body=f"b{i}", published=True).on_conflict(
-                Post.author_id, Post.title, where=Post.published, update=True, update_fields=[Post.body]
-            )
-        assert [p.body for p in await posts] == ["b7"]
-        rows = [{"author": alice, "title": f"t{i % 2}", "body": "x", "published": True} for i in range(8)]
-        await posts.insert_many(rows, batch_size=1).on_conflict(
-            Post.author_id, Post.title, where=Post.published == True, update=False
-        )  # noqa: E712
-        assert await posts.count() == 3
-    finally:
-        await db.close()
-        await clean.execute("DROP INDEX posts_published_title")
+    db, _, Solo = notes
+    solos = Solo.objects.using(db)
+    for i in range(8):
+        await solos.insert(slug="a", body=f"b{i}").on_conflict(
+            Solo.slug, index=Solo.indexes.solo_slug_active, update=True, update_fields=[Solo.body]
+        )
+    assert [s.body for s in await solos] == ["b7"]
+    rows = [{"slug": f"s{i % 2}", "body": "x"} for i in range(8)]
+    await solos.insert_many(rows, batch_size=1).on_conflict(
+        Solo.slug, index=[Solo.indexes.solo_slug_active], update=False
+    )
+    assert await solos.count() == 3
 
 
 async def test_on_conflict_infers_the_partial_unique_index():
@@ -191,12 +238,22 @@ async def test_on_conflict_infers_the_partial_unique_index():
         await db.close()
 
 
-async def test_on_conflict_where_reads_own_columns_only(anon_index):
-    # Postgres refuses a relation path (a subquery) in an index predicate.
-    with pytest.raises(orm.DatabaseError, match="subquery in index predicate"):
-        await Comment.objects.insert(post_id=1, body="x").on_conflict(
-            Comment.post_id, where=Comment.post.title == "t", update=False
-        )
+async def test_on_conflict_index_errors_name_the_problem(notes):
+    db, Note, Solo = notes
+    notes_ = Note.objects.using(db)
+    with pytest.raises(TypeError, match="not an index of Note"):
+        notes_.insert(slug="a").on_conflict(Note.slug, index=Solo.indexes.solo_slug_active, update=False)
+    with pytest.raises(TypeError, match="takes Note.indexes"):
+        notes_.insert(slug="a").on_conflict(Note.slug, index="notes_slug_live", update=False)  # type: ignore[arg-type]
+    # A forged reference reaches the engine, which checks the schema.
+    with pytest.raises(orm.QueryError, match="not unique"):
+        await notes_.insert(slug="a", body="b").on_conflict(Note.body, index=orm.IndexRef(Note, "notes_body_slug"), update=False)
+    with pytest.raises(orm.QueryError, match="exactly the conflict columns"):
+        await notes_.insert(slug="a").on_conflict(Note.slug, index=Note.indexes.notes_body, update=False)
+    with pytest.raises(orm.QueryError, match="not an index of Note"):
+        await notes_.insert(slug="a").on_conflict(Note.slug, index=orm.IndexRef(Note, "nope"), update=False)
+    with pytest.raises(orm.QueryError, match="notes_slug_live, notes_slug_shown"):
+        await notes_.insert(slug="a").on_conflict(Note.slug, update=False)
 
 
 # -- insert results and on_conflict options ---------------------------------------------------

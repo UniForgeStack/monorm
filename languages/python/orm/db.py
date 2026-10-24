@@ -274,7 +274,7 @@ class Database:
         set_: tuple[list[dict[str, Any]], list[Any]] | None = None,
         db: Database | None = None,
         batch_size: int | None = None,
-        where: dict[str, Any] | None = None,
+        indexes: list[str] | None = None,
         *,
         returning: bool = True,
         without_defaults: bool | tuple[str, ...] = False,
@@ -283,7 +283,6 @@ class Database:
         scope_json, params = _with_scope("{}", params)
         scope = json.dumps(json.loads(scope_json).get("scope", {}))
         tx, allowed = self._tx(), allowed_writes()
-        wh = None if where is None else json.dumps(where)
         return await self._call(
             lambda t: self._engine.insert(
                 model,
@@ -297,7 +296,7 @@ class Database:
                 db,
                 allowed,
                 batch_size,
-                wh,
+                indexes,
                 t,
                 returning,
                 scope,

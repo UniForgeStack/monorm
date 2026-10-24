@@ -156,7 +156,7 @@ class Engine:
         db: Any = None,
         allowed: Sequence[str] = ...,
         batch_size: int | None = None,
-        conflict_where: str | None = None,
+        conflict_indexes: Sequence[str] | None = None,
         trace: Trace | None = None,
         returning: bool = True,
         scope: str | None = None,

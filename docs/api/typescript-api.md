@@ -686,7 +686,7 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
     updateValues: { views: Post.views.add(excluded(Post.views)) },
   });
   ```
-* `onConflict(columns, { update, updateFields, updateValues, where })`: `columns` are
+* `onConflict(columns, { update, updateFields, updateValues, index })`: `columns` are
   the column(s) of one unique constraint. `update` is required. `update: false` keeps
   the existing row (`DO NOTHING`). `update: true` updates it: `updateFields` copy the
   proposed values, `updateValues` set plain values or expressions (keys are field
@@ -694,14 +694,25 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   name keep their values. With neither option, every field given to the insert except
   the conflict columns is overwritten. An empty `updateFields` or `updateValues`, and
   either one with `update: false`, throw `TypeError`.
-* `onConflict(columns, { where: cond, update })` picks a partial unique index:
-  `ON CONFLICT (...) WHERE cond`. The database uses the condition to find the index,
-  so it goes into the SQL text with its values written out, not as parameters.
-  `Task.active.eq(true)` gives the bare column, the form SQLite needs. Without
-  `where`, the schema decides: when exactly one `@@index([...], unique: true, where: ...)`
-  has these plain columns (no expression, no sort), its `where` text goes into the
-  conflict target. So `insert`, `insertMany` and `getOrInsert` use that partial index.
-  An explicit `where` wins. With no such index, or with several, there is no predicate.
+* `onConflict(columns, { index: Model.indexes.name, update })` names a unique index of the
+  model on exactly these columns: `{ index: Task.indexes.task_one_open, update: false }`.
+  `index` also takes an array (Postgres only; SQLite takes one index).
+  `Model.indexes.<name>` has one entry per `@@index([...], unique: true)` of the schema,
+  named by its `map:` name, or else `<table>_<columns>_idx`. The predicate comes from the
+  schema only: `ON CONFLICT (...) WHERE <predicate>`, written as in the schema, never from
+  a call value. An array gives `WHERE (a) AND (b)`. A name that is not a unique index of
+  the model on exactly the conflict columns rejects with `QueryError` before the
+  database. A reference to another model's index throws `TypeError`. `index` supplies a
+  predicate; it is not an exclusive selector: the conflict still fires for every unique
+  index that the target covers. Without `index`, the one unique index on exactly these
+  plain columns (no expression, no sort) gives the predicate, so `insert`, `insertMany`
+  and `getOrInsert` use it. If any matching index has no predicate, no predicate
+  is sent. When two or more matching indexes are all partial, the call rejects with
+  `QueryError` and lists the candidates: pass `index`. `index` can name only an index
+  that the schema declares. To name an index that you made by hand in the database,
+  declare it in the schema first. The next migration then emits `CREATE UNIQUE INDEX`
+  without `IF NOT EXISTS`, so drop the old index first. `orm pull` writes such an index
+  into the schema as `where: raw(...)`.
 * `insertMany(rows, { copy: true })` loads the rows with Postgres `COPY` (binary) and
   gives the row count. A duplicate key stops the whole load. A field must be set in
   every row or in none. Values fit the column's type (`Int` on a `smallint` column).

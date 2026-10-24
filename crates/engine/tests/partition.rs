@@ -172,7 +172,7 @@ fn proxy_partition_upsert_reads_the_existing_row_through_the_partition_table() {
     let target = Target::new(Dialect::Postgres);
     let (stmt, _) = plan::plan_insert(&s, target, "PercentageReward", &["id".into(), "shop".into()],
         vec![vec![Some(1.into()), Some(10.into())]],
-        Some(OnConflict::Update(vec!["id".into(), "kind".into()], None, vec!["shop".into()], vec![])), &NoParams, false, &Default::default()).unwrap();
+        Some(OnConflict::Update(vec!["id".into(), "kind".into()], Default::default(), vec!["shop".into()], vec![])), &NoParams, false, &Default::default()).unwrap();
     let sql = db::build(target.dialect, &stmt).0;
     let (_, action) = sql.split_once(" DO UPDATE SET ").unwrap();
     assert!(action.contains("WHERE \"partition_proxy_percent\".\"shop\" > "), "{sql}");

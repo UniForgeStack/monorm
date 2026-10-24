@@ -16,7 +16,7 @@ from typing import Any, ClassVar, Literal, NotRequired, Required, TypedDict, ove
 
 from typing_extensions import Self, Unpack
 
-from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, NestedRef, NestedValue, QuerySet, RelationPath, Update, UpdateMany
+from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, IndexRef, NestedRef, NestedValue, QuerySet, RelationPath, Update, UpdateMany
 from orm import fields as f
 
 # -- Geo --------------------------------------------------------------------------------
@@ -287,6 +287,101 @@ class OptQuerySet(QuerySet[Opt]):
     def update(self, **values: Unpack[OptUpdate]) -> Update[Opt]: ...  # type: ignore[override]
     def update_many(self, rows: Iterable[OptUpdateRow], *, batch_size: int | None = None) -> UpdateMany[Opt]: ...  # type: ignore[override]
 
+# -- Slugged ----------------------------------------------------------------------------
+
+class Slugged(Model):
+    id: f.Integer[int]
+    slug: f.String[str]
+
+    objects: ClassVar[SluggedQuerySet]
+    indexes: ClassVar[_SluggedIndexes]
+
+    async def update(self, **values: Unpack[SluggedUpdate]) -> None: ...  # type: ignore[override]
+
+class _SluggedPath(RelationPath[Slugged]):
+    id: ColumnRef[int]
+    slug: ColumnRef[str]
+    @property
+    def objects(self) -> SluggedQuerySet: ...
+
+class _SluggedIndexes:
+    slugged_slug: IndexRef
+    slugged_slug_id: IndexRef
+    def __getitem__(self, name: str) -> IndexRef: ...
+
+class SluggedInsert(TypedDict):
+    id: int
+    slug: str
+
+class SluggedUpdate(TypedDict, total=False):
+    id: int | Expression[int]
+    slug: str | Expression[str]
+
+class SluggedUpdateRow(TypedDict, total=False):
+    id: Required[int]
+    slug: str
+
+class SluggedLookup(TypedDict, total=False):
+    id: int
+    slug: str
+
+class SluggedQuerySet(QuerySet[Slugged]):
+    def insert(self, **values: Unpack[SluggedInsert]) -> InsertOne[Slugged]: ...  # type: ignore[override]
+    @overload  # type: ignore[override]
+    def insert_many(self, rows: Iterable[SluggedInsert], *, batch_size: int | None = None, copy: Literal[False] = False) -> InsertMany[Slugged]: ...
+    @overload
+    def insert_many(self, rows: Iterable[SluggedInsert], *, copy: Literal[True]) -> CopyInsert[Slugged]: ...
+    async def get_or_insert(self, defaults: SluggedLookup | None = None, **lookup: Unpack[SluggedLookup]) -> tuple[Slugged, bool]: ...  # type: ignore[override]
+    def update(self, **values: Unpack[SluggedUpdate]) -> Update[Slugged]: ...  # type: ignore[override]
+    def update_many(self, rows: Iterable[SluggedUpdateRow], *, batch_size: int | None = None) -> UpdateMany[Slugged]: ...  # type: ignore[override]
+
+# -- Titled -----------------------------------------------------------------------------
+
+class Titled(Model):
+    id: f.Integer[int]
+    title: f.String[str]
+
+    objects: ClassVar[TitledQuerySet]
+    indexes: ClassVar[_TitledIndexes]
+
+    async def update(self, **values: Unpack[TitledUpdate]) -> None: ...  # type: ignore[override]
+
+class _TitledPath(RelationPath[Titled]):
+    id: ColumnRef[int]
+    title: ColumnRef[str]
+    @property
+    def objects(self) -> TitledQuerySet: ...
+
+class _TitledIndexes:
+    titled_title: IndexRef
+    def __getitem__(self, name: str) -> IndexRef: ...
+
+class TitledInsert(TypedDict):
+    id: int
+    title: str
+
+class TitledUpdate(TypedDict, total=False):
+    id: int | Expression[int]
+    title: str | Expression[str]
+
+class TitledUpdateRow(TypedDict, total=False):
+    id: Required[int]
+    title: str
+
+class TitledLookup(TypedDict, total=False):
+    id: int
+    title: str
+
+class TitledQuerySet(QuerySet[Titled]):
+    def insert(self, **values: Unpack[TitledInsert]) -> InsertOne[Titled]: ...  # type: ignore[override]
+    @overload  # type: ignore[override]
+    def insert_many(self, rows: Iterable[TitledInsert], *, batch_size: int | None = None, copy: Literal[False] = False) -> InsertMany[Titled]: ...
+    @overload
+    def insert_many(self, rows: Iterable[TitledInsert], *, copy: Literal[True]) -> CopyInsert[Titled]: ...
+    async def get_or_insert(self, defaults: TitledLookup | None = None, **lookup: Unpack[TitledLookup]) -> tuple[Titled, bool]: ...  # type: ignore[override]
+    def update(self, **values: Unpack[TitledUpdate]) -> Update[Titled]: ...  # type: ignore[override]
+    def update_many(self, rows: Iterable[TitledUpdateRow], *, batch_size: int | None = None) -> UpdateMany[Titled]: ...  # type: ignore[override]
+
 __all__ = [
     "Geo",
     "GeoInput",
@@ -304,6 +399,8 @@ __all__ = [
     "Plain",
     "Wrapped",
     "Opt",
+    "Slugged",
+    "Titled",
     "ShopInsert",
     "ShopUpdate",
     "ShopUpdateRow",
@@ -316,8 +413,16 @@ __all__ = [
     "OptInsert",
     "OptUpdate",
     "OptUpdateRow",
+    "SluggedInsert",
+    "SluggedUpdate",
+    "SluggedUpdateRow",
+    "TitledInsert",
+    "TitledUpdate",
+    "TitledUpdateRow",
     "ShopQuerySet",
     "PlainQuerySet",
     "WrappedQuerySet",
     "OptQuerySet",
+    "SluggedQuerySet",
+    "TitledQuerySet",
 ]

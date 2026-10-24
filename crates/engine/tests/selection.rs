@@ -336,8 +336,8 @@ fn upsert_bypass_names_the_defaults_it_skips() {
     let schema = Schema::from_ir(serde_json::from_value(schema(true)).unwrap()).unwrap();
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
         let sql = |bypass: Bypass, update: bool| {
-            let conflict = if update { OnConflict::Update(vec!["id".into()], None, vec!["value".into()], vec![]) }
-                else { OnConflict::Nothing(vec!["id".into()], None) };
+            let conflict = if update { OnConflict::Update(vec!["id".into()], Default::default(), vec!["value".into()], vec![]) }
+                else { OnConflict::Nothing(vec!["id".into()], Default::default()) };
             plan_insert(&schema, Target::new(dialect), "Selected", &["id".into(), "value".into()],
                 vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), &NoParams, false, &bypass)
                 .map(|(stmt, _)| db::build(dialect, &stmt).0)
@@ -376,8 +376,8 @@ fn neutral_upsert_filters_the_update_action_and_fails_closed() {
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
         let insert = |update: bool, params: &dyn orm_engine::Params| {
             let conflict = if update {
-                OnConflict::Update(vec!["id".into()], None, vec!["value".into()], vec![])
-            } else { OnConflict::Nothing(vec!["id".into()], None) };
+                OnConflict::Update(vec!["id".into()], Default::default(), vec!["value".into()], vec![])
+            } else { OnConflict::Nothing(vec!["id".into()], Default::default()) };
             plan_insert(&schema, Target::new(dialect), "Selected", &["id".into(), "value".into()],
                 vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), params, false, &Default::default())
         };
@@ -525,7 +525,7 @@ fn scope_errors_identify_the_prepared_default_at_each_consumer() {
             check(Planner::plan(&schema, target, &operation, &NoParams).err().expect("missing scope"));
         }
         check(orm_engine::plan::plan_insert(&schema, target, "Child", &["id".into()],
-            vec![vec![Some(1.into())]], Some(orm_engine::plan::OnConflict::Update(vec!["id".into()], None, vec!["id".into()], vec![])),
+            vec![vec![Some(1.into())]], Some(orm_engine::plan::OnConflict::Update(vec!["id".into()], Default::default(), vec!["id".into()], vec![])),
             &NoParams, false, &Default::default()).err().expect("upsert scope"));
         let Operation::Select(q) = serde_json::from_value(json!({"op":"select","model":"Selected","prefetch":[{"relation":"children","model":"Child"}]})).unwrap() else { panic!("select") };
         check(plan_prefetch_only(&schema, target, &q, &NoParams).err().expect("prefetch scope"));

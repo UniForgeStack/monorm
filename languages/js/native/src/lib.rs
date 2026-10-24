@@ -360,8 +360,8 @@ fn inspect_insert(env: &Env, schema: &schema::Schema, target: Target, model: &st
     options: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool) -> napi::Result<String> {
     let opts: orm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(query_err)?;
     let conflict = opts.conflict.map(|target| match opts.update {
-        Some(update) => Conflict::Update { target, filter: opts.filter, update, set: opts.set },
-        None => Conflict::Nothing { target, filter: opts.filter },
+        Some(update) => Conflict::Update { target, index: orm_engine::exec::index_target(opts.indexes), update, set: opts.set },
+        None => Conflict::Nothing { target, index: orm_engine::exec::index_target(opts.indexes) },
     });
     let values = convert_rows(env, schema, model, fields, rows, true)?;
     let p = params(env, params_)?;
@@ -762,8 +762,8 @@ impl Engine {
     /// `conflict` (unique field names) rows hitting that constraint update the `update`
     /// fields from the new row and apply the `set` assignments (JSON list of
     /// `{"field", "value"}` IR, parameters in `params`), or are skipped if `update` is
-    /// null. `conflictWhere` (condition IR, parameters in `params`) is the predicate of a
-    /// partial unique index. Rows beyond the parameter limit, or beyond `batchSize`, go to further
+    /// null. `conflictIndexes` names the unique indexes whose predicates the conflict
+    /// target carries (undefined: the index on exactly the conflict columns). Rows beyond the parameter limit, or beyond `batchSize`, go to further
     /// statements in one transaction (inside `tx` when given). `withoutDefaults` (JSON:
     /// `false`, `true` or a list of names) skips defaults of the model in the DO UPDATE condition.
     #[napi(ts_return_type = "Promise<unknown>")]
@@ -781,7 +781,7 @@ impl Engine {
         tx: Option<&Transaction>,
         allowed: Option<Vec<String>>,
         batch_size: Option<u32>,
-        conflict_where: Option<String>,
+        conflict_indexes: Option<Vec<String>>,
         trace: Option<&Trace>,
         returning: Option<bool>,
         scope: Option<String>,
@@ -794,13 +794,10 @@ impl Engine {
             Some(json) => serde_json::from_str(&json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
             None => vec![],
         };
-        let filter: Option<ir::Expr> = match conflict_where {
-            Some(json) => Some(serde_json::from_str(&json).map_err(|e| query_err(format!("invalid condition IR: {e}")))?),
-            None => None,
-        };
+        let index = orm_engine::exec::index_target(conflict_indexes);
         let conflict = conflict.map(|target| match update {
-            Some(update) => Conflict::Update { target, filter, update, set },
-            None => Conflict::Nothing { target, filter },
+            Some(update) => Conflict::Update { target, index, update, set },
+            None => Conflict::Nothing { target, index },
         });
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
         let p = params(env, params_)?;
