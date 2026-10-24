@@ -17,9 +17,13 @@ LAST_WEEK = NOW - timedelta(days=7)
 
 
 async def seed() -> tuple[User, User, User, tuple[Post, Post, Post]]:
-    alice = await User.objects.insert(email="alice@example.com", name="Alice")
-    bob = await User.objects.insert(email="bob@example.com", name="Bob")
-    carol = await User.objects.insert(email="carol@example.com", name="Carol")
+    alice, bob, carol = await User.objects.insert_many(
+        [
+            {"email": "alice@example.com", "name": "Alice"},
+            {"email": "bob@example.com", "name": "Bob"},
+            {"email": "carol@example.com", "name": "Carol"},
+        ]
+    ).returning()
     a1, a2, b1 = await Post.objects.insert_many(
         [
             {

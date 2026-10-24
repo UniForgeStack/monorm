@@ -55,9 +55,11 @@ export async function otherDatabase(): Promise<Database> {
 }
 
 export async function seed() {
-  const alice = await User.objects.insert({ email: "alice@example.com", name: "Alice" });
-  const bob = await User.objects.insert({ email: "bob@example.com", name: "Bob" });
-  const carol = await User.objects.insert({ email: "carol@example.com", name: "Carol" });
+  const [alice, bob, carol] = (await User.objects.insertMany([
+    { email: "alice@example.com", name: "Alice" },
+    { email: "bob@example.com", name: "Bob" },
+    { email: "carol@example.com", name: "Carol" },
+  ]).returning()) as [User, User, User];
   const [a1, a2, b1] = (await Post.objects.insertMany([
     { author: alice, title: "old draft", body: "...", createdAt: LAST_WEEK, views: 5 },
     { author: alice, title: "new post", body: "...", published: true, views: 50 },

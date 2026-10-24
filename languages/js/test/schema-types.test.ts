@@ -11,8 +11,10 @@ import { useDatabase } from "./helpers.js";
 useDatabase();
 
 async function users() {
-  const alice = await User.objects.insert({ email: "alice@example.com", name: "Alice" });
-  const bob = await User.objects.insert({ email: "bob@example.com", name: "Bob" });
+  const [alice, bob] = (await User.objects.insertMany([
+    { email: "alice@example.com", name: "Alice" },
+    { email: "bob@example.com", name: "Bob" },
+  ]).returning()) as [User, User];
   return { alice, bob };
 }
 
@@ -86,8 +88,10 @@ test("an int enum", async () => {
 
 test("array columns", async () => {
   const { alice, bob } = await users();
-  const a = await Profile.objects.insert({ user: alice, links: ["https://a.example", "https://b.example"] });
-  const b = await Profile.objects.insert({ user: bob });
+  const [a, b] = (await Profile.objects.insertMany([
+    { user: alice, links: ["https://a.example", "https://b.example"] },
+    { user: bob },
+  ]).returning()) as [Profile, Profile];
   assert.deepEqual(a.links, ["https://a.example", "https://b.example"]);
   assert.deepEqual(b.links, []);
   assert.equal(await Profile.objects.filter(Profile.links.has("https://a.example")).count(), 1);
