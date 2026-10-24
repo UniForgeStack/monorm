@@ -12,11 +12,13 @@ import { fileURLToPath } from "node:url";
 import { Decimal } from "./decimal.js";
 import { fromNative } from "./errors.js";
 
-/** Rows of one statement: `n` rows of `width` cells, row after row. */
+/** Rows of one statement: `n` rows of `width` cells, row after row. The engine hands the
+ * cells over packed; `cellsOf` (`rows.ts`) decodes them into `values`. */
 export interface NativeRows {
   readonly n: number;
   readonly width: number;
-  readonly values: unknown[];
+  readonly packed: Buffer;
+  values?: unknown[];
 }
 
 /** How rows become instances: the root model's fields first, then each

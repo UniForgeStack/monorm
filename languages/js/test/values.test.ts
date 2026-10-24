@@ -10,6 +10,8 @@ import { DATABASE_URL } from "./helpers.js";
 const SCHEMA = `
 model Doc {
   id      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ref     String?   @db.Uuid
+  extra   Json?
   data    Json      @default("{\\"a\\": 1}")
   day     DateTime? @db.Date
   at      DateTime?
@@ -18,6 +20,7 @@ model Doc {
   ratio   Float?
   amount  Decimal?  @db.Decimal(20, 6)
   flag    Boolean?
+  note    String?
   ids     BigInt[]   @default([])
   days    DateTime[] @default([]) @db.Date
   @@map("value_docs")
@@ -81,6 +84,70 @@ test("every column type round-trips", async () => {
   assert.equal(await one(Doc.amount.gt(100)), 1);
   assert.equal(await one(Doc.ids.has(2)), 1);
   assert.equal(await one(Doc.data.eq({ a: 1 })), 1);
+});
+
+test("fetched rows decode every type, nulls in every column, through the packed rows", async () => {
+  await objects().delete();
+  const micros = new Date("2026-05-06T07:08:09.123Z");
+  Object.defineProperty(micros, "orm:micros", { value: 456 });
+  Object.defineProperty(micros, "orm:micros-ms", { value: micros.getTime() });
+  await objects().insertMany([
+    {
+      data: { list: [1, 2.5, "é", null, { deep: true }], s: "日本", ["__proto__"]: 7 },
+      day: new Date("2026-03-04T00:00:00Z"),
+      at: micros,
+      ref: "12345678-1234-1234-1234-123456789abc",
+      extra: { nested: true },
+      big: -9007199254740993n,
+      small: 2147483647,
+      ratio: -0.5,
+      amount: new Decimal("-0.000001"),
+      flag: false,
+      note: "naïve ☃ text",
+      ids: [1n, 2n],
+      days: [new Date("2026-01-01T00:00:00Z"), new Date("2026-01-02T00:00:00Z")],
+    },
+    { note: "", flag: true, at: new Date("2026-01-01T00:00:00Z") },
+    { note: "ASCII text" },
+    {},
+  ]);
+  // PostgreSQL allows NULL array elements even though model writes reject them.
+  await db.execute("UPDATE value_docs SET ids = ARRAY[1::bigint, NULL, 2::bigint] WHERE note = 'naïve ☃ text'");
+  const rows = (await objects().fetch()) as Record<string, any>[];
+  assert.equal(rows.length, 4);
+  const byNote = (note: string | null) => rows.find((r) => r.note === note)!;
+  const [none, blank, full] = [byNote(null), byNote(""), byNote("naïve ☃ text")];
+  // Cover SQL NULL separately from JSON null and empty arrays.
+  for (const r of [none, blank]) {
+    assert.deepEqual([r.day, r.big, r.small, r.ratio, r.amount, r.ref, r.extra], [null, null, null, null, null, null, null]);
+    assert.deepEqual([r.ids, r.days, r.data], [[], [], { a: 1 }]);
+    assert.match(r.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  }
+  assert.equal(none.note, null);
+  assert.equal(none.at, null);
+  assert.equal(none.flag, null);
+  assert.equal(blank.flag, true);
+  assert.equal(blank.at.toISOString(), "2026-01-01T00:00:00.000Z");
+  assert.equal(byNote("ASCII text").note, "ASCII text");
+  assert.equal(full.ref, "12345678-1234-1234-1234-123456789abc");
+  assert.deepEqual(full.extra, { nested: true });
+  assert.equal(blank.note, "");
+  assert.deepEqual(full.data.list, [1, 2.5, "é", null, { deep: true }]);
+  assert.equal(full.data.s, "日本");
+  assert.equal(Object.getOwnPropertyDescriptor(full.data, "__proto__")?.value, 7); // an own key, not the prototype
+  assert.equal(full.day.toISOString(), "2026-03-04T00:00:00.000Z");
+  assert.equal(full.at.getTime(), micros.getTime());
+  assert.equal(full.at["orm:micros"], 456);
+  assert.equal(full.at["orm:micros-ms"], micros.getTime());
+  assert.equal(Object.keys(full.at).length, 0); // the hidden properties do not enumerate
+  assert.equal(full.big, -9007199254740993n);
+  assert.equal(full.small, 2147483647);
+  assert.equal(full.ratio, -0.5);
+  assert.ok(full.amount instanceof Decimal && full.amount.eq("-0.000001"));
+  assert.equal(full.flag, false);
+  assert.equal(full.note, "naïve ☃ text");
+  assert.deepEqual(full.ids, [1n, null, 2n]);
+  assert.deepEqual(full.days.map((d: Date) => d.toISOString()), ["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"]);
 });
 
 test("wrong value types are TypeErrors", async () => {

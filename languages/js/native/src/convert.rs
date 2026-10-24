@@ -329,7 +329,7 @@ impl Conv {
     }
 }
 
-fn midnight_ms(d: NaiveDate) -> f64 {
+pub(crate) fn midnight_ms(d: NaiveDate) -> f64 {
     d.and_hms_opt(0, 0, 0).map(|t| t.and_utc().timestamp_millis() as f64).unwrap_or(f64::NAN)
 }
 

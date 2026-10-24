@@ -4,6 +4,7 @@
  */
 
 import { clearAbsent, markAbsent } from "./reference-absence.js";
+import { cellsOf } from "./rows.js";
 import { key } from "./value-key.js";
 import type { Database } from "./db.js";
 import { fieldValue, related, type ModelMeta, type Registry } from "./model.js";
@@ -52,7 +53,8 @@ export class Builder {
 
   /** One instance per row, joined objects attached. */
   instances(out: NativeInstances, rows: NativeRows): Obj[] {
-    const { n, width, values } = rows;
+    const { n, width } = rows;
+    const values = cellsOf(rows);
     const meta = this.meta(out.model);
     const joins = out.joins.map((j) => ({ ...j, meta: this.meta(j.model) }));
     const objs: Obj[] = new Array(n);
@@ -103,7 +105,8 @@ export class Builder {
   }
 
   private columns(out: NativeColumns, rows: NativeRows, keys: readonly string[], decoders?: readonly (((raw: unknown) => unknown) | undefined)[]): Obj[] {
-    const { n, width, values } = rows;
+    const { n, width } = rows;
+    const values = cellsOf(rows);
     const objs: Obj[] = new Array(n);
     for (let r = 0; r < n; r++) {
       const o: Obj = {};
@@ -138,8 +141,9 @@ export class Builder {
     }
     const groups = new Map<unknown, Obj | Obj[]>();
     const cw = f.rows.width;
+    const childCells = cellsOf(f.rows);
     for (let i = 0; i < children.length; i++) {
-      const k = rowKey(f.rows.values, i * cw, f.childKeyPos);
+      const k = rowKey(childCells, i * cw, f.childKeyPos);
       if (f.many) {
         const list = groups.get(k) as Obj[] | undefined;
         if (list) {
@@ -155,10 +159,11 @@ export class Builder {
     const rel = meta.relationByIr.get(f.attr);
     const back = f.back === null ? undefined : childMeta.relationByIr.get(f.back)!.name;
     const pw = parentRows.width;
+    const parentCells = cellsOf(parentRows);
     for (let i = 0; i < parents.length; i++) {
       const parent = parents[i]!;
       if (rel) clearAbsent(parent, rel.name);
-      const k = rowKey(parentRows.values, i * pw, f.keyPos);
+      const k = rowKey(parentCells, i * pw, f.keyPos);
       const found = k === null ? undefined : groups.get(k);
       let value: unknown;
       if (f.many) {

@@ -3,14 +3,15 @@
 //! The same calls as the Python binding: the schema is sent once (`new Schema(json)`),
 //! then one IR document per operation, its literals in a separate array of JS values.
 //! Planning (which reads those values) happens in the call; the query runs on Tokio and
-//! the promise resolves with the rows decoded in one pass: a flat array of cell values
-//! per row set, plus how the rows become objects, which the TypeScript runtime builds.
+//! the promise resolves with the rows packed into one buffer per row set (`pack`), plus
+//! how the rows become objects, which the TypeScript runtime builds.
 //!
 //! Errors are thrown as JS errors whose message starts with `[orm:<Kind>] `; the
 //! runtime turns them into its error classes.
 
 mod convert;
 mod js;
+mod pack;
 
 #[cfg(any(
     all(feature = "profile-postgres", feature = "profile-sqlite"),
@@ -152,23 +153,13 @@ fn model_name(schema: &schema::Schema, idx: usize) -> Option<&str> {
     (idx < schema.models.len()).then(|| schema.model(idx).ir.name.as_str())
 }
 
-/// `{n, width, values}`: the cells of `rows`, row after row.
-fn rows_js(c: Conv, rows: &dyn RowSet, types: &[ValueType]) -> napi::Result<V> {
-    let js = c.js;
-    let width = types.len();
-    let values = js.array(rows.len() * width)?;
-    let mut k = 0u32;
-    for r in 0..rows.len() {
-        for (col, ty) in types.iter().enumerate() {
-            let cell = rows.cell(r, col, *ty).map_err(db_tagged)?;
-            js.set_element(values, k, c.cell(cell)?)?;
-            k += 1;
-        }
-    }
+/// `{n, width, packed}`: the cells of `rows` in one `Buffer` (see `pack`).
+fn rows_js(js: Js, rows: &dyn RowSet, types: &[ValueType]) -> napi::Result<V> {
+    let packed = pack::pack(rows, types).map_err(db_tagged)?;
     let obj = js.object()?;
     js.set(obj, "n", js.number(rows.len() as f64)?)?;
-    js.set(obj, "width", js.number(width as f64)?)?;
-    js.set(obj, "values", values)?;
+    js.set(obj, "width", js.number(types.len() as f64)?)?;
+    js.set(obj, "packed", js.buffer(&packed)?)?;
     Ok(obj)
 }
 
@@ -217,8 +208,7 @@ fn output_js(js: Js, schema: &schema::Schema, output: &Output) -> napi::Result<V
     Ok(obj)
 }
 
-fn prefetched_js(c: Conv, schema: &schema::Schema, fetched: &[Fetched]) -> napi::Result<V> {
-    let js = c.js;
+fn prefetched_js(js: Js, schema: &schema::Schema, fetched: &[Fetched]) -> napi::Result<V> {
     js.array_of(fetched.iter().map(|f| {
         let p = &f.plan;
         let o = js.object()?;
@@ -231,9 +221,9 @@ fn prefetched_js(c: Conv, schema: &schema::Schema, fetched: &[Fetched]) -> napi:
             Some(b) => js.str(b)?,
             None => js.null()?,
         })?;
-        js.set(o, "rows", rows_js(c, f.rows.as_ref(), &p.types)?)?;
+        js.set(o, "rows", rows_js(js, f.rows.as_ref(), &p.types)?)?;
         js.set(o, "output", output_js(js, schema, &p.output)?)?;
-        js.set(o, "children", prefetched_js(c, schema, &f.children)?)?;
+        js.set(o, "children", prefetched_js(js, schema, &f.children)?)?;
         Ok(o)
     }))
 }
@@ -246,14 +236,13 @@ fn outcome_js(env: &Env, schema: &schema::Schema, out: Outcome) -> napi::Result<
     let out = orm_engine::behavior::results(&schema.native_models, out).map_err(db_tagged)?;
     #[cfg(feature = "proxy-models")]
     orm_engine::proxy::emit(&orm_engine::proxy::diagnostics(&schema.proxy_models, &out).map_err(db_tagged)?);
-    let c = conv(env)?;
-    let js = c.js;
+    let js = Js(env.raw());
     Ok(Raw(match out {
         Outcome::Select(s) => {
             let o = js.object()?;
-            js.set(o, "rows", rows_js(c, s.rows.as_ref(), &s.plan.types)?)?;
+            js.set(o, "rows", rows_js(js, s.rows.as_ref(), &s.plan.types)?)?;
             js.set(o, "output", output_js(js, schema, &s.plan.output)?)?;
-            js.set(o, "prefetched", prefetched_js(c, schema, &s.prefetched)?)?;
+            js.set(o, "prefetched", prefetched_js(js, schema, &s.prefetched)?)?;
             o
         }
         Outcome::Count(n) => js.number(n as f64)?,
@@ -262,8 +251,8 @@ fn outcome_js(env: &Env, schema: &schema::Schema, out: Outcome) -> napi::Result<
         Outcome::Prefetched { parents, prefetched } => {
             let o = js.object()?;
             let model = parents_model(schema, &prefetched);
-            js.set(o, "rows", rows_js(c, parents.as_ref(), &model)?)?;
-            js.set(o, "prefetched", prefetched_js(c, schema, &prefetched)?)?;
+            js.set(o, "rows", rows_js(js, parents.as_ref(), &model)?)?;
+            js.set(o, "prefetched", prefetched_js(js, schema, &prefetched)?)?;
             o
         }
         Outcome::Rows { model, rows, types, shape } => {
@@ -272,7 +261,7 @@ fn outcome_js(env: &Env, schema: &schema::Schema, out: Outcome) -> napi::Result<
                 Some(n) => js.str(n)?,
                 None => js.null()?,
             })?;
-            js.set(o, "rows", rows_js(c, rows.as_ref(), &types)?)?;
+            js.set(o, "rows", rows_js(js, rows.as_ref(), &types)?)?;
             js.set(o, "shape", shape_js(js, shape.as_ref())?)?;
             o
         }

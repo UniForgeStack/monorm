@@ -189,6 +189,14 @@ impl Js {
         Ok(out)
     }
 
+    /// A `Buffer` holding a copy of `bytes`.
+    pub fn buffer(self, bytes: &[u8]) -> napi::Result<V> {
+        let mut out = ptr::null_mut();
+        let mut data = ptr::null_mut();
+        call!(napi_create_buffer_copy(self.0, bytes.len(), bytes.as_ptr() as *const _, &mut data, &mut out))?;
+        Ok(out)
+    }
+
     pub fn date(self, ms: f64) -> napi::Result<V> {
         let mut out = ptr::null_mut();
         call!(napi_create_date(self.0, ms, &mut out))?;

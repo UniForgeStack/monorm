@@ -6,6 +6,7 @@
  */
 
 import { blake2b } from "./blake2b.js";
+import { MICROS, MICROS_MS } from "./date-micros.js";
 import { Decimal } from "./decimal.js";
 import { QueryError } from "./errors.js";
 import { Column, Ordering, and, or, type Condition } from "./expr.js";
@@ -68,10 +69,6 @@ export function fingerprint(meta: ModelMeta, keys: readonly Key[]): string {
   return Buffer.from(blake2b(new TextEncoder().encode(text), 8)).toString("hex");
 }
 
-/** The hidden properties of a `Date` from a `DateTime` column (set by the native driver):
- * the microseconds below its milliseconds, and the milliseconds they belong to. */
-const MICROS = "orm:micros";
-const MICROS_MS = "orm:micros-ms";
 const INT32 = 2 ** 31;
 const INT64 = 2n ** 63n;
 const UUID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
