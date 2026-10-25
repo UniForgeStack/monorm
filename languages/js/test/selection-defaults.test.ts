@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, define, func, IntegrityError, loads, NotLoaded, Registry } from "../src/index.js";
+import { connect, define, func, IntegrityError, loads, NotLoaded, of, Registry } from "../src/index.js";
 import { native } from "../src/native.js";
 
 const queryDefaults = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes("query-defaults") ?? false;
@@ -125,6 +125,18 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       await joined[1].update({ authorId: hidden.pk });
       const bypassed = await b.withoutDefaults().load(Book.author).orderBy(Book.id).all();
       assert.equal(bypassed[1].author.name, "hidden"); assert.equal(bypassed[1].author.visible, false);
+      for (const named of [false, true]) {
+        for (const filtered of [false, true]) {
+          const books = await b.withoutDefaults().orderBy(Book.id).all();
+          let bound = named ? of(books).withoutDefaults("query") : of(books).withoutDefaults();
+          if (filtered) bound = bound.filter(Book.id.gt(0));
+          await bound.load(Book.author);
+          assert.deepEqual(books.map((book: any) => book.author.name), ["changed", "hidden"]);
+        }
+      }
+      const hiddenBooks = await b.withoutDefaults().orderBy(Book.id).all();
+      await of(hiddenBooks).load(Book.author);
+      assert.equal(hiddenBooks[0].author.name, "changed"); assert.equal(hiddenBooks[1].author, null);
       const partialReturn = await a.load(Author.name).update({ name: "again" }, { returning: true });
       assert.deepEqual(partialReturn[0].toJSON(), { name: "again" });
       const cleared = await b.withoutRelated().first(); assert.throws(() => cleared.author, NotLoaded);

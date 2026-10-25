@@ -571,6 +571,45 @@ async def test_typed_read_of_a_smallint_column(clean):
         assert agg == [[7, 9]]
 
 
+async def test_typed_read_of_native_type_columns():
+    registry = orm.Registry()
+    Row = orm.loads(
+        """
+        model NativeTypeRow {
+          id    BigInt   @id
+          small Int      @db.SmallInt
+          stamp DateTime? @db.Timestamp(3)
+          @@map("native_type_rows")
+        }
+        """,
+        registry=registry,
+    )["NativeTypeRow"]
+    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    try:
+        await db.drop_tables()
+        await db.create_tables()
+        await db.execute(
+            "INSERT INTO native_type_rows (id, small, stamp) "
+            "VALUES (1, 7, '2024-01-02 03:04:05.123')"
+        )
+        stamp = datetime(2024, 1, 2, 3, 4, 5, 123_000, tzinfo=timezone.utc)
+        row = await Row.objects.using(db).get(Row.id == 1)
+        assert (row.small, row.stamp) == (7, stamp)
+        assert await Row.objects.using(db).select(Row.small, Row.stamp).get(Row.id == 1) == (7, stamp)
+        assert await db.fetch("SELECT small, stamp FROM native_type_rows WHERE id = 1") == [
+            {"small": 7, "stamp": stamp}
+        ]
+        await db.execute("INSERT INTO native_type_rows (id, small, stamp) VALUES (2, 9, NULL)")
+        assert (await Row.objects.using(db).get(Row.id == 2)).stamp is None
+        assert await Row.objects.using(db).select(func.array_agg(Row.stamp, order_by=Row.id)).scalar() == [stamp, None]
+        assert await db.fetch("SELECT array_agg(stamp ORDER BY id) AS stamps FROM native_type_rows") == [
+            {"stamps": [stamp, None]}
+        ]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 async def test_copy_rejections(clean):
     with pytest.raises(TypeError, match="on_conflict"):
         Tag.objects.insert_many([{"name": "a"}], copy=True).on_conflict(Tag.name, update=False)

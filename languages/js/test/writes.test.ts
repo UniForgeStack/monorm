@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DatabaseError, Decimal, IntegrityError, QueryError, TransactionAborted, connect, excluded, func, getDatabase, type Database, type QueryEvent } from "../src/index.js";
+import { DatabaseError, Decimal, IntegrityError, QueryError, TransactionAborted, connect, excluded, func, getDatabase, loads, Registry, type Database, type QueryEvent } from "../src/index.js";
 import { Comment, Post, PostTag, Priority, Profile, Tag, User, type TagInsert } from "./blog/models.js";
 import { DATABASE_URL, otherDatabase, replicaUrl, useDatabase } from "./helpers.js";
 
@@ -343,6 +343,37 @@ test("typed read of a smallint column", () =>
     assert.deepEqual((await posts.select({ v: Post.views }).orderBy(Post.views)).map((r: any) => r.v), [7, 9]);
     assert.deepEqual(await User.objects.using(narrow).select({ v: func.arrayAgg(User.posts.views, { orderBy: User.posts.views }) }).scalar(), [7, 9]);
   }));
+
+test("typed read of native type columns", async () => {
+  const registry = new Registry();
+  const Row = loads(`
+model NativeTypeRow {
+  id    BigInt   @id
+  small Int      @db.SmallInt
+  stamp DateTime? @db.Timestamp(3)
+  @@map("native_type_rows_ts")
+}
+`, { registry }).NativeTypeRow as any;
+  const db = await connect(DATABASE_URL, { registry, default: false });
+  try {
+    await db.dropTables();
+    await db.createTables();
+    await db.execute("INSERT INTO native_type_rows_ts (id, small, stamp) VALUES (1, 7, '2024-01-02 03:04:05.123')");
+    const stamp = new Date("2024-01-02T03:04:05.123Z");
+    const row = await Row.objects.using(db).get(Row.id.eq(1));
+    assert.equal(row.small, 7);
+    assert.equal(row.stamp.toISOString(), stamp.toISOString());
+    assert.deepEqual(await Row.objects.using(db).select({ small: Row.small, stamp: Row.stamp }).get(Row.id.eq(1)), { small: 7, stamp });
+    assert.deepEqual(await db.fetch("SELECT small, stamp FROM native_type_rows_ts WHERE id = 1"), [{ small: 7, stamp }]);
+    await db.execute("INSERT INTO native_type_rows_ts (id, small, stamp) VALUES (2, 9, NULL)");
+    assert.equal((await Row.objects.using(db).get(Row.id.eq(2))).stamp, null);
+    assert.deepEqual(await Row.objects.using(db).select({ stamps: func.arrayAgg(Row.stamp, { orderBy: Row.id }) }).scalar(), [stamp, null]);
+    assert.deepEqual(await db.fetch("SELECT array_agg(stamp ORDER BY id) AS stamps FROM native_type_rows_ts"), [{ stamps: [stamp, null] }]);
+  } finally {
+    await db.dropTables();
+    await db.close();
+  }
+});
 
 test("insertMany copy stops at a duplicate key", async () => {
   await Tag.objects.insert({ name: "taken" });

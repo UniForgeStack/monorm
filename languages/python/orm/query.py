@@ -661,9 +661,11 @@ class QuerySet(Generic[M]):
 
     def _cut(self, kind: str) -> tuple[str, ...]:
         if kind in self._cuts or "slice" in self._cuts or (kind == "slice" and self._cuts):
+            cuts = " and ".join(f"{'an' if cut == 'offset' else 'a'} {cut}" for cut in self._cuts)
             raise QueryError(
-                f"{kind} can't be applied to a query set that already has a {' and a '.join(self._cuts)}; "
-                "use one limit() and one offset(), or a single slice"
+                f"{kind} can't be applied to a query set that already has {cuts}; "
+                "use one limit() and one offset(), or a single slice; to change or clear a limit "
+                "or offset, build a new query set"
             )
         return (*self._cuts, kind)
 
@@ -1660,6 +1662,7 @@ async def prefetch(
     instances: Iterable[M],
     *relations: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any],
     using: Database | None = None,
+    without_defaults: bool | tuple[str, ...] = False,
 ) -> None:
     """The relation-only read of :class:`BoundQuerySet` and ``load_instance``: ``IN (...)``
     queries for ``relations`` of ``instances``, and no query for the instances themselves.
@@ -1682,7 +1685,7 @@ async def prefetch(
         raise TypeError("prefetch() loads relations; a labeled aggregate has nothing to prefetch")
     if any(isinstance(i, ColumnRef) and not i._path for i in loads):
         raise TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load")
-    qs = model.objects._clone(_prefetch=_derive(model, loads, by_query=True)[3])
+    qs = model.objects._clone(_prefetch=_derive(model, loads, by_query=True)[3], _without_defaults=without_defaults)
     if using is not None:
         qs = qs.using(using)
     params: list[Any] = []
@@ -1815,7 +1818,12 @@ class BoundQuerySet(Generic[M]):
         own = any((isinstance(i, ColumnRef) and not i._path) or isinstance(i, Labeled) for i in loads)
         relation_only = bool(loads) and not own
         if relation_only and not self._qs._filters and self._qs._lock is None:
-            await prefetch(self._objs, *cast("tuple[Any, ...]", loads), using=self._database())
+            await prefetch(
+                self._objs,
+                *cast("tuple[Any, ...]", loads),
+                using=self._database(),
+                without_defaults=self._qs._without_defaults,
+            )
             return list(self._objs)
         fresh: dict[Any, M] = {}
         for query in self._read_queries():
@@ -1826,7 +1834,12 @@ class BoundQuerySet(Generic[M]):
         for o in matched:
             merge(o, fresh[o.pk], True)
         if relation_only:
-            await prefetch(matched, *cast("tuple[Any, ...]", loads), using=self._database())
+            await prefetch(
+                matched,
+                *cast("tuple[Any, ...]", loads),
+                using=self._database(),
+                without_defaults=self._qs._without_defaults,
+            )
         return matched
 
     def __await__(self) -> Generator[Any, None, list[M]]:

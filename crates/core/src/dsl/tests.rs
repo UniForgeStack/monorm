@@ -307,6 +307,14 @@ fn errors_point_at_the_problem() {
             "model A {\n  id BigInt @id\n  @@trigger(t, before: [update], body: \"\"\"BEGIN RETURN NEW; END;\"\"\")\n}".into(),
             "only go in top-level blocks",
         ),
+        (
+            format!("model A {{\n  id BigInt @id\n  b_id Json\n  b B @relation(fields: [b_id], references: [id])\n}}\n{b}"),
+            "relation A.b: A.b_id is Json, and a Json field can't be a reference key",
+        ),
+        (
+            format!("model A {{\n  id BigInt @id\n  b_id BigInt\n  b B @relation(fields: [b_id], references: [key])\n}}\nmodel B {{\n  id BigInt @id\n  key Json\n}}"),
+            "relation A.b: B.key is Json, and a Json field can't be a reference key",
+        ),
     ];
     for (src, expected) in cases {
         let e = fails(&src);
@@ -1224,4 +1232,15 @@ fn model_mapping_records_explicitness_even_when_it_matches_the_default() {
     let encoded = serde_json::to_string(&ir).unwrap();
     let decoded: orm_contracts::ir::SchemaIr = serde_json::from_str(&encoded).unwrap();
     assert!(decoded.models[0].mapped);
+}
+
+#[test]
+fn json_relation_keys_are_rejected_from_either_side_at_load() {
+    for (local_type, target_type, bad_key) in [("Json", "BigInt", "Child.parent_key"), ("BigInt", "Json", "Parent.key")] {
+        for reverse_type in ["Child[]", "Child?"] {
+            let source = format!("model Parent {{\n id BigInt @id\n key {target_type} @unique\n children {reverse_type}\n}}\nmodel Child {{\n id BigInt @id\n parent_key {local_type} @unique\n parent Parent @relation(fields: [parent_key], references: [key])\n}}");
+            let error = compile(&source, None).unwrap_err();
+            assert!(error.contains(&format!("relation Parent.children: {bad_key} is Json")), "{error}");
+        }
+    }
 }
