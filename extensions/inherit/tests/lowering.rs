@@ -301,6 +301,7 @@ fn override_effects_are_declared_once() {
 fn override_with_an_explicit_map_records_the_rename() {
     let mut ir = parent();
     ir.models[2].table = "custom_user".into();
+    ir.models[2].mapped = true;
     lower(&mut ir).unwrap();
     let my = get(&ir, "MyUser");
     assert_eq!((my.table.as_str(), my.renamed_from.as_deref()), ("custom_user", Some("user")));
@@ -319,6 +320,7 @@ fn override_follows_an_import_prefix_table() {
 fn abstract_with_a_map_is_rejected() {
     let mut ir = stamped();
     ir.models[0].table = "elsewhere".into();
+    ir.models[0].mapped = true;
     let message = rejected(ir);
     assert!(message.starts_with("schema.prisma:3:1: @@inherit.abstract: "), "{message}");
     assert!(message.contains("@@map"), "{message}");
@@ -536,6 +538,7 @@ fn a_schema_without_inheritance_is_untouched() {
 fn an_override_with_a_map_that_ends_in_its_name_keeps_the_map() {
     let mut ir = parent();
     ir.models[2].table = "legacy_myuser".into();
+    ir.models[2].mapped = true;
     lower(&mut ir).unwrap();
     let my = get(&ir, "MyUser");
     assert_eq!((my.table.as_str(), my.renamed_from.as_deref()), ("legacy_myuser", Some("user")));
@@ -545,6 +548,7 @@ fn an_override_with_a_map_that_ends_in_its_name_keeps_the_map() {
 fn an_abstract_map_that_ends_in_its_name_is_rejected() {
     let mut ir = stamped();
     ir.models[0].table = "x_stamped".into();
+    ir.models[0].mapped = true;
     let message = rejected(ir);
     assert!(message.contains("@@map"), "{message}");
 }
@@ -706,6 +710,7 @@ fn a_join_model_is_named_from_its_own_child() {
 fn a_through_template_gives_each_child_its_own_join_model() {
     let mut ir = user_roles();
     ir.models[1].table = "auth_user".into();
+    ir.models[1].mapped = true;
     lower(&mut ir).unwrap();
     let mut all: Vec<_> = ir.models.iter().map(|m| m.name.as_str()).collect();
     all.sort();
@@ -883,4 +888,49 @@ fn a_key_on_another_field_says_to_redeclare_the_base_key() {
     ir.models[1].fields.insert(0, serde_json::from_value(string_key("uuid")).unwrap());
     let message = rejected(ir);
     assert!(message.contains("differs from the one of User (uuid)") && message.contains("redeclare `id`"), "{message}");
+}
+
+#[test]
+fn a_lone_prefixed_abstract_model_is_not_mapped() {
+    let mut ir = stamped();
+    ir.models[0].table = "base_stamped".into();
+    lower(&mut ir).unwrap();
+}
+
+#[test]
+fn an_explicit_map_equal_to_the_default_is_still_rejected_on_an_abstract() {
+    let mut ir = stamped();
+    ir.models[0].mapped = true;
+    assert!(rejected(ir).contains("@@map"));
+}
+
+#[test]
+fn an_override_map_equal_to_its_prefixed_default_is_preserved() {
+    let mut ir = parent();
+    ir.models[0].table = "app_user".into();
+    ir.models[2].table = "app_myuser".into();
+    ir.models[2].mapped = true;
+    lower(&mut ir).unwrap();
+    assert_eq!(get(&ir, "MyUser").table, "app_myuser");
+    assert_eq!(get(&ir, "MyUser").renamed_from.as_deref(), Some("app_user"));
+}
+
+#[test]
+fn an_explicit_primary_key_name_on_an_abstract_with_two_children_is_rejected() {
+    let mut ir = stamped();
+    ir.models[0].pk_name = Some("shared_pkey".into());
+    let message = rejected(ir);
+    assert!(message.contains("shared_pkey") && message.contains("two or more children"), "{message}");
+}
+
+#[test]
+fn an_explicit_primary_key_name_with_one_child_is_inherited() {
+    let mut ir = stamped();
+    ir.models.pop();
+    ir.behavior.declarations.pop();
+    ir.models[0].pk_name = Some("shared_pkey".into());
+    ir.models[0].fields.push(serde_json::from_value(key("id")).unwrap());
+    ir.models[1].fields.clear();
+    lower(&mut ir).unwrap();
+    assert_eq!(get(&ir, "Post").pk_name.as_deref(), Some("shared_pkey"));
 }

@@ -22,7 +22,7 @@ fn plan(dialect: &str, overriding: bool, map: Option<&str>, previous: &DbSchema)
     let mut declarations = vec![];
     if overriding {
         let table = map.unwrap_or("myuser");
-        models.push(json!({"name": "MyUser", "table": table, "fields": [{"name": OWN, "column": OWN, "type": "string", "nullable": true}]}));
+        models.push(json!({"name": "MyUser", "table": table, "mapped": map.is_some(), "fields": [{"name": OWN, "column": OWN, "type": "string", "nullable": true}]}));
         declarations.push(json!({"attribute": "inherit.override", "model": "MyUser", "field": null, "arguments": {},
             "positional": ["User"], "location": {"file": "schema.prisma", "line": 9, "column": 1}}));
     }
@@ -149,7 +149,7 @@ fn plan_with_keys(dialect: &str, overriding: Override, previous: &DbSchema) -> (
     ];
     let mut declarations = vec![declare("inherit.abstract", "AbstractUser", &[]), declare("inherit.extends", "User", &["AbstractUser"])];
     if let Some((map, renamed_from)) = overriding {
-        let mut my = json!({"name": "MyUser", "table": map.unwrap_or("myuser"),
+        let mut my = json!({"name": "MyUser", "table": map.unwrap_or("myuser"), "mapped": map.is_some(),
             "fields": [key, {"name": OWN, "column": OWN, "type": "string", "nullable": true}]});
         my["renamed_from"] = json!(renamed_from);
         models.push(my);
@@ -178,15 +178,20 @@ const SEED: &str = "INSERT INTO \"user\" (id, name) VALUES (1, 'a'), (2, 'b');
     INSERT INTO role (id, user_roles_id) VALUES (1, 1), (2, 2), (3, 2);
     INSERT INTO post (id, author_id) VALUES (1, 2), (2, 1)";
 
-/// A table rebuild copies and drops the old table, so enforcement is off while it runs; `foreign_key_check` verifies the end state.
+/// Match `SqliteDb::transaction(true)`: enforcement off before BEGIN, checked
+/// before COMMIT, and restored afterward.
 fn sqlite_db() -> rusqlite::Connection {
     let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    db.execute_batch("PRAGMA foreign_keys = ON").unwrap();
     db
 }
 
 fn sqlite_apply(db: &rusqlite::Connection, steps: &[Step]) {
+    db.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE").unwrap();
     for step in steps { db.execute_batch(&step.sql).unwrap_or_else(|e| panic!("{e}: {}", step.sql)); }
+    assert!(sqlite_count(db, "SELECT 1 FROM pragma_foreign_key_check").is_empty());
+    db.execute_batch("COMMIT; PRAGMA foreign_keys = ON").unwrap();
+    assert_eq!(sqlite_count(db, "PRAGMA foreign_keys"), [1]);
 }
 
 fn sqlite_count(db: &rusqlite::Connection, query: &str) -> Vec<i64> {

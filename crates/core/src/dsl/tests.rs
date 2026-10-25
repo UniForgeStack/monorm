@@ -552,6 +552,8 @@ fn schema_imports_share_root_settings_and_preserve_ownership() {
     assert_eq!(ir.dialect, crate::dialect::Dialect::Sqlite);
     let invoice = ir.models.iter().find(|m| m.name == "Invoice").unwrap();
     assert_eq!(invoice.table, "billing_invoices");
+    assert!(invoice.mapped);
+    assert!(!ir.models.iter().find(|m| m.name == "Record").unwrap().mapped);
     assert_eq!(invoice.renamed_from.as_deref(), Some("billing_old_invoices"));
     assert_eq!(ir.models.iter().find(|m| m.name == "Record").unwrap().table, "billing_old_record");
     let sql = crate::migrate::create_all(&schema).unwrap().join("\n");
@@ -1212,4 +1214,14 @@ fn a_generator_block_lists_extension_ids_and_ignores_other_keys() {
 #[test]
 fn a_generator_block_compiles_when_it_names_no_extension() {
     assert!(compile("generator client {\n provider = \"orm\"\n}\nmodel A {\n id Int @id\n}\n", None).is_ok());
+}
+
+#[test]
+fn model_mapping_records_explicitness_even_when_it_matches_the_default() {
+    let ir = compile("model A {\n id Int @id\n @@map(\"a\")\n}\nmodel B {\n id Int @id\n}\n", None).unwrap();
+    assert!(ir.models[0].mapped);
+    assert!(!ir.models[1].mapped);
+    let encoded = serde_json::to_string(&ir).unwrap();
+    let decoded: orm_contracts::ir::SchemaIr = serde_json::from_str(&encoded).unwrap();
+    assert!(decoded.models[0].mapped);
 }

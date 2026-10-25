@@ -591,6 +591,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         partition: None,
         name: m.name.clone(),
         table: m.name.to_lowercase(),
+        mapped: m.mapped,
         fields: vec![],
         primary_key: vec![],
         pk_name: None,

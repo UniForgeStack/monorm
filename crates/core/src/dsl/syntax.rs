@@ -344,6 +344,8 @@ pub struct Member {
 
 #[derive(Debug)]
 pub struct ModelDecl {
+    /// Explicit `@@map` in the source, before the loader adds import-prefix maps.
+    pub mapped: bool,
     pub pos: Pos,
     pub name: String,
     pub members: Vec<Member>,
@@ -610,7 +612,8 @@ impl<'a> Parser<'a> {
             }
             last_line = start.line;
         }
-        Ok(ModelDecl { pos, name, members, blocks })
+        let mapped = blocks.iter().any(|a| a.name == "map");
+        Ok(ModelDecl { pos, name, members, blocks, mapped })
     }
 
     fn enum_block(&mut self, pos: Pos, name: String) -> Result<EnumDecl> {

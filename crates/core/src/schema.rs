@@ -60,6 +60,7 @@ impl Model {
             partition: None,
             name: name.to_owned(),
             table: name.to_owned(),
+            mapped: false,
             fields,
             primary_key: vec![],
             pk_name: None,
