@@ -13,6 +13,7 @@ pub mod model;
 pub mod nested_copy;
 pub mod pg;
 pub mod pull;
+mod reconcile;
 pub mod sqlite;
 
 use serde::Serialize;
@@ -80,7 +81,8 @@ pub fn snapshot(schema: &Schema) -> Result<DbSchema> {
 /// to `schema`.
 pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
     let schema = schema.physical();
-    let (current, renames) = model::build(schema)?;
+    let (mut current, renames) = model::build(schema)?;
+    reconcile::reconcile(schema, previous, &mut current);
     if let Some(old) = &previous.identities {
         let next = current.identities.as_ref().ok_or("identity manifest removed from schema; retain frozen identities and tombstones")?;
         old.validate_successor(next)?;
@@ -105,6 +107,15 @@ pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
     let mut down = steps(&down, previous);
     if identity_changed { identity_step(&mut up); identity_step(&mut down); }
     Ok(MigrationPlan { up, down, snapshot: current })
+}
+
+/// Shadow databases can add parentheses to equivalent native expressions.
+/// Compare their checked structure so pull and drift do not report those as changes.
+pub fn reconcile_introspection(previous: &DbSchema, current: &mut DbSchema) {
+    let pulled = pull::pull(current, &[]);
+    if let Ok(schema) = crate::dsl::compile(&pulled.schema, None).and_then(Schema::from_ir) {
+        reconcile::reconcile(&schema, previous, current);
+    }
 }
 
 fn identity_step(steps: &mut Vec<Step>) {

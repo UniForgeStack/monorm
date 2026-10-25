@@ -27,6 +27,8 @@
 //! reference is `docs/schema/schema.md`; `docs/schema/prisma-syntax.md` has the design.
 
 pub mod expr;
+pub mod sql_expr;
+pub mod native;
 mod lower;
 mod render;
 mod syntax;
@@ -91,6 +93,7 @@ pub struct CompiledProject {
 
 struct Loader<'a> {
     apps: &'a std::collections::BTreeMap<String, PathBuf>,
+    overrides: &'a std::collections::BTreeMap<PathBuf, String>,
     units: Vec<SchemaUnit>,
     seen: std::collections::HashMap<PathBuf, String>,
     active: Vec<PathBuf>,
@@ -158,7 +161,7 @@ impl Loader<'_> {
                         None => origin.parent().unwrap_or(Path::new("")).join(&*path),
                     };
                     if app.is_some() || imported.extension().is_some_and(|e| e == "prisma") {
-                        let text = std::fs::read_to_string(&imported)
+                        let text = self.overrides.get(&imported.canonicalize().unwrap_or_else(|_| imported.clone())).cloned().map(Ok).unwrap_or_else(|| std::fs::read_to_string(&imported))
                             .map_err(|e| self.located(syntax::Error { pos: *pos, msg: format!("import {path:?}: {e}") }))?;
                         let via = format!("import {path:?} in {}", origin.display());
                         out.extend(self.expand(&text, &imported, &via, &format!("{prefix}{local}"), false, app.as_deref().or(owner))?);
@@ -216,7 +219,11 @@ pub fn compile_project_with(source: &str, origin: Option<&Path>, installed: &Ins
 type IdentityUpdate<'a> = (&'a [(String, String)], &'a [String]);
 
 fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, installed: &Installed) -> Result<CompiledProject, String> {
-    let mut loader = Loader { apps: &installed.apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none() };
+    compile_project_overlay(source, origin, update, installed, &Default::default())
+}
+
+fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, installed: &Installed, overrides: &std::collections::BTreeMap<PathBuf, String>) -> Result<CompiledProject, String> {
+    let mut loader = Loader { overrides, apps: &installed.apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none() };
     let origin = origin.unwrap_or(Path::new("<schema>"));
     let mut items = loader.expand(source, origin, "the root schema", "", true, None)?;
     let mut declared = std::collections::HashMap::new();

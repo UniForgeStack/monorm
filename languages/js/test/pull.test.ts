@@ -128,7 +128,7 @@ model Pet {
 
   const pulled = await pull(db);
   assert.deepEqual(pulled.differences, []);
-  assert.ok(pulled.schema.includes('@@check("age >= 0", name: "pet_age")'));
+  assert.ok(pulled.schema.includes('@@check((age >= 0), name: "pet_age")'));
   pulled.write(join(dir, "pulled.prisma"));
   await db.execute("DROP TABLE orm_migrations");
   const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "pulled.prisma")));

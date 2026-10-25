@@ -862,7 +862,7 @@ export class Registry {
       throw new TypeError("schemas in one registry must target the same database");
     }
     this.dialect = dialect;
-    for (const key of ["extensions", "functions", "catalog", "partitions"]) {
+    for (const key of ["extensions", "functions", "catalog", "partitions", "native_expression_slots"]) {
       const items = (ir[key] as unknown[] | undefined) ?? [];
       const known = (this.extra[key] ??= []);
       for (const x of items) {

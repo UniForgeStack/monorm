@@ -1469,6 +1469,19 @@ fn filter(n: &mut Named<'_>, pending: Option<&Pendings>, model: &str, what: &str
     Ok(Some(expression(pending, model, Context::IndexFilter, &format!("{what}: where"), extent, value)?))
 }
 
+// SQL escape nodes carry no type proof, including when nested in a native tree.
+fn fully_checked(node: &super::expr::Node) -> bool {
+    use super::expr::NodeKind;
+    match &node.kind {
+        NodeKind::Sql(_) => false,
+        NodeKind::Call { args, .. } => args.iter().all(fully_checked),
+        NodeKind::Method { receiver, args, .. } => fully_checked(receiver) && args.iter().all(fully_checked),
+        NodeKind::Binary(_, a, b) => fully_checked(a) && fully_checked(b),
+        NodeKind::Not(a) | NodeKind::Neg(a) | NodeKind::IsNull { operand: a, .. } | NodeKind::Key { inner: a, .. } => fully_checked(a),
+        _ => true,
+    }
+}
+
 /// Checks every pending expression against the whole schema, lowers it to SQL text and puts the
 /// text in the IR slot that holds its marker. Returns the warnings, in source order.
 fn resolve_pending(ir: &mut SchemaIr, pending: &Pendings) -> Result<Vec<Diagnostic>> {
@@ -1476,34 +1489,44 @@ fn resolve_pending(ir: &mut SchemaIr, pending: &Pendings) -> Result<Vec<Diagnost
     let mut warnings = pending.warnings.take();
     let as_error = |d: Diagnostic| super::syntax::Error { pos: Pos { line: d.span.line, col: d.span.column, len: 0 }, msg: d.message };
     let mut texts = Vec::with_capacity(list.len());
+    let mut checked_slots = Vec::with_capacity(list.len());
     for e in &list {
         let checked = super::expr::check(ir, &e.model, e.context, e.pos, &e.value).map_err(as_error)?;
+        checked_slots.push(fully_checked(&checked.root));
         warnings.extend(checked.warnings);
         texts.push(super::render::render(ir, ir.dialect, &checked.root).map_err(as_error)?);
     }
-    let fill = |slot: &mut String| {
+    let mut slots = vec![];
+    let mut fill = |model: &str, path: String, slot: &mut String| {
         if let Some(i) = slot.strip_prefix(MARK).and_then(|n| n.parse::<usize>().ok()) {
             *slot = texts[i].clone();
+            if checked_slots[i] { slots.push((model.to_owned(), path)); }
         }
     };
-    let fill_key = |key: &mut IndexColumnIr| key.expr.iter_mut().for_each(fill);
     for m in &mut ir.models {
-        m.fields.iter_mut().filter_map(|f| f.check.as_mut()).for_each(fill);
-        for ix in &mut m.indexes {
-            ix.columns.iter_mut().for_each(fill_key);
-            ix.where_.iter_mut().for_each(fill);
+        for f in &mut m.fields {
+            if let Some(expr) = &mut f.check { fill(&m.name, format!("field:{}", f.name), expr); }
         }
-        for c in &mut m.constraints {
+        for (i, ix) in m.indexes.iter_mut().enumerate() {
+            for (k, key) in ix.columns.iter_mut().enumerate() {
+                if let Some(expr) = &mut key.expr { fill(&m.name, format!("index:{i}:key:{k}"), expr); }
+            }
+            if let Some(expr) = &mut ix.where_ { fill(&m.name, format!("index:{i}:where"), expr); }
+        }
+        for (i, c) in m.constraints.iter_mut().enumerate() {
             match c {
-                ConstraintIr::Check { expr, .. } => fill(expr),
+                ConstraintIr::Check { expr, .. } => fill(&m.name, format!("check:{i}"), expr),
                 ConstraintIr::Exclude { elements, where_, .. } => {
-                    elements.iter_mut().for_each(|e| fill_key(&mut e.column));
-                    where_.iter_mut().for_each(fill);
+                    for (k, e) in elements.iter_mut().enumerate() {
+                        if let Some(expr) = &mut e.column.expr { fill(&m.name, format!("exclude:{i}:key:{k}"), expr); }
+                    }
+                    if let Some(expr) = where_ { fill(&m.name, format!("exclude:{i}:where"), expr); }
                 }
                 _ => {}
             }
         }
     }
+    ir.native_expression_slots = slots;
     warnings.sort_by_key(|w| (w.span.line, w.span.column));
     Ok(warnings)
 }

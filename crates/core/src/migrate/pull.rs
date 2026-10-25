@@ -465,13 +465,13 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
             }
         }
         for c in &t.checks {
-            m.attrs.push(format!("@@check({}, name: {})", quoted(&c.expr), quoted(&c.name)));
+            m.attrs.push(format!("@@check(raw({}), name: {})", quoted(&c.expr), quoted(&c.name)));
         }
         for x in &t.exclusions {
             let keys: Vec<String> = x.elements.iter().map(|e| m.key(&e.key, Some(&e.operator))).collect();
             let mut args = vec![format!("[{}]", keys.join(", ")), format!("type: {}", x.method), format!("name: {}", quoted(&x.name))];
             if let Some(w) = &x.where_ {
-                args.push(format!("where: {}", quoted(w)));
+                args.push(format!("where: raw({})", quoted(w)));
             }
             args.extend(deferrable(x.deferrable).map(str::to_owned));
             m.attrs.push(format!("@@exclude({})", args.join(", ")));
@@ -667,6 +667,11 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
         for g in &gaps {
             out.push_str(&format!("// gap: {}\n", g.replace('\n', " ")));
         }
+    }
+    // Compile the complete emitted schema so translation uses the final mapped
+    // and disambiguated identifiers, enum types and destination context checks.
+    if let Ok(ir) = crate::dsl::compile(&out, None) {
+        if let Ok((native, _)) = crate::dsl::native::convert_source(&out, &ir) { out = native; }
     }
     Pulled { schema: out, gaps }
 }

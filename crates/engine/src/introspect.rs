@@ -1255,10 +1255,11 @@ pub async fn compare(conn: &dyn Executor, target: &DbSchema) -> Result<(Vec<Step
     let shadow = DbSchema { extensions: target.extensions.clone(), ..shadow };
     // Postgres' deparsed text is not always stable when it is parsed again, so the live
     // schema is also re-created; an object both shadows agree on is the same.
-    let live_schema = match materialize(conn, &live.schema).await {
+    let mut live_schema = match materialize(conn, &live.schema).await {
         Ok(again) => adopt(&live.schema, &again.schema, &shadow),
         Err(_) => live.schema,
     };
+    orm_core::migrate::reconcile_introspection(&shadow, &mut live_schema);
     Ok((differences(&live_schema, &shadow), live.gaps))
 }
 

@@ -296,3 +296,22 @@ test("the CLI against a database", async () => {
   assert.equal(run("migrate").out, "Nothing to apply.\n");
   assert.deepEqual(run("rollback", "--to", "zero"), { code: 0, out: "Reverted 0001_initial\n", err: "" });
 });
+
+test("Node launcher converts native expressions offline and preserves pending changes", () => {
+  const dir = tmp();
+  const path = join(dir, "schema.prisma");
+  const old = 'model Item {\n id Int @id\n qty Int @check(raw("qty > 0"))\n}\n';
+  writeFileSync(path, old);
+  assert.equal(cli(["makemigrations", "initial"], dir).code, 0);
+  const history = readFileSync(join(dir, "migrations/0001_initial/snapshot.json"), "utf8");
+  writeFileSync(path, old.replace(" qty Int", " note String?\n qty Int"));
+  const result = cli(["fmt", "--native"], dir);
+  assert.equal(result.code, 0, result.err);
+  const converted = readFileSync(path, "utf8");
+  assert.ok(converted.includes("note String?"));
+  assert.ok(converted.includes("@check((qty > 0))"));
+  assert.equal(cli(["makemigrations", "--check"], dir).code, 1);
+  assert.equal(cli(["fmt", "--native"], dir).code, 0);
+  assert.equal(readFileSync(path, "utf8"), converted);
+  assert.equal(readFileSync(join(dir, "migrations/0001_initial/snapshot.json"), "utf8"), history);
+});
