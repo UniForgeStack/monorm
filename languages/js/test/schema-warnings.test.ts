@@ -59,3 +59,24 @@ test("a native or raw() check does not warn", async () => {
   });
   assert.deepEqual(seen, []);
 });
+
+test("native adoption survives registry IR and unrelated migration snapshots", async () => {
+  const { Migrations } = await import("../src/index.js");
+  const dir = mkdtempSync(join(tmpdir(), "orm-native-adoption-"));
+  const registry = (check: string, extra = "") => {
+    const reg = new Registry();
+    loads(schema(check).replace("  qty Int", `${extra}  qty Int`), { registry: reg });
+    return reg;
+  };
+  try {
+    assert.ok(new Migrations(dir, registry('raw("((qty > 0))")')).make());
+    const native = new Migrations(dir, registry("qty > 0"));
+    assert.deepEqual(native.plan().up, []);
+    assert.deepEqual(native.plan().down, []);
+    const unrelated = new Migrations(dir, registry("qty > 0", "  note String?\n"));
+    assert.ok(unrelated.make("unrelated"));
+    assert.deepEqual(unrelated.plan().up, []);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});

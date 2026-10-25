@@ -736,6 +736,7 @@ python -m orm rollback [--steps N | --to 0002_x | --to zero] [--force]
 python -m orm showmigrations
 python -m orm pull [-o schema.prisma] [--force]   # the schema file from a live database
 python -m orm baseline                       # mark the first migration applied (after pull)
+python -m orm fmt --native                   # convert supported SQL expressions offline
 python -m orm drift                          # exit 1 if the database differs from the last snapshot
 ```
 
@@ -996,3 +997,6 @@ for the syntax and interaction with composite identity and default filters.
   database schemas.
 * Renaming a native enum value in place (`ALTER TYPE ... RENAME VALUE`): a renamed
   value is a removal plus an addition today.
+
+For offline SQL-to-native adoption and its supported subset, see
+[native expression conversion](native-conversion.md).

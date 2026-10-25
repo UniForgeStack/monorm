@@ -75,6 +75,7 @@ impl Host {
 }
 
 const COMMANDS: &str = "  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check [-o FILE]                          compile the schema and check the package lock
+  fmt --native                            convert supported SQL expressions offline
   compile [-o ir.json]                     print or write the compiled schema (JSON IR)
   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
                                            the models module from the schema; TARGET is
@@ -126,7 +127,7 @@ struct Args {
     options: Vec<(String, Option<String>)>,
 }
 
-const FLAGS: [&str; 6] = ["--empty", "--check", "--down", "--force", "-h", "--help"];
+const FLAGS: [&str; 7] = ["--native", "--empty", "--check", "--down", "--force", "-h", "--help"];
 const VALUED: [&str; 16] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension"];
 
 impl Args {
@@ -375,6 +376,17 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             if changes.is_empty() { println!("no identity changes"); }
             for change in changes { println!("{change}"); }
             println!("wrote {}", path.display());
+        }
+        "fmt" => {
+            args.allow(command, &["--native"], 0)?;
+            if !args.flag("--native") { return Err(Failure::Usage("fmt requires --native".into())); }
+            let previous = files::files::latest_snapshot(&dir).map_err(Failure::Failed)?;
+            let conversion = dsl::native::prepare(&schema, &args.installed()?, &previous).map_err(Failure::Failed)?;
+            for report in conversion.reports { eprintln!("{report}"); }
+            for (path, source) in conversion.files {
+                write(&path, &source)?;
+                println!("converted {}", path.display());
+            }
         }
         "check" => {
             args.allow(command, &["-o", "--out"], 0)?;

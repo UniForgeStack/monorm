@@ -779,3 +779,241 @@ fn a_diff_reports_a_copy_it_cannot_make_instead_of_dropping_it() {
     assert!(err.contains("list"), "{err}");
     assert!(diff::diff(&cols.snapshot, &json.snapshot, &Default::default()).is_ok());
 }
+
+fn expression_schema(dialect: &str, attrs: &str, extra: &str) -> Schema {
+    let text = format!("datasource db {{\n provider = \"{dialect}\"\n}}\nmodel Item {{\n id Int @id\n qty Int @map(\"Qty\")\n label String @db.Text\n {extra}\n {attrs}\n}}\n");
+    Schema::from_ir(crate::dsl::compile(&text, None).unwrap()).unwrap()
+}
+
+#[test]
+fn native_adoption_preserves_snapshot_sql_and_generated_names() {
+    for dialect in ["postgresql", "sqlite"] {
+        let old = expression_schema(dialect, "@@check(\"((\\\"Qty\\\" > 0))\")\n @@index([sql(\"abs(\\\"Qty\\\")\")], where: raw(\"(\\\"Qty\\\" > 0)\"))", "");
+        let native = "@@check(qty > 0)\n @@index([abs(qty)], where: qty > 0)";
+        let next = expression_schema(dialect, native, "");
+        let previous = snapshot(&old).unwrap();
+        let plan = plan(&next, &previous).unwrap();
+        assert!(plan.up.is_empty(), "{dialect}: {:?}", plan.up);
+        assert!(plan.down.is_empty());
+        assert_eq!(plan.snapshot, previous);
+        let reloaded = parse_snapshot(&serde_json::to_string(&plan.snapshot).unwrap()).unwrap();
+        assert!(super::plan(&next, &reloaded).unwrap().up.is_empty());
+        let unrelated = expression_schema(dialect, native, "note String?");
+        let changed = super::plan(&unrelated, &reloaded).unwrap();
+        assert!(!changed.up.is_empty());
+        assert_eq!(changed.snapshot.tables[0].checks, previous.tables[0].checks);
+        assert_eq!(changed.snapshot.tables[0].indexes, previous.tables[0].indexes);
+        settled(&unrelated, &changed);
+        let real = expression_schema(dialect, "@@check(qty > 1)\n @@index([abs(qty)], where: qty > 1)", "note String?");
+        let real = super::plan(&real, &changed.snapshot).unwrap();
+        assert!(!real.up.is_empty());
+        assert!(!real.down.is_empty());
+    }
+}
+
+#[test]
+fn adoption_requires_native_intent_unique_identity_and_equal_options() {
+    for dialect in ["postgresql", "sqlite"] {
+        let old = snapshot(&expression_schema(dialect, "@@check(\"(\\\"Qty\\\" > 0)\", name: \"positive\")\n @@index([sql(\"abs( \\\"Qty\\\" )\")], where: raw(\"(\\\"Qty\\\" > 0)\"))", "")).unwrap();
+        let native = expression_schema(dialect, "@@check(qty > 0, name: \"positive\")\n @@index([abs(qty)], where: qty > 0)", "");
+        let compatible = plan(&native, &old).unwrap();
+        assert!(compatible.up.is_empty(), "{:?}", compatible.up);
+        assert_eq!(compatible.snapshot, old);
+        for attrs in [
+            "@@check(qty > 0, name: \"renamed\")\n @@index([abs(qty)], where: qty > 0)",
+            "@@check(qty >= 0, name: \"positive\")\n @@index([abs(qty)], where: qty > 0)",
+            "@@check(qty > 0, name: \"positive\")\n @@index([abs(qty)], unique: true, where: qty > 0)",
+            "@@check(qty > 0, name: \"positive\")\n @@index([sql(\"abs(\\\"Qty\\\")\", sort: Desc)], where: qty > 0)",
+            "@@check(raw(\"\\\"Qty\\\" > 0\"), name: \"positive\")\n @@index([abs(qty)], where: qty > 0)",
+        ] {
+            let changed = plan(&expression_schema(dialect, attrs, ""), &old).unwrap();
+            assert!(!changed.up.is_empty(), "{attrs}");
+            assert!(!changed.down.is_empty(), "{attrs}");
+        }
+        let mut duplicate = old.clone();
+        duplicate.tables[0].checks[0].name = "first".into();
+        let mut second = duplicate.tables[0].checks[0].clone(); second.name = "second".into();
+        duplicate.tables[0].checks.push(second);
+        let next = expression_schema(dialect, "@@check(qty > 0)", "");
+        assert!(!plan(&next, &duplicate).unwrap().up.is_empty());
+    }
+}
+
+#[test]
+fn conversion_never_collapses_literal_whitespace_or_discards_sql_syntax() {
+    for dialect in ["postgresql", "sqlite"] {
+        let old = expression_schema(dialect, "@@check(raw(\"label <> 'a  b'\"), name: \"label_rule\")", "");
+        let old = snapshot(&old).unwrap();
+        assert_eq!(old.tables[0].checks[0].expr, "label <> 'a  b'");
+        let next = expression_schema(dialect, "@@check(label != \"a b\", name: \"label_rule\")", "");
+        assert!(!plan(&next, &old).unwrap().up.is_empty());
+        for sql in ["CAST(\"Qty\" AS INTEGER) > 0", "\"Qty\"::int > 0", "label COLLATE custom <> 'x'", "\"Qty\" = (NULL)", "mystery(\"Qty\") > 0", "\"Qty\" > 0 -- id"] {
+            let ir = crate::dsl::compile(&format!("datasource db {{\n provider = \"{dialect}\"\n}}\nmodel Item {{\n id Int @id\n qty Int @map(\"Qty\")\n label String @db.Text\n}}"), None).unwrap();
+            assert!(crate::dsl::sql_expr::translate(&ir, "Item", crate::dsl::expr::Context::Check, sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[test]
+fn pull_emits_checked_native_expressions_and_lossless_escapes() {
+    for dialect in ["postgresql", "sqlite"] {
+        let original = expression_schema(dialect, "@@check(raw(\"(\\\"Qty\\\" BETWEEN 1 AND 10) AND (label IS NOT NULL OR NOT (\\\"Qty\\\" IN (2, 3)))\"), name: \"range_rule\")\n @@check(raw(\"mystery(label) = 'it''s  odd'\"), name: \"escape_rule\")\n @@index([sql(\"abs( \\\"Qty\\\" )\")], where: raw(\"\\\"Qty\\\" > 0\"))\n @@index([sql(\"lower(label)\", sort: Desc)], name: \"sorted_label\")", "");
+        let before = snapshot(&original).unwrap();
+        let pulled = pull::pull(&before, &[]);
+        let compiled = crate::dsl::compile_project(&pulled.schema, None).unwrap();
+        assert!(compiled.warnings.iter().all(|w| !w.message.contains("not checked")), "{:?}", compiled.warnings);
+        assert!(pulled.schema.contains(".between(1, 10)"), "{}", pulled.schema);
+        assert!(pulled.schema.contains("abs(Qty)"), "{}", pulled.schema);
+        assert!(pulled.schema.contains("sql(\"lower(label)\", sort: Desc)"));
+        assert!(pulled.schema.contains("raw(\"mystery(label) = 'it''s  odd'\")"));
+        let restored = Schema::from_ir(compiled.ir).unwrap();
+        let reconciled = plan(&restored, &before).unwrap();
+        assert!(reconciled.up.is_empty(), "{:?}", reconciled.up);
+        assert!(reconciled.down.is_empty());
+    }
+}
+
+#[test]
+fn every_predicate_destination_retains_sql_across_snapshot_round_trips() {
+    let cases = [
+        ("@check(raw(\"(\\\"Qty\\\" >= 0)\"))", "@check(qty >= 0)", true, false),
+        ("@@check(raw(\"(\\\"Qty\\\" >= 0)\"), name: \"named_check\")", "@@check(qty >= 0, name: \"named_check\")", false, false),
+        ("@@index([qty], unique: true, where: raw(\"(\\\"Qty\\\" >= 0)\"))", "@@index([qty], unique: true, where: qty >= 0)", false, false),
+        ("@@exclude([qty(op: \"=\")], name: \"exclusive_qty\", where: raw(\"(\\\"Qty\\\" >= 0)\"))", "@@exclude([qty(op: \"=\")], name: \"exclusive_qty\", where: qty >= 0)", false, true),
+    ];
+    for dialect in ["postgresql", "sqlite"] {
+        for (old, new, field_check, pg_only) in cases {
+            if pg_only && dialect == "sqlite" { continue; }
+            let build = |attrs: &str, extra: &str| {
+                if field_check {
+                    let text = format!("datasource db {{\n provider = \"{dialect}\"\n}}\nmodel Item {{\n id Int @id\n qty Int @map(\"Qty\") {attrs}\n {extra}\n}}");
+                    Schema::from_ir(crate::dsl::compile(&text, None).unwrap()).unwrap()
+                } else { expression_schema(dialect, attrs, extra) }
+            };
+            let previous = snapshot(&build(old, "")).unwrap();
+            let current = build(new, "");
+            let converted = plan(&current, &previous).unwrap();
+            assert!(converted.up.is_empty(), "{dialect}: {new}: {:?}", converted.up);
+            assert!(converted.down.is_empty());
+            assert_eq!(converted.snapshot, previous);
+            let loaded = parse_snapshot(&serde_json::to_string(&converted.snapshot).unwrap()).unwrap();
+            assert!(plan(&current, &loaded).unwrap().up.is_empty());
+            let next = build(new, " added Int?");
+            let unrelated = plan(&next, &loaded).unwrap();
+            assert!(!unrelated.up.is_empty());
+            assert_eq!(unrelated.snapshot.tables[0].checks, previous.tables[0].checks);
+            assert_eq!(unrelated.snapshot.tables[0].indexes, previous.tables[0].indexes);
+            assert_eq!(unrelated.snapshot.tables[0].exclusions, previous.tables[0].exclusions);
+            settled(&next, &unrelated);
+        }
+    }
+}
+
+#[test]
+fn sqlite_boolean_rendering_is_recognized_as_a_typed_literal() {
+    let build = |check: &str| {
+        let text = format!("datasource db {{ provider = \"sqlite\" }}\nmodel Flag {{\n id Int @id\n active Boolean?\n @@check({check}, name: \"flag_check\")\n}}");
+        Schema::from_ir(crate::dsl::compile(&text, None).unwrap()).unwrap()
+    };
+    let old = snapshot(&build("raw(\"(active = TRUE)\")")).unwrap();
+    let next = plan(&build("active == true"), &old).unwrap();
+    assert!(next.up.is_empty(), "{:?}", next.up);
+    assert!(next.down.is_empty());
+    assert_eq!(next.snapshot, old);
+    assert!(!plan(&build("active == false"), &old).unwrap().up.is_empty());
+}
+
+#[test]
+fn a_sql_column_key_can_adopt_a_checked_field_without_renaming_the_index() {
+    for dialect in ["postgresql", "sqlite"] {
+        let old = snapshot(&expression_schema(dialect, "@@index([sql(\"(\\\"Qty\\\")\")])", "")).unwrap();
+        let native = expression_schema(dialect, "@@index([qty])", "");
+        let converted = plan(&native, &old).unwrap();
+        assert!(converted.up.is_empty(), "{:?}", converted.up);
+        assert!(converted.down.is_empty());
+        assert_eq!(converted.snapshot, old);
+        settled(&native, &converted);
+    }
+}
+
+#[test]
+fn legacy_sql_layout_does_not_create_a_migration() {
+    for dialect in ["postgresql", "sqlite"] {
+        let source = expression_schema(dialect,
+            "@@check(raw(\"\\\"Qty\\\"   >\\n 0\"))\n @@index([sql(\"abs(  \\\"Qty\\\" )\")], where: raw(\"\\\"Qty\\\"  >  0\"))", "");
+        let mut legacy = snapshot(&source).unwrap();
+        for table in &mut legacy.tables {
+            for check in &mut table.checks { check.expr = model::normalize_ws(&check.expr); }
+            for index in &mut table.indexes {
+                for key in &mut index.keys { key.expr = key.expr.as_deref().map(model::normalize_ws); }
+                index.where_ = index.where_.as_deref().map(model::normalize_ws);
+            }
+        }
+        let legacy = parse_snapshot(&serde_json::to_string(&legacy).unwrap()).unwrap();
+        let result = plan(&source, &legacy).unwrap();
+        assert!(result.up.is_empty(), "{dialect}: {:?}", result.up);
+        assert!(result.down.is_empty());
+        assert_eq!(result.snapshot, legacy);
+    }
+}
+
+#[test]
+fn adoption_respects_dialect_predicate_precedence() {
+    for (dialect, raw, native) in [
+        ("postgresql", "TRUE = 1 IN (1)", "true == (1).in_([1])"),
+        ("postgresql", "TRUE = 1 BETWEEN 0 AND 2", "true == (1).between(0, 2)"),
+        ("postgresql", "TRUE = FALSE IS NULL", "(true == false) == null"),
+    ] {
+        let old = snapshot(&expression_schema(dialect, &format!("@@check(raw({}), name: \"rule\")", serde_json::to_string(raw).unwrap()), "")).unwrap();
+        let next = expression_schema(dialect, &format!("@@check({native}, name: \"rule\")"), "");
+        let result = plan(&next, &old).unwrap();
+        assert!(result.up.is_empty(), "{dialect}: {raw}: {:?}", result.up);
+        assert_eq!(result.snapshot, old);
+    }
+}
+
+#[test]
+fn ambiguous_generated_candidates_cannot_adopt_a_native_check() {
+    for dialect in ["postgresql", "sqlite"] {
+        let before = expression_schema(dialect, "@@check(raw(\"(\\\"Qty\\\" > 0)\"))\n @@check(raw(\"((\\\"Qty\\\" > 0))\"))", "");
+        let old = snapshot(&before).unwrap();
+        let native = expression_schema(dialect, "@@check(qty > 0)", "");
+        let result = plan(&native, &old).unwrap();
+        assert!(!result.up.is_empty());
+        assert_ne!(result.snapshot.tables[0].checks[0].name, old.tables[0].checks[0].name);
+        assert_ne!(result.snapshot.tables[0].checks[0].name, old.tables[0].checks[1].name);
+    }
+}
+
+#[test]
+fn unsupported_sql_and_different_mapped_columns_keep_real_migrations() {
+    for dialect in ["postgresql", "sqlite"] {
+        for raw in ["CAST(\"Qty\" AS INTEGER) > 0", "mystery(\"Qty\") > 0", "id > 0"] {
+            let before = expression_schema(dialect, &format!("@@check(raw({}), name: \"rule\")", serde_json::to_string(raw).unwrap()), "");
+            let old = snapshot(&before).unwrap();
+            let native = expression_schema(dialect, "@@check(qty > 0, name: \"rule\")", "");
+            let result = plan(&native, &old).unwrap();
+            assert!(!result.up.is_empty(), "{raw}");
+            assert!(!result.down.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pull_retains_cast_operator_and_predicate_fallbacks() {
+    let source = expression_schema("postgresql", r#"
+ @@check(raw("CAST(\"Qty\" AS INTEGER) > 0"), name: "cast_rule")
+ @@check(raw("label ~~ 'x%'"), name: "operator_rule")
+ @@index([qty], where: raw("mystery(\"Qty\") > 0"))
+ @@exclude([sql("abs(\"Qty\")", op: "=")], name: "exclusive")
+ "#, "");
+    let old = snapshot(&source).unwrap();
+    let result = pull::pull(&old, &[]);
+    assert!(result.schema.contains("raw(\"CAST("), "{}", result.schema);
+    assert!(result.schema.contains("raw(\"label ~~ 'x%'\")"), "{}", result.schema);
+    assert!(result.schema.contains("where: raw("), "{}", result.schema);
+    assert!(result.schema.contains("sql(\"abs("), "{}", result.schema);
+    assert!(result.schema.contains("op: \"=\""), "{}", result.schema);
+    let schema = Schema::from_ir(crate::dsl::compile(&result.schema, None).unwrap()).unwrap();
+    assert!(plan(&schema, &old).unwrap().up.is_empty());
+}

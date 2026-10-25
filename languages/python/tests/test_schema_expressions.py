@@ -102,3 +102,112 @@ def test_a_native_or_raw_check_does_not_warn():
         warnings.simplefilter("error")
         orm.loads(source("sqlite", "t1", "qty > 0"), registry=orm.Registry())
         orm.loads(source("sqlite", "t2", 'raw("qty > 0")'), registry=orm.Registry())
+
+
+def test_native_adoption_survives_registry_ir_and_unrelated_snapshots(tmp_path):
+    from orm.migrations import Migrations
+
+    def registry(check, extra=""):
+        reg = orm.Registry()
+        orm.loads(source("sqlite", "stock", check, extra), registry=reg)
+        return reg
+
+    old = registry('raw("((qty > 0))")')
+    initial = Migrations(tmp_path, old).make()
+    assert initial is not None
+    native = registry("qty > 0")
+    assert not Migrations(tmp_path, native).plan()
+    assert Migrations(tmp_path, native).plan().down == []
+    unrelated = registry("qty > 0", "  note String?\n")
+    migration = Migrations(tmp_path, unrelated).make("unrelated")
+    assert migration is not None
+    assert "CHECK (((qty > 0)))" in migration.up_sql
+    assert not Migrations(tmp_path, unrelated).plan()
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_offline_native_conversion_preserves_live_rules_and_later_migrations(provider, tmp_path):
+    import subprocess
+    import sys
+
+    from orm.migrations import Migrations, Migrator, pull
+
+    dialect, url = PROVIDERS[provider]
+    path = tmp_path / "schema.prisma"
+    legacy = (
+        f'datasource db {{\n provider = "{dialect}"\n}}\n'
+        'model Item {\n id Int @id\n qty Int @map("Qty")\n'
+        ' @@map("conversion_item")\n'
+        ' @@check(raw("((\\"Qty\\" > 0))"))\n'
+        ' @@index([sql("abs( \\"Qty\\" )")], where: raw("(\\"Qty\\" > 0)"))\n}\n'
+    )
+    path.write_text(legacy)
+    migrations = Migrations(tmp_path / "migrations", path)
+    first = migrations.make()
+    assert first is not None
+    connection_registry = orm.Registry()
+    orm.loads(f'datasource db {{ provider = "{dialect}" }}\n', registry=connection_registry)
+    db = await orm.connect(url, registry=connection_registry, default=False, max_connections=1)
+    if provider == "postgres":
+        await db.execute("CREATE SCHEMA pl12_conversion; SET search_path = pl12_conversion")
+    runner = Migrator(db, migrations)
+    try:
+        await runner.upgrade()
+        await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (1, 2), (2, 3)')
+        converted = subprocess.run(
+            [sys.executable, "-m", "orm", "--schema", str(path), "--dir", str(migrations.directory), "fmt", "--native"],
+            capture_output=True, text=True,
+        )
+        assert converted.returncode == 0, converted.stderr
+        assert "@@check((((qty > 0))))" in path.read_text()
+        assert not migrations.plan()
+        assert migrations.plan().down == []
+        assert await runner.upgrade() == []
+        with pytest.raises(orm.IntegrityError):
+            await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, -1)')
+        # Shadow verification must accept the native form of the existing rules.
+        pulled = await pull(db)
+        assert pulled.differences == [], (pulled.schema, pulled.differences)
+        fresh_registry = orm.Registry()
+        orm.loads(pulled.schema, registry=fresh_registry)
+        fresh = await orm.connect(url, registry=fresh_registry, default=False, max_connections=1)
+        try:
+            if provider == "postgres":
+                await fresh.execute("CREATE SCHEMA pl12_fresh; SET search_path = pl12_fresh")
+            await fresh.create_tables()
+            await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (1, 2), (2, 3)')
+            with pytest.raises(orm.IntegrityError):
+                await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, -1)')
+            assert not (await pull(fresh)).differences
+        finally:
+            if provider == "postgres":
+                await fresh.execute("SET search_path = public; DROP SCHEMA pl12_fresh CASCADE")
+            await fresh.close()
+        pulled_path = tmp_path / "pulled.prisma"
+        pulled.write(pulled_path)
+        baseline = Migrator(db, Migrations(tmp_path / "baseline", pulled_path))
+        assert not (await runner.drift()).steps
+        path.write_text(path.read_text().replace(" qty Int", " note String?\n qty Int"))
+        unrelated = migrations.make("unrelated")
+        assert unrelated is not None
+        await runner.upgrade()
+        assert not migrations.plan()
+        path.write_text(path.read_text().replace("qty > 0", "qty > 1"))
+        real = migrations.make("stricter")
+        assert real is not None and real.down_sql
+        await runner.upgrade()
+        with pytest.raises(orm.IntegrityError):
+            await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, 1)')
+        await runner.downgrade()
+        await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, 1)')
+        assert await db._fetch_text("SELECT count(*) FROM conversion_item") == [("3",)]
+        await runner.downgrade(target="zero")
+        await db.execute('CREATE TABLE conversion_item (id INTEGER PRIMARY KEY, "Qty" INTEGER NOT NULL CHECK ("Qty" > 0))')
+        pulled = await pull(db)
+        pulled.write(pulled_path)
+        await baseline.baseline()
+        assert not (await baseline.drift()).steps
+    finally:
+        if provider == "postgres":
+            await db.execute("SET search_path = public; DROP SCHEMA pl12_conversion CASCADE")
+        await db.close()

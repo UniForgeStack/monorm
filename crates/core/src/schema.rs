@@ -132,6 +132,7 @@ impl Model {
 }
 
 pub struct Schema {
+    pub(crate) native_expression_slots: Vec<(String, String)>,
     #[cfg(feature = "proxy-models")]
     pub proxy_models: Vec<crate::proxy::PreparedProxy>,
     pub dialect: crate::dialect::Dialect,
@@ -171,6 +172,7 @@ impl Schema {
             Some(storage) => {
                 let physical = serde_json::from_value(serde_json::json!({
                     "models": storage.models, "enums": ir.enums, "types": ir.types, "dialect": ir.dialect,
+                    "native_expression_slots": ir.native_expression_slots,
                     "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities, "partitions": ir.partitions,
                 })).map_err(|e| e.to_string())?;
                 Some(Box::new(Self::from_ir_impl(physical, false)?))
@@ -296,6 +298,7 @@ impl Schema {
                 ir.behavior.proxy_models.iter().find(|p| p.model == m.ir.name))).collect::<Result<Vec<_>>>()?
         };
         Ok(Schema {
+            native_expression_slots: ir.native_expression_slots,
             #[cfg(feature = "proxy-models")] proxy_models,
             dialect: ir.dialect,
             models,

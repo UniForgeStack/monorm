@@ -341,3 +341,73 @@ fn check_compares_extension_locks_and_python_facades() {
 
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn fmt_native_is_offline_idempotent_and_preserves_imports_comments_and_history() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-native-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = "// root stays intact\nimport \"item.prisma\"\n";
+    let old = "// comment é\nmodel Item {\n id Int @id\n qty Int @map(\"Qty\") @check(raw(\"(\\\"Qty\\\" > 0)\")) // field comment\n label String\n @@check(raw(\"mystery(label) IS NOT NULL\"), name: \"unsupported\")\n @@index([sql(\"abs( \\\"Qty\\\" )\")], where: raw(\"\\\"Qty\\\" > 0\"))\n}\n";
+    std::fs::write(dir.join("schema.prisma"), root).unwrap();
+    std::fs::write(dir.join("item.prisma"), old).unwrap();
+    let initial = orm(&dir, &["makemigrations", "initial"]);
+    assert!(initial.status.success(), "{}", text(&initial.stderr));
+    let snapshot = std::fs::read(dir.join("migrations/0001_initial/snapshot.json")).unwrap();
+    let old = old.replace(" label String", " pending String?\n label String");
+    std::fs::write(dir.join("item.prisma"), &old).unwrap();
+    let converted = orm(&dir, &["fmt", "--native"]);
+    assert!(converted.status.success(), "{}", text(&converted.stderr));
+    assert!(text(&converted.stderr).contains("item.prisma:7:"), "{}", text(&converted.stderr));
+    let expected = old.replace("raw(\"(\\\"Qty\\\" > 0)\")", "((qty > 0))").replace("sql(\"abs( \\\"Qty\\\" )\")", "abs(qty)").replace("raw(\"\\\"Qty\\\" > 0\")", "(qty > 0)");
+    assert_eq!(std::fs::read_to_string(dir.join("item.prisma")).unwrap(), expected);
+    assert_eq!(std::fs::read_to_string(dir.join("schema.prisma")).unwrap(), root);
+    let second = orm(&dir, &["fmt", "--native"]);
+    assert!(second.status.success(), "{}", text(&second.stderr));
+    assert_eq!(std::fs::read_to_string(dir.join("item.prisma")).unwrap(), expected);
+    assert_eq!(orm(&dir, &["makemigrations", "--check"]).status.code(), Some(1));
+    assert_eq!(std::fs::read(dir.join("migrations/0001_initial/snapshot.json")).unwrap(), snapshot);
+    // Conversion must not absorb changes that still need a migration.
+    std::fs::write(dir.join("item.prisma"), expected.replace(" label String", " note String?\n label String")).unwrap();
+    assert_eq!(orm(&dir, &["makemigrations", "--check"]).status.code(), Some(1));
+    assert!(orm(&dir, &["makemigrations", "unrelated"]).status.success());
+    assert!(orm(&dir, &["makemigrations", "--check"]).status.success());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn fmt_native_without_history_reports_fallbacks_and_never_writes_invalid_schemas() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-native-no-history-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("schema.prisma");
+    let old = "model Item {\n id Int @id\n qty Int @check(\"qty BETWEEN 1 AND 10\")\n @@check(raw(\"qty::int > 0\"), name: \"cast_rule\")\n}\n";
+    std::fs::write(&path, old).unwrap();
+    let converted = orm(&dir, &["fmt", "--native"]);
+    assert!(converted.status.success(), "{}", text(&converted.stderr));
+    assert!(text(&converted.stderr).contains("no migration history"));
+    assert!(text(&converted.stderr).contains("schema.prisma:4:"));
+    let converted = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(converted, old.replace("\"qty BETWEEN 1 AND 10\"", "(qty).between(1, 10)"));
+    assert!(!dir.join("migrations").exists());
+    let invalid = converted.replace("qty Int", "qty MissingType");
+    std::fs::write(&path, &invalid).unwrap();
+    assert_eq!(orm(&dir, &["fmt", "--native"]).status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), invalid);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn fmt_native_rejects_a_proposed_target_that_cannot_retain_history() {
+    let dir = std::env::temp_dir().join(format!("orm-cli-native-ambiguous-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("schema.prisma");
+    let history = "model Item {\n id Int @id\n qty Int\n @@check(raw(\"(qty > 0)\"))\n @@check(raw(\"((qty > 0))\"))\n}\n";
+    std::fs::write(&path, history).unwrap();
+    assert!(orm(&dir, &["makemigrations", "initial"]).status.success());
+    let source = "model Item {\n id Int @id\n qty Int\n @@check(raw(\"(((qty > 0)))\"))\n}\n";
+    std::fs::write(&path, source).unwrap();
+    let result = orm(&dir, &["fmt", "--native"]);
+    assert!(result.status.success(), "{}", text(&result.stderr));
+    assert!(text(&result.stderr).contains("cannot uniquely retain"), "{}", text(&result.stderr));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+    std::fs::remove_dir_all(dir).unwrap();
+}

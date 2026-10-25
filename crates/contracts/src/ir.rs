@@ -194,6 +194,9 @@ pub struct NestedIr {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 pub struct SchemaIr {
+    /// Native source slots for migration reconciliation. Not part of database snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_expression_slots: Vec<(String, String)>,
     /// Frozen storage identities for the complete application schema set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identities: Option<crate::identity::IdentityManifest>,

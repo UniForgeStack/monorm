@@ -270,7 +270,7 @@ async def test_sqlite_pull_baseline_and_drift(tmp_path):
         pulled = await pull(db)
         assert pulled.differences == []
         assert 'provider = "sqlite"' in pulled.schema
-        assert '@@check("age >= 0", name: "pet_age")' in pulled.schema
+        assert '@@check((age >= 0), name: "pet_age")' in pulled.schema
 
         schema = tmp_path / "pulled.prisma"
         pulled.write(schema)
@@ -437,8 +437,8 @@ async def test_sqlite_pull_reads_column_clauses(tmp_path):
     finally:
         await db.close()
     text = pulled.schema
-    assert '@@check("\\"age\\" >= 0", name: "auth_user_age_check")' in text, text
-    assert '@@check("price > 0", name: "auth_user_check")' in text
+    assert '@@check((age >= 0), name: "auth_user_age_check")' in text, text
+    assert '@@check((price > 0), name: "auth_user_check")' in text
     assert "is_staff Boolean" in text and "joined DateTime" in text and "price Float" in text
     assert 'user AuthUser @relation("AppItem_user", fields: [user_id], references: [id], deferrable: deferred)' in text
     assert 'owner AuthUser? @relation("AppItem_owner", fields: [owner_id], references: [id])' in text

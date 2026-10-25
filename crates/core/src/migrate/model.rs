@@ -456,7 +456,7 @@ pub fn index_name(m: &Model, ix: &crate::ir::IndexIr) -> Result<String> {
         .iter()
         .map(|c| match (&c.field, &c.expr) {
             (Some(f), None) => m.field(f).map(|f| f.column.clone()).map_err(|e| e.to_string()),
-            (None, Some(e)) => Ok(expr_tag(e)),
+            (None, Some(e)) => Ok(expression_tag(e)),
             _ => Err(format!("model {}: each index key needs exactly one of field / expr", m.ir.name)),
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -469,12 +469,33 @@ pub fn unique_index_names(m: &Model) -> Vec<String> {
 }
 
 /// Stable short tag for expressions in generated names.
-fn expr_tag(expr: &str) -> String {
+pub(super) fn expression_tag(expr: &str) -> String {
     format!("expr{:08x}", fnv1a(&normalize_ws(expr)))
 }
 
 pub fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// Retain the historical layout outside quotes without changing literal contents.
+fn expression_sql(sql: &str) -> String {
+    let mut out = String::new();
+    let mut quote = None;
+    let mut space = false;
+    for c in sql.trim().chars() {
+        if let Some(q) = quote {
+            out.push(c);
+            if c == q { quote = None; }
+        } else if c.is_whitespace() {
+            space = true;
+        } else {
+            if space && !out.is_empty() { out.push(' '); }
+            space = false;
+            out.push(c);
+            if matches!(c, '\'' | '"' | '`') { quote = Some(c); }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------
@@ -614,7 +635,7 @@ impl Builder<'_> {
             (Some(f), None) => (Some(self.column_of(m, f)?), None),
             (None, Some(e)) => {
                 self.require_expr(e, what);
-                (None, Some(normalize_ws(e)))
+                (None, Some(expression_sql(e)))
             }
             _ => return Err(format!("model {}: each {what} key needs exactly one of field / expr", m.ir.name)),
         };
@@ -635,7 +656,7 @@ impl Builder<'_> {
     /// Name part for a list of keys: column names, or a hash for expressions.
     fn keys_tag(keys: &[IndexKey]) -> String {
         keys.iter()
-            .map(|k| k.column.clone().unwrap_or_else(|| expr_tag(k.expr.as_deref().unwrap_or(""))))
+            .map(|k| k.column.clone().unwrap_or_else(|| expression_tag(k.expr.as_deref().unwrap_or(""))))
             .collect::<Vec<_>>()
             .join("_")
     }
@@ -746,7 +767,7 @@ impl Builder<'_> {
                 self.require_expr(expr, &format!("check on {t}.{}", f.column));
                 table.checks.push(Check {
                     name: self.claim_local(object_name(&[&t, &f.column, "check"]), m)?,
-                    expr: normalize_ws(expr),
+                    expr: expression_sql(expr),
                 });
             }
         }
@@ -802,7 +823,7 @@ impl Builder<'_> {
                 method,
                 keys,
                 include: ix.include.iter().map(|f| self.column_of(m, f)).collect::<Result<_>>()?,
-                where_: ix.where_.as_deref().map(normalize_ws),
+                where_: ix.where_.as_deref().map(expression_sql),
                 with: ix.with.clone(),
                 nulls_not_distinct: ix.nulls_not_distinct,
             });
@@ -830,8 +851,8 @@ impl Builder<'_> {
                 }
                 ConstraintIr::Check { name, expr } => {
                     self.require_expr(expr, "check constraint");
-                    let name = name.clone().unwrap_or_else(|| object_name(&[&t, &expr_tag(expr), "check"]));
-                    table.checks.push(Check { name: self.claim_local(name, m)?, expr: normalize_ws(expr) });
+                    let name = name.clone().unwrap_or_else(|| object_name(&[&t, &expression_tag(expr), "check"]));
+                    table.checks.push(Check { name: self.claim_local(name, m)?, expr: expression_sql(expr) });
                 }
                 ConstraintIr::Exclude { name, method, elements, where_, deferrable, requires } => {
                     let mut els = vec![];
@@ -856,7 +877,7 @@ impl Builder<'_> {
                         name: self.claim(name, m)?,
                         method,
                         elements: els,
-                        where_: where_.as_deref().map(normalize_ws),
+                        where_: where_.as_deref().map(expression_sql),
                         deferrable: *deferrable,
                     });
                 }

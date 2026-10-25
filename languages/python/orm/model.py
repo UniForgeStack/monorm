@@ -623,7 +623,7 @@ def define(
         if computed:
             cls._meta.input_fields = {k: v for k, v in cls._meta.fields.items() if k not in computed}
         out[m["name"]] = cls
-    for key in ("types", "extensions", "functions", "catalog", "partitions"):
+    for key in ("types", "extensions", "functions", "catalog", "partitions", "native_expression_slots"):
         items = reg._schema_extra.setdefault(key, [])
         items.extend(x for x in ir.get(key, ()) if x not in items)
         if not items:
