@@ -288,4 +288,39 @@ mod tests {
         let error = crate::codegen::Options::default().with_schema_classes(&ir, &[], Language::Python, &root).unwrap_err();
         assert!(error.contains("no schema file declares"), "{error}");
     }
+
+    #[test]
+    fn mixed_own_and_inherited_classes_resolve_in_the_child_package() {
+        let root = dir("mixed-classes");
+        touch(&root.join("pyproject.toml"), "");
+        touch(&root.join("base/package.json"), r#"{"name":"base"}"#);
+        touch(&root.join("child/package.json"), r#"{"name":"child"}"#);
+        let unit = |name: &str, model: &str| SchemaUnit { app: None, path: root.join(format!("{name}/schema.prisma")), models: vec![model.into()], enums: vec![], types: vec![] };
+        let units = [unit("base", "Base"), unit("child", "Child")];
+        // This is the IR produced by inherit when either class is declared on Child:
+        // it copies the other name, leaving classes_from empty.
+        for own_query_set in [true, false] {
+            let mut ir = crate::dsl::compile("model Child {\n id Int @id\n}\n", None).unwrap();
+            let child = &mut ir.models[0];
+            child.query_set = Some(if own_query_set { "OwnQueries" } else { "BaseQueries" }.into());
+            child.model_methods = Some(if own_query_set { "BaseMethods" } else { "OwnMethods" }.into());
+            assert!(child.classes_from.is_none());
+            for language in [Language::Python, Language::TypeScript] {
+                let mut options = crate::codegen::Options::default();
+                options.with_schema_classes(&ir, &units, language, &root.join("child")).unwrap();
+                let (queries, methods) = if own_query_set { ("OwnQueries", "BaseMethods") } else { ("BaseQueries", "OwnMethods") };
+                match language {
+                    Language::Python => {
+                        assert_eq!(options.query_sets["Child"], format!("child.queries:{queries}"));
+                        assert_eq!(options.model_methods["Child"], format!("child.methods:{methods}"));
+                    }
+                    Language::TypeScript => {
+                        assert_eq!(options.query_sets["Child"], format!("./queries.js#{queries}"));
+                        assert_eq!(options.model_methods["Child"], format!("./methods.js#{methods}"));
+                    }
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -24,6 +24,8 @@ fn main() {
     // A model with a declaration passes core, but no pass here derives its join model.
     let unexpanded = dsl::compile("model Team {\n id Int @id\n}\nmodel UserView {\n id Int @id\n teams Team[] @relation(through: \"{model}Team\")\n @@example.proxy(parent: \"Team\")\n}", None).err().unwrap();
     assert!(unexpanded.ends_with(":6:2: relation UserView.teams: {model} in a through: name is only expanded in a relation that an extension pass derives; name the join model without it"), "{unexpanded}");
+    let unowned = dsl::compile("model Team {\n id Int @id\n}\nmodel UserView {\n id Int @id\n teams Team[]\n @@example.proxy(parent: \"Team\")\n}", None).err().unwrap();
+    assert!(unowned.ends_with(":6:2: relation UserView.teams: Team has no relation to UserView with fields: / references: after extension lowering"), "{unowned}");
     assert_eq!(ir.models[0].fields[1].name, "public_name");
     assert_eq!(ir.models[0].fields[1].column, "name");
     let json = serde_json::to_string(&ir).unwrap();

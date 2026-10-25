@@ -254,6 +254,9 @@ pub struct ModelIr {
     pub partition: Option<PartitionKeyIr>,
     pub name: String,
     pub table: String,
+    /// Whether the schema explicitly declares `@@map`, independently of import prefixes.
+    #[serde(default, skip_serializing_if = "crate::ir::is_false")]
+    pub mapped: bool,
     pub fields: Vec<FieldIr>,
     /// `@@id([a, b])`: the key fields in key order. Empty for a one-field `@id`.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]

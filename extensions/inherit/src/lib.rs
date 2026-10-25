@@ -76,16 +76,6 @@ fn index(ir: &SchemaIr, name: &str) -> Result<usize, String> {
     ir.models.iter().position(|m| m.name == name).ok_or_else(|| format!("unknown model {name}"))
 }
 
-/// The import prefix of a model that has the default table (`<prefix><lower-case name>`).
-fn prefix_of(m: &ModelIr) -> Option<&str> {
-    m.table.strip_suffix(m.name.to_lowercase().as_str())
-}
-
-/// Whether `m` has the default table under no prefix or one of `prefixes` (the prefixes of the models in the same schema).
-fn default_table<'a>(m: &ModelIr, prefixes: impl IntoIterator<Item = &'a str>) -> bool {
-    std::iter::once("").chain(prefixes).any(|p| prefix_of(m) == Some(p))
-}
-
 fn same<T: Serialize>(a: &T, b: &T) -> bool {
     serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
 }
@@ -111,13 +101,12 @@ fn validate(ir: &SchemaIr, p: &Parsed) -> Result<(), String> {
     }
     for (name, d) in &p.abstracts {
         let m = &ir.models[index(ir, name)?];
-        let others = ir.models.iter().filter(|o| o.name != m.name).filter_map(prefix_of);
-        for (set, what) in [(!default_table(m, others), "@@map"), (m.renamed_from.is_some(), "@@renamed_from"), (m.partition.is_some(), "@@partition")] {
+        for (set, what) in [(m.mapped, "@@map"), (m.renamed_from.is_some(), "@@renamed_from"), (m.partition.is_some(), "@@partition")] {
             if set { return Err(error(d, format!("{name} is abstract and has no table; {what} is not allowed on it"))); }
         }
         if p.overrides.contains_key(name) { return Err(error(d, format!("{name} is abstract and cannot override a model"))); }
         if children(p, name, &mut vec![]) >= 2 {
-            let named = m.indexes.iter().filter_map(explicit_name).chain(m.constraints.iter().filter_map(explicit_name)).next();
+            let named = m.indexes.iter().filter_map(explicit_name).chain(m.constraints.iter().filter_map(explicit_name)).chain(m.pk_name.clone()).next();
             if let Some(n) = named {
                 return Err(error(d, format!("{name} has an explicit index or constraint name {n:?} and two or more children; the name would repeat in each table. Remove the name")));
             }
@@ -416,7 +405,7 @@ fn join_model(
         foreign_key: true, on_delete: Some(OnDelete::Cascade), on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
     };
     let model = ModelIr {
-        name: join_name.clone(), table: table.clone(), primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
+        name: join_name.clone(), table: table.clone(), mapped: false, primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
         protected_write: false, query_set: None, model_methods: None, classes_from: None, indexes: vec![], triggers: vec![],
         relations: vec![link(&child_side, &source, child, &child_key), link(&target_side, &target, &rel.target, &target_key)],
         constraints: vec![ConstraintIr::Unique {
@@ -480,9 +469,8 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
         if !p.extends.contains_key(child) { merge(ir, child, std::slice::from_ref(base), Some(base.as_str()), d)?; }
         let (bi, ci) = (index(ir, base)?, index(ir, child)?);
         let (table, renamed_from, partition) = (ir.models[bi].table.clone(), ir.models[bi].renamed_from.clone(), ir.models[bi].partition.clone());
-        let base_prefix = prefix_of(&ir.models[bi]).map(str::to_owned);
         let cm = &mut ir.models[ci];
-        if default_table(cm, base_prefix.as_deref()) {
+        if !cm.mapped {
             cm.table = table;
             if cm.renamed_from.is_none() { cm.renamed_from = renamed_from; }
         } else if cm.renamed_from.is_none() {
