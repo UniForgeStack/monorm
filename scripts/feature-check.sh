@@ -64,13 +64,16 @@ VENV=$WORK/venv
 if [ ! -x "$VENV/bin/python" ]; then uv venv -q --python "${PYTHON:-python3}" "$VENV" || exit 1; fi
 PY=$VENV/bin/python
 uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/integration/python" -e "$ROOT/apps/auth/python" || exit 1
+# Rust typing tests and extension validation invoke mypy/pyright by name.
+export PATH="$VENV/bin:$PATH"
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 (cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
+# Storage imports orm through its package exports, which point at dist/.
+(cd "$ROOT/languages/js" && npm run -s build) >"$LOGS/npm-build.log" 2>&1 || { echo "npm build failed"; exit 1; }
 
-# Suites that do not depend on an artifact.
+# Rust storage tests do not depend on a host artifact.
 step storage rust-extension sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/extensions/file-storage/Cargo.toml'"
-step storage typescript-integration sh -c "cd '$ROOT/extensions/file-storage/integration/typescript' && npm install --no-audit --no-fund -s && npm test"
 
 build() {
   local artifact=$1 dir=$WORK/$1 deps="" feature
@@ -105,6 +108,10 @@ for artifact in $ARTIFACTS; do
   export ORM_PYTHON_METHODS=$dir/build/python-methods.rs ORM_NODE_METHODS=$dir/build/node-methods.rs
   step "$artifact" build build "$artifact"
   grep -q "^$artifact build PASS" "$MATRIX" || continue
+  # The storage adapter imports orm at runtime, so use the first built addon.
+  if ! grep -q '^storage typescript-integration ' "$MATRIX"; then
+    step storage typescript-integration env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/extensions/file-storage/integration/typescript' && npm install --no-audit --no-fund -s && npm test"
+  fi
   step "$artifact" capabilities capabilities "$artifact"
   step "$artifact" cargo sh -c "cd '$dir/build' && cargo test -q --workspace"
   step "$artifact" pytest env PYTHONPATH="$dir/py" ORM_PROFILE=custom sh -c "cd '$ROOT' && '$PY' -m pytest -q -p no:cacheprovider"
