@@ -275,6 +275,35 @@ async def backends(db, url):
     return int(rows[0][0] or 0)
 
 
+async def assert_backends(db, url, expected, *, timeout=5):
+    # Pool closure drops clients locally; PostgreSQL observes their disconnect later.
+    deadline = time.monotonic() + timeout
+    actual = await backends(db, url)
+    while actual != expected and time.monotonic() < deadline:
+        await asyncio.sleep(0.025)
+        actual = await backends(db, url)
+    assert actual == expected, "PostgreSQL replica sessions after pool closure"
+
+
+async def test_replica_disconnect_observation_waits_for_postgres(monkeypatch):
+    observations = iter([1, 1, 0])
+
+    async def disconnecting(db, url):
+        return next(observations)
+
+    monkeypatch.setitem(globals(), "backends", disconnecting)
+    await assert_backends(None, "replica", 0)
+
+
+async def test_replica_disconnect_observation_rejects_a_leaked_session(monkeypatch):
+    async def still_connected(db, url):
+        return 1
+
+    monkeypatch.setitem(globals(), "backends", still_connected)
+    with pytest.raises(AssertionError, match="replica sessions"):
+        await assert_backends(None, "replica", 0, timeout=0)
+
+
 async def test_replicas_answer_reads_outside_a_transaction(clean):
     db = clean
     url, url2 = await replica_url(db), await replica_url(db, 2)
@@ -304,7 +333,8 @@ async def test_replicas_answer_reads_outside_a_transaction(clean):
     finally:
         # Closing a primary view closes the whole database: the primary and each replica.
         await routed.primary.close()
-    assert [await backends(db, url), await backends(db, url2)] == [0, 0]
+    await assert_backends(db, url, 0)
+    await assert_backends(db, url2, 0)
 
 
 async def test_instance_reload_reads_the_primary_in_one_statement(clean, observe_queries):
