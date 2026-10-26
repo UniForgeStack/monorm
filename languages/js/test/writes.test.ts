@@ -350,25 +350,34 @@ test("typed read of native type columns", async () => {
 model NativeTypeRow {
   id    BigInt   @id
   small Int      @db.SmallInt
-  stamp DateTime? @db.Timestamp(3)
+  stamp DateTime? @unique @db.Timestamp(3)
+  links NativeTypeLink[]
   @@map("native_type_rows_ts")
+}
+model NativeTypeLink {
+  id BigInt @id
+  stamp DateTime @db.Timestamp(3)
+  row NativeTypeRow @relation(fields: [stamp], references: [stamp])
+  @@map("native_type_links_ts")
 }
 `, { registry }).NativeTypeRow as any;
   const db = await connect(DATABASE_URL, { registry, default: false });
   try {
     await db.dropTables();
     await db.createTables();
-    await db.execute("INSERT INTO native_type_rows_ts (id, small, stamp) VALUES (1, 7, '2024-01-02 03:04:05.123')");
+    await db.execute("INSERT INTO native_type_rows_ts (id, small, stamp) VALUES (1, 7, '2024-01-02 03:04:05.123'), (2, 9, NULL)");
     const stamp = new Date("2024-01-02T03:04:05.123Z");
     const row = await Row.objects.using(db).get(Row.id.eq(1));
     assert.equal(row.small, 7);
     assert.equal(row.stamp.toISOString(), stamp.toISOString());
     assert.deepEqual(await Row.objects.using(db).select({ small: Row.small, stamp: Row.stamp }).get(Row.id.eq(1)), { small: 7, stamp });
     assert.deepEqual(await db.fetch("SELECT small, stamp FROM native_type_rows_ts WHERE id = 1"), [{ small: 7, stamp }]);
-    await db.execute("INSERT INTO native_type_rows_ts (id, small, stamp) VALUES (2, 9, NULL)");
     assert.equal((await Row.objects.using(db).get(Row.id.eq(2))).stamp, null);
     assert.deepEqual(await Row.objects.using(db).select({ stamps: func.arrayAgg(Row.stamp, { orderBy: Row.id }) }).scalar(), [stamp, null]);
     assert.deepEqual(await db.fetch("SELECT array_agg(stamp ORDER BY id) AS stamps FROM native_type_rows_ts"), [{ stamps: [stamp, null] }]);
+    await db.execute("INSERT INTO native_type_links_ts (id, stamp) VALUES (1, '2024-01-02 03:04:05.123')");
+    const loaded = await Row.objects.using(db).load(Row.links).get(Row.id.eq(1));
+    assert.deepEqual(loaded.links.cached.map((link: any) => link.stamp), [stamp]);
   } finally {
     await db.dropTables();
     await db.close();
@@ -439,4 +448,47 @@ test("related lazy inserts join the transaction at await", async () => {
   assert.equal(await Post.objects.count(), 1);
   assert.equal(await Tag.objects.count(), 0);
   assert.equal(await PostTag.objects.count(), 0);
+});
+
+test("Timestamp write/read with a non-UTC database", async () => {
+  const registry = new Registry();
+  const Row = loads(`
+model TimestampRoundtrip {
+  id BigInt @id
+  stamp DateTime? @db.Timestamp(3)
+  instant DateTime @db.Timestamptz(3)
+  @@map("timestamp_roundtrip_ts")
+}
+`, { registry }).TimestampRoundtrip as any;
+  const admin = await connect(DATABASE_URL, { default: false });
+  const name = (await admin.fetch("SELECT current_database() AS name"))[0]!.name;
+  const database = '"' + String(name).replaceAll('"', '""') + '"';
+  const previous = await admin.fetch(
+    "SELECT unnest(setconfig) AS setting FROM pg_db_role_setting " +
+    "WHERE setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) AND setrole = 0",
+  );
+  const zone = previous.map((r) => String(r.setting)).find((s) => s.startsWith("TimeZone="))?.slice("TimeZone=".length);
+  let db: Database | undefined;
+  try {
+    await admin.execute(`ALTER DATABASE ${database} SET TimeZone = 'Asia/Tehran'`);
+    db = await connect(DATABASE_URL, { registry, default: false });
+    await db.dropTables();
+    await db.createTables();
+    const stamp = new Date("2024-01-02T03:04:05.123Z");
+    const rows = Row.objects.using(db);
+    await rows.insertMany([{ id: 1, stamp, instant: stamp }, { id: 2, stamp: null, instant: stamp }]);
+    const row = await rows.get(Row.id.eq(1));
+    assert.deepEqual({ stamp: row.stamp, instant: row.instant }, { stamp, instant: stamp });
+    assert.equal((await rows.get(Row.id.eq(2))).stamp, null);
+    assert.equal((await rows.get(Row.stamp.eq(stamp))).id, 1n);
+  } finally {
+    if (db) {
+      await db.dropTables();
+      await db.close();
+    }
+    await admin.execute(zone === undefined
+      ? `ALTER DATABASE ${database} RESET TimeZone`
+      : `ALTER DATABASE ${database} SET TimeZone = '${zone.replaceAll("'", "''")}'`);
+    await admin.close();
+  }
 });

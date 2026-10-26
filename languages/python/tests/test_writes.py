@@ -578,8 +578,15 @@ async def test_typed_read_of_native_type_columns():
         model NativeTypeRow {
           id    BigInt   @id
           small Int      @db.SmallInt
-          stamp DateTime? @db.Timestamp(3)
+          stamp DateTime? @unique @db.Timestamp(3)
+          links NativeTypeLink[]
           @@map("native_type_rows")
+        }
+        model NativeTypeLink {
+          id BigInt @id
+          stamp DateTime @db.Timestamp(3)
+          row NativeTypeRow @relation(fields: [stamp], references: [stamp])
+          @@map("native_type_links")
         }
         """,
         registry=registry,
@@ -590,7 +597,7 @@ async def test_typed_read_of_native_type_columns():
         await db.create_tables()
         await db.execute(
             "INSERT INTO native_type_rows (id, small, stamp) "
-            "VALUES (1, 7, '2024-01-02 03:04:05.123')"
+            "VALUES (1, 7, '2024-01-02 03:04:05.123'), (2, 9, NULL)"
         )
         stamp = datetime(2024, 1, 2, 3, 4, 5, 123_000, tzinfo=timezone.utc)
         row = await Row.objects.using(db).get(Row.id == 1)
@@ -599,12 +606,14 @@ async def test_typed_read_of_native_type_columns():
         assert await db.fetch("SELECT small, stamp FROM native_type_rows WHERE id = 1") == [
             {"small": 7, "stamp": stamp}
         ]
-        await db.execute("INSERT INTO native_type_rows (id, small, stamp) VALUES (2, 9, NULL)")
         assert (await Row.objects.using(db).get(Row.id == 2)).stamp is None
         assert await Row.objects.using(db).select(func.array_agg(Row.stamp, order_by=Row.id)).scalar() == [stamp, None]
         assert await db.fetch("SELECT array_agg(stamp ORDER BY id) AS stamps FROM native_type_rows") == [
             {"stamps": [stamp, None]}
         ]
+        await db.execute("INSERT INTO native_type_links (id, stamp) VALUES (1, '2024-01-02 03:04:05.123')")
+        loaded = await Row.objects.using(db).load(Row.links).get(Row.id == 1)
+        assert [link.stamp for link in loaded.links.cached] == [stamp]
     finally:
         await db.drop_tables()
         await db.close()
@@ -618,3 +627,52 @@ async def test_copy_rejections(clean):
     with pytest.raises(orm.QueryError, match="some rows only"):
         await Tag.objects.insert_many([{"name": "a"}, {"name": "b", "priority": Priority.low}], copy=True)
     assert await Tag.objects.insert_many([], copy=True) == 0
+
+
+async def test_timestamp_write_read_with_non_utc_database():
+    registry = orm.Registry()
+    Row = orm.loads(
+        """
+        model TimestampRoundtrip {
+          id BigInt @id
+          stamp DateTime? @db.Timestamp(3)
+          instant DateTime @db.Timestamptz(3)
+          @@map("timestamp_roundtrip_py")
+        }
+        """, registry=registry,
+    )["TimestampRoundtrip"]
+    admin = await orm.connect(DATABASE_URL, default=False)
+    name = (await admin.fetch("SELECT current_database() AS name"))[0]["name"]
+    database = '"' + name.replace('"', '""') + '"'
+    previous = await admin.fetch(
+        "SELECT unnest(setconfig) AS setting FROM pg_db_role_setting "
+        "WHERE setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+        "AND setrole = 0"
+    )
+    zone = next((r["setting"].split("=", 1)[1] for r in previous if r["setting"].startswith("TimeZone=")), None)
+    db = None
+    try:
+        await admin.execute(f"ALTER DATABASE {database} SET TimeZone = 'Asia/Tehran'")
+        db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+        await db.drop_tables()
+        await db.create_tables()
+        stamp = datetime(2024, 1, 2, 3, 4, 5, 123_000, tzinfo=timezone.utc)
+        rows = Row.objects.using(db)
+        await rows.insert_many([
+            {"id": 1, "stamp": stamp, "instant": stamp},
+            {"id": 2, "stamp": None, "instant": stamp},
+        ])
+        row = await rows.get(Row.id == 1)
+        assert (row.stamp, row.instant) == (stamp, stamp)
+        assert (await rows.get(Row.id == 2)).stamp is None
+        assert (await rows.get(Row.stamp == stamp)).id == 1
+    finally:
+        if db is not None:
+            await db.drop_tables()
+            await db.close()
+        if zone is None:
+            await admin.execute(f"ALTER DATABASE {database} RESET TimeZone")
+        else:
+            quoted_zone = zone.replace("'", "''")
+            await admin.execute(f"ALTER DATABASE {database} SET TimeZone = '{quoted_zone}'")
+        await admin.close()

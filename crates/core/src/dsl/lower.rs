@@ -1049,7 +1049,7 @@ fn relation(
     let target = &member.ty.name;
     let what = format!("relation {}.{}", m.name, member.name);
     let is_json = |model: &str, field: &str| field_types.get(&(model.to_string(), field.to_string())) == Some(&ColType::Json);
-    let json_key = |model: &str, field: &str| format!("{what}: {model}.{field} is Json, and a Json field can't be a reference key");
+    let json_key_error = |model: &str, field: &str| format!("{what}: {model}.{field} is Json, and a Json field can't be a reference key");
     if let Some(a) = member.attrs.iter().find(|a| a.name != "relation") {
         return err(a.pos, format!("{what}: relations take only @relation(...)"));
     }
@@ -1182,7 +1182,7 @@ fn relation(
         }
         for (owner, keys) in [(m.name.as_str(), from), (target.as_str(), to)] {
             if let Some(field) = keys.iter().find(|k| is_json(owner, k)) {
-                return err(member.pos, json_key(owner, field));
+                return err(member.pos, json_key_error(owner, field));
             }
         }
         let kind = if member.ty.list {
@@ -1229,8 +1229,8 @@ fn relation(
         let Some(local) = fields.iter().find(|f| &f.name == name) else {
             return err(fpos, format!("{what}: no field {name} in this model"));
         };
-        if is_json(m.name.as_str(), name) {
-            return err(fpos, json_key(m.name.as_str(), name));
+        if local.ty == ColType::Json {
+            return err(fpos, json_key_error(m.name.as_str(), name));
         }
         if local.nullable != member.ty.optional {
             let hint = if local.nullable { format!("{target}?") } else { target.clone() };
@@ -1242,7 +1242,7 @@ fn relation(
         return err(tpos, format!("{what}: references: needs one field for each of fields: ({} for {})", to.len(), from.len()));
     }
     if let Some(field) = to.iter().find(|t| is_json(target, t)) {
-        return err(tpos, json_key(target, field));
+        return err(tpos, json_key_error(target, field));
     }
     if !deferred_identity.contains(target) {
         if let Some(missing) = to.iter().find(|t| !target_fields.contains(&t.as_str())) {

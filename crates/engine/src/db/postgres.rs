@@ -193,15 +193,15 @@ async fn fetch(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Box<dyn
     Ok(Box::new(PgRawRows { columns, types, rows }))
 }
 
-/// How a raw column decodes. `int2` and `float4` have no `ValueType` of their own.
+/// How a raw column decodes. `int2`, `float4`, and `timestamp` have no `ValueType` of their own.
 #[derive(Clone, Copy)]
 enum RawType {
     Value(ValueType),
     SmallInt,
     Real,
+    Timestamp,
     SmallIntArray,
     RealArray,
-    Timestamp,
     TimestampArray,
 }
 
@@ -496,7 +496,12 @@ pub struct PgDriver {
 
 impl PgDriver {
     pub async fn connect(url: &str, max_connections: usize) -> DbResult<Self> {
-        let (config, tls) = tls::parse(url)?;
+        let (mut config, tls) = tls::parse(url)?;
+        // DateTime fields are UTC instants, including when stored in a timestamp
+        // without time zone. Keep Postgres's timestamptz -> timestamp cast in UTC
+        // on every pooled and dedicated connection, regardless of server defaults.
+        let options = format!("{} -c TimeZone=UTC", config.get_options().unwrap_or(""));
+        config.options(&options);
         let mgr_config = ManagerConfig { recycling_method: RecyclingMethod::Fast };
         let manager = match tls.clone() {
             Some(tls) => Manager::from_config(config.clone(), tls, mgr_config),
