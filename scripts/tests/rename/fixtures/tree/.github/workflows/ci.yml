@@ -1,0 +1,7 @@
+jobs:
+  test:
+    env:
+      ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+    steps:
+      - run: python -m orm generate
+      - run: orm generate typescript

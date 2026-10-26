@@ -1,0 +1,107 @@
+# A reduced copy of the shapes in scripts/rename/rules.toml, with ranges for the fixture tree.
+env_rename = ["ORM_DATABASE_URL", "ORM_PROFILE"]
+
+[[protect]]
+id = "kept-database-names"
+pattern = '(?<![A-Za-z0-9_@.-])orm_(?:test(?:_rs)?|bench(?:mark)?)\b'
+
+[[protect]]
+id = "kept-test-env"
+pattern = '(?<![A-Za-z0-9_])ORM_(?:TEST_DATABASE_URL|BENCH_[A-Z_]+)\b'
+
+[[protect]]
+id = "bench-result-key"
+pattern = '(?<![A-Za-z0-9_@/.-])orm-all(?![A-Za-z0-9_-])'
+
+[[rule]]
+id = "npm-main-name"
+files = ["**/package.json"]
+pattern = '"name": "orm"'
+replace = '"name": "@ufstack/monorm"'
+expect = [1, 1]
+
+[[rule]]
+id = "npm-scope"
+pattern = '@orm/'
+replace = '@ufstack/monorm-'
+expect = [2, 2]
+
+[[rule]]
+id = "js-import-specifier"
+files = ["**/*.ts"]
+pattern = '(?<=from ")orm(?=["/])'
+replace = '@ufstack/monorm'
+expect = [1, 1]
+
+[[rule]]
+id = "py-import"
+pattern = '(?<![A-Za-z0-9_@/.-])((?:from|import) )orm(?![A-Za-z0-9_-])'
+replace = '\1monorm'
+expect = [4, 4]
+
+[[rule]]
+id = "py-dash-m"
+pattern = '(?<=-m )orm(?![A-Za-z0-9_-])'
+replace = 'monorm'
+expect = [2, 2]
+
+[[rule]]
+id = "pyproject-name"
+files = ["pyproject.toml"]
+pattern = '(?m)^name = "orm"$'
+replace = 'name = "monorm"'
+expect = [1, 1]
+
+[[rule]]
+id = "tool-orm-table"
+files = ["**/*.toml"]
+pattern = '(?<=tool\.)orm(?![A-Za-z0-9_-])'
+replace = 'monorm'
+expect = [1, 1]
+
+[[rule]]
+id = "npx-command-text"
+pattern = '(?<=npx )orm(?![A-Za-z0-9_-])'
+replace = '@ufstack/monorm'
+expect = [1, 1]
+
+[[rule]]
+id = "cli-command-text"
+pattern = '(?<![A-Za-z0-9_@/.-])orm (?=(?:generate|check))'
+replace = 'monorm '
+expect = [2, 2]
+
+[[rule]]
+id = "pip-install-text"
+files = ["**/*.md"]
+pattern = '(?<=pip install )orm(?![A-Za-z0-9_-])'
+replace = 'monorm'
+expect = [1, 1]
+
+[[rule]]
+id = "orm-underscore-prefix"
+pattern = '(?<![A-Za-z0-9_@/.-])orm_(?=[a-z0-9])'
+replace = 'monorm_'
+expect = [5, 5]
+
+[[rule]]
+id = "orm-hyphen-prefix"
+pattern = '(?<![A-Za-z0-9_@/.-])orm-(?=[a-z0-9])'
+replace = 'monorm-'
+expect = [8, 8]
+
+[[move]]
+from = "languages/python/orm"
+sub = ['^orm$', 'monorm']
+
+[[move]]
+from = "apps/auth/python/orm_auth"
+sub = ['^orm_', 'monorm_']
+
+[[move]]
+from = "extensions/*/python/orm_*"
+sub = ['^orm_', 'monorm_']
+
+[[move]]
+from = "**/orm-extension.toml"
+sub = ['^orm-', 'monorm-']

@@ -1,0 +1,6 @@
+{
+  "name": "orm",
+  "dependencies": {
+    "@orm/inherit": "^0.1.0"
+  }
+}

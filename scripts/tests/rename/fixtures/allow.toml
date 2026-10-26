@@ -1,0 +1,34 @@
+[[guard]]
+id = "old-path"
+target = "path"
+pattern = '(^|/)orm(?:[-_.]|$)'
+
+[[guard]]
+id = "hyphen-prefix"
+pattern = '(?<![A-Za-z0-9_@/.-])orm-'
+
+[[guard]]
+id = "underscore-prefix"
+pattern = '(?<![A-Za-z0-9_@/.-])orm_'
+
+[[guard]]
+id = "old-npm-scope"
+pattern = '@orm\b'
+
+[[guard]]
+id = "env-prefix"
+pattern = '(?<![A-Za-z0-9_])ORM_'
+
+[[guard]]
+id = "command-text"
+pattern = '(?<![A-Za-z0-9_@/.-])orm (?:generate|check)\b'
+
+[[allow]]
+glob = "**"
+pattern = 'ORM_TEST_DATABASE_URL|ORM_BENCH_[A-Z_]+'
+reason = "Test and bench variables stay."
+
+[[allow]]
+glob = "bench/compare/**"
+pattern = 'orm-all'
+reason = "Contender key of the recorded results."

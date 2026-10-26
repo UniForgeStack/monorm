@@ -1,0 +1,6 @@
+[project]
+name = "orm"
+dependencies = ["orm-native-postgres"]
+
+[tool.orm]
+apps = []

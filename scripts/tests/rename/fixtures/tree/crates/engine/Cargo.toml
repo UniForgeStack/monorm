@@ -1,0 +1,5 @@
+[package]
+name = "orm-engine"
+
+[dependencies]
+orm_core = { package = "orm-core", path = "../.." }
