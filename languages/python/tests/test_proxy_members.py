@@ -5,6 +5,7 @@ Each `# E:` line of the typing use must fail and no other line may.
 """
 
 import importlib
+import os
 import re
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from artifact_caps import artifact_capabilities, has_extension
-from orm import _native
+from orm.__main__ import main as cli
 
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA = """\
@@ -80,7 +81,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
     (pkg / "use.py").write_text(USE)
     (root / "schema.prisma").write_text(SCHEMA)
     args = ["--schema", str(root / "schema.prisma"), "generate", "python", "-o", str(pkg / "models.py")]
-    assert _native.cli([*args, "--query-set", "PmPost=pmpkg.pq:PmQueries"]) == 0
+    assert cli([*args, "--query-set", "PmPost=pmpkg.pq:PmQueries"]) == 0
     return pkg
 
 
@@ -144,6 +145,6 @@ def test_pyright(package: Path):
         capture_output=True,
         text=True,
         cwd=package.parent,
-        env={"PATH": str(Path(exe).parent), "PYTHONPATH": str(ROOT / "languages/python")},
+        env={"HOME": os.environ["HOME"], "PATH": str(Path(exe).parent), "PYTHONPATH": str(ROOT / "languages/python")},
     ).stdout
     assert error_lines(out, r"use\.py:(\d+):\d+ - error") == EXPECTED, out

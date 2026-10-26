@@ -886,6 +886,10 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
         if c.extensions.get(&id).is_some_and(|v| v != &version) { return Err(format!("incompatible extension {id}; rebuild dependent schemas together")); }
         c.extensions.insert(id, version);
     }
+    for (id, stamp) in n.packages {
+        if c.packages.get(&id).is_some_and(|known| known != &stamp) { return Err(format!("incompatible extension package {id}; rebuild dependent schemas together")); }
+        c.packages.insert(id, stamp);
+    }
     Ok(context)
 }
 fn physical_models(ir: &SchemaIr) -> Result<Vec<crate::ir::ModelIr>, String> {
@@ -1146,6 +1150,17 @@ mod tests {
         assert_eq!(merged.behavior.type_models.len(), 1);
         let error = merge_definition(batch(model("a")), batch(model("b"))).unwrap_err();
         assert!(error.contains("AbstractUser") && error.contains("rebuild"), "{error}");
+    }
+
+    #[test]
+    fn merge_definition_keeps_the_packages_of_a_later_batch() {
+        let stamp = |version: &str| PackageStamp { version: version.into(), attributes: vec!["soft_delete.deleted_at".into()], ..PackageStamp::default() };
+        let batch = |version: Option<&str>| { let mut ir = SchemaIr::default(); if let Some(v) = version { ir.behavior.packages.insert("orm.soft-delete".into(), stamp(v)); } ir };
+        let merged = merge_definition(batch(None), batch(Some("1"))).unwrap();
+        assert_eq!(merged.behavior.packages["orm.soft-delete"], stamp("1"));
+        assert!(merge_definition(batch(Some("1")), batch(Some("1"))).is_ok());
+        let error = merge_definition(batch(Some("1")), batch(Some("2"))).unwrap_err();
+        assert!(error.contains("orm.soft-delete") && error.contains("rebuild"), "{error}");
     }
 
     #[test]
