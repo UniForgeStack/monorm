@@ -1,5 +1,4 @@
 //! Build frontend for fixed native composition. Cargo owns package resolution.
-pub use orm_contracts::extension::QUERY_DEFAULTS;
 use orm_contracts::extension::{Manifest, Pass};
 use std::collections::BTreeMap;
 

@@ -56,3 +56,14 @@ SCHEMA
   (cd "$consumer" && ORM_DATABASE_URL="$url" node use.mjs)
   (cd "$consumer" && ORM_DATABASE_URL="$url" bun use.mjs)
 done
+# Without its package, `@@query.*` fails and neutral read defaults still work.
+uv venv --python "$PYTHON" "$WORK/bare-venv"
+uv pip install --python "$WORK/bare-venv/bin/python" "$WORK/wheels"/*.whl
+"$WORK/bare-venv/bin/python" "$ROOT/extensions/query-defaults/tests/public/disabled.py"
+mkdir -p "$WORK/bare-js"
+printf '{"private":true,"type":"module"}\n' > "$WORK/bare-js/package.json"
+bare_tarballs=()
+for tarball in "$WORK/tarballs"/*.tgz; do
+  case "$tarball" in *query-defaults*) ;; *) bare_tarballs+=("$tarball") ;; esac
+done
+(cd "$WORK/bare-js" && npm install --ignore-scripts --no-audit --no-fund "${bare_tarballs[@]}" && node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs")

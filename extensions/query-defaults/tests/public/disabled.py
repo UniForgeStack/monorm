@@ -1,11 +1,9 @@
-"""Without the producer, public syntax is rejected; neutral prepared data is accepted."""
-
-import json
+"""Without the `orm-query-defaults` package, public syntax is rejected; neutral prepared data is accepted."""
 
 import orm
-from orm import _native as module
+from orm._packages import resolve_extensions
 
-assert "query-defaults" not in json.loads(module.native_artifact())["capabilities"]
+assert "orm.query-defaults" not in resolve_extensions(), "run this script in an environment without the package"
 registry = orm.Registry()
 plain = {
     "models": [

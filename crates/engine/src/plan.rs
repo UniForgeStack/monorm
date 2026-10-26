@@ -8,7 +8,7 @@
 //!   *same* related row. An `alias()` tag on a hop asks for another related row: each
 //!   (hop, alias) pair is one subquery. `NOT` and `OR` are grouping barriers:
 //!   `~(User.posts.views > 10)` means "no post with more than 10 views". There are no
-//!   duplicate rows (no JOIN fan-out, no DISTINCT needed). The query-defaults filter is
+//!   duplicate rows (no JOIN fan-out, no DISTINCT needed). A read-default filter is
 //!   planned apart and never joins a user group.
 //! * `select_related` and `order_by` follow to-one relations only, with `LEFT JOIN`s.
 //! * `prefetch` loads relations with one extra `WHERE fk IN (...)` query each.

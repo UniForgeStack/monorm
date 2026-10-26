@@ -29,7 +29,9 @@ cd ../..
 uv pip install -e apps/auth/python
 python -m pytest -q apps/auth/python/tests
 python extensions/inherit/tests/public/python.py
+python extensions/query-defaults/tests/public/python.py
 (cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
+(cd languages/js && node ../../extensions/query-defaults/tests/public/node.mjs)
 (cd apps/auth/typescript && npm test && npm run test:bun)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 ```

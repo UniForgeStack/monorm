@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { define, loads, Registry, SchemaError } from '../../../../languages/js/dist/src/index.js';
+import { resolveExtensions } from '../../../../languages/js/dist/src/packages.js';
+// Run from a directory whose package.json does not depend on `@orm/query-defaults`.
+assert.ok(!('orm.query-defaults' in resolveExtensions()), 'run this script in an environment without the package');
 const registry = new Registry();
 const field = { name: 'id', column: 'id', type: 'int', primary_key: true };
 define({ models: [{ name: 'Plain', table: 'plain', fields: [field] }], behavior: {

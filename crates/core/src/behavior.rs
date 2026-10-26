@@ -20,7 +20,6 @@ fn build_artifact() -> Artifact {
         (cfg!(feature = "model-composition"), "model-composition"),
         (cfg!(feature = "proxy-models"), "proxy-models"),
         (cfg!(feature = "generic-relations"), "generic-relations"),
-        (cfg!(feature = "query-defaults"), QUERY_DEFAULTS),
     ];
     for (_, capability) in compiled.into_iter().filter(|(on, _)| *on) {
         if !artifact.capabilities.iter().any(|c| c == capability) { artifact.capabilities.push(capability.into()); }

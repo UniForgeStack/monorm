@@ -24,7 +24,6 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | Feature | Crate | Attributes | Doc |
 |---|---|---|---|
 | proxy-models | `extensions/proxy` (`orm-proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
-| query-defaults | `extensions/query-defaults/` (`orm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 | model-composition | `extensions/model-composition/` (`orm-model-composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
 | file-storage | `extensions/file-storage` (`orm-file-storage-extension`) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
 | generic-relations | `extensions/generic` (`orm-generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
@@ -32,6 +31,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | soft-delete | `extensions/soft-delete` (`orm-soft-delete`) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | locking | `extensions/locking` (`orm-locking`) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | inherit | `extensions/inherit` (`orm-inherit`) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
+| query-defaults | `extensions/query-defaults/` (`orm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 
 [build-time-extensions.md](contracts/build-time-extensions.md#select-feature-extensions) shows how to select them, build, and package the result.
 The same doc describes the extension contract: manifests, passes, native behavior profiles.

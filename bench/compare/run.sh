@@ -107,7 +107,6 @@ build_node() {
 # The `all` artifact, as scripts/feature-check.sh builds it, in release mode.
 build_all() {
   local deps='"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}'
-  deps+=',"query_defaults":{"package":"orm-query-defaults","path":"'"$ROOT"'/extensions/query-defaults"}'
   deps+=',"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}'
   deps+=',"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}'
   deps+=',"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}'
