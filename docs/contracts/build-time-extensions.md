@@ -362,6 +362,10 @@ Each runtime module exports `MANIFEST_HASH` (Python) or `manifestHash` (TypeScri
 
 TypeScript runtime packages and their dependencies must be synchronously loadable, without top-level await. Node requires 20.19+ on the 20.x line or 22.12+ on later lines; Bun is also supported. Prefer one runtime format. Synchronous loading resolves the package's import entry before loading it, so a dual package uses the same module and class identities as generated ESM imports.
 `tests/outside-extension/` is a library in its own workspace.
+It also shows the three optional keys of a field attribute in `orm-extension.toml` (schema contract 2.2).
+`field_type = "Money"` makes the attribute own that DSL type: a field of that type lowers to an `Int` placeholder, and the pass replaces it.
+`member = false` makes the field no model member: lowering drops the field and keeps its declaration for the pass.
+`identities = true` makes a schema that uses the attribute need model identities (`orm identities`).
 
 ## Installable packages
 

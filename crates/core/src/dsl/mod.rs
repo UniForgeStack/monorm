@@ -374,7 +374,7 @@ pub fn check(ir: SchemaIr) -> Result<(SchemaIr, Schema), String> {
 mod tests;
 
 /// Explicit allocation is separate from compilation and usable without a compiled
-/// generic relation extension. A schema without extension declarations gets the full
+/// extension that needs identities. A schema without extension declarations gets the full
 /// engine check before atomic publication; extension lowering waits for compilation.
 pub fn generate_identities(path: &Path, renames: &[(String, String)], restores: &[String]) -> Result<orm_contracts::identity::IdentityManifest, String> {
     generate_identities_with(path, renames, restores, &Installed::new())

@@ -107,7 +107,7 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
     let stamp = &ir.behavior.packages[ID];
-    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.tag".to_owned()].as_slice(), ["outside.tag".to_owned()].as_slice()));
+    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.fields".to_owned(), "acme.outside.tag".to_owned()].as_slice(), ["outside.tag".to_owned(), "outside.money".to_owned(), "outside.note".to_owned()].as_slice()));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     assert_eq!(*seen.borrow(), [("acme.static.prep".to_owned(), false), ("acme.static.late".to_owned(), true)]);
     let behavior = &ir.behavior;
     assert_eq!(behavior.completed_passes, order);
-    assert_eq!(behavior.packages[ID].passes, ["acme.outside.tag"]);
+    assert_eq!(behavior.packages[ID].passes, ["acme.outside.fields", "acme.outside.tag"]);
     assert_eq!(behavior.extensions.get("acme.static").map(String::as_str), Some("1.0.0"));
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));
@@ -430,4 +430,25 @@ fn lowering_refuses_a_hook_that_the_manifest_of_the_library_does_not_allow() {
         let error = lower_with(&plan, &hook).unwrap_err();
         assert!(error.contains(message), "{error}");
     }
+}
+
+const FIELDS: &str = "model Order {\n id Int @id\n price Money @outside.money\n memo String @outside.note(\"remember\")\n}\n";
+
+#[test]
+fn an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model() {
+    let manifest = installed("", "0.2");
+    let path = scratch("schema-fields").join("schema.prisma");
+    fs::write(&path, FIELDS).unwrap();
+    let _ = fs::remove_file(orm_core::identity::manifest_path(&path));
+    let installed = Installed { extensions: [(ID.to_owned(), manifest)].into(), ..Installed::new() };
+    let error = compile_file_with(&path, &installed).unwrap_err();
+    assert!(error.contains("orm identities"), "an attribute with identities = true needs the identity file: {error}");
+    orm_core::dsl::generate_identities_with(&path, &[], &[], &installed).unwrap();
+    assert!(orm_core::identity::manifest_path(&path).is_file());
+
+    let ir = compile_file_with(&path, &installed).unwrap();
+    assert!(ir.identities.is_some());
+    let names: Vec<&str> = ir.models[0].fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["id", "price_amount", "price_currency"], "Money becomes two columns and the note is no column");
+    assert_eq!(ir.behavior.extension_data[ID]["notes"]["Order.memo"], "remember");
 }
