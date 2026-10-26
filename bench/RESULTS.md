@@ -44,6 +44,36 @@ How to run each benchmark: [`README.md`](README.md).
 | 2026-10-03 | [Current Rust engine versus SeaORM and Diesel](#current-rust-engine-versus-seaorm--2026-10-03) | not recorded | macOS arm64, PostgreSQL 18.6 | See the section; the correction subsection replaces earlier SeaORM ratios |
 | 2026-10-02/03 | Phase 0, engine change, instances in Rust, query profile, prepared queries (below) | not recorded | 4-vCPU Xeon Linux VM, PostgreSQL 16.14 | Historical: earlier engines |
 
+## Speed-up summary
+
+End to end: every number includes the database round trip. Source: the [Python and TypeScript versus Django and Prisma](#python-and-typescript-versus-django-and-prisma--2026-10-21) run below (run `c9bbf7c`, 2026-10-21, cloud VM, Intel Xeon 2.80GHz, 4 cores, PostgreSQL 16.15). All numbers are measured in that run; the ratios here are computed from its tables.
+
+Method: "N× faster" is the contender median time divided by the `orm` median time, from the "Time per operation" cells of the same case. The summary columns are over the 20 cases of the run (geometric mean = the 20th root of the product of the 20 ratios). A ratio below 1.0× means `orm` is slower in that case. The paired ratios in the tables below (`orm / django-async` and so on) are the inverse and use a different estimator, so a ratio can differ in the second digit. Treat a case whose interval in the tables overlaps 1.00 as level.
+
+| Comparison | Cases | Geometric mean | Median | Lowest | Highest |
+|---|---|---|---|---|---|
+| Python, `orm` versus Django async | 20 | 1.95× faster | 1.82× faster | 1.10× (`tx-5`) | 4.18× (`m2m`) |
+| Python, `orm` versus Django sync | 20 | 1.57× faster | 1.39× faster | 0.95× (`tx-5`, level) | 3.82× (`m2m`) |
+| Node, `orm` versus Prisma | 20 | 1.77× faster | 1.49× faster | 0.71× (`projection-1000`, slower) | 18.6× (`upsert-100`) |
+| Bun, `orm` versus Prisma | 3 | not computed | not computed | 1.69× (`read-1000`) | 3.56× (`bulk-insert-1000`) |
+| Python-side work only, `orm` versus Django async (approximate) | 10 | 4.93× faster | not computed | 2.32× (`prefetch-to-many`) | 6.80× (`join-to-one`) |
+
+The last row is the CPU split of the [Python](#cpu-split-approximate) section: build the query plus make the SQL, with no database. It is approximate (see "Read the numbers with care"), and it leaves out the decode time and the round trip.
+
+Key cases (`orm` versus Django async on Python, versus Prisma on Node):
+
+| Case | Python | Node |
+|---|---|---|
+| `read-pk` | 1.6× faster | 2.0× faster |
+| `read-1000` | 3.0× faster | 1.6× faster |
+| `prefetch-to-many` | 3.3× faster | 1.7× faster |
+| `m2m` | 4.2× faster | 2.2× faster |
+| `bulk-insert-1000` | 1.9× faster | 4.3× faster |
+| `tx-5` | 1.1× faster (level) | 1.4× faster |
+| `concurrent` | 2.7× faster | 1.5× faster |
+
+Where `orm` is not faster: Node `projection-1000` (Prisma is 1.4× faster), Node `delete-100` (0.91×, level), Python `tx-5` (1.10× against Django async, level; 0.95× against Django sync) and Python `insert-1` against Django sync (1.01×, level). Django async has no async `atomic()`, which affects `tx-5`; see "Read the numbers with care".
+
 ## Python and TypeScript versus Django and Prisma — 2026-10-21
 
 `bench/compare`: the public Python and TypeScript APIs of `orm` against Django 6.1.2 (sync and async), Prisma 7.10.1 and raw `pg` 8.23.1 (the floor), on one shared schema and seed. The run (`bench/compare/run.sh`, no flags) used release builds at `c9bbf7c`: 20 rounds × 20 timed iterations, 50 untimed warm-up calls per case, one fresh process per contender and round, rotated order.
