@@ -1,19 +1,21 @@
 """Turn a results directory of run.sh into summary.md.
 
-    python report.py results/<date>-<sha>
+    python report.py results/<date>-<sha> [output.md]
 
-One table per side. Every contender runs once per round in a fresh process, so the rounds are the independent
-units: a cell is the median of the per-round medians with a 95% cluster bootstrap interval (rounds resampled,
-not single timed calls). A ratio compares round r of a contender with round r of the reference, takes the
-median of those paired ratios, and gives a bootstrap interval of it. The reference is `pg` on TypeScript (the
-floor: no ORM work), Django async on Python (no floor contender there) and Prisma on Bun. `orm-all` is also
-compared with `orm` in a ratio column. A ratio below 1 means faster than the reference.
+A Summary block comes first, then one table per side. Every contender runs once per round in a fresh process,
+so the rounds are the independent units: a cell is the median of the per-round medians with a 95 percent
+cluster bootstrap interval (rounds resampled, not single timed calls). A speed-up compares round r of a
+contender with round r of `orm`, as contender time / orm time, takes the median of those paired values, and
+gives a bootstrap interval of it. `2.31×` means `orm` is 2.31 times faster; below 1 reads `0.81× (slower)`.
+`pg` on TypeScript is the floor, not a contender: its column is the overhead orm / pg. `orm-all / orm` is the
+extension cost. All times include the database round trip.
 Every number is measured. The header says whether the run is valid and whether the load check was overridden.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import random
 import statistics
 import sys
@@ -46,6 +48,15 @@ def paired(num: dict[str, Any], den: dict[str, Any]) -> tuple[float, float, floa
     return statistics.median(ratios), lo, hi
 
 
+def times(v: float) -> str:
+    """`2.31×`; below 1 reads `0.81× (slower)`."""
+    return f"{v:.2f}×{' (slower)' if round(v, 2) < 1 else ''}"
+
+
+def speedup(m: float, lo: float, hi: float) -> str:
+    return f"{times(m)} [{lo:.2f}, {hi:.2f}]"
+
+
 def fmt(x: float | None) -> str:
     if x is None:
         return "-"
@@ -76,13 +87,45 @@ def case_names(results: Result) -> list[str]:
     return seen
 
 
-def timing_table(title: str, results: Result, reference: str | None, extra_pairs: list[tuple[str, str]] | None = None) -> list[str]:
-    """Columns: one per contender, `median [lo, hi]` in ms; then paired ratios to the reference (and `extra_pairs`)."""
+ORM_BUILDS = ("orm", "orm-all")
+FLOOR = "pg"
+
+
+def contenders_of(results: Result) -> list[str]:
+    """The ORMs that `orm` is compared with: neither an `orm` build nor the `pg` floor."""
+    return [n for n in results if n not in ORM_BUILDS and n != FLOOR]
+
+
+def case_speedups(results: Result, contender: str) -> dict[str, float]:
+    """Per case, the median paired speed-up of `orm` over `contender` (contender time / orm time)."""
+    out: dict[str, float] = {}
+    for case, orm_item in results.get("orm", {}).items():
+        other = results.get(contender, {}).get(case)
+        if other:
+            m = paired(other, orm_item)[0]
+            if not math.isnan(m):
+                out[case] = m
+    return out
+
+
+def overhead(m: float, lo: float, hi: float) -> str:
+    """A cost ratio, not a speed-up: `1.25×`, never marked slower."""
+    return f"{m:.2f}× [{lo:.2f}, {hi:.2f}]"
+
+
+def timing_table(title: str, results: Result) -> list[str]:
+    """Columns: one per contender, `median [lo, hi]` in ms; then the speed-up of `orm` over each contender,
+    the overhead over `pg` and the cost of `orm-all`, from paired per-round values."""
     names = list(results)
-    pairs = [(n, reference) for n in names if reference and n != reference]
-    pairs += [(a, b) for a, b in (extra_pairs or []) if a in results and b in results]
+    if "orm" not in results:
+        return [f"### {title}", "", "No `orm` results: no speed-up to show.", ""]
+    pairs = [(n, "orm", f"orm vs {n}", speedup) for n in contenders_of(results)]
+    if FLOOR in results:
+        pairs.append(("orm", FLOOR, "orm / pg (overhead)", overhead))
+    if "orm-all" in results:
+        pairs.append(("orm-all", "orm", "orm-all / orm (extension cost)", overhead))
     lines = [f"### {title}", ""]
-    head = ["case"] + [f"{n} (ms)" for n in names] + [f"{a} / {b}" for a, b in pairs]
+    head = ["case"] + [f"{n} (ms)" for n in names] + [label for _, _, label, _ in pairs]
     lines += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     for case in case_names(results):
         row = [case]
@@ -93,14 +136,52 @@ def timing_table(title: str, results: Result, reference: str | None, extra_pairs
                 continue
             lo, hi = interval(rounds_of(item))
             row.append(f"{fmt(statistics.median(rounds_of(item)))} [{fmt(lo)}, {fmt(hi)}]")
-        for a, b in pairs:
+        for a, b, label, show in pairs:
             x, y = results[a].get(case), results[b].get(case)
             if x and y:
                 m, lo, hi = paired(x, y)
-                row.append(f"{m:.2f} [{lo:.2f}, {hi:.2f}]")
+                row.append(show(m, lo, hi))
             else:
                 row.append("-")
         lines.append("| " + " | ".join(row) + " |")
+    return lines + [""]
+
+
+def cpu_total(cpu: dict[str, Any]) -> float:
+    return (cpu.get("build_ms") or 0) + (cpu.get("sql_ms") or 0)
+
+
+def cpu_speedups(results: Result, contender: str) -> dict[str, float]:
+    """Per case, (build query + make SQL) time of `contender` / of `orm`, where both ran the CPU split."""
+    out: dict[str, float] = {}
+    for case, orm_item in results.get("orm", {}).items():
+        other = results.get(contender, {}).get(case)
+        if not (other and orm_item.get("cpu") and other.get("cpu")):
+            continue
+        if cpu_total(orm_item["cpu"]) > 0 and cpu_total(other["cpu"]) > 0:
+            out[case] = cpu_total(other["cpu"]) / cpu_total(orm_item["cpu"])
+    return out
+
+
+def range_text(values: dict[str, float]) -> str:
+    worst, best = min(values, key=values.__getitem__), max(values, key=values.__getitem__)
+    mean = statistics.geometric_mean(values.values())
+    return f"geometric mean {times(mean)}, range {times(values[worst])} ({worst}) to {times(values[best])} ({best})"
+
+
+def summary_block(sides: list[tuple[str, Result]]) -> list[str]:
+    """Top of the report: per side and contender, the end-to-end speed-up of `orm`, then the approximate CPU split."""
+    lines = ["## Summary", "",
+             "Speed-up is contender time / `orm` time: `2.3×` means `orm` is 2.3 times faster. "
+             "End to end: each time includes the database round trip.", ""]
+    end_to_end = [f"- {side} vs `{c}`: {range_text(s)} ({len(s)} cases)"
+                  for side, res in sides for c in contenders_of(res) if (s := case_speedups(res, c))]
+    cpu = [f"- {side} vs `{c}`: {range_text(s)} ({len(s)} cases)"
+           for side, res in sides for c in contenders_of(res) if (s := cpu_speedups(res, c))]
+    lines += end_to_end or ["No speed-up to show."]
+    if cpu:
+        lines += ["", "CPU split (build query + make SQL, contender time / `orm` time): approximate, no database, decode not measured. "
+                  "The main numbers above are end to end.", ""] + cpu
     return lines + [""]
 
 
@@ -175,6 +256,7 @@ def versions(env: dict[str, Any]) -> str:
 
 def main() -> None:
     directory = Path(sys.argv[1])
+    target = Path(sys.argv[2]) if len(sys.argv) > 2 else directory / "summary.md"
     run = json.loads((directory / "run.json").read_text()) if (directory / "run.json").exists() else {}
     py = load(directory / "python")
     node = load(directory / "js")
@@ -187,10 +269,11 @@ def main() -> None:
                 + ("The load check was overridden (`--ignore-load`). " if run.get("load_check_ignored") else "")
                 + ("Release builds used the fast profile (no fat LTO). " if run.get("fast_build") else "")
                 + "Do not quote these numbers.", ""]
+    out += summary_block([("Python", py), ("Node", node), ("Bun", bun)])
     out += [f"All numbers are **measured** on this machine: {run.get('rounds', '?')} rounds x {run.get('iters', '?')} "
             "iterations per case (the warm-up calls are not timed), the contender order rotated every round, one fresh "
-            "process per contender and round. Each cell is `median [95% cluster bootstrap interval]` of the per-round "
-            "medians; each ratio is the median of the paired per-round ratios with its interval.",
+            "process per contender and round. Each cell is `median [95 percent cluster bootstrap interval]` of the per-round "
+            "medians; each speed-up is the median of the paired per-round values (contender time / orm time) with its interval.",
             "",
             f"Load before: `{run.get('uptime_before', '?')}`  ",
             f"Load after: `{run.get('uptime_after', '?')}`", ""]
@@ -208,9 +291,9 @@ def main() -> None:
         env = json.loads((directory / "python" / "environment.json").read_text())
         envs.append(env)
         out += [versions(env), "",
-                "Reference: `django-async`. There is no `pg`-like floor contender on Python. `orm-all` is the `orm` build with every "
-                "extension; the `orm-all / orm` column compares the two.", ""]
-        out += timing_table("Time per operation", py, "django-async" if "django-async" in py else None, [("orm-all", "orm")])
+                "There is no `pg`-like floor contender on Python. `orm-all` is the `orm` build with every "
+                "extension; the `orm-all / orm` column is the extension cost.", ""]
+        out += timing_table("Time per operation", py)
         out += concurrent_table(py) + cpu_table(py)
     else:
         out += ["No Python results.", ""]
@@ -219,16 +302,16 @@ def main() -> None:
     if node:
         env = json.loads((directory / "js" / "environment.json").read_text())
         envs.append(env)
-        out += [versions(env), "", "Reference: `pg` (prepared statements, no ORM work), the floor. The `orm-all / orm` column compares the two builds.", ""]
-        out += timing_table("Time per operation", node, "pg" if "pg" in node else None, [("orm-all", "orm")])
+        out += [versions(env), "", "`pg` (prepared statements, no ORM work) is the floor: its column is the overhead orm / pg. The `orm-all / orm` column is the extension cost.", ""]
+        out += timing_table("Time per operation", node)
         out += concurrent_table(node) + cpu_table(node)
     else:
         out += ["No Node results.", ""]
 
     out += ["## TypeScript on Bun", ""]
     if bun:
-        out += ["Three cases only. Reference: `prisma` (there is no `pg` row on Bun).", ""]
-        out += timing_table("Time per operation", bun, "prisma" if "prisma" in bun else None)
+        out += ["Three cases only. There is no `pg` row on Bun.", ""]
+        out += timing_table("Time per operation", bun)
     else:
         out += ["No Bun results.", ""]
 
@@ -237,7 +320,7 @@ def main() -> None:
     if bun_env.exists():
         envs.append(json.loads(bun_env.read_text()))
     out += notes(*envs)
-    (directory / "summary.md").write_text("\n".join(out))
+    target.write_text("\n".join(out))
 
 
 if __name__ == "__main__":

@@ -17,7 +17,11 @@ bench/compare/run.sh                     # builds release artifacts, 20 rounds x
 It marks `run.json` invalid (and `summary.md` shows an INVALID banner) when the load at the end is above 2.
 `--ignore-load` and `--fast-build` are for a pipeline smoke: the directory gets a `-smoke` suffix, and the numbers are not valid.
 The database is `bench` (`BENCH_DB_NAME` changes it); the run drops and recreates it, and drops it at the end.
-`report.py` gives each cell as the median of the per-round medians with a 95% cluster bootstrap interval (rounds resampled), and each ratio as the median of the paired per-round ratios.
+`report.py` gives each cell as the median of the per-round medians with a 95% cluster bootstrap interval (rounds resampled), and each speed-up as the median of the paired per-round values (contender time / `orm` time) with its interval.
+Read `2.3×` as "`orm` is 2.3 times faster"; below 1 reads `0.8× (slower)`.
+The `orm / pg` column is overhead over raw `pg` (1.25× means `orm` takes 1.25 times the time of `pg`), and `orm-all / orm` is the extension cost.
+The Summary block at the top gives the geometric mean and the range over the cases, end to end (each time includes the database round trip), and the approximate CPU split separately.
+`python report.py <results dir> [output.md]` writes `summary.md` in the results directory unless you name another file.
 
 ## Run one runner by hand
 
