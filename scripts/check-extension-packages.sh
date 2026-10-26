@@ -41,6 +41,7 @@ model Note {
   text String
   @@inherit.extends(Base)
   @@outside.tag("installed")
+  @@query.filter("positive", "id > 0")
   @@map("pkg1d_seam_notes")
 }
 SCHEMA

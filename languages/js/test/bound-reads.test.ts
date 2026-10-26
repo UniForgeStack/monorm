@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, define, loads, of, QueryError, Registry, type Database } from "../src/index.js";
-import { native } from "../src/native.js";
+import { hasExtension } from "./artifact-caps.js";
 
 const source = `
 model Writer {
@@ -276,7 +276,7 @@ for (const provider of ["sqlite", "postgresql"]) {
   });
 }
 
-const queryDefaults = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes("query-defaults") ?? false;
+const queryDefaults = hasExtension("orm.query-defaults");
 
 test("of() applies no query default on the root; withoutDefaults() stays accepted", { skip: !queryDefaults }, async () => {
   const registry = new Registry();

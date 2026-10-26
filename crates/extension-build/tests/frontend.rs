@@ -112,7 +112,6 @@ fn manifest_capability_selects_the_host_feature() {
     let root = host.join("target/extension-proof-tests").join(format!("orm-extension-feature-test-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     for (feature, alias, package, path) in [
-        ("query-defaults", "query_defaults", "orm-query-defaults", "extensions/query-defaults"),
         ("model-composition", "composition", "orm-model-composition", "extensions/model-composition"),
         ("proxy-models", "proxy", "orm-proxy", "extensions/proxy"),
         ("generic-relations", "generic", "orm-generic", "extensions/generic"),

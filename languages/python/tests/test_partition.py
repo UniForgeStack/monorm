@@ -118,8 +118,8 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
     from orm import _native
 
     capabilities = artifact_capabilities()
-    if not {"proxy-models", "query-defaults"}.issubset(capabilities) or not has_extension("orm.soft-delete"):
-        pytest.skip("requires combined proxy, query-defaults and soft-delete artifact")
+    if "proxy-models" not in capabilities or not has_extension("orm.query-defaults", "orm.soft-delete"):
+        pytest.skip("requires proxy, orm.query-defaults and orm.soft-delete")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
     source = source.replace("deleted DateTime?", '@@soft_delete.deleted_at("deleted")')
     source = source.replace(
@@ -204,8 +204,8 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
     from pathlib import Path
     from orm import _native
 
-    if not {"proxy-models", "query-defaults"}.issubset(artifact_capabilities()) or not has_extension("orm.soft-delete"):
-        pytest.skip("requires combined proxy, query-defaults and soft-delete artifact")
+    if "proxy-models" not in artifact_capabilities() or not has_extension("orm.query-defaults", "orm.soft-delete"):
+        pytest.skip("requires proxy, orm.query-defaults and orm.soft-delete")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-rewards.prisma").read_text()
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)

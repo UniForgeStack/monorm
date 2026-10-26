@@ -152,8 +152,8 @@ model Employee {
 
 
 @pytest.mark.skipif(
-    "query-defaults" not in json.loads(_native.native_artifact())["capabilities"],
-    reason="requires a query-defaults native artifact",
+    not has_extension("orm.query-defaults"),
+    reason="requires the orm.query-defaults package",
 )
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 async def test_composed_writes_read_the_scope(provider):

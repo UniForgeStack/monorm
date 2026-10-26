@@ -1,13 +1,12 @@
 """Commit callbacks, session advisory locks, read replicas and tenants."""
 
 import asyncio
-import json
 import time
 
 import pytest
 
 import orm
-from orm import _native
+from artifact_caps import has_extension
 from orm.hooks import prepare_update
 from blog.models import Post, User
 
@@ -529,7 +528,7 @@ async def test_tenant_ids_are_checked(db):
             pass
 
 
-QUERY_DEFAULTS = "query-defaults" in json.loads(_native.native_artifact()).get("capabilities", [])
+QUERY_DEFAULTS = has_extension("orm.query-defaults")
 
 
 def scoped_schema(dialect):
@@ -588,7 +587,7 @@ def scoped_schema(dialect):
     }
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a query-defaults artifact")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
 async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect):
     registry = orm.Registry()
@@ -642,7 +641,7 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
         await sdb.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a query-defaults artifact")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
 async def test_prefetch_applies_scope_values(db, dialect):
     registry = orm.Registry()

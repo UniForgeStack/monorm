@@ -148,7 +148,7 @@ model Doc {
 
   const versionedSkip = { skip: !hasExtension("orm.soft-delete", "orm.locking") };
 
-  test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !capabilities.includes("query-defaults") }, async () => {
+  test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.query-defaults") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -181,7 +181,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an instance hardDelete also drops the tenant filter (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !capabilities.includes("query-defaults") }, async () => {
+  test(`an instance hardDelete also drops the tenant filter (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.query-defaults") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -282,7 +282,7 @@ model PostTag {
     });
   }
 
-  test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !capabilities.includes("query-defaults") }, async () => {
+  test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.query-defaults") }, async () => {
     await assert.rejects(open(dialect, `
 model Doc {
   id      Int       @id

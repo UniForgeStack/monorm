@@ -1,0 +1,70 @@
+id = "orm.query-defaults"
+version = "0.1.0"
+abi = "0.2"
+library = "orm_query_defaults"
+schema_contract = 2
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+
+[[passes]]
+id = "query.defaults.lower"
+phase = "behavior"
+effects = ["query-defaults"]
+
+[[attributes]]
+name = "query.defaults"
+target = "model"
+[attributes.arguments.filter]
+kind = "string"
+[attributes.arguments.fields]
+kind = "list"
+[attributes.arguments.related]
+kind = "list"
+[attributes.arguments.parent]
+kind = "string"
+[attributes.arguments.order]
+kind = "list"
+
+[[attributes]]
+name = "query.selectOut"
+target = "field"
+
+# One attribute per `query.defaults` option; each sets that option only.
+[[attributes]]
+name = "query.filter"
+target = "model"
+# `@@query.filter("<name>", "<expr>")`; the compiler rejects a missing expression with the full form.
+[[attributes.positional]]
+kind = "string"
+required = true
+[[attributes.positional]]
+kind = "string"
+
+[[attributes]]
+name = "query.fields"
+target = "model"
+[[attributes.positional]]
+kind = "list"
+required = true
+
+[[attributes]]
+name = "query.related"
+target = "model"
+[[attributes.positional]]
+kind = "list"
+required = true
+
+[[attributes]]
+name = "query.order"
+target = "model"
+[[attributes.positional]]
+kind = "string"
+variadic = true
+
+[[attributes]]
+name = "query.parent"
+target = "model"
+[[attributes.positional]]
+kind = "string"
+required = true

@@ -3,69 +3,11 @@ name = "orm-query-defaults"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Optional @@query.* compiler for ORM: lowers model query policies to read defaults"
+
 [dependencies]
 orm-contracts = { path = "../../crates/contracts" }
 serde_json = "1"
-[package.metadata.orm-extension]
-id = "orm.query-defaults"
-version = "0.1.0"
-host_contract = 1
-schema_contract = 2
-capabilities = ["query-defaults"]
-languages = ["python", "typescript"]
-databases = ["postgres", "sqlite"]
-[[package.metadata.orm-extension.attributes]]
-name = "query.defaults"
-target = "model"
-[package.metadata.orm-extension.attributes.arguments.filter]
-kind = "string"
-[package.metadata.orm-extension.attributes.arguments.fields]
-kind = "list"
-[package.metadata.orm-extension.attributes.arguments.related]
-kind = "list"
-[package.metadata.orm-extension.attributes.arguments.parent]
-kind = "string"
-[package.metadata.orm-extension.attributes.arguments.order]
-kind = "list"
-[[package.metadata.orm-extension.attributes]]
-name = "query.selectOut"
-target = "field"
-# One attribute per `query.defaults` option; each sets that option only.
-[[package.metadata.orm-extension.attributes]]
-name = "query.filter"
-target = "model"
-# `@@query.filter("<name>", "<expr>")`; the compiler rejects a missing expression with the full form.
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "string"
-required = true
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "string"
-[[package.metadata.orm-extension.attributes]]
-name = "query.fields"
-target = "model"
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "list"
-required = true
-[[package.metadata.orm-extension.attributes]]
-name = "query.related"
-target = "model"
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "list"
-required = true
-[[package.metadata.orm-extension.attributes]]
-name = "query.order"
-target = "model"
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "string"
-variadic = true
-[[package.metadata.orm-extension.attributes]]
-name = "query.parent"
-target = "model"
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "string"
-required = true
-[[package.metadata.orm-extension.passes]]
-id = "query.defaults.lower"
-phase = "behavior"
-rust = "query_defaults::lower"
-effects = ["query-defaults"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]

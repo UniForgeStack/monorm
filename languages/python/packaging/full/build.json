@@ -15,10 +15,6 @@
       "package": "orm-proxy",
       "path": "../../../../extensions/proxy"
     },
-    "query_defaults": {
-      "package": "orm-query-defaults",
-      "path": "../../../../extensions/query-defaults"
-    },
     "composition": {
       "package": "orm-model-composition",
       "path": "../../../../extensions/model-composition"

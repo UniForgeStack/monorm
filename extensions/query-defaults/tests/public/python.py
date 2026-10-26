@@ -1,17 +1,14 @@
-"""`@@query.defaults` from the schema language to a query; needs a query-defaults artifact."""
+"""`@@query.defaults` from the schema language to a query; needs the `orm-query-defaults` package."""
 
 import asyncio
-import json
 import os
 from pathlib import Path
 
 import orm
-from orm import _native
+from orm._packages import resolve_extensions
 
 FIXTURE = Path(__file__).parent.parent.joinpath("fixtures/schema.prisma").read_text()
-assert "query-defaults" in json.loads(_native.native_artifact())["capabilities"], (
-    "select orm-query-defaults in the build"
-)
+assert "orm.query-defaults" in resolve_extensions(), "install the orm-query-defaults package"
 
 
 async def run(provider: str, url: str) -> None:

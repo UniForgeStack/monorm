@@ -95,8 +95,8 @@ model ActiveMember {
 
 
 @pytest.mark.skipif(
-    "query-defaults" not in json.loads(_native.native_artifact())["capabilities"],
-    reason="requires proxy and query-defaults in one artifact",
+    not has_extension("orm.query-defaults"),
+    reason="requires proxy and the orm.query-defaults package",
 )
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_proxy_with_query_defaults_is_a_filtered_view(dialect):

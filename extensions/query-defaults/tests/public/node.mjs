@@ -1,11 +1,13 @@
-// `@@query.defaults` from the schema language to a query; needs a query-defaults artifact.
+// `@@query.defaults` from the schema language to a query; needs the `@orm/query-defaults` package.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { connect, loads, NotLoaded, Registry, scope } from '../../../../languages/js/dist/src/index.js';
-import { native } from '../../../../languages/js/dist/src/native.js';
+import { resolveExtensions } from '../../../../languages/js/dist/src/packages.js';
 
 const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.url), 'utf8');
-assert.ok(JSON.parse(native().nativeArtifact()).capabilities.includes('query-defaults'), 'select orm-query-defaults in the build');
+// Packages are discovered from the consumer's working directory.
+process.chdir(new URL('../../../../languages/js/', import.meta.url).pathname);
+assert.ok('orm.query-defaults' in resolveExtensions(), 'install the @orm/query-defaults package');
 
 async function run(provider, url) {
   const registry = new Registry();
