@@ -2,7 +2,11 @@
 //! Two producers fill a `HookPlan`: a library that `define()` opens (`HookRef::Abi`) and the functions
 //! that the artifact compiles in (`HookRef::Static`). The engine runs both through one dispatch.
 use crate::loader::State;
+use crate::schema::Model;
 use orm_contracts::abi::{Arg, Context, Value};
+use orm_contracts::extension::Requirements;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// A function that the artifact compiles in.
@@ -16,6 +20,9 @@ pub enum StaticHook {
     Computed(fn(&str) -> Result<String, String>),
 }
 
+/// The name of the argument of a transform or a validator: one hook serves any field.
+const VALUE: &str = "value";
+
 #[derive(Clone)]
 pub enum HookRef {
     /// An export of a loaded library, with the state of its `init`.
@@ -26,13 +33,13 @@ pub enum HookRef {
 impl HookRef {
     pub fn reads_context(&self) -> bool { matches!(self, Self::Abi { reads_context: true, .. }) }
 
-    /// Rewrites `value` in place. `name` is the field name that the hook sees.
-    pub fn rewrite(&self, name: &str, value: &mut Value, context: &Context) -> Result<(), String> {
+    /// Rewrites `value` in place. A library hook gets it as the one argument `value`.
+    pub fn rewrite(&self, value: &mut Value, context: &Context) -> Result<(), String> {
         match self {
             Self::Static(StaticHook::Field(f)) => f(value),
             Self::Static(_) => Err("a record or computed function cannot rewrite a field".into()),
             Self::Abi { state, export, .. } => {
-                let arg = Arg { name: name.to_owned(), value: std::mem::replace(value, Value::Null) };
+                let arg = Arg { name: VALUE.to_owned(), value: std::mem::replace(value, Value::Null) };
                 *value = state.call(export, std::slice::from_ref(&arg), context)?;
                 Ok(())
             }
@@ -40,12 +47,12 @@ impl HookRef {
     }
 
     /// Checks `value` and leaves it as it is.
-    pub fn check(&self, name: &str, value: &Value, context: &Context) -> Result<(), String> {
+    pub fn check(&self, value: &Value, context: &Context) -> Result<(), String> {
         match self {
             Self::Static(StaticHook::Field(f)) => f(&mut value.clone()),
             Self::Static(_) => Err("a record or computed function cannot check a field".into()),
             Self::Abi { state, export, .. } => {
-                let arg = Arg { name: name.to_owned(), value: value.clone() };
+                let arg = Arg { name: VALUE.to_owned(), value: value.clone() };
                 state.call(export, std::slice::from_ref(&arg), context).map(drop)
             }
         }
@@ -96,4 +103,53 @@ impl HookPlan {
     pub fn watches(&self, position: usize) -> bool {
         self.transforms.iter().chain(&self.validators).any(|(p, _)| *p == position)
     }
+}
+
+/// Opens the library of each package that has change-set bindings (points 1 to 4), calls its `init` with
+/// `extension_data[id]`, and resolves each binding into the `HookPlan` of its model. `packages` maps an extension id
+/// to the directory of its installed package. Any failure fails `define()`.
+pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requirements, packages: &BTreeMap<String, PathBuf>) -> Result<(), String> {
+    let mut states: BTreeMap<&str, (Arc<State>, Vec<String>)> = BTreeMap::new();
+    let mut plans: BTreeMap<usize, HookPlan> = BTreeMap::new();
+    for binding in r.hooks.iter().filter(|b| (1..=3).contains(&b.point) && r.packages.contains_key(&b.source)) {
+        let id = binding.source.as_str();
+        if !states.contains_key(id) {
+            let dir = packages.get(id).ok_or_else(|| format!("extension {id}: the schema binds its hooks, but no package directory was given; install the package and pass it to `define()`"))?;
+            let library = crate::loader::open_package(id, dir)?;
+            let names: Vec<String> = library.hook_names()?.into_iter().map(str::to_owned).collect();
+            let data = r.extension_data.get(id).unwrap_or(&serde_json::Value::Null);
+            let state = library.init(data)?;
+            states.insert(id, (Arc::new(state), names));
+        }
+        let (state, names) = &states[id];
+        let at = match &binding.field { Some(f) => format!("{}.{f}", binding.model), None => binding.model.clone() };
+        if !names.contains(&binding.export) {
+            return Err(format!("{at}: extension {id} has no hook {}; fix the binding or rebuild the package", binding.export));
+        }
+        let m = *index.get(&binding.model).ok_or_else(|| format!("hook {} is bound to unknown model {}", binding.export, binding.model))?;
+        let position = |name: &str| models[m].field_pos(name).map_err(|e| format!("{at}: hook {}: {e}", binding.export));
+        let hook = HookRef::Abi { state: state.clone(), export: binding.export.clone(), reads_context: binding.reads_context };
+        let plan = plans.entry(m).or_default();
+        match (binding.point, &binding.field) {
+            (1, Some(f)) => plan.transforms.push((position(f)?, hook)),
+            (2, Some(f)) => plan.validators.push((position(f)?, hook)),
+            (3, None) => {
+                if binding.dependencies.is_empty() { return Err(format!("{at}: record validator {} names no dependencies", binding.export)); }
+                let positions = binding.dependencies.iter().map(|d| position(d)).collect::<Result<Vec<_>, _>>()?;
+                plan.records.push(RecordHook { positions, hook });
+            }
+            _ => return Err(format!("{at}: hook {} has point {} and a field that do not fit", binding.export, binding.point)),
+        }
+    }
+    for (m, mut plan) in plans {
+        // A model can already have static hooks of the artifact; both producers share one plan.
+        if let Some(existing) = models[m].hooks.take() {
+            let existing = *existing;
+            plan.transforms.splice(0..0, existing.transforms);
+            plan.validators.splice(0..0, existing.validators);
+            plan.records.splice(0..0, existing.records);
+        }
+        models[m].hooks = plan.finish();
+    }
+    Ok(())
 }

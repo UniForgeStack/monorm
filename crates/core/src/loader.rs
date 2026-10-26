@@ -351,6 +351,15 @@ impl Plan {
     }
 }
 
+/// Opens the library of the package installed in `dir`. `define()` calls this for each package that has hook bindings.
+/// The ABI check of `open` is the only check at run time: the generated IR already holds the checked bindings.
+pub fn open_package(id: &str, dir: &Path) -> Result<Library, String> {
+    let d = read_manifest(id, &dir.join(MANIFEST_FILE))?;
+    check_library(&d)?;
+    if d.manifest.exports.is_empty() { return Err(no_exports(id)); }
+    Ok(Library { native: open(&d)?, id: id.to_owned() })
+}
+
 impl Library {
     /// The names of the hooks of the library, in table order.
     pub fn hook_names(&self) -> Result<Vec<&str>, String> { Ok(self.native.symbols(&self.id)?.hooks.iter().map(|(n, _)| n.as_str()).collect()) }

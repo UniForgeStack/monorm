@@ -15,7 +15,7 @@ import { NestedColumn, buildTypes, decodeJsonCell, type IRNested, type IRType, t
 import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
 
 import { resolveApps } from "./apps.js";
-import { resolveExtensions } from "./packages.js";
+import { hookPackages, resolveExtensions } from "./packages.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
@@ -782,6 +782,7 @@ export class Registry {
   private behavior: Record<string, unknown> = {};
   private identities: unknown;
   private nativeSchema: NativeSchema | undefined;
+  private packageDirs: Record<string, string> | undefined;
   private readonly types = new Map<string, IRType>();
   private built: Map<string, NestedType> | undefined;
 
@@ -919,6 +920,7 @@ export class Registry {
     next.built = this.built;
     next.dialect = this.dialect;
     next.behavior = detached(this.behavior);
+    next.packageDirs = this.packageDirs;
     next.identities = detached(this.identities);
     for (const [k, v] of Object.entries(this.extra)) next.extra[k] = [...v];
     return next;
@@ -937,6 +939,7 @@ export class Registry {
     this.built = next.built;
     this.dialect = next.dialect;
     this.behavior = detached(next.behavior);
+    this.packageDirs = next.packageDirs;
     this.identities = detached(next.identities);
     for (const k of Object.keys(this.extra)) delete this.extra[k];
     for (const [k, v] of Object.entries(next.extra)) this.extra[k] = [...v];
@@ -944,14 +947,15 @@ export class Registry {
   }
 
   /** @internal: `prepared` is the prepared schema JSON these models were just built from. */
-  prepareFrom(prepared: string): NativeSchema {
-    this.nativeSchema ??= call(() => new (native().Schema)(prepared));
+  prepareFrom(prepared: string, packages?: Record<string, string>): NativeSchema {
+    this.packageDirs = packages;
+    this.nativeSchema ??= call(() => new (native().Schema)(prepared, packages));
     return this.nativeSchema;
   }
 
   /** The compiled native schema (cached until models change). */
   native(): NativeSchema {
-    this.nativeSchema ??= call(() => new (native().Schema)(JSON.stringify(this.ir())));
+    this.nativeSchema ??= call(() => new (native().Schema)(JSON.stringify(this.ir()), this.packageDirs));
     return this.nativeSchema;
   }
 }
@@ -1044,7 +1048,7 @@ export function define(
     reg.add(meta);
     out[m.name] = meta.model;
   }
-  const flags = JSON.parse(reg.prepareFrom(prepared).readFlags()) as Record<string, { filtered: boolean; indexes?: string[] }>;
+  const flags = JSON.parse(reg.prepareFrom(prepared, hookPackages(ir.behavior as never, options.extensionSchema)).readFlags()) as Record<string, { filtered: boolean; indexes?: string[] }>;
   for (const name of Object.keys(out)) {
     const meta = reg.get(name);
     meta.filtered = flags[name]?.filtered ?? false;

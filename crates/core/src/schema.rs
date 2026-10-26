@@ -157,9 +157,15 @@ pub struct Schema {
 }
 
 impl Schema {
-    pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true) }
+    pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, &Default::default()) }
 
-    fn from_ir_impl(mut ir: SchemaIr, behavioral: bool) -> Result<Self> {
+    /// Like `from_ir`, and loads the library of each package in `packages` (extension id to package directory)
+    /// that has hook bindings in the IR.
+    pub fn from_ir_with_packages(ir: SchemaIr, packages: &std::collections::BTreeMap<String, std::path::PathBuf>) -> Result<Self> {
+        Self::from_ir_impl(ir, true, packages)
+    }
+
+    fn from_ir_impl(mut ir: SchemaIr, behavioral: bool, packages: &std::collections::BTreeMap<String, std::path::PathBuf>) -> Result<Self> {
         crate::identity::validate(&ir)?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
@@ -177,7 +183,7 @@ impl Schema {
                     "native_expression_slots": ir.native_expression_slots,
                     "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities, "partitions": ir.partitions,
                 })).map_err(|e| e.to_string())?;
-                Some(Box::new(Self::from_ir_impl(physical, false)?))
+                Some(Box::new(Self::from_ir_impl(physical, false, &Default::default())?))
             }
             None => None,
         };
@@ -280,6 +286,7 @@ impl Schema {
         }
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
+        if behavioral { crate::hooks::bind(&mut models, &model_index, &ir.behavior, packages)?; }
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
         #[cfg(feature = "composition")]

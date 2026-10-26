@@ -431,3 +431,64 @@ fn lowering_refuses_a_hook_that_the_manifest_of_the_library_does_not_allow() {
         assert!(error.contains(message), "{error}");
     }
 }
+
+// `Schema::from_ir_with_packages` opens the library of each package that has bindings and resolves them into `Model.hooks`.
+
+/// `Post { id, tag }` with the bindings `hooks`, the extension data of `data`, and the stamp of the library.
+fn hooked(hooks: Vec<HookBinding>, data: serde_json::Value) -> SchemaIr {
+    let id = FieldIr { primary_key: true, ..FieldIr::plain("id", ColType::Int) };
+    let post = serde_json::json!({ "name": "Post", "table": "post", "fields": [id, FieldIr::plain("tag", ColType::Text)] });
+    let mut ir = SchemaIr { models: vec![serde_json::from_value(post).unwrap()], ..SchemaIr::default() };
+    ir.behavior.hooks = hooks;
+    ir.behavior.extension_data.insert(ID.to_owned(), data);
+    ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
+    ir.behavior.schema_contract_minor = SCHEMA_CONTRACT_MINOR;
+    ir.behavior.packages.insert(ID.to_owned(), orm_contracts::extension::PackageStamp { version: "0.1.0".into(), languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
+    ir
+}
+
+fn packages(manifest: &Path) -> BTreeMap<String, PathBuf> { [(ID.to_owned(), manifest.parent().unwrap().to_path_buf())].into() }
+
+#[test]
+fn define_resolves_the_bindings_of_a_library_into_the_hook_plan_of_the_model() {
+    let manifest = installed("", "0.2");
+    let ir = hooked(vec![binding(1, "tag", "outside.prefix"), binding(2, "tag", "outside.audit")], serde_json::json!({"prefix": "x"}));
+    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
+    let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
+    assert_eq!((plan.transforms.len(), plan.validators.len(), plan.records.len()), (1, 1, 0));
+    let (position, hook) = &plan.transforms[0];
+    assert_eq!(*position, 1);
+    let mut value = text("hello");
+    hook.rewrite(&mut value, &Context::default()).unwrap();
+    assert_eq!(value, text("xhello"), "init got the extension data");
+}
+
+#[test]
+fn a_hook_binding_without_a_package_directory_fails_define() {
+    let ir = hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
+    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
+    assert!(error.contains(ID) && error.contains("no package directory"), "{error}");
+}
+
+#[test]
+fn a_binding_to_a_missing_export_and_a_failing_init_fail_define_with_the_id() {
+    let manifest = installed("", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.gone")], serde_json::Value::Null), &packages(&manifest)).err().expect("no export");
+    assert!(error.contains("Post.tag") && error.contains(ID) && error.contains("outside.gone"), "{error}");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::json!({"fail": true})), &packages(&manifest)).err().expect("init fails");
+    assert!(error.contains(ID) && error.contains("init asked to fail"), "{error}");
+}
+
+#[test]
+fn a_binding_of_an_unknown_field_fails_define() {
+    let manifest = installed("", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "nope", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("no field");
+    assert!(error.contains("Post.nope") && error.contains("outside.prefix"), "{error}");
+}
+
+#[test]
+fn a_library_with_the_wrong_abi_fails_define_with_both_versions() {
+    let manifest = installed("abi-newer", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("abi");
+    assert!(error.contains(ID) && error.contains("ABI 0.3") && error.contains("ABI 0.2"), "{error}");
+}

@@ -98,13 +98,12 @@ fn failure(model: &Model, position: Option<usize>, hook: &HookRef, message: Stri
 
 /// Runs the hooks of one field on `value`.
 fn field(model: &Model, plan: &HookPlan, position: usize, value: &mut Value, context: &Context) -> Result<()> {
-    let name = &model.fields()[position].name;
     let mut abi = to_abi(model, position, value)?;
     for (_, hook) in plan.transforms.iter().filter(|(p, _)| *p == position) {
-        hook.rewrite(name, &mut abi, context).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.rewrite(&mut abi, context).map_err(|m| failure(model, Some(position), hook, m))?;
     }
     for (_, hook) in plan.validators.iter().filter(|(p, _)| *p == position) {
-        hook.check(name, &abi, context).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.check(&abi, context).map_err(|m| failure(model, Some(position), hook, m))?;
     }
     if !plan.transforms.iter().any(|(p, _)| *p == position) { return Ok(()); }
     *value = from_abi(model, position, value, abi)?;

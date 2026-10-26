@@ -184,7 +184,7 @@ export interface NativeEngine extends NativeInspector {
 }
 
 interface Addon {
-  Schema: new (schemaJson: string) => NativeSchema;
+  Schema: new (schemaJson: string, packages?: Record<string, string>) => NativeSchema;
   Trace: new () => NativeTrace;
   connect(url: string, schema: NativeSchema, maxConnections: number, disable: string[]): Promise<NativeEngine>;
   prepareSchema(schemaJson: string, contextJson?: string): string;
