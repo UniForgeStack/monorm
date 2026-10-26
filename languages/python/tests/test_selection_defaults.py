@@ -194,6 +194,17 @@ async def test_selection_defaults(dialect):
         bypassed = await b.without_defaults().load(Book.author).order_by(Book.id)
         assert bypassed[0].author.name == "changed" and bypassed[0].author.visible is True
         assert bypassed[1].author.name == "hidden"
+        for named in (False, True):
+            for filtered in (False, True):
+                books = await b.without_defaults().order_by(Book.id)
+                bound = orm.of(books).without_defaults(*(("query",) if named else ()))
+                if filtered:
+                    bound = bound.filter(Book.id > 0)
+                await bound.load(Book.author)
+                assert [book.author.name for book in books] == ["changed", "hidden"]
+        hidden_books = await b.without_defaults().order_by(Book.id)
+        await orm.of(hidden_books).load(Book.author)
+        assert hidden_books[0].author.name == "changed" and hidden_books[1].author is None
         assert await a.in_bulk() == {visible.pk: partial}
         changed_return = await a.load(Author.name).update(name="again").returning()
         assert changed_return[0].to_dict() == {"name": "again"}
@@ -534,6 +545,13 @@ def test_slice_combinations_raise(one_row_topics):
         with pytest.raises((orm.QueryError, TypeError)):
             build()
     assert t.limit(2).offset(1).sql() == t.offset(1).limit(2).sql()
+    with pytest.raises(orm.QueryError, match=r"already has a limit and an offset;.*build a new query set"):
+        t.limit(1).offset(2).limit(3)
+    with pytest.raises(orm.QueryError, match=r"clear a limit.*build a new query set"):
+        t.limit(1).limit(None)
+    assert "LIMIT" not in t.sql()
+    with pytest.raises(orm.QueryError, match=r"already has an offset;"):
+        t.offset(1)[0:2]
 
 
 async def test_one_row_prepared(one_row_topics, observe_queries):

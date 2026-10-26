@@ -423,12 +423,16 @@ impl Lowering<'_> {
             .iter()
             .map(|m| (m.name.clone(), m.fields.iter().find(|f| f.primary_key).map(|f| f.name.clone())))
             .collect();
+        let field_types: HashMap<(String, String), ColType> = lowered
+            .iter()
+            .flat_map(|m| m.fields.iter().map(move |f| ((m.name.clone(), f.name.clone()), f.ty)))
+            .collect();
         for ((m, decl), paths) in lowered.iter_mut().zip(&models).zip(&all_paths) {
             if pks[&m.name].is_none() && !self.deferred_identity.contains(&m.name) {
                 return err(decl.pos, format!("model {} has no @id field", decl.name));
             }
             for member in decl.members.iter().filter(|mm| model_names.contains_key(mm.ty.name.as_str())) {
-                let r = relation(decl, member, &m.fields, &model_names, self.deferred_identity)?;
+                let r = relation(decl, member, &m.fields, &model_names, &field_types, self.deferred_identity)?;
                 m.relations.push(r);
             }
             for block in &decl.blocks {
@@ -1034,9 +1038,18 @@ fn rel_args(a: &Attr) -> RelArgs {
     RelArgs { name, fields: names("fields"), references: names("references") }
 }
 
-fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap<&str, &ModelDecl>, deferred_identity: &HashSet<String>) -> Result<RelationIr> {
+fn relation(
+    m: &ModelDecl,
+    member: &Member,
+    fields: &[FieldIr],
+    models: &HashMap<&str, &ModelDecl>,
+    field_types: &HashMap<(String, String), ColType>,
+    deferred_identity: &HashSet<String>,
+) -> Result<RelationIr> {
     let target = &member.ty.name;
     let what = format!("relation {}.{}", m.name, member.name);
+    let is_json = |model: &str, field: &str| field_types.get(&(model.to_string(), field.to_string())) == Some(&ColType::Json);
+    let json_key = |model: &str, field: &str| format!("{what}: {model}.{field} is Json, and a Json field can't be a reference key");
     if let Some(a) = member.attrs.iter().find(|a| a.name != "relation") {
         return err(a.pos, format!("{what}: relations take only @relation(...)"));
     }
@@ -1167,6 +1180,11 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
         if from.len() != to.len() {
             return err(member.pos, format!("{what}: the relation on {target} needs references: with one field for each of fields:"));
         }
+        for (owner, keys) in [(m.name.as_str(), from), (target.as_str(), to)] {
+            if let Some(field) = keys.iter().find(|k| is_json(owner, k)) {
+                return err(member.pos, json_key(owner, field));
+            }
+        }
         let kind = if member.ty.list {
             if member.ty.optional {
                 return err(member.ty.pos, format!("{what}: a to-many relation can't be optional"));
@@ -1211,6 +1229,9 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
         let Some(local) = fields.iter().find(|f| &f.name == name) else {
             return err(fpos, format!("{what}: no field {name} in this model"));
         };
+        if is_json(m.name.as_str(), name) {
+            return err(fpos, json_key(m.name.as_str(), name));
+        }
         if local.nullable != member.ty.optional {
             let hint = if local.nullable { format!("{target}?") } else { target.clone() };
             return err(member.ty.pos, format!("{what}: {name} is {}nullable, so the relation type is `{hint}`", if local.nullable { "" } else { "not " }));
@@ -1219,6 +1240,9 @@ fn relation(m: &ModelDecl, member: &Member, fields: &[FieldIr], models: &HashMap
     let Some((tpos, to)) = to else { return err(rel.pos, format!("{what}: fields: needs references: [<field of {target}>]")) };
     if to.len() != from.len() {
         return err(tpos, format!("{what}: references: needs one field for each of fields: ({} for {})", to.len(), from.len()));
+    }
+    if let Some(field) = to.iter().find(|t| is_json(target, t)) {
+        return err(tpos, json_key(target, field));
     }
     if !deferred_identity.contains(target) {
         if let Some(missing) = to.iter().find(|t| !target_fields.contains(&t.as_str())) {

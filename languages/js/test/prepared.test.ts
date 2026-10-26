@@ -130,5 +130,9 @@ test("param() misuse", () => {
   assert.throws(() => (Post.objects.filter(Post.id.eq(param("id"))) as never as { sql(): string }).sql(), (e: unknown) => e instanceof QueryError && /prepare/.test(e.message));
   assert.throws(() => Post.id.in(param("ids") as never), /in\(\)/);
   assert.throws(() => Post.objects.limit(param("n")).slice(0, 5), (e: unknown) => e instanceof QueryError && /already has a limit/.test(e.message));
+  assert.throws(() => Post.objects.limit(1).offset(2).limit(3), (e: unknown) => e instanceof QueryError && /already has a limit and an offset;.*build a new query set/.test(e.message));
+  assert.throws(() => Post.objects.offset(1).slice(0, 2), (e: unknown) => e instanceof QueryError && /already has an offset;/.test(e.message));
+  assert.throws(() => Post.objects.limit(1).limit(null), (e: unknown) => e instanceof QueryError && /clear a limit.*build a new query set/.test(e.message));
+  assert.ok(!Post.objects.sql().includes("LIMIT"));
   assert.throws(() => param("not a name"), /identifier/);
 });

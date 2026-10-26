@@ -1,6 +1,6 @@
 // Derives prisma/schema.prisma from the shared ../schema.prisma: Prisma has no `through:` relation and no
 // timestamptz default, so the two many-to-many fields go (the explicit PostTag model stays) and DateTime gets @db.Timestamptz(6).
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,4 +22,5 @@ datasource db {
   provider = "postgresql"
 }
 `;
+mkdirSync(join(here, "prisma"), { recursive: true });
 writeFileSync(join(here, "prisma", "schema.prisma"), header + body);

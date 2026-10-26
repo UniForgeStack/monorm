@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use deadpool_postgres::{ClientWrapper, Manager, ManagerConfig, Object, Pool, RecyclingMethod};
 use sea_query::{ArrayType, Value};
 use tokio::sync::Mutex;
@@ -201,6 +201,8 @@ enum RawType {
     Real,
     SmallIntArray,
     RealArray,
+    Timestamp,
+    TimestampArray,
 }
 
 fn raw_type(name: &str, ty: &Type) -> DbResult<RawType> {
@@ -211,6 +213,7 @@ fn raw_type(name: &str, ty: &Type) -> DbResult<RawType> {
     let col = match *scalar {
         Type::INT2 => return Ok(if array { RawType::SmallIntArray } else { RawType::SmallInt }),
         Type::FLOAT4 => return Ok(if array { RawType::RealArray } else { RawType::Real }),
+        Type::TIMESTAMP => return Ok(if array { RawType::TimestampArray } else { RawType::Timestamp }),
         Type::INT8 => ColType::BigInt,
         Type::INT4 => ColType::Int,
         Type::FLOAT8 => ColType::Float,
@@ -252,6 +255,8 @@ impl RawRows for PgRawRows {
             RawType::Real => opt(r, col, |v: f32| Cell::Float(v.into())),
             RawType::SmallIntArray => list(r, col, |v: i16| Cell::Int(v.into())),
             RawType::RealArray => list(r, col, |v: f32| Cell::Float(v.into())),
+            RawType::Timestamp => opt(r, col, timestamp_cell),
+            RawType::TimestampArray => list(r, col, timestamp_cell),
         }
     }
 }
@@ -380,6 +385,11 @@ fn list<'a, T: FromSql<'a>>(row: &'a Row, idx: usize, f: impl Fn(T) -> Cell<'a>)
     Ok(Cell::Array(items.into_iter().map(|v| v.map(&f).unwrap_or(Cell::Null)).collect()))
 }
 
+/// A `timestamp` has no zone: read it as UTC, like other DateTime fields.
+fn timestamp_cell<'a>(v: NaiveDateTime) -> Cell<'a> {
+    Cell::DateTime(v.and_utc())
+}
+
 fn cell(row: &Row, idx: usize, ty: ValueType) -> DbResult<Cell<'_>> {
     if ty.array {
         return match ty.ty {
@@ -423,6 +433,8 @@ impl RowSet for PgRows {
             Ok(RawType::Real) => opt(r, col, |v: f32| Cell::Float(v.into())),
             Ok(RawType::SmallIntArray) => list(r, col, |v: i16| Cell::Int(v.into())),
             Ok(RawType::RealArray) => list(r, col, |v: f32| Cell::Float(v.into())),
+            Ok(RawType::Timestamp) => opt(r, col, timestamp_cell),
+            Ok(RawType::TimestampArray) => list(r, col, timestamp_cell),
             _ => cell(r, col, ty),
         }
     }
@@ -438,6 +450,9 @@ impl RowSet for PgRows {
         }
         if *wire == Type::FLOAT4 {
             return Ok(Value::Double(get::<f32>(r, col)?.map(f64::from)));
+        }
+        if *wire == Type::TIMESTAMP {
+            return Ok(Value::ChronoDateTimeWithTimeZone(get::<NaiveDateTime>(r, col)?.map(|d| d.and_utc().fixed_offset())));
         }
         Ok(match ty.ty {
             ColType::BigInt => Value::BigInt(get(r, col)?),

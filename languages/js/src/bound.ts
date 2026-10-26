@@ -208,7 +208,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     const relationOnly = loads.length > 0 && !loads.some((i) => i instanceof Labeled || (i instanceof Column && !i.path.length));
     // no root column to read: the keys come from the objects
     if (relationOnly && !st.filters.length && st.lock === undefined) {
-      await prefetch(objs, ...this.items, { using: db });
+      await prefetch(objs, ...this.items, { using: db, withoutDefaults: st.withoutDefaults });
       return [...objs] as R[];
     }
     const keys = meta.key.map((f) => f.ir);
@@ -219,7 +219,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
       rows.push(...await (qs as unknown as { fetch(): Promise<Row[]> }).fetch());
     }
     const matched = this.fill(rows);
-    if (relationOnly) await prefetch(matched as object[], ...this.items, { using: db });
+    if (relationOnly) await prefetch(matched as object[], ...this.items, { using: db, withoutDefaults: st.withoutDefaults });
     return matched;
   }
 }
