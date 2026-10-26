@@ -263,7 +263,7 @@ mod tests {
     fn install(dir: &Path, id: &str, body: &str) -> (String, PathBuf) {
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join(MANIFEST_FILE);
-        std::fs::write(&path, format!("id = \"{id}\"\nversion = \"1.0.0\"\nschema_contract = \"2.0\"\nabi = \"0.1\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n{body}")).unwrap();
+        std::fs::write(&path, format!("id = \"{id}\"\nversion = \"1.0.0\"\nschema_contract = \"2.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n{body}")).unwrap();
         (id.to_owned(), path)
     }
 

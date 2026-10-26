@@ -109,7 +109,7 @@ mod tests {
 
     fn library(extra: serde_json::Value) -> Manifest {
         let mut value = serde_json::json!({
-            "id": "acme.lib", "version": "1.0.0", "schema_contract": "2.0", "abi": "0.1", "library": "lib",
+            "id": "acme.lib", "version": "1.0.0", "schema_contract": "2.0", "abi": "0.2", "library": "lib",
             "languages": ["python"], "databases": ["sqlite"],
         });
         value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());

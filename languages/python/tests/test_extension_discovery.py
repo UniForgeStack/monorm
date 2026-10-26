@@ -19,7 +19,7 @@ from orm.__main__ import main as cli
 from orm._native import SchemaError
 from orm._packages import resolve_extensions
 
-MANIFEST = 'id = "acme.fixture"\nversion = "0.1.0"\nabi = "0.1"\nlibrary = "libfixture"\n'
+MANIFEST = 'id = "acme.fixture"\nversion = "0.1.0"\nabi = "0.2"\nlibrary = "libfixture"\n'
 
 
 def install(site: Path, dist: str, entry: str | None, *, manifest: bool = True, ident: str | None = None) -> Path:

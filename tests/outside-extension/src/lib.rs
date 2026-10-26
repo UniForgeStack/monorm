@@ -25,4 +25,4 @@ orm_contracts::extension!(("acme.outside.tag", tag));
 #[cfg(feature = "abi-major")]
 orm_contracts::extension!(abi = (1, 0); ("acme.outside.tag", tag));
 #[cfg(all(feature = "abi-newer", not(feature = "abi-major")))]
-orm_contracts::extension!(abi = (0, 2); ("acme.outside.tag", tag));
+orm_contracts::extension!(abi = (0, 3); ("acme.outside.tag", tag));

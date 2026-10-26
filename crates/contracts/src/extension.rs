@@ -9,7 +9,7 @@ pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
 pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 0);
 /// The C ABI that `orm_contracts::extension!` writes.
-pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 1);
+pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
 pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
@@ -1131,7 +1131,7 @@ mod tests {
         let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
         let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
-        assert!(error.contains("ABI 0.2 is newer than this engine (ABI 0.1)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains("ABI 0.3 is newer than this engine (ABI 0.2)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| { v.as_object_mut().unwrap().remove("host_contract"); }).unwrap_err();
         assert!(error.contains("app: a manifest with no `abi` needs `host_contract`"), "{error}");
     }

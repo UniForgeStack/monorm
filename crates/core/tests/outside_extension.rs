@@ -29,7 +29,7 @@ fn variant(feature: &str) -> &str { if feature.is_empty() { "default" } else { f
 
 /// The manifest of the package, with the `abi` that it says.
 fn manifest(abi: &str) -> String {
-    fs::read_to_string(root().join("orm-extension.toml")).unwrap().replace("abi = \"0.1\"", &format!("abi = \"{abi}\""))
+    fs::read_to_string(root().join("orm-extension.toml")).unwrap().replace("abi = \"0.2\"", &format!("abi = \"{abi}\""))
 }
 
 /// Builds the library with `feature` and keeps a copy: every build writes the same file.
@@ -69,7 +69,7 @@ fn compile(name: &str, schema: &str, extensions: &[(&str, &Path)]) -> Result<Sch
 
 #[test]
 fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     let ir = compile("lowers", SCHEMA, &[(ID, &manifest)]).unwrap();
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
@@ -79,7 +79,7 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
 
 #[test]
 fn the_generator_key_loads_a_library_that_no_attribute_selects() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     let schema = "generator client {\n provider = \"orm\"\n extensions = [\"acme.outside\"]\n}\nmodel Post {\n id Int @id\n}\n";
     assert!(compile("named", schema, &[(ID, &manifest)]).unwrap().behavior.packages.contains_key(ID));
     assert!(compile("unused", "model Post {\n id Int @id\n}\n", &[(ID, &manifest)]).unwrap().behavior.packages.is_empty());
@@ -87,7 +87,7 @@ fn the_generator_key_loads_a_library_that_no_attribute_selects() {
 
 #[test]
 fn a_pass_error_names_the_extension_and_the_pass() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     let error = compile("argument", "model Post {\n id Int @id\n @@outside.tag(\"\")\n}\n", &[(ID, &manifest)]).unwrap_err();
     assert!(error.contains(ID) && error.contains("acme.outside.tag") && error.contains("non-empty"), "{error}");
 }
@@ -103,9 +103,9 @@ fn a_missing_extension_says_how_to_install_it() {
 
 #[test]
 fn two_extensions_that_own_one_effect_conflict() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     let rival = scratch("rival").join("orm-extension.toml");
-    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"2.0\"\nabi = \"0.1\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
+    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"2.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
     let schema = "generator client {\n extensions = [\"acme.outside\", \"acme.rival\"]\n}\nmodel Post {\n id Int @id\n}\n";
     let error = compile("conflict", schema, &[(ID, &manifest), ("acme.rival", &rival)]).unwrap_err();
     assert!(error.contains("models.outside") && error.contains(ID) && error.contains("acme.rival"), "{error}");
@@ -113,7 +113,7 @@ fn two_extensions_that_own_one_effect_conflict() {
 
 #[test]
 fn a_broken_manifest_of_another_package_fails_only_a_compile_that_it_can_own() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     let broken = scratch("broken").join("orm-extension.toml");
     fs::write(&broken, "id = \"acme.broken\"\nversion = [").unwrap();
     compile("broken-other", SCHEMA, &[(ID, &manifest), ("acme.broken", &broken)]).unwrap();
@@ -126,25 +126,25 @@ fn a_broken_manifest_of_another_package_fails_only_a_compile_that_it_can_own() {
 
 #[test]
 fn a_library_of_another_abi_major_fails_before_any_pass_runs() {
-    let manifest = installed("abi-major", "0.1");
+    let manifest = installed("abi-major", "0.2");
     let error = compile("lib-major", SCHEMA, &[(ID, &manifest)]).unwrap_err();
-    assert!(error.contains(ID) && error.contains("ABI 1.0") && error.contains("ABI 0.1") && error.contains("major") && error.contains("install a release of"), "{error}");
+    assert!(error.contains(ID) && error.contains("ABI 1.0") && error.contains("ABI 0.2") && error.contains("major") && error.contains("install a release of"), "{error}");
 }
 
 #[test]
 fn a_library_with_a_higher_abi_minor_asks_for_an_update() {
-    let manifest = installed("abi-newer", "0.1");
+    let manifest = installed("abi-newer", "0.2");
     let error = compile("lib-minor", SCHEMA, &[(ID, &manifest)]).unwrap_err();
-    assert!(error.contains(ID) && error.contains("ABI 0.2") && error.contains("ABI 0.1") && error.contains("update the ORM"), "{error}");
+    assert!(error.contains(ID) && error.contains("ABI 0.3") && error.contains("ABI 0.2") && error.contains("update the ORM"), "{error}");
 }
 
 #[test]
 fn a_manifest_of_another_abi_fails_before_any_library_loads() {
-    for (abi, advice) in [("1.0", "install a release of"), ("0.2", "update the ORM")] {
+    for (abi, advice) in [("1.0", "install a release of"), ("0.3", "update the ORM")] {
         let path = scratch(&format!("manifest-{abi}")).join("orm-extension.toml");
         fs::write(&path, manifest(abi).replace("library = \"outside_extension\"", "library = \"gone\"")).unwrap();
         let error = compile(&format!("manifest-{abi}"), SCHEMA, &[(ID, &path)]).unwrap_err();
-        assert!(error.contains(ID) && error.contains(&format!("ABI {abi}")) && error.contains("ABI 0.1") && error.contains(advice) && !error.contains("gone"), "{error}");
+        assert!(error.contains(ID) && error.contains(&format!("ABI {abi}")) && error.contains("ABI 0.2") && error.contains(advice) && !error.contains("gone"), "{error}");
     }
 }
 
@@ -152,22 +152,22 @@ fn a_manifest_of_another_abi_fails_before_any_library_loads() {
 fn a_manifest_that_disagrees_with_the_library_abi_fails() {
     let manifest = installed("", "0.0");
     let error = compile("disagree", SCHEMA, &[(ID, &manifest)]).unwrap_err();
-    assert!(error.contains(ID) && error.contains("the library reports ABI 0.1") && error.contains("the manifest says 0.0"), "{error}");
+    assert!(error.contains(ID) && error.contains("the library reports ABI 0.2") && error.contains("the manifest says 0.0"), "{error}");
 }
 
 #[test]
 fn a_manifest_that_disagrees_still_fails_when_the_library_is_already_loaded() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     compile("disagree-first", SCHEMA, &[(ID, &manifest)]).unwrap();
     let older = manifest.with_file_name("older.toml");
-    fs::write(&older, fs::read_to_string(&manifest).unwrap().replace("abi = \"0.1\"", "abi = \"0.0\"")).unwrap();
+    fs::write(&older, fs::read_to_string(&manifest).unwrap().replace("abi = \"0.2\"", "abi = \"0.0\"")).unwrap();
     let error = compile("disagree-loaded", SCHEMA, &[(ID, &older)]).unwrap_err();
-    assert!(error.contains("the library reports ABI 0.1") && error.contains("the manifest says 0.0"), "{error}");
+    assert!(error.contains("the library reports ABI 0.2") && error.contains("the manifest says 0.0"), "{error}");
 }
 
 #[test]
 fn lowering_a_lowered_schema_again_keeps_one_field() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     let mut ir = compile("again", SCHEMA, &[(ID, &manifest)]).unwrap();
     let artifact = orm_core::behavior::artifact();
     let plan = orm_core::loader::plan(&[(ID.to_owned(), manifest.clone())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests(), &artifact.passes).unwrap().unwrap();
@@ -191,7 +191,7 @@ fn unlowered() -> SchemaIr {
 // A compiled pass is a recording closure here: the artifact with the real feature passes is a `feature-check` build.
 #[test]
 fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
-    let manifest = installed("", "0.1");
+    let manifest = installed("", "0.2");
     let ordered = manifest.with_file_name("ordered.toml");
     fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replace("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n")).unwrap();
     let compiled: Manifest = toml::from_str(&format!(
