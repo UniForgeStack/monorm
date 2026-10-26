@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "orm"
 version = "0.1.0"
+authors = [{ name = "mh-alahdadi", email = "mhalah15@gmail.com" }]
 description = "Async Python ORM with a Rust core"
 readme = "README.md"
 license = { text = "MIT" }
