@@ -7,7 +7,6 @@ from typing import NamedTuple
 import pytest
 
 import orm
-from soft_delete_ext import loads_soft_delete
 from artifact_caps import artifact_capabilities, has_extension
 
 DATABASES = ["sqlite", "postgres"]
@@ -24,7 +23,7 @@ async def connect(dialect: str, source: str) -> tuple[orm.Database, dict]:
     if dialect == "sqlite":
         source = 'datasource db { provider = "sqlite" }\n' + source
     registry = orm.Registry()
-    models = loads_soft_delete(source, registry=registry)
+    models = orm.loads(source, registry=registry)
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
@@ -662,7 +661,7 @@ model Story {{
 def test_the_model_attribute_adds_the_field_with_its_default_or_given_name(tracking):
     if not has_extension(tracking.extension):
         pytest.skip(f"requires {tracking.extension}")
-    fields = lambda source: list(loads_soft_delete(source, registry=orm.Registry())["Story"]._meta.fields)
+    fields = lambda source: list(orm.loads(source, registry=orm.Registry())["Story"]._meta.fields)
     assert fields(tracking_schema(tracking.attribute)) == ["id", tracking.default]
     assert fields(tracking_schema(f'{tracking.attribute}("{tracking.custom}")')) == ["id", tracking.custom]
 
@@ -878,7 +877,7 @@ model Grandchild {{
 def test_a_tracking_attribute_on_a_base_reaches_each_concrete_child(tracking):
     if not has_extension(tracking.extension):
         pytest.skip(f"requires {tracking.extension}")
-    models = loads_soft_delete(inherited_schema(tracking.attribute), registry=orm.Registry())
+    models = orm.loads(inherited_schema(tracking.attribute), registry=orm.Registry())
     assert sorted(models) == ["Child", "Grandchild"]
     for name in models:
         assert tracking.default in models[name]._meta.fields

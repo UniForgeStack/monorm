@@ -1,8 +1,9 @@
 # Column-role extensions: `updated_at`, soft delete, optimistic locking
 
-Three build-time extensions give a column a role that the ORM keeps on writes.
+Three extension packages give a column a role that the ORM keeps on writes.
 Each one is a crate in `extensions/`; the host has no code for the roles, and the crate pushes neutral write records.
-Select the crate in the `orm-extension-build` configuration (see `build-time-extensions.md`).
+Install its Python package or its npm package (`orm-timestamps`, `orm-soft-delete`, `orm-locking`; `@orm/timestamps`, `@orm/soft-delete`, `@orm/locking`).
+`orm-extension-package package <crate dir> --out <dir>` builds them for the host platform (see `build-time-extensions.md`).
 
 | Crate | Extension id | Attribute |
 |---|---|---|
@@ -80,7 +81,7 @@ model Book {
   One field for each model.
 * `delete()` on a query set or an instance sends `UPDATE ... SET deleted_at = <now> WHERE ... AND deleted_at IS NULL`, never `DELETE`.
   The count and `RETURNING` are the rows that the call soft-deleted; rows that are already soft-deleted do not count.
-* The members below come from the soft-delete extension's generated code (`orm_ext/orm_soft_delete`, `orm-ext/orm-soft-delete`).
+* The members below come from the soft-delete extension's generated code (`orm_soft_delete`, `@orm/soft-delete`).
   A model gets them when it declares `@@soft_delete.deleted_at`; other models, and proxy models, do not.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.

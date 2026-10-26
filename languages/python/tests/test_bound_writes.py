@@ -6,7 +6,6 @@ import pytest
 
 import orm
 from blog.models import Post, User
-from soft_delete_ext import loads_soft_delete
 from artifact_caps import has_extension
 
 
@@ -95,7 +94,7 @@ SOURCE = (
 @pytest.fixture
 async def docs():
     registry = orm.Registry()
-    Doc = loads_soft_delete(SOURCE, registry=registry)["Doc"]
+    Doc = orm.loads(SOURCE, registry=registry)["Doc"]
     db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
     try:
         await db.drop_tables()

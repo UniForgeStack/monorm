@@ -22,7 +22,7 @@ def split_perm(perm: str) -> tuple[str, str]:
 def _active_model(name: str, registry: Registry | None = None) -> Any:
     """The model class for `name`: the model that overrides it (`@@inherit.override`), else `name` itself.
 
-    The app cannot import `orm_ext.orm_inherit.model_for`: `orm generate` writes that module into the consumer's project.
+    The app does not depend on the `orm-inherit` package, so it reads `model_overrides` itself.
     """
     from orm.ext import behavior_value
 

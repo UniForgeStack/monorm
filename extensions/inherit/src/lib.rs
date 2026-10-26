@@ -526,3 +526,6 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
     for d in ir.behavior.declarations.iter_mut().filter(|d| d.attribute.starts_with("inherit.")) { d.lowered = true; }
     Ok(())
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.inherit.expand", expand));

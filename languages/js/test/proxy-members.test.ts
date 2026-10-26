@@ -2,16 +2,15 @@
 // Runs only with an artifact that selects the proxy-models and soft-delete extensions.
 // Each `// E:` line of the typing use must fail and no other line may.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import ts from "typescript";
-import { connect, Registry } from "../src/index.js";
-import { native } from "../src/native.js";
+import { connect, loads, Registry } from "../src/index.js";
+import { main as cli } from "../src/cli.js";
 import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
-import { loadsSoftDelete } from "./soft-delete-ext.js";
+import { scratch } from "./scratch.js";
 
 const SCHEMA = `model Post {
   id         Int       @id
@@ -69,13 +68,12 @@ const EXPECTED = USE.split("\n").flatMap((line, i) => (line.includes("// E:") ? 
 const skip = !artifactCapabilities().includes("proxy-models") || !hasExtension("orm.soft-delete");
 
 test("a proxy has the soft-delete members and the query-set class of its root", { skip }, async () => {
-  const root = mkdtempSync(join(tmpdir(), "orm-proxy-members-"));
+  const root = scratch("orm-proxy-members-");
   writeFileSync(join(root, "schema.prisma"), SCHEMA);
-  writeFileSync(join(root, "package.json"), '{"type":"module"}');
   writeFileSync(join(root, "queries.ts"), QUERIES);
   writeFileSync(join(root, "use.ts"), USE);
   const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"];
-  assert.equal(await native().cli([...args, "--query-set", "Post=./queries.js#PostQueries"]), 0);
+  assert.equal(await cli([...args, "--query-set", "Post=./queries.js#PostQueries"]), 0);
   const generated = readFileSync(join(root, "models.ts"), "utf8");
   assert.match(generated, /useQuerySet\(Post, \(\) => _q0\.PostQueries\)/);
   assert.match(generated, /useQuerySet\(Draft, \(\(\) => _q0\.PostQueries\) as never\)/);
@@ -106,7 +104,7 @@ test("a proxy has the soft-delete members and the query-set class of its root", 
 });
 
 test("a proxy gets the soft-delete members at run time through the record of the extension", { skip }, async () => {
-  const models = (await loadsSoftDelete(SCHEMA, { registry: new Registry() })) as unknown as Record<string, { objects: Record<string, unknown> }>;
+  const models = (await loads(SCHEMA, { registry: new Registry() })) as unknown as Record<string, { objects: Record<string, unknown> }>;
   for (const member of ["allWithDeleted", "deletedOnly", "undelete", "hardDelete"]) {
     assert.equal(typeof models.Draft!.objects[member], "function", member);
     assert.equal(typeof models.Post!.objects[member], "function", member);
@@ -117,11 +115,11 @@ test("a proxy gets the soft-delete members at run time through the record of the
 const url = process.env["ORM_TEST_DATABASE_URL"] ?? "";
 
 test("an inherited query-set method returns rows of the proxy at run time", { skip: skip || !url }, async () => {
-  const root = mkdtempSync(join(tmpdir(), "orm-proxy-members-run-"));
+  const root = scratch("orm-proxy-members-run-");
   writeFileSync(join(root, "schema.prisma"), SCHEMA);
   writeFileSync(join(root, "queries.ts"), QUERIES);
   const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm", "--query-set", "Post=./queries.js#PostQueries"];
-  assert.equal(await native().cli(args), 0);
+  assert.equal(await cli(args), 0);
   const src = join(import.meta.dirname, "..", "src");
   const imports: Record<string, string> = { '"orm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"orm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
   const emit = (from: string, to: string) => {
@@ -134,7 +132,6 @@ test("an inherited query-set method returns rows of the proxy at run time", { sk
   };
   const out = join(root, "js");
   emit(root, out);
-  emit(join(root, "orm-ext", "orm-soft-delete"), join(out, "orm-ext", "orm-soft-delete"));
   // Bun runs every test file in one process, so the default registry already holds Post from another file.
   const modelsFile = join(out, "models.js");
   const isolated = readFileSync(modelsFile, "utf8").replace(/define\(SCHEMA(\)|, \{)/, (_, tail: string) => `define(SCHEMA, { registry: __registry${tail === ")" ? " })" : ","}`);

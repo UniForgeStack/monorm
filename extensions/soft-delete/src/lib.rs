@@ -490,3 +490,6 @@ mod tests {
         assert_eq!(deleted(&db, "SELECT count(*) FROM authors"), 1);
     }
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.soft-delete.fields", add_fields), ("orm.soft-delete.prepare", prepare));

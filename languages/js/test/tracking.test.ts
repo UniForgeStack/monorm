@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, of, Registry, scope, VersionConflict, type Database } from "../src/index.js";
-import { loadsSoftDelete } from "./soft-delete-ext.js";
 import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
 
 const capabilities = artifactCapabilities();
@@ -11,7 +10,7 @@ type Models = Record<string, { objects: any; [key: string]: any }>;
 
 async function open(dialect: string, source: string): Promise<[Database, Models]> {
   const registry = new Registry();
-  const models = await loadsSoftDelete((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + source, { registry }) as unknown as Models;
+  const models = await loads((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + source, { registry }) as unknown as Models;
   const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
   const db = await connect(url, { registry, default: false });
   await db.dropTables();
@@ -627,7 +626,7 @@ model Grandchild {
 }`;
 const trackingFields = async (source: string) => {
   const registry = new Registry();
-  const models = await loadsSoftDelete('datasource db { provider = "sqlite" }\n' + source, { registry }) as unknown as Models;
+  const models = await loads('datasource db { provider = "sqlite" }\n' + source, { registry }) as unknown as Models;
   const db = await connect("sqlite://:memory:", { registry, default: false });
   try {
     await db.createTables();

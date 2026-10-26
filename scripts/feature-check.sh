@@ -4,10 +4,10 @@
 #   ORM_TEST_DATABASE_URL=postgres://... scripts/feature-check.sh [artifact...]
 #
 # Artifacts: proxy-models query-defaults model-composition file-storage generic-relations
-# tracking (timestamps, soft-delete, locking) inherit all
-# (default: every one). Each artifact selects only extension crates; the manifests turn on
+# all (default: every one). Each artifact selects only extension crates; the manifests turn on
 # the host Cargo features, so no cargo command here passes --features.
-# The auth app (apps/auth) uses `inherit`: its Python and TypeScript tests run on each artifact that has it.
+# The timestamps, soft-delete, locking and inherit packages are installed in every environment,
+# so the auth app (apps/auth) and the inherit public scripts run on every artifact.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
 set -uo pipefail
 
@@ -19,7 +19,7 @@ export ORM_TEST_DATABASE_URL
 # Not CARGO_TARGET_DIR: sccache hashes every CARGO_* variable, and a per-checkout path would block cache hits.
 TARGET=$WORK/target
 mkdir -p "$WORK/.cargo" && printf '[build]\ntarget-dir = "%s"\n' "$TARGET" >"$WORK/.cargo/config.toml"
-ARTIFACTS=${*:-proxy-models query-defaults model-composition file-storage generic-relations tracking all}
+ARTIFACTS=${*:-proxy-models query-defaults model-composition file-storage generic-relations all}
 LOGS=$WORK/logs
 MATRIX=$WORK/matrix.txt
 case "$(uname -s)" in
@@ -35,16 +35,12 @@ dependency() {
     model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}' ;;
     file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}' ;;
     generic-relations) echo '"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}' ;;
-    tracking) echo '"timestamps":{"package":"orm-timestamps","path":"'"$ROOT"'/extensions/timestamps"},"soft_delete":{"package":"orm-soft-delete","path":"'"$ROOT"'/extensions/soft-delete"},"locking":{"package":"orm-locking","path":"'"$ROOT"'/extensions/locking"}' ;;
-    inherit) echo '"inherit":{"package":"orm-inherit","path":"'"$ROOT"'/extensions/inherit"}' ;;
     *) echo "unknown feature $1" >&2; return 1 ;;
   esac
 }
-FEATURES="proxy-models query-defaults model-composition file-storage generic-relations tracking inherit"
-# file-storage, tracking and inherit are extension artifacts with no host capability.
+FEATURES="proxy-models query-defaults model-composition file-storage generic-relations"
+# file-storage has no host capability.
 HOST_FEATURES=${FEATURES/file-storage /}
-HOST_FEATURES=${HOST_FEATURES/ tracking/}
-HOST_FEATURES=${HOST_FEATURES/ inherit/}
 features_of() { if [ "$1" = all ]; then echo "$FEATURES"; else echo "$1"; fi; }
 has() { case " $(features_of "$1") " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -68,7 +64,7 @@ uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-stora
 export PATH="$VENV/bin:$PATH"
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
-(cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
+ORM_PACKAGE_PYTHON="$PY" "$ROOT/scripts/install-extension-packages.sh" >"$LOGS/extension-packages.log" 2>&1 || { echo "extension package install failed"; exit 1; }
 # Storage imports orm through its package exports, which point at dist/.
 (cd "$ROOT/languages/js" && npm run -s build) >"$LOGS/npm-build.log" 2>&1 || { echo "npm build failed"; exit 1; }
 
@@ -92,7 +88,7 @@ build() {
 # The loaded artifacts report exactly the selected host features.
 capabilities() {
   local artifact=$1 dir=$WORK/$1 expected actual_py actual_node
-  expected=$(for f in $(features_of "$artifact"); do [ "$f" = file-storage ] || [ "$f" = tracking ] || [ "$f" = inherit ] || echo "$f"; done | sort | tr '\n' ' ' | sed 's/ $//')
+  expected=$(for f in $(features_of "$artifact"); do [ "$f" = file-storage ] || echo "$f"; done | sort | tr '\n' ' ' | sed 's/ $//')
   actual_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.native_artifact())['capabilities']) & set('$HOST_FEATURES'.split()))))")
   actual_node=$(node -e "const a = JSON.parse(require(process.argv[1]).nativeArtifact()); console.log(a.capabilities.filter(c => '$HOST_FEATURES'.split(' ').includes(c)).sort().join(' '))" "$dir/orm.node")
   # The embedded build record names the same Cargo features.
@@ -124,14 +120,12 @@ for artifact in $ARTIFACTS; do
     step "$artifact" query-defaults-disabled-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/query-defaults/tests/public/disabled.py"
     step "$artifact" query-defaults-disabled-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs"
   fi
-  if has "$artifact" inherit; then
-    step "$artifact" inherit-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/inherit/tests/public/python.py"
-    step "$artifact" inherit-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/inherit/tests/public/node.mjs"
-    # The app tests use the built `languages/js/dist` that the npm step above leaves.
-    step "$artifact" auth-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom sh -c "cd '$ROOT' && '$PY' -m pytest -q -p no:cacheprovider apps/auth/python/tests"
-    step "$artifact" auth-npm env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm install --no-audit --no-fund -s && npm test"
-    step "$artifact" auth-bun env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm run -s test:bun"
-  fi
+  step "$artifact" inherit-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" "$ROOT/extensions/inherit/tests/public/python.py"
+  step "$artifact" inherit-node env ORM_NATIVE="$dir/orm.node" node "$ROOT/extensions/inherit/tests/public/node.mjs"
+  # The app tests use the built `languages/js/dist` that the npm step above leaves.
+  step "$artifact" auth-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom sh -c "cd '$ROOT' && '$PY' -m pytest -q -p no:cacheprovider apps/auth/python/tests"
+  step "$artifact" auth-npm env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm install --no-audit --no-fund -s && npm test"
+  step "$artifact" auth-bun env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm run -s test:bun"
   if has "$artifact" file-storage; then
     # These tests import `orm.adapters`, which needs a native profile.
     step "$artifact" storage-python-unit env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" -m pytest -q -p no:cacheprovider "$ROOT/extensions/file-storage/integration/python/tests"

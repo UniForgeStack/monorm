@@ -111,9 +111,6 @@ build_all() {
   deps+=',"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}'
   deps+=',"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}'
   deps+=',"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}'
-  deps+=',"timestamps":{"package":"orm-timestamps","path":"'"$ROOT"'/extensions/timestamps"}'
-  deps+=',"soft_delete":{"package":"orm-soft-delete","path":"'"$ROOT"'/extensions/soft-delete"}'
-  deps+=',"locking":{"package":"orm-locking","path":"'"$ROOT"'/extensions/locking"}'
   rm -rf "$ALL" && mkdir -p "$ALL/py/orm_native_custom"
   printf '{"host":"%s","output":"%s/build","prepare_only":true,"bindings":["python","node"],"dependencies":{%s}}\n' \
     "$ROOT" "$ALL" "$deps" >"$ALL/config.json"

@@ -1416,7 +1416,7 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   Reads in the block go to a replica when the database has replicas: read in a
   transaction or with `.using("primary")` to see the last write of the previous holder.
 * Optimistic locking (version columns) is not in the core.
-  Select the `orm-locking` extension and add `@@locking.version` to the model; see `schema-extensions.md`.
+  Install the `orm-locking` package and add `@@locking.version` to the model; see `schema-extensions.md`.
 
 ### Read replicas
 

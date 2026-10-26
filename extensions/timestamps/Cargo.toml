@@ -13,45 +13,5 @@ serde_json = "1"
 orm-core = { path = "../../crates/core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
-[package.metadata.orm-extension]
-id = "orm.timestamps"
-version = "0.1.0"
-host_contract = 1
-schema_contract = 2
-languages = ["python", "typescript"]
-databases = ["postgres", "sqlite"]
-capabilities = ["schema-transformations", "physical-schema"]
-
-# Adds the field before the logical passes, so a proxy of the model copies it.
-[[package.metadata.orm-extension.passes]]
-id = "orm.timestamps.fields"
-phase = "declaration"
-rust = "crate::add_fields"
-after = ["orm.inherit.expand"]
-effects = ["models.timestamps", "storage.timestamps"]
-
-[[package.metadata.orm-extension.passes]]
-id = "orm.timestamps.prepare"
-phase = "behavior"
-rust = "crate::prepare"
-effects = ["behavior.write_assignments.timestamps", "storage.updated_at_triggers"]
-
-# `@@timestamps.updated_at("updated_at", map: "_updated_at", mode: "application", upsert: "pick")`: adds the field.
-[[package.metadata.orm-extension.attributes]]
-name = "timestamps.updated_at"
-target = "model"
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "string"
-[package.metadata.orm-extension.attributes.arguments.mode]
-kind = "string"
-[package.metadata.orm-extension.attributes.arguments.upsert]
-kind = "string"
-[package.metadata.orm-extension.attributes.arguments.map]
-kind = "string"
-
-# The field form; the pass rejects it with the model attribute to write instead.
-[[package.metadata.orm-extension.attributes]]
-name = "timestamps.updated_at"
-target = "field"
-[package.metadata.orm-extension.attributes.arguments.mode]
-kind = "string"
+[lib]
+crate-type = ["cdylib", "rlib"]

@@ -67,8 +67,8 @@ A manifest capability in `HOST_FEATURE_CAPABILITIES` (`query-defaults`, `model-c
 `file-storage` is not one: it has no host code and only requires `async-field-adapter.v1`.
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
 The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
-Select the extension crates.
-`scripts/feature-check.sh` builds one artifact per host feature, one `tracking` artifact with the three column-role extensions, one `inherit` artifact, and one with all of them, and runs every suite on each.
+These four are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
+`scripts/feature-check.sh` builds one artifact per host feature and one with all of them, installs the four packages in every environment, and runs every suite on each.
 
 Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
 For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
@@ -159,14 +159,15 @@ A bound query set mixin reads the objects of a bound write with these helpers (t
 ### The full profile
 
 `languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.
-They select the nine first-party extensions.
+They select the five static first-party extensions.
+The timestamps, soft-delete, locking and inherit extensions are installable packages, not part of the profile.
 They set `prepare_only` and `binding_features` to `["profile-full"]`.
 `profile-full` has the features of `profile-tooling`: the backends, `cli`, both generators and `reference-loading`.
 It also gives the profile its name in `profile_metadata()`.
 `build-full-wheel.py` and `build-node-profile.mjs full` run the steps above.
 The Python script then runs `maturin build --release` in the emitted workspace.
 The Node script runs `cargo build -p orm-node` there.
-[Static native profiles](optional-packaging.md#the-full-profile) has the list of the nine extensions, the install lines and the rest of the contract.
+[Static native profiles](optional-packaging.md#the-full-profile) has the list of the five extensions, the install lines and the rest of the contract.
 
 ## Application source modules
 
@@ -341,3 +342,11 @@ Each runtime module exports `MANIFEST_HASH` (Python) or `manifestHash` (TypeScri
 
 TypeScript runtime packages and their dependencies must be synchronously loadable, without top-level await. Node requires 20.19+ on the 20.x line or 22.12+ on later lines; Bun is also supported. Prefer one runtime format. Synchronous loading resolves the package's import entry before loading it, so a dual package uses the same module and class identities as generated ESM imports.
 `tests/outside-extension/` is a library in its own workspace.
+
+## Installable packages
+
+`orm-extension-package package <crate dir> --out <dir>` builds one extension crate for the host platform.
+The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `orm-extension.toml` with `abi` and `library`.
+The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
+Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.
+`scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking and inherit packages and installs them into `.venv` and `languages/js`.

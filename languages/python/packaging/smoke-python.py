@@ -20,8 +20,7 @@ assert _again is _native
 os.environ["ORM_PROFILE"] = _selector
 assert hasattr(_native, "cli") == metadata["capabilities"]["cli"]
 FULL_EXTENSIONS = {
-    "composition", "file-storage", "orm.generic", "orm.inherit", "orm.locking",
-    "orm.proxy", "orm.query-defaults", "orm.soft-delete", "orm.timestamps",
+    "composition", "file-storage", "orm.generic", "orm.proxy", "orm.query-defaults",
 }
 extensions = set(json.loads(_native.native_artifact())["extensions"])
 assert extensions == (FULL_EXTENSIONS if _selector == "full" else set()), extensions

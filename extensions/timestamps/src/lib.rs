@@ -364,3 +364,6 @@ mod tests {
         assert!(value.len() == 23 && value.as_bytes()[19] == b'.', "{value}");
     }
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.timestamps.fields", add_fields), ("orm.timestamps.prepare", prepare));

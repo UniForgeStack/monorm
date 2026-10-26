@@ -872,6 +872,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "orm-extension-package"
+version = "0.1.0"
+dependencies = [
+ "orm-contracts",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "orm-generic"
 version = "0.1.0"
 dependencies = [

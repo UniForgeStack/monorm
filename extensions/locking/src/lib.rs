@@ -200,3 +200,6 @@ mod tests {
         assert_eq!(prepare(&mut ir).unwrap_err(), "schema.prisma:3:3: @locking.version: Post has more than one version field");
     }
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.locking.fields", add_fields), ("orm.locking.prepare", prepare));

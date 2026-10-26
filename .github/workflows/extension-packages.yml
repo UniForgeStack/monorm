@@ -1,0 +1,43 @@
+name: Extension packages
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  installed-packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+      PYTHON: python3.14
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python maturin
+      - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: scripts/check-extension-packages.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-package-consumers
+          path: target/package-seam-*/js
