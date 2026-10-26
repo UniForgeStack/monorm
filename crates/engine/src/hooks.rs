@@ -1,6 +1,7 @@
 //! Change-set hooks at the write seams. Each seam reads `Model.hooks` once per statement and
 //! runs the transforms, the validators and the record validators of `HookPlan` on the supplied values.
 use crate::error::{Error, Result};
+use crate::params::Params;
 use orm_contracts::abi::{Arg, Context, Value as Abi};
 use orm_core::{hooks::{HookPlan, HookRef}, schema::Model};
 use sea_query::Value;
@@ -32,11 +33,11 @@ impl Slots for [Option<Value>] {
 const RESTRICTED: &str = "native validated fields require supplied values; database defaults and expressions need a constraint or explicit transaction strategy";
 const PARTIAL: &str = "record validation requires all non-null supplied dependencies; use an explicit transaction for partial records";
 
-fn to_abi(model: &Model, position: usize, value: &Value) -> Result<Abi> {
+fn abi_of(value: &Value) -> Option<Abi> {
     use chrono::{DateTime, NaiveDate};
     let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
     let micros = |t: DateTime<chrono::Utc>| Abi::DateTime(t.timestamp_micros());
-    Ok(match value {
+    Some(match value {
         Value::Bool(v) => v.map_or(Abi::Null, Abi::Bool),
         Value::TinyInt(v) => v.map_or(Abi::Null, |v| Abi::Int(v.into())),
         Value::SmallInt(v) => v.map_or(Abi::Null, |v| Abi::Int(v.into())),
@@ -53,8 +54,36 @@ fn to_abi(model: &Model, position: usize, value: &Value) -> Result<Abi> {
         Value::ChronoDateTimeUtc(v) => v.map_or(Abi::Null, micros),
         Value::ChronoDateTimeWithTimeZone(v) => v.map_or(Abi::Null, |v| micros(v.to_utc())),
         Value::ChronoDateTime(v) => v.map_or(Abi::Null, |v| micros(v.and_utc())),
-        _ => return Err(Error::query(format!("{}.{}: hooks do not support this field type", model.ir.name, model.fields()[position].name))),
+        _ => return None,
     })
+}
+
+fn to_abi(model: &Model, position: usize, value: &Value) -> Result<Abi> {
+    abi_of(value).ok_or_else(|| Error::query(format!("{}.{}: hooks do not support this field type", model.ir.name, model.fields()[position].name)))
+}
+
+/// The request context of one statement: the scope values for a hook that reads them, and nothing for the rest.
+pub struct Contexts { full: Option<Context>, empty: Context }
+
+impl Contexts {
+    pub fn new(plan: &HookPlan, params: &dyn Params) -> Result<Self> {
+        let full = if plan.reads_context() { Some(context(params)?) } else { None };
+        Ok(Self { full, empty: Context::default() })
+    }
+
+    pub fn of(&self, hook: &HookRef) -> &Context {
+        match (&self.full, hook.reads_context()) { (Some(full), true) => full, _ => &self.empty }
+    }
+}
+
+fn context(params: &dyn Params) -> Result<Context> {
+    let mut values = Vec::new();
+    for (name, i) in params.scope_values() {
+        let value = params.value(i, None)?;
+        let value = abi_of(&value).ok_or_else(|| Error::query(format!("scope.{name}: hooks do not support this value type")))?;
+        values.push(Arg { name, value });
+    }
+    Ok(Context { values })
 }
 
 /// The database value for what a hook returned. The original value gives the type.
@@ -97,13 +126,13 @@ fn failure(model: &Model, position: Option<usize>, hook: &HookRef, message: Stri
 }
 
 /// Runs the hooks of one field on `value`.
-fn field(model: &Model, plan: &HookPlan, position: usize, value: &mut Value, context: &Context) -> Result<()> {
+fn field(model: &Model, plan: &HookPlan, position: usize, value: &mut Value, contexts: &Contexts) -> Result<()> {
     let mut abi = to_abi(model, position, value)?;
     for (_, hook) in plan.transforms.iter().filter(|(p, _)| *p == position) {
-        hook.rewrite(&mut abi, context).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.rewrite(&mut abi, contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
     }
     for (_, hook) in plan.validators.iter().filter(|(p, _)| *p == position) {
-        hook.check(&abi, context).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.check(&abi, contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
     }
     if !plan.transforms.iter().any(|(p, _)| *p == position) { return Ok(()); }
     *value = from_abi(model, position, value, abi)?;
@@ -112,12 +141,12 @@ fn field(model: &Model, plan: &HookPlan, position: usize, value: &mut Value, con
 
 /// Runs the hooks on one supplied row. `skip` is the number of leading slots that no hook reads
 /// (the key slot of `update_many`).
-fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>], row: &mut R, skip: usize, context: &Context) -> Result<()> {
+fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>], row: &mut R, skip: usize, contexts: &Contexts) -> Result<()> {
     let slot = |p: usize| map.get(p).copied().flatten().filter(|s| *s >= skip);
     for &p in plan.required.iter().filter(|p| plan.watches(**p)) {
         let Some(s) = slot(p) else { continue };
         match row.slot(s) {
-            Some(value) => field(model, plan, p, value, context)?,
+            Some(value) => field(model, plan, p, value, contexts)?,
             None => return Err(Error::query(RESTRICTED)),
         }
     }
@@ -128,16 +157,16 @@ fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>],
             let value = slot(p).and_then(|s| row.slot(s)).ok_or_else(|| Error::query(PARTIAL))?;
             args.push(Arg { name: model.fields()[p].name.clone(), value: to_abi(model, p, value)? });
         }
-        record.hook.check_record(&args, context).map_err(|m| failure(model, None, &record.hook, m))?;
+        record.hook.check_record(&args, contexts.of(&record.hook)).map_err(|m| failure(model, None, &record.hook, m))?;
     }
     Ok(())
 }
 
 /// `SET` values in `set` order, with `None` for a database expression.
-pub fn update_set(model: &Model, positions: &[usize], values: &mut [Option<Value>]) -> Result<()> {
+pub fn update_set(model: &Model, positions: &[usize], values: &mut [Option<Value>], params: &dyn Params) -> Result<()> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
     let map = input_map(model.fields().len(), positions)?;
-    row(model, plan, &map, values, 0, &Context::default())
+    row(model, plan, &map, values, 0, &Contexts::new(plan, params)?)
 }
 
 /// The statement-level checks of an insert: the supplied fields, and the upsert.
@@ -157,16 +186,27 @@ fn insert_fields(model: &Model, plan: &HookPlan, map: &[Option<usize>], upsert: 
 }
 
 /// Runs the hooks on the rows of an insert.
-pub fn insert_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Option<Value>>], upsert: bool) -> Result<()> {
+pub fn insert_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Option<Value>>], upsert: bool, params: &dyn Params) -> Result<()> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
     insert_fields(model, plan, map, upsert)?;
-    let context = Context::default();
-    rows.iter_mut().try_for_each(|r| row(model, plan, map, r.as_mut_slice(), 0, &context))
+    let contexts = Contexts::new(plan, params)?;
+    rows.iter_mut().try_for_each(|r| row(model, plan, map, r.as_mut_slice(), 0, &contexts))
 }
 
 /// Runs the hooks on the rows of an `update_many`; slot 0 is the key.
-pub fn update_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Value>]) -> Result<()> {
+pub fn update_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Value>], params: &dyn Params) -> Result<()> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
-    let context = Context::default();
-    rows.iter_mut().try_for_each(|r| row(model, plan, map, r.as_mut_slice(), 1, &context))
+    let contexts = Contexts::new(plan, params)?;
+    rows.iter_mut().try_for_each(|r| row(model, plan, map, r.as_mut_slice(), 1, &contexts))
+}
+
+/// The value that the point-4 hook of field `position` gives to a write. `None` when the model has no such hook.
+pub fn assigned(model: &Model, position: usize, params: &dyn Params) -> Result<Option<Value>> {
+    let Some(plan) = model.hooks.as_deref() else { return Ok(None) };
+    let Some(hook) = plan.assigner(position) else { return Ok(None) };
+    let contexts = Contexts::new(plan, params)?;
+    let field = &model.fields()[position];
+    let out = hook.produce(contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
+    let seed = crate::params::null_of(Some(field.value_type()));
+    from_abi(model, position, &seed, out).map(Some)
 }

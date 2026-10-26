@@ -107,7 +107,7 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
     let stamp = &ir.behavior.packages[ID];
-    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.tag".to_owned()].as_slice(), ["outside.tag".to_owned()].as_slice()));
+    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.tag".to_owned(), "acme.outside.guard".to_owned()].as_slice(), ["outside.tag".to_owned(), "outside.guard".to_owned()].as_slice()));
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn unlowered() -> SchemaIr {
 fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     let manifest = installed("", "0.2");
     let ordered = manifest.with_file_name("ordered.toml");
-    fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replace("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n")).unwrap();
+    fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replacen("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n", 1)).unwrap();
     let compiled: Manifest = toml::from_str(&format!(
         "id = \"acme.static\"\nversion = \"1.0.0\"\nhost_contract = \"{HOST_CONTRACT_VERSION}\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
          languages = [\"python\"]\ndatabases = [\"postgres\"]\n\
@@ -246,7 +246,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     assert_eq!(*seen.borrow(), [("acme.static.prep".to_owned(), false), ("acme.static.late".to_owned(), true)]);
     let behavior = &ir.behavior;
     assert_eq!(behavior.completed_passes, order);
-    assert_eq!(behavior.packages[ID].passes, ["acme.outside.tag"]);
+    assert_eq!(behavior.packages[ID].passes, ["acme.outside.tag", "acme.outside.guard"]);
     assert_eq!(behavior.extensions.get("acme.static").map(String::as_str), Some("1.0.0"));
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));
@@ -491,4 +491,45 @@ fn a_library_with_the_wrong_abi_fails_define_with_both_versions() {
     let manifest = installed("abi-newer", "0.2");
     let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("abi");
     assert!(error.contains(ID) && error.contains("ABI 0.3") && error.contains("ABI 0.2"), "{error}");
+}
+
+// Hook 4: a point-4 binding plus a write assignment give a field the value of a hook on update.
+
+fn actor_ir(binding_ok: bool) -> SchemaIr {
+    let mut hook = binding(4, "tag", "acme.outside.actor");
+    hook.reads_context = true;
+    let mut ir = hooked(if binding_ok { vec![hook] } else { vec![] }, serde_json::Value::Null);
+    ir.behavior.write_assignments.push(orm_contracts::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![orm_contracts::writes::WriteKind::Update],
+        value: orm_contracts::writes::AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: Default::default(),
+    });
+    ir
+}
+
+#[test]
+fn a_point_four_binding_resolves_into_the_assign_list_and_reads_the_context() {
+    let manifest = installed("", "0.2");
+    let schema = orm_core::schema::Schema::from_ir_with_packages(actor_ir(true), &packages(&manifest)).unwrap();
+    let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
+    assert_eq!((plan.assign.len(), plan.no_upsert, plan.reads_context()), (1, false, true));
+    let hook = plan.assigner(1).expect("the tag field has a hook");
+    let context = Context { values: vec![arg("user", text("ada"))] };
+    assert_eq!(hook.produce(&context), Ok(text("ada")));
+    assert!(hook.produce(&Context::default()).unwrap_err().contains("no user in the request scope"));
+}
+
+#[test]
+fn a_hook_assignment_without_its_point_four_binding_fails_define() {
+    let manifest = installed("", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(actor_ir(false), &packages(&manifest)).err().expect("no binding");
+    assert!(error.contains("Post.tag") && error.contains("acme.outside.actor") && error.contains("no point-4 binding"), "{error}");
+}
+
+#[test]
+fn a_point_four_hook_that_returns_the_wrong_type_fails_define() {
+    let manifest = installed("", "0.2");
+    let mut ir = actor_ir(true);
+    ir.models[0].fields[1] = FieldIr::plain("tag", ColType::Int);
+    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).err().expect("type");
+    assert!(error.contains("Post.tag") && error.contains("acme.outside.actor"), "{error}");
 }

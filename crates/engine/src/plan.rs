@@ -3089,7 +3089,7 @@ impl<'s> Planner<'s> {
             let f = &root.fields()[position];
             values.push(if let Expr::Param { i } = &a.value { Some(self.params.value(self.param(*i)?, Some(f.value_type()))?) } else { None });
         }
-        crate::hooks::update_set(root, &positions, &mut values)?;
+        crate::hooks::update_set(root, &positions, &mut values, self.params)?;
         set.iter().zip(values).map(|(a, value)| {
             let f = root.field(&a.field).map_err(query_err)?;
             match value { Some(value) => Ok(bind(value, Some(f))), None => self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) }) }
@@ -3216,7 +3216,7 @@ impl<'s> Planner<'s> {
         for (column, v) in nested {
             stmt.value(column.to_owned(), v);
         }
-        for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name)) {
+        for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name), self.params)? {
             stmt.value(column.to_owned(), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
@@ -3246,7 +3246,7 @@ impl<'s> Planner<'s> {
         let mut stmt = Query::update();
         stmt.table(Alias::new(root.table()));
         stmt.value(Alias::new(&field.column), bind(crate::client_default::now(field.ty), Some(field)));
-        for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false) {
+        for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false, self.params)? {
             stmt.value(Alias::new(column), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
@@ -3797,7 +3797,7 @@ pub fn plan_insert(
         if positions.iter().any(|p| m.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
         if m.hooks.is_some() {
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
-            crate::hooks::insert_rows(m, &map, &mut rows, on_conflict.is_some())?;
+            crate::hooks::insert_rows(m, &map, &mut rows, on_conflict.is_some(), params)?;
         }
         rows
     };
@@ -3890,7 +3890,7 @@ pub fn plan_insert(
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
                     clause.value(Alias::new(&f.column), v);
                 }
-                for (column, expr) in maintained(m, AssignKind::Upsert, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name)) {
+                for (column, expr) in maintained(m, AssignKind::Upsert, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name), planner.params)? {
                     clause.value(Alias::new(column), expr);
                 }
                 clause.to_owned()
@@ -3981,7 +3981,7 @@ pub fn plan_update_many(
                 _ => stmt.and_where(row_in(target.dialect, key_cols.clone(), chunk.iter().map(|r| r.iter().zip(&cols).take(width).map(|(v, c)| bind(v.clone(), Some(c))).collect()).collect())),
             };
         }
-        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name)) {
+        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name), params)? {
             stmt.value(Alias::new(column), v);
         }
         for w in &where_ {
@@ -4000,18 +4000,23 @@ pub fn plan_update_many(
 
 /// Assignments that extensions registered for `kind` and the caller does not set: the current
 /// time or `column + 1`.
-pub(crate) fn maintained(m: &Model, kind: AssignKind, is_set: impl Fn(&str) -> bool) -> Vec<(&str, SExpr)> {
+pub(crate) fn maintained<'m>(m: &'m Model, kind: AssignKind, is_set: impl Fn(&str) -> bool, params: &dyn Params) -> Result<Vec<(&'m str, SExpr)>> {
     let mut out = vec![];
     for a in m.assignments.iter().filter(|a| a.applies_to(kind)) {
         let f = &m.fields()[a.field];
         if is_set(&f.name) { continue; }
-        let v = match a.value {
+        let v = match &a.value {
             AssignValue::Now => bind(crate::client_default::now(f.ty), Some(f)),
             AssignValue::Increment => col(m.table(), &f.column).add(1),
+            AssignValue::Hook { export } => {
+                let value = crate::hooks::assigned(m, a.field, params)?
+                    .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
+                bind(value, Some(f))
+            }
         };
         out.push((f.column.as_str(), v));
     }
-    out
+    Ok(out)
 }
 
 /// An expression assigned to field `f`: through its `write_sql` template, if any.

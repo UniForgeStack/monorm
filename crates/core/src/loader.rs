@@ -331,7 +331,7 @@ impl Native {
 
 /// An opened library of a manifest that declares `exports`: its hooks and its state.
 #[derive(Clone)]
-pub struct Library { native: Arc<Native>, id: String }
+pub struct Library { native: Arc<Native>, id: String, exports: Vec<orm_contracts::extension::Export> }
 
 /// The state that `orm_ext_init` returned. Dropping it calls `orm_ext_drop_state` once.
 pub struct State { native: Arc<Native>, id: String, raw: *mut c_void }
@@ -347,7 +347,7 @@ impl Plan {
     pub fn library(&self, id: &str) -> Result<Library, String> {
         let d = self.dynamic.iter().find(|d| d.manifest.id == id).ok_or_else(|| format!("extension {id} is not a selected library"))?;
         if d.manifest.exports.is_empty() { return Err(no_exports(id)); }
-        Ok(Library { native: open(d)?, id: id.to_owned() })
+        Ok(Library { native: open(d)?, id: id.to_owned(), exports: d.manifest.exports.clone() })
     }
 }
 
@@ -357,10 +357,13 @@ pub fn open_package(id: &str, dir: &Path) -> Result<Library, String> {
     let d = read_manifest(id, &dir.join(MANIFEST_FILE))?;
     check_library(&d)?;
     if d.manifest.exports.is_empty() { return Err(no_exports(id)); }
-    Ok(Library { native: open(&d)?, id: id.to_owned() })
+    Ok(Library { native: open(&d)?, id: id.to_owned(), exports: d.manifest.exports.clone() })
 }
 
 impl Library {
+    /// The manifest entry of the export `id`.
+    pub fn export(&self, id: &str) -> Option<&orm_contracts::extension::Export> { self.exports.iter().find(|e| e.id == id) }
+
     /// The names of the hooks of the library, in table order.
     pub fn hook_names(&self) -> Result<Vec<&str>, String> { Ok(self.native.symbols(&self.id)?.hooks.iter().map(|(n, _)| n.as_str()).collect()) }
 

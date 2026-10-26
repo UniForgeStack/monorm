@@ -23,6 +23,43 @@ fn tag(ir: &mut SchemaIr) -> Result<(), String> {
     Ok(())
 }
 
+const GUARD: &str = "outside.guard";
+const SOURCE: &str = "acme.outside";
+
+/// `@@outside.guard` binds the `acme.outside.*` hooks to a model that has the fields `text`, `start`, `end`, `shop_id` and `updated_by`:
+/// trim and non-empty on `text`, `start < end`, the request `user` as `updated_by` on update, and the default filter `shop_id == scope.shop`.
+fn guard(ir: &mut SchemaIr) -> Result<(), String> {
+    use orm_contracts::{extension::{HookBinding, ReadDefault}, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
+    let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == GUARD).cloned().collect();
+    for d in declarations {
+        let model = d.model.clone();
+        let m = ir.models.iter().find(|m| m.name == model).ok_or_else(|| format!("unknown model {model}"))?;
+        for name in ["text", "start", "end", "shop_id", "updated_by"] {
+            if !m.fields.iter().any(|f| f.name == name) { return Err(format!("@@{GUARD} on {model}: the model needs a field {name}")); }
+        }
+        let bind = |point: u8, field: Option<&str>, export: &str, dependencies: &[&str], reads_context: bool| HookBinding {
+            source: SOURCE.into(), point, model: model.clone(), field: field.map(Into::into), export: export.into(),
+            dependencies: dependencies.iter().map(|s| (*s).into()).collect(), reads_context,
+        };
+        ir.behavior.hooks.extend([
+            bind(1, Some("text"), "acme.outside.trim", &[], false),
+            bind(2, Some("text"), "acme.outside.nonempty", &[], false),
+            bind(3, None, "acme.outside.ordered", &["start", "end"], false),
+            bind(4, Some("updated_by"), "acme.outside.actor", &[], true),
+        ]);
+        ir.behavior.write_assignments.push(WriteAssignment {
+            source: SOURCE.into(), model: model.clone(), field: "updated_by".into(), on: vec![WriteKind::Update],
+            value: AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: UpsertDefault::Drop,
+        });
+        ir.behavior.read_defaults.push(ReadDefault {
+            source: SOURCE.into(), name: "tenant".into(), model,
+            filter: Some(serde_json::json!({"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "shop_id"}, "r": {"t": "scope", "name": "shop"}})),
+            ..ReadDefault::default()
+        });
+    }
+    Ok(())
+}
+
 /// The count of states that `drop_state` has dropped, which `outside.drops` returns.
 static DROPS: AtomicU64 = AtomicU64::new(0);
 
@@ -57,6 +94,22 @@ fn context(_: &State, _: &[Arg], ctx: &Context) -> Result<Value, String> {
     let tenant = match ctx.get("tenant") { Some(Value::Text(t)) => serde_json::Value::String(t.clone()), _ => serde_json::Value::Null };
     Ok(Value::Json(serde_json::json!({"tenant": tenant, "n": ctx.values.len()}).to_string()))
 }
+fn trim(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Text(text(args, "value")?.trim().to_owned())) }
+fn nonempty(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
+    if text(args, "value")?.is_empty() { Err("must not be empty".into()) } else { Ok(Value::Null) }
+}
+/// A record rule over the fields `start` and `end`.
+fn ordered(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
+    match (one(args, "start")?, one(args, "end")?) {
+        (Value::Int(s), Value::Int(e)) if s < e => Ok(Value::Null),
+        (Value::Int(s), Value::Int(e)) => Err(format!("start {s} must be before end {e}")),
+        (s, e) => Err(format!("start and end must be integers, got {s:?} and {e:?}")),
+    }
+}
+/// A write value: the `user` of the request scope.
+fn actor(_: &State, _: &[Arg], ctx: &Context) -> Result<Value, String> {
+    match ctx.get("user") { Some(Value::Text(user)) => Ok(Value::Text(user.clone())), _ => Err("no user in the request scope".into()) }
+}
 fn drops(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Int(DROPS.load(Ordering::SeqCst) as i64)) }
 fn fail(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Err("the hook failed".into()) }
 fn explode(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { panic!("the hook panicked") }
@@ -77,9 +130,11 @@ macro_rules! export {
             init = init;
             hooks {
                 "outside.prefix" => prefix, "outside.audit" => audit, "outside.context" => context, "outside.drops" => drops,
+                "acme.outside.trim" => trim, "acme.outside.nonempty" => nonempty, "acme.outside.ordered" => ordered, "acme.outside.actor" => actor,
                 "outside.fail" => fail, "outside.panic" => explode, "outside.echo" => echo, "outside.add" => add,
             };
-            ("acme.outside.tag", tag)
+            ("acme.outside.tag", tag),
+            ("acme.outside.guard", guard)
         }
     };
 }
@@ -104,7 +159,7 @@ mod slice_one {
     /// Called by the ORM loader with readable ranges and a writable `out`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
-        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn)];
+        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.guard", super::guard as PassFn)];
         // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
         unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
     }

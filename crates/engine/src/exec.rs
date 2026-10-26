@@ -621,7 +621,7 @@ pub fn plan_update_many(
         if positions.iter().skip(1).any(|p| m.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
         if m.hooks.is_some() {
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
-            crate::hooks::update_rows(m, &map, &mut rows)?;
+            crate::hooks::update_rows(m, &map, &mut rows, params)?;
         }
         rows
     };

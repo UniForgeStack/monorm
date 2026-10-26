@@ -139,7 +139,7 @@ pub fn prepare_insert(
     let mut rows = rows;
     if logical.hooks.is_some() {
         let map = crate::hooks::input_map(logical.fields().len(), &positions)?;
-        crate::hooks::insert_rows(logical, &map, &mut rows, false)?;
+        crate::hooks::insert_rows(logical, &map, &mut rows, false, &crate::params::NoParams)?;
     }
     let mut chain = vec![logical.owner];
     chain.extend(owner_chain(schema, logical.owner).iter().map(|l| l.parent));

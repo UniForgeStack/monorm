@@ -58,6 +58,14 @@ impl HookRef {
         }
     }
 
+    /// The value of a write assignment (point 4); the hook takes no argument.
+    pub fn produce(&self, context: &Context) -> Result<Value, String> {
+        match self {
+            Self::Static(_) => Err("a static function cannot assign a value".into()),
+            Self::Abi { state, export, .. } => state.call(export, &[], context),
+        }
+    }
+
     /// Checks a record: one argument for each dependency.
     pub fn check_record(&self, args: &[Arg], context: &Context) -> Result<(), String> {
         match self {
@@ -81,6 +89,8 @@ pub struct HookPlan {
     pub transforms: Vec<(usize, HookRef)>,
     pub validators: Vec<(usize, HookRef)>,
     pub records: Vec<RecordHook>,
+    /// The hook that gives the value of a field on update, by field position (point 4).
+    pub assign: Vec<(usize, HookRef)>,
     /// Positions of fields that must be supplied on insert, and cannot be a database expression.
     pub required: Vec<usize>,
     /// The model rejects an upsert, because a conflict outcome skips the hooks.
@@ -90,14 +100,23 @@ pub struct HookPlan {
 impl HookPlan {
     /// Fills `required` and `no_upsert` from the hooks; `None` for a plan without any change-set hook.
     pub fn finish(mut self) -> Option<Box<HookPlan>> {
-        if self.transforms.is_empty() && self.validators.is_empty() && self.records.is_empty() { return None; }
+        let change_set = !(self.transforms.is_empty() && self.validators.is_empty() && self.records.is_empty());
+        if !change_set && self.assign.is_empty() { return None; }
         let mut required: Vec<usize> = self.transforms.iter().chain(&self.validators).map(|(p, _)| *p).chain(self.records.iter().flat_map(|r| r.positions.iter().copied())).collect();
         required.sort_unstable();
         required.dedup();
         self.required = required;
-        self.no_upsert = true;
+        self.no_upsert = change_set;
         Some(Box::new(self))
     }
+
+    /// True when a hook of the plan reads the request context.
+    pub fn reads_context(&self) -> bool {
+        self.transforms.iter().chain(&self.validators).chain(&self.assign).any(|(_, h)| h.reads_context()) || self.records.iter().any(|r| r.hook.reads_context())
+    }
+
+    /// The hook that assigns `position`.
+    pub fn assigner(&self, position: usize) -> Option<&HookRef> { self.assign.iter().find(|(p, _)| *p == position).map(|(_, h)| h) }
 
     /// True when a transform or validator watches `position`.
     pub fn watches(&self, position: usize) -> bool {
@@ -109,9 +128,9 @@ impl HookPlan {
 /// `extension_data[id]`, and resolves each binding into the `HookPlan` of its model. `packages` maps an extension id
 /// to the directory of its installed package. Any failure fails `define()`.
 pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requirements, packages: &BTreeMap<String, PathBuf>) -> Result<(), String> {
-    let mut states: BTreeMap<&str, (Arc<State>, Vec<String>)> = BTreeMap::new();
+    let mut states: BTreeMap<&str, (Arc<State>, Vec<String>, crate::loader::Library)> = BTreeMap::new();
     let mut plans: BTreeMap<usize, HookPlan> = BTreeMap::new();
-    for binding in r.hooks.iter().filter(|b| (1..=3).contains(&b.point) && r.packages.contains_key(&b.source)) {
+    for binding in r.hooks.iter().filter(|b| (1..=4).contains(&b.point) && r.packages.contains_key(&b.source)) {
         let id = binding.source.as_str();
         if !states.contains_key(id) {
             let dir = packages.get(id).ok_or_else(|| format!("extension {id}: the schema binds its hooks, but no package directory was given; install the package and pass it to `define()`"))?;
@@ -119,9 +138,9 @@ pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requiremen
             let names: Vec<String> = library.hook_names()?.into_iter().map(str::to_owned).collect();
             let data = r.extension_data.get(id).unwrap_or(&serde_json::Value::Null);
             let state = library.init(data)?;
-            states.insert(id, (Arc::new(state), names));
+            states.insert(id, (Arc::new(state), names, library));
         }
-        let (state, names) = &states[id];
+        let (state, names, library) = &states[id];
         let at = match &binding.field { Some(f) => format!("{}.{f}", binding.model), None => binding.model.clone() };
         if !names.contains(&binding.export) {
             return Err(format!("{at}: extension {id} has no hook {}; fix the binding or rebuild the package", binding.export));
@@ -133,6 +152,17 @@ pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requiremen
         match (binding.point, &binding.field) {
             (1, Some(f)) => plan.transforms.push((position(f)?, hook)),
             (2, Some(f)) => plan.validators.push((position(f)?, hook)),
+            (4, Some(f)) => {
+                let p = position(f)?;
+                let field = &models[m].fields()[p];
+                let output = library.export(&binding.export).and_then(|e| e.point.zip(e.output));
+                match output {
+                    Some((4, ty)) if orm_contracts::extension::same_value_type(ty, field.ty) => {}
+                    Some((4, ty)) => return Err(format!("{at}: hook {} returns {ty:?}, but the field is {:?}; rebuild the package or fix the binding", binding.export, field.ty)),
+                    _ => return Err(format!("{at}: hook {} is not a point-4 export with an output type; rebuild the package or fix the binding", binding.export)),
+                }
+                plan.assign.push((p, hook));
+            }
             (3, None) => {
                 if binding.dependencies.is_empty() { return Err(format!("{at}: record validator {} names no dependencies", binding.export)); }
                 let positions = binding.dependencies.iter().map(|d| position(d)).collect::<Result<Vec<_>, _>>()?;
