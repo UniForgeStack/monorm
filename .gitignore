@@ -25,3 +25,4 @@ build/
 .pytest_cache/
 .test-artifacts/
 apps/auth/typescript/dist/
+.DS_Store

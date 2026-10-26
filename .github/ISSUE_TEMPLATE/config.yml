@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/UniForgeStack/monorm/blob/main/docs/README.md
+    about: Read the docs before you open an issue.
+  - name: Security problem
+    url: https://github.com/UniForgeStack/monorm/security/policy
+    about: Report a vulnerability in private. Do not open a public issue.
