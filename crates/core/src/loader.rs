@@ -1,7 +1,7 @@
 //! Extensions that ship their passes as native libraries: select, check, load and run them.
 //! It names no extension. The passes of libraries and the passes compiled into the artifact run in one order.
 use sha2::{Digest, Sha256};
-use orm_contracts::abi::{AbiVersionFn, Buffer, FreeFn, RunPassFn, SYMBOL_ABI_VERSION, SYMBOL_FREE, SYMBOL_RUN_PASS, STATUS_OK, STATUS_PANIC};
+use orm_contracts::abi::{AbiVersionFn, Arg, Buffer, Context, DropStateFn, FreeFn, HookFn, HooksFn, InitFn, OrmArg, OrmContext, OrmValue, RunPassFn, Value, STATUS_OK, STATUS_PANIC, SYMBOL_ABI_VERSION, SYMBOL_DROP_STATE, SYMBOL_FREE, SYMBOL_HOOKS, SYMBOL_INIT, SYMBOL_RUN_PASS};
 use orm_contracts::extension::{attribute_namespace, PackageStamp, ABI_VERSION, SCHEMA_CONTRACT, SCHEMA_CONTRACT_VERSION};
 use orm_contracts::ir::SchemaIr;
 use orm_contracts::version::ContractVersion;
@@ -10,7 +10,8 @@ use crate::behavior::{capture_storage, validate_declarations, validate_requireme
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::ffi::c_void;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The file that describes an extension package, beside its library.
 pub const MANIFEST_FILE: &str = "orm-extension.toml";
@@ -21,6 +22,14 @@ struct Native {
     run: RunPassFn,
     free: FreeFn,
     abi: ContractVersion,
+    /// The optional exports of ABI 0.2; resolved the first time a manifest that declares `exports` opens the library.
+    exports: OnceLock<Exports>,
+}
+
+struct Exports {
+    init: Option<InitFn>,
+    drop_state: Option<DropStateFn>,
+    hooks: Vec<(String, HookFn)>,
 }
 
 static LIBRARIES: Mutex<BTreeMap<PathBuf, Arc<Native>>> = Mutex::new(BTreeMap::new());
@@ -192,6 +201,7 @@ impl Plan {
         ir.behavior.declarations.extend(previous);
         ir.behavior.lowered_models = ir.models.iter().map(|m| m.name.clone()).collect();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
+        ir.behavior.stamp_minor();
         ir.behavior.extensions = self.manifests.iter().filter(|m| !m.is_dynamic()).map(|m| (m.id.clone(), m.version.clone())).collect();
         validate_requirements(ir, &self.manifests, language)
     }
@@ -211,6 +221,7 @@ fn open(d: &Dynamic) -> Result<Arc<Native>, String> {
     let mut cache = LIBRARIES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(native) = cache.get(&path) {
         native.check_manifest(d)?;
+        native.resolve_exports(d, &path)?;
         return Ok(native.clone());
     }
     // SAFETY: loading a library runs its initializers; the user chose to install this extension.
@@ -226,13 +237,44 @@ fn open(d: &Dynamic) -> Result<Arc<Native>, String> {
     // SAFETY: `abi` takes no argument and reads nothing.
     let reported = ContractVersion::from_bits(unsafe { abi() });
     reported.check("ABI", ABI_VERSION, id)?;
-    let native = Arc::new(Native { _library: library, run, free, abi: reported });
+    let native = Arc::new(Native { _library: library, run, free, abi: reported, exports: OnceLock::new() });
     native.check_manifest(d)?;
+    native.resolve_exports(d, &path)?;
     cache.insert(path, native.clone());
     Ok(native)
 }
 
 impl Native {
+    /// Resolves `orm_ext_init`, `orm_ext_drop_state` and `orm_ext_hooks`, only for a manifest that declares `exports`.
+    fn resolve_exports(&self, d: &Dynamic, path: &Path) -> Result<(), String> {
+        if d.manifest.exports.is_empty() || self.exports.get().is_some() { return Ok(()); }
+        let id = &d.manifest.id;
+        let name = |symbol: &[u8]| String::from_utf8_lossy(&symbol[..symbol.len() - 1]).into_owned();
+        let missing = |symbol: &[u8]| format!("extension {id}: {} has no `{}`, and the manifest declares exports; build it with orm_contracts::extension!", path.display(), name(symbol));
+        // SAFETY: the symbol types are the ABI of orm_contracts::abi; the ABI version was checked before this call.
+        let (init, drop_state, table) = unsafe {
+            let init = self._library.get::<InitFn>(SYMBOL_INIT).ok().map(|s| *s);
+            let drop_state = self._library.get::<DropStateFn>(SYMBOL_DROP_STATE).ok().map(|s| *s);
+            let hooks = *self._library.get::<HooksFn>(SYMBOL_HOOKS).map_err(|_| missing(SYMBOL_HOOKS))?;
+            (init, drop_state, hooks())
+        };
+        if init.is_some() && drop_state.is_none() { return Err(missing(SYMBOL_DROP_STATE)); }
+        let mut hooks = vec![];
+        if !table.is_null() {
+            // SAFETY: the table and its entries are immutable statics of the library, which stays loaded.
+            let table = unsafe { &*table };
+            let entries = if table.len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(table.entries, table.len) } };
+            for entry in entries {
+                // SAFETY: the name is a static string of the library.
+                let name = unsafe { std::slice::from_raw_parts(entry.name_ptr, entry.name_len) };
+                let name = std::str::from_utf8(name).map_err(|_| format!("extension {id}: a hook name is not UTF-8"))?;
+                hooks.push((name.to_owned(), entry.call));
+            }
+        }
+        let _ = self.exports.set(Exports { init, drop_state, hooks });
+        Ok(())
+    }
+
     fn check_manifest(&self, d: &Dynamic) -> Result<(), String> {
         if Some(self.abi) == d.manifest.abi { return Ok(()); }
         Err(format!("extension {}: the library reports ABI {}, the manifest says {}; rebuild the library or fix the manifest", d.manifest.id, self.abi, d.manifest.abi.map_or_else(String::new, |v| v.to_string())))
@@ -253,6 +295,87 @@ impl Native {
         }
         let text = String::from_utf8_lossy(&text);
         Err(if status == STATUS_PANIC { format!("extension {id}: pass {pass} panicked: {text}") } else { format!("extension {id}: pass {pass}: {text}") })
+    }
+}
+
+/// An opened library of a manifest that declares `exports`: its hooks and its state.
+#[derive(Clone)]
+pub struct Library { native: Arc<Native>, id: String }
+
+/// The state that `orm_ext_init` returned. Dropping it calls `orm_ext_drop_state` once.
+pub struct State { native: Arc<Native>, id: String, raw: *mut c_void }
+
+impl Plan {
+    /// Opens the library of the selected extension `id`.
+    pub fn library(&self, id: &str) -> Result<Library, String> {
+        let d = self.dynamic.iter().find(|d| d.manifest.id == id).ok_or_else(|| format!("extension {id} is not a selected library"))?;
+        Ok(Library { native: open(d)?, id: id.to_owned() })
+    }
+}
+
+impl Library {
+    fn exports(&self) -> Result<&Exports, String> {
+        self.native.exports.get().ok_or_else(|| format!("extension {}: the manifest declares no exports", self.id))
+    }
+
+    /// The names of the hooks of the library, in table order.
+    pub fn hook_names(&self) -> Result<Vec<&str>, String> { Ok(self.exports()?.hooks.iter().map(|(n, _)| n.as_str()).collect()) }
+
+    pub fn hook(&self, name: &str) -> Result<Option<HookFn>, String> { Ok(self.exports()?.hooks.iter().find(|(n, _)| n == name).map(|(_, f)| *f)) }
+
+    /// Calls `orm_ext_init` with the JSON of the `extension_data` entry. A library without `init` gets no state.
+    pub fn init(&self, data: &serde_json::Value) -> Result<State, String> {
+        let exports = self.exports()?;
+        let mut raw: *mut c_void = std::ptr::null_mut();
+        if let Some(init) = exports.init {
+            let json = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+            let mut error = Buffer { ptr: std::ptr::null_mut(), len: 0 };
+            // SAFETY: the range and the out pointers are valid for the call; the buffer is freed once, by its owner.
+            let (status, text) = unsafe {
+                let status = init(json.as_ptr(), json.len(), &mut raw, &mut error);
+                let text = if error.ptr.is_null() { vec![] } else { std::slice::from_raw_parts(error.ptr, error.len).to_vec() };
+                (self.native.free)(error.ptr, error.len);
+                (status, text)
+            };
+            if status != STATUS_OK {
+                let text = String::from_utf8_lossy(&text);
+                return Err(if status == STATUS_PANIC { format!("extension {}: init panicked: {text}", self.id) } else { format!("extension {}: init: {text}", self.id) });
+            }
+        }
+        Ok(State { native: self.native.clone(), id: self.id.clone(), raw })
+    }
+}
+
+impl State {
+    /// Calls the hook `name` with the arguments and the request context.
+    pub fn call(&self, name: &str, args: &[Arg], context: &Context) -> Result<Value, String> {
+        let exports = self.native.exports.get().ok_or_else(|| format!("extension {}: the manifest declares no exports", self.id))?;
+        let hook = exports.hooks.iter().find(|(n, _)| n == name).map(|(_, f)| *f).ok_or_else(|| format!("extension {}: no hook {name}", self.id))?;
+        let raw_args: Vec<OrmArg> = args.iter().map(Arg::borrow).collect();
+        let raw_context: Vec<OrmArg> = context.values.iter().map(Arg::borrow).collect();
+        let ctx = OrmContext { args: raw_context.as_ptr(), len: raw_context.len() };
+        let mut out = OrmValue::NULL;
+        // SAFETY: the arguments live through the call and `out` is writable; the state is the one that `init` returned.
+        let status = unsafe { hook(self.raw, raw_args.as_ptr(), raw_args.len(), &ctx, &mut out) };
+        // SAFETY: the library allocated `out`; it is copied here and freed once.
+        let value = unsafe {
+            let value = Value::from_raw(&out);
+            (self.native.free)(out.ptr as *mut u8, out.len);
+            value
+        }?;
+        if status == STATUS_OK { return Ok(value); }
+        let text = match value { Value::Text(t) => t, other => format!("{other:?}") };
+        Err(if status == STATUS_PANIC { format!("extension {}: hook {name} panicked: {text}", self.id) } else { format!("extension {}: hook {name}: {text}", self.id) })
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        if self.raw.is_null() { return; }
+        if let Some(drop_state) = self.native.exports.get().and_then(|e| e.drop_state) {
+            // SAFETY: `raw` is the state that `init` of this library returned, and it drops once.
+            unsafe { drop_state(self.raw) };
+        }
     }
 }
 

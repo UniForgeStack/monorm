@@ -1,6 +1,6 @@
 id = "acme.outside"
 version = "0.1.0"
-schema_contract = "2.0"
+schema_contract = "2.1"
 abi = "0.2"
 library = "outside_extension"
 language_contract = 1
@@ -20,6 +20,23 @@ required = true
 id = "acme.outside.tag"
 phase = "declaration"
 effects = ["models.outside", "behavior.storage"]
+
+# Hooks of the library. `outside.prefix` reads the `{"prefix": ...}` of its `extension_data` entry.
+[[exports]]
+id = "outside.prefix"
+point = 1
+input = "string"
+output = "string"
+
+[[exports]]
+id = "outside.audit"
+point = 2
+input = "string"
+
+[[exports]]
+id = "outside.context"
+point = 6
+output = "json"
 
 [python]
 source = "python"

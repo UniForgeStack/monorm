@@ -1,7 +1,9 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
+use orm_contracts::abi::{Arg, Context, Value};
 use orm_contracts::extension::{Declaration, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_VERSION};
 use orm_core::dsl::{compile_file_with, Installed};
+use orm_core::loader::Library;
 use orm_core::ir::{ColType, FieldIr, SchemaIr};
 use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, process::Command, sync::Mutex};
 
@@ -219,4 +221,100 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     assert_eq!(behavior.extensions.get("acme.static").map(String::as_str), Some("1.0.0"));
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));
+}
+
+// The hooks of the library: the manifest declares `exports`, so the loader resolves `init`, `drop_state` and the table.
+
+fn open(manifest: &Path) -> Library {
+    let artifact = orm_core::behavior::artifact();
+    let plan = orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests(), &artifact.passes).unwrap().unwrap();
+    plan.library(ID).unwrap()
+}
+
+fn text(value: &str) -> Value { Value::Text(value.into()) }
+fn arg(name: &str, value: Value) -> Arg { Arg { name: name.into(), value } }
+
+#[test]
+fn init_gets_the_extension_data_and_a_hook_reads_the_state() {
+    let library = open(&installed("", "0.2"));
+    let state = library.init(&serde_json::json!({"prefix": "x"})).unwrap();
+    assert_eq!(state.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("xhello")));
+    let bare = library.init(&serde_json::Value::Null).unwrap();
+    assert_eq!(bare.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("hello")));
+    assert!(library.hook_names().unwrap().contains(&"outside.echo"));
+    assert!(library.hook("outside.gone").unwrap().is_none());
+}
+
+#[test]
+fn every_value_tag_makes_a_round_trip_through_a_hook() {
+    let state = open(&installed("", "0.2")).init(&serde_json::Value::Null).unwrap();
+    let values = [
+        Value::Null, Value::Bool(true), Value::Bool(false), Value::Int(-7), Value::Float(1.5), Value::Decimal("12.340".into()), text("héllo"), text(""),
+        Value::Bytes(vec![0, 1, 255]), Value::DateTime(-1_000_000), Value::Uuid([7; 16]), Value::Json("{\"a\":[1]}".into()), Value::Date(-3),
+    ];
+    for value in values {
+        assert_eq!(state.call("outside.echo", &[arg("value", value.clone())], &Context::default()), Ok(value.clone()), "{value:?}");
+    }
+    let add = |a, b| state.call("outside.add", &[arg("a", a), arg("b", b)], &Context::default());
+    assert_eq!(add(Value::Int(2), Value::Int(3)), Ok(Value::Int(5)));
+    assert_eq!(add(Value::Float(0.5), Value::Float(1.0)), Ok(Value::Float(1.5)));
+    assert!(add(Value::Int(2), Value::Float(3.0)).unwrap_err().contains("cannot add"));
+}
+
+#[test]
+fn a_hook_reads_the_request_context() {
+    let state = open(&installed("", "0.2")).init(&serde_json::Value::Null).unwrap();
+    let context = Context { values: vec![arg("tenant", text("acme")), arg("n", Value::Int(1))] };
+    assert_eq!(state.call("outside.context", &[], &context), Ok(Value::Json("{\"n\":2,\"tenant\":\"acme\"}".into())));
+    assert_eq!(state.call("outside.context", &[], &Context::default()), Ok(Value::Json("{\"n\":0,\"tenant\":null}".into())));
+}
+
+#[test]
+fn an_error_and_a_panic_of_a_hook_or_of_init_name_the_extension() {
+    let library = open(&installed("", "0.2"));
+    let state = library.init(&serde_json::Value::Null).unwrap();
+    let error = state.call("outside.fail", &[], &Context::default()).unwrap_err();
+    assert!(error.contains(ID) && error.contains("outside.fail") && error.contains("the hook failed"), "{error}");
+    let error = state.call("outside.panic", &[], &Context::default()).unwrap_err();
+    assert!(error.contains(ID) && error.contains("panicked") && error.contains("the hook panicked"), "{error}");
+    assert!(state.call("outside.prefix", &[], &Context::default()).unwrap_err().contains("missing argument value"));
+    assert!(state.call("outside.gone", &[], &Context::default()).unwrap_err().contains("no hook outside.gone"));
+    // The library still works after a panic.
+    assert!(state.call("outside.drops", &[], &Context::default()).is_ok());
+    let error = library.init(&serde_json::json!({"prefix": 3})).err().unwrap();
+    assert!(error.contains(ID) && error.contains("prefix must be a string"), "{error}");
+    let error = library.init(&serde_json::json!({"panic": true})).err().unwrap();
+    assert!(error.contains(ID) && error.contains("init panicked") && error.contains("init asked to panic"), "{error}");
+}
+
+#[test]
+fn drop_state_runs_once_when_the_state_drops() {
+    // A copy of the library at its own path has its own counter.
+    let source = installed("", "0.2");
+    let dir = scratch("drops");
+    fs::copy(source.with_file_name(format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX)), dir.join(format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX))).unwrap();
+    fs::write(dir.join("orm-extension.toml"), manifest("0.2")).unwrap();
+    let library = open(&dir.join("orm-extension.toml"));
+    let drops = |state: &orm_core::loader::State| state.call("outside.drops", &[], &Context::default()).unwrap();
+    let first = library.init(&serde_json::Value::Null).unwrap();
+    assert_eq!(drops(&first), Value::Int(0));
+    let second = library.init(&serde_json::Value::Null).unwrap();
+    drop(first);
+    assert_eq!(drops(&second), Value::Int(1));
+    drop(second);
+    let third = library.init(&serde_json::Value::Null).unwrap();
+    assert_eq!(drops(&third), Value::Int(2));
+}
+
+#[test]
+fn a_manifest_without_exports_leaves_the_hooks_unresolved() {
+    // A copy at its own path: the loader caches a library by path, with its exports.
+    let dir = scratch("bare");
+    let name = format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    fs::copy(installed("", "0.2").with_file_name(&name), dir.join(&name)).unwrap();
+    let text = manifest("0.2");
+    let (before, after) = (text.split("# Hooks of the library").next().unwrap(), &text[text.find("[python]").unwrap()..]);
+    fs::write(dir.join("orm-extension.toml"), format!("{before}{after}")).unwrap();
+    let error = open(&dir.join("orm-extension.toml")).init(&serde_json::Value::Null).err().unwrap();
+    assert!(error.contains(ID) && error.contains("declares no exports"), "{error}");
 }

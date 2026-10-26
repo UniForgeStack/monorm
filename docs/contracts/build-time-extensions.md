@@ -331,6 +331,11 @@ The macro exports `orm_ext_abi_version`, `orm_ext_run_pass` and `orm_ext_free` (
 `init` gets the JSON of the extension's `extension_data` entry and returns the state `S` (`()` without `init`); the engine calls `orm_ext_drop_state` when it drops the state.
 A hook has one signature for all seven points. `orm_contracts::abi::Value` has the tags null, bool, int, float, decimal, text, bytes, datetime (microseconds since the Unix epoch, UTC), uuid, json and date (days since 1970-01-01).
 An `Err` becomes status ERROR with its text, and a panic becomes status PANIC.
+`orm_ext_init(json, len, out_state, error)` writes a message to `error` when `init` fails; the host frees it with `orm_ext_free`.
+A manifest of a library lists its hooks as `[[exports]]` with `id`, `point` (1 to 7), `input` and `output` (a value type). A compiled extension keeps `rust`, `kind` and `input`.
+When the manifest has `exports`, the loader needs `orm_ext_hooks` and, when `init` exists, `orm_ext_drop_state`. `Plan::library(id)` gives a `Library`; `Library::init(&json)` gives a `State`, and `State::call(hook, &args, &context)` runs one hook. The `State` calls `orm_ext_drop_state` once when it drops.
+Schema contract 2.1 adds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). The IR sets `schema_contract_minor = 1` only when one of them has content, so an older IR stays readable by a 2.0 engine.
+`define()` checks each binding: the model, the field and the dependency. When the manifest of the source is in the build, it also checks the point, and that the `input` and `output` types match the field type.
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.
