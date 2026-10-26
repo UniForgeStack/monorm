@@ -655,6 +655,13 @@ pub fn attribute_namespace(attribute: &str) -> &str {
     attribute.split_once('.').map_or(attribute, |(namespace, _)| namespace)
 }
 
+/// The error for a declaration whose attribute no installed manifest owns.
+pub fn unowned_declaration_error(d: &Declaration) -> String {
+    let prefix = if d.field.is_some() { "@" } else { "@@" };
+    format!("{}:{}:{}: @{}: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace {prefix}{}.*, see docs/README.md)",
+        d.location.file, d.location.line, d.location.column, d.attribute, attribute_namespace(&d.attribute))
+}
+
 pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Option<&str>) -> Result<(), String> {
     let fail = |d: &Declaration, msg: String| format!("{}:{}:{}: @{}: {msg}",
         d.location.file, d.location.line, d.location.column, d.attribute);
@@ -668,11 +675,7 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
         // One name can have a model entry (`@@x`) and a field entry (`@x`).
         let named = || manifests.iter().flat_map(|m| m.attributes.iter().map(move |a| (m, a))).filter(|(_, a)| a.name == d.attribute);
         let found = named().find(|(_, a)| (a.target == AttributeTarget::Field) == d.field.is_some()).or_else(|| named().next());
-        let (m, a) = found.ok_or_else(|| {
-            let prefix = if d.field.is_some() { "@" } else { "@@" };
-            let namespace = attribute_namespace(&d.attribute);
-            fail(d, format!("not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace {prefix}{namespace}.*, see docs/README.md)"))
-        })?;
+        let (m, a) = found.ok_or_else(|| unowned_declaration_error(d))?;
         if let Err(e) = m.check_contracts() { return Err(fail(d, e)); }
         if !m.databases.iter().any(|s| s == ir.dialect.name()) {
             return Err(fail(d, format!("{} does not support {}", m.id, ir.dialect.name())));

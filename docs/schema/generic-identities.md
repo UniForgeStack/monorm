@@ -71,6 +71,9 @@ A created name that collides with a member fails; name an existing field with `t
 `Generic` is only a type on a field with `@generic.relation`; elsewhere it is an unknown type.
 A `Generic` field takes no other attribute, such as `@map`, `@unique` or `@db.*`; use the explicit form for those.
 A `@generic.reverse` field takes no other attribute.
+The error for such an attribute says "remove it"; for `@map`, `@unique`, `@db.*` and defaults on a `Generic` field, use the explicit form.
+The manifest of `@generic.relation` sets `field_type = "Generic"`, the manifest of `@generic.reverse` sets `member = false`, and both set `identities = true`.
+Any extension can use these keys for its own type or non-member field.
 The proxy and composition passes copy fields before the generic pass runs.
 So a proxy or a composed child cannot keep a `Generic` field: exclude the field there, or use the explicit form.
 

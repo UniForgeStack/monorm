@@ -1,7 +1,7 @@
 id = "orm.generic"
 version = "0.1.0"
 host_contract = 1
-schema_contract = 2
+schema_contract = "2.2"
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema", "generic-relations"]
@@ -9,6 +9,7 @@ capabilities = ["schema-transformations", "physical-schema", "generic-relations"
 [[attributes]]
 name = "generic.relation"
 target = "model"
+identities = true
 positional = [{ kind = "string", required = true }]
 [attributes.arguments]
 type = { kind = "string", required = true }
@@ -19,6 +20,8 @@ targets = { kind = "list", required = true }
 [[attributes]]
 name = "generic.relation"
 target = "field"
+field_type = "Generic"
+identities = true
 [attributes.arguments]
 targets = { kind = "list", required = true }
 type = { kind = "string" }
@@ -28,6 +31,8 @@ index = { kind = "boolean" }
 [[attributes]]
 name = "generic.reverse"
 target = "field"
+member = false
+identities = true
 [attributes.arguments]
 relation = { kind = "string" }
 
