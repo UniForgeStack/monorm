@@ -24,7 +24,7 @@ import sys
 
 from . import _native
 from ._apps import resolve_apps
-from ._packages import resolve_extensions
+from ._packages import resolve_extensions, runtime_modules
 from ._native import SchemaError
 
 
@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
         args += ["--app", f"{name}={path}"]
     for ident, manifest in extensions.items():
         args += ["--extension", f"{ident}={manifest}"]
+    for ident, module in runtime_modules().items():
+        args += ["--extension-module", f"{ident}={module}"]
     found = _native.cli_migrate_args(args)
     if found is not None:
         schema, directory, url, target = found

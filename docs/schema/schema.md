@@ -700,8 +700,8 @@ An extension that the schema does not use is not loaded and adds no stamp.
 * Node and Bun: a direct dependency whose `package.json` has `"orm": {"extension": "<id>"}`; the manifest is in the package root.
   The lookup starts at the project of the schema file, or at the working directory when there is no file (`loads(source)`).
   Python reads the interpreter environment.
-* The standalone `orm` binary does not look for packages: `orm generate --extension acme.outside=path/to/orm-extension.toml`. `--extension` can repeat; the Python and Node commands add it themselves.
-* `load(path)` and `loads(source)` resolve extensions the same way. No extension code runs in the language runtime.
+* The standalone `orm` binary does not look for packages: `orm generate typescript --extension acme.outside=path/to/orm-extension.toml --extension-module acme.outside=acme-outside`. Both flags can repeat; use the Python import name for Python generation. The Python and Node commands add them automatically.
+* `load(path)` and `loads(source)` resolve extensions the same way and import each selected package's runtime module, as generated models do. Definition loads no package native library or pass; changed or missing runtime manifest hashes emit `OrmStaleModelsWarning` and advise running `orm generate` ([runtime contract](../contracts/build-time-extensions.md#installed-libraries)).
 * The loader reads the id, versions and attribute names of every installed manifest, and reads the rest of a manifest only when the schema selects its package.
   A manifest that does not parse fails a schema only when that schema can need it: the schema selects it by id, or uses an attribute namespace that no other package owns.
 * The loader opens each library file once for each process and keeps it by its canonical path. A change to the file on disk has no effect until the process restarts.

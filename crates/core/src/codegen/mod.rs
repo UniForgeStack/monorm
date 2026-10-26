@@ -81,7 +81,7 @@ pub struct Options {
     pub query_sets: std::collections::BTreeMap<String, String>,
     /// The user's instance-methods class per model, in the same form as `query_sets`.
     pub model_methods: std::collections::BTreeMap<String, String>,
-    /// The language code of the artifact's extensions, dependencies first.
+    /// Static language code and packaged runtime imports, dependencies first.
     pub extensions: Vec<ExtensionCode>,
     /// Where the generated models import the extension packages from: the dotted module of
     /// the extension directory in Python (`orm_ext`), the relative specifier in TypeScript
@@ -92,6 +92,8 @@ pub struct Options {
 /// The language code of one extension: what the artifact records and the files it embeds.
 #[derive(Debug, Default, Clone)]
 pub struct ExtensionCode {
+    /// Installed runtime module; no source files are copied for packaged extensions.
+    pub runtime_module: Option<String>,
     pub members: orm_contracts::extension::LanguageMembers,
     /// The attributes of the extension; a model that declares one gets the members.
     pub attributes: Vec<String>,
@@ -120,7 +122,7 @@ impl ExtensionCode {
     pub fn applies(&self, ir: &crate::ir::SchemaIr, model: &str) -> bool {
         let m = &self.members;
         let adds_nothing = m.query_set_members.is_empty() && m.instance_members.is_empty() && m.bound_query_set.is_empty();
-        if adds_nothing {
+        if adds_nothing && (self.runtime_module.is_none() || m.query_set.is_empty()) {
             return false;
         }
         let id = m.extension.as_str();
@@ -142,6 +144,39 @@ impl ExtensionCode {
 }
 
 impl Options {
+    /// Add the packages selected by the schema, using the binding's discovered import names.
+    pub fn with_packages(&mut self, ir: &crate::ir::SchemaIr, language: &str, modules: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+        fn visit<'a>(id: &'a String, packages: &'a std::collections::BTreeMap<String, orm_contracts::extension::PackageStamp>, order: &mut Vec<&'a String>, visiting: &mut Vec<&'a String>) -> Result<(), String> {
+            if order.contains(&id) { return Ok(()); }
+            if visiting.contains(&id) { return Err(format!("cyclic packaged extension dependencies at {id}")); }
+            visiting.push(id);
+            for dep in packages[id].dependencies.keys() {
+                if let Some((key, _)) = packages.get_key_value(dep) { visit(key, packages, order, visiting)?; }
+            }
+            visiting.pop();
+            order.push(id);
+            Ok(())
+        }
+        let mut order = vec![];
+        for id in ir.behavior.packages.keys() { visit(id, &ir.behavior.packages, &mut order, &mut vec![])?; }
+        for id in order {
+            let package = &ir.behavior.packages[id];
+            if self.extensions.iter().any(|e| e.members.extension == *id) {
+                return Err(format!("extension {id} is in both the generated packages and the native artifact"));
+            }
+            let module = modules.get(id).ok_or_else(|| format!("extension {id}: missing runtime module; pass --extension-module ID=MODULE"))?;
+            let mut members = orm_contracts::extension::LanguageMembers { extension: id.clone(), version: package.version.clone(), language: language.into(), ..Default::default() };
+            if let Some(section) = package.language_members.get(language) {
+                members.query_set = section.query_set.clone();
+                members.instance = section.instance.clone();
+                members.bound_query_set = section.bound_query_set.clone();
+                members.overrides = section.overrides.clone();
+            }
+            self.extensions.push(ExtensionCode { runtime_module: Some(module.clone()), members, attributes: package.attributes.clone(), files: vec![] });
+        }
+        Ok(())
+    }
+
     /// The extensions of `model`, dependencies first.
     pub fn model_extensions(&self, ir: &crate::ir::SchemaIr, model: &str) -> Vec<(usize, &ExtensionCode)> {
         self.extensions.iter().enumerate().filter(|(_, e)| e.applies(ir, model)).collect()
@@ -347,6 +382,7 @@ mod reference_tests {
             location: crate::behavior::SourceLocation { file: "schema.prisma".into(), line: 1, column: 1 }, lowered: false,
         });
         ExtensionCode {
+            runtime_module: None,
             members: orm_contracts::extension::LanguageMembers {
                 extension: "example.language".into(), version: "1.0.0".into(), language: "python".into(),
                 query_set: "TaggedQuerySet".into(), instance: "TaggedInstance".into(), hash: "abc".into(), query_set_members: vec!["tagged".into()], ..Default::default()

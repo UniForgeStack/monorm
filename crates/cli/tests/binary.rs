@@ -218,7 +218,7 @@ fn extension_flag_gives_the_loader_an_installed_library() {
 
     let ok = orm(&dir, &["check", "--schema", "schema.prisma", "--extension", "acme.outside=orm-extension.toml"]);
     assert!(ok.status.success(), "{}", text(&ok.stderr));
-    let generated = orm(&dir, &["generate", "--schema", "schema.prisma", "--extension", "acme.outside=orm-extension.toml", "-o", "out/models.ts"]);
+    let generated = orm(&dir, &["generate", "--schema", "schema.prisma", "--extension", "acme.outside=orm-extension.toml", "--extension-module", "acme.outside=acme_outside", "-o", "out/models.ts"]);
     assert!(generated.status.success(), "{}", text(&generated.stderr));
     assert!(std::fs::read_to_string(dir.join("out/models.ts")).unwrap().contains("tag"));
 
@@ -284,16 +284,16 @@ fn check_rejects_a_missing_explicit_output() {
 #[test]
 fn check_compares_extension_locks_and_python_facades() {
     let dir = extension_fixture("check-lock");
-    let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "-o", "out/models.ts"]);
+    let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "--extension-module", "acme.outside=acme_outside", "-o", "out/models.ts"]);
     assert!(generated.status.success(), "{}", text(&generated.stderr));
     // The lock comes from the same schema bytes consumed by define().
     let models = std::fs::read_to_string(dir.join("out/models.ts")).unwrap();
     assert!(models.contains("manifest_hash"), "{models}");
     // Independently measured with shasum -a 256 on the fixture's raw bytes.
-    assert!(models.contains("b11fe866c1fea126c36a23e07fbae9f1461d767377d0b096a26274bb9899a4f5"));
+    assert!(models.contains("7d1acfa50bb44f0ffc2faa307c15400b1b65ce637dc254b80137421605bc7306"));
     let original = std::fs::read_to_string(dir.join("orm-extension.toml")).unwrap();
     for output in ["out/models.ts", "models.py"] {
-        let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "-o", output]);
+        let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "--extension-module", "acme.outside=acme_outside", "-o", output]);
         assert!(generated.status.success(), "{}", text(&generated.stderr));
         let check = || orm(&dir, &["check", "--extension", "acme.outside=orm-extension.toml", "--out", output]);
         assert!(check().status.success());
@@ -328,7 +328,7 @@ fn check_compares_extension_locks_and_python_facades() {
     // Default paths and the shared Python schema behind generated facades.
     std::fs::create_dir_all(dir.join("multi")).unwrap();
     std::fs::write(dir.join("multi/schema.prisma"), "import \"../schema.prisma\"\nmodel Other {\n id Int @id\n}\n").unwrap();
-    let multi = orm(&dir, &["generate", "python", "--schema", "multi/schema.prisma", "--extension", "acme.outside=orm-extension.toml"]);
+    let multi = orm(&dir, &["generate", "python", "--schema", "multi/schema.prisma", "--extension", "acme.outside=orm-extension.toml", "--extension-module", "acme.outside=acme_outside"]);
     assert!(multi.status.success(), "{}", text(&multi.stderr));
     assert!(dir.join("multi/_orm_models.py").is_file());
     let current = orm(&dir, &["check", "--schema", "multi/schema.prisma", "--extension", "acme.outside=orm-extension.toml"]);

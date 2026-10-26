@@ -4,6 +4,11 @@ The fake extensions have ids that no real package uses, so the tests also pass i
 """
 
 import shutil
+import hashlib
+import importlib.util
+import json
+import sys
+import warnings
 import subprocess
 from pathlib import Path
 
@@ -29,6 +34,9 @@ def install(site: Path, dist: str, entry: str | None, *, manifest: bool = True, 
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: 0.1\n")
     if entry is not None:
         (info / "entry_points.txt").write_text(f"[orm.extensions]\n{ident or 'acme.fixture'} = {entry}\n")
+    if ident == "acme.outside":
+        (site / package / "__init__.py").write_text((OUTSIDE / "python" / "__init__.py").read_text())
+        sys.modules.pop(package, None)
     return site / package / "orm-extension.toml"
 
 
@@ -85,17 +93,33 @@ def outside_library(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return next(p for p in (target / "debug").glob("liboutside_extension.*") if p.suffix in {".dylib", ".so", ".dll"})
 
 
-def test_an_installed_outside_library_lowers_the_schema_through_load_and_loads(
+async def test_an_installed_outside_library_lowers_the_schema_through_load_and_loads(
     site: Path, outside_library: Path, tmp_path: Path
 ) -> None:
     manifest = install(site, "acme-outside", "acme_outside", ident="acme.outside")
     manifest.write_text((OUTSIDE / "orm-extension.toml").read_text())
     shutil.copy(outside_library, manifest.parent / outside_library.name)
-    source = 'model Post {\n id Int @id\n @@outside.tag("blue")\n}\n'
-    assert orm.loads(source, registry=orm.Registry())["Post"]._meta.fields["tag"].default == "blue"
+    source = 'datasource db { provider = "sqlite" }\nmodel Post {\n id Int @id\n @@outside.tag("blue")\n}\n'
+    LoadedPost = orm.loads(source, registry=orm.Registry())["Post"]
+    assert LoadedPost._meta.fields["tag"].default == "blue"
+    assert "LIMIT 7" in LoadedPost.objects.tagged().sql()
     schema = tmp_path / "schema.prisma"
     schema.write_text(source)
-    assert "tag" in orm.load(schema, registry=orm.Registry())["Post"]._meta.fields
+    registry = orm.Registry()
+    Post = orm.load(schema, registry=registry)["Post"]
+    assert "tag" in Post._meta.fields
+    assert "LIMIT 7" in Post.objects.tagged().sql()
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        row = await Post.objects.using(db).insert(id=1, tag="blue")
+        assert row.tag_label() == "blue"
+    finally:
+        await db.close()
+
+    manifest.write_text(manifest.read_text().replace('languages = ["python", "typescript"]', 'languages = ["typescript"]'))
+    with pytest.raises(SchemaError, match="does not support this language binding"):
+        orm.load(schema, registry=orm.Registry())
 
 
 def test_the_command_line_lowers_the_schema_with_an_installed_outside_library(
@@ -123,3 +147,76 @@ def test_the_command_line_lowers_the_schema_with_an_installed_outside_library(
     assert "locked" in error and "installed" in error
     manifest.write_text(original)
     assert cli(["check"]) == 0
+
+
+async def test_packaged_generated_models_use_runtime_without_the_pass_library(site: Path, outside_library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = install(site, "acme-outside", "acme_outside", ident="acme.outside")
+    manifest.write_bytes((OUTSIDE / "orm-extension.toml").read_bytes())
+    library = manifest.parent / outside_library.name
+    shutil.copy(outside_library, library)
+    (tmp_path / "schema.prisma").write_text('datasource db { provider = "sqlite" }\nmodel Post {\n id Int @id\n @@outside.tag("blue")\n}\n')
+    monkeypatch.chdir(tmp_path)
+    assert cli(["generate"]) == 0
+    assert not (tmp_path / "orm_ext").exists()
+    library.unlink()  # define() must need neither the pass library nor discovery.
+    registry = orm.Registry()
+    monkeypatch.setattr(orm.model, "registry", registry)
+    spec = importlib.util.spec_from_file_location("outside_generated", tmp_path / "models.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        spec.loader.exec_module(module)
+    assert not caught
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        row = await module.Post.objects.using(db).insert(id=1, tag="blue")
+        assert row.tag_label() == "blue"
+    finally:
+        await db.close()
+    assert "LIMIT 7" in module.Post.objects.tagged().sql()
+    import acme_outside
+    assert acme_outside.MANIFEST_HASH == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    schema = json.loads(module._SCHEMA)
+    for installed in ("changed", None):
+        if installed is None:
+            del acme_outside.MANIFEST_HASH
+        else:
+            acme_outside.MANIFEST_HASH = installed
+        with pytest.warns(orm.OrmStaleModelsWarning, match="acme.outside.*run `orm generate`") as caught:
+            Post = orm.define(schema, registry=orm.Registry(), extensions={"acme.outside": acme_outside})["Post"]
+        assert len(caught) == 1
+        assert "locked manifest hash" in str(caught[0].message)
+        assert "LIMIT 7" in Post.objects.tagged().sql()
+    acme_outside.MANIFEST_HASH = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    monkeypatch.delattr(acme_outside, "OutsideQuerySet")
+    with pytest.raises(TypeError, match="extension acme.outside has no OutsideQuerySet; run `orm generate`"):
+        orm.define(schema, registry=orm.Registry(), extensions={"acme.outside": acme_outside})
+    schema["behavior"]["packages"]["acme.outside"]["languages"] = ["typescript"]
+    with pytest.raises(SchemaError, match="does not support this language binding"):
+        orm.define(schema, registry=orm.Registry(), extensions={"acme.outside": acme_outside})
+
+
+def test_hash_only_package_is_imported_by_generated_models(site: Path, outside_library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = install(site, "acme-outside", "acme_outside", ident="acme.outside")
+    manifest.write_text((OUTSIDE / "orm-extension.toml").read_text().split("\n[python]")[0])
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    (manifest.parent / "__init__.py").write_text(f'MANIFEST_HASH = "{digest}"\n')
+    library = manifest.parent / outside_library.name
+    shutil.copy(outside_library, library)
+    (tmp_path / "schema.prisma").write_text('model Plain {\n id Int @id\n @@outside.tag("blue")\n}\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(orm.model, "registry", orm.Registry())
+    assert cli(["generate"]) == 0
+    assert not (tmp_path / "orm_ext").exists()
+    library.unlink()
+    spec = importlib.util.spec_from_file_location("hash_only_generated", tmp_path / "models.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        spec.loader.exec_module(module)
+    assert not caught
+    assert sys.modules["acme_outside"].MANIFEST_HASH == digest
+    assert not hasattr(module.Plain.objects, "tagged")

@@ -12,7 +12,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { resolveApps } from "./apps.js";
-import { resolveExtensions } from "./packages.js";
+import { resolveExtensions, runtimeModules } from "./packages.js";
 import "./index.js"; // loads the modules in their order
 import { hasDataSteps, migrateCommand } from "./migrations.js";
 import { native } from "./native.js";
@@ -25,6 +25,7 @@ export async function main(rawArgv: readonly string[]): Promise<number> {
   try {
     const schema = addon.cliSchema(argv);
     for (const [name, file] of Object.entries(resolveApps(schema))) argv.push("--app", `${name}=${file}`);
+    for (const [id, module] of Object.entries(runtimeModules(schema))) argv.push("--extension-module", `${id}=${module}`);
     for (const [id, manifest] of Object.entries(resolveExtensions(schema))) argv.push("--extension", `${id}=${manifest}`);
   } catch (e) {
     process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);

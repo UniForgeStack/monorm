@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { importRuntime } from "./packages.js";
 import type { ModelMeta } from "./model.js";
 import { native } from "./native.js";
 import type { QuerySet } from "./query.js";
@@ -11,9 +12,9 @@ import type { QuerySet } from "./query.js";
 export interface ExtensionCode {
   readonly module: Readonly<Record<string, unknown>>;
   /** The hash of the extension build that generated the files. */
-  readonly hash: string;
+  readonly hash?: string;
   /** The directory of the generated files. */
-  readonly dir: URL;
+  readonly dir?: URL;
 }
 
 interface LanguageRecord {
@@ -74,7 +75,7 @@ function check(id: string, code: ExtensionCode): LanguageRecord {
   const record = records().get(id);
   if (record === undefined) throw new TypeError(`generated models use extension ${id}, which the native artifact does not have; run \`orm generate\``);
   if (code.hash !== record.hash) throw new TypeError(`the generated code of extension ${id} was made for another build; run \`orm generate\``);
-  if (code.dir.protocol !== "file:") return record;
+  if (code.dir === undefined || code.dir.protocol !== "file:") return record;
   const root = fileURLToPath(code.dir);
   const files = sources(root);
   if (!files.length) return record;
@@ -140,14 +141,14 @@ function installInstance(meta: ModelMeta, prototype: object): void {
  * A member name that a host member, a field, a relation or an earlier extension has is an
  * error, unless the extension declares an override.
  */
-export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensions: Readonly<Record<string, ExtensionCode>>, hostQuerySetMember: (name: string) => boolean): void {
+export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensions: Readonly<Record<string, ExtensionCode>>, packaged: ReadonlyMap<string, LanguageRecord>, hostQuerySetMember: (name: string) => boolean): void {
   const given = new Map<string, string>();
   const mixins: Mixin[] = [];
   const bound: ((base: never) => unknown)[] = [];
   for (const id of ids) {
     const code = extensions[id];
     if (code === undefined) throw new TypeError(`${meta.name}: extension ${id} is not in the generated extensions`);
-    const record = check(id, code);
+    const record = packaged.get(id) ?? check(id, code);
     const overrides = new Set(record.overrides);
     const mixin = code.module[record.query_set];
     const instance = code.module[record.instance];
@@ -176,4 +177,68 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
   meta.extensionMixins = mixins;
   meta.boundMixins = bound;
   meta.resetQuerySet(meta.querySet);
+}
+
+interface PackageStamp {
+  readonly dependencies?: Readonly<Record<string, string>>;
+  readonly manifest_hash: string;
+  readonly version: string;
+  readonly attributes: readonly string[];
+  readonly language_members: Readonly<Record<string, Omit<LanguageRecord, "extension" | "version" | "language" | "hash" | "query_set_members" | "instance_members" | "bound_query_set_members">>>;
+}
+
+export function packageContracts(ir: { behavior?: unknown; [key: string]: unknown }, extensions: Record<string, ExtensionCode>, schema?: string): Map<string, LanguageRecord> {
+  const stamps = (ir.behavior as { packages?: Record<string, PackageStamp> } | undefined)?.packages ?? {};
+  const found = new Map<string, LanguageRecord>();
+  if (!Object.keys(stamps).length) return found;
+  const compiled = records();
+  const order: string[] = [];
+  const visiting = new Set<string>();
+  const visit = (id: string): void => {
+    if (order.includes(id)) return;
+    if (visiting.has(id)) throw new TypeError(`cyclic packaged extension dependencies at ${id}`);
+    visiting.add(id);
+    for (const dep of Object.keys(stamps[id]!.dependencies ?? {})) if (stamps[dep]) visit(dep);
+    visiting.delete(id);
+    order.push(id);
+  };
+  for (const id of Object.keys(stamps)) visit(id);
+  for (const id of order) {
+    const stamp = stamps[id]!;
+    if (compiled.has(id)) throw new TypeError(`extension ${id} is in both the generated packages and the native artifact`);
+    const code = extensions[id] ?? { module: importRuntime(id, schema) };
+    extensions[id] = code;
+    const installed = code.module.manifestHash;
+    if (installed !== stamp.manifest_hash) process.emitWarning(`extension ${id}: locked manifest hash ${stamp.manifest_hash}, installed ${String(installed)}; run \`orm generate\``, "OrmStaleModelsWarning");
+    const section = stamp.language_members.typescript;
+    if (section === undefined) continue;
+    const names = (exportName: string | undefined, mixin: boolean): string[] => {
+      if (!exportName) return [];
+      const value = code.module[exportName];
+      if (typeof value !== "function") throw new TypeError(`extension ${id} has no ${exportName}; run \`orm generate\``);
+      const Base = class {};
+      const cls = mixin ? (value as (base: unknown) => { prototype: object })(Base) : value as { prototype: object };
+      // Instance installation uses only own descriptors; traversing the `super` proxy would add Object members.
+      if (!mixin) return Object.getOwnPropertyNames(cls.prototype).filter((name) => name !== "constructor" && !name.startsWith("_"));
+      const members = new Set<string>();
+      for (let proto: object | null = cls.prototype; proto !== null && proto !== Base.prototype && proto !== Object.prototype; proto = Object.getPrototypeOf(proto) as object | null) {
+        for (const name of Object.getOwnPropertyNames(proto)) if (name !== "constructor" && !name.startsWith("_")) members.add(name);
+      }
+      return [...members];
+    };
+    found.set(id, { ...section, extension: id, version: stamp.version, language: "typescript", hash: stamp.manifest_hash,
+      query_set_members: names(section.query_set, true), instance_members: names(section.instance, false),
+      bound_query_set_members: names(section.bound_query_set, true),
+    });
+  }
+  return found;
+}
+
+export function packageMembers(ir: { models: readonly { name: string }[]; behavior?: unknown }, packaged: ReadonlyMap<string, LanguageRecord>): Record<string, readonly string[]> {
+  const b = ir.behavior as { packages?: Record<string, PackageStamp>; declarations?: { model: string; attribute: string }[] } & Record<string, unknown> | undefined;
+  return Object.fromEntries(ir.models.map((m) => [m.name, [...packaged.keys()].filter((id) =>
+    b?.declarations?.some((d) => d.model === m.name && b.packages?.[id]?.attributes.includes(d.attribute)) ||
+    ["read_defaults", "delete_rewrites", "write_assignments", "instance_guards"].some((key) =>
+      (b?.[key] as { model: string; source: string }[] | undefined)?.some((r) => r.model === m.name && r.source === id)))
+  ]));
 }

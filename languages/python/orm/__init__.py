@@ -8,6 +8,7 @@ expressions over model attributes, Django-style managers on top::
     users = await User.objects.filter(User.posts.created_at < yesterday)
 """
 
+from ._extensions import OrmStaleModelsWarning as OrmStaleModelsWarning
 from .inspection import QueryInspection, StatementInspection
 from . import debug, fields, otel
 from .db import Database, QueryEvent, connect, get_database, scope
@@ -145,6 +146,7 @@ __all__ = [
     "QueryError",
     "SchemaError",
     "SchemaWarning",
+    "OrmStaleModelsWarning",
     "DoesNotExist",
     "MultipleObjectsReturned",
     "DecodeError",

@@ -1,7 +1,7 @@
 """Finds the installed extension packages: an `orm.extensions` entry point named like the extension id.
 
 The value is a module (`orm_tracking`); its directory holds `orm-extension.toml`.
-No extension package is imported. The Rust loader selects the extensions that a schema uses.
+Discovery reads metadata; definition imports the selected runtime packages.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import importlib.metadata
 import importlib.util
 import os
 from pathlib import Path
+from types import ModuleType
 
 from ._native import SchemaError
 
@@ -41,3 +42,15 @@ def resolve_extensions() -> dict[str, str]:
             )
         found[entry.name] = path
     return found
+
+
+def runtime_modules() -> dict[str, str]:
+    """Installed import names, without importing extension code."""
+    return {entry.name: entry.value.partition(":")[0].strip() for entry in importlib.metadata.entry_points(group="orm.extensions")}
+
+
+def import_runtime(ident: str) -> ModuleType:
+    name = runtime_modules().get(ident)
+    if name is None:
+        raise SchemaError(f"extension {ident}: runtime package is not installed")
+    return importlib.import_module(name)

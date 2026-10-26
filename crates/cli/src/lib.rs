@@ -128,7 +128,7 @@ struct Args {
 }
 
 const FLAGS: [&str; 7] = ["--native", "--empty", "--check", "--down", "--force", "-h", "--help"];
-const VALUED: [&str; 16] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension"];
+const VALUED: [&str; 17] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -167,7 +167,7 @@ impl Args {
     /// Only these options (besides the global ones) and at most `max` positionals
     /// after the command.
     fn allow(&self, command: &str, options: &[&str], max: usize) -> Result<()> {
-        let global = ["--schema", "--dir", "--url", "--app", "--extension"];
+        let global = ["--schema", "--dir", "--url", "--app", "--extension", "--extension-module"];
         if let Some((k, _)) = self.options.iter().find(|(k, _)| !global.contains(&k.as_str()) && !options.contains(&k.as_str())) {
             return Err(Failure::Usage(format!("{command} doesn't take {k}")));
         }
@@ -478,6 +478,17 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, extensions: orm_core::behavior::extension_code(language), ..codegen::Options::default() };
+    if language != "rust" {
+        let mut modules = std::collections::BTreeMap::new();
+        for (key, value) in &args.options {
+            if key == "--extension-module" {
+                let (id, module) = value.as_deref().and_then(|v| v.split_once('=')).filter(|(id, module)| !id.is_empty() && !module.is_empty())
+                    .ok_or_else(|| Failure::Usage("--extension-module needs ID=MODULE".into()))?;
+                modules.insert(id.to_owned(), module.to_owned());
+            }
+        }
+        options.with_packages(&ir, language, &modules).map_err(Failure::Failed)?;
+    }
     if language == "rust" && args.opt(&["--ext-dir"]).is_some() { return Err(Failure::Usage("--ext-dir is for python and typescript".into())); }
     for (kind, targets) in [(codegen::lookup::ClassKind::QuerySet, &mut options.query_sets), (codegen::lookup::ClassKind::ModelMethods, &mut options.model_methods)] {
         let flag = kind.flag();
@@ -579,8 +590,8 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
 // Every extension in the artifact gets its files, also when no model uses it.
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 fn write_extensions(options: &codegen::Options, language: &str, dir: &Path) -> Result<()> {
-    if options.extensions.is_empty() { return Ok(()); }
-    let mut files: Vec<(PathBuf, String)> = options.extensions.iter()
+    if options.extensions.iter().all(|e| e.runtime_module.is_some()) { return Ok(()); }
+    let mut files: Vec<(PathBuf, String)> = options.extensions.iter().filter(|e| e.runtime_module.is_none())
         .flat_map(|e| e.generated_files(language))
         .map(|(name, content)| (dir.join(name), content))
         .collect();

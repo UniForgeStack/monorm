@@ -19,7 +19,7 @@ import { resolveExtensions } from "./packages.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
-import { applyExtensions, type ExtensionCode, type Mixin } from "./extensions.js";
+import { applyExtensions, packageContracts, packageMembers, type ExtensionCode, type Mixin } from "./extensions.js";
 import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
@@ -976,6 +976,8 @@ export function define(
   schema: string | SchemaIR,
   options: {
     readonly registry?: Registry;
+    /** @internal Discovery origin for load(). */
+    readonly extensionSchema?: string;
     readonly requiredCapabilities?: readonly string[];
     /** The generated code of each extension, by extension id. */
     readonly extensions?: Readonly<Record<string, ExtensionCode>>;
@@ -996,6 +998,9 @@ export function define(
     throw e;
   }
   const ir = JSON.parse(prepared) as SchemaIR;
+  const extensions = { ...options.extensions };
+  const packaged = packageContracts(ir, extensions, options.extensionSchema);
+  const members = { ...packageMembers(ir, packaged), ...options.members };
   const reg = destination.candidate();
   reg.addExtra(ir);
   reg.setBehavior(ir.behavior);
@@ -1033,8 +1038,8 @@ export function define(
         Object.defineProperty(meta.model, name, { value: (value: string) => call(() => fn(value)), enumerable: true });
       }
     }
-    const ids = options.members?.[m.name];
-    if (ids?.length) applyExtensions(meta, ids, options.extensions ?? {}, hostQuerySetMember);
+    const ids = members[m.name];
+    if (ids?.length) applyExtensions(meta, ids, extensions, packaged, hostQuerySetMember);
     Object.defineProperty(meta.Row, "meta", { value: meta });
     reg.add(meta);
     out[m.name] = meta.model;
@@ -1060,7 +1065,7 @@ export function define(
  * (and so without static types: generate `models.ts` for those).
  */
 export function load(path: string, options: { readonly registry?: Registry } = {}): Record<string, ModelClass<ModelSpec> & Record<string, unknown>> {
-  return define(call(() => native().compileSchemaFile(path, resolveApps(path), resolveExtensions(path))), options);
+  return define(call(() => native().compileSchemaFile(path, resolveApps(path), resolveExtensions(path))), { ...options, extensionSchema: path });
 }
 
 /** Like {@link load}, for schema source text. `import "app:<name>"` needs a file: use {@link load} or generate the models. */

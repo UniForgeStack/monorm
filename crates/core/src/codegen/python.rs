@@ -238,12 +238,16 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
     // the extensions some model uses, with the models that use each, in chain order
     let model_exts: Vec<(&str, Vec<(usize, &super::ExtensionCode)>)> = names.iter().map(|n| (*n, options.model_extensions(ir, n))).filter(|(_, e)| !e.is_empty()).collect();
-    let used_exts: BTreeSet<usize> = model_exts.iter().flat_map(|(_, e)| e.iter().map(|(i, _)| *i)).collect();
+    let used_exts: BTreeSet<usize> = model_exts.iter().flat_map(|(_, e)| e.iter().map(|(i, _)| *i)).chain(options.extensions.iter().enumerate().filter(|(_, e)| e.runtime_module.is_some()).map(|(i, _)| i)).collect();
     let ext_base = options.ext_import.as_deref().unwrap_or("orm_ext");
     let mut ext_kwargs = String::new();
     if !used_exts.is_empty() {
         for i in &used_exts {
-            writeln!(py, "from {ext_base} import {} as _ext{i}", options.extensions[*i].python_package()).unwrap();
+            if let Some(module) = &options.extensions[*i].runtime_module {
+                writeln!(py, "import {module} as _ext{i}").unwrap();
+            } else {
+                writeln!(py, "from {ext_base} import {} as _ext{i}", options.extensions[*i].python_package()).unwrap();
+            }
         }
         py.push('\n');
         let modules: Vec<String> = used_exts.iter().map(|i| format!("{:?}: _ext{i}", options.extensions[*i].members.extension)).collect();
@@ -667,8 +671,10 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
     for i in &used_exts {
         let e = &options.extensions[*i];
+        if e.members.query_set.is_empty() { continue; }
         let bound = if e.members.bound_query_set.is_empty() { String::new() } else { format!(", {} as _ext{i}BoundQuerySet", e.members.bound_query_set) };
-        writeln!(pyi, "from {ext_base}.{} import {} as _ext{i}QuerySet, {} as _ext{i}Instance{bound}", e.python_package(), e.members.query_set, e.members.instance).unwrap();
+        let module = e.runtime_module.clone().unwrap_or_else(|| format!("{ext_base}.{}", e.python_package()));
+        writeln!(pyi, "from {module} import {} as _ext{i}QuerySet, {} as _ext{i}Instance{bound}", e.members.query_set, e.members.instance).unwrap();
     }
     if !query_sets.is_empty() || !used_exts.is_empty() || !model_methods.is_empty() {
         pyi.push('\n');

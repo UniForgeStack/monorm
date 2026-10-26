@@ -315,25 +315,29 @@ Timing intervals that cross the limit remain inconclusive.
 ## Installed libraries
 
 A manifest with `abi` (a `"major.minor"` string, currently `"0.1"`) and `library` (the file name; the loader adds the platform prefix and suffix) is a library.
-It has no `host_contract` and no language section: the loader runs only its passes.
+It has no `host_contract`. The loader runs its passes; optional `[python]` and `[typescript]` sections name exports in the packaged runtime modules and retain language-contract validation. ABI 0.1 hook exports remain unsupported.
 The crate is a `cdylib` built with `panic = "unwind"` that ends with `orm_contracts::extension!(("<pass id>", pass_fn), ...)`.
 The macro exports `orm_ext_abi_version`, `orm_ext_run_pass` and `orm_ext_free`.
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.
 The loader runs library passes and compiled passes in one pass order.
-The IR records each library that ran in `Requirements.packages`: its version, its passes, its attribute names, and `manifest_hash` (the lowercase hexadecimal SHA-256 of the raw `orm-extension.toml` bytes).
+The IR records each library that ran in `Requirements.packages`: its version, its passes, its attribute names, supported `languages` and `databases`, `language_members`, `dependencies`, and `manifest_hash` (the lowercase hexadecimal SHA-256 of the raw `orm-extension.toml` bytes).
 The generated models embed this lock in their compiled schema.
 The hash excludes native library bytes, so the same models work across platforms.
 
 Run `orm check` in CI to compare the lock against installed extension packages.
 A changed version or manifest, or a missing package, fails with the locked and installed identities and a run `orm generate` hint.
 Unused installed packages add no lock requirement.
-Python and npm commands discover packages as they do for generation; the standalone binary takes repeated `--extension ID=MANIFEST` options.
+Python and npm commands discover packages as they do for generation. The standalone binary takes repeated `--extension ID=MANIFEST` options and, for generation, `--extension-module ID=MODULE` for each selected package (a Python import name or npm package name). The binding commands supply both automatically.
 Use `check -o FILE` (or `--out FILE`) for a custom models path; a missing explicit path fails with a regeneration hint.
 All hosts check `models.py` and `models.ts` beside the schema when they carry a generated header, and skip other files.
 Rust models are outside this lock check.
 Python schema facades are checked through their shared `_orm_models.py`.
 With no generated models file, the command compiles the schema as usual.
-`load()` and `loads()` carry package stamps in their IR but perform no lock comparison.
+Generated models import every selected package's runtime module, including packages without runtime classes; `load()` and `loads()` discover and import the same modules. Definition merges their runtime members with the native artifact's static members; an extension id present in both is an error. Definition loads no package native library or pass.
+
+Each runtime module exports `MANIFEST_HASH` (Python) or `manifestHash` (TypeScript), the lowercase SHA-256 of the raw manifest bytes. `define()` compares it with the embedded stamp once per extension per definition. A changed or missing constant warns with the id, both hashes and a run `orm generate` hint, then continues. Python uses `orm.OrmStaleModelsWarning`, a `UserWarning` subclass (subject to Python warning filters); Node and Bun emit `OrmStaleModelsWarning`. This warning does not replace the CI lock check above.
+
+TypeScript runtime packages and their dependencies must be synchronously loadable, without top-level await. Node requires 20.19+ on the 20.x line or 22.12+ on later lines; Bun is also supported. Prefer one runtime format. Synchronous loading resolves the package's import entry before loading it, so a dual package uses the same module and class identities as generated ESM imports.
 `tests/outside-extension/` is a library in its own workspace.
