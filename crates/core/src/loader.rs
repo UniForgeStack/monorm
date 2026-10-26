@@ -367,12 +367,12 @@ mod tests {
     fn a_manifest_of_a_later_release_fails_only_for_a_package_that_the_compile_selects() {
         let dir = scratch("later");
         let (_, newer) = install(&dir.join("b"), "other.kit", &format!("future_field = true\n{KIT}"));
-        std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"2.0\"", "schema_contract = \"2.1\"")).unwrap();
+        std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"2.0\"", "schema_contract = \"2.2\"")).unwrap();
         let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), newer)];
         assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
         for selected in [select(&available, &used("kit"), &[]), select(&available, &BTreeSet::new(), &["other.kit".into()])] {
             let error = selected.err().unwrap();
-            assert!(error.contains("other.kit") && error.contains("schema contract 2.1") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
+            assert!(error.contains("other.kit") && error.contains("schema contract 2.2") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
         }
         std::fs::remove_dir_all(&dir).ok();
     }

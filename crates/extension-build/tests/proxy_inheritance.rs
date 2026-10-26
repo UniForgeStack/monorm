@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 fn manifest() -> Manifest {
-    let export = |id: &str, kind, output| Export { id: id.into(), rust: format!("app::{}", id.replace('.', "_")), kind, input: ColType::String, output };
+    let export = |id: &str, kind, output| Export { id: id.into(), rust: Some(format!("app::{}", id.replace('.', "_"))), kind: Some(kind), point: None, input: Some(ColType::String), output };
     Manifest {
         id: "app".into(), version: "1.0.0".into(), host_contract: Some(HOST_CONTRACT_VERSION), abi: None, library: None, schema_contract: SCHEMA_CONTRACT_VERSION,
         language_contract: None, python: None, typescript: None, dependencies: BTreeMap::new(), capabilities: vec![], requires: vec![],
@@ -100,7 +100,7 @@ fn a_proxy_that_drops_a_field_of_an_inherited_record_rule_fails_the_build() {
     let mut manifest = manifest();
     let mut export = manifest.exports[0].clone();
     export.id = "app.check_record".into();
-    export.kind = ExportKind::StringRecordValidator;
+    export.kind = Some(ExportKind::StringRecordValidator);
     manifest.exports.push(export);
     let error = generate(&mut schema(), &[spec(record.clone())], &[manifest.clone()]).err().expect("Slim drops `name`");
     for part in ["Slim", "app.check_record", "name", "keep name", "own record rule"] {
