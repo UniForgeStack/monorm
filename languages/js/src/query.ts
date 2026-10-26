@@ -2550,6 +2550,8 @@ for (const cls of [RelatedSet, ManyRelatedSet]) {
   });
 }
 
+type PrefetchOptions = { readonly using: Database; readonly withoutDefaults?: boolean | readonly string[] };
+
 /**
  * The relation-only read of `BoundQuerySet` and `loadInstance`: relations onto
  * instances you already have, always by `IN (...)` query, with no query for the
@@ -2557,10 +2559,10 @@ for (const cls of [RelatedSet, ManyRelatedSet]) {
  */
 export async function prefetch(
   instances: readonly object[],
-  ...relations: readonly (LoadItem<ModelSpec> | { readonly using: Database; readonly withoutDefaults?: boolean | readonly string[] })[]
+  ...relations: readonly (LoadItem<ModelSpec> | PrefetchOptions)[]
 ): Promise<void> {
   const last = relations[relations.length - 1];
-  const options = last !== undefined && !(last instanceof RelationPath) && !(last instanceof Column) && !(last instanceof QuerySet) && !(last instanceof Labeled) ? (last as { using: Database; withoutDefaults?: boolean | readonly string[] }) : undefined;
+  const options = last !== undefined && !(last instanceof RelationPath) && !(last instanceof Column) && !(last instanceof QuerySet) && !(last instanceof Labeled) ? (last as PrefetchOptions) : undefined;
   const using = options?.using;
   const paths = options === undefined ? relations : relations.slice(0, -1);
   const objs = [...instances] as Record<PropertyKey, unknown>[];
@@ -2581,10 +2583,12 @@ export async function prefetch(
     throw new TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load");
   }
   const qs = (meta.objects as QuerySet<ModelSpec>).using(using).withPrefetch(derive(meta, loads, true).prefetch);
-  const prefetching = options?.withoutDefaults;
-  const bypassed = prefetching === true || (Array.isArray(prefetching) && prefetching.length > 0)
-    ? (prefetching === true ? qs.withoutDefaults() : qs.withoutDefaults(...prefetching))
-    : qs;
+  const withoutDefaults = options?.withoutDefaults;
+  const bypassed = withoutDefaults === true
+    ? qs.withoutDefaults()
+    : Array.isArray(withoutDefaults) && withoutDefaults.length > 0
+      ? qs.withoutDefaults(...withoutDefaults)
+      : qs;
   const params: unknown[] = [];
   const ir = bypassed.selectIr("select", params);
   const keys: string[] = [];
