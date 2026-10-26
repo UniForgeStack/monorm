@@ -146,7 +146,8 @@ test("an installed outside library lowers the schema through load(), loads() and
   assert.ok(run("sqlmigrate", "1").includes('"tag"'), "the migration adds the column of the pass");
   const runtime = new URL(`../src/index.${CLI.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href;
   run("generate", "--import", runtime);
-  assert.equal(existsSync(join(root, "orm-ext")), false);
+  // Compiled static extensions can write sources here; packaged extensions cannot.
+  assert.equal(existsSync(join(root, "orm-ext", "acme-outside")), false);
   const generated = readFileSync(join(root, "models.ts"), "utf8");
   write(join(root, "models.mjs"), ts.transpileModule(generated, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
   const embedded = JSON.parse(generated.match(/const SCHEMA: SchemaIR = ([\s\S]+?);\n/)![1]!) as SchemaIR;
