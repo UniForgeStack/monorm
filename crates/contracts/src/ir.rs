@@ -256,11 +256,11 @@ mod schema_json {
     }
     #[test]
     fn an_ir_of_a_newer_contract_names_both_versions_before_any_record_error() {
-        let newer = r#"{"models":[],"behavior":{"schema_contract":2,"schema_contract_minor":2,"hooks":[{"from_the_future":1}]}}"#;
+        let newer = r#"{"models":[],"behavior":{"schema_contract":2,"schema_contract_minor":3,"hooks":[{"from_the_future":1}]}}"#;
         let error = super::SchemaIr::from_json(newer).unwrap_err();
-        assert!(error.contains("schema contract 2.2 is newer than this engine (2.1)"), "{error}");
+        assert!(error.contains("schema contract 2.3 is newer than this engine (2.2)"), "{error}");
         let major = r#"{"models":[],"behavior":{"schema_contract":3}}"#;
-        assert!(super::SchemaIr::from_json(major).unwrap_err().contains("schema contract 3.0 is newer than this engine (2.1)"));
+        assert!(super::SchemaIr::from_json(major).unwrap_err().contains("schema contract 3.0 is newer than this engine (2.2)"));
         let same = r#"{"models":[],"behavior":{"schema_contract":2,"schema_contract_minor":1,"hooks":[{"source":"a","point":2,"model":"M","export":"e"}]}}"#;
         assert_eq!(super::SchemaIr::from_json(same).unwrap().behavior.hooks.len(), 1);
     }

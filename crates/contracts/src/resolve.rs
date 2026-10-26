@@ -9,6 +9,9 @@ pub struct Resolved {
     pub passes: Vec<Pass>,
 }
 
+/// The DSL type names that no attribute can own: the scalar types and `Unsupported`.
+pub const RESERVED_TYPES: [&str; 9] = ["BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Unsupported"];
+
 /// Reject source injection in metadata before emitting Rust paths.
 pub fn rust_path(path: &str) -> Result<(), String> {
     if path.split("::").any(|part| {
@@ -22,6 +25,7 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
     manifests.sort_by(|a, b| a.id.cmp(&b.id));
     let mut extensions = BTreeMap::new();
     let mut attributes = BTreeMap::new();
+    let mut field_types: BTreeMap<&str, &str> = BTreeMap::new();
     let mut exports = BTreeSet::new();
     let mut passes = BTreeMap::new();
     let mut effects: BTreeMap<&str, &str> = BTreeMap::new();
@@ -50,6 +54,21 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             if !a.name.contains('.') { return Err(format!("{}: attribute {} must be namespaced", m.id, a.name)); }
             if let Some(owner) = attributes.insert((&a.name, a.target == AttributeTarget::Field), &m.id) {
                 return Err(format!("attribute {} has duplicate owners {owner} and {}; uninstall one of them", a.name, m.id));
+            }
+        }
+        for a in &m.attributes {
+            if a.target != AttributeTarget::Field && (a.field_type.is_some() || !a.member) {
+                return Err(format!("{}: attribute {} has `field_type` or `member = false`, which only a field attribute takes; set `target = \"field\"`", m.id, a.name));
+            }
+            let Some(ty) = a.field_type.as_deref() else { continue };
+            if ty.is_empty() || !ty.starts_with(|c: char| c.is_ascii_uppercase()) || !ty.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric()) {
+                return Err(format!("{}: attribute {} owns the type {ty:?}; a type name starts with an uppercase letter and has letters, digits and `_` only", m.id, a.name));
+            }
+            if RESERVED_TYPES.contains(&ty) {
+                return Err(format!("{}: attribute {} owns the type {ty}, which is a built-in type; choose another name", m.id, a.name));
+            }
+            if let Some(owner) = field_types.insert(ty, &m.id) {
+                return Err(format!("the type {ty} has two owners, {owner} and {}; uninstall one of them", m.id));
             }
         }
         for e in &m.exports {
@@ -148,6 +167,36 @@ mod tests {
         assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 2})).unwrap_err().contains("needs an `input` type"));
         assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 2, "input": "string"})).is_ok());
         assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 6, "output": "json"})).is_ok());
+    }
+
+    #[test]
+    fn an_attribute_owns_a_field_type_once_and_only_on_a_field() {
+        let owner = |id: &str, attribute: serde_json::Value| -> Manifest {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "version": "1.0.0", "schema_contract": "2.2", "host_contract": "1.0", "languages": [], "databases": [],
+                "attributes": [attribute],
+            })).unwrap()
+        };
+        let money = |id: &str, name: &str| owner(id, serde_json::json!({"name": name, "target": "field", "field_type": "Money", "identities": true}));
+        let ok = resolve_all(vec![money("acme.a", "a.money")]).unwrap();
+        assert_eq!(ok.manifests[0].attributes[0].field_type.as_deref(), Some("Money"));
+        assert!(ok.manifests[0].attributes[0].member && ok.manifests[0].attributes[0].identities);
+        let error = resolve_all(vec![money("acme.a", "a.money"), money("acme.b", "b.money")]).unwrap_err();
+        assert!(error.contains("the type Money has two owners, acme.a and acme.b"), "{error}");
+        for ty in RESERVED_TYPES {
+            let error = resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "field", "field_type": ty}))]).unwrap_err();
+            assert!(error.contains("acme.a") && error.contains("built-in type"), "{ty}: {error}");
+        }
+        let error = resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "field", "field_type": "money"}))]).unwrap_err();
+        assert!(error.contains("starts with an uppercase letter"), "{error}");
+        for key in [serde_json::json!({"field_type": "Money"}), serde_json::json!({"member": false})] {
+            let mut attribute = serde_json::json!({"name": "a.x", "target": "model"});
+            attribute.as_object_mut().unwrap().extend(key.as_object().unwrap().clone());
+            let error = resolve_all(vec![owner("acme.a", attribute)]).unwrap_err();
+            assert!(error.contains("acme.a") && error.contains("only a field attribute takes"), "{error}");
+        }
+        // `identities` is valid on a model attribute.
+        assert!(resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "model", "identities": true}))]).is_ok());
     }
 
     #[test]

@@ -52,13 +52,13 @@ fn an_after_pass_that_is_not_selected_orders_nothing() {
 fn attribute_ownership_and_phase_boundaries_are_checked() {
     let mut a = manifest("a", "a.lower", &[], &[]);
     a.attributes.push(Attribute { name: "a.rename".into(), target: AttributeTarget::Field,
-        arguments: BTreeMap::new(), positional: vec![] });
+        arguments: BTreeMap::new(), positional: vec![], field_type: None, member: true, identities: false });
     let mut b = manifest("b", "b.lower", &[], &[]);
     b.attributes = a.attributes.clone();
     assert!(Composition::resolve(vec![a.clone(), b]).unwrap_err().contains("a.rename"));
     let mut both = a.clone();
     both.attributes.push(Attribute { name: "a.rename".into(), target: AttributeTarget::Model,
-        arguments: BTreeMap::new(), positional: vec![] });
+        arguments: BTreeMap::new(), positional: vec![], field_type: None, member: true, identities: false });
     assert!(Composition::resolve(vec![both.clone()]).is_ok());
     both.attributes.push(both.attributes[1].clone());
     assert!(Composition::resolve(vec![both]).unwrap_err().contains("a.rename"));

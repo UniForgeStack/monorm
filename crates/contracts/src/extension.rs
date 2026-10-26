@@ -7,14 +7,15 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 1);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 2);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
 pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
 /// The minor that an IR carries only when it uses a record that a 2.0 engine lacks (`hooks`, `extension_data`).
-pub const SCHEMA_CONTRACT_MINOR: u32 = SCHEMA_CONTRACT_VERSION.minor as u32;
+/// Minor 2 adds manifest keys only, so no IR carries it.
+pub const SCHEMA_CONTRACT_MINOR: u32 = 1;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -504,7 +505,18 @@ pub struct Attribute {
     pub arguments: BTreeMap<String, Argument>,
     #[serde(default)]
     pub positional: Vec<Argument>,
+    /// A field attribute only: the DSL type that this attribute owns. A field of that type lowers to a placeholder column that the extension pass replaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_type: Option<String>,
+    /// `false` on a field attribute: the field is no model member, and lowering keeps only its declaration.
+    #[serde(default = "member_default", skip_serializing_if = "is_true")]
+    pub member: bool,
+    /// A schema that uses this attribute needs model identities.
+    #[serde(default, skip_serializing_if = "crate::ir::is_false")]
+    pub identities: bool,
 }
+fn member_default() -> bool { true }
+fn is_true(b: &bool) -> bool { *b }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Argument {
@@ -717,7 +729,7 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
     if !r.is_empty() && r.schema_contract != artifact.schema_contract {
         return Err(format!("schema contract {} unavailable (artifact {}); rebuild native artifact", r.schema_contract, artifact.schema_contract));
     }
-    if r.schema_contract_minor > SCHEMA_CONTRACT_MINOR {
+    if r.schema_contract_minor > SCHEMA_CONTRACT_VERSION.minor as u32 {
         return Err(format!("schema contract {}.{} is newer than this engine ({SCHEMA_CONTRACT_VERSION}); update the ORM or regenerate the models", r.schema_contract, r.schema_contract_minor));
     }
     if r.storage.is_some() && !artifact.capabilities.iter().any(|c| c == "physical-schema") {
@@ -1258,9 +1270,9 @@ mod tests {
         let next_minor = |v: ContractVersion| format!("{}.{}", v.major, v.minor + 1);
         assert!(check(&|_| {}).is_ok());
         let error = check(&|v| v["schema_contract"] = format!("{}.0", SCHEMA_CONTRACT_VERSION.major + 1).into()).unwrap_err();
-        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.1") && error.contains("major versions differ"), "{error}");
+        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.2") && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("schema contract 2.2 is newer than this engine (schema contract 2.1)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains("schema contract 2.3 is newer than this engine (schema contract 2.2)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
         let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
@@ -1362,9 +1374,9 @@ mod tests {
         assert!(!serde_json::to_string(&SchemaIr::default()).unwrap().contains("schema_contract_minor"));
         let mut newer = SchemaIr::default();
         newer.behavior.schema_contract = SCHEMA_CONTRACT;
-        newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_MINOR + 1;
+        newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_VERSION.minor as u32 + 1;
         let error = check_requirements(&newer, &Artifact::default()).unwrap_err();
-        assert!(error.contains("schema contract 2.2 is newer than this engine (2.1)"), "{error}");
+        assert!(error.contains("schema contract 2.3 is newer than this engine (2.2)"), "{error}");
         let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir.behavior.stamp_minor(); ir };
         let merged = merge_definition(data("a"), data("b")).unwrap();
         assert_eq!(merged.behavior.extension_data.len(), 2);
