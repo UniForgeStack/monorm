@@ -136,9 +136,11 @@ pub fn prepare_insert(
     {
         return Err(Error::query("computed fields are read-only"));
     }
-    let map = crate::behavior::input_map(logical.fields().len(), &positions)?;
     let mut rows = rows;
-    crate::behavior::insert_values(logical.native, &map, &mut rows, fields.len())?;
+    if logical.hooks.is_some() {
+        let map = crate::hooks::input_map(logical.fields().len(), &positions)?;
+        crate::hooks::insert_rows(logical, &map, &mut rows, false)?;
+    }
     let mut chain = vec![logical.owner];
     chain.extend(owner_chain(schema, logical.owner).iter().map(|l| l.parent));
     chain.reverse();

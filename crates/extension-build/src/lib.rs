@@ -120,7 +120,7 @@ pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> 
         if let Some(native) = native {
             source.push_str(&native.core);
         } else {
-            source.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum NativeModel { None }\nimpl NativeModel { pub fn computed(self) -> &'static [usize] { &[] } pub fn validated(self) -> &'static [usize] { &[] } pub fn has_records(self) -> bool { false } pub fn dependency(self, _field: usize) -> Option<usize> { None } }\npub fn bind(ir: &mut SchemaIr) -> Result<Vec<NativeModel>, String> { Ok(vec![NativeModel::None; ir.models.len()]) }\n");
+            source.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum NativeModel { None }\nimpl NativeModel { pub fn computed(self) -> &'static [usize] { &[] } pub fn static_hooks(self) -> Option<Box<crate::hooks::HookPlan>> { None } pub fn dependency(self, _field: usize) -> Option<usize> { None } }\npub fn bind(ir: &mut SchemaIr) -> Result<Vec<NativeModel>, String> { Ok(vec![NativeModel::None; ir.models.len()]) }\n");
         }
         Ok(source)
     }

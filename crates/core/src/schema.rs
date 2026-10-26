@@ -35,6 +35,8 @@ pub struct Model {
     pub delete_rewrite: Option<crate::writes::PreparedDeleteRewrite>,
     /// Field positions an instance write must match against the loaded value.
     pub guards: Vec<usize>,
+    /// The change-set hooks of this model; `None` when it has no binding.
+    pub hooks: Option<Box<crate::hooks::HookPlan>>,
     #[cfg(feature = "composition")]
     pub native: crate::behavior::NativeModel,
     #[cfg(feature = "composition")]
@@ -80,7 +82,7 @@ impl Model {
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
-            assignments: vec![], delete_rewrite: None, guards: vec![],
+            assignments: vec![], delete_rewrite: None, guards: vec![], hooks: None,
             #[cfg(feature = "composition")] native: crate::behavior::NativeModel::None,
             #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
             #[cfg(feature = "composition")] resolved_fields: vec![] })
@@ -244,13 +246,17 @@ impl Schema {
                 return Err(format!("{}.{}: an enum subset is only allowed on a field of a proxy model", m.name, f.name));
             }
             let client_defaults = crate::client_default::prepare(&m.name, &m.fields, &enums)?;
+            #[cfg(feature = "composition")]
+            let kind = native.next().expect("prepared model");
             models.push(Model {
                 file_fields: file_fields.next().expect("prepared file model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
                 assignments: vec![], delete_rewrite: None, guards: vec![],
-                #[cfg(feature = "composition")] native: native.next().expect("prepared model"),
+                #[cfg(feature = "composition")] hooks: kind.static_hooks(),
+                #[cfg(not(feature = "composition"))] hooks: None,
+                #[cfg(feature = "composition")] native: kind,
                 #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
             #[cfg(feature = "composition")] resolved_fields: vec![] });
         }

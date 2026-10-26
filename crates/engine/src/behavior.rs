@@ -6,28 +6,6 @@ use sea_query::Value;
 
 #[allow(unused_variables)]
 mod generated { include!(env!("ORM_ENGINE_COMPOSITION")); }
-pub use generated::{field, expression, omitted, upsert, insert_fields, record, insert_values, update_values};
-
-/// Map a logical field position to its supplied row slot, once per operation.
-pub fn input_map(width: usize, positions: &[usize]) -> crate::error::Result<Vec<Option<usize>>> {
-    let mut map = vec![None; width];
-    for (slot, &field) in positions.iter().enumerate() {
-        if map[field].is_some() { return Err(crate::error::Error::query("duplicate supplied field")); }
-        map[field] = Some(slot);
-    }
-    Ok(map)
-}
-
-/// Borrow supplied native values without constructing a callback argument buffer.
-pub trait Values {
-    fn value(&self, index: usize) -> Option<&Value>;
-}
-impl Values for [Value] {
-    fn value(&self, index: usize) -> Option<&Value> { self.get(index) }
-}
-impl Values for [Option<Value>] {
-    fn value(&self, index: usize) -> Option<&Value> { self.get(index).and_then(Option::as_ref) }
-}
 
 #[derive(Clone, Copy)]
 pub struct Computation {

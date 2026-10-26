@@ -10,6 +10,7 @@ name = "orm_engine"
 
 [dependencies]
 orm-core = { path = "../core", default-features = false }
+orm-contracts = { path = "../contracts" }
 # SQL building: one builder per dialect (multi-database support lives here).
 sea-query = { version = "1.0", default-features = false, features = ["with-chrono", "with-json", "with-uuid", "with-bigdecimal", "postgres-array", "thread-safe", "hashable-value"] }
 # Postgres driver (see src/db/postgres.rs).

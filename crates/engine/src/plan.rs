@@ -3072,26 +3072,24 @@ impl<'s> Planner<'s> {
         self.set_values(&q.set)
     }
 
-    /// `SET` values in `q.set` order, after the model's native field and record checks.
-    #[cfg(feature = "composition")]
+    /// `SET` values in `q.set` order, after the model's hook checks.
     fn set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
         let root = self.model(self.root);
         let positions: Vec<_> = set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<_>>()?;
+        #[cfg(feature = "composition")]
         if positions.iter().any(|p| root.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
-        let map = if root.native.has_records() { crate::behavior::input_map(root.fields().len(), &positions)? } else { vec![] };
+        if root.hooks.is_none() {
+            return set.iter().map(|a| {
+                let f = root.field(&a.field).map_err(query_err)?;
+                self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
+            }).collect();
+        }
         let mut values = Vec::with_capacity(set.len());
         for (a, &position) in set.iter().zip(&positions) {
             let f = &root.fields()[position];
-            values.push(if let Expr::Param { i } = &a.value {
-                let mut value = self.params.value(self.param(*i)?, Some(f.value_type()))?;
-                crate::behavior::field(root.native, position, &mut value)?;
-                Some(value)
-            } else {
-                crate::behavior::expression(root.native, position)?;
-                None
-            });
+            values.push(if let Expr::Param { i } = &a.value { Some(self.params.value(self.param(*i)?, Some(f.value_type()))?) } else { None });
         }
-        crate::behavior::record(root.native, &map, values.as_slice())?;
+        crate::hooks::update_set(root, &positions, &mut values)?;
         set.iter().zip(values).map(|(a, value)| {
             let f = root.field(&a.field).map_err(query_err)?;
             match value { Some(value) => Ok(bind(value, Some(f))), None => self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) }) }
@@ -3213,13 +3211,7 @@ impl<'s> Planner<'s> {
             return Err(Error::query("update() needs at least one field"));
         }
         let (set, nested) = self.nested_sets(&q.set)?;
-        #[cfg(feature = "composition")]
         let values = self.set_values(&set)?;
-        #[cfg(not(feature = "composition"))]
-        let values = set.iter().map(|a| {
-            let f = root.field(&a.field).map_err(query_err)?;
-            self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
-        }).collect::<Result<Vec<_>>>()?;
         self.update_assignments(&mut stmt, &set, values)?;
         for (column, v) in nested {
             stmt.value(column.to_owned(), v);
@@ -3798,14 +3790,15 @@ pub fn plan_insert(
     let fields: &[String] = &fields;
     #[cfg(feature = "composition")]
     crate::ownership::require_local_write(m)?;
-    #[cfg(feature = "composition")]
     let rows = {
-        if on_conflict.is_some() { crate::behavior::upsert(m.native)?; }
         let mut rows = rows;
         let positions: Vec<_> = fields.iter().map(|name| m.field_pos(name).map_err(query_err)).collect::<Result<_>>()?;
-        let map = crate::behavior::input_map(m.fields().len(), &positions)?;
+        #[cfg(feature = "composition")]
         if positions.iter().any(|p| m.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
-        crate::behavior::insert_values(m.native, &map, &mut rows, fields.len())?;
+        if m.hooks.is_some() {
+            let map = crate::hooks::input_map(m.fields().len(), &positions)?;
+            crate::hooks::insert_rows(m, &map, &mut rows, on_conflict.is_some())?;
+        }
         rows
     };
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;

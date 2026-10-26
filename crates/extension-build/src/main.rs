@@ -121,6 +121,13 @@ fn build() -> Result<(), String> {
         config.dependencies.insert(module.alias.clone(), toml::Value::try_from(serde_json::json!({"path":folder, "package":format!("orm-app-{}",module.alias.replace('_', "-"))})).map_err(|e| e.to_string())?);
     }
     for dir in ["core", "engine", "cli"] { copy_tree(&config.host.join("crates").join(dir), &config.output.join("crates").join(dir))?; }
+    // The engine reads the contracts SDK from the host, as the core does.
+    let engine_path = config.output.join("crates/engine/Cargo.toml");
+    let mut engine: toml::Value = toml::from_str(&fs::read_to_string(&engine_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    if let Some(path) = engine["dependencies"].get_mut("orm-contracts").and_then(|d| d.get_mut("path")) {
+        *path = toml::Value::String(config.host.join("crates/contracts").to_string_lossy().into());
+    }
+    fs::write(&engine_path, toml::to_string(&engine).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     for binding in &config.bindings { copy_tree(&config.host.join(binding_dir(binding)), &config.output.join(binding_dir(binding)))?; }
     // The emitted CLI/core tests build the outside library against the host SDK.
     let fixture = Path::new("tests/outside-extension");
