@@ -791,7 +791,7 @@ fn a_manifest_attribute_owns_a_field_type_or_drops_a_field() {
     let (deferred, proxies) = Default::default();
     let error = lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies, owned_types: &owned }.lower(items).unwrap_err().msg;
     assert!(error.contains("unknown type Generic; a Generic field needs @generic.relation(...) (namespace generic.*)"), "{error}");
-    // With no owner, the type is plain unknown, and the namespace error is the one that the user sees for the attribute.
+    // Without an owner, the type is plain unknown.
     let error = compile("model Tag {\n id Int @id\n target Generic?\n}", None).unwrap_err();
     assert!(error.contains("unknown type Generic; expected a model or") && !error.contains("needs @"), "{error}");
     let error = compile("model Tag {\n id Int @id\n}\nmodel Post {\n id Int @id\n tags Tag[] @generic.reverse\n}", None).unwrap_err();

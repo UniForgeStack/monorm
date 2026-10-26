@@ -172,7 +172,8 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, cap
     )
     if "generic-relations" not in json.loads(_native.native_artifact())["capabilities"]:
         assert cli(["--schema", str(schema), "identities"]) != 0
-        assert "unknown type Generic; a Generic field needs @generic.relation(...) (namespace generic.*)" in capfd.readouterr().err
+        # The first declaration in the file (`@generic.reverse` on Post) reports the missing extension.
+        assert "@generic.reverse: not compiled into this artifact" in capfd.readouterr().err
         return
     generate(schema)
     registry = orm.Registry()

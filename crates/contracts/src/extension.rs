@@ -14,7 +14,7 @@ pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
 /// The minor that an IR carries only when it uses a record that a 2.0 engine lacks (`hooks`, `extension_data`).
-/// Minor 2 adds manifest keys only, so no IR carries it.
+/// Manifest-only keys (minor 2) never reach an IR, so this stays at the IR minor.
 pub const SCHEMA_CONTRACT_MINOR: u32 = 1;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
