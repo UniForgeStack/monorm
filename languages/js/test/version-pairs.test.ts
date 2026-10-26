@@ -1,15 +1,21 @@
 /** Run with an artifact that selects the locking extension: bound writes check the loaded versions. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import { connect, NotLoaded, of, Registry, VersionConflict, type Database } from "../src/index.js";
-import { native } from "../src/native.js";
+import { main as cli } from "../src/cli.js";
 import { loadsSoftDelete } from "./soft-delete-ext.js";
 import { hasExtension } from "./artifact-caps.js";
+
+// Under this package, so the schema finds the installed extension packages as direct dependencies.
+function scratch(prefix: string): string {
+  const base = join(import.meta.dirname, "..", "..", ".test-tmp");
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(join(base, prefix));
+}
 
 const locking = { skip: !hasExtension("orm.locking") };
 const both = { skip: !hasExtension("orm.locking") || !hasExtension("orm.soft-delete") };
@@ -52,9 +58,9 @@ async function open(dialect: string): Promise<[Database, Models, string[]]> {
 
 /** Load a schema through the `models.ts` that `orm generate` writes, as an application does, on SQLite. */
 async function openGenerated(schema: string): Promise<[Database, Models, string[]]> {
-  const root = mkdtempSync(join(tmpdir(), "orm-version-pairs-"));
+  const root = scratch("orm-version-pairs-");
   writeFileSync(join(root, "schema.prisma"), 'datasource db { provider = "sqlite" }\n' + schema);
-  assert.equal(await native().cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"]), 0);
+  assert.equal(await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"]), 0);
   const src = join(import.meta.dirname, "..", "src");
   const imports: Record<string, string> = { '"orm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"orm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
   const emit = (from: string, to: string) => {
@@ -67,7 +73,6 @@ async function openGenerated(schema: string): Promise<[Database, Models, string[
   };
   const out = join(root, "js");
   emit(root, out);
-  for (const dir of readdirSync(join(root, "orm-ext"))) emit(join(root, "orm-ext", dir), join(out, "orm-ext", dir));
   // Bun runs every test file in one process, so the default registry may already hold these models.
   const file = join(out, "models.js");
   const source = readFileSync(file, "utf8");

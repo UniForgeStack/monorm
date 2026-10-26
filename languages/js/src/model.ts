@@ -19,6 +19,7 @@ import { resolveExtensions } from "./packages.js";
 import { call, native, type NativeShape, type NativeSchema } from "./native.js";
 import { key as keyOf } from "./value-key.js";
 import { resolve, type Database } from "./db.js";
+import * as references from "./references.js";
 import { applyExtensions, packageContracts, packageMembers, type ExtensionCode, type Mixin } from "./extensions.js";
 import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
@@ -33,9 +34,8 @@ export const INTERNAL: unique symbol = Symbol.for("orm.internal");
 const artifact = JSON.parse(native().nativeArtifact()) as { capabilities: string[]; requires?: Record<string, string[]> };
 const capabilities: readonly string[] = artifact.capabilities;
 checkRequires(artifact);
-// Adapter selection happens once; baseline artifacts never import its runtime module.
-const referenceAdapter = capabilities.includes("reference-loading")
-  ? await import("./references.js") : undefined;
+// Adapter selection happens once. The import is static: a top-level await would stop a synchronous require() of any package that imports `orm`.
+const referenceAdapter = capabilities.includes("reference-loading") ? references : undefined;
 
 export type IRField = {
   name: string;

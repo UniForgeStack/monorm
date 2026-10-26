@@ -1,23 +1,12 @@
 // `modelFor` and the expanded models from the schema language to the database; needs an inherit artifact.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, readFileSync, symlinkSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { connect, loads, Registry } from '../../../../languages/js/dist/src/index.js';
-
-const js = new URL('../../../../languages/js/', import.meta.url).pathname;
-const source = new URL('../../typescript/src/index.ts', import.meta.url).pathname;
+import { modelFor } from '../../../../languages/js/node_modules/@orm/inherit/index.js';
 const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.url), 'utf8');
 
-// compile the extension's own source next to a `node_modules/orm` link, as the artifact build does
-const dir = mkdtempSync(join(tmpdir(), 'orm-inherit-'));
-mkdirSync(join(dir, 'node_modules'));
-symlinkSync(js, join(dir, 'node_modules/orm'));
-copyFileSync(source, join(dir, 'index.ts'));
-execFileSync(join(js, 'node_modules/.bin/tsc'), [join(dir, 'index.ts'), '--outDir', dir, '--module', 'ESNext', '--moduleResolution', 'Bundler', '--target', 'ES2022', '--skipLibCheck', '--types', 'node', '--typeRoots', join(js, 'node_modules/@types')], { stdio: 'inherit' });
-const { modelFor } = await import(pathToFileURL(join(dir, 'index.js')).href);
+// loads() discovers direct package dependencies from the consumer's working directory.
+process.chdir(new URL('../../../../languages/js/', import.meta.url).pathname);
 
 async function run(provider, url) {
   const registry = new Registry();

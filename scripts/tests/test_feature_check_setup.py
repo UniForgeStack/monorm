@@ -16,6 +16,9 @@ class FeatureCheckSetupTest(unittest.TestCase):
             root = Path(temporary)
             (root / "scripts").mkdir()
             shutil.copy(script, root / "scripts/feature-check.sh")
+            installer = root / "scripts/install-extension-packages.sh"
+            installer.write_text("#!/bin/sh\nexit 0\n")
+            installer.chmod(0o755)
             for directory in ("languages/js", "extensions/file-storage/integration/typescript"):
                 (root / directory).mkdir(parents=True)
             tools = root / "tools"
@@ -39,6 +42,8 @@ esac
             for program in ("mypy", "pyright"):
                 executable(venv / program, "exit 0\n")
             executable(tools / "node", "exit 0\n")
+            executable(tools / "bun", "exit 0\n")
+            (root / "apps/auth/typescript").mkdir(parents=True)
             package = root / "languages/python/packaging/custom/orm_native_custom"
             package.mkdir(parents=True)
             (package / "__init__.py").touch()
@@ -52,14 +57,14 @@ esac
 case "$*" in
   test*) command -v mypy && command -v pyright ;;
   run*)
-    mkdir -p "$ORM_FEATURE_CHECK_DIR/tracking/build" "$ORM_FEATURE_CHECK_DIR/target/debug"
+    mkdir -p "$ORM_FEATURE_CHECK_DIR/file-storage/build" "$ORM_FEATURE_CHECK_DIR/target/debug"
     for library in lib_native.so lib_native.dylib liborm_node.so liborm_node.dylib; do
       touch "$ORM_FEATURE_CHECK_DIR/target/debug/$library"
     done ;;
 esac
 ''')
             result = subprocess.run(
-                ["/bin/bash", str(root / "scripts/feature-check.sh"), "tracking"],
+                ["/bin/bash", str(root / "scripts/feature-check.sh"), "file-storage"],
                 env={
                     **os.environ,
                     "PATH": f"{tools}:/usr/bin:/bin",
@@ -76,7 +81,7 @@ esac
             for expected in (
                 "storage rust-extension PASS",
                 "storage typescript-integration PASS",
-                "tracking build PASS",
+                "file-storage build PASS",
             ):
                 with self.subTest(expected=expected):
                     self.assertIn(expected, matrix)

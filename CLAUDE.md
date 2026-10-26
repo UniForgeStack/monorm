@@ -18,23 +18,32 @@
 ```bash
 service postgresql start          # the test database (postgres:postgres@localhost/orm_test)
 . .venv/bin/activate && uv pip install -e .   # the thin `orm` package (languages/python/)
+scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
 (cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
-cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-build
+cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-build -p orm-extension-package
 mypy --strict languages/python/orm && pyright languages/python/orm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
+cd ../..
+uv pip install -e apps/auth/python
+python -m pytest -q apps/auth/python/tests
+python extensions/inherit/tests/public/python.py
+(cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
+(cd apps/auth/typescript && npm test && npm run test:bun)
+scripts/check-extension-packages.sh  # fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 ```
 
 ## Feature artifacts
 
 The checks above build no optional feature. `scripts/feature-check.sh` builds one
 artifact per feature extension (proxy-models, query-defaults, model-composition,
-file-storage, generic-relations, tracking: timestamps, soft-delete and locking, inherit) and one with all of them through `orm-extension-build`;
+file-storage, generic-relations) and one with all of them through `orm-extension-build`;
 the extension manifests select the Cargo features, never a hand-set `--features`.
 On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
 and inherit public scripts, and once the `extensions/file-storage` packages and their end-to-end scripts.
-On each artifact that has `inherit` it also runs the `apps/auth` Python, `npm test` and bun tests.
+The timestamps, soft-delete, locking and inherit packages are installed on every artifact.
+Each artifact also runs the `apps/auth` Python, `npm test` and bun tests.
 CI runs it (`.github/workflows/feature-check.yml`). Run it before you commit a change
 to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code:
 

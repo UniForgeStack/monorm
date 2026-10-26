@@ -1,13 +1,19 @@
 // Type-checks the generated soft-delete members: each `// E:` line must fail and no other line may.
 // Runs only with an artifact that selects the soft-delete extension.
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import ts from "typescript";
-import { native } from "../src/native.js";
+import { main as cli } from "../src/cli.js";
 import { hasExtension } from "./artifact-caps.js";
+
+// Under this package, so the schema finds the installed extension packages as direct dependencies.
+function scratch(prefix: string): string {
+  const base = join(import.meta.dirname, "..", "..", ".test-tmp");
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(join(base, prefix));
+}
 
 const SCHEMA = `model Post {
   id         Int       @id
@@ -53,9 +59,9 @@ export async function go() {
 const EXPECTED = USE.split("\n").flatMap((line, i) => (line.includes("// E:") ? [i + 1] : []));
 
 test("the generated soft-delete members type-check on the soft-delete model only", { skip: !hasExtension("orm.soft-delete") }, async () => {
-  const root = mkdtempSync(join(tmpdir(), "orm-sd-typing-"));
+  const root = scratch("orm-sd-typing-");
   writeFileSync(join(root, "schema.prisma"), SCHEMA);
-  const exit = await native().cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"]);
+  const exit = await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"]);
   assert.equal(exit, 0);
   writeFileSync(join(root, "package.json"), '{"type":"module"}');
   writeFileSync(join(root, "use.ts"), USE);

@@ -4,8 +4,8 @@ The `orm.inherit` extension (crate `orm-inherit`, `extensions/inherit`) lets one
 It has no host feature and no capability.
 Its pass runs in the `declaration` phase, so the host and the other extensions see only ordinary models.
 
-**Enable:** select the `orm-inherit` crate in your build.
-See [build-time-extensions.md](../contracts/build-time-extensions.md).
+**Enable:** install the `orm-inherit` Python package or the `@orm/inherit` npm package.
+The packages come from `scripts/install-extension-packages.sh`, which uses `orm-extension-package`; see [build-time-extensions.md](../contracts/build-time-extensions.md).
 
 ## Schema
 
@@ -100,7 +100,7 @@ A hand-written `through:` relation on `User` and its join model follow the child
 
 ## Get the active model
 
-`model_for("User")` (Python, `orm_ext.orm_inherit`) and `modelFor("User")` (TypeScript, `orm-ext/orm-inherit`) return `MyUser`.
+`model_for("User")` (Python, `orm_inherit`) and `modelFor("User")` (TypeScript, `@orm/inherit`) return `MyUser`.
 They return the name's own model when nothing overrides it.
 The Python function returns `Any`; the TypeScript function returns the registered model without a static type.
 

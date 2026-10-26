@@ -118,6 +118,14 @@ export async function makeAuth(provider: Provider, variant: Variant): Promise<Au
   const dir = mkdtempSync(join(tmpdir(), "orm-auth-"));
   mkdirSync(join(dir, "node_modules"));
   symlinkSync(PACKAGE, join(dir, "node_modules", "orm-auth"));
+  // A fresh consumer declares pass packages directly, as package discovery requires.
+  mkdirSync(join(dir, "node_modules", "@orm"));
+  const dependencies: Record<string, string> = { "orm-auth": "0.1.0" };
+  for (const name of ["timestamps", "soft-delete", "locking", "inherit"]) {
+    symlinkSync(join(PACKAGE, "node_modules", "@orm", name), join(dir, "node_modules", "@orm", name));
+    dependencies[`@orm/${name}`] = "0.1.0";
+  }
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies }));
   const schema = join(dir, "schema.prisma");
   writeFileSync(schema, HEADER(provider) + variant.schema);
   const registry = new Registry();

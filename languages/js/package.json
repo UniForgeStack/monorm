@@ -32,7 +32,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/typing/tsconfig.json --noEmit",
     "test": "npm run build && node --expose-gc --test --test-concurrency=1 \"dist/test/**/*.test.js\"",
-    "test:bun": "bun test --timeout 300000 ./test/"
+    "test:bun": "npm run build && bun test --timeout 300000 ./dist/test/"
   },
   "dependencies": {
     "decimal.js": "^10.4.3",
@@ -40,7 +40,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "@orm/timestamps": "file:../../target/extension-packages/timestamps/npm",
+    "@orm/soft-delete": "file:../../target/extension-packages/soft-delete/npm",
+    "@orm/locking": "file:../../target/extension-packages/locking/npm",
+    "@orm/inherit": "file:../../target/extension-packages/inherit/npm"
   },
   "files": [
     "dist/src"

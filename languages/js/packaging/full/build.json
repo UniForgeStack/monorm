@@ -30,22 +30,6 @@
     "generic": {
       "package": "orm-generic",
       "path": "../../../../extensions/generic"
-    },
-    "timestamps": {
-      "package": "orm-timestamps",
-      "path": "../../../../extensions/timestamps"
-    },
-    "soft_delete": {
-      "package": "orm-soft-delete",
-      "path": "../../../../extensions/soft-delete"
-    },
-    "locking": {
-      "package": "orm-locking",
-      "path": "../../../../extensions/locking"
-    },
-    "inherit": {
-      "package": "orm-inherit",
-      "path": "../../../../extensions/inherit"
     }
   }
 }

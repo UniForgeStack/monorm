@@ -1,13 +1,11 @@
 """`model_for` and the expanded models from the schema language to the database; needs an inherit artifact."""
 
 import asyncio
-import sys
 from pathlib import Path
 
 import orm
 
 ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT.parent / "python"))
 from orm_inherit import model_for  # noqa: E402
 
 FIXTURE = ROOT.joinpath("fixtures/schema.prisma").read_text()

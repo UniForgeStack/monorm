@@ -6,7 +6,8 @@ import sys
 import pytest
 
 import orm
-from orm import _native, model as orm_model
+from orm import model as orm_model
+from orm.__main__ import main as cli
 from test_tracking import DATABASES, connect, requires
 
 LOCKED = """
@@ -242,7 +243,7 @@ async def generated(tmp_path, monkeypatch):
         (root / package / "__init__.py").write_text("")
         (root / "schema.prisma").write_text('datasource db { provider = "sqlite" }\n' + schema)
         args = ["--schema", str(root / "schema.prisma"), "generate", "python", "-o", str(root / package / "models.py")]
-        assert _native.cli(args) == 0
+        assert cli(args) == 0
         registry = orm.Registry()
         monkeypatch.syspath_prepend(str(root))
         monkeypatch.setattr(orm_model, "_default_registry", lambda: registry)

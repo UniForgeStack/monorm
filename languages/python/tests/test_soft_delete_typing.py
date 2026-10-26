@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from artifact_caps import has_extension
-from orm import _native
+from orm.__main__ import main as cli
 
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA = """\
@@ -65,7 +65,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
     (pkg / "__init__.py").write_text("")
     (pkg / "use.py").write_text(USE)
     (root / "schema.prisma").write_text(SCHEMA)
-    code = _native.cli(["--schema", str(root / "schema.prisma"), "generate", "python", "-o", str(pkg / "models.py")])
+    code = cli(["--schema", str(root / "schema.prisma"), "generate", "python", "-o", str(pkg / "models.py")])
     assert code == 0
     return pkg
 
