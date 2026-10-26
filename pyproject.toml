@@ -6,7 +6,27 @@ build-backend = "setuptools.build_meta"
 name = "orm"
 version = "0.1.0"
 description = "Async Python ORM with a Rust core"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+keywords = ["orm", "async", "asyncio", "rust", "postgresql", "sqlite", "prisma", "migrations"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Rust",
+  "Framework :: AsyncIO",
+  "Topic :: Database",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/UniForgeStack/monorm"
+Issues = "https://github.com/UniForgeStack/monorm/issues"
+Changelog = "https://github.com/UniForgeStack/monorm/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 postgres = ["orm-native-postgres==0.1.0"]

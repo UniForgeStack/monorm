@@ -1,5 +1,7 @@
 # Working on this repo
 
+Outside contributors: read [CONTRIBUTING.md](CONTRIBUTING.md). It has the same checks (keep the two lists in step) and the PR rules.
+
 ## Git
 
 - Commit directly on `main` and push to `origin main`. No feature branches or pull

@@ -1,0 +1,61 @@
+name: Bug report
+description: Something does not work as the docs say.
+labels: [bug]
+body:
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language
+      options: [Python, TypeScript on Node, TypeScript on Bun, Rust client, Command line]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The package version, or the output of `git rev-parse HEAD` for a source build.
+    validations:
+      required: true
+  - type: input
+    id: database
+    attributes:
+      label: Database and version
+      placeholder: PostgreSQL 18.1, SQLite 3.46
+    validations:
+      required: true
+  - type: input
+    id: profile
+    attributes:
+      label: Native profile (`ORM_PROFILE`)
+      placeholder: postgres, sqlite, combined, tooling, full or custom
+  - type: dropdown
+    id: extensions
+    attributes:
+      label: Did you build with extensions?
+      options: ["No", "Yes (name them in the description)"]
+  - type: textarea
+    id: schema
+    attributes:
+      label: Schema excerpt
+      render: prisma
+  - type: textarea
+    id: code
+    attributes:
+      label: Code that shows the problem
+      description: The smallest code that fails.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: The output or the full error.
+    validations:
+      required: true

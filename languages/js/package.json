@@ -3,6 +3,25 @@
   "version": "0.1.0",
   "description": "TypeScript ORM with a Rust core: the same engine and schema as the Python package",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UniForgeStack/monorm.git",
+    "directory": "languages/js"
+  },
+  "bugs": {
+    "url": "https://github.com/UniForgeStack/monorm/issues"
+  },
+  "homepage": "https://github.com/UniForgeStack/monorm#readme",
+  "keywords": [
+    "orm",
+    "typescript",
+    "rust",
+    "postgresql",
+    "sqlite",
+    "prisma",
+    "migrations",
+    "napi"
+  ],
   "private": true,
   "type": "module",
   "main": "./dist/src/index.js",
