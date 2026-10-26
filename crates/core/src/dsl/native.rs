@@ -91,7 +91,7 @@ pub struct Conversion {
 /// Prepare and validate all source changes before exposing any file replacement.
 pub fn prepare(path: &Path, installed: &Installed, previous: &DbSchema) -> Result<Conversion, String> {
     let project = super::compile_project_file_with(path, installed)?;
-    let original = migrate::plan(&Schema::from_ir(super::compile_project_file_with(path, installed)?.ir)?, previous)?;
+    let original = migrate::plan(&Schema::from_ir_unbound(super::compile_project_file_with(path, installed)?.ir)?, previous)?;
     let root = path.canonicalize().map_err(|e| e.to_string())?;
     let root_source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut files = BTreeMap::new();
@@ -112,7 +112,7 @@ pub fn prepare(path: &Path, installed: &Installed, previous: &DbSchema) -> Resul
             files.insert(canonical.clone(), candidate.clone());
             let proposed_source = files.get(&root).unwrap_or(&root_source);
             let target = super::compile_project_overlay(proposed_source, Some(path), None, installed, &files)
-                .and_then(|p| Schema::from_ir(p.ir)).and_then(|s| migrate::plan(&s, previous));
+                .and_then(|p| Schema::from_ir_unbound(p.ir)).and_then(|s| migrate::plan(&s, previous));
             let reason = match target {
                 Ok(target) if previous.version == 0 || target.snapshot == original.snapshot => None,
                 Ok(_) => Some("cannot uniquely retain migration snapshot SQL and name".to_owned()),

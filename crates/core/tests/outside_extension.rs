@@ -470,6 +470,16 @@ fn a_hook_binding_without_a_package_directory_fails_define() {
     assert!(error.contains(ID) && error.contains("no package directory"), "{error}");
 }
 
+// Code generation, migrations and compile-time checks build a schema without any extension library.
+#[test]
+fn a_schema_with_hook_bindings_builds_unbound_without_a_package_directory() {
+    let ir = hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
+    let schema = orm_core::schema::Schema::from_ir_unbound(ir).unwrap();
+    assert!(schema.models.iter().all(|m| m.hooks.is_none()), "no binding is resolved");
+    let (_, checked) = orm_core::dsl::check(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null)).unwrap();
+    assert!(checked.models.iter().all(|m| m.hooks.is_none()));
+}
+
 #[test]
 fn a_binding_to_a_missing_export_and_a_failing_init_fail_define_with_the_id() {
     let manifest = installed("", "0.2");

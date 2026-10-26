@@ -157,15 +157,19 @@ pub struct Schema {
 }
 
 impl Schema {
-    pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, &Default::default()) }
+    pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, Some(&Default::default())) }
+
+    /// Like `from_ir`, and leaves the hook bindings unresolved: code generation, migrations and compile-time checks
+    /// need no extension library.
+    pub fn from_ir_unbound(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, None) }
 
     /// Like `from_ir`, and loads the library of each package in `packages` (extension id to package directory)
     /// that has hook bindings in the IR.
     pub fn from_ir_with_packages(ir: SchemaIr, packages: &std::collections::BTreeMap<String, std::path::PathBuf>) -> Result<Self> {
-        Self::from_ir_impl(ir, true, packages)
+        Self::from_ir_impl(ir, true, Some(packages))
     }
 
-    fn from_ir_impl(mut ir: SchemaIr, behavioral: bool, packages: &std::collections::BTreeMap<String, std::path::PathBuf>) -> Result<Self> {
+    fn from_ir_impl(mut ir: SchemaIr, behavioral: bool, packages: Option<&std::collections::BTreeMap<String, std::path::PathBuf>>) -> Result<Self> {
         crate::identity::validate(&ir)?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
@@ -183,7 +187,7 @@ impl Schema {
                     "native_expression_slots": ir.native_expression_slots,
                     "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities, "partitions": ir.partitions,
                 })).map_err(|e| e.to_string())?;
-                Some(Box::new(Self::from_ir_impl(physical, false, &Default::default())?))
+                Some(Box::new(Self::from_ir_impl(physical, false, None)?))
             }
             None => None,
         };
@@ -286,7 +290,7 @@ impl Schema {
         }
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
-        if behavioral { crate::hooks::bind(&mut models, &model_index, &ir.behavior, packages)?; }
+        if let (true, Some(packages)) = (behavioral, packages) { crate::hooks::bind(&mut models, &model_index, &ir.behavior, packages)?; }
         #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
         #[cfg(feature = "composition")]

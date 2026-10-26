@@ -30,7 +30,7 @@ target = "model"
 id = "acme.outside.guard"
 phase = "declaration"
 after = ["acme.outside.tag"]
-effects = ["behavior.hooks.outside", "behavior.write_assignments.outside", "behavior.read_defaults.outside"]
+effects = ["behavior.hooks.outside", "behavior.write_assignments.outside", "behavior.outside_read_defaults"]
 
 # Hooks of the library. `outside.prefix` reads the `{"prefix": ...}` of its `extension_data` entry.
 [[exports]]

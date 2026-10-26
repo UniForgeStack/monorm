@@ -247,7 +247,7 @@ fn main() -> Result<(), String> {
     };
     orm_core::behavior::prepare(&mut ir, None)?;
     let json = serde_json::to_vec(&ir).map_err(|e| e.to_string())?;
-    orm_core::schema::Schema::from_ir(serde_json::from_slice(&json).map_err(|e| e.to_string())?)?;
+    orm_core::schema::Schema::from_ir_unbound(serde_json::from_slice(&json).map_err(|e| e.to_string())?)?;
     std::fs::write(&args[2], json).map_err(|e| e.to_string())
 }
 "#).map_err(|e| e.to_string())?;
