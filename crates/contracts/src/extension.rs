@@ -111,6 +111,14 @@ pub struct PackageStamp {
     /// The attribute names of the manifest: a lowered declaration of one of them needs no compiled manifest.
     #[serde(default)]
     pub attributes: Vec<String>,
+    #[serde(default)]
+    pub languages: Vec<String>,
+    #[serde(default)]
+    pub databases: Vec<String>,
+    #[serde(default)]
+    pub language_members: BTreeMap<String, LanguageSection>,
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, String>,
 }
 
 impl Requirements {
@@ -577,8 +585,12 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
     let fail = |d: &Declaration, msg: String| format!("{}:{}:{}: @{}: {msg}",
         d.location.file, d.location.line, d.location.column, d.attribute);
     for d in &ir.behavior.declarations {
-        // A library lowered it, and its manifest is not in this artifact.
-        if d.lowered && ir.behavior.packages.values().any(|p| p.attributes.contains(&d.attribute)) { continue; }
+        if d.lowered {
+            if let Some((id, package)) = ir.behavior.packages.iter().find(|(_, p)| p.attributes.contains(&d.attribute)) {
+                validate_package_support(id, package, ir.dialect.name(), language).map_err(|e| fail(d, e))?;
+                continue;
+            }
+        }
         // One name can have a model entry (`@@x`) and a field entry (`@x`).
         let named = || manifests.iter().flat_map(|m| m.attributes.iter().map(move |a| (m, a))).filter(|(_, a)| a.name == d.attribute);
         let found = named().find(|(_, a)| (a.target == AttributeTarget::Field) == d.field.is_some()).or_else(|| named().next());
@@ -677,9 +689,25 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
     Ok(())
 }
 
+fn validate_package_support(id: &str, package: &PackageStamp, database: &str, language: Option<&str>) -> Result<(), String> {
+    if !package.databases.iter().any(|d| d == database) {
+        return Err(format!("{id}@{} does not support {database}", package.version));
+    }
+    if language.is_some_and(|l| !package.languages.iter().any(|s| s == l)) {
+        return Err(format!("{id}@{} does not support this language binding", package.version));
+    }
+    Ok(())
+}
+
 /// Validate active compiled contributions even when a normalized schema carries no
 /// source declarations (e.g. generated code or a matching native specialization).
 pub fn validate_requirements(ir: &SchemaIr, manifests: &[Manifest], language: Option<&str>) -> Result<(), String> {
+    for (id, package) in &ir.behavior.packages {
+        if manifests.iter().any(|m| m.id == *id && !m.is_dynamic()) {
+            return Err(format!("extension {id} is in both the generated packages and the native artifact"));
+        }
+        validate_package_support(id, package, ir.dialect.name(), language)?;
+    }
     for (id, version) in &ir.behavior.extensions {
         let manifest = manifests.iter().find(|m| m.id == *id && m.version == *version)
             .ok_or_else(|| format!("missing extension {id}@{version}; rebuild native artifact"))?;
@@ -927,6 +955,25 @@ mod tests {
             location: SourceLocation { file: "schema.prisma".into(), line: 3, column: 7 }, lowered: false,
         });
         ir
+    }
+
+    #[test]
+    fn packaged_declarations_and_requirements_check_the_stamped_support() {
+        let mut ir = schema(crate::dialect::Dialect::Sqlite);
+        ir.behavior.declarations[0].lowered = true;
+        let mut stamp = PackageStamp { version: "1.0.0".into(), attributes: vec!["app.trim".into()], ..PackageStamp::default() };
+        // Deserialize the stamped manifest data, as generated models do.
+        let mut value = serde_json::to_value(&stamp).unwrap();
+        value["languages"] = serde_json::json!(["python"]);
+        value["databases"] = serde_json::json!(["sqlite"]);
+        stamp = serde_json::from_value(value).unwrap();
+        ir.behavior.packages.insert("app".into(), stamp);
+        assert!(validate_declarations(&ir, &[], Some("python")).is_ok());
+        assert!(validate_declarations(&ir, &[], Some("typescript")).unwrap_err().contains("does not support this language binding"));
+        ir.behavior.declarations.clear();
+        assert!(validate_requirements(&ir, &[], Some("typescript")).unwrap_err().contains("does not support this language binding"));
+        ir.dialect = crate::dialect::Dialect::Postgres;
+        assert!(validate_requirements(&ir, &[], Some("python")).unwrap_err().contains("does not support postgres"));
     }
 
     #[test]

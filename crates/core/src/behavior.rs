@@ -60,7 +60,7 @@ pub fn extension_code(language: &str) -> Vec<crate::codegen::ExtensionCode> {
     order.into_iter().filter_map(|m| {
         let members = artifact().language_members.iter().find(|r| r.extension == m.id && r.language == language)?.clone();
         let files = sources.iter().filter(|(e, l, _, _)| *e == m.id && *l == language).map(|(_, _, f, c)| (f.to_string(), c.to_string())).collect();
-        Some(crate::codegen::ExtensionCode { members, attributes: m.attributes.iter().map(|a| a.name.clone()).collect(), files })
+        Some(crate::codegen::ExtensionCode { runtime_module: None, members, attributes: m.attributes.iter().map(|a| a.name.clone()).collect(), files })
     }).collect()
 }
 
@@ -82,6 +82,7 @@ pub fn prepare_with(ir: &mut crate::ir::SchemaIr, language: Option<&str>, plan: 
         #[cfg(not(feature = "composition"))]
         { validate_declarations(ir, &[], language)?; }
     }
+    validate_requirements(ir, manifests(), language)?;
     check_requirements(ir, artifact())
 }
 

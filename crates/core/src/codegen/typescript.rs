@@ -598,7 +598,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     if !ir.behavior.type_models.is_empty() {
         types.push("ModelSpec");
     }
-    let used_exts: BTreeSet<usize> = schema.models.iter().flat_map(|m| options.model_extensions(ir, &m.ir.name).into_iter().map(|(i, _)| i)).collect();
+    let used_exts: BTreeSet<usize> = schema.models.iter().flat_map(|m| options.model_extensions(ir, &m.ir.name).into_iter().map(|(i, _)| i)).chain(options.extensions.iter().enumerate().filter(|(_, e)| e.runtime_module.is_some()).map(|(i, _)| i)).collect();
     if !query_sets.is_empty() || !used_exts.is_empty() {
         types.push("QueriesOf");
     }
@@ -620,12 +620,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(out, "import * as _m{i} from {};", quote(module)).unwrap();
     }
     for i in &used_exts {
-        writeln!(out, "import * as _e{i} from {};", quote(&format!("{ext_base}/{}/index.js", options.extensions[*i].typescript_dir()))).unwrap();
+        writeln!(out, "import * as _e{i} from {};", quote(&options.extensions[*i].runtime_module.clone().unwrap_or_else(|| format!("{ext_base}/{}/index.js", options.extensions[*i].typescript_dir())))).unwrap();
     }
     let mut ext_options = String::new();
     if !used_exts.is_empty() {
         let modules: Vec<String> = used_exts.iter().map(|i| {
             let e = &options.extensions[*i];
+            if e.runtime_module.is_some() { return format!("{}: {{ module: _e{i} }}", quote(&e.members.extension)); }
             format!("{}: {{ module: _e{i}, hash: {}, dir: new URL({}, import.meta.url) }}", quote(&e.members.extension), quote(&e.members.hash), quote(&format!("{ext_base}/{}/", e.typescript_dir())))
         }).collect();
         let members: Vec<String> = schema.models.iter().filter_map(|m| {

@@ -3,6 +3,7 @@ version = "0.1.0"
 schema_contract = "2.0"
 abi = "0.1"
 library = "outside_extension"
+language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 
@@ -19,3 +20,13 @@ required = true
 id = "acme.outside.tag"
 phase = "declaration"
 effects = ["models.outside", "behavior.storage"]
+
+[python]
+source = "python"
+query_set = "OutsideQuerySet"
+instance = "OutsideInstance"
+
+[typescript]
+source = "typescript"
+query_set = "OutsideQuerySet"
+instance = "OutsideInstance"

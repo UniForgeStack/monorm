@@ -193,7 +193,7 @@ fn unlowered() -> SchemaIr {
 fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     let manifest = installed("", "0.1");
     let ordered = manifest.with_file_name("ordered.toml");
-    fs::write(&ordered, fs::read_to_string(&manifest).unwrap() + "\nafter = [\"acme.static.prep\"]\n").unwrap();
+    fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replace("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n")).unwrap();
     let compiled: Manifest = toml::from_str(&format!(
         "id = \"acme.static\"\nversion = \"1.0.0\"\nhost_contract = \"{HOST_CONTRACT_VERSION}\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
          languages = [\"python\"]\ndatabases = [\"postgres\"]\n\

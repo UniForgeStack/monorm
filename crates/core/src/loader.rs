@@ -171,7 +171,10 @@ impl Plan {
         ir.behavior.completed_passes.clear();
         for d in &self.dynamic {
             let attributes = d.manifest.attributes.iter().map(|a| a.name.clone()).collect();
-            ir.behavior.packages.insert(d.manifest.id.clone(), PackageStamp { version: d.manifest.version.clone(), manifest_hash: d.manifest_hash.clone(), passes: vec![], attributes });
+            ir.behavior.packages.insert(d.manifest.id.clone(), PackageStamp { version: d.manifest.version.clone(), manifest_hash: d.manifest_hash.clone(), passes: vec![], attributes,
+                dependencies: d.manifest.dependencies.clone(), languages: d.manifest.languages.clone(), databases: d.manifest.databases.clone(),
+                language_members: d.manifest.language_sections().map(|(l, s)| (l.to_owned(), s.clone())).collect(),
+            });
         }
         for pass in &self.order {
             match owner_of.get(pass.id.as_str()) {

@@ -91,6 +91,7 @@ const REJECTED: &[(&str, &str)] = &[
 
 fn code(id: &str, attribute: &str, language: &str, query_set: &str, instance: &str, files: Vec<(String, String)>) -> ExtensionCode {
     ExtensionCode {
+        runtime_module: None,
         members: LanguageMembers {
             extension: id.into(), version: "1.0.0".into(), language: language.into(),
             query_set: query_set.into(), instance: instance.into(), hash: "0".into(), query_set_members: vec!["member".into()], ..Default::default()

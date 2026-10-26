@@ -36,9 +36,6 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             return Err(format!("{}: exports need hooks, which ABI {} does not have; remove them", m.id, m.abi.unwrap()));
         }
         let sections: Vec<_> = m.language_sections().collect();
-        if m.is_dynamic() && !sections.is_empty() {
-            return Err(format!("{}: language sections need the language contract of a later release; remove them", m.id));
-        }
         if !sections.is_empty() && m.language_contract != Some(LANGUAGE_CONTRACT) {
             return Err(format!("{}: incompatible language contract; rebuild", m.id));
         }
@@ -122,13 +119,11 @@ mod tests {
     fn resolve_all(manifests: Vec<Manifest>) -> Result<Resolved, String> { resolve(manifests, &|_, _, _| Ok(())) }
 
     #[test]
-    fn a_library_manifest_has_no_language_section_and_no_export() {
+    fn a_library_manifest_checks_language_contract_and_has_no_hook_export() {
         assert!(resolve_all(vec![library(serde_json::json!({}))]).is_ok());
         let section = serde_json::json!({"source": "py", "query_set": "QuerySet", "instance": "Instance"});
-        for extra in [serde_json::json!({"python": section}), serde_json::json!({"python": section, "language_contract": LANGUAGE_CONTRACT})] {
-            let error = resolve_all(vec![library(extra)]).unwrap_err();
-            assert!(error.contains("acme.lib") && error.contains("language sections need the language contract of a later release"), "{error}");
-        }
+        assert!(resolve_all(vec![library(serde_json::json!({"python": section}))]).unwrap_err().contains("incompatible language contract"));
+        assert!(resolve_all(vec![library(serde_json::json!({"python": section, "language_contract": LANGUAGE_CONTRACT}))]).is_ok());
         let export = serde_json::json!([{"id": "acme.lib.x", "rust": "crate::x", "kind": "string_validator", "input": "string"}]);
         let error = resolve_all(vec![library(serde_json::json!({"exports": export}))]).unwrap_err();
         assert!(error.contains("exports need hooks"), "{error}");

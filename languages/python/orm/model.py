@@ -526,15 +526,12 @@ def define(
     Returns the model classes and the schema's enum classes, by name. They join
     ``registry`` (the default one unless given); ``module`` sets their ``__module__``.
 
-    ``extensions`` maps an extension id to its generated package, and ``members`` maps a model to the
+    ``extensions`` maps an extension id to its runtime module, and ``members`` maps a model to the
     ids whose query-set and instance classes it gets, dependencies first. Generated modules pass both.
     ``model_methods`` maps a model to a class whose methods go on each of its instances (``@@model_methods``).
     """
     from .query import BoundQuerySet, QuerySet, use_extensions
 
-    chains: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-    for model_name, ids in (members or {}).items():
-        chains[model_name] = [(i, _extensions.check(i, (extensions or {})[i])) for i in ids]
     for capability in required_capabilities:
         if capability not in _CAPABILITIES:
             raise TypeError(f"generated models require {capability}; rebuild/select a compatible native artifact")
@@ -549,6 +546,14 @@ def define(
     else:
         prepared_json = _native.prepare_schema(json.dumps(schema), context)
     ir: dict[str, Any] = json.loads(prepared_json)
+    extensions = dict(extensions or {})
+    packaged = _extensions.packages(ir, extensions)
+    selected = _extensions.package_members(ir, packaged)
+    selected.update(members or {})
+    chains = {
+        name: [(ident, packaged[ident] if ident in packaged else _extensions.check(ident, extensions[ident])) for ident in ids]
+        for name, ids in selected.items()
+    }
     reg = destination._candidate()
     nested_types: dict[str, NestedType] = {}
     dialect = ir.get("dialect", "postgres")
@@ -584,7 +589,7 @@ def define(
             ns["__module__"] = module
         chain = chains.get(m["name"], [])
         classes = (
-            [(getattr(extensions[i], r["query_set"]), getattr(extensions[i], r["instance"])) for i, r in chain]  # type: ignore[index]
+            [(getattr(extensions[i], r["query_set"]), getattr(extensions[i], r["instance"])) for i, r in chain]
             if chain
             else []
         )
@@ -608,7 +613,7 @@ def define(
         )
         if classes:
             bound = tuple(
-                getattr(extensions[i], r["bound_query_set"])  # type: ignore[index]
+                getattr(extensions[i], r["bound_query_set"])
                 for i, r in reversed(chain)
                 if r["bound_query_set"]
             )
