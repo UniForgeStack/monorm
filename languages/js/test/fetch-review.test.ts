@@ -61,6 +61,35 @@ test("a column named __proto__ is an own key of the row", async () => {
   }
 });
 
+test("raw fetch keeps __proto__ as an own key in json", async () => {
+  const db = await single();
+  try {
+    const [row] = await db.fetch(`SELECT '{"__proto__": 1, "a": 2}'::jsonb AS j`);
+    const obj = row!.j as Record<string, unknown>;
+    assert.deepEqual(Object.keys(obj).sort(), ["__proto__", "a"].sort());
+    assert.equal(Object.getPrototypeOf(obj), Object.prototype);
+    assert.equal(Object.getOwnPropertyDescriptor(obj, "__proto__")?.value, 1);
+    assert.equal((obj as any).a, 2);
+  } finally {
+    await db.close();
+  }
+});
+
+test("raw fetch keeps __proto__ as an own key in json on sqlite", async () => {
+  const db = await lite();
+  try {
+    const [row] = await db.fetch(`SELECT '{"__proto__": 7, "b": 9}' AS j`);
+    const raw = row!.j;
+    const obj = typeof raw === "string" ? JSON.parse(raw) : (raw as Record<string, unknown>);
+    assert.deepEqual(Object.keys(obj), ["__proto__", "b"]);
+    assert.equal(Object.getPrototypeOf(obj), Object.prototype);
+    assert.equal(Object.getOwnPropertyDescriptor(obj, "__proto__")?.value, 7);
+    assert.equal((obj as any).b, 9);
+  } finally {
+    await db.close();
+  }
+});
+
 test("fromNative keeps the stack frames and not the lines of a multi-line message", () => {
   const e = new Error("[orm:DatabaseError] first line\nDETAIL: second line");
   const out = fromNative(e) as Error;

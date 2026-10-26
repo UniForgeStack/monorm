@@ -321,7 +321,7 @@ impl Conv {
             J::Object(map) => {
                 let obj = js.object()?;
                 for (k, item) in map {
-                    js.set(obj, k, self.json_out(item)?)?;
+                    js.define_own(obj, k, self.json_out(item)?)?;
                 }
                 Ok(obj)
             }
