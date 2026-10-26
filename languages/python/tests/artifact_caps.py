@@ -11,7 +11,10 @@ def artifact_capabilities() -> list[str]:
 
 
 def has_extension(*ids: str) -> bool:
-    """True when the native artifact contains every named extension, such as `orm.locking`."""
+    """True when the native artifact or an installed package contains every named extension, such as `orm.file-storage`.
+
+    A missing `orm.timestamps`, `orm.soft-delete`, `orm.locking` or `orm.inherit` package fails with an assert.
+    """
     extensions = {**json.loads(_native.native_artifact())["extensions"], **resolve_extensions()}
     for ident in ids:
         if ident in {"orm.timestamps", "orm.soft-delete", "orm.locking", "orm.inherit"}:

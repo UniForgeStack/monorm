@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
     (package / "py.typed").touch()
     info = stage / f"{module}-{version}.dist-info"
     info.mkdir()
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\nRequires-Python: >=3.11\nRequires-Dist: orm==0.1.0\n")
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\nRequires-Python: >=3.11\n")
     tag = "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_")
     (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: orm-extension-package\nRoot-Is-Purelib: false\nTag: {tag}\n")
     (info / "entry_points.txt").write_text(f"[orm.extensions]\n{ident} = {module}\n")
@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
         "name": npm_name, "version": version, "type": "module",
         "main": "./index.js", "types": "./index.d.ts",
         "exports": {".": {"types": "./index.d.ts", "default": "./index.js"}},
-        "orm": {"extension": ident}, "peerDependencies": {"orm": "0.1.0"},
+        "orm": {"extension": ident},
     }, indent=2) + "\n")
     if (out / "npm").exists():
         shutil.rmtree(out / "npm")

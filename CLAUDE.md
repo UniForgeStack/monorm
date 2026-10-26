@@ -31,7 +31,7 @@ python -m pytest -q apps/auth/python/tests
 python extensions/inherit/tests/public/python.py
 (cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
 (cd apps/auth/typescript && npm test && npm run test:bun)
-scripts/check-extension-packages.sh  # fresh Python, Node and Bun consumers; PostgreSQL and SQLite
+scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 ```
 
 ## Feature artifacts

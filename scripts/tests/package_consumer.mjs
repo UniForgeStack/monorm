@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { connect } from 'orm';
 import { Note } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
+assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'orm.inherit', 'orm.locking', 'orm.soft-delete', 'orm.timestamps']);
 for (const [id, stamp] of Object.entries(locked.behavior.packages)) {
   const [scope, name] = id.split('.');
   assert.equal((await import(`@${scope}/${name}`)).manifestHash, stamp.manifest_hash);

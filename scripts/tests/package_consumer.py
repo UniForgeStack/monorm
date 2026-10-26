@@ -11,7 +11,9 @@ from orm._packages import import_runtime
 async def run():
     # The generated lock and the installed runtime expose the same manifest identity.
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
-    for ident, stamp in locked["behavior"]["packages"].items():
+    packages = locked["behavior"]["packages"]
+    assert set(packages) == {"acme.outside", "orm.inherit", "orm.locking", "orm.soft-delete", "orm.timestamps"}
+    for ident, stamp in packages.items():
         assert import_runtime(ident).MANIFEST_HASH == stamp["manifest_hash"]
     db = await orm.connect(os.environ["ORM_DATABASE_URL"])
     await db.drop_tables()

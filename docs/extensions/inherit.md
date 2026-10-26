@@ -105,7 +105,7 @@ They return the name's own model when nothing overrides it.
 The Python function returns `Any`; the TypeScript function returns the registered model without a static type.
 
 ```python
-from orm_ext.orm_inherit import model_for
+from orm_inherit import model_for
 
 Account = model_for("User")
 ```
@@ -180,4 +180,4 @@ In TypeScript, annotate `this`: `domain(this: AbstractUserData): string`.
 ## Checks
 
 `crates/core/tests/abstract_typing.rs` runs mypy --strict, pyright and `tsc --strict` on the generated types with the classes above.
-`scripts/feature-check.sh` runs `extensions/inherit/tests/public/python.py` and `node.mjs` on each artifact that has the extension.
+`scripts/feature-check.sh` runs `extensions/inherit/tests/public/python.py` and `node.mjs` on every artifact, because it installs the package in each environment.

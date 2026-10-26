@@ -2,22 +2,15 @@
 // Runs only with an artifact that selects the proxy-models and soft-delete extensions.
 // Each `// E:` line of the typing use must fail and no other line may.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import ts from "typescript";
-import { connect, Registry } from "../src/index.js";
+import { connect, loads, Registry } from "../src/index.js";
 import { main as cli } from "../src/cli.js";
 import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
-import { loadsSoftDelete } from "./soft-delete-ext.js";
-
-// Under this package, so the schema finds the installed extension packages as direct dependencies.
-function scratch(prefix: string): string {
-  const base = join(import.meta.dirname, "..", "..", ".test-tmp");
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, prefix));
-}
+import { scratch } from "./scratch.js";
 
 const SCHEMA = `model Post {
   id         Int       @id
@@ -111,7 +104,7 @@ test("a proxy has the soft-delete members and the query-set class of its root", 
 });
 
 test("a proxy gets the soft-delete members at run time through the record of the extension", { skip }, async () => {
-  const models = (await loadsSoftDelete(SCHEMA, { registry: new Registry() })) as unknown as Record<string, { objects: Record<string, unknown> }>;
+  const models = (await loads(SCHEMA, { registry: new Registry() })) as unknown as Record<string, { objects: Record<string, unknown> }>;
   for (const member of ["allWithDeleted", "deletedOnly", "undelete", "hardDelete"]) {
     assert.equal(typeof models.Draft!.objects[member], "function", member);
     assert.equal(typeof models.Post!.objects[member], "function", member);

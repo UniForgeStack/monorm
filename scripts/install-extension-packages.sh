@@ -16,7 +16,7 @@ for extension in timestamps soft-delete locking inherit; do
   cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-package -- package "$ROOT/extensions/$extension" --out "$OUT/$extension" --tsc "$TSC"
 done
 uv pip install --python "$PY" "$OUT"/*/*.whl
-# Local package directories resolve their orm peer through the checkout.
+# The package directories import orm; resolve it through the checkout.
 mkdir -p "$ROOT/node_modules"
 ln -sfn ../languages/js "$ROOT/node_modules/orm"
 (cd "$ROOT/languages/js" && npm install --no-audit --no-fund)

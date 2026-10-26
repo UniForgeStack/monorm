@@ -1,19 +1,13 @@
 // Type-checks the generated soft-delete members: each `// E:` line must fail and no other line may.
 // Runs only with an artifact that selects the soft-delete extension.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import ts from "typescript";
 import { main as cli } from "../src/cli.js";
 import { hasExtension } from "./artifact-caps.js";
-
-// Under this package, so the schema finds the installed extension packages as direct dependencies.
-function scratch(prefix: string): string {
-  const base = join(import.meta.dirname, "..", "..", ".test-tmp");
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, prefix));
-}
+import { scratch } from "./scratch.js";
 
 const SCHEMA = `model Post {
   id         Int       @id

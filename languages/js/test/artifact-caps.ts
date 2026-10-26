@@ -9,7 +9,10 @@ export function artifactCapabilities(): string[] {
   return artifact.capabilities;
 }
 
-/** True when the native artifact contains every named extension, such as `orm.locking`. */
+/**
+ * True when the native artifact or an installed package contains every named extension, such as `orm.file-storage`.
+ * A missing `orm.timestamps`, `orm.soft-delete`, `orm.locking` or `orm.inherit` package fails with an assert.
+ */
 export function hasExtension(...ids: string[]): boolean {
   const installed = { ...artifact.extensions, ...resolveExtensions() };
   for (const id of ids) if (["orm.timestamps", "orm.soft-delete", "orm.locking", "orm.inherit"].includes(id))

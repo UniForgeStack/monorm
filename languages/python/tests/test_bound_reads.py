@@ -7,7 +7,6 @@ import pytest
 
 import orm
 from blog.models import Comment, Post, User
-from soft_delete_ext import loads_soft_delete
 from artifact_caps import has_extension
 
 
@@ -285,7 +284,7 @@ async def test_a_column_named_qs_is_reserved():
 async def test_a_soft_deleted_object_is_refreshed_because_of_applies_no_default():
     source = 'model Doc {\n  id Int @id\n  title String\n  @@soft_delete.deleted_at("deleted", mode: "application")\n}\n'
     registry = orm.Registry()
-    Doc = loads_soft_delete(source, registry=registry)["Doc"]
+    Doc = orm.loads(source, registry=registry)["Doc"]
     db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
     try:
         await db.drop_tables()

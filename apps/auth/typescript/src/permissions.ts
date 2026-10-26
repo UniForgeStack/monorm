@@ -16,7 +16,7 @@ export function splitPerm(perm: string): [label: string, codename: string] {
 
 /**
  * The model class for `name`: the model that overrides it (`@@inherit.override`), else `name` itself.
- * The app cannot import `modelFor` from `orm_ext/orm_inherit`: `orm generate` writes that module into the consumer's project.
+ * The app does not depend on the `@orm/inherit` package, so it reads `model_overrides` itself.
  *
  * @internal
  */

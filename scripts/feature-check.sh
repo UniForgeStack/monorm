@@ -4,10 +4,10 @@
 #   ORM_TEST_DATABASE_URL=postgres://... scripts/feature-check.sh [artifact...]
 #
 # Artifacts: proxy-models query-defaults model-composition file-storage generic-relations
-# all; the four pass extensions are installed as packages in every environment.
-# (default: every one). Each artifact selects only extension crates; the manifests turn on
+# all (default: every one). Each artifact selects only extension crates; the manifests turn on
 # the host Cargo features, so no cargo command here passes --features.
-# The auth app (apps/auth) and inherit public scripts run with the installed inherit package.
+# The timestamps, soft-delete, locking and inherit packages are installed in every environment,
+# so the auth app (apps/auth) and the inherit public scripts run on every artifact.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
 set -uo pipefail
 
@@ -65,7 +65,6 @@ export PATH="$VENV/bin:$PATH"
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 ORM_PACKAGE_PYTHON="$PY" "$ROOT/scripts/install-extension-packages.sh" >"$LOGS/extension-packages.log" 2>&1 || { echo "extension package install failed"; exit 1; }
-(cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s) >"$LOGS/npm-install.log" 2>&1 || { echo "npm install failed"; exit 1; }
 # Storage imports orm through its package exports, which point at dist/.
 (cd "$ROOT/languages/js" && npm run -s build) >"$LOGS/npm-build.log" 2>&1 || { echo "npm build failed"; exit 1; }
 

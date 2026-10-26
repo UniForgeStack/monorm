@@ -2,9 +2,11 @@
 # Main seam: fresh consumers, installed packages, generate, import and query.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-: "${ORM_TEST_DATABASE_URL:?set the PostgreSQL test URL}"
+: "${ORM_TEST_DATABASE_URL:=postgres://postgres:postgres@localhost/orm_test}"
+mkdir -p "$ROOT/target"
 WORK=$(mktemp -d "$ROOT/target/package-seam-XXXXXX")
-trap 'echo "Package seam artifacts: $WORK"' EXIT
+# CI uploads $WORK, so only a local pass removes it.
+trap 'status=$?; if [ "$status" -eq 0 ] && [ -z "${CI:-}" ]; then rm -rf "$WORK"; else echo "Package seam artifacts: $WORK"; fi' EXIT
 PYTHON=${PYTHON:-python3}
 export PYTHON
 ORM_PACKAGE_PYTHON="$ROOT/.venv/bin/python" "$ROOT/scripts/install-extension-packages.sh"

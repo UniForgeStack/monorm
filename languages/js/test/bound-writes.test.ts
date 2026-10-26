@@ -2,17 +2,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, of, Registry, type Database } from "../src/index.js";
-import { loadsSoftDelete } from "./soft-delete-ext.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const soft = { skip: !hasExtension("orm.soft-delete") };
 type Models = Record<string, any>;
 const bound = (b: unknown): any => b;
 
-async function open(dialect: string, source: string, extended = false): Promise<[Database, Models]> {
+async function open(dialect: string, source: string): Promise<[Database, Models]> {
   const registry = new Registry();
   const text = (dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + source;
-  const models = (extended ? await loadsSoftDelete(text, { registry }) : await loads(text, { registry })) as unknown as Models;
+  const models = (await loads(text, { registry })) as unknown as Models;
   const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
   const db = await connect(url, { registry, default: false });
   await db.dropTables();
@@ -122,7 +121,7 @@ model Item {
 }`;
 
   test(`bound delete is a soft delete; undelete and hardDelete work on the bound set (${dialect})`, soft, async () => {
-    const [db, { Item }] = await open(dialect, softSource, true);
+    const [db, { Item }] = await open(dialect, softSource);
     try {
       const items = Item.objects.using(db);
       const held = await items.insertMany([1, 2, 3].map((id: number) => ({ id, name: `i${id}` }))).returning();
@@ -141,7 +140,7 @@ model Item {
   });
 
   test(`bound allWithDeleted and deletedOnly read soft-deleted rows (${dialect})`, soft, async () => {
-    const [db, { Item }] = await open(dialect, softSource, true);
+    const [db, { Item }] = await open(dialect, softSource);
     try {
       const items = Item.objects.using(db);
       const held = await items.insertMany([1, 2].map((id: number) => ({ id, name: `i${id}` }))).returning();

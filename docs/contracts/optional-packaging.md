@@ -11,7 +11,7 @@ schemas, objects, pools and transactions cannot switch engines.
 | sqlite | SQLite | no | no | none | none |
 | combined | PostgreSQL + SQLite | no | no | none | none |
 | tooling | PostgreSQL + SQLite | yes | Python + TypeScript | none | none |
-| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | all nine first-party |
+| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | five static first-party |
 
 Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]`, `orm[tooling]` or `orm[full]`.
 These extras select complete distributions, not changes to an installed binary.
@@ -55,8 +55,9 @@ npx orm generate typescript
 
 ## The full profile
 
-The `full` profile is the `tooling` profile plus every first-party extension:
-`orm.proxy`, `orm.query-defaults`, the model-composition extension (`composition`), `file-storage`, `orm.generic`, `orm.timestamps`, `orm.soft-delete`, `orm.locking` and `orm.inherit`.
+The `full` profile is the `tooling` profile plus the five static first-party extensions:
+`orm.proxy`, `orm.query-defaults`, the model-composition extension (`composition`), `file-storage` and `orm.generic`.
+The timestamps, soft-delete, locking and inherit extensions are installable packages, not part of any profile; see [Installable packages](build-time-extensions.md#installable-packages).
 It has the generators because only the artifact that holds the extensions can write their `orm_ext/` files during `orm generate`.
 
 ```bash
@@ -157,7 +158,7 @@ exactly their selected adapters and dependencies. No query-time plugin discovery
 `languages/python/packaging/check-dependencies.py` audits isolated graphs for every binding/profile,
 including backend SQL-builder unification and absence of CLI/TLS/unused drivers.
 `languages/python/packaging/check-wheel.py` checks thin/native wheel payload separation.
-`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or all nine for `full`.
+`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or the five static extensions for `full`.
 The `full` run also defines a schema with `@@proxy.of`.
 `languages/js/packaging/check-node-install.mjs` packs and installs one native profile offline,
 checks the dependency lock and runs installed-package smoke tests. Python

@@ -1,4 +1,4 @@
-/** Build-selected reference loading adapter. Baseline profiles do not load this module. */
+/** Reference loading adapter. `model.ts` imports it in every profile and uses it only with the `reference-loading` capability. */
 import { clearAbsent, isAbsent } from "./reference-absence.js";
 import { active as debugging, relationLoad } from "./debug.js";
 import { key } from "./value-key.js";

@@ -1,4 +1,4 @@
-// `modelFor` and the expanded models from the schema language to the database; needs an inherit artifact.
+// `modelFor` and the expanded models from the schema language to the database; needs the `@orm/inherit` package.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { connect, loads, Registry } from '../../../../languages/js/dist/src/index.js';

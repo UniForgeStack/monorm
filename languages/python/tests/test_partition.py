@@ -5,7 +5,6 @@ import pytest
 import orm
 from conftest import DATABASE_URL
 from artifact_caps import artifact_capabilities, has_extension
-from soft_delete_ext import loads_soft_delete
 
 SOURCE = """
 model PartitionRow {
@@ -128,7 +127,7 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
         '@@map("partition_proxy_reward")\n @@query.filter("tenant", "shop == scope.shop and deleted == null")',
     )
     registry = orm.Registry()
-    models = loads_soft_delete(source, registry=registry)
+    models = orm.loads(source, registry=registry)
     Reward, Percent, Fixed = (models[n] for n in ("Reward", "PercentageReward", "FixedReward"))
     db = await orm.connect(DATABASE_URL, registry=registry, default=False)
     try:

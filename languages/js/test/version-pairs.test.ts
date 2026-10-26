@@ -1,21 +1,14 @@
 /** Run with an artifact that selects the locking extension: bound writes check the loaded versions. */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
-import { connect, NotLoaded, of, Registry, VersionConflict, type Database } from "../src/index.js";
+import { connect, loads, NotLoaded, of, Registry, VersionConflict, type Database } from "../src/index.js";
 import { main as cli } from "../src/cli.js";
-import { loadsSoftDelete } from "./soft-delete-ext.js";
 import { hasExtension } from "./artifact-caps.js";
-
-// Under this package, so the schema finds the installed extension packages as direct dependencies.
-function scratch(prefix: string): string {
-  const base = join(import.meta.dirname, "..", "..", ".test-tmp");
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, prefix));
-}
+import { scratch } from "./scratch.js";
 
 const locking = { skip: !hasExtension("orm.locking") };
 const both = { skip: !hasExtension("orm.locking") || !hasExtension("orm.soft-delete") };
@@ -46,7 +39,7 @@ const DOCS = LOCKED + PAGES;
 
 async function open(dialect: string): Promise<[Database, Models, string[]]> {
   const registry = new Registry();
-  const models = await loadsSoftDelete((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + DOCS, { registry }) as unknown as Models;
+  const models = await loads((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + DOCS, { registry }) as unknown as Models;
   const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
   const db = await connect(url, { registry, default: false });
   await db.dropTables();
