@@ -3,6 +3,7 @@
 Runs with an artifact that selects the soft-delete extension.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -95,6 +96,6 @@ def test_pyright(package: Path):
         capture_output=True,
         text=True,
         cwd=package.parent,
-        env={"PATH": str(Path(exe).parent), "PYTHONPATH": str(ROOT / "languages/python")},
+        env={"HOME": os.environ["HOME"], "PATH": str(Path(exe).parent), "PYTHONPATH": str(ROOT / "languages/python")},
     ).stdout
     assert error_lines(out, r"use\.py:(\d+):\d+ - error") == EXPECTED, out

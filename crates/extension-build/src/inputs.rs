@@ -80,7 +80,7 @@ fn main() {
     }
     for (path,expected) in data["directories"].as_object().unwrap() {
         println!("cargo:rerun-if-changed={path}");
-        let mut names: Vec<_> = std::fs::read_dir(path).expect("extension source directory unavailable").map(|e|e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| !matches!(n.as_str(), "target" | ".git" | "node_modules" | "__pycache__" | ".mypy_cache" | ".pytest_cache")).collect();
+        let mut names: Vec<_> = std::fs::read_dir(path).expect("extension source directory unavailable").map(|e|e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| !matches!(n.as_str(), "target" | ".git" | "node_modules" | "dist" | "__pycache__" | ".mypy_cache" | ".pytest_cache")).collect();
         names.sort();
         assert_eq!(serde_json::json!(names),*expected,"extension source files changed; rerun orm-extension-build with a fresh output directory");
     }
@@ -94,7 +94,7 @@ fn collect(root: &Path, paths: &mut Vec<PathBuf>, directories: &mut BTreeMap<Pat
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
-        if matches!(name.to_str(), Some("target" | ".git" | "node_modules" | "__pycache__" | ".mypy_cache" | ".pytest_cache")) { continue; }
+        if matches!(name.to_str(), Some("target" | ".git" | "node_modules" | "dist" | "__pycache__" | ".mypy_cache" | ".pytest_cache")) { continue; }
         names.push(name.to_string_lossy().into_owned());
         let kind = entry.file_type().map_err(|e| e.to_string())?;
         if kind.is_dir() { collect(&entry.path(), paths, directories)?; }
