@@ -9,54 +9,5 @@ description = "Selected optimistic-locking compiler for ORM: a version field che
 orm-contracts = { path = "../../crates/contracts" }
 serde_json = "1"
 
-[package.metadata.orm-extension]
-id = "orm.locking"
-version = "0.1.0"
-host_contract = 1
-schema_contract = 2
-language_contract = 1
-languages = ["python", "typescript"]
-databases = ["postgres", "sqlite"]
-capabilities = []
-
-# Adds the field before the logical passes, so a proxy of the model copies it.
-[[package.metadata.orm-extension.passes]]
-id = "orm.locking.fields"
-phase = "declaration"
-rust = "crate::add_fields"
-after = ["orm.inherit.expand"]
-effects = ["models.locking", "storage.locking"]
-
-[[package.metadata.orm-extension.passes]]
-id = "orm.locking.prepare"
-phase = "behavior"
-rust = "crate::prepare"
-effects = ["behavior.write_assignments.locking", "behavior.instance_guards"]
-
-# `@@locking.version("version", map: "_version", upsert: "pick")`: adds the field.
-[[package.metadata.orm-extension.attributes]]
-name = "locking.version"
-target = "model"
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "string"
-[package.metadata.orm-extension.attributes.arguments.upsert]
-kind = "string"
-[package.metadata.orm-extension.attributes.arguments.map]
-kind = "string"
-
-# The field form; the pass rejects it with the model attribute to write instead.
-[[package.metadata.orm-extension.attributes]]
-name = "locking.version"
-target = "field"
-
-[package.metadata.orm-extension.python]
-source = "python/orm_locking"
-query_set = "LockingQuerySet"
-instance = "LockingInstance"
-bound_query_set = "LockingBoundQuerySet"
-
-[package.metadata.orm-extension.typescript]
-source = "typescript/src"
-query_set = "lockingQuerySet"
-bound_query_set = "lockingBoundQuerySet"
-instance = "LockingInstance"
+[lib]
+crate-type = ["cdylib", "rlib"]

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import weakref
-from typing import Any, cast
-
-from typing_extensions import Self
+from typing import Any, Self, cast
 
 from orm import BoundQuerySet, ColumnRef, Delete, QuerySet, Update
 from orm.ext import (

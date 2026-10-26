@@ -1,0 +1,10 @@
+[package]
+name = "orm-extension-package"
+version = "0.1.0"
+edition = "2021"
+description = "Build host-platform Python and npm packages for ORM pass extensions"
+
+[dependencies]
+orm-contracts = { path = "../contracts" }
+serde_json = "1"
+toml = "0.8"

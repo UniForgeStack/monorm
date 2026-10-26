@@ -341,3 +341,11 @@ Each runtime module exports `MANIFEST_HASH` (Python) or `manifestHash` (TypeScri
 
 TypeScript runtime packages and their dependencies must be synchronously loadable, without top-level await. Node requires 20.19+ on the 20.x line or 22.12+ on later lines; Bun is also supported. Prefer one runtime format. Synchronous loading resolves the package's import entry before loading it, so a dual package uses the same module and class identities as generated ESM imports.
 `tests/outside-extension/` is a library in its own workspace.
+
+## Installable packages
+
+`orm-extension-package package <crate dir> --out <dir>` builds one extension crate for the host platform.
+The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `orm-extension.toml` with `abi` and `library`.
+The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
+Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.
+`scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking and inherit packages and installs them into `.venv` and `languages/js`.
