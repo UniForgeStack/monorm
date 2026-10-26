@@ -13,7 +13,7 @@ import { resolveExtensions } from "../src/packages.js";
 
 // `npx orm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
-const MANIFEST = 'id = "acme.fixture"\nversion = "0.1.0"\nabi = "0.1"\nlibrary = "libfixture"\n';
+const MANIFEST = 'id = "acme.fixture"\nversion = "0.1.0"\nabi = "0.2"\nlibrary = "libfixture"\n';
 
 function write(file: string, text: string): string {
   mkdirSync(dirname(file), { recursive: true });

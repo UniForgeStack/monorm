@@ -3,6 +3,7 @@
 //! and in 0.2 the optional `orm_ext_init`, `orm_ext_drop_state` and `orm_ext_hooks`.
 //! It links to neither Python nor Node. `extension!` writes the exports; the host loader calls them by these names and types.
 //! A panic in a pass or a hook is caught, so it never crosses the ABI. The library must build with `panic = "unwind"`.
+//! The host may call the hooks of one state from several threads at once, and may drop the state on another thread: a state is `Send + Sync`.
 use crate::extension::ABI_VERSION;
 use crate::ir::SchemaIr;
 use std::any::Any;
@@ -130,11 +131,22 @@ pub type InitRust<S> = fn(&serde_json::Value) -> Result<S, String>;
 /// The `init` that the macro uses when the author gives none.
 pub fn default_init(_: &serde_json::Value) -> Result<(), String> { Ok(()) }
 
+/// The hook of a `hooks { … }` entry, which must take the state that `init` returns.
+/// The macro calls it, so a hook of another state type is a compile error and not a `STATUS_BAD_INPUT` at every call.
+pub fn bind<S: Send + Sync + 'static>(_: InitRust<S>, hook: HookRust<S>) -> HookRust<S> { hook }
+
+/// The state as `init` leaks it behind a `*mut c_void`. `call_hook` and `drop_state` cast the pointer back to this exact type.
+type StateBox = Box<dyn Any + Send + Sync>;
+
 fn leak_bytes(bytes: Vec<u8>) -> (*const u8, usize) {
     let boxed = bytes.into_boxed_slice();
     let len = boxed.len();
     (Box::into_raw(boxed) as *const u8, len)
 }
+
+/// True for the tags whose `ptr`/`len` hold a buffer of the library (see `Value::leak`); the host frees it with `orm_ext_free`.
+/// The other tags do not use `ptr` and `len`, so a library may leave any bytes in them.
+pub const fn owns_bytes(tag: u32) -> bool { matches!(tag, TAG_DECIMAL | TAG_TEXT | TAG_BYTES | TAG_UUID | TAG_JSON) }
 
 impl Value {
     pub fn tag(&self) -> u32 {
@@ -225,6 +237,15 @@ fn panic_text(payload: Box<dyn Any + Send>) -> String {
     payload.downcast_ref::<&str>().map(|s| (*s).to_string()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_else(|| "the call panicked".into())
 }
 
+/// Copy `len` raw arguments into Rust; a value that does not fit is BAD_INPUT.
+///
+/// # Safety
+/// `ptr` and `len` describe a readable range of `OrmArg`, or `len` is 0, and the ranges in each argument are readable.
+unsafe fn args_from_raw(ptr: *const OrmArg, len: usize) -> Result<Vec<Arg>, (i32, String)> {
+    // SAFETY: the caller guarantees the ranges.
+    unsafe { items(ptr, len) }.iter().map(|a| unsafe { Arg::from_raw(a) }).collect::<Result<Vec<_>, _>>().map_err(|e| (STATUS_BAD_INPUT, e))
+}
+
 /// The body of a hook export: converts the raw arguments, calls `hook` and writes `out`.
 /// A null `state` is the state `()`; a state of another type than `S` is BAD_INPUT.
 ///
@@ -232,17 +253,18 @@ fn panic_text(payload: Box<dyn Any + Send>) -> String {
 /// `state` is null or comes from `init` of this library. `args`, `n`, `ctx` are readable, and `out` is writable.
 pub unsafe fn call_hook<S: 'static>(hook: HookRust<S>, state: *const c_void, args: *const OrmArg, n: usize, ctx: *const OrmContext, out: *mut OrmValue) -> i32 {
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<Value, (i32, String)> {
-        let state: &dyn Any = if state.is_null() { &() } else {
-            // SAFETY: a non-null state is the `Box<Box<dyn Any>>` that `init` leaked, and the host keeps it alive during the call.
-            unsafe { &**(state as *const Box<dyn Any>) }
+        let state: &(dyn Any + Send + Sync) = if state.is_null() { &() } else {
+            // SAFETY: a non-null state is the `Box<StateBox>` that `init` leaked, and the host keeps it alive during the call.
+            unsafe { &**(state as *const StateBox) }
         };
         let state = state.downcast_ref::<S>().ok_or_else(|| (STATUS_BAD_INPUT, "the state is not the type that this hook takes".to_string()))?;
         // SAFETY: the caller guarantees the ranges.
-        let args = unsafe { items(args, n) }.iter().map(|a| unsafe { Arg::from_raw(a) }).collect::<Result<Vec<_>, _>>().map_err(|e| (STATUS_BAD_INPUT, e))?;
+        let args = unsafe { args_from_raw(args, n) }?;
         let context = if ctx.is_null() { Context::default() } else {
             // SAFETY: the caller guarantees that a non-null `ctx` is readable and that its list is too.
             let raw = unsafe { &*ctx };
-            Context { values: unsafe { items(raw.args, raw.len) }.iter().map(|a| unsafe { Arg::from_raw(a) }).collect::<Result<Vec<_>, _>>().map_err(|e| (STATUS_BAD_INPUT, e))? }
+            // SAFETY: as above.
+            Context { values: unsafe { args_from_raw(raw.args, raw.len) }? }
         };
         hook(state, &args, &context).map_err(|e| (STATUS_ERROR, e))
     }));
@@ -260,7 +282,7 @@ pub unsafe fn call_hook<S: 'static>(hook: HookRust<S>, state: *const c_void, arg
 ///
 /// # Safety
 /// `data` is readable, and `state_out` is writable. `error` is null or writable.
-pub unsafe fn init<S: 'static>(init: InitRust<S>, data: *const u8, data_len: usize, state_out: *mut *mut c_void, error: *mut Buffer) -> i32 {
+pub unsafe fn init<S: Send + Sync + 'static>(init: InitRust<S>, data: *const u8, data_len: usize, state_out: *mut *mut c_void, error: *mut Buffer) -> i32 {
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<S, (i32, String)> {
         // SAFETY: the caller guarantees the range.
         let data = unsafe { bytes(data, data_len) };
@@ -271,7 +293,7 @@ pub unsafe fn init<S: 'static>(init: InitRust<S>, data: *const u8, data_len: usi
     }));
     let (status, text) = match outcome {
         Ok(Ok(state)) => {
-            let state: Box<dyn Any> = Box::new(state);
+            let state: StateBox = Box::new(state);
             // SAFETY: the caller guarantees that `state_out` is writable; `drop_state` frees the state once.
             unsafe { *state_out = Box::into_raw(Box::new(state)) as *mut c_void };
             (STATUS_OK, String::new())
@@ -293,8 +315,8 @@ pub unsafe fn init<S: 'static>(init: InitRust<S>, data: *const u8, data_len: usi
 /// `state` is null, or comes from `init` of this library, and nothing drops it twice.
 pub unsafe fn drop_state(state: *mut c_void) {
     if state.is_null() { return; }
-    // SAFETY: the caller guarantees that `state` is the `Box<Box<dyn Any>>` that `init` leaked, dropped once.
-    let state = unsafe { Box::from_raw(state as *mut Box<dyn Any>) };
+    // SAFETY: the caller guarantees that `state` is the `Box<StateBox>` that `init` leaked, dropped once.
+    let state = unsafe { Box::from_raw(state as *mut StateBox) };
     let _ = catch_unwind(AssertUnwindSafe(move || drop(state)));
 }
 
@@ -338,25 +360,66 @@ pub unsafe fn run_pass(passes: &[(&str, PassFn)], id: *const u8, id_len: usize, 
 /// The body of `orm_ext_free`.
 ///
 /// # Safety
-/// `ptr` and `len` come from a `Buffer` of this library, and nothing frees them twice.
+/// `ptr` and `len` come from a `Buffer`, or from the `ptr`/`len` of an `OrmValue` that `owns_bytes`, of this library, and nothing frees them twice.
 pub unsafe fn free(ptr: *mut u8, len: usize) {
     if ptr.is_null() { return; }
-    // SAFETY: the caller guarantees that `ptr` and `len` are the `Box<[u8]>` that `run_pass` leaked, and that nothing frees it twice.
+    // SAFETY: the caller guarantees that `ptr` and `len` are a `Box<[u8]>` that this library leaked (`leak_bytes` or `run_pass`), and that nothing frees it twice.
     drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
 }
 
 /// Write the exports of ABI 0.2. Call it once, at the root of a `cdylib` crate:
 ///
-/// ```ignore
+/// ```
+/// use orm_contracts::abi::{Arg, Context, Value};
+/// use orm_contracts::ir::SchemaIr;
+/// struct State(String);
+/// fn init(data: &serde_json::Value) -> Result<State, String> { Ok(State(data.to_string())) }
+/// fn hook(state: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Text(state.0.clone())) }
+/// fn pass(_: &mut SchemaIr) -> Result<(), String> { Ok(()) }
 /// orm_contracts::extension! {
-///     init = my_init;                                  // optional: fn(&serde_json::Value) -> Result<S, String>
-///     hooks { "my.hook" => my_hook, "my.other" => other }; // optional: fn(&S, &[Arg], &Context) -> Result<Value, String>
-///     ("my.pass", my_pass), ("my.pass2", pass2)        // fn(&mut SchemaIr) -> Result<(), String>
+///     init = init;                  // optional: fn(&serde_json::Value) -> Result<S, String>
+///     hooks { "my.hook" => hook };  // optional: fn(&S, &[Arg], &Context) -> Result<Value, String>
+///     ("my.pass", pass)             // fn(&mut SchemaIr) -> Result<(), String>
 /// }
+/// # fn main() {}
 /// ```
 ///
 /// `abi = (major, minor);` first sets the reported ABI version (tests only). Without `init` the state is `()`.
 /// The library must build with `panic = "unwind"`: the exports catch a panic and return `STATUS_PANIC`.
+///
+/// Each hook takes the state that `init` returns, and that state is `Send + Sync`. A hook of another state is a compile error:
+///
+/// ```compile_fail,E0308
+/// use orm_contracts::abi::{Arg, Context, Value};
+/// struct State;
+/// fn hook(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
+/// orm_contracts::extension! { hooks { "x.hook" => hook }; }
+/// ```
+///
+/// ```compile_fail,E0308
+/// use orm_contracts::abi::{Arg, Context, Value};
+/// struct State;
+/// struct Other;
+/// fn init(_: &serde_json::Value) -> Result<State, String> { Ok(State) }
+/// fn hook(_: &Other, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
+/// orm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
+/// ```
+///
+/// The host calls the hooks of one state from several threads, so a state that is not `Send + Sync` is a compile error:
+///
+/// ```compile_fail,E0277
+/// use orm_contracts::abi::{Arg, Context, Value};
+/// use std::rc::Rc;
+/// fn init(_: &serde_json::Value) -> Result<Rc<u8>, String> { Ok(Rc::new(0)) }
+/// fn hook(_: &Rc<u8>, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
+/// orm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
+/// ```
+///
+/// An input that matches no form is a compile error that lists the forms:
+///
+/// ```compile_fail
+/// orm_contracts::extension! { hooks "x.hook" => hook }
+/// ```
 #[macro_export]
 macro_rules! extension {
     (abi = ($major:expr, $minor:expr); $($rest:tt)*) => {
@@ -373,6 +436,10 @@ macro_rules! extension {
     };
     (@hooks ($bits:expr) ($init:path); $(($id:expr, $pass:expr)),* $(,)?) => {
         $crate::extension!(@exports ($bits) ($init) []; $(($id, $pass)),*);
+    };
+    // Input that no other arm takes ends here; the last arm would send it back to `@init` until the recursion limit.
+    (@hooks $($rest:tt)*) => {
+        ::core::compile_error!("extension!: expected `[abi = (major, minor);] [init = path;] [hooks { \"name\" => path, … };] (\"pass.id\", path), …`");
     };
     (@exports ($bits:expr) ($init:path) [$(($name:expr, $hook:path))*]; $(($id:expr, $pass:expr)),*) => {
         #[unsafe(no_mangle)]
@@ -414,7 +481,7 @@ macro_rules! extension {
                 call: {
                     unsafe extern "C" fn call(state: *const ::std::ffi::c_void, args: *const $crate::abi::OrmArg, n: usize, ctx: *const $crate::abi::OrmContext, out: *mut $crate::abi::OrmValue) -> i32 {
                         // SAFETY: the loader passes the arguments that `call_hook` documents.
-                        unsafe { $crate::abi::call_hook($hook, state, args, n, ctx, out) }
+                        unsafe { $crate::abi::call_hook($crate::abi::bind($init, $hook), state, args, n, ctx, out) }
                     }
                     call
                 },
@@ -596,6 +663,16 @@ mod tests {
         assert_eq!(status, STATUS_BAD_INPUT);
         assert!(text.contains("does not parse"), "{text}");
         assert_eq!(run("").0, STATUS_ERROR, "empty data is JSON null, which has no prefix");
+    }
+
+    #[test]
+    fn only_the_tags_that_leak_a_buffer_own_bytes() {
+        let owning: Vec<u32> = (0..=12).filter(|t| owns_bytes(*t)).collect();
+        assert_eq!(owning, [TAG_DECIMAL, TAG_TEXT, TAG_BYTES, TAG_UUID, TAG_JSON], "unknown tags own nothing");
+        for value in every_value() {
+            let leaks = matches!(value, Value::Decimal(_) | Value::Text(_) | Value::Bytes(_) | Value::Uuid(_) | Value::Json(_));
+            assert_eq!(owns_bytes(value.tag()), leaks, "{value:?}");
+        }
     }
 
     #[test]

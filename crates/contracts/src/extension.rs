@@ -798,7 +798,8 @@ fn same_value_type(a: ColType, b: ColType) -> bool {
 }
 
 /// One hook binding. The model, field and dependency checks run always. The export, point and type checks need the
-/// manifest of `source`; the generated models carry only static manifests, so they run only where the manifest is known.
+/// manifest of `source`; `Plan::lower` has it, so they run at `orm generate`. A generated model carries only the stamp of the
+/// package, so there `source` must be in `behavior.packages`.
 fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> Result<(), String> {
     let at = |field: Option<&str>| match field { Some(f) => format!("{}.{f}", hook.model), None => hook.model.clone() };
     let who = format!("hook {} of {}", hook.export, hook.source);
@@ -815,7 +816,10 @@ fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> R
         (_, Some(name)) => Some(model.fields.iter().find(|f| f.name == *name)
             .ok_or_else(|| format!("{who} is bound to unknown field {}", at(Some(name))))?),
     };
-    let Some(manifest) = manifests.iter().find(|m| m.id == hook.source) else { return Ok(()) };
+    let Some(manifest) = manifests.iter().find(|m| m.id == hook.source) else {
+        if ir.behavior.packages.contains_key(&hook.source) { return Ok(()); }
+        return Err(format!("{}: {who} names the source {}, but no manifest and no package of the schema has that id; select the extension or fix the source", at(hook.field.as_deref()), hook.source));
+    };
     let export = manifest.exports.iter().find(|e| e.id == hook.export)
         .ok_or_else(|| format!("{}: {who} is not in the manifest of {}", at(hook.field.as_deref()), hook.source))?;
     if export.point != Some(hook.point) {
@@ -1335,9 +1339,17 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_of_a_package_passes_when_the_slice_has_only_static_manifests() {
+    fn a_hook_needs_the_manifest_or_the_package_stamp_of_its_source() {
         let statics = [manifest(&["python"], &["sqlite"])];
-        assert!(validate_requirements(&hook_ir(binding(2, Some("name"), "acme.lib.check")), &statics, None).is_ok());
+        let mut ir = hook_ir(binding(2, Some("name"), "acme.lib.check"));
+        let error = validate_requirements(&ir, &statics, None).unwrap_err();
+        for part in ["User.name", "acme.lib.check", "names the source acme.lib", "no manifest and no package"] {
+            assert!(error.contains(part), "{part} is missing from: {error}");
+        }
+        // A generated model carries the stamp of the package, not its manifest.
+        let stamp = PackageStamp { version: "1.0.0".into(), databases: vec![ir.dialect.name().into()], ..PackageStamp::default() };
+        ir.behavior.packages.insert("acme.lib".into(), stamp);
+        assert!(validate_requirements(&ir, &statics, None).is_ok());
     }
 
     #[test]

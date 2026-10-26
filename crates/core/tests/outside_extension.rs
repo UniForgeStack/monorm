@@ -1,9 +1,9 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
 use orm_contracts::abi::{Arg, Context, Value};
-use orm_contracts::extension::{Declaration, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_VERSION};
+use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_MINOR, SCHEMA_CONTRACT_VERSION};
 use orm_core::dsl::{compile_file_with, Installed};
-use orm_core::loader::Library;
+use orm_core::loader::{Library, Plan};
 use orm_core::ir::{ColType, FieldIr, SchemaIr};
 use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, process::Command, sync::Mutex};
 
@@ -34,6 +34,9 @@ fn manifest(abi: &str) -> String {
     fs::read_to_string(root().join("orm-extension.toml")).unwrap().replace("abi = \"0.2\"", &format!("abi = \"{abi}\""))
 }
 
+/// The file name of the library that every build writes.
+fn library_file() -> String { format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX) }
+
 /// Builds the library with `feature` and keeps a copy: every build writes the same file.
 fn build(feature: &str) -> PathBuf {
     let target = scratch("target");
@@ -41,25 +44,47 @@ fn build(feature: &str) -> PathBuf {
     build.args(["build", "--offline", "--quiet", "--manifest-path"]).arg(root().join("Cargo.toml")).arg("--target-dir").arg(&target);
     if !feature.is_empty() { build.args(["--features", feature]); }
     assert!(build.status().unwrap().success(), "the outside extension did not build");
-    let name = format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    let name = library_file();
     let kept = scratch(&format!("library-{}", variant(feature))).join(&name);
     fs::copy(target.join("debug").join(&name), &kept).unwrap();
     kept
 }
 
+/// The kept library of `feature`; the first call builds it.
+fn built(builds: &mut Builds, feature: &str) -> PathBuf {
+    builds.libraries.entry(feature.to_owned()).or_insert_with(|| build(feature)).clone()
+}
+
+/// A package in the directory `name`: a copy of `library` and the manifest `text`.
+/// The loader caches a library by its path, so each directory has its own copy of the library and of its state.
+fn install(name: &str, library: &Path, text: &str) -> PathBuf {
+    let dir = scratch(name);
+    fs::copy(library, dir.join(library.file_name().unwrap())).unwrap();
+    let path = dir.join("orm-extension.toml");
+    fs::write(&path, text).unwrap();
+    path
+}
+
+/// A package of the library that `feature` builds, in the directory `name`.
+fn package(name: &str, feature: &str, text: &str) -> PathBuf {
+    let library = built(&mut BUILDS.lock().unwrap_or_else(|e| e.into_inner()), feature);
+    install(name, &library, text)
+}
+
 /// The installed package of a variant: a copy of the library that `feature` builds, and a manifest that says `abi`.
-/// Each variant has its own directory, so the loader opens its own copy of the library.
 fn installed(feature: &str, abi: &str) -> PathBuf {
     let mut builds = BUILDS.lock().unwrap_or_else(|e| e.into_inner());
     let key = (feature.to_owned(), abi.to_owned());
     if let Some(path) = builds.packages.get(&key) { return path.clone(); }
-    let library = builds.libraries.entry(feature.to_owned()).or_insert_with(|| build(feature)).clone();
-    let dir = scratch(&format!("{}-{abi}", variant(feature)));
-    fs::copy(&library, dir.join(library.file_name().unwrap())).unwrap();
-    let path = dir.join("orm-extension.toml");
-    fs::write(&path, manifest(abi)).unwrap();
+    let library = built(&mut builds, feature);
+    let path = install(&format!("{}-{abi}", variant(feature)), &library, &manifest(abi));
     builds.packages.insert(key, path.clone());
     path
+}
+
+/// The manifest `text` without its `[[exports]]`: the text between "# Hooks of the library" and `[python]` goes.
+fn without_exports(text: &str) -> String {
+    format!("{}{}", text.split("# Hooks of the library").next().unwrap(), &text[text.find("[python]").unwrap()..])
 }
 
 fn compile(name: &str, schema: &str, extensions: &[(&str, &Path)]) -> Result<SchemaIr, String> {
@@ -67,6 +92,12 @@ fn compile(name: &str, schema: &str, extensions: &[(&str, &Path)]) -> Result<Sch
     fs::write(&path, schema).unwrap();
     let installed = Installed { extensions: extensions.iter().map(|(id, path)| ((*id).to_owned(), path.to_path_buf())).collect(), ..Installed::new() };
     compile_file_with(&path, &installed)
+}
+
+/// The plan of the package at `manifest` with the passes of the artifact.
+fn plan(manifest: &Path) -> Plan {
+    let artifact = orm_core::behavior::artifact();
+    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests(), &artifact.passes).unwrap().unwrap()
 }
 
 #[test]
@@ -171,9 +202,7 @@ fn a_manifest_that_disagrees_still_fails_when_the_library_is_already_loaded() {
 fn lowering_a_lowered_schema_again_keeps_one_field() {
     let manifest = installed("", "0.2");
     let mut ir = compile("again", SCHEMA, &[(ID, &manifest)]).unwrap();
-    let artifact = orm_core::behavior::artifact();
-    let plan = orm_core::loader::plan(&[(ID.to_owned(), manifest.clone())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests(), &artifact.passes).unwrap().unwrap();
-    orm_core::behavior::prepare_with(&mut ir, None, Some(&plan)).unwrap();
+    orm_core::behavior::prepare_with(&mut ir, None, Some(&plan(&manifest))).unwrap();
     assert_eq!(ir.models[0].fields.iter().filter(|f| f.name == "tag").count(), 1);
 }
 
@@ -225,11 +254,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
 
 // The hooks of the library: the manifest declares `exports`, so the loader resolves `init`, `drop_state` and the table.
 
-fn open(manifest: &Path) -> Library {
-    let artifact = orm_core::behavior::artifact();
-    let plan = orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests(), &artifact.passes).unwrap().unwrap();
-    plan.library(ID).unwrap()
-}
+fn open(manifest: &Path) -> Library { plan(manifest).library(ID).unwrap() }
 
 fn text(value: &str) -> Value { Value::Text(value.into()) }
 fn arg(name: &str, value: Value) -> Arg { Arg { name: name.into(), value } }
@@ -242,7 +267,6 @@ fn init_gets_the_extension_data_and_a_hook_reads_the_state() {
     let bare = library.init(&serde_json::Value::Null).unwrap();
     assert_eq!(bare.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("hello")));
     assert!(library.hook_names().unwrap().contains(&"outside.echo"));
-    assert!(library.hook("outside.gone").unwrap().is_none());
 }
 
 #[test]
@@ -288,13 +312,17 @@ fn an_error_and_a_panic_of_a_hook_or_of_init_name_the_extension() {
 }
 
 #[test]
+fn a_hook_of_point_two_returns_nothing_and_refuses_a_value_that_is_not_text() {
+    let state = open(&installed("", "0.2")).init(&serde_json::Value::Null).unwrap();
+    assert_eq!(state.call("outside.audit", &[arg("value", text("hello"))], &Context::default()), Ok(Value::Null));
+    let error = state.call("outside.audit", &[arg("value", Value::Int(1))], &Context::default()).unwrap_err();
+    assert!(error.contains(ID) && error.contains("outside.audit") && error.contains("value must be text"), "{error}");
+}
+
+#[test]
 fn drop_state_runs_once_when_the_state_drops() {
     // A copy of the library at its own path has its own counter.
-    let source = installed("", "0.2");
-    let dir = scratch("drops");
-    fs::copy(source.with_file_name(format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX)), dir.join(format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX))).unwrap();
-    fs::write(dir.join("orm-extension.toml"), manifest("0.2")).unwrap();
-    let library = open(&dir.join("orm-extension.toml"));
+    let library = open(&package("drops", "", &manifest("0.2")));
     let drops = |state: &orm_core::loader::State| state.call("outside.drops", &[], &Context::default()).unwrap();
     let first = library.init(&serde_json::Value::Null).unwrap();
     assert_eq!(drops(&first), Value::Int(0));
@@ -306,15 +334,100 @@ fn drop_state_runs_once_when_the_state_drops() {
     assert_eq!(drops(&third), Value::Int(2));
 }
 
+/// A package of the default build, and `missing.toml` beside it: a manifest that declares one export more than the library has a hook for.
+fn with_a_missing_export(name: &str) -> (PathBuf, PathBuf) {
+    let good = package(name, "", &manifest("0.2"));
+    let bad = good.with_file_name("missing.toml");
+    let extra = "[[exports]]\nid = \"outside.missing\"\npoint = 1\ninput = \"string\"\noutput = \"string\"\n\n[python]";
+    fs::write(&bad, fs::read_to_string(&good).unwrap().replace("[python]", extra)).unwrap();
+    (good, bad)
+}
+
+fn refuses_the_missing_export(error: &str) {
+    assert!(error.contains(ID) && error.contains("the export outside.missing") && error.contains("no hook of that name"), "{error}");
+}
+
 #[test]
-fn a_manifest_without_exports_leaves_the_hooks_unresolved() {
-    // A copy at its own path: the loader caches a library by path, with its exports.
-    let dir = scratch("bare");
-    let name = format!("{}outside_extension{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
-    fs::copy(installed("", "0.2").with_file_name(&name), dir.join(&name)).unwrap();
-    let text = manifest("0.2");
-    let (before, after) = (text.split("# Hooks of the library").next().unwrap(), &text[text.find("[python]").unwrap()..]);
-    fs::write(dir.join("orm-extension.toml"), format!("{before}{after}")).unwrap();
-    let error = open(&dir.join("orm-extension.toml")).init(&serde_json::Value::Null).err().unwrap();
+fn an_export_without_a_hook_fails_the_first_open_of_a_library() {
+    let (_, bad) = with_a_missing_export("table-fresh");
+    refuses_the_missing_export(&plan(&bad).library(ID).err().unwrap());
+}
+
+#[test]
+fn an_export_without_a_hook_fails_when_the_library_is_already_loaded() {
+    let (good, bad) = with_a_missing_export("table-loaded");
+    open(&good);
+    refuses_the_missing_export(&plan(&bad).library(ID).err().unwrap());
+}
+
+#[test]
+fn a_manifest_without_exports_has_no_library_to_open() {
+    let bare = package("bare", "", &without_exports(&manifest("0.2")));
+    let error = plan(&bare).library(ID).err().unwrap();
     assert!(error.contains(ID) && error.contains("declares no exports"), "{error}");
+}
+
+// A library of slice 1 has the three symbols of ABI 0.1 and no `init`, no `drop_state` and no hook table.
+
+#[test]
+fn a_library_of_slice_one_lowers_a_schema_without_a_hook_table() {
+    let text = without_exports(&manifest("0.1")).replace("schema_contract = \"2.1\"", "schema_contract = \"2.0\"");
+    let path = package("pass-only", "pass-only", &text);
+    let ir = compile("pass-only", SCHEMA, &[(ID, &path)]).unwrap();
+    assert!(ir.models[0].fields.iter().any(|f| f.name == "tag"));
+}
+
+#[test]
+fn a_manifest_that_declares_exports_for_a_library_of_slice_one_names_the_missing_table() {
+    let path = package("pass-only-exports", "pass-only", &manifest("0.1"));
+    let error = plan(&path).library(ID).err().unwrap();
+    assert!(error.contains(ID) && error.contains("has no `orm_ext_hooks`") && error.contains("the manifest declares exports"), "{error}");
+}
+
+// A schema with a hook record: the compiled pass `acme.static.bind` binds the hook and sets the `extension_data` of the library.
+
+fn bind_plan(manifest: &Path) -> Plan {
+    let compiled: Manifest = toml::from_str(&format!(
+        "id = \"acme.static\"\nversion = \"1.0.0\"\nhost_contract = \"{HOST_CONTRACT_VERSION}\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
+         languages = [\"python\"]\ndatabases = [\"postgres\"]\n\
+         [[passes]]\nid = \"acme.static.bind\"\nphase = \"declaration\"\nrust = \"acme_static::bind\"\neffects = [\"models.static_bind\"]\n"
+    )).unwrap();
+    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], &[compiled], &["acme.static.bind".to_owned()]).unwrap().unwrap()
+}
+
+/// A hook of the library at `point` on the field `field` of `Post`.
+fn binding(point: u8, field: &str, export: &str) -> HookBinding {
+    HookBinding { source: ID.into(), point, model: "Post".into(), field: Some(field.into()), export: export.into(), dependencies: vec![], reads_context: false }
+}
+
+fn lower_with(plan: &Plan, hook: &HookBinding) -> Result<SchemaIr, String> {
+    let run = |ir: &mut SchemaIr, _: &str| {
+        ir.behavior.hooks.push(hook.clone());
+        ir.behavior.extension_data.insert(ID.to_owned(), serde_json::json!({"prefix": "x"}));
+        Ok(true)
+    };
+    let mut ir = unlowered();
+    plan.lower(&mut ir, None, &run).map(|_| ir)
+}
+
+#[test]
+fn a_hook_of_the_library_lowers_with_the_new_minor_and_runs_with_its_extension_data() {
+    let plan = bind_plan(&installed("", "0.2"));
+    let ir = lower_with(&plan, &binding(1, "tag", "outside.prefix")).unwrap();
+    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, SCHEMA_CONTRACT_MINOR));
+    let state = plan.library(ID).unwrap().init(&ir.behavior.extension_data[ID]).unwrap();
+    assert_eq!(state.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("xhello")));
+}
+
+#[test]
+fn lowering_refuses_a_hook_that_the_manifest_of_the_library_does_not_allow() {
+    let plan = bind_plan(&installed("", "0.2"));
+    for (hook, message) in [
+        (binding(1, "tag", "outside.gone"), "is not in the manifest of acme.outside"),
+        (binding(2, "tag", "outside.prefix"), "is bound at point 2, and the manifest says point 1"),
+        (binding(1, "id", "outside.prefix"), "takes string but the field is int"),
+    ] {
+        let error = lower_with(&plan, &hook).unwrap_err();
+        assert!(error.contains(message), "{error}");
+    }
 }

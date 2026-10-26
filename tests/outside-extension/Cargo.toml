@@ -18,3 +18,5 @@ serde_json = "1"
 # These two report an ABI that this engine rejects.
 abi-major = []
 abi-newer = []
+# A library of ABI 0.1: the passes and no `init`, `drop_state` or hook table. Build one feature at a time.
+pass-only = []

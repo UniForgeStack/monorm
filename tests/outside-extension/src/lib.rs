@@ -1,3 +1,5 @@
+// `pass-only` builds no hook, no state and no `init`.
+#![cfg_attr(feature = "pass-only", allow(dead_code, unused_macros))]
 use orm_contracts::{abi::{Arg, Context, Value}, extension::Declaration, ir::{ColType, FieldIr, SchemaIr}};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -82,9 +84,36 @@ macro_rules! export {
     };
 }
 
-#[cfg(not(any(feature = "abi-major", feature = "abi-newer")))]
+#[cfg(not(any(feature = "abi-major", feature = "abi-newer", feature = "pass-only")))]
 export!();
 #[cfg(feature = "abi-major")]
 export!(abi = (1, 0););
 #[cfg(all(feature = "abi-newer", not(feature = "abi-major")))]
 export!(abi = (0, 3););
+
+/// The three symbols of a library from slice 1, written by hand: `extension!` always writes all six.
+#[cfg(feature = "pass-only")]
+mod slice_one {
+    use orm_contracts::abi::{self, Buffer, PassFn};
+    use orm_contracts::extension::ContractVersion;
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn orm_ext_abi_version() -> u32 { ContractVersion::new(0, 1).to_bits() }
+
+    /// # Safety
+    /// Called by the ORM loader with readable ranges and a writable `out`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
+        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn)];
+        // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
+        unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
+    }
+
+    /// # Safety
+    /// Called by the ORM loader with a buffer of this library.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn orm_ext_free(ptr: *mut u8, len: usize) {
+        // SAFETY: the loader passes a buffer that this library returned, once.
+        unsafe { abi::free(ptr, len) }
+    }
+}
