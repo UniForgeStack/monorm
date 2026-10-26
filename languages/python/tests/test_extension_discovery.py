@@ -157,7 +157,8 @@ async def test_packaged_generated_models_use_runtime_without_the_pass_library(si
     (tmp_path / "schema.prisma").write_text('datasource db { provider = "sqlite" }\nmodel Post {\n id Int @id\n @@outside.tag("blue")\n}\n')
     monkeypatch.chdir(tmp_path)
     assert cli(["generate"]) == 0
-    assert not (tmp_path / "orm_ext").exists()
+    # Compiled static extensions can write sources here; packaged extensions cannot.
+    assert not (tmp_path / "orm_ext" / "acme_outside").exists()
     library.unlink()  # define() must need neither the pass library nor discovery.
     registry = orm.Registry()
     monkeypatch.setattr(orm.model, "registry", registry)
@@ -209,7 +210,8 @@ def test_hash_only_package_is_imported_by_generated_models(site: Path, outside_l
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(orm.model, "registry", orm.Registry())
     assert cli(["generate"]) == 0
-    assert not (tmp_path / "orm_ext").exists()
+    # Compiled static extensions can write sources here; packaged extensions cannot.
+    assert not (tmp_path / "orm_ext" / "acme_outside").exists()
     library.unlink()
     spec = importlib.util.spec_from_file_location("hash_only_generated", tmp_path / "models.py")
     assert spec and spec.loader
