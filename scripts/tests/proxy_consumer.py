@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 import orm
-from models import Account, ActiveAccount
+from models import Account, ActiveAccount, Status
 from orm._packages import import_runtime
 
 
@@ -18,11 +18,13 @@ async def run():
     await db.create_tables()
     try:
         await Account.objects.using(db).insert_many([
-            {"id": 1, "name": "old one", "status": "OLD", "note": "n"},
-            {"id": 2, "name": "live", "status": "ACTIVE", "note": "n"},
+            {"id": 1, "name": "old one", "status": Status.OLD, "note": "n"},
+            {"id": 2, "name": "live", "status": Status.ACTIVE, "note": "n"},
         ])
         rows = await ActiveAccount.objects.using(db).all()
-        assert [row.name for row in rows] == ["live"]
+        assert sorted(row.name for row in rows) == ["live", "old one"]
+        created = await ActiveAccount.objects.using(db).insert(id=3)
+        assert created.name == "new" and created.status is Status.ACTIVE
     finally:
         await db.drop_tables()
         await db.close()

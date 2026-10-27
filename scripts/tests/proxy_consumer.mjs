@@ -11,10 +11,12 @@ await db.dropTables();
 await db.createTables();
 try {
   await Account.objects.using(db).insertMany([
-    { id: 1, name: 'old one', status: 'OLD', note: 'n' },
-    { id: 2, name: 'live', status: 'ACTIVE', note: 'n' },
+    { id: 1, name: 'old one', status: 'old', note: 'n' },
+    { id: 2, name: 'live', status: 'active', note: 'n' },
   ]);
   const rows = await ActiveAccount.objects.using(db).all();
-  assert.deepEqual(rows.map((row) => row.name), ['live']);
+  assert.deepEqual(rows.map((row) => row.name).sort(), ['live', 'old one']);
+  const created = await ActiveAccount.objects.using(db).insert({ id: 3 });
+  assert.equal(created.name, 'new'); assert.equal(created.status, 'active');
 } finally { await db.dropTables(); await db.close(); }
 console.log('proxy consumer js ok');

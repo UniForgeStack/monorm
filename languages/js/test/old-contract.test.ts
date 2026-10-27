@@ -10,5 +10,5 @@ test("define rejects an old schema contract and names the cure", () => {
 
 test("define rejects old proxy models and names the cure", () => {
   const ir = { models: [], behavior: { proxy_models: [{ model: "A", parent: "U", defaults: {} }] } } as unknown as SchemaIR;
-  assert.throws(() => define(ir, { registry: new Registry() }), (e: unknown) => e instanceof SchemaError && /unknown field `defaults`.*regenerate them and rebuild the native artifact/.test(e.message));
+  assert.throws(() => define(ir, { registry: new Registry() }), (e: unknown) => e instanceof SchemaError && /unknown field `proxy_models`.*regenerate the models and rebuild the native artifact/.test(e.message));
 });
