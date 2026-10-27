@@ -250,10 +250,14 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
             location.line = location.line - start + 1;
         }
     }
+    // An attribute of a missing extension can take its field out of the model: the namespace error comes before lowering.
+    if let Some(d) = declarations.iter().find(|d| d.field.is_some() && lower::declared(manifests, &d.attribute, true).is_none()) {
+        return Err(crate::behavior::unowned_declaration_error(d));
+    }
     let path = crate::identity::manifest_path(origin);
-    // A handwritten ContentType enum stays ordinary unless generation or a generic relation asks for identities.
+    // A handwritten ContentType enum stays ordinary unless generation or an attribute that needs identities asks for them.
     let handwritten = items.iter().any(|i| matches!(i, syntax::Item::Enum(e) if e.name == "ContentType"));
-    let needs_identities = update.is_some() || declarations.iter().any(|d| d.attribute.starts_with("generic.")) || !handwritten && (path.is_file()
+    let needs_identities = update.is_some() || declarations.iter().any(|d| lower::declared(manifests, &d.attribute, d.field.is_some()).is_some_and(|a| a.identities)) || !handwritten && (path.is_file()
         || items.iter().any(|item| matches!(item, syntax::Item::Model(m) if m.members.iter().any(|f| f.ty.name == "ContentType"))));
     let identities = if needs_identities {
         if handwritten {
@@ -291,7 +295,8 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
         None => msg,
     };
     let proxies: std::collections::HashSet<String> = declarations.iter().filter(|d| d.attribute == "proxy.of").map(|d| d.model.clone()).collect();
-    let (mut ir, diagnostics) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, proxies: &proxies }.lower(items).map_err(|e| loader.located(e))?;
+    let owned_types = lower::owned_types(manifests);
+    let (mut ir, diagnostics) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, proxies: &proxies, owned_types: &owned_types }.lower(items).map_err(|e| loader.located(e))?;
     let warnings = diagnostics.into_iter().map(|d| {
         let (file, span) = loader.located_span(d.span);
         expr::Warning { file, span, message: d.message }
@@ -369,7 +374,7 @@ pub fn check(ir: SchemaIr) -> Result<(SchemaIr, Schema), String> {
 mod tests;
 
 /// Explicit allocation is separate from compilation and usable without a compiled
-/// generic relation extension. A schema without extension declarations gets the full
+/// extension that needs identities. A schema without extension declarations gets the full
 /// engine check before atomic publication; extension lowering waits for compilation.
 pub fn generate_identities(path: &Path, renames: &[(String, String)], restores: &[String]) -> Result<orm_contracts::identity::IdentityManifest, String> {
     generate_identities_with(path, renames, restores, &Installed::new())

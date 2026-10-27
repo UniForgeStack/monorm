@@ -338,6 +338,8 @@ pub struct Lowering<'l> {
     pub deferred_identity: &'l HashSet<String>,
     /// Proxy models (`@@proxy.of`): only their redeclared fields take an enum subset.
     pub proxies: &'l HashSet<String>,
+    /// The DSL type names that a manifest attribute owns, with the attribute that owns each (see `owned_types`).
+    pub owned_types: &'l BTreeMap<String, String>,
 }
 
 struct Ctx<'l> {
@@ -347,13 +349,14 @@ struct Ctx<'l> {
     /// Position and `@map` of each type member, by type and subfield name; `TypeFieldIr` holds neither.
     members: HashMap<(String, String), nested::TypeMember>,
     proxies: &'l HashSet<String>,
+    owned_types: &'l BTreeMap<String, String>,
     pending: Pendings,
 }
 
 impl Lowering<'_> {
     pub fn lower(&self, items: Vec<Item>) -> Result<(SchemaIr, Vec<Diagnostic>)> {
         let mut ir = SchemaIr::default();
-        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), proxies: self.proxies, pending: Pendings::default() };
+        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), proxies: self.proxies, owned_types: self.owned_types, pending: Pendings::default() };
         for def in ExtensionDef::builtin() {
             for (name, t) in &def.types {
                 ctx.types.insert(name.clone(), (def.name.clone(), t.clone()));
@@ -831,8 +834,8 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
         if decimal {
             f.db_type = Some("numeric".into());
         }
-    } else if name == "Generic" {
-        return err(*pos, format!("{what}: unknown type Generic; a Generic field needs @generic.relation(...) from the orm.generic extension"));
+    } else if let Some(attribute) = ctx.owned_types.get(name) {
+        return err(*pos, format!("{what}: unknown type {name}; a {name} field needs @{attribute}(...) (namespace {}.*)", crate::behavior::attribute_namespace(attribute)));
     } else {
         return err(
             *pos,
@@ -1819,6 +1822,7 @@ pub(super) fn generator_extensions(items: &[Item]) -> Result<Vec<String>> {
 /// Database type attributes keep their existing interpretation.
 pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &[crate::behavior::Manifest]) -> Result<Vec<crate::behavior::Declaration>> {
     let mut out = vec![];
+    let names: HashSet<String> = items.iter().filter_map(|i| match i { Item::Model(m) => Some(m.name.clone()), Item::Enum(e) => Some(e.name.clone()), _ => None }).collect();
     let mut collect = |attrs: &mut Vec<Attr>, model: &str, field: Option<(&str, String)>| -> Result<()> {
         let mut ordinary = vec![];
         for a in attrs.drain(..) {
@@ -1854,19 +1858,21 @@ pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &
             let mut members = vec![];
             for mut member in m.members.drain(..) {
                 let ty = format!("{}{}{}", member.ty.name, if member.ty.list { "[]" } else { "" }, if member.ty.optional { "?" } else { "" });
-                let has = |name: &str| member.attrs.iter().any(|a| a.name == name);
-                // The generic pass owns these members: a reverse field is no relation, and a
-                // `Generic` field becomes its type and key fields at this position.
-                let reverse = has("generic.reverse");
-                let generic = member.ty.name == "Generic" && has("generic.relation") && declared(manifests, "generic.relation", true).is_some();
-                collect(&mut member.attrs, &m.name, Some((&member.name, ty)))?;
-                if let Some(a) = member.attrs.iter().find(|_| reverse || generic) {
-                    // A reverse field has no explicit form; a Generic field has @@generic.relation.
-                    let (kind, cure) = if reverse { ("@generic.reverse", "remove it") } else { ("Generic", "use the explicit @@generic.relation form for @map, @unique, @db.* and defaults") };
-                    return err(a.pos, format!("{}.{}: @{} is not allowed on a {kind} field; {cure}", m.name, member.name, a.name));
+                // A manifest attribute can own the field's type (an extension pass builds the columns at
+                // this position) or take the field out of the model (the pass reads its declaration).
+                let owner = member.attrs.iter().find_map(|a| field_attribute(manifests, &a.name).filter(|d| d.field_type.as_deref() == Some(member.ty.name.as_str())));
+                let non_member = member.attrs.iter().find_map(|a| field_attribute(manifests, &a.name).filter(|d| !d.member));
+                let owner_name = owner.map(|d| d.name.clone());
+                if owner.is_some() && non_member.is_none() && names.contains(&member.ty.name) {
+                    return err(member.pos, format!("{}.{}: the type {} is owned by @{}, and a model or enum has that name; rename it", m.name, member.name, member.ty.name, owner_name.unwrap_or_default()));
                 }
-                if reverse { continue; }
-                if generic { member.ty.name = "Int".into(); }
+                let special = non_member.or(owner).map(|d| (d.name.clone(), if non_member.is_some() { format!("@{} ", d.name) } else { format!("{} ", member.ty.name) }));
+                collect(&mut member.attrs, &m.name, Some((&member.name, ty)))?;
+                if let (Some(a), Some((name, kind))) = (member.attrs.first(), &special) {
+                    return err(a.pos, format!("{}.{}: @{} is not allowed on a {}field; remove it (see the {}.* docs)", m.name, member.name, a.name, kind, crate::behavior::attribute_namespace(name)));
+                }
+                if non_member.is_some() { continue; }
+                if owner.is_some() { member.ty.name = "Int".into(); }
                 members.push(member);
             }
             m.members = members;
@@ -1875,8 +1881,18 @@ pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &
     Ok(out)
 }
 
+/// The DSL type names that manifest attributes own, each with the attribute that owns it.
+pub(super) fn owned_types(manifests: &[crate::behavior::Manifest]) -> BTreeMap<String, String> {
+    manifests.iter().flat_map(|m| &m.attributes).filter_map(|a| Some((a.field_type.clone()?, a.name.clone()))).collect()
+}
+
+/// The field entry of attribute `name` in the manifests.
+fn field_attribute<'m>(manifests: &'m [crate::behavior::Manifest], name: &str) -> Option<&'m crate::behavior::Attribute> {
+    manifests.iter().flat_map(|m| &m.attributes).find(|d| d.name == name && d.target == crate::behavior::AttributeTarget::Field)
+}
+
 /// The manifest entry of attribute `name` on a field (`@name`) or a model (`@@name`).
-fn declared<'m>(manifests: &'m [crate::behavior::Manifest], name: &str, field: bool) -> Option<&'m crate::behavior::Attribute> {
+pub(super) fn declared<'m>(manifests: &'m [crate::behavior::Manifest], name: &str, field: bool) -> Option<&'m crate::behavior::Attribute> {
     let named = || manifests.iter().flat_map(|m| &m.attributes).filter(|d| d.name == name);
     named().find(|d| (d.target == crate::behavior::AttributeTarget::Field) == field).or_else(|| named().next())
 }

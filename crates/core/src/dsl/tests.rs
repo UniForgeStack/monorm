@@ -337,7 +337,7 @@ fn a_through_name_with_the_model_placeholder_lowers_on_a_deferred_model_only() {
     let proxies = std::collections::HashSet::new();
     let lower_with = |deferred: &[&str], source: &str| {
         let deferred = deferred.iter().map(|m| m.to_string()).collect();
-        lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies }.lower(syntax::parse(source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
+        lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies, owned_types: &Default::default() }.lower(syntax::parse(source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
     };
     let ir = lower_with(&["A"], source).unwrap();
     let r = &ir.models[0].relations[0];
@@ -741,13 +741,19 @@ fn minus_field_is_a_descending_index_key() {
     }
 }
 
+/// A manifest with the keys of the generic extension, written out: the core reads the keys, not the names.
+fn owning_manifest() -> crate::behavior::Manifest {
+    serde_json::from_value(serde_json::json!({
+        "id": "orm.generic", "version": "1", "host_contract": 1, "schema_contract": "2.2", "languages": [], "databases": [],
+        "attributes": [{"name": "generic.relation", "target": "field", "field_type": "Generic", "identities": true, "arguments": {"targets": {"kind": "list", "required": true}}},
+                       {"name": "generic.reverse", "target": "field", "member": false, "identities": true},
+                       {"name": "generic.relation", "target": "model", "identities": true}]
+    })).unwrap()
+}
+
 #[test]
-fn the_generic_pass_owns_generic_and_reverse_fields() {
-    let manifest: crate::behavior::Manifest = serde_json::from_value(serde_json::json!({
-        "id": "orm.generic", "version": "1", "host_contract": 1, "schema_contract": 2, "languages": [], "databases": [],
-        "attributes": [{"name": "generic.relation", "target": "field", "arguments": {"targets": {"kind": "list", "required": true}}},
-                       {"name": "generic.reverse", "target": "field"}]
-    })).unwrap();
+fn a_manifest_attribute_owns_a_field_type_or_drops_a_field() {
+    let manifest = owning_manifest();
     let source = r#"model Tag {
       id     Int      @id
       target Generic? @generic.relation(targets: ["Post"])
@@ -766,25 +772,52 @@ fn the_generic_pass_owns_generic_and_reverse_fields() {
     assert_eq!(members(&items, 1).len(), 1);
     // The pass builds these members, so an ordinary attribute on one has nowhere to go.
     for (from, to, message) in [
-        ("@generic.relation(targets: [\"Post\"])", "@generic.relation(targets: [\"Post\"]) @unique", "Tag.target: @unique is not allowed on a Generic field; use the explicit @@generic.relation form"),
-        ("@generic.relation(targets: [\"Post\"])", "@map(\"zz\") @generic.relation(targets: [\"Post\"])", "Tag.target: @map is not allowed on a Generic field; use the explicit @@generic.relation form"),
-        ("@generic.reverse", "@generic.reverse @map(\"zz\")", "Post.tags: @map is not allowed on a @generic.reverse field; remove it"),
-        ("@generic.reverse", "@generic.reverse @relation(\"x\")", "Post.tags: @relation is not allowed on a @generic.reverse field; remove it"),
+        ("@generic.relation(targets: [\"Post\"])", "@generic.relation(targets: [\"Post\"]) @unique", "Tag.target: @unique is not allowed on a Generic field; remove it (see the generic.* docs)"),
+        ("@generic.relation(targets: [\"Post\"])", "@map(\"zz\") @generic.relation(targets: [\"Post\"])", "Tag.target: @map is not allowed on a Generic field; remove it (see the generic.* docs)"),
+        ("@generic.reverse", "@generic.reverse @map(\"zz\")", "Post.tags: @map is not allowed on a @generic.reverse field; remove it (see the generic.* docs)"),
+        ("@generic.reverse", "@generic.reverse @relation(\"x\")", "Post.tags: @relation is not allowed on a @generic.reverse field; remove it (see the generic.* docs)"),
     ] {
         let mut items = syntax::parse(&source.replace(from, to)).unwrap();
         let error = super::lower::behavior_declarations(&mut items, "t.prisma", std::slice::from_ref(&manifest)).unwrap_err().msg;
         assert!(error.contains(message), "{error}");
     }
-    // A Generic field without @generic.relation is not the pass's member.
+    // An owned type needs its attribute; the lowering error names the type, the attribute and the namespace.
     let mut items = syntax::parse("model Tag {\n id Int @id\n x Generic\n}").unwrap();
     super::lower::behavior_declarations(&mut items, "t.prisma", std::slice::from_ref(&manifest)).unwrap();
     assert_eq!(members(&items, 0)[1].1, "Generic");
-    // Without a compiled generic.relation, Generic stays an unknown type.
-    let mut items = syntax::parse(source).unwrap();
-    super::lower::behavior_declarations(&mut items, "t.prisma", &[]).unwrap();
-    assert_eq!(members(&items, 0)[1].1, "Generic");
+    let owned = super::lower::owned_types(std::slice::from_ref(&manifest));
+    assert_eq!(owned.get("Generic").map(String::as_str), Some("generic.relation"));
+    let load = |_: &str| Err("no imports".to_owned());
+    let (deferred, proxies) = Default::default();
+    let error = lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies, owned_types: &owned }.lower(items).unwrap_err().msg;
+    assert!(error.contains("unknown type Generic; a Generic field needs @generic.relation(...) (namespace generic.*)"), "{error}");
+    // Without an owner, the type is plain unknown.
     let error = compile("model Tag {\n id Int @id\n target Generic?\n}", None).unwrap_err();
-    assert!(error.contains("unknown type Generic; a Generic field needs @generic.relation"), "{error}");
+    assert!(error.contains("unknown type Generic; expected a model or") && !error.contains("needs @"), "{error}");
+    let error = compile("model Tag {\n id Int @id\n}\nmodel Post {\n id Int @id\n tags Tag[] @generic.reverse\n}", None).unwrap_err();
+    assert!(error.contains("@generic.reverse: not compiled into this artifact and no installed extension owns it") && error.contains("(namespace @generic.*"), "{error}");
+}
+
+#[test]
+fn a_model_or_enum_cannot_share_the_name_of_an_owned_type() {
+    let manifest = owning_manifest();
+    for declaration in ["model Generic {\n id Int @id\n}", "enum Generic {\n A\n}"] {
+        let source = format!("{declaration}\nmodel Tag {{\n id Int @id\n target Generic? @generic.relation(targets: [\"Tag\"])\n}}");
+        let mut items = syntax::parse(&source).unwrap();
+        let error = super::lower::behavior_declarations(&mut items, "t.prisma", std::slice::from_ref(&manifest)).unwrap_err().msg;
+        assert!(error.contains("Tag.target: the type Generic is owned by @generic.relation, and a model or enum has that name; rename it"), "{error}");
+    }
+}
+
+#[test]
+fn an_attribute_asks_for_identities_in_its_manifest() {
+    let manifest = owning_manifest();
+    for (attribute, field) in [("generic.reverse", true), ("generic.relation", true), ("generic.relation", false)] {
+        assert!(super::lower::declared(std::slice::from_ref(&manifest), attribute, field).is_some_and(|a| a.identities), "{attribute} {field}");
+    }
+    let mut plain = manifest;
+    plain.attributes.iter_mut().for_each(|a| a.identities = false);
+    assert!(!super::lower::declared(std::slice::from_ref(&plain), "generic.reverse", true).unwrap().identities);
 }
 
 #[test]

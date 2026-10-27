@@ -93,8 +93,12 @@ const genericHeader = `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid
 const hasGeneric = () => (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("generic-relations");
 
 test("a Generic field creates its pair, its index and the reverse field", async () => {
-  assert.throws(() => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null), /unknown type Generic; a Generic field needs @generic.relation/);
-  if (!hasGeneric()) return;
+  const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null);
+  if (!hasGeneric()) {
+    assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && !e.message.includes("needs @"));
+    return;
+  }
+  assert.throws(bare, /unknown type Generic; a Generic field needs @generic\.relation\(\.\.\.\) \(namespace generic\.\*\)/);
   const dir = mkdtempSync(join(scratch, "generic-field-"));
   const path = join(dir, "schema.prisma");
   try {

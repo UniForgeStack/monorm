@@ -1,6 +1,6 @@
 id = "acme.outside"
 version = "0.1.0"
-schema_contract = "2.1"
+schema_contract = "2.2"
 abi = "0.2"
 library = "outside_extension"
 language_contract = 1
@@ -20,6 +20,29 @@ required = true
 id = "acme.outside.tag"
 phase = "declaration"
 effects = ["models.outside", "behavior.storage"]
+
+# `price Money @outside.money` owns the type `Money`: the pass replaces the field with `price_amount` and `price_currency`.
+# A schema that uses it needs model identities.
+[[attributes]]
+name = "outside.money"
+target = "field"
+field_type = "Money"
+identities = true
+
+# `memo String @outside.note("text")` is no model member: the pass writes the text into the `extension_data` of the package.
+[[attributes]]
+name = "outside.note"
+target = "field"
+member = false
+
+[[attributes.positional]]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.fields"
+phase = "declaration"
+effects = ["fields.outside", "behavior.extension_data"]
 
 # Hooks of the library. `outside.prefix` reads the `{"prefix": ...}` of its `extension_data` entry.
 [[exports]]

@@ -222,3 +222,28 @@ def test_hash_only_package_is_imported_by_generated_models(site: Path, outside_l
     assert not caught
     assert sys.modules["acme_outside"].MANIFEST_HASH == digest
     assert not hasattr(module.Plain.objects, "tagged")
+
+
+async def test_an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model(site: Path, outside_library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]) -> None:
+    manifest = install(site, "acme-outside", "acme_outside", ident="acme.outside")
+    manifest.write_text((OUTSIDE / "orm-extension.toml").read_text())
+    shutil.copy(outside_library, manifest.parent / outside_library.name)
+    schema = tmp_path / "schema.prisma"
+    schema.write_text('datasource db { provider = "sqlite" }\nmodel Order {\n id Int @id\n price Money @outside.money\n memo String @outside.note("remember")\n}\n')
+    monkeypatch.chdir(tmp_path)
+    assert cli(["check"]) == 1
+    assert "orm identities" in capfd.readouterr().err
+    assert cli(["identities"]) == 0
+    assert cli(["generate"]) == 0
+    assert json.loads(schema.with_suffix(".identities.json").read_text())["entries"][0]["model"] == "Order"
+    Order = orm.load(schema, registry=(registry := orm.Registry()))["Order"]
+    assert list(Order._meta.fields) == ["id", "price_amount", "price_currency"]
+    assert registry.ir()["behavior"]["extension_data"]["acme.outside"]["notes"]["Order.memo"] == "remember"
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        await Order.objects.using(db).insert_many([{"id": 1, "price_amount": 250, "price_currency": "EUR"}])
+        [row] = await Order.objects.using(db).all()
+        assert (row.price_amount, row.price_currency) == (250, "EUR")
+    finally:
+        await db.close()

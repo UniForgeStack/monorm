@@ -23,6 +23,38 @@ fn tag(ir: &mut SchemaIr) -> Result<(), String> {
     Ok(())
 }
 
+/// `Money` fields become an amount and a currency column; `outside.note` declarations go into `extension_data`.
+fn fields(ir: &mut SchemaIr) -> Result<(), String> {
+    let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.field.is_some()).cloned().collect();
+    for d in declarations {
+        let field = d.field.as_deref().unwrap_or_default();
+        match d.attribute.as_str() {
+            "outside.money" => {
+                let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
+                let mut found = false;
+                for model in models.filter(|m| m.name == d.model) {
+                    let at = model.fields.iter().position(|f| f.name == field).ok_or_else(|| format!("{}.{field}: the Money placeholder is missing", d.model))?;
+                    let nullable = model.fields[at].nullable;
+                    model.fields.splice(at..=at, [
+                        FieldIr { nullable, ..FieldIr::plain(&format!("{field}_amount"), ColType::Int) },
+                        FieldIr { nullable, ..FieldIr::plain(&format!("{field}_currency"), ColType::Text) },
+                    ]);
+                    found = true;
+                }
+                if !found { return Err(format!("unknown model {}", d.model)); }
+            }
+            "outside.note" => {
+                let note = d.positional.first().and_then(|v| v.as_str()).ok_or_else(|| format!("{}.{field}: the note must be a string", d.model))?;
+                let data = ir.behavior.extension_data.entry("acme.outside".into()).or_insert_with(|| serde_json::json!({}));
+                let notes = data.as_object_mut().ok_or("the extension_data of acme.outside must be an object")?.entry("notes").or_insert_with(|| serde_json::json!({}));
+                notes[format!("{}.{field}", d.model)] = note.into();
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The count of states that `drop_state` has dropped, which `outside.drops` returns.
 static DROPS: AtomicU64 = AtomicU64::new(0);
 
@@ -79,7 +111,8 @@ macro_rules! export {
                 "outside.prefix" => prefix, "outside.audit" => audit, "outside.context" => context, "outside.drops" => drops,
                 "outside.fail" => fail, "outside.panic" => explode, "outside.echo" => echo, "outside.add" => add,
             };
-            ("acme.outside.tag", tag)
+            ("acme.outside.tag", tag),
+            ("acme.outside.fields", fields)
         }
     };
 }
@@ -104,7 +137,7 @@ mod slice_one {
     /// Called by the ORM loader with readable ranges and a writable `out`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
-        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn)];
+        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn)];
         // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
         unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
     }
