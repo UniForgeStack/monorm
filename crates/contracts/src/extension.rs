@@ -807,7 +807,7 @@ fn col_name(ty: ColType) -> String {
 }
 
 /// The typed values of ABI 0.2 that one column type takes: integers, and strings, travel as one value type each.
-fn same_value_type(a: ColType, b: ColType) -> bool {
+pub fn same_value_type(a: ColType, b: ColType) -> bool {
     let family = |t: ColType| match t { ColType::Int | ColType::BigInt => ColType::Int, ColType::String | ColType::Text => ColType::String, t => t };
     family(a) == family(b)
 }

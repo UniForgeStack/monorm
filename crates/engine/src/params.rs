@@ -34,6 +34,11 @@ pub trait Params {
     fn scope(&self, _name: &str) -> Option<usize> {
         None
     }
+
+    /// Every `scope.<name>` of the statement with its parameter index: the request context of the hooks.
+    fn scope_values(&self) -> Vec<(String, usize)> {
+        vec![]
+    }
 }
 
 /// `params` with the statement's `scope.<name>` parameter indexes.
@@ -57,6 +62,9 @@ impl Params for Scoped<'_> {
     }
     fn scope(&self, name: &str) -> Option<usize> {
         self.scope.get(name).copied()
+    }
+    fn scope_values(&self) -> Vec<(String, usize)> {
+        self.scope.iter().map(|(k, v)| (k.clone(), *v)).collect()
     }
 }
 

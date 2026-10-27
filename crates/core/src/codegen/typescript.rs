@@ -416,10 +416,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             #[cfg(not(feature = "composition"))]
             let _ = position;
             let t = file_value_type(m, f);
-            #[cfg(feature = "composition")]
-            let expression = !m.native.validated().contains(&position);
-            #[cfg(not(feature = "composition"))]
-            let expression = true;
+            let expression = !m.hooks.as_ref().is_some_and(|h| h.required.contains(&position));
             if expression {
                 writeln!(body, "  {}?: {} | Expression<Compat<{t}>, \"{name}\" | \"~{name}\", {{}}>;", camel(&f.name), file_input_type(m, f)).unwrap();
             } else { writeln!(body, "  {}?: {};", camel(&f.name), file_input_type(m, f)).unwrap(); }

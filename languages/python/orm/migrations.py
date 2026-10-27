@@ -40,7 +40,7 @@ from typing import Any
 
 from . import _native
 from ._apps import resolve_apps
-from ._packages import resolve_extensions
+from ._packages import package_dirs, resolve_extensions
 from .db import Database, _callbacks, _Callbacks, _current_tx
 from .db import connect as orm_connect
 from ._native import MigrationError
@@ -103,7 +103,7 @@ def _native_schema(schema: Schema) -> _native.Schema:
         return schema
     if isinstance(schema, Registry):
         return schema.prepare()
-    return _native.Schema(_native.compile_schema_file(os.fspath(schema), resolve_apps(schema), resolve_extensions()))
+    return _native.Schema(_native.compile_schema_file(os.fspath(schema), resolve_apps(schema), resolve_extensions()), None, package_dirs())
 
 
 class Migrations:

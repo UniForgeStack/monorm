@@ -21,6 +21,7 @@ pub mod schema;
 pub mod features;
 
 pub mod behavior;
+pub mod hooks;
 pub mod loader;
 
 #[cfg(feature = "composition")]

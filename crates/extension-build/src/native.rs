@@ -73,21 +73,12 @@ pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manife
     let mut core = String::from("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum NativeModel { None,\n");
     for i in 0..specs.len() { core.push_str(&format!("S{i},\n")); }
     core.push_str("}\nimpl NativeModel { pub fn computed(self) -> &'static [usize] { match self { Self::None => &[],\n");
-    let mut engine = String::from("use orm_core::behavior::NativeModel;\nuse sea_query::Value;\n#[allow(unused_imports)]\nuse crate::error::{Error, Result};\n");
-    let mut field_arms = String::new();
-    let mut field_helpers = String::new();
-    let mut record_helpers = String::new();
-    let mut insert_bulk = String::new();
-    let mut update_bulk = String::new();
-    let mut validated_arms = String::new();
-    let mut record_models = String::new();
+    let mut engine = String::from("use orm_core::behavior::NativeModel;\n");
+    let mut hook_helpers = String::new();
+    let mut hook_arms = String::new();
     let mut dependency_arms = String::new();
     let mut computation_arms = String::new();
     let mut bind_arms = String::new();
-    let mut restricted = String::new();
-    let mut insert_requirements = String::new();
-    let mut native_models = String::new();
-    let mut record_arms = String::new();
     let mut specializations = vec![];
     let mut python = String::from("#[allow(unused_imports)] use pyo3::prelude::*;\n");
     let mut node = String::from("#[allow(unused_imports)] use napi_derive::napi;\n");
@@ -96,43 +87,34 @@ pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manife
     for (i, spec) in specs.iter().enumerate() {
         if !seen_models.insert(&spec.model) { return Err(format!("duplicate native model {}", spec.model)); }
         let model = schema.models.iter_mut().find(|m| m.name == spec.model).ok_or_else(|| format!("unknown native model {}", spec.model))?;
-        if !spec.records.is_empty() { record_models.push_str(&format!("Self::S{i} => true,\n")); }
         let mut ids = vec![];
-        let mut validated_positions = std::collections::BTreeSet::new();
-        if !spec.fields.is_empty() || !spec.records.is_empty() { native_models.push_str(&format!("NativeModel::S{i} => Err(Error::query(\"native validation does not support upsert conflict outcomes; use an explicit transaction or database constraint\")),\n")); }
-        insert_requirements.push_str(&format!("NativeModel::S{i} => {{\n"));
+        let mut plan = String::new();
         let mut seen_fields = std::collections::BTreeSet::new();
-        let mut rule_positions = vec![];
         for rule in &spec.fields {
             if !seen_fields.insert(&rule.field) { return Err(format!("{}.{}: duplicate native field rule", spec.model, rule.field)); }
             let pos = model.fields.iter().position(|f| f.name == rule.field).ok_or_else(|| format!("{}.{}: unknown field", spec.model, rule.field))?;
-            restricted.push_str(&format!("(NativeModel::S{i}, {pos}) => Err(Error::query(\"native validated fields require supplied values; database defaults and expressions need a constraint or explicit transaction strategy\")),\n"));
-            insert_requirements.push_str(&format!("if map.get({pos}).copied().flatten().is_none() {{ return Err(Error::query({:?})); }}\n", format!("{}.{}: native validation requires an explicitly supplied insert value", spec.model, rule.field)));
-            validated_positions.insert(pos);
             let field = &model.fields[pos];
             if !matches!(field.ty, ColType::String | ColType::Text) || field.array || field.enum_name.is_some() {
                 return Err(format!("{}.{}: borrowed string exports require a scalar string", spec.model, rule.field));
             }
-            rule_positions.push(pos);
-            let mut body = format!("fn field_s{i}_{pos}(value: &mut Value) -> Result<()> {{\n");
-            body.push_str(&format!("let v = match value {{ Value::String(Some(v)) => v, Value::String(None) if {} => return Ok(()), _ => return Err(Error::query({:?})) }};\n", rule.allow_null, format!("{}.{}: validator requires a non-null string", spec.model, rule.field)));
+            let mut body = format!("fn field_s{i}_{pos}(value: &mut orm_contracts::abi::Value) -> Result<(), String> {{\nuse orm_contracts::abi::Value;\n");
+            body.push_str(&format!("let v = match value {{ Value::Text(v) => v, Value::Null if {} => return Ok(()), _ => return Err({:?}.into()) }};\n", rule.allow_null, format!("{}.{}: validator requires a non-null string", spec.model, rule.field)));
             for (export, kind) in rule.transforms.iter().map(|s| (s, ExportKind::StringTransform)).chain(rule.validators.iter().map(|s| (s, ExportKind::StringValidator))) {
                 let e = exports.get(export.as_str()).ok_or_else(|| format!("missing export {export}; rebuild"))?;
                 if e.kind != kind || !matches!(e.input, ColType::String | ColType::Text) || (kind == ExportKind::StringValidator && e.output.is_some()) { return Err(format!("wrong export type for {export}")); }
                 ids.push(export.clone());
                 if kind == ExportKind::StringTransform {
                     if !matches!(e.output, Some(ColType::String | ColType::Text)) { return Err(format!("wrong transform output for {export}")); }
-                    body.push_str(&format!("*v = {}(v.as_str()).map_err(Error::query)?;\n", e.rust));
+                    body.push_str(&format!("*v = {}(v.as_str()).map_err(String::from)?;\n", e.rust));
                 } else {
-                    body.push_str(&format!("let () = {}(v.as_str()).map_err(Error::query)?;\n", e.rust));
+                    body.push_str(&format!("let () = {}(v.as_str()).map_err(String::from)?;\n", e.rust));
                 }
             }
             body.push_str("Ok(()) }\n");
-            field_helpers.push_str(&body);
-            field_arms.push_str(&format!("(NativeModel::S{i}, {pos}) => field_s{i}_{pos}(value),\n"));
+            hook_helpers.push_str(&body);
+            plan.push_str(&format!("plan.transforms.push(({pos}, HookRef::Static(StaticHook::Field(field_s{i}_{pos}))));\n"));
         }
-        let mut record_body = format!("fn record_s{i}<R: crate::behavior::Values + ?Sized>(map: &[Option<usize>], values: &R) -> Result<()> {{\n");
-        for rule in &spec.records {
+        for (r, rule) in spec.records.iter().enumerate() {
             if rule.dependencies.is_empty() { return Err(format!("{}: record validator must declare dependencies", spec.model)); }
             let export = exports.get(rule.export.as_str()).ok_or_else(|| format!("missing record export {}", rule.export))?;
             if export.kind != ExportKind::StringRecordValidator || !matches!(export.input, ColType::String | ColType::Text) || export.output.is_some() {
@@ -141,42 +123,17 @@ pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manife
             ids.push(rule.export.clone());
             let mut arguments = vec![];
             let dependencies: Vec<_> = rule.dependencies.iter().map(|name| model.fields.iter().position(|f| f.name == *name).ok_or_else(|| format!("missing record dependency {name}"))).collect::<Result<_, _>>()?;
-            let dependencies = format!("{dependencies:?}");
-            record_body.push_str(&format!("if {dependencies}.iter().any(|d| map.get(*d).copied().flatten().is_some()) {{\n"));
-            for dependency in &rule.dependencies {
-                let position = model.fields.iter().position(|f| f.name == *dependency).ok_or_else(|| format!("missing record dependency {dependency}"))?;
-                validated_positions.insert(position);
+            for (k, dependency) in rule.dependencies.iter().enumerate() {
                 let field = model.fields.iter().find(|f| f.name == *dependency).ok_or_else(|| format!("missing record dependency {dependency}"))?;
                 if !matches!(field.ty, ColType::String | ColType::Text) || field.array || field.enum_name.is_some() {
                     return Err(format!("record dependency {dependency} requires a scalar string"));
                 }
-                insert_requirements.push_str(&format!("if map.get({position}).copied().flatten().is_none() {{ return Err(Error::query(\"record validation requires all insert dependencies\")); }}\n"));
-                arguments.push(format!("match map.get({position}).copied().flatten().and_then(|p| values.value(p)) {{ Some(Value::String(Some(v))) => v.as_str(), _ => return Err(Error::query(\"record validation requires all non-null supplied dependencies; use an explicit transaction for partial records\")) }}"));
+                arguments.push(format!("match args.get({k}).map(|a| &a.value) {{ Some(orm_contracts::abi::Value::Text(v)) => v.as_str(), _ => return Err(\"record validation requires all non-null supplied dependencies; use an explicit transaction for partial records\".into()) }}"));
             }
-            record_body.push_str(&format!("let args = [{}];\nlet () = {}(&args).map_err(Error::query)?;\n}}\n", arguments.join(", "), export.rust));
+            hook_helpers.push_str(&format!("fn record_s{i}_{r}(args: &[orm_contracts::abi::Arg]) -> Result<(), String> {{\nlet args = [{}];\nlet () = {}(&args).map_err(String::from)?;\nOk(()) }}\n", arguments.join(", "), export.rust));
+            plan.push_str(&format!("plan.records.push(RecordHook {{ positions: vec!{dependencies:?}, hook: HookRef::Static(StaticHook::Record(record_s{i}_{r})) }});\n"));
         }
-        record_body.push_str("Ok(()) }\n");
-        record_helpers.push_str(&record_body);
-        record_arms.push_str(&format!("NativeModel::S{i} => record_s{i}(map, values),\n"));
-        for (bulk, insert) in [(&mut insert_bulk, true), (&mut update_bulk, false)] {
-            bulk.push_str(&format!("NativeModel::S{i} => {{\n"));
-            if insert { bulk.push_str(&format!("insert_fields(NativeModel::S{i}, map)?;\n")); }
-            for pos in &rule_positions { bulk.push_str(&format!("let slot_{pos} = map.get({pos}).copied().flatten();\n")); }
-            if !rule_positions.is_empty() || !spec.records.is_empty() {
-                bulk.push_str("for row in rows { if row.len() != width { return Err(Error::query(\"write row length does not match fields\")); }\n");
-                for pos in &rule_positions {
-                    if insert {
-                        bulk.push_str(&format!("if let Some(slot) = slot_{pos} {{ match &mut row[slot] {{ Some(value) => field_s{i}_{pos}(value)?, None => omitted(NativeModel::S{i}, {pos})? }} }}\n"));
-                    } else {
-                        bulk.push_str(&format!("if let Some(slot) = slot_{pos}.filter(|slot| *slot > 0) {{ field_s{i}_{pos}(&mut row[slot])?; }}\n"));
-                    }
-                }
-                if !spec.records.is_empty() { bulk.push_str(&format!("record_s{i}(map, row.as_slice())?;\n")); }
-                bulk.push_str("}\n");
-            }
-            bulk.push_str("Ok(()) },\n");
-        }
-        insert_requirements.push_str("Ok(()) },\n");
+        hook_arms.push_str(&format!("Self::S{i} => {{ let mut plan = HookPlan::default();\n{plan}plan.finish() }},\n"));
         let mut positions = vec![];
         let mut results = vec![];
         for computed in &spec.computed {
@@ -220,7 +177,6 @@ pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manife
 "#, path=e.rust));
         }
         core.push_str(&format!("Self::S{i} => &{positions:?},\n"));
-        validated_arms.push_str(&format!("Self::S{i} => &{:?},\n", validated_positions.into_iter().collect::<Vec<_>>()));
         let mut methods = vec![];
         let mut seen_methods = std::collections::BTreeSet::new();
         for (j, method) in spec.methods.iter().enumerate() {
@@ -318,17 +274,9 @@ pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manife
     core.push_str("} } }\npub fn bind(ir: &mut SchemaIr) -> Result<Vec<NativeModel>, String> { let mut out = Vec::with_capacity(ir.models.len()); for m in &mut ir.models { match m.name.as_str() {\n");
     core.push_str(&bind_arms);
     core.push_str("_ => out.push(NativeModel::None),\n} } Ok(out) }\n");
-    core.push_str(&format!("impl NativeModel {{ pub fn validated(self) -> &'static [usize] {{ match self {{ Self::None => &[], {validated_arms} }} }} }}\n"));
-    core.push_str(&format!("impl NativeModel {{ pub fn has_records(self) -> bool {{ match self {{ {record_models} _ => false }} }} }}\n"));
     core.push_str(&format!("impl NativeModel {{ pub fn dependency(self, field: usize) -> Option<usize> {{ match (self, field) {{ {dependency_arms} _ => None }} }} }}\n"));
-    engine.push_str(&field_helpers);
-    engine.push_str(&record_helpers);
-    engine.push_str(&format!("pub fn insert_values(kind: NativeModel, map: &[Option<usize>], rows: &mut [Vec<Option<Value>>], width: usize) -> Result<()> {{ match kind {{ {insert_bulk} _ => Ok(()) }} }}\npub fn update_values(kind: NativeModel, map: &[Option<usize>], rows: &mut [Vec<Value>], width: usize) -> Result<()> {{ match kind {{ {update_bulk} _ => Ok(()) }} }}\n"));
-    engine.push_str("pub fn field(kind: NativeModel, position: usize, value: &mut Value) -> Result<()> { match (kind, position) {\n");
-    engine.push_str(&field_arms);
-    engine.push_str("_ => Ok(()),\n} }\n");
-    engine.push_str(&format!("pub fn expression(kind: NativeModel, position: usize) -> Result<()> {{ match (kind, position) {{ {restricted} _ => Ok(()) }} }}\npub fn omitted(kind: NativeModel, position: usize) -> Result<()> {{ expression(kind, position) }}\npub fn upsert(kind: NativeModel) -> Result<()> {{ match kind {{ {native_models} _ => Ok(()) }} }}\npub fn insert_fields(kind: NativeModel, map: &[Option<usize>]) -> Result<()> {{ match kind {{ {insert_requirements} _ => Ok(()) }} }}\n"));
-    engine.push_str(&format!("pub fn record<R: crate::behavior::Values + ?Sized>(kind: NativeModel, map: &[Option<usize>], values: &R) -> Result<()> {{ match kind {{ {record_arms} _ => Ok(()) }} }}\n"));
+    core.push_str(&hook_helpers);
+    core.push_str(&format!("impl NativeModel {{ pub fn static_hooks(self) -> Option<Box<crate::hooks::HookPlan>> {{\n#[allow(unused_imports)] use crate::hooks::{{HookPlan, HookRef, RecordHook, StaticHook}};\nmatch self {{ Self::None => None, {hook_arms} }} }} }}\n"));
     engine.push_str("pub fn compute(kind: NativeModel, position: usize, rows: &dyn crate::db::RowSet, column: usize, ty: orm_core::ir::ValueType) -> crate::db::DbResult<Vec<Option<String>>> { match (kind, position) {\n");
     engine.push_str(&computation_arms);
     engine.push_str("_ => Err(crate::db::DbError::other(\"missing compiled computation\")),\n} }\n");

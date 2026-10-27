@@ -44,6 +44,11 @@ def resolve_extensions() -> dict[str, str]:
     return found
 
 
+def package_dirs() -> dict[str, str]:
+    """``{extension id: package directory}`` of every installed extension package."""
+    return {ident: str(Path(manifest).parent) for ident, manifest in resolve_extensions().items()}
+
+
 def runtime_modules() -> dict[str, str]:
     """Installed import names, without importing extension code."""
     return {entry.name: entry.value.partition(":")[0].strip() for entry in importlib.metadata.entry_points(group="orm.extensions")}

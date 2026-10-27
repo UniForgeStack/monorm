@@ -3072,26 +3072,24 @@ impl<'s> Planner<'s> {
         self.set_values(&q.set)
     }
 
-    /// `SET` values in `q.set` order, after the model's native field and record checks.
-    #[cfg(feature = "composition")]
+    /// `SET` values in `q.set` order, after the model's hook checks.
     fn set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
         let root = self.model(self.root);
         let positions: Vec<_> = set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<_>>()?;
+        #[cfg(feature = "composition")]
         if positions.iter().any(|p| root.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
-        let map = if root.native.has_records() { crate::behavior::input_map(root.fields().len(), &positions)? } else { vec![] };
+        if root.hooks.is_none() {
+            return set.iter().map(|a| {
+                let f = root.field(&a.field).map_err(query_err)?;
+                self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
+            }).collect();
+        }
         let mut values = Vec::with_capacity(set.len());
         for (a, &position) in set.iter().zip(&positions) {
             let f = &root.fields()[position];
-            values.push(if let Expr::Param { i } = &a.value {
-                let mut value = self.params.value(self.param(*i)?, Some(f.value_type()))?;
-                crate::behavior::field(root.native, position, &mut value)?;
-                Some(value)
-            } else {
-                crate::behavior::expression(root.native, position)?;
-                None
-            });
+            values.push(if let Expr::Param { i } = &a.value { Some(self.params.value(self.param(*i)?, Some(f.value_type()))?) } else { None });
         }
-        crate::behavior::record(root.native, &map, values.as_slice())?;
+        crate::hooks::update_set(root, &positions, &mut values, self.params)?;
         set.iter().zip(values).map(|(a, value)| {
             let f = root.field(&a.field).map_err(query_err)?;
             match value { Some(value) => Ok(bind(value, Some(f))), None => self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) }) }
@@ -3213,18 +3211,12 @@ impl<'s> Planner<'s> {
             return Err(Error::query("update() needs at least one field"));
         }
         let (set, nested) = self.nested_sets(&q.set)?;
-        #[cfg(feature = "composition")]
         let values = self.set_values(&set)?;
-        #[cfg(not(feature = "composition"))]
-        let values = set.iter().map(|a| {
-            let f = root.field(&a.field).map_err(query_err)?;
-            self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
-        }).collect::<Result<Vec<_>>>()?;
         self.update_assignments(&mut stmt, &set, values)?;
         for (column, v) in nested {
             stmt.value(column.to_owned(), v);
         }
-        for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name)) {
+        for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name), self.params)? {
             stmt.value(column.to_owned(), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
@@ -3254,7 +3246,7 @@ impl<'s> Planner<'s> {
         let mut stmt = Query::update();
         stmt.table(Alias::new(root.table()));
         stmt.value(Alias::new(&field.column), bind(crate::client_default::now(field.ty), Some(field)));
-        for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false) {
+        for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false, self.params)? {
             stmt.value(Alias::new(column), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
@@ -3798,14 +3790,15 @@ pub fn plan_insert(
     let fields: &[String] = &fields;
     #[cfg(feature = "composition")]
     crate::ownership::require_local_write(m)?;
-    #[cfg(feature = "composition")]
     let rows = {
-        if on_conflict.is_some() { crate::behavior::upsert(m.native)?; }
         let mut rows = rows;
         let positions: Vec<_> = fields.iter().map(|name| m.field_pos(name).map_err(query_err)).collect::<Result<_>>()?;
-        let map = crate::behavior::input_map(m.fields().len(), &positions)?;
+        #[cfg(feature = "composition")]
         if positions.iter().any(|p| m.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
-        crate::behavior::insert_values(m.native, &map, &mut rows, fields.len())?;
+        if m.hooks.is_some() {
+            let map = crate::hooks::input_map(m.fields().len(), &positions)?;
+            crate::hooks::insert_rows(m, &map, &mut rows, on_conflict.is_some(), params)?;
+        }
         rows
     };
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;
@@ -3897,7 +3890,7 @@ pub fn plan_insert(
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
                     clause.value(Alias::new(&f.column), v);
                 }
-                for (column, expr) in maintained(m, AssignKind::Upsert, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name)) {
+                for (column, expr) in maintained(m, AssignKind::Upsert, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name), planner.params)? {
                     clause.value(Alias::new(column), expr);
                 }
                 clause.to_owned()
@@ -3988,7 +3981,7 @@ pub fn plan_update_many(
                 _ => stmt.and_where(row_in(target.dialect, key_cols.clone(), chunk.iter().map(|r| r.iter().zip(&cols).take(width).map(|(v, c)| bind(v.clone(), Some(c))).collect()).collect())),
             };
         }
-        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name)) {
+        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name), params)? {
             stmt.value(Alias::new(column), v);
         }
         for w in &where_ {
@@ -4007,18 +4000,23 @@ pub fn plan_update_many(
 
 /// Assignments that extensions registered for `kind` and the caller does not set: the current
 /// time or `column + 1`.
-pub(crate) fn maintained(m: &Model, kind: AssignKind, is_set: impl Fn(&str) -> bool) -> Vec<(&str, SExpr)> {
+pub(crate) fn maintained<'m>(m: &'m Model, kind: AssignKind, is_set: impl Fn(&str) -> bool, params: &dyn Params) -> Result<Vec<(&'m str, SExpr)>> {
     let mut out = vec![];
     for a in m.assignments.iter().filter(|a| a.applies_to(kind)) {
         let f = &m.fields()[a.field];
         if is_set(&f.name) { continue; }
-        let v = match a.value {
+        let v = match &a.value {
             AssignValue::Now => bind(crate::client_default::now(f.ty), Some(f)),
             AssignValue::Increment => col(m.table(), &f.column).add(1),
+            AssignValue::Hook { export } => {
+                let value = crate::hooks::assigned(m, a.field, params)?
+                    .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
+                bind(value, Some(f))
+            }
         };
         out.push((f.column.as_str(), v));
     }
-    out
+    Ok(out)
 }
 
 /// An expression assigned to field `f`: through its `write_sql` template, if any.

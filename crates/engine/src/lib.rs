@@ -30,6 +30,7 @@ pub fn parse_op(op_json: &str) -> Result<Operation> {
 
 #[cfg(feature = "composition")]
 pub mod behavior;
+pub mod hooks;
 
 #[cfg(feature = "composition")]
 pub mod ownership;

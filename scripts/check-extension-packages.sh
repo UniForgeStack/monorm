@@ -39,9 +39,14 @@ model Base {
 }
 model Note {
   text String
+  start Int
+  end Int
+  shop_id Int
+  updated_by String?
   @@inherit.extends(Base)
   @@outside.tag("installed")
   @@query.filter("positive", "id > 0")
+  @@outside.guard
   @@map("pkg1d_seam_notes")
 }
 SCHEMA
@@ -67,3 +72,15 @@ for tarball in "$WORK/tarballs"/*.tgz; do
   case "$tarball" in *query-defaults*) ;; *) bare_tarballs+=("$tarball") ;; esac
 done
 (cd "$WORK/bare-js" && npm install --ignore-scripts --no-audit --no-fund "${bare_tarballs[@]}" && node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs")
+# A library of a newer ABI minor fails `define()` with both versions in the message.
+cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-package -- package "$ROOT/tests/outside-extension" --out "$WORK/outside-newer" --tsc "$ROOT/languages/js/node_modules/.bin/tsc" --features abi-newer
+uv venv --python "$PYTHON" "$WORK/venv-newer"
+uv pip install --python "$WORK/venv-newer/bin/python" "$WORK/wheels"/*.whl "$ROOT/target/extension-packages"/*/*.whl "$WORK/outside-newer"/*.whl
+if (cd "$WORK/js/sqlite" && "$WORK/venv-newer/bin/python" -c "import models") 2> "$WORK/newer.err"; then
+  echo "a library of ABI 0.3 must fail define()" >&2
+  exit 1
+fi
+if ! grep -q "ABI 0.3" "$WORK/newer.err" || ! grep -q "ABI 0.2" "$WORK/newer.err"; then
+  cat "$WORK/newer.err" >&2
+  exit 1
+fi

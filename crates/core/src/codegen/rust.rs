@@ -13,7 +13,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
         return Err("prepared schema dialect mismatch".into());
     }
     // Do not accept an unrelated prepared schema and silently emit mismatched codecs.
-    let prepared = Schema::from_ir(SchemaIr::from_json(&super::embedded_schema_json(ir)?)?)?;
+    let prepared = Schema::from_ir_unbound(SchemaIr::from_json(&super::embedded_schema_json(ir)?)?)?;
     if prepared.models.len() != schema.models.len()
         || prepared.models.iter().zip(&schema.models).any(|(a, b)| {
             a.ir.name != b.ir.name
