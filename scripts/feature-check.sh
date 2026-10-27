@@ -6,7 +6,7 @@
 # Artifacts: proxy-models model-composition file-storage
 # all (default: every one). Each artifact selects only extension crates; the manifests turn on
 # the host Cargo features, so no cargo command here passes --features.
-# The timestamps, soft-delete, locking, inherit and query-defaults packages are installed in every environment,
+# The timestamps, soft-delete, locking, inherit, query-defaults and generic packages are installed in every environment,
 # so the auth app (apps/auth) and the inherit and query-defaults public scripts run on every artifact.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
 set -uo pipefail
@@ -33,14 +33,12 @@ dependency() {
     proxy-models) echo '"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}' ;;
     model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}' ;;
     file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}' ;;
-    generic-relations) echo '"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}' ;;
     *) echo "unknown feature $1" >&2; return 1 ;;
   esac
 }
-FEATURES="proxy-models model-composition file-storage generic-relations"
-# file-storage and generic-relations have no host capability.
-HOST_FEATURES=${FEATURES/file-storage /}
-HOST_FEATURES=${HOST_FEATURES/ generic-relations/}
+FEATURES="proxy-models model-composition file-storage"
+# file-storage has no host capability.
+HOST_FEATURES=${FEATURES/ file-storage/}
 features_of() { if [ "$1" = all ]; then echo "$FEATURES"; else echo "$1"; fi; }
 has() { case " $(features_of "$1") " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -88,7 +86,7 @@ build() {
 # The loaded artifacts report exactly the selected host features.
 capabilities() {
   local artifact=$1 dir=$WORK/$1 expected actual_py actual_node
-  expected=$(for f in $(features_of "$artifact"); do case $f in file-storage|generic-relations) ;; *) echo "$f" ;; esac; done | sort | tr '\n' ' ' | sed 's/ $//')
+  expected=$(for f in $(features_of "$artifact"); do [ "$f" = file-storage ] || echo "$f"; done | sort | tr '\n' ' ' | sed 's/ $//')
   actual_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.native_artifact())['capabilities']) & set('$HOST_FEATURES'.split()))))")
   actual_node=$(node -e "const a = JSON.parse(require(process.argv[1]).nativeArtifact()); console.log(a.capabilities.filter(c => '$HOST_FEATURES'.split(' ').includes(c)).sort().join(' '))" "$dir/orm.node")
   # The embedded build record names the same Cargo features.

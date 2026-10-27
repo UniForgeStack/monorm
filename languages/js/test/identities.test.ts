@@ -1,15 +1,17 @@
 /** Frozen schema identities through native compilation and both database drivers. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { main as cli } from "../src/cli.js";
 import { connect, IntegrityError, load, Migrations, Registry, SchemaError } from "../src/index.js";
 import { native } from "../src/native.js";
+import { resolveExtensions } from "../src/packages.js";
 import { hasExtension } from "./artifact-caps.js";
+import { scratch as scratchDir } from "./scratch.js";
 
-const scratch = resolve("../.test-tmp/node-identities");
-mkdirSync(scratch, { recursive: true });
+// Under this package, so the schemas find the installed generic package as a direct dependency.
+const scratch = scratchDir("node-identities-");
 
 for (const [provider, url] of [
   ["sqlite", "sqlite://:memory:"],
@@ -94,12 +96,10 @@ const genericHeader = `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid
 const hasGeneric = () => hasExtension("orm.generic");
 
 test("a Generic field creates its pair, its index and the reverse field", async () => {
-  const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null);
-  if (!hasGeneric()) {
-    assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && !e.message.includes("needs @"));
-    return;
-  }
-  assert.throws(bare, /unknown type Generic; a Generic field needs @generic\.relation\(\.\.\.\) \(namespace generic\.\*\)/);
+  // A package compiles into a schema only when the schema uses its namespace, so a bare `Generic` type gets the plain error.
+  const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null, resolveExtensions());
+  assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && !e.message.includes("needs @"));
+  if (!hasGeneric()) return;
   const dir = mkdtempSync(join(scratch, "generic-field-"));
   const path = join(dir, "schema.prisma");
   try {

@@ -231,9 +231,11 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         return Err(error(d, "unknown generic attribute"));
     }
     ir.behavior.extension_data.insert(ID.into(), serde_json::to_value(&data).map_err(|e| e.to_string())?);
-    ir.behavior.stamp_minor();
     Ok(())
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.generic.prepare", prepare));
 
 #[cfg(test)]
 mod tests {
@@ -273,7 +275,6 @@ mod tests {
             let ConstraintIr::Check { expr, .. } = &model.constraints[0] else { panic!() };
             assert_eq!(expr, "((\"kind\" IS NULL) = (\"target_id\" IS NULL)) AND (\"kind\" IN (1, 2))");
         }
-        assert_eq!(ir.behavior.schema_contract_minor, orm_contracts::extension::SCHEMA_CONTRACT_MINOR);
         for d in &mut ir.behavior.declarations { d.lowered = true; }
         prepare(&mut ir).unwrap();
         assert_eq!(ir.models[2].constraints.len(), 1);
