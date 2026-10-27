@@ -43,7 +43,7 @@ enables generic relation behavior by itself.
 
 ## Generic relation compiler contribution
 
-The selected `orm-generic` compiler crate declares these namespaced attributes.
+The installed `orm-generic` package (`@orm/generic` for npm) declares these namespaced attributes.
 The field form declares a generic relation as one field of the reserved type `Generic`:
 
 ```prisma
@@ -102,9 +102,10 @@ for paired nulls and the allowed discriminator subset, plus forward/reverse setu
 metadata. It contributes no conventional multi-target foreign key. Database checks
 preserve pair validity for external scalar writes without promising target existence.
 
-**Enable:** select the `orm-generic` crate (`extensions/generic`) in your build.
-See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
-Its manifest declares the `generic-relations` capability; native artifacts without it reject generic setup metadata at definition.
+**Enable:** install `orm-generic` (Python) or `@orm/generic` (npm). No build is needed.
+See [Installable packages](../contracts/build-time-extensions.md#installable-packages).
+Its relation and reverse records live in `behavior.extension_data["orm.generic"]`, and the host has no generic code or capability.
+Models generated for schema contract 2 fail to load with an instruction to regenerate them.
 Frozen identities and `ContentType` work in every build.
 
 **Limits:** the bindings have no generic accessor, loader, prefetch or reverse query API, and no generated target union.

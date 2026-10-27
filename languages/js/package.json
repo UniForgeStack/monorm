@@ -65,7 +65,8 @@
     "@orm/soft-delete": "file:../../target/extension-packages/soft-delete/npm",
     "@orm/locking": "file:../../target/extension-packages/locking/npm",
     "@orm/inherit": "file:../../target/extension-packages/inherit/npm",
-    "@orm/query-defaults": "file:../../target/extension-packages/query-defaults/npm"
+    "@orm/query-defaults": "file:../../target/extension-packages/query-defaults/npm",
+    "@orm/generic": "file:../../target/extension-packages/generic/npm"
   },
   "files": [
     "dist/src",

@@ -8,17 +8,19 @@ use std::{
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let usage = "usage: orm-extension-package package <crate-dir> --out <dir> [--tsc <executable>]";
+    let usage = "usage: orm-extension-package package <crate-dir> --out <dir> [--tsc <executable>] [--features <list>]";
     if args.next().as_deref() != Some("package") {
         return Err(usage.into());
     }
     let dir = PathBuf::from(args.next().ok_or(usage)?).canonicalize()?;
     let mut out = None;
     let mut tsc = "tsc".to_owned();
+    let mut features = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--out" => out = Some(PathBuf::from(args.next().ok_or(usage)?)),
             "--tsc" => tsc = args.next().ok_or(usage)?,
+            "--features" => features = Some(args.next().ok_or(usage)?),
             _ => return Err(format!("unknown argument {arg}; {usage}").into()),
         }
     }
@@ -36,7 +38,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("library must be a file name".into());
     }
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let build = Command::new(cargo)
+    let mut build = Command::new(cargo);
+    build
         .args([
             "build",
             "--release",
@@ -44,7 +47,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--message-format=json-render-diagnostics",
             "--manifest-path",
         ])
-        .arg(dir.join("Cargo.toml"))
+        .arg(dir.join("Cargo.toml"));
+    if let Some(features) = &features {
+        build.args(["--features", features]);
+    }
+    let build = build
         .stderr(Stdio::inherit())
         .output()?;
     if !build.status.success() {

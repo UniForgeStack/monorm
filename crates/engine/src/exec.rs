@@ -525,8 +525,8 @@ pub struct BulkCopy {
 /// Plans `insert_many(rows, copy=True)`: Postgres `COPY ... FROM STDIN (FORMAT binary)`.
 /// `rows` are converted by [`field_types`] (`None`: the column's default); client
 /// defaults fill values first. COPY has no per-row `DEFAULT`, so a field must be set in
-/// every row or in none. COPY writes values as they are, so models whose writes run
-/// native code or SQL templates are rejected.
+/// every row or in none. COPY writes values as they are, so models with change-set hooks
+/// or SQL templates are rejected.
 pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String], rows: Vec<Vec<Option<Value>>>) -> Result<BulkCopy> {
     if target.dialect != orm_core::dialect::Dialect::Postgres {
         return Err(Error::query("insert_many(copy=True) needs Postgres"));
@@ -543,6 +543,9 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
         if !matches!(m.native, orm_core::behavior::NativeModel::None) {
             return Err(Error::query(format!("insert_many(copy=True): {} has native write behavior; use insert_many()", m.ir.name)));
         }
+    }
+    if m.hooks.as_deref().is_some_and(orm_core::hooks::HookPlan::changes_set) {
+        return Err(Error::query(format!("insert_many(copy=True): {} has change-set hooks; use insert_many()", m.ir.name)));
     }
     let (fields, rows) = crate::client_default::fill(m, fields, rows)?;
     let mut columns = vec![];
@@ -610,14 +613,19 @@ pub fn plan_update_many(
     if rows.iter().any(|r| r.len() != fields.len()) {
         return Err(Error::query("update_many row length does not match fields"));
     }
-    #[cfg(feature = "composition")]
     let rows = {
         let m = schema.model(schema.model_idx(model).map_err(query_err)?);
         let mut rows = rows;
-        let positions: Vec<_> = fields.iter().map(|name| m.field_pos(name).map_err(query_err)).collect::<Result<_>>()?;
-        let map = crate::behavior::input_map(m.fields().len(), &positions)?;
+        #[cfg(feature = "composition")]
+        let positions = plan::field_positions(m, fields)?;
+        #[cfg(feature = "composition")]
         if positions.iter().skip(1).any(|p| m.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
-        crate::behavior::update_values(m.native, &map, &mut rows, fields.len())?;
+        if m.hooks.is_some() {
+            #[cfg(not(feature = "composition"))]
+            let positions = plan::field_positions(m, fields)?;
+            let map = crate::hooks::input_map(m.fields().len(), &positions)?;
+            crate::hooks::update_rows(m, &map, &mut rows, params)?;
+        }
         rows
     };
     let per_row = if target.caps.update_from_values { fields.len() } else { 2 * fields.len() - 1 };

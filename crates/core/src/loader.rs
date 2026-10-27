@@ -1,7 +1,7 @@
 //! Extensions that ship their passes as native libraries: select, check, load and run them.
 //! It names no extension. The passes of libraries and the passes compiled into the artifact run in one order.
 use sha2::{Digest, Sha256};
-use orm_contracts::abi::{owns_bytes, AbiVersionFn, Arg, Buffer, Context, DropStateFn, FreeFn, HookFn, HooksFn, InitFn, OrmArg, OrmContext, OrmValue, RunPassFn, Value, STATUS_OK, STATUS_PANIC, SYMBOL_ABI_VERSION, SYMBOL_DROP_STATE, SYMBOL_FREE, SYMBOL_HOOKS, SYMBOL_INIT, SYMBOL_RUN_PASS};
+use orm_contracts::abi::{owns_bytes, AbiVersionFn, Arg, Buffer, Context, DropStateFn, FreeFn, HookFn, HooksFn, InitFn, OrmArg, OrmContext, OrmValue, RunPassFn, Value, STATUS_ERROR, STATUS_OK, STATUS_PANIC, SYMBOL_ABI_VERSION, SYMBOL_DROP_STATE, SYMBOL_FREE, SYMBOL_HOOKS, SYMBOL_INIT, SYMBOL_RUN_PASS};
 use orm_contracts::extension::{attribute_namespace, PackageStamp, ABI_VERSION, SCHEMA_CONTRACT, SCHEMA_CONTRACT_VERSION};
 use orm_contracts::ir::SchemaIr;
 use orm_contracts::version::ContractVersion;
@@ -331,10 +331,14 @@ impl Native {
 
 /// An opened library of a manifest that declares `exports`: its hooks and its state.
 #[derive(Clone)]
-pub struct Library { native: Arc<Native>, id: String }
+pub struct Library { native: Arc<Native>, id: String, exports: Vec<orm_contracts::extension::Export> }
 
 /// The state that `orm_ext_init` returned. Dropping it calls `orm_ext_drop_state` once.
 pub struct State { native: Arc<Native>, id: String, raw: *mut c_void }
+
+/// A hook that `State::hook` resolved by name. It holds the library, so the pointer stays valid, and only the states of that library call it.
+#[derive(Clone)]
+pub struct Hook { native: Arc<Native>, call: HookFn, name: String }
 
 // SAFETY: a state is `Send + Sync` by the ABI (see `orm_contracts::abi`): the host may call the hooks of one state
 // from several threads at once and drop it on another thread. `raw` is the only field that is not `Send + Sync` by itself.
@@ -347,13 +351,23 @@ impl Plan {
     pub fn library(&self, id: &str) -> Result<Library, String> {
         let d = self.dynamic.iter().find(|d| d.manifest.id == id).ok_or_else(|| format!("extension {id} is not a selected library"))?;
         if d.manifest.exports.is_empty() { return Err(no_exports(id)); }
-        Ok(Library { native: open(d)?, id: id.to_owned() })
+        Ok(Library { native: open(d)?, id: id.to_owned(), exports: d.manifest.exports.clone() })
     }
 }
 
+/// Opens the library of the package installed in `dir`. `define()` calls this for each package that has hook bindings.
+/// It reads the manifest and checks the library against it (`check_library`, then the ABI and the hook table in `open`).
+/// `hooks::bind` then checks each bound export.
+pub fn open_package(id: &str, dir: &Path) -> Result<Library, String> {
+    let d = read_manifest(id, &dir.join(MANIFEST_FILE))?;
+    check_library(&d)?;
+    if d.manifest.exports.is_empty() { return Err(no_exports(id)); }
+    Ok(Library { native: open(&d)?, id: id.to_owned(), exports: d.manifest.exports.clone() })
+}
+
 impl Library {
-    /// The names of the hooks of the library, in table order.
-    pub fn hook_names(&self) -> Result<Vec<&str>, String> { Ok(self.native.symbols(&self.id)?.hooks.iter().map(|(n, _)| n.as_str()).collect()) }
+    /// The manifest entry of the export `id`.
+    pub fn export(&self, id: &str) -> Option<&orm_contracts::extension::Export> { self.exports.iter().find(|e| e.id == id) }
 
     /// Calls `orm_ext_init` with the JSON of the `extension_data` entry. A library without `init` gets no state.
     pub fn init(&self, data: &serde_json::Value) -> Result<State, String> {
@@ -376,32 +390,47 @@ impl Library {
 }
 
 impl State {
+    /// Looks up the hook `name` of the library once, so that a write does not search the table again.
+    pub fn hook(&self, name: &str) -> Option<Hook> {
+        let call = self.native.symbols(&self.id).ok()?.find(name)?;
+        Some(Hook { native: self.native.clone(), call, name: name.to_owned() })
+    }
+
     /// Calls the hook `name` with the arguments and the request context.
     pub fn call(&self, name: &str, args: &[Arg], context: &Context) -> Result<Value, String> {
-        let hook = self.native.symbols(&self.id)?.find(name).ok_or_else(|| format!("extension {}: no hook {name}", self.id))?;
+        let hook = self.hook(name).ok_or_else(|| format!("extension {}: no hook {name}", self.id))?;
+        self.call_hook(&hook, args, context)
+    }
+
+    /// Calls a resolved hook. A hook that fails with its own text gives that text and nothing else: the caller names the place.
+    pub fn call_hook(&self, hook: &Hook, args: &[Arg], context: &Context) -> Result<Value, String> {
+        if !Arc::ptr_eq(&self.native, &hook.native) {
+            return Err(format!("extension {}: the hook {} belongs to another library", self.id, hook.name));
+        }
         let raw_args: Vec<OrmArg> = args.iter().map(Arg::borrow).collect();
         let raw_context: Vec<OrmArg> = context.values.iter().map(Arg::borrow).collect();
         let ctx = OrmContext { args: raw_context.as_ptr(), len: raw_context.len() };
         let mut out = OrmValue::NULL;
         // SAFETY: the arguments live through the call and `out` is writable; the state is the one that `init` returned.
-        let status = unsafe { hook(self.raw, raw_args.as_ptr(), raw_args.len(), &ctx, &mut out) };
+        let status = unsafe { (hook.call)(self.raw, raw_args.as_ptr(), raw_args.len(), &ctx, &mut out) };
         // SAFETY: the library wrote `out` on every status. It is copied here; only a tag that `owns_bytes` holds a buffer, and it is freed once.
         let value = unsafe {
             let value = Value::from_raw(&out);
             if owns_bytes(out.tag) { (self.native.free)(out.ptr as *mut u8, out.len); }
             value
         };
-        let what = format!("hook {name}");
+        let what = || format!("hook {}", hook.name);
         match (status, value) {
             (STATUS_OK, Ok(value)) => Ok(value),
-            (STATUS_OK, Err(e)) => Err(format!("extension {}: {what} returned a value that does not read: {e}", self.id)),
+            (STATUS_OK, Err(e)) => Err(format!("extension {}: {} returned a value that does not read: {e}", self.id, what())),
+            (STATUS_ERROR, Ok(Value::Text(text))) => Err(text),
             (status, value) => {
                 let text = match value {
                     Ok(Value::Text(text)) => text,
                     Ok(other) => format!("{other:?}"),
                     Err(e) => format!("the value that came with status {status} does not read: {e}"),
                 };
-                Err(call_error(&self.id, &what, status, &text))
+                Err(call_error(&self.id, &what(), status, &text))
             }
         }
     }
@@ -420,13 +449,13 @@ impl Drop for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orm_contracts::abi::{STATUS_ERROR, TAG_INT};
+    use orm_contracts::abi::TAG_INT;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn install(dir: &Path, id: &str, body: &str) -> (String, PathBuf) {
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join(MANIFEST_FILE);
-        std::fs::write(&path, format!("id = \"{id}\"\nversion = \"1.0.0\"\nschema_contract = \"2.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n{body}")).unwrap();
+        std::fs::write(&path, format!("id = \"{id}\"\nversion = \"1.0.0\"\nschema_contract = \"3.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n{body}")).unwrap();
         (id.to_owned(), path)
     }
 
@@ -517,9 +546,21 @@ mod tests {
         assert_eq!(call(&native, "x.error").unwrap_err(), format!("extension x: hook x.error: {reason} 1 does not read: unknown value tag 99"));
         assert_eq!(call(&native, "x.panic").unwrap_err(), format!("extension x: hook x.panic panicked: {reason} 2 does not read: unknown value tag 99"));
         assert_eq!(call(&native, "x.ok").unwrap_err(), "extension x: hook x.ok returned a value that does not read: unknown value tag 99");
-        assert_eq!(call(&native, "x.boom").unwrap_err(), "extension x: hook x.boom: boom");
+        assert_eq!(call(&native, "x.boom").unwrap_err(), "boom");
         assert_eq!(call(&native, "x.crash").unwrap_err(), "extension x: hook x.crash panicked: boom");
         assert_eq!(call(&native, "x.gone").unwrap_err(), "extension x: no hook x.gone");
+    }
+
+    #[test]
+    fn a_resolved_hook_runs_only_on_a_state_of_its_own_library() {
+        let first = fake(real_free, &[("x.ok", hook!(STATUS_OK, Value::Text("one".into()).leak()))]);
+        let second = fake(real_free, &[("x.ok", hook!(STATUS_OK, Value::Text("two".into()).leak()))]);
+        let state = |native: &Arc<Native>| State { native: native.clone(), id: "x".into(), raw: std::ptr::null_mut() };
+        let hook = state(&first).hook("x.ok").expect("the table has the hook");
+        assert!(state(&first).hook("x.gone").is_none());
+        assert_eq!(state(&first).call_hook(&hook, &[], &Context::default()), Ok(Value::Text("one".into())));
+        let error = state(&second).call_hook(&hook, &[], &Context::default()).unwrap_err();
+        assert_eq!(error, "extension x: the hook x.ok belongs to another library");
     }
 
     #[test]
@@ -590,7 +631,7 @@ mod tests {
 
     #[test]
     fn the_generator_key_may_name_an_extension_that_the_artifact_has() {
-        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"2.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n").unwrap();
+        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"3.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n").unwrap();
         assert!(plan(&[], &BTreeSet::new(), &["acme.compiled".into()], &[compiled], &[]).unwrap().is_none());
     }
 
@@ -608,7 +649,7 @@ mod tests {
         let dir = scratch("manifest");
         let (_, path) = install(&dir, "acme.audit", TAG);
         assert!(read_manifest("acme.other", &path).err().unwrap().contains("describes acme.audit"));
-        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 2\nhost_contract = 1\nlanguages = []\ndatabases = []\n").unwrap();
+        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 3\nhost_contract = 1\nlanguages = []\ndatabases = []\n").unwrap();
         assert!(check_library(&read_manifest("acme.audit", &path).unwrap()).err().unwrap().contains("no `abi`"));
         assert!(read_manifest("acme.audit", &dir.join("gone.toml")).err().unwrap().contains("gone.toml"));
         std::fs::remove_dir_all(&dir).ok();
@@ -639,7 +680,7 @@ mod tests {
     fn an_unrelated_package_that_is_no_library_never_fails_a_compile() {
         let dir = scratch("unrelated");
         let (_, other) = install(&dir.join("b"), "other.kit", KIT);
-        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"2.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
+        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"3.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
         let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), other.clone())];
         assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
         let error = select(&available, &used("kit"), &[]).err().unwrap();
@@ -655,12 +696,12 @@ mod tests {
         for (name, extra) in [("later", format!("future_field = true\n{KIT}")), ("later-attribute", format!("{KIT}field_type = \"Money\"\nfuture_key = true\n"))] {
             let dir = scratch(name);
             let (_, newer) = install(&dir.join("b"), "other.kit", &extra);
-            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"2.0\"", "schema_contract = \"2.4\"")).unwrap();
+            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"3.0\"", "schema_contract = \"3.4\"")).unwrap();
             let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), newer)];
             assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
             for selected in [select(&available, &used("kit"), &[]), select(&available, &BTreeSet::new(), &["other.kit".into()])] {
                 let error = selected.err().unwrap();
-                assert!(error.contains("other.kit") && error.contains("schema contract 2.4") && error.contains("schema contract 2.3") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
+                assert!(error.contains("other.kit") && error.contains("schema contract 3.4") && error.contains("schema contract 3.3") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
             }
             std::fs::remove_dir_all(&dir).ok();
         }

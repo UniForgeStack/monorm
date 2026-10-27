@@ -68,7 +68,7 @@ fn a_proxy_with_its_own_spec_still_inherits_its_root() {
     let own_model = schema.models.iter().find(|m| m.name == "Own").unwrap();
     assert!(own_model.fields.iter().any(|f| f.name == "loud"), "Own takes the computed field of User");
     // Sorted models: Admin S0, Deep S1, Own S2, Slim S3, User S4; `name` is field 1.
-    assert!(sources.engine.contains("(NativeModel::S2, 1) => field_s2_1"), "Own takes the `name` validator of User");
+    assert!(sources.core.contains("HookRef::Static(StaticHook::Field(field_s2_1))"), "Own takes the `name` validator of User");
     let own_spec = sources.specializations.iter().find(|s| s.model == "Own").unwrap();
     assert_eq!(own_spec.exports, ["app.check", "app.shout"]);
     assert!(sources.python.contains("orm_native_method_"));

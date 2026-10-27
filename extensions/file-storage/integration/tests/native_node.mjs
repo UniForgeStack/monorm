@@ -26,7 +26,7 @@ async function fixture(run, { protectedWrite = false } = {}) {
     models: [{ name: 'FileReport07', table: 'file_reports_07_node', fields: [
       { name: 'id', column: 'id', type: 'int', primary_key: true },
       { name: 'file', column: 'file', type: 'json', nullable: true }] }],
-    behavior: { schema_contract: 2,
+    behavior: { schema_contract: 3,
       field_adapters: [{ model: 'FileReport07', field: 'file', adapter: 'file-storage.reference.v1' }],
       file_fields: [{ model: 'FileReport07', field: 'file', storage: 'reports', reference_contract: 1 }] },
   };

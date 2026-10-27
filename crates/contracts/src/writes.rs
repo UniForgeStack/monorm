@@ -15,13 +15,16 @@ pub enum WriteKind {
 }
 
 /// The value the ORM assigns.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignValue {
     /// The current time; the field is a DateTime.
     Now,
     /// The stored value plus one; the field is an Int or BigInt.
     Increment,
+    /// The value that a library hook (point 4) returns. The `source` of the `WriteAssignment` owns the export,
+    /// and the hook binding of the field names it; the hook reads the request context.
+    Hook { export: String },
 }
 
 /// Whether the default `on_conflict(update=True)` column list takes the field.

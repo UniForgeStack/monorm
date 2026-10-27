@@ -844,6 +844,7 @@ dependencies = [
  "bytes",
  "chrono",
  "deadpool-postgres",
+ "orm-contracts",
  "orm-core",
  "rusqlite",
  "rustls",
@@ -884,6 +885,7 @@ name = "orm-generic"
 version = "0.1.0"
 dependencies = [
  "orm-contracts",
+ "serde",
  "serde_json",
 ]
 

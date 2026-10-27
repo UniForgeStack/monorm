@@ -3,10 +3,12 @@ name = "orm-generic"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Optional generic relations for ORM: one relation to any of several target models"
 
 [dependencies]
 orm-contracts = { path = "../../crates/contracts" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-[package.metadata.orm-extension]
-manifest = "orm-extension.toml"
+[lib]
+crate-type = ["cdylib", "rlib"]

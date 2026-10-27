@@ -21,6 +21,7 @@ pub mod schema;
 pub mod features;
 
 pub mod behavior;
+pub mod hooks;
 pub mod loader;
 
 #[cfg(feature = "composition")]
@@ -30,9 +31,6 @@ pub mod file_storage;
 pub mod identity;
 pub mod client_default;
 pub mod writes;
-
-#[cfg(any(feature = "generic-relations", test))]
-pub mod generic;
 
 pub mod result_check;
 pub mod view;

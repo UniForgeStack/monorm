@@ -74,6 +74,14 @@ export function resolveExtensions(schema?: string): Record<string, string> {
   return Object.fromEntries(Object.entries(discover(schema)).map(([id, p]) => [id, p.manifest]));
 }
 
+/** Package directories of the extensions whose hooks the schema binds, by extension id. */
+export function hookPackages(behavior: { hooks?: readonly { source: string }[]; packages?: Record<string, unknown> } | undefined, schema?: string): Record<string, string> | undefined {
+  const ids = new Set((behavior?.hooks ?? []).map((h) => h.source).filter((id) => id in (behavior?.packages ?? {})));
+  if (!ids.size) return undefined;
+  const found = discover(schema);
+  return Object.fromEntries([...ids].flatMap((id) => (found[id] === undefined ? [] : [[id, dirname(found[id].manifest)]])));
+}
+
 /** Extension ids mapped to runtime import names, without importing runtime code. */
 export function runtimeModules(schema?: string): Record<string, string> {
   return Object.fromEntries(Object.entries(discover(schema)).map(([id, p]) => [id, p.name]));

@@ -41,7 +41,7 @@ fn application_rust_runs_through_both_bindings() {
         ]},{"name":"NativeNullable","table":"native_nullable","fields":[
             {"name":"id","column":"id","type":"int","primary_key":true,"auto_increment":true},
             {"name":"username","column":"username","type":"string","nullable":true}
-        ]},{"name":"NativeAdmin","table":"native_admins","fields":[]}],"behavior":{"schema_contract":2,"declarations":[
+        ]},{"name":"NativeAdmin","table":"native_admins","fields":[]}],"behavior":{"schema_contract":3,"declarations":[
             {"attribute":"proxy.of","model":"NativeAdmin","field":null,"arguments":{},"positional":["NativeUser"],"location":{"file":"profile.json","line":3,"column":1}},
             {"attribute":"example.rename","model":"LoweredUser","field":"name","arguments":{"to":"public_name"},"positional":[],"location":{"file":"profile.json","line":1,"column":1}},
             {"attribute":"example.hide","model":"LoweredUser","field":"secret","arguments":{},"positional":[],"location":{"file":"profile.json","line":2,"column":1}}
