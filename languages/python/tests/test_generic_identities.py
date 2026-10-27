@@ -6,6 +6,7 @@ import os
 import pytest
 import orm
 from orm.__main__ import main as cli
+from artifact_caps import has_extension
 
 
 def generate(path):
