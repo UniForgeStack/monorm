@@ -11,7 +11,7 @@ schemas, objects, pools and transactions cannot switch engines.
 | sqlite | SQLite | no | no | none | none |
 | combined | PostgreSQL + SQLite | no | no | none | none |
 | tooling | PostgreSQL + SQLite | yes | Python + TypeScript | none | none |
-| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | four static first-party |
+| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | three static first-party |
 
 Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]`, `orm[tooling]` or `orm[full]`.
 These extras select complete distributions, not changes to an installed binary.
@@ -55,9 +55,9 @@ npx orm generate typescript
 
 ## The full profile
 
-The `full` profile is the `tooling` profile plus the four static first-party extensions:
-`orm.proxy`, the model-composition extension (`composition`), `file-storage` and `orm.generic`.
-The timestamps, soft-delete, locking, inherit and query-defaults extensions are installable packages, not part of any profile; see [Installable packages](build-time-extensions.md#installable-packages).
+The `full` profile is the `tooling` profile plus the three static first-party extensions:
+`orm.proxy`, the model-composition extension (`composition`) and `file-storage`.
+The timestamps, soft-delete, locking, inherit, query-defaults and generic extensions are installable packages, not part of any profile; see [Installable packages](build-time-extensions.md#installable-packages).
 It has the generators because only the artifact that holds the extensions can write their `orm_ext/` files during `orm generate`.
 
 ```bash
@@ -92,9 +92,9 @@ static extension host; extension contract/compiler logic belongs to the build-ti
 extension system. It is distinct from model composition.
 
 Baseline native profiles do not claim optional reference-loading,
-proxy-models, model-composition, file-storage or generic-relations support.
+proxy-models, model-composition or file-storage support.
 The tooling profile and the default binding builds add `reference-loading`.
-The four feature extensions come only from extension crates selected in
+The three feature extensions come only from extension crates selected in
 `orm-extension-build`; do not pass their host features by hand (for example
 `maturin build --features proxy-models`). A marker package cannot add code to an
 already compiled engine. [Build-time extensions](build-time-extensions.md#select-feature-extensions)
@@ -158,7 +158,7 @@ exactly their selected adapters and dependencies. No query-time plugin discovery
 `languages/python/packaging/check-dependencies.py` audits isolated graphs for every binding/profile,
 including backend SQL-builder unification and absence of CLI/TLS/unused drivers.
 `languages/python/packaging/check-wheel.py` checks thin/native wheel payload separation.
-`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or the four static extensions for `full`.
+`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or the three static extensions for `full`.
 The `full` run also defines a schema with `@@proxy.of`.
 `languages/js/packaging/check-node-install.mjs` packs and installs one native profile offline,
 checks the dependency lock and runs installed-package smoke tests. Python

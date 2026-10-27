@@ -685,7 +685,7 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 | `@@query.defaults(filter:, fields:, related:, parent:, order:)`, `@@query.filter`, `@@query.fields`, `@@query.related`, `@@query.order`, `@@query.parent`, `@query.selectOut` | query-defaults | [selection-and-defaults.md](selection-and-defaults.md) |
 | `@@composition.model(parent:, parentRef:, childRef:)` | model-composition | [model-composition.md](../extensions/model-composition.md) |
 | `@storage.file(storage:)` | file-storage | [file-storage.md](../extensions/file-storage.md) |
-| `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic-relations | [generic-identities.md](generic-identities.md) |
+| `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic (package) | [generic-identities.md](generic-identities.md) |
 
 `@client_default`, enum subsets in proxies (`Status(ACTIVE)`) and `@@protected_write` are core syntax.
 

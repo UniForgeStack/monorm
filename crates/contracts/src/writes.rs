@@ -22,8 +22,8 @@ pub enum AssignValue {
     Now,
     /// The stored value plus one; the field is an Int or BigInt.
     Increment,
-    /// The value that a library hook (point 4) returns. `source` owns the export, and the hook binding of
-    /// the field names it; the hook reads the request context.
+    /// The value that a library hook (point 4) returns. The `source` of the `WriteAssignment` owns the export,
+    /// and the hook binding of the field names it; the hook reads the request context.
     Hook { export: String },
     /// A query IR expression (the JSON of `Expr`) over the row's own columns and `scope.<name>`. The model's
     /// `define()` parses it once; the statement puts it in the SET list.

@@ -13,7 +13,7 @@ const selector = process.env.ORM_PROFILE;
 process.env.ORM_PROFILE = "invalid-after-initialization";
 assert.equal(native(), addon);
 process.env.ORM_PROFILE = selector;
-const fullExtensions = ["composition", "file-storage", "orm.generic", "orm.proxy"];
+const fullExtensions = ["composition", "file-storage", "orm.proxy"];
 assert.deepEqual(Object.keys(JSON.parse(addon.nativeArtifact()).extensions).sort(), selector === "full" ? fullExtensions : []);
 assert.equal(metadata.capabilities.composition, selector === "full");
 assert.equal(typeof addon.cli === "function", metadata.capabilities.cli);

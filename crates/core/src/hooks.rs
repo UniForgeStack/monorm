@@ -1,7 +1,7 @@
 //! The change-set hooks of a model: what runs on a value before it goes into a write.
 //! Two producers fill a `HookPlan`: a library that `define()` opens (`HookRef::Abi`) and the functions
 //! that the artifact compiles in (`HookRef::Static`). The engine runs both through one dispatch.
-use crate::loader::State;
+use crate::loader::{Hook, Library, State};
 use crate::schema::Model;
 use orm_contracts::abi::{Arg, Context, Value};
 use orm_contracts::extension::Requirements;
@@ -23,10 +23,12 @@ pub enum StaticHook {
 /// The name of the argument of a transform or a validator: one hook serves any field.
 const VALUE: &str = "value";
 
+/// A hook of a model, from a loaded library or from the artifact. Each method below runs one hook shape;
+/// a hook of the wrong kind for the method is an error, not a silent skip.
 #[derive(Clone)]
 pub enum HookRef {
-    /// An export of a loaded library, with the state of its `init`.
-    Abi { state: Arc<State>, export: String, reads_context: bool },
+    /// An export of a loaded library, resolved once by name, with the state of its `init`.
+    Abi { state: Arc<State>, hook: Hook, reads_context: bool },
     Static(StaticHook),
 }
 
@@ -38,9 +40,9 @@ impl HookRef {
         match self {
             Self::Static(StaticHook::Field(f)) => f(value),
             Self::Static(_) => Err("a record or computed function cannot rewrite a field".into()),
-            Self::Abi { state, export, .. } => {
+            Self::Abi { state, hook, .. } => {
                 let arg = Arg { name: VALUE.to_owned(), value: std::mem::replace(value, Value::Null) };
-                *value = state.call(export, std::slice::from_ref(&arg), context)?;
+                *value = state.call_hook(hook, std::slice::from_ref(&arg), context)?;
                 Ok(())
             }
         }
@@ -51,9 +53,9 @@ impl HookRef {
         match self {
             Self::Static(StaticHook::Field(f)) => f(&mut value.clone()),
             Self::Static(_) => Err("a record or computed function cannot check a field".into()),
-            Self::Abi { state, export, .. } => {
+            Self::Abi { state, hook, .. } => {
                 let arg = Arg { name: VALUE.to_owned(), value: value.clone() };
-                state.call(export, std::slice::from_ref(&arg), context).map(drop)
+                state.call_hook(hook, std::slice::from_ref(&arg), context).map(drop)
             }
         }
     }
@@ -62,7 +64,7 @@ impl HookRef {
     pub fn produce(&self, context: &Context) -> Result<Value, String> {
         match self {
             Self::Static(_) => Err("a static function cannot assign a value".into()),
-            Self::Abi { state, export, .. } => state.call(export, &[], context),
+            Self::Abi { state, hook, .. } => state.call_hook(hook, &[], context),
         }
     }
 
@@ -70,7 +72,7 @@ impl HookRef {
     pub fn compute(&self, args: &[Arg], context: &Context) -> Result<Value, String> {
         match self {
             Self::Static(_) => Err("a static function cannot compute a field here".into()),
-            Self::Abi { state, export, .. } => state.call(export, args, context),
+            Self::Abi { state, hook, .. } => state.call_hook(hook, args, context),
         }
     }
 
@@ -78,9 +80,9 @@ impl HookRef {
     pub fn expression(&self, context: &Context) -> Result<serde_json::Value, String> {
         match self {
             Self::Static(_) => Err("a static function cannot give an expression".into()),
-            Self::Abi { state, export, .. } => match state.call(export, &[], context)? {
-                Value::Json(text) => serde_json::from_str(&text).map_err(|e| format!("hook {export} returned json that does not parse: {e}")),
-                other => Err(format!("hook {export} must return json (query IR), not {other:?}")),
+            Self::Abi { state, hook, .. } => match state.call_hook(hook, &[], context)? {
+                Value::Json(text) => serde_json::from_str(&text).map_err(|e| format!("hook {} returned json that does not parse: {e}", hook.name())),
+                other => Err(format!("hook {} must return json (query IR), not {other:?}", hook.name())),
             },
         }
     }
@@ -90,7 +92,7 @@ impl HookRef {
         match self {
             Self::Static(StaticHook::Record(f)) => f(args),
             Self::Static(_) => Err("a field or computed function cannot check a record".into()),
-            Self::Abi { state, export, .. } => state.call(export, args, context).map(drop),
+            Self::Abi { state, hook, .. } => state.call_hook(hook, args, context).map(drop),
         }
     }
 }
@@ -116,6 +118,8 @@ pub struct HookPlan {
     pub expr_assign: Vec<(usize, HookRef)>,
     /// The hook that gives the expression of an omitted insert value (point 7), by field position.
     pub expr_default: Vec<(usize, HookRef)>,
+    /// Positions that a transform or a validator watches, sorted.
+    pub watched: Vec<usize>,
     /// Positions of fields that must be supplied on insert, and cannot be a database expression.
     pub required: Vec<usize>,
     /// The model rejects an upsert, because a conflict outcome skips the hooks.
@@ -123,17 +127,24 @@ pub struct HookPlan {
 }
 
 impl HookPlan {
-    /// Fills `required` and `no_upsert` from the hooks; `None` for a plan without any change-set hook.
+    /// Fills `watched`, `required` and `no_upsert` from the hooks; `None` for a plan without any hook.
     pub fn finish(mut self) -> Option<Box<HookPlan>> {
-        let change_set = !(self.transforms.is_empty() && self.validators.is_empty() && self.records.is_empty());
+        let change_set = self.changes_set();
         if !change_set && self.assign.is_empty() && self.computed.is_empty() && self.expr_assign.is_empty() && self.expr_default.is_empty() { return None; }
-        let mut required: Vec<usize> = self.transforms.iter().chain(&self.validators).map(|(p, _)| *p).chain(self.records.iter().flat_map(|r| r.positions.iter().copied())).collect();
+        let mut watched: Vec<usize> = self.transforms.iter().chain(&self.validators).map(|(p, _)| *p).collect();
+        watched.sort_unstable();
+        watched.dedup();
+        let mut required: Vec<usize> = watched.iter().copied().chain(self.records.iter().flat_map(|r| r.positions.iter().copied())).collect();
         required.sort_unstable();
         required.dedup();
+        self.watched = watched;
         self.required = required;
         self.no_upsert = change_set;
         Some(Box::new(self))
     }
+
+    /// True when a transform, a validator or a record rule runs on the change set of a write (hooks 1 to 3).
+    pub fn changes_set(&self) -> bool { !(self.transforms.is_empty() && self.validators.is_empty() && self.records.is_empty()) }
 
     /// True when a hook of the plan reads the request context.
     pub fn reads_context(&self) -> bool {
@@ -157,35 +168,36 @@ impl HookPlan {
     }
 
     /// True when a transform or validator watches `position`.
-    pub fn watches(&self, position: usize) -> bool {
-        self.transforms.iter().chain(&self.validators).any(|(p, _)| *p == position)
-    }
+    pub fn watches(&self, position: usize) -> bool { self.watched.binary_search(&position).is_ok() }
 }
+
+/// A library that `bind` opened, with the state of its `init`.
+struct Opened { library: Library, state: Arc<State> }
 
 /// Opens the library of each package that has hook bindings (points 1 to 7), calls its `init` with
 /// `extension_data[id]`, and resolves each binding into the `HookPlan` of its model. `packages` maps an extension id
 /// to the directory of its installed package. Any failure fails `define()`.
 pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requirements, packages: &BTreeMap<String, PathBuf>) -> Result<(), String> {
-    let mut states: BTreeMap<&str, (Arc<State>, Vec<String>, crate::loader::Library)> = BTreeMap::new();
+    let mut opened: BTreeMap<&str, Opened> = BTreeMap::new();
     let mut plans: BTreeMap<usize, HookPlan> = BTreeMap::new();
-    for binding in r.hooks.iter().filter(|b| (1..=7).contains(&b.point) && r.packages.contains_key(&b.source)) {
+    for binding in r.hooks.iter().filter(|b| (1..=7).contains(&b.point)) {
         let id = binding.source.as_str();
-        if !states.contains_key(id) {
+        let at = match &binding.field { Some(f) => format!("{}.{f}", binding.model), None => binding.model.clone() };
+        if !r.packages.contains_key(id) {
+            return Err(format!("{at}: hook {} names extension {id}, which did not run as a library for this schema; regenerate the schema", binding.export));
+        }
+        if !opened.contains_key(id) {
             let dir = packages.get(id).ok_or_else(|| format!("extension {id}: the schema binds its hooks, but no package directory was given; install the package and pass it to `define()`"))?;
             let library = crate::loader::open_package(id, dir)?;
-            let names: Vec<String> = library.hook_names()?.into_iter().map(str::to_owned).collect();
             let data = r.extension_data.get(id).unwrap_or(&serde_json::Value::Null);
-            let state = library.init(data)?;
-            states.insert(id, (Arc::new(state), names, library));
+            let state = Arc::new(library.init(data)?);
+            opened.insert(id, Opened { library, state });
         }
-        let (state, names, library) = &states[id];
-        let at = match &binding.field { Some(f) => format!("{}.{f}", binding.model), None => binding.model.clone() };
-        if !names.contains(&binding.export) {
-            return Err(format!("{at}: extension {id} has no hook {}; fix the binding or rebuild the package", binding.export));
-        }
+        let Opened { library, state } = &opened[id];
+        let resolved = state.hook(&binding.export).ok_or_else(|| format!("{at}: extension {id} has no hook {}; fix the binding or rebuild the package", binding.export))?;
         let m = *index.get(&binding.model).ok_or_else(|| format!("hook {} is bound to unknown model {}", binding.export, binding.model))?;
         let position = |name: &str| models[m].field_pos(name).map_err(|e| format!("{at}: hook {}: {e}", binding.export));
-        let hook = HookRef::Abi { state: state.clone(), export: binding.export.clone(), reads_context: binding.reads_context };
+        let hook = HookRef::Abi { state: state.clone(), hook: resolved, reads_context: binding.reads_context };
         let plan = plans.entry(m).or_default();
         match (binding.point, &binding.field) {
             (1, Some(f)) => plan.transforms.push((position(f)?, hook)),

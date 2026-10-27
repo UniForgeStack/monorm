@@ -15,7 +15,7 @@ impl Params for Ints {
 
 fn schema(client_default: Json, behavior: Json) -> std::result::Result<Schema, String> {
     let mut behavior = behavior;
-    behavior["schema_contract"] = json!(2);
+    behavior["schema_contract"] = json!(orm_core::behavior::SCHEMA_CONTRACT);
     let mut shop = json!({"name":"shop","column":"shop_id","type":"int"});
     if !client_default.is_null() { shop["client_default"] = client_default; }
     Schema::from_ir(serde_json::from_value(json!({"models":[{"name":"Post","table":"posts","fields":[

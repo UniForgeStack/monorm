@@ -3071,7 +3071,7 @@ impl<'s> Planner<'s> {
     /// `SET` values in `q.set` order, after the model's hook checks.
     fn set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
         let root = self.model(self.root);
-        let positions: Vec<_> = set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<_>>()?;
+        let positions = field_positions(root, set.iter().map(|a| &a.field))?;
         if positions.iter().any(|p| root.computed(*p)) { return Err(Error::query(COMPUTED_READ_ONLY)); }
         if root.hooks.is_none() {
             return set.iter().map(|a| {
@@ -3079,6 +3079,8 @@ impl<'s> Planner<'s> {
                 self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
             }).collect();
         }
+        #[cfg(not(feature = "composition"))]
+        let positions = field_positions(root, set.iter().map(|a| &a.field))?;
         let mut values = Vec::with_capacity(set.len());
         for (a, &position) in set.iter().zip(&positions) {
             let f = &root.fields()[position];
@@ -3785,7 +3787,7 @@ pub fn plan_insert(
     crate::ownership::require_local_write(m)?;
     let rows = {
         let mut rows = rows;
-        let positions: Vec<_> = fields.iter().map(|name| m.field_pos(name).map_err(query_err)).collect::<Result<_>>()?;
+        let positions = field_positions(m, fields)?;
         if positions.iter().any(|p| m.computed(*p)) { return Err(Error::query(COMPUTED_READ_ONLY)); }
         if m.hooks.is_some() {
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
@@ -3817,7 +3819,7 @@ pub fn plan_insert(
                 match default {
                     orm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
                     orm_core::client_default::ClientDefault::Hook(export) => {
-                        let e = crate::hooks::expression(m, *position, true, params)?
+                        let e = crate::hooks::expression(m, *position, true, &crate::hooks::Contexts::new(params))?
                             .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, c.name)))?;
                         *slot = Some(planner.value(&e, Hint { ty: Some(c.value_type()), field: Some(c) })?);
                     }
@@ -4000,10 +4002,16 @@ pub fn plan_update_many(
     Ok((stmts, returning.then(|| m.fields().iter().map(|f| f.value_type()).collect())))
 }
 
+/// The positions of the fields `names`, in order.
+pub(crate) fn field_positions<'a>(m: &Model, names: impl IntoIterator<Item = &'a String>) -> Result<Vec<usize>> {
+    names.into_iter().map(|name| m.field_pos(name).map_err(query_err)).collect()
+}
+
 /// Assignments that extensions registered for `kind` and the caller does not set: the current
-/// time or `column + 1`.
+/// time, `column + 1` or the value of a hook.
 pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&str) -> bool, planner: &mut Planner<'s>) -> Result<Vec<(&'s str, SExpr)>> {
     let params = planner.params;
+    let contexts = crate::hooks::Contexts::new(params);
     let mut out = vec![];
     for a in m.assignments.iter().filter(|a| a.applies_to(kind)) {
         let f = &m.fields()[a.field];
@@ -4012,7 +4020,7 @@ pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&st
             AssignValue::Now => bind(crate::client_default::now(f.ty), Some(f)),
             AssignValue::Increment => col(m.table(), &f.column).add(1),
             AssignValue::Hook { export } => {
-                let value = crate::hooks::assigned(m, a.field, params)?
+                let value = crate::hooks::assigned(m, a.field, &contexts)?
                     .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
                 bind(value, Some(f))
             }
@@ -4021,7 +4029,7 @@ pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&st
                 planner.value(expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
             }
             AssignValue::ExprHook { export } => {
-                let expr = crate::hooks::expression(m, a.field, false, params)?
+                let expr = crate::hooks::expression(m, a.field, false, &contexts)?
                     .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
                 planner.value(&expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
             }

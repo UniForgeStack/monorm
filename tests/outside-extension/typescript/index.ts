@@ -1,5 +1,5 @@
 // The package build exposes this module; the fixture tests compile it to CommonJS.
-export const manifestHash = "cd1e3298e6d0efbd6210d6007c72658999faed2332aae60ff9ef79da75640a2a";
+export const manifestHash = "622d0638cfb6b3f37587844ea260a8d567eea62fe87c45ecb18f352ae6906575";
 
 export const OutsideQuerySet = <T extends new (...args: any[]) => any>(Base: T) => class extends Base {
   tagged() { return this.limit(7); }

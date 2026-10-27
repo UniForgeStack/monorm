@@ -24,7 +24,7 @@ async def run():
         async def fails(coro, *parts):
             try:
                 await (coro() if callable(coro) else coro)
-            except Exception as error:
+            except (orm.QueryError, TypeError) as error:
                 for part in parts:
                     assert part in str(error), f"{part!r} is missing from {error}"
                 return
@@ -43,7 +43,7 @@ async def run():
             # Hook 7 gives `region` and `owner` an expression default; `updated_by` and `shop_id` default to the request scope.
             created = await notes.get(Note.id == 1)
             assert (created.region, created.owner, created.updated_by, created.shop_id) == ("eu", "by:ann", "ann", 1)
-            await fails(notes.insert(id=9, text="   ", start=1, end=2, shop_id=1, secret=""), "must not be empty")
+            await fails(notes.insert(id=9, text="   ", start=1, end=2, shop_id=1, secret=""), "Note.text: must not be empty")
             # acme.outside.ordered (point 3) reads two fields.
             await fails(notes.insert(id=9, text="x", start=3, end=1, shop_id=1, secret=""), "start 3 must be before end 1")
             assert await notes.filter(Note.id == 9).count() == 0
@@ -55,6 +55,9 @@ async def run():
             # `stamp` comes from a hook that reads no context and `editor` from one that reads the user of the request scope.
             changed = await notes.get(Note.id == 1)
             assert (changed.updated_by, changed.slug, changed.stamp, changed.editor) == ("ann", "first", "guarded", "by:ann")
+            # A value that the caller sets for that field goes through the hook too.
+            await row.update(updated_by="eve")
+            assert (await notes.get(Note.id == 1)).updated_by == "ann"
             # acme.outside.initials (point 5) computes `initials` from `first` and `last` on read.
             await notes.insert(id=3, text="named", start=1, end=2, first="ada", last="lovelace", secret="")
             assert (await notes.get(Note.id == 3)).initials == "AL"
