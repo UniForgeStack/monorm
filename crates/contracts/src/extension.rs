@@ -7,7 +7,7 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 2);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(3, 2);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -51,10 +51,6 @@ pub struct Requirements {
     /// Same-table logical views, prepared by the selected proxy compiler.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proxy_models: Vec<ProxyModel>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub generic_relations: Vec<crate::generic::GenericRelation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub generic_reverse: Vec<crate::generic::GenericReverse>,
     #[serde(default)]
     pub read_defaults: Vec<ReadDefault>,
     #[serde(default)]
@@ -183,7 +179,7 @@ impl Requirements {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
+        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
@@ -723,9 +719,6 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
 pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), String> {
     validate_field_adapters(ir)?;
     let r = &ir.behavior;
-    if (!r.generic_relations.is_empty() || !r.generic_reverse.is_empty()) && !artifact.capabilities.iter().any(|c| c == "generic-relations") {
-        return Err("generic relations are not compiled into this artifact; rebuild with generic-relations".into());
-    }
     if !r.proxy_models.is_empty() && !artifact.capabilities.iter().any(|c| c == "proxy-models") {
         return Err("proxy models require the compiled proxy-models capability; rebuild native artifact".into());
     }
@@ -920,11 +913,11 @@ pub fn capture_storage(ir: &mut SchemaIr) -> Result<(), String> {
 pub const HOST_CAPABILITIES: &[&str] = &[
     "schema-transformations", "physical-schema", "native-string-values",
     "native-string-records", "native-string-results", "file-storage",
-    "model-composition", "proxy-models", "generic-relations",
+    "model-composition", "proxy-models",
 ];
 
 /// Capabilities that a build selects as the host Cargo feature of the same name.
-pub const HOST_FEATURE_CAPABILITIES: &[&str] = &["model-composition", "proxy-models", "generic-relations"];
+pub const HOST_FEATURE_CAPABILITIES: &[&str] = &["model-composition", "proxy-models"];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
 /// declarations retain their phase state; new declarations are the only pass inputs.
@@ -997,8 +990,6 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.lowered_models.sort(); c.lowered_models.dedup();
     c.declarations.extend(n.declarations);
     c.proxy_models.extend(n.proxy_models);
-    c.generic_relations.extend(n.generic_relations);
-    c.generic_reverse.extend(n.generic_reverse);
     c.read_defaults.extend(n.read_defaults);
     c.specializations.extend(n.specializations);
     c.result_fields.extend(n.result_fields);
@@ -1274,9 +1265,9 @@ mod tests {
         let next_minor = |v: ContractVersion| format!("{}.{}", v.major, v.minor + 1);
         assert!(check(&|_| {}).is_ok());
         let error = check(&|v| v["schema_contract"] = format!("{}.0", SCHEMA_CONTRACT_VERSION.major + 1).into()).unwrap_err();
-        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.2") && error.contains("major versions differ"), "{error}");
+        assert!(error.contains("schema contract 4.0") && error.contains("schema contract 3.2") && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("schema contract 2.3 is newer than this engine (schema contract 2.2)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains("schema contract 3.3 is newer than this engine (schema contract 3.2)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
         let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
@@ -1300,7 +1291,7 @@ mod tests {
     }
     fn hook_manifest(exports: serde_json::Value) -> Manifest {
         serde_json::from_value(serde_json::json!({
-            "id": "acme.lib", "version": "1.0.0", "schema_contract": "2.1", "abi": "0.2", "library": "lib",
+            "id": "acme.lib", "version": "1.0.0", "schema_contract": "3.1", "abi": "0.2", "library": "lib",
             "languages": ["python"], "databases": ["sqlite"], "exports": exports,
         })).unwrap()
     }
@@ -1380,7 +1371,7 @@ mod tests {
         newer.behavior.schema_contract = SCHEMA_CONTRACT;
         newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_VERSION.minor as u32 + 1;
         let error = check_requirements(&newer, &Artifact::default()).unwrap_err();
-        assert!(error.contains("schema contract 2.3 is newer than this engine (2.2)"), "{error}");
+        assert!(error.contains("schema contract 3.3 is newer than this engine (3.2)"), "{error}");
         let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir.behavior.stamp_minor(); ir };
         let merged = merge_definition(data("a"), data("b")).unwrap();
         assert_eq!(merged.behavior.extension_data.len(), 2);

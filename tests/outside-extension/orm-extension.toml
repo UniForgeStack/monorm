@@ -1,6 +1,6 @@
 id = "acme.outside"
 version = "0.1.0"
-schema_contract = "2.2"
+schema_contract = "3.2"
 abi = "0.2"
 library = "outside_extension"
 language_contract = 1
