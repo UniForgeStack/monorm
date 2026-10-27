@@ -3,51 +3,15 @@ name = "orm-proxy"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Selected same-table proxy schema compiler for ORM"
+description = "Same-table proxy models for ORM: views over one source table"
 
 [dependencies]
 orm-contracts = { path = "../../crates/contracts" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde = "1"
 
 [dev-dependencies]
 orm-core = { path = "../../crates/core" }
 
-[package.metadata.orm-extension]
-id = "orm.proxy"
-version = "0.1.0"
-host_contract = 1
-schema_contract = 3
-languages = ["python", "typescript"]
-databases = ["postgres", "sqlite"]
-capabilities = ["proxy-models"]
-
-[[package.metadata.orm-extension.passes]]
-id = "orm.proxy.lower"
-phase = "logical"
-rust = "proxy::lower"
-effects = ["orm.proxy.logical-models"]
-
-[[package.metadata.orm-extension.attributes]]
-name = "proxy.of"
-target = "model"
-view_source = true
-# `value`: the source model is a bare name, `@@proxy.of(User)`; the pass checks it is a string.
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "value"
-required = true
-
-[[package.metadata.orm-extension.attributes]]
-name = "proxy.fields"
-target = "model"
-[package.metadata.orm-extension.attributes.arguments.include]
-kind = "list"
-[package.metadata.orm-extension.attributes.arguments.exclude]
-kind = "list"
-
-[[package.metadata.orm-extension.attributes]]
-name = "partition.values"
-target = "model"
-[[package.metadata.orm-extension.attributes.positional]]
-kind = "value"
-required = true
+[lib]
+crate-type = ["cdylib", "rlib"]

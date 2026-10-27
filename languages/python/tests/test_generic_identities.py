@@ -241,11 +241,8 @@ def test_moving_to_the_generic_field_form_needs_no_migration(tmp_path):
 
 
 async def test_a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads(tmp_path):
-    from orm import _native
-
-    capabilities = json.loads(_native.native_artifact())["capabilities"]
-    if not has_extension("orm.generic") or "proxy-models" not in capabilities:
-        pytest.skip("needs the orm.generic extension and proxy-models")
+    if not has_extension("orm.generic", "orm.proxy"):
+        pytest.skip("needs the orm.generic and orm.proxy extensions")
     schema = tmp_path / "schema.prisma"
     tag = 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post"])\nnote String\n@@map("generic_field_tags")\n}\n'
     for fields in ['include: ["id", "note"]', 'exclude: ["target"]']:

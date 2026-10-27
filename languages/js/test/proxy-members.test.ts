@@ -1,5 +1,5 @@
 // A proxy of a model inherits its root's extension members and its root's QuerySet class.
-// Runs only with an artifact that selects the proxy-models and soft-delete extensions.
+// Runs only with the orm-proxy and orm-soft-delete packages installed.
 // Each `// E:` line of the typing use must fail and no other line may.
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { test } from "node:test";
 import ts from "typescript";
 import { connect, loads, Registry } from "../src/index.js";
 import { main as cli } from "../src/cli.js";
-import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 import { scratch } from "./scratch.js";
 
 const SCHEMA = `model Post {
@@ -65,7 +65,7 @@ export async function go() {
 }
 `;
 const EXPECTED = USE.split("\n").flatMap((line, i) => (line.includes("// E:") ? [i + 1] : []));
-const skip = !artifactCapabilities().includes("proxy-models") || !hasExtension("orm.soft-delete");
+const skip = !hasExtension("orm.proxy", "orm.soft-delete");
 
 test("a proxy has the soft-delete members and the query-set class of its root", { skip }, async () => {
   const root = scratch("orm-proxy-members-");

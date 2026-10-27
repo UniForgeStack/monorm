@@ -19,9 +19,7 @@ from orm import _native as _again
 assert _again is _native
 os.environ["ORM_PROFILE"] = _selector
 assert hasattr(_native, "cli") == metadata["capabilities"]["cli"]
-FULL_EXTENSIONS = {
-    "composition", "file-storage", "orm.proxy",
-}
+FULL_EXTENSIONS = {"composition", "file-storage"}
 extensions = set(json.loads(_native.native_artifact())["extensions"])
 assert extensions == (FULL_EXTENSIONS if _selector == "full" else set()), extensions
 assert metadata["capabilities"]["composition"] == (_selector == "full")
@@ -37,13 +35,11 @@ else:
 
 
 def source(backend):
-    # `@@proxy.of` is an extension attribute that only `full` accepts.
-    view = "\nmodel ProbeView {\n  @@proxy.of(Probe)\n}" if metadata["profile"] == "full" else ""
     return f'''datasource db {{ provider = "{backend}" }}
 model Probe {{
   id BigInt @id @default(autoincrement())
   name String @unique
-}}{view}'''
+}}'''
 
 
 async def run():
@@ -73,8 +69,6 @@ async def run():
             assert await Probe.objects.using(db).count() == 2
             await first.update(name="changed")
             assert (await Probe.objects.using(db).get(Probe.id == first.id)).name == "changed"
-            if metadata["profile"] == "full":
-                assert await models["ProbeView"].objects.using(db).count() == 2
             await db.drop_tables()
         finally:
             await db.close()

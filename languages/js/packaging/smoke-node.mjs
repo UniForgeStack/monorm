@@ -13,7 +13,7 @@ const selector = process.env.ORM_PROFILE;
 process.env.ORM_PROFILE = "invalid-after-initialization";
 assert.equal(native(), addon);
 process.env.ORM_PROFILE = selector;
-const fullExtensions = ["composition", "file-storage", "orm.proxy"];
+const fullExtensions = ["composition", "file-storage"];
 assert.deepEqual(Object.keys(JSON.parse(addon.nativeArtifact()).extensions).sort(), selector === "full" ? fullExtensions : []);
 assert.equal(metadata.capabilities.composition, selector === "full");
 assert.equal(typeof addon.cli === "function", metadata.capabilities.cli);
@@ -26,13 +26,11 @@ if (metadata.capabilities.cli) {
   assert.notEqual(cli.status, 0);
   assert.match(cli.stderr, /install @orm\/native-tooling/);
 }
-// `@@proxy.of` is an extension attribute that only `full` accepts.
-const view = metadata.profile === "full" ? "\nmodel ProbeView {\n  @@proxy.of(Probe)\n}" : "";
 const source = backend => `datasource db { provider = "${backend}" }
 model Probe {
   id BigInt @id @default(autoincrement())
   name String @unique
-}${view}`;
+}`;
 for (const backend of ["postgres", "sqlite"]) {
   const provider = backend === "postgres" ? "postgresql" : backend;
   const registry = new Registry();
@@ -41,7 +39,7 @@ for (const backend of ["postgres", "sqlite"]) {
     continue;
   }
   if (backend === "postgres" && !process.env.ORM_TEST_DATABASE_URL) continue;
-  const { Probe, ProbeView } = loads(source(provider), { registry });
+  const { Probe } = loads(source(provider), { registry });
   const db = await connect(backend === "postgres" ? process.env.ORM_TEST_DATABASE_URL : "sqlite://:memory:", { registry, default: false });
   try {
     await db.createTables();
@@ -51,7 +49,6 @@ for (const backend of ["postgres", "sqlite"]) {
     assert.equal(await Probe.objects.using(db).count(), 2);
     await first.update({ name: "changed" });
     assert.equal((await Probe.objects.using(db).get(Probe.id.eq(first.id))).name, "changed");
-    if (metadata.profile === "full") assert.equal(await ProbeView.objects.using(db).count(), 2);
     await db.dropTables();
   } finally { await db.close(); }
 }

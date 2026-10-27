@@ -113,7 +113,6 @@ fn manifest_capability_selects_the_host_feature() {
     fs::create_dir_all(&root).unwrap();
     for (feature, alias, package, path) in [
         ("model-composition", "composition", "orm-model-composition", "extensions/model-composition"),
-        ("proxy-models", "proxy", "orm-proxy", "extensions/proxy"),
     ] {
         let output = root.join(feature);
         let config = root.join(format!("{feature}.json"));

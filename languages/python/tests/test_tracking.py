@@ -14,7 +14,7 @@ OLD = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
 def requires(name: str) -> pytest.MarkDecorator:
-    """Skip unless the artifact has the extension (`orm.locking`) or the host capability (`proxy-models`)."""
+    """Skip unless the artifact has the extension (`orm.locking`) or the host capability (`model-composition`)."""
     present = has_extension(name) if name.startswith("orm.") else name in artifact_capabilities()
     return pytest.mark.skipif(not present, reason=f"requires {name} in the native artifact")
 
@@ -524,7 +524,7 @@ async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect)
         await db.close()
 
 
-@requires("proxy-models")
+@requires("orm.proxy")
 @requires("orm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("operation", ["update", "delete"])
