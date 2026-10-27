@@ -156,7 +156,7 @@ exactly their selected adapters and dependencies. No query-time plugin discovery
 `languages/python/packaging/check-dependencies.py` audits isolated graphs for every binding/profile,
 including backend SQL-builder unification and absence of CLI/TLS/unused drivers.
 `languages/python/packaging/check-wheel.py` checks thin/native wheel payload separation.
-`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or the two static extensions for `full`.
+`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or `file-storage` for `full`.
 `languages/js/packaging/check-node-install.mjs` packs and installs one native profile offline,
 checks the dependency lock and runs installed-package smoke tests. Python
 `languages/python/packaging/smoke-python.py` runs against fresh installed wheels. Set

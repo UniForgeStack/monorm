@@ -4,8 +4,8 @@
 #   ORM_TEST_DATABASE_URL=postgres://... scripts/feature-check.sh [artifact...]
 #
 # Artifacts: file-storage
-# all (default: every one). Each artifact selects only extension crates; the manifests turn on
-# the host Cargo features, so no cargo command here passes --features.
+# all (default: every one). Each artifact selects only extension crates,
+# so no cargo command here passes --features.
 # The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy and composition packages are installed in every environment,
 # so the auth app (apps/auth) and the inherit and query-defaults public scripts run on every artifact.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
