@@ -1,0 +1,2 @@
+# Fixture trees hold old names on purpose; ruff skips them.
+extend-exclude = ["**"]

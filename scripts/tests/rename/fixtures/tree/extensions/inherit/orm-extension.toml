@@ -1,0 +1,3 @@
+id = "inherit"
+name = "orm-inherit"
+python = "orm_inherit"

@@ -1,0 +1,6 @@
+[package]
+name = "orm-core"
+
+[dependencies]
+orm-engine = { path = "crates/engine" }
+serde = "1"

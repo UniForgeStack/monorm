@@ -1,0 +1,487 @@
+# Reviewed rename rules: `orm` -> `monorm`. Applied in file order; longest names first.
+# `L` below stands for the look-behind (?<![A-Za-z0-9_@/.-]): a name never matches inside a
+# longer name, so `monorm-x` and `@ufstack/monorm-x` stay put and a second --apply is a no-op.
+# Bare `orm` has no blanket rule: each context below names its own target.
+# Set the `expect` ranges again from a fresh dry-run on the tree you apply to.
+
+env_rename = ["ORM_DATABASE_URL", "ORM_PROFILE", "ORM_NATIVE", "ORM_BUILD_REVISION", "ORM_BUILD_RECORD"]
+
+# --- protect: names that stay -------------------------------------------------
+
+[[protect]]
+id = "kept-database-names"
+pattern = '(?<![A-Za-z0-9_@.-])orm_(?:test(?:_rs)?|bench(?:mark)?)\b'
+
+[[protect]]
+id = "bench-result-key"
+pattern = '(?<![A-Za-z0-9_@/.-])orm-all(?![A-Za-z0-9_-])'
+
+# --- npm names ----------------------------------------------------------------
+
+[[rule]]
+id = "npm-main-name"
+files = ["languages/js/package.json", "**/package-lock.json"]
+pattern = '"name": "orm"'
+replace = '"name": "@ufstack/monorm"'
+expect = [4, 10]
+
+[[rule]]
+id = "npm-dependency-key"
+files = ["**/package.json", "**/package-lock.json"]
+pattern = '"orm"(?=: (?:"|\{ "optional"))'
+replace = '"@ufstack/monorm"'
+expect = [18, 32]
+
+[[rule]]
+id = "npm-lock-path"
+files = ["**/package-lock.json"]
+pattern = '"node_modules/orm"'
+replace = '"node_modules/@ufstack/monorm"'
+expect = [1, 5]
+
+[[rule]]
+id = "config-key-package-json"
+files = ["**/package.json", "**/package-lock.json"]
+pattern = '(?m)"orm"(?=: \{$)'
+replace = '"monorm"'
+expect = [1, 5]
+
+[[rule]]
+id = "npm-scope"
+pattern = '@orm/'
+replace = '@ufstack/monorm-'
+expect = [134, 226]
+
+[[rule]]
+id = "npm-auth-name"
+files = ["**/*.ts", "**/*.mjs", "**/*.js", "**/*.cjs", "**/package.json", "**/package-lock.json"]
+pattern = '(?<![A-Za-z0-9_@.-])(?<!/)orm-auth(?![A-Za-z0-9_-])|(?<=node_modules/)orm-auth(?![A-Za-z0-9_-])'
+replace = '@ufstack/monorm-auth'
+expect = [28, 50]
+
+[[rule]]
+id = "js-import-specifier"
+files = ["**/*.ts", "**/*.mjs", "**/*.js", "**/*.cjs", "**/*.rs", "**/*.md", "**/*.py", "**/*.json"]
+pattern = '((?:from|import|require|resolve|import\()\(? ?\\?["\x27])orm((?:/(?:ext|otel))?\\?["\x27])'
+replace = '\1@ufstack/monorm\2'
+expect = [39, 68]
+
+[[rule]]
+id = "js-subpath-string"
+pattern = '(?<=["\x27`\s(])orm/(?=ext\b|otel\b)'
+replace = '@ufstack/monorm/'
+expect = [11, 22]
+
+[[rule]]
+id = "node-modules-main"
+pattern = '(?<=node_modules/)orm(?![A-Za-z0-9_-])'
+replace = '@ufstack/monorm'
+expect = [1, 5]
+
+# --- config keys and extension ids -------------------------------------------
+
+[[rule]]
+id = "tool-orm-table"
+files = ["**/*.toml", "**/*.md", "**/*.py", "**/*.rs", "**/*.ts"]
+pattern = '(?<=tool\.)orm(?![A-Za-z0-9_-])'
+replace = 'monorm'
+expect = [15, 28]
+
+[[rule]]
+id = "package-metadata-key"
+pattern = '(?<=package\.metadata\.)orm-extension'
+replace = 'monorm-extension'
+expect = [54, 94]
+
+[[rule]]
+id = "config-key-access"
+files = ["**/*.ts", "**/*.mjs", "**/*.js", "**/*.rs"]
+pattern = '(?<=\.)orm(?=\?\.)|(?<=\)\.)orm(?![A-Za-z0-9_-])'
+replace = 'monorm'
+expect = [1, 5]
+
+[[rule]]
+id = "extension-manifest-name"
+pattern = '(?<![A-Za-z0-9_@/.-])orm-extension\.toml'
+replace = 'monorm-extension.toml'
+expect = [48, 83]
+
+[[rule]]
+id = "wire-tag"
+pattern = '(?<![A-Za-z0-9_@/.-])orm:(?=[A-Za-z<{])'
+replace = 'monorm:'
+expect = [18, 32]
+
+# --- Python module, native modules --------------------------------------------
+
+[[rule]]
+id = "py-import"
+pattern = '(?<![A-Za-z0-9_@/.-])((?:from|import) )orm(?![A-Za-z0-9_-])'
+replace = '\1monorm'
+expect = [258, 433]
+
+[[rule]]
+id = "py-dash-m"
+pattern = '(?<=-m )orm(?![A-Za-z0-9_-])|(?<=-m", ")orm(?=")|(?<=-m\x27, \x27)orm(?=\x27)'
+replace = 'monorm'
+expect = [66, 113]
+
+[[rule]]
+id = "npx-command-text"
+pattern = '(?<=npx )orm(?![A-Za-z0-9_-])|(?<=bunx )orm(?![A-Za-z0-9_-])'
+replace = '@ufstack/monorm'
+expect = [31, 55]
+
+[[rule]]
+id = "cli-command-text"
+pattern = '(?<![A-Za-z0-9_@/.-])orm (?=(?:generate|migrate|makemigrations|make|pull|check|identities|compile|rollback|sqlmigrate|baseline|drift|fmt|--))'
+replace = 'monorm '
+expect = [86, 146]
+
+[[rule]]
+id = "npm-install-text"
+files = ["**/*.md"]
+pattern = '(?<=npm install )orm(?![A-Za-z0-9_-])'
+replace = '@ufstack/monorm'
+expect = [2, 7]
+
+[[rule]]
+id = "import-flag-text"
+files = ["**/*.md"]
+pattern = '(?<=--import )orm(?![A-Za-z0-9_-])'
+replace = '@ufstack/monorm'
+expect = [1, 4]
+
+[[rule]]
+id = "codegen-argument-compact"
+files = ["**/*.rs"]
+pattern = '(?<=\.prisma",)"orm"(?=\))'
+replace = '"@ufstack/monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "codegen-argument-ts-test"
+files = ["languages/js/test/**"]
+pattern = '(generateTypescript\(\w+, )"orm"'
+replace = '\1"@ufstack/monorm"'
+expect = [1, 5]
+
+[[rule]]
+id = "test-message-regex"
+files = ["languages/js/test/**"]
+pattern = '(?<=\.\*)"orm"(?=/s)'
+replace = '"monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "py-hasattr-module"
+files = ["**/*.py"]
+pattern = '(?<=hasattr\()orm(?=,)'
+replace = 'monorm'
+expect = [1, 4]
+
+[[rule]]
+id = "auth-test-scope-dir"
+files = ["apps/auth/typescript/test/support.ts"]
+pattern = '(?<="node_modules", )"@orm"(?=\))'
+replace = '"@ufstack"'
+expect = [1, 4]
+
+[[rule]]
+id = "auth-test-scope-child"
+files = ["apps/auth/typescript/test/support.ts"]
+pattern = '"@orm", name\)'
+replace = '"@ufstack", `monorm-${name}`)'
+expect = [1, 5]
+
+[[rule]]
+id = "py-directory-name-compare"
+files = ["bench/**/*.py"]
+pattern = '(?<=name == )"orm"'
+replace = '"monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "docs-register-call"
+files = ["**/*.md"]
+pattern = '(?<="schema.prisma", )"orm"(?=,)'
+replace = '"@ufstack/monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "native-error-text"
+files = ["languages/js/src/**"]
+pattern = '(?<= alongside )orm(?=")'
+replace = '@ufstack/monorm'
+expect = [1, 4]
+
+# --- prefixed names (underscore and hyphen) -----------------------------------
+
+[[rule]]
+id = "orm-underscore-prefix"
+pattern = '(?<![A-Za-z0-9_@/.-])orm_(?=[a-z0-9])'
+replace = 'monorm_'
+expect = [1274, 2126]
+
+[[rule]]
+id = "orm-hyphen-prefix"
+pattern = '(?<![A-Za-z0-9_@/.-])orm-(?=[a-z0-9])'
+replace = 'monorm-'
+expect = [544, 910]
+
+[[rule]]
+id = "node-addon-file"
+pattern = '(?<![A-Za-z0-9_-])orm\.node\b'
+replace = 'monorm.node'
+expect = [48, 83]
+
+[[rule]]
+id = "cdylib-name"
+pattern = '(?<=lib)orm_node'
+replace = 'monorm_node'
+expect = [12, 23]
+
+# --- dotted names: module attributes and extension ids ------------------------
+
+[[rule]]
+id = "orm-dot-name"
+pattern = '(?<![A-Za-z0-9_@/.-])orm\.(?=[A-Za-z_])'
+replace = 'monorm.'
+expect = [1719, 2869]
+
+# --- the command line, config keys and code strings ----------------------------
+
+[[rule]]
+id = "cli-crate-name"
+files = ["crates/cli/Cargo.toml"]
+pattern = '(?m)^name = "orm"$'
+replace = 'name = "monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "cli-host-name"
+files = ["crates/cli/src/lib.rs"]
+pattern = 'Host::Binary => "orm"'
+replace = 'Host::Binary => "monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "cli-usage-text"
+files = ["crates/cli/**"]
+pattern = 'usage: orm '
+replace = 'usage: monorm '
+expect = [1, 4]
+
+[[rule]]
+id = "cli-synopsis"
+files = ["crates/cli/src/lib.rs"]
+pattern = '(?m)^(//! )orm (?=\[)'
+replace = '\1monorm '
+expect = [1, 4]
+
+[[rule]]
+id = "cli-test-helper"
+files = ["crates/cli/tests/**"]
+pattern = '(?<![A-Za-z0-9_@/.:-])orm(?=\((?:&dir|dir: &Path))'
+replace = 'monorm'
+expect = [52, 89]
+
+[[rule]]
+id = "cli-backtick-name"
+pattern = '(?<=`)orm(?=` (?:command line|binary|CLI|command)\b)'
+replace = 'monorm'
+expect = [23, 41]
+
+[[rule]]
+id = "config-key-get"
+files = ["**/*.rs"]
+pattern = '(?<=get\()"orm"(?=\))'
+replace = '"monorm"'
+expect = [3, 8]
+
+[[rule]]
+id = "config-key-quoted"
+files = ["**/*.ts", "**/*.mjs", "**/*.js", "**/*.md", "**/*.rs", "**/*.py"]
+pattern = '(?<![A-Za-z0-9_@/.-])"orm"(?=: \{| key\b| in package\.json)'
+replace = '"monorm"'
+expect = [15, 28]
+
+[[rule]]
+id = "config-key-escaped"
+files = ["**/*.rs"]
+pattern = '\\"orm\\"(?= in package)'
+replace = '\\"monorm\\"'
+expect = [1, 4]
+
+[[rule]]
+id = "config-key-object"
+files = ["**/*.ts", "**/*.mjs", "**/*.js"]
+pattern = '(?<![A-Za-z0-9_@/.-])orm(?=\??: \{)'
+replace = 'monorm'
+expect = [7, 14]
+
+[[rule]]
+id = "paths-key-escaped"
+files = ["**/*.rs"]
+pattern = '\\"orm\\"(?=: \[)'
+replace = '\\"@ufstack/monorm\\"'
+expect = [1, 5]
+
+[[rule]]
+id = "paths-key-quoted"
+files = ["**/*.rs", "**/*.ts", "**/*.mjs", "**/*.json"]
+pattern = '(?<![A-Za-z0-9_@/.-])"orm"(?=: \[)'
+replace = '"@ufstack/monorm"'
+expect = [1, 5]
+
+[[rule]]
+id = "paths-key-bare"
+files = ["**/*.ts", "**/*.mjs"]
+pattern = '(?<=paths: \{ )orm(?=: \[)'
+replace = '"@ufstack/monorm"'
+expect = [2, 7]
+
+[[rule]]
+id = "codegen-runtime-argument"
+files = ["**/*.rs"]
+pattern = '(?:(?<=", )|(?<=","))"orm"(?=\)|, ?&)|(?<=unwrap_or\()"orm"(?=\))'
+replace = '"@ufstack/monorm"'
+expect = [25, 44]
+
+[[rule]]
+id = "import-runtime-text"
+pattern = '(?<=`)"orm"(?=`)|(?<=\x27)"orm"(?=\x27)|(?<="--import", )"orm"'
+replace = '"@ufstack/monorm"'
+expect = [12, 23]
+
+[[rule]]
+id = "provider-name"
+pattern = '(?<=provider = \\")orm(?=\\")|(?<=provider = ")orm(?=")'
+replace = 'monorm'
+expect = [3, 8]
+
+[[rule]]
+id = "error-tag-regex"
+files = ["**/*.ts", "**/*.js", "**/*.mjs"]
+pattern = '(?<=\\\[)orm:(?=\()'
+replace = 'monorm:'
+expect = [1, 4]
+
+[[rule]]
+id = "message-names"
+pattern = '(?<=incompatible )orm(?= native)|(?<=incompatible custom )orm(?= native)|(?<=matching )orm(?= \d)|(?<=for )orm(?= \d+\.\d)|(?<=this )orm(?= language adapter)|(?<=f")orm(?= needs)|(?<=upgrade )orm(?= or)'
+replace = 'monorm'
+expect = [18, 34]
+
+[[rule]]
+id = "tracer-name"
+pattern = '(?<=get_tracer\()"orm"|(?<=getTracer\()"orm"'
+replace = '"monorm"'
+expect = [4, 10]
+
+[[rule]]
+id = "py-dist-name"
+files = ["**/pyproject.toml"]
+pattern = '(?m)^name = "orm"$'
+replace = 'name = "monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "py-dependency"
+files = ["**/pyproject.toml"]
+pattern = '(?:(?<=\[)|(?<=, ))"orm(?=["\x27>=<~\[])'
+replace = '"monorm'
+expect = [2, 7]
+
+[[rule]]
+id = "py-extras"
+files = ["**/*.yml", "**/*.md", "**/*.sh", "**/*.toml", "**/*.py"]
+pattern = '(?<![A-Za-z0-9_@/.-])orm(?=\[(?:\$\{\{|\{|[a-z]+[\],]))'
+replace = 'monorm'
+expect = [25, 44]
+
+[[rule]]
+id = "py-import-escaped-newline"
+pattern = '(?<=\\n)(from|import) orm(?![A-Za-z0-9_-])'
+replace = '\1 monorm'
+expect = [1, 5]
+
+[[rule]]
+id = "npm-scope-escaped"
+pattern = '@orm\\/'
+replace = '@ufstack\\/monorm-'
+expect = [1, 4]
+
+[[rule]]
+id = "generated-by-header"
+pattern = '(?<=Generated by )orm(?=;)'
+replace = 'monorm'
+expect = [6, 13]
+
+[[rule]]
+id = "crate-name-template"
+files = ["**/*.rs"]
+pattern = '(?<=")orm-(?=\{)'
+replace = 'monorm-'
+expect = [1, 4]
+
+[[rule]]
+id = "py-package-path-string"
+files = ["**/*.py", "**/*.sh", "**/*.yml"]
+pattern = '(?<=["\x27])orm(?=/(?:_[a-z]|["\x27]))|(?<=")orm(?=-\*\.whl)|(?<=")orm(?=\.")'
+replace = 'monorm'
+expect = [4, 10]
+
+[[rule]]
+id = "package-data-key"
+files = ["**/pyproject.toml"]
+pattern = '(?m)^orm(?= = \[)'
+replace = 'monorm'
+expect = [1, 4]
+
+[[rule]]
+id = "config-key-subscript"
+files = ["**/*.py", "**/*.ts", "**/*.mjs", "**/*.js"]
+pattern = '(?<=\[)"orm"(?=\]\[)'
+replace = '"monorm"'
+expect = [1, 4]
+
+[[rule]]
+id = "dotted-escaped"
+pattern = '(?<![A-Za-z0-9_@/.-])orm\\\.(?=[a-z])'
+replace = 'monorm\\.'
+expect = [3, 8]
+
+# --- path moves ---------------------------------------------------------------
+
+[[move]]
+from = "languages/python/orm"
+sub = ['^orm$', 'monorm']
+
+[[move]]
+from = "apps/auth/python/orm_auth"
+sub = ['^orm_', 'monorm_']
+
+[[move]]
+from = "extensions/file-storage/integration/python/src/orm_file_storage"
+sub = ['^orm_', 'monorm_']
+
+[[move]]
+from = "extensions/*/python/orm_*"
+sub = ['^orm_', 'monorm_']
+
+[[move]]
+from = "languages/python/packaging/*/orm_native_*"
+sub = ['^orm_', 'monorm_']
+
+[[move]]
+from = "**/orm-extension.toml"
+sub = ['^orm-', 'monorm-']
+
+[[move]]
+from = "bench/compare/js/contenders/orm.mjs"
+sub = ['^orm\.', 'monorm.']
+
+[[move]]
+from = "bench/compare/python/orm_contender.py"
+sub = ['^orm_', 'monorm_']
