@@ -81,6 +81,14 @@ async def run():
             await notes.insert(id=3, text="named", start=1, end=2, first="ada", last="lovelace", secret="")
             assert (await notes.get(Note.id == 3)).initials == "AL"
             assert [n.initials for n in await notes.filter(Note.id.in_([1, 3])).order_by(Note.id).all()] == ["", "AL"]
+            # The rows that writes return carry the computed field too: insert, update, update_many and the refreshed instance.
+            inserted = await notes.insert(id=5, text="w", start=1, end=2, first="grace", last="hopper", secret="")
+            assert inserted.initials == "GH"
+            await inserted.update(first="mary", last="shelley")
+            assert inserted.initials == "MS"
+            assert [n.initials for n in await notes.filter(Note.id == 5).update(first="ada", last="byron").returning()] == ["AB"]
+            assert [n.initials for n in await notes.update_many([{"id": 5, "first": "emmy", "last": "noether"}]).returning()] == ["EN"]
+            await notes.filter(Note.id == 5).delete()
             # The bindings drop a computed field from the update input, so the call fails before the engine runs.
             await fails(lambda: notes.filter(Note.id == 3).update(initials="ZZ"), "initials", errors=(orm.QueryError, TypeError))
             await fails(lambda: notes.filter(Note.initials == "AL").count(), "computed fields")
@@ -106,8 +114,8 @@ async def run():
         with orm.scope(shop=1, user="ann"):
             await row.delete()
             assert await notes.all() == []
-            # The soft-deleted rows 3 and 4 stay visible next to row 1.
-            assert sorted(n.id for n in await notes.all_with_deleted().all()) == [1, 3, 4]
+            # The soft-deleted rows 3, 4 and 5 stay visible next to row 1.
+            assert sorted(n.id for n in await notes.all_with_deleted().all()) == [1, 3, 4, 5]
     finally:
         await db.drop_tables()
         await db.close()

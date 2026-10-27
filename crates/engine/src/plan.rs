@@ -159,7 +159,7 @@ pub enum Plan {
     /// The model and column types of the returned rows when the delete has `RETURNING`.
     Delete(DeleteStatement, Option<Returned>),
     /// The model and column types of the returned rows when the insert has `RETURNING`.
-    Insert(InsertStatement, Option<(usize, Vec<ValueType>)>),
+    Insert(InsertStatement, Option<(usize, Vec<ValueType>, Vec<crate::hooks::Computed>)>),
     MultiTableInsert(Box<crate::multi_table::Insert>),
     MultiTableMutation(Box<crate::multi_table::Mutation>),
 }
@@ -967,7 +967,7 @@ impl<'s> Planner<'s> {
                     stmt.with_cte(w);
                 }
                 within_param_cap(target, &stmt)?;
-                let returned = types.map(|(types, shape)| (p.root, types, shape));
+                let returned = p.returned(types)?;
                 if stmt.has_row_values() {
                     Plan::RowUpdate(stmt, returned)
                 } else {
@@ -986,14 +986,14 @@ impl<'s> Planner<'s> {
                         stmt.with_cte(w);
                     }
                     within_param_cap(target, &stmt)?;
-                    return Ok(Plan::Update(stmt, types.map(|(types, shape)| (p.root, types, shape))));
+                    return Ok(Plan::Update(stmt, p.returned(types)?));
                 }
                 let (mut stmt, types) = p.delete(q)?;
                 if let Some(w) = p.with_clause(&q.with)? {
                     stmt.with_cte(w);
                 }
                 within_param_cap(target, &stmt)?;
-                Plan::Delete(stmt, types.map(|(types, shape)| (p.root, types, shape)))
+                Plan::Delete(stmt, p.returned(types)?)
             }
         })
     }
@@ -3209,6 +3209,14 @@ impl<'s> Planner<'s> {
         Ok((stmt, Some((positions.iter().map(|pos| root.fields()[pos].value_type()).collect(), shape))))
     }
 
+    /// The root's returned rows with the hook-computed fields of their columns (point 5).
+    fn returned(&self, columns: Option<ReturnColumns>) -> Result<Option<Returned>> {
+        let Some((types, shape)) = columns else { return Ok(None) };
+        let positions = shape_positions(self.model(self.root), shape.as_ref()).to_vec();
+        let computed = crate::hooks::computations(self.model(self.root), 0, &positions, self.params)?;
+        Ok(Some((self.root, types, shape, computed)))
+    }
+
     /// A delete of a model with a delete rewrite: `UPDATE ... SET <field> = <now> WHERE ... AND <guard>`.
     fn delete_rewrite(&mut self, q: &Delete, rewrite: &orm_core::writes::PreparedDeleteRewrite) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
         let root = self.model(self.root);
@@ -4038,7 +4046,7 @@ fn shape_positions(model: &Model, shape: Option<&orm_core::behavior::ResultShape
     match shape { Some(shape) => Positions::Shaped(shape.fields.iter().map(|f| f.field.position).collect()), None => Positions::All(model.fields().len()) }
 }
 
-pub type Returned = (usize, Vec<ValueType>, Option<orm_core::behavior::ResultShape>);
+pub type Returned = (usize, Vec<ValueType>, Option<orm_core::behavior::ResultShape>, Vec<crate::hooks::Computed>);
 pub type ReturnColumns = (Vec<ValueType>, Option<orm_core::behavior::ResultShape>);
 
 /// Plans `op`, an update, without running it, and tells whether its filters pin one
