@@ -60,6 +60,9 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             if a.target != AttributeTarget::Field && (a.field_type.is_some() || !a.member) {
                 return Err(format!("{}: attribute {} has `field_type` or `member = false`, which only a field attribute takes; set `target = \"field\"`", m.id, a.name));
             }
+            if a.view_source && a.target != AttributeTarget::Model {
+                return Err(format!("{}: attribute {} has `view_source`, which only a model attribute takes; set `target = \"model\"`", m.id, a.name));
+            }
             let Some(ty) = a.field_type.as_deref() else { continue };
             if ty.is_empty() || !ty.starts_with(|c: char| c.is_ascii_uppercase()) || !ty.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric()) {
                 return Err(format!("{}: attribute {} owns the type {ty:?}; a type name starts with an uppercase letter and has letters, digits and `_` only", m.id, a.name));
@@ -173,7 +176,7 @@ mod tests {
     fn an_attribute_owns_a_field_type_once_and_only_on_a_field() {
         let owner = |id: &str, attribute: serde_json::Value| -> Manifest {
             serde_json::from_value(serde_json::json!({
-                "id": id, "version": "1.0.0", "schema_contract": "3.2", "host_contract": "1.0", "languages": [], "databases": [],
+                "id": id, "version": "1.0.0", "schema_contract": "3.3", "host_contract": "1.0", "languages": [], "databases": [],
                 "attributes": [attribute],
             })).unwrap()
         };
@@ -197,6 +200,9 @@ mod tests {
         }
         // `identities` is valid on a model attribute.
         assert!(resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "model", "identities": true}))]).is_ok());
+        assert!(resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "model", "view_source": true}))]).is_ok());
+        let error = resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "field", "view_source": true}))]).unwrap_err();
+        assert!(error.contains("acme.a") && error.contains("only a model attribute takes"), "{error}");
     }
 
     #[test]

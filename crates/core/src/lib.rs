@@ -33,6 +33,6 @@ pub mod identity;
 pub mod client_default;
 pub mod writes;
 
-#[cfg(feature = "proxy-models")]
-pub use orm_proxy_runtime as proxy;
+pub mod result_check;
+pub mod view;
 pub mod selection;

@@ -369,10 +369,11 @@ class Registry:
                 for d in behavior.get("write_assignments", ())
                 if d["model"] == meta.name and d["upsert"] == "drop" and "upsert" in d["on"]
             )
-            proxy: dict[str, Any] = next(
-                (p for p in prepared.get("behavior", {}).get("proxy_models", ()) if p["model"] == meta.name), {}
+            meta.narrowed = frozenset(
+                c["field"]
+                for c in prepared.get("behavior", {}).get("result_checks", ())
+                if c["model"] == meta.name and c.get("non_null")
             )
-            meta.narrowed = frozenset(f["field"] for f in proxy.get("fields", ()) if f.get("non_null"))
             meta.field_names = tuple(fields)
             meta.index_nested()
             pk_ir = next(f for f in ir["fields"] if f["name"] == meta.key[0].name)

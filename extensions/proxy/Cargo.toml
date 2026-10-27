@@ -31,6 +31,7 @@ effects = ["orm.proxy.logical-models"]
 [[package.metadata.orm-extension.attributes]]
 name = "proxy.of"
 target = "model"
+view_source = true
 # `value`: the source model is a bare name, `@@proxy.of(User)`; the pass checks it is a string.
 [[package.metadata.orm-extension.attributes.positional]]
 kind = "value"

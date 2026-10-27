@@ -3,7 +3,10 @@
 //! narrowing nor client defaults change physical storage or imply predicates.
 //! Explicit partition ownership projects local objects and a permanent storage bound.
 use std::collections::{BTreeMap, BTreeSet};
-use orm_contracts::{extension::{capture_storage, ProxyField, ProxyModel, ProxyPartition, ProxySelection}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
+use orm_contracts::{extension::{capture_storage, ModelView, ProxyField, ProxyModel, ProxyPartition, ProxySelection, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
+
+/// The warning code of a proxy shape check.
+pub const SHAPE_CODE: &str = "orm.proxy.shape";
 
 /// Declarations contribute logical views and explicit partition ownership. Required argument
 /// kinds/targets are checked by the composition manifest before this pass runs.
@@ -251,6 +254,15 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
         let pos = ir.models.iter().position(|m| m.name == spec.model).expect("checked proxy");
         ir.models[pos] = model;
         ir.behavior.storage.as_mut().expect("captured storage").models.retain(|m| m.name != spec.model);
+        // The view and check records are the general form of the partition and the shape fields; the core reads only them.
+        let inherited_view = ir.behavior.model_views.iter().find(|v| v.model == spec.parent);
+        let (row_filter, insert_table) = match (&spec.partition, &partition) {
+            (Some(declared), Some(p)) => (Some(RowFilter { field: p.field.clone(), values: declared.values.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned)).collect() }), Some(p.table.clone())),
+            _ => inherited_view.map(|v| (v.row_filter.clone(), v.insert_table.clone())).unwrap_or_default(),
+        };
+        ir.behavior.model_views.push(ModelView { model: spec.model.clone(), source: spec.parent.clone(), root: prepared.storage_owner.clone(), row_filter, insert_table });
+        ir.behavior.result_checks.retain(|c| c.model != spec.model);
+        ir.behavior.result_checks.extend(prepared.fields.iter().map(|f| ResultCheck { model: spec.model.clone(), field: f.field.clone(), non_null: f.non_null, allowed: f.subset.clone(), code: SHAPE_CODE.into() }));
         ir.behavior.proxy_models.push(prepared);
     }
     // Physical relations may name a proxy. Resolve only the physical FK target;
@@ -311,6 +323,6 @@ mod effects {
         ],"behavior":{"declarations":[
             {"attribute":"proxy.of","model":"Active","field":null,"arguments":{},"positional":["User"],"location":{"file":"schema.prisma","line":1,"column":1}}
         ]}})).unwrap();
-        assert_eq!(pass_effects(&ir, super::lower).unwrap().into_iter().collect::<Vec<_>>(), ["behavior.proxy_models", "behavior.storage", "models"]);
+        assert_eq!(pass_effects(&ir, super::lower).unwrap().into_iter().collect::<Vec<_>>(), ["behavior.model_views", "behavior.proxy_models", "behavior.result_checks", "behavior.storage", "models"]);
     }
 }

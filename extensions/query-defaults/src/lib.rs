@@ -91,7 +91,7 @@ fn order_key(model: &orm_contracts::ir::ModelIr, source: &Value) -> Result<Order
 fn check_order(ir: &SchemaIr, model: &orm_contracts::ir::ModelIr, order: &[OrderKey], source: &str) -> Result<(), String> {
     let name = &model.name;
     let from = if source == name { String::new() } else { format!(" (from the default order of {source}; give {name} its own @@query.order(...), or clear it with @@query.order())") };
-    let narrowed = |field: &str| ir.behavior.proxy_models.iter().any(|p| p.model == *name && p.fields.iter().any(|f| f.field == field && f.non_null));
+    let narrowed = |field: &str| ir.behavior.result_checks.iter().any(|c| c.model == *name && c.field == field && c.non_null);
     for (i, k) in order.iter().enumerate() {
         let field = &k.field;
         let Some(f) = model.fields.iter().find(|f| f.name == *field) else {
@@ -124,10 +124,10 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         stack.push(name.into());
         let model = ir.models.iter().find(|m| m.name == name).ok_or_else(|| format!("unknown policy parent {name}"))?;
         let given = options(ir, name)?;
-        // The proxy pass (logical phase) fills `proxy_models` before this behavior pass.
-        let proxy_parent = ir.behavior.proxy_models.iter().find(|p| p.model == name).map(|p| p.parent.as_str());
+        // The view pass (logical phase) fills `model_views` before this behavior pass.
+        let view_parent = ir.behavior.derived_parent(name);
         let composed_parent = ir.behavior.declarations.iter().find(|d| d.model == name && d.attribute == "composition.model").and_then(|d| d.arguments.get("parent")).and_then(Value::as_str);
-        let parent = given.get("parent").and_then(Value::as_str).or(proxy_parent).or(composed_parent);
+        let parent = given.get("parent").and_then(Value::as_str).or(view_parent).or(composed_parent);
         let inherited = match parent { Some(p) => resolve(ir, p, resolved, order_sources, stack)?, None => ModelPolicy::default() };
         let mut out = inherited.clone(); out.model = name.into();
         if let Some(source) = given.get("filter") {
@@ -333,7 +333,7 @@ mod tests {
     fn proxy_and_composed_models_inherit_through_typed_parents() {
         let mut schema = ir();
         schema.behavior.declarations.retain(|d| d.model != "Child");
-        schema.behavior.proxy_models.push(serde_json::from_value(json!({"model":"Child","parent":"Parent"})).unwrap());
+        schema.behavior.model_views.push(serde_json::from_value(json!({"model":"Child","source":"Parent","root":"Parent"})).unwrap());
         lower(&mut schema).unwrap();
         assert_eq!(schema.behavior.read_defaults[1].filter, schema.behavior.read_defaults[0].filter);
         let mut schema = ir();
@@ -431,7 +431,8 @@ mod tests {
         // A proxy narrows a nullable column; the order is the child's own.
         let mut schema = ir();
         declare(&mut schema, "Child", "query.order", json!({}), json!(["bio"]));
-        schema.behavior.proxy_models.push(serde_json::from_value(json!({"model":"Child","parent":"Parent","fields":[{"field":"bio","non_null":true}]})).unwrap());
+        schema.behavior.model_views.push(serde_json::from_value(json!({"model":"Child","source":"Parent","root":"Parent"})).unwrap());
+        schema.behavior.result_checks.push(serde_json::from_value(json!({"model":"Child","field":"bio","non_null":true,"code":"orm.proxy.shape"})).unwrap());
         let error = lower(&mut schema).unwrap_err();
         assert!(error.ends_with("Child: order column \"bio\" can be NULL: write \"bio nulls first\" or \"bio nulls last\""), "{error}");
         // Two levels down, the error still names the model that set the order.
@@ -452,7 +453,7 @@ mod tests {
         other["name"] = json!("Other");
         schema.models.push(serde_json::from_value(other).unwrap());
         declare(&mut schema, "Other", "query.order", json!({}), json!(["-id"]));
-        schema.behavior.proxy_models.push(serde_json::from_value(json!({"model":"Child","parent":"Parent"})).unwrap());
+        schema.behavior.model_views.push(serde_json::from_value(json!({"model":"Child","source":"Parent","root":"Parent"})).unwrap());
         schema.behavior.declarations[1].arguments.insert("parent".into(), json!("Other"));
         schema.behavior.declarations[1].arguments.remove("filter");
         lower(&mut schema).unwrap();
@@ -463,7 +464,7 @@ mod tests {
         let mut schema = ir();
         schema.behavior.declarations.retain(|d| d.model != "Child");
         declare(&mut schema, "Parent", "query.order", json!({}), json!(["-visible", "id"]));
-        schema.behavior.proxy_models.push(serde_json::from_value(json!({"model":"Child","parent":"Parent"})).unwrap());
+        schema.behavior.model_views.push(serde_json::from_value(json!({"model":"Child","source":"Parent","root":"Parent"})).unwrap());
         lower(&mut schema).unwrap();
         assert_eq!(schema.behavior.read_defaults[1].order, schema.behavior.read_defaults[0].order);
         assert_eq!(schema.behavior.read_defaults[1].order.as_ref().unwrap().len(), 2);

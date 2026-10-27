@@ -24,8 +24,8 @@ fn model(name: &str, fields: &[&str]) -> Value {
 fn schema() -> SchemaIr {
     serde_json::from_value(json!({"models":[
         model("User", &["name", "note"]), model("Admin", &["name", "note"]), model("Slim", &["note"]), model("Own", &["name", "note"]), model("Deep", &["name", "note"]),
-    ],"behavior":{"proxy_models":[
-        {"model":"Admin","parent":"User"}, {"model":"Slim","parent":"User"}, {"model":"Own","parent":"User"}, {"model":"Deep","parent":"Admin"},
+    ],"behavior":{"model_views":[
+        {"model":"Admin","source":"User","root":"User"}, {"model":"Slim","source":"User","root":"User"}, {"model":"Own","source":"User","root":"User"}, {"model":"Deep","source":"Admin","root":"User"},
     ]}})).unwrap()
 }
 fn spec(value: Value) -> NativeSpec { serde_json::from_value(value).unwrap() }

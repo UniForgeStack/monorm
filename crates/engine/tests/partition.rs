@@ -1,6 +1,12 @@
 #![cfg(feature = "postgres")]
 use orm_core::{dsl, migrate};
 use orm_engine::{db, introspect};
+#[cfg(feature = "proxy-models")]
+use orm_core::dialect::{Dialect, Target};
+#[cfg(feature = "proxy-models")]
+use orm_engine::exec::plan_copy;
+#[cfg(feature = "proxy-models")]
+use sea_query::Value;
 
 const SOURCE: &str = r#"
 enum Kind {
@@ -191,4 +197,40 @@ fn proxy_storage_predicates_skip_virtual_cte_models() {
         "filters":[{"t":"in_select","item":{"t":"col","path":[],"name":"id"},"select":{"model":"ids","columns":[{"t":"expr","expr":{"t":"cte_col","cte":"ids","name":"id"},"name":"id"}]}}]
     })).unwrap();
     Planner::plan(&s, Target::new(Dialect::Postgres), &q, &NoParams).unwrap();
+}
+
+#[cfg(feature = "proxy-models")]
+#[test]
+fn ordinary_proxies_share_a_partitioned_base_without_owning_a_table() {
+    let s = schema(&format!("{SOURCE}\nmodel RewardView {{\n @@proxy.of(Reward)\n}}\n"));
+    let snapshot = migrate::snapshot(&s).unwrap();
+    assert_eq!(snapshot.tables.len(), 3);
+    assert_eq!(snapshot.tables.iter().filter(|t| t.partition_of.is_some()).count(), 2);
+    assert!(migrate::plan(&s, &snapshot).unwrap().up.is_empty());
+}
+
+#[cfg(feature = "proxy-models")]
+#[test]
+fn copy_targets_owned_partition_and_fills_its_key() {
+    let source = r#"model Item {
+ id Int
+ kind String @map("_kind")
+ @@id([id, kind])
+ @@partition(list: [kind])
+}
+model Selected {
+ @@proxy.of(Item)
+ @@partition.values(["a"])
+ @@map("copy_selected")
+}
+partition copy_other { of = Item default = true }
+"#;
+    let schema = schema(source);
+    let target = Target::new(Dialect::Postgres);
+    let copy = plan_copy(&schema, target, "Selected", &["id".into()], vec![vec![Some(1.into())]]).unwrap();
+    assert_eq!(copy.table, "copy_selected");
+    assert_eq!(copy.columns, ["id", "_kind"]);
+    assert_eq!(copy.rows[0][1], Value::String(Some("a".into())));
+    let outside = plan_copy(&schema, target, "Selected", &["id".into(), "kind".into()], vec![vec![Some(2.into()), Some("other".into())]]).unwrap();
+    assert_eq!(outside.table, "copy_selected"); // PostgreSQL enforces the bound on COPY too.
 }

@@ -78,7 +78,7 @@ fn field_form(ir: &mut SchemaIr, d: &Declaration, targets: &[String]) -> Result<
     };
     // Proxy and composition passes ran first; a model they made with this field holds the placeholder.
     let keeps = |model: &str| ir.models.iter().any(|m| m.name == model && m.fields.iter().any(|f| f.name == name));
-    let copy = ir.behavior.proxy_models.iter().filter(|p| p.storage_owner == d.model).map(|p| &p.model)
+    let copy = ir.behavior.model_views.iter().filter(|v| v.root == d.model).map(|v| &v.model)
         .chain(ir.behavior.owner_links.iter().filter(|l| l.parent == d.model).map(|l| &l.child))
         .find(|m| keeps(m));
     if let Some(copy) = copy {
@@ -432,7 +432,7 @@ mod tests {
             link(&mut ir, copy);
             prepare(&mut ir)
         };
-        let proxy: fn(&mut SchemaIr, &str) = |ir, m| ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: m.into(), parent: "Tag".into(), storage_owner: "Tag".into(), ..Default::default() });
+        let proxy: fn(&mut SchemaIr, &str) = |ir, m| ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: m.into(), source: "Tag".into(), root: "Tag".into(), row_filter: None, insert_table: None });
         let child: fn(&mut SchemaIr, &str) = |ir, m| ir.behavior.owner_links.push(orm_contracts::extension::OwnerLink { child: m.into(), parent: "Tag".into(), child_key: "id".into(), parent_key: "id".into() });
         for (copy, link) in [("NotedTag", proxy), ("Child", child)] {
             let error = with(copy, true, link).unwrap_err();

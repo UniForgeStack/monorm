@@ -68,33 +68,39 @@ pub fn content_type(manifest: &IdentityManifest) -> Result<EnumIr, String> {
     Ok(EnumIr { name: "ContentType".into(), db_name: "contenttype".into(), storage: EnumStorage::Int, values, comment: None })
 }
 
-pub fn validate(ir: &SchemaIr) -> Result<(), String> {
+pub fn validate(ir: &SchemaIr, manifests: &[crate::behavior::Manifest]) -> Result<(), String> {
     let Some(manifest) = &ir.identities else { return Ok(()); };
     manifest.validate()?;
-    let proxies: BTreeSet<_> = ir.behavior.proxy_models.iter().map(|p| p.model.as_str()).chain(ir.behavior.declarations.iter().filter(|d| d.attribute == "proxy.of").map(|d| d.model.as_str())).collect();
+    let proxies = view_models(ir, manifests);
     let actual: BTreeSet<_> = ir.models.iter().filter(|m| !proxies.contains(m.name.as_str())).map(|m| m.name.as_str()).collect();
     let expected: BTreeSet<_> = manifest.active().map(|e| e.model.as_str()).collect();
     if actual != expected { return Err("stale identity manifest: active models differ from the application schema; run orm identities".into()); }
-    for proxy in &ir.behavior.proxy_models {
-        let view = ir.models.iter().find(|m| m.name == proxy.model).ok_or_else(|| format!("unknown proxy identity {}", proxy.model))?;
-        let owner = ir.models.iter().find(|m| m.name == proxy.storage_owner && expected.contains(m.name.as_str()))
-            .ok_or_else(|| format!("proxy {} needs a resolved concrete storage identity", proxy.model))?;
-        if view.table != owner.table { return Err(format!("proxy {} does not share storage identity {}", proxy.model, proxy.storage_owner)); }
+    for v in &ir.behavior.model_views {
+        let view = ir.models.iter().find(|m| m.name == v.model).ok_or_else(|| format!("unknown view identity {}", v.model))?;
+        let root = ir.models.iter().find(|m| m.name == v.root && expected.contains(m.name.as_str()))
+            .ok_or_else(|| format!("view {} needs a resolved concrete storage identity", v.model))?;
+        if view.table != root.table { return Err(format!("view {} does not share storage identity {}", v.model, v.root)); }
     }
     let wanted = content_type(manifest)?;
     let enums: Vec<_> = ir.enums.iter().filter(|e| e.name == "ContentType").collect();
     if enums != vec![&wanted] { return Err("ContentType does not match frozen model identities; regenerate the compiled schema".into()); }
-    validate_names(ir)?;
+    validate_names(ir, &proxies)?;
     Ok(())
 }
 
-fn validate_names(ir: &SchemaIr) -> Result<(), String> {
+/// The models that read the table of another model: the written views and the declarations of a `view_source` attribute.
+fn view_models<'a>(ir: &'a SchemaIr, manifests: &[crate::behavior::Manifest]) -> BTreeSet<&'a str> {
+    let sources: BTreeSet<_> = manifests.iter().flat_map(|m| &m.attributes).filter(|a| a.view_source).map(|a| a.name.as_str()).collect();
+    ir.behavior.model_views.iter().map(|v| v.model.as_str())
+        .chain(ir.behavior.declarations.iter().filter(|d| sources.contains(d.attribute.as_str())).map(|d| d.model.as_str())).collect()
+}
+
+fn validate_names(ir: &SchemaIr, proxies: &BTreeSet<&str>) -> Result<(), String> {
     let mut tables = HashMap::new();
     let mut symbols = HashMap::new();
     for reserved in ["ContentType", "Model", "QuerySet", "Registry", "define", "Decimal", "UUID", "datetime", "date", "IntEnum", "Enum", "Instance", "ModelClass", "Column", "RelationPath", "RelatedSet", "ManyRelatedSet", "Hop", "Compat", "Expression", "SchemaIR", "JsonValue", "In", "Many", "Date", "Object", "Promise", "Readonly"] {
         symbols.insert(reserved.to_string(), "generated/runtime symbol".to_string());
     }
-    let proxies: BTreeSet<_> = ir.behavior.proxy_models.iter().map(|p| p.model.as_str()).chain(ir.behavior.declarations.iter().filter(|d| d.attribute == "proxy.of").map(|d| d.model.as_str())).collect();
     for model in &ir.models {
         if ["class", "def", "import", "from", "return", "for", "while", "if", "else", "try", "except", "finally", "with", "as", "pass", "lambda", "async", "await", "None", "True", "False", "global", "nonlocal", "yield", "raise", "assert", "del", "elif", "break", "continue", "and", "or", "not", "in", "is", "enum", "interface", "export", "default", "new", "const", "let", "function", "extends", "implements", "null"].contains(&model.name.as_str()) {
             return Err(format!("model {} is a reserved language name", model.name));
@@ -305,12 +311,12 @@ mod integration_tests {
         let mut ir = ir("sqlite");
         let mut view = serde_json::to_value(&ir.models[0]).unwrap(); view["name"] = "PublicPost".into();
         ir.models.push(serde_json::from_value(view).unwrap());
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel {
-            model: "PublicPost".into(), parent: "Post".into(), storage_owner: "Post".into(), fields: vec![], ..Default::default()
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView {
+            model: "PublicPost".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None,
         });
-        validate(&ir).unwrap();
-        ir.behavior.proxy_models.clear();
-        assert!(validate(&ir).unwrap_err().contains("stale"));
+        validate(&ir, &[]).unwrap();
+        ir.behavior.model_views.clear();
+        assert!(validate(&ir, &[]).unwrap_err().contains("stale"));
     }
     #[test]
     fn dialect_integer_ddl_and_snapshot_identity_reassignment() {

@@ -336,8 +336,8 @@ pub struct Lowering<'l> {
     /// Model declarations selected for compiler contributions may derive identity.
     /// Final identity validation runs after the selected passes.
     pub deferred_identity: &'l HashSet<String>,
-    /// Proxy models (`@@proxy.of`): only their redeclared fields take an enum subset.
-    pub proxies: &'l HashSet<String>,
+    /// View models (a `view_source` attribute): only their redeclared fields take an enum subset.
+    pub views: &'l HashSet<String>,
     /// The DSL type names that a manifest attribute owns, with the attribute that owns each (see `owned_types`).
     pub owned_types: &'l BTreeMap<String, String>,
 }
@@ -348,7 +348,7 @@ struct Ctx<'l> {
     nested: HashMap<String, crate::ir::TypeIr>,
     /// Position and `@map` of each type member, by type and subfield name; `TypeFieldIr` holds neither.
     members: HashMap<(String, String), nested::TypeMember>,
-    proxies: &'l HashSet<String>,
+    views: &'l HashSet<String>,
     owned_types: &'l BTreeMap<String, String>,
     pending: Pendings,
 }
@@ -356,7 +356,7 @@ struct Ctx<'l> {
 impl Lowering<'_> {
     pub fn lower(&self, items: Vec<Item>) -> Result<(SchemaIr, Vec<Diagnostic>)> {
         let mut ir = SchemaIr::default();
-        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), proxies: self.proxies, owned_types: self.owned_types, pending: Pendings::default() };
+        let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), views: self.views, owned_types: self.owned_types, pending: Pendings::default() };
         for def in ExtensionDef::builtin() {
             for (name, t) in &def.types {
                 ctx.types.insert(name.clone(), (def.name.clone(), t.clone()));
@@ -775,10 +775,10 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
         if !args.named.is_empty() {
             return err(args.pos, format!("{what}: {name} takes no named arguments"));
         }
-        // `Status(ACTIVE, OLD)`: the members a proxy view expects.
+        // `Status(ACTIVE, OLD)`: the members a view model expects.
         if !args.positional.is_empty() {
-            if !ctx.proxies.contains(&m.name) {
-                return err(args.pos, format!("{what}: an enum subset {name}(...) is only allowed on a field of a proxy model"));
+            if !ctx.views.contains(&m.name) {
+                return err(args.pos, format!("{what}: an enum subset {name}(...) is only allowed on a field of a view model"));
             }
             let mut members: Vec<String> = vec![];
             for (p, v) in &args.positional {
@@ -1884,6 +1884,11 @@ pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &
 /// The DSL type names that manifest attributes own, each with the attribute that owns it.
 pub(super) fn owned_types(manifests: &[crate::behavior::Manifest]) -> BTreeMap<String, String> {
     manifests.iter().flat_map(|m| &m.attributes).filter_map(|a| Some((a.field_type.clone()?, a.name.clone()))).collect()
+}
+
+/// The models that declare a `view_source` attribute.
+pub(super) fn view_models(manifests: &[crate::behavior::Manifest], declarations: &[crate::behavior::Declaration]) -> HashSet<String> {
+    declarations.iter().filter(|d| declared(manifests, &d.attribute, d.field.is_some()).is_some_and(|a| a.view_source)).map(|d| d.model.clone()).collect()
 }
 
 /// The field entry of attribute `name` in the manifests.

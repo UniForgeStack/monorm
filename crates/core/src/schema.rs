@@ -36,6 +36,8 @@ pub struct Model {
     pub delete_rewrite: Option<crate::writes::PreparedDeleteRewrite>,
     /// Field positions an instance write must match against the loaded value.
     pub guards: Vec<usize>,
+    /// The row filter and insert table when this model is a view over a shared table.
+    pub view: Option<crate::view::PreparedView>,
     /// The change-set hooks of this model; `None` when it has no binding.
     pub hooks: Option<Box<crate::hooks::HookPlan>>,
     #[cfg(feature = "composition")]
@@ -83,7 +85,7 @@ impl Model {
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
-            assignments: vec![], delete_rewrite: None, guards: vec![], hooks: None,
+            assignments: vec![], delete_rewrite: None, guards: vec![], view: None, hooks: None,
             #[cfg(feature = "composition")] native: crate::behavior::NativeModel::None,
             #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
             #[cfg(feature = "composition")] resolved_fields: vec![] })
@@ -152,8 +154,8 @@ impl Model {
 
 pub struct Schema {
     pub(crate) native_expression_slots: Vec<(String, String)>,
-    #[cfg(feature = "proxy-models")]
-    pub proxy_models: Vec<crate::proxy::PreparedProxy>,
+    /// The prepared result checks by model index; empty when no model has one.
+    pub result_checks: Vec<Option<crate::result_check::PreparedChecks>>,
     pub dialect: crate::dialect::Dialect,
     pub models: Vec<Model>,
     pub enums: Vec<EnumIr>,
@@ -167,10 +169,36 @@ pub struct Schema {
     model_index: HashMap<String, usize>,
     #[cfg(feature = "composition")]
     pub native_models: Vec<crate::behavior::NativeModel>,
-    #[cfg(feature = "composition")]
     storage: Option<Box<Schema>>,
     #[cfg(feature = "composition")]
     pub owner_links: Vec<crate::behavior::PreparedOwnerLink>,
+}
+
+/// The view and check records must name known models, and a view shares the table of its root.
+fn validate_views(behavior: &crate::behavior::Requirements, models: &[Model], model_index: &HashMap<String, usize>, physical: Option<&Schema>) -> Result<()> {
+    if !behavior.proxy_models.is_empty() && behavior.model_views.is_empty() {
+        return Err("the models carry proxy records from an older release and no model views; run `orm generate`".into());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for view in &behavior.model_views {
+        let known = |name: &str| model_index.get(name).map(|&i| &models[i]);
+        let (Some(model), Some(_), Some(root)) = (known(&view.model), known(&view.source), known(&view.root)) else {
+            return Err(format!("{}: unresolved model view; rebuild schema", view.model));
+        };
+        if !seen.insert(&view.model) { return Err(format!("{}: duplicate model view; rebuild schema", view.model)); }
+        let ancestors = behavior.ancestors(&view.model).ok_or_else(|| format!("{}: cyclic model view; rebuild schema", view.model))?;
+        if ancestors.last().copied() != Some(view.root.as_str()) { return Err(format!("{}: stale view root; rebuild schema", view.model)); }
+        if model.table() != root.table() { return Err(format!("{}: a view must share the table of its root {}", view.model, view.root)); }
+        if let Some(physical) = physical {
+            if !physical.models.iter().any(|m| m.ir.name == view.root && m.table() == model.table()) {
+                return Err(format!("{}: a view must share its root storage owner {}", view.model, view.root));
+            }
+        }
+    }
+    if let Some(check) = behavior.result_checks.iter().find(|c| !model_index.contains_key(&c.model)) {
+        return Err(format!("{}: result check names an unknown model; rebuild schema", check.model));
+    }
+    Ok(())
 }
 
 impl Schema {
@@ -187,7 +215,7 @@ impl Schema {
     }
 
     fn from_ir_impl(mut ir: SchemaIr, behavioral: bool, packages: Option<&std::collections::BTreeMap<String, std::path::PathBuf>>) -> Result<Self> {
-        crate::identity::validate(&ir)?;
+        crate::identity::validate(&ir, crate::behavior::manifests())?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
         #[cfg(not(feature = "model-composition"))]
@@ -196,7 +224,6 @@ impl Schema {
         }
         #[cfg(feature = "composition")]
         let native_models = if behavioral { crate::behavior::bind(&mut ir)? } else { vec![crate::behavior::NativeModel::None; ir.models.len()] };
-        #[cfg(feature = "composition")]
         let storage = match ir.behavior.storage.take() {
             Some(storage) => {
                 let physical = serde_json::from_value(serde_json::json!({
@@ -270,7 +297,7 @@ impl Schema {
                 relation_index.insert(r.name.clone(), (i, target));
             }
             if let Some(f) = m.fields.iter().find(|f| f.enum_subset.is_some()) {
-                return Err(format!("{}.{}: an enum subset is only allowed on a field of a proxy model", m.name, f.name));
+                return Err(format!("{}.{}: an enum subset is only allowed on a field of a view model", m.name, f.name));
             }
             let client_defaults = crate::client_default::prepare(&m.name, &m.fields, &enums)?;
             #[cfg(feature = "composition")]
@@ -280,7 +307,7 @@ impl Schema {
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
-                assignments: vec![], delete_rewrite: None, guards: vec![],
+                assignments: vec![], delete_rewrite: None, guards: vec![], view: None,
                 #[cfg(feature = "composition")] hooks: kind.static_hooks(),
                 #[cfg(not(feature = "composition"))] hooks: None,
                 #[cfg(feature = "composition")] native: kind,
@@ -312,28 +339,20 @@ impl Schema {
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
         #[cfg(feature = "composition")]
         crate::writes::reject_composed(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
-        #[cfg(feature = "proxy-models")]
-        let proxy_models = {
-            let mut seen = std::collections::BTreeSet::new();
-            for proxy in &ir.behavior.proxy_models {
-                if !seen.insert(&proxy.model) || !model_index.contains_key(&proxy.model) || !model_index.contains_key(&proxy.parent) {
-                    return Err(format!("{}: duplicate or unresolved proxy metadata; rebuild schema", proxy.model));
-                }
-                let ancestors = ir.behavior.ancestors(&proxy.model).ok_or("cyclic proxy metadata; rebuild schema")?;
-                let parent = ancestors.last().copied().unwrap_or(&proxy.parent);
-                let model = &models[model_index[&proxy.model]];
-                if proxy.storage_owner != parent { return Err(format!("{}: stale proxy storage owner; rebuild schema", proxy.model)); }
-                let physical = storage.as_ref().ok_or("proxy models require explicit physical storage")?;
-                if model.table() != models[model_index[parent]].table() || !physical.models.iter().any(|m| m.ir.name == parent && m.table() == model.table()) {
-                    return Err(format!("{}: proxy must share its root storage owner", proxy.model));
-                }
-            }
-            models.iter().map(|m| crate::proxy::prepare(&m.ir.name, m.fields(), &enums,
-                ir.behavior.proxy_models.iter().find(|p| p.model == m.ir.name))).collect::<Result<Vec<_>>>()?
-        };
+        let physical = storage.as_deref();
+        validate_views(&ir.behavior, &models, &model_index, physical)?;
+        let mut result_checks = Vec::with_capacity(models.len());
+        for m in models.iter_mut() {
+            let checks: Vec<_> = ir.behavior.result_checks.iter().filter(|c| c.model == m.ir.name).collect();
+            let view = crate::view::prepare(&m.ir.name, m.fields(), &enums, ir.behavior.model_views.iter().find(|v| v.model == m.ir.name))?;
+            let prepared = crate::result_check::prepare(&m.ir.name, m.fields(), &enums, &checks)?;
+            m.view = view;
+            result_checks.push(prepared);
+        }
+        if result_checks.iter().all(Option::is_none) { result_checks.clear(); }
         Ok(Schema {
             native_expression_slots: ir.native_expression_slots,
-            #[cfg(feature = "proxy-models")] proxy_models,
+            result_checks,
             dialect: ir.dialect,
             models,
             enums,
@@ -345,14 +364,13 @@ impl Schema {
             catalog: ir.catalog,
             model_index,
             #[cfg(feature = "composition")] native_models,
-            #[cfg(feature = "composition")] storage,
+            storage,
             #[cfg(feature = "composition")] owner_links,
         })
     }
 
     /// Schema used by physical migrations; logical views retain their storage.
     pub fn physical(&self) -> &Schema {
-        #[cfg(feature = "composition")]
         if let Some(storage) = &self.storage { return storage; }
         self
     }

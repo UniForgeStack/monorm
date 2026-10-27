@@ -328,3 +328,43 @@ async def test_an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_t
         assert (row.price_amount, row.price_currency) == (250, "EUR")
     finally:
         await db.close()
+
+
+async def test_an_outside_view_reads_and_writes_through_the_row_filter_and_warns_with_its_own_code(
+    site: Path, outside_library: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    manifest = install(site, "acme-outside", "acme_outside", ident="acme.outside")
+    manifest.write_text((OUTSIDE / "orm-extension.toml").read_text())
+    shutil.copy(outside_library, manifest.parent / outside_library.name)
+    source = (
+        'datasource db { provider = "sqlite" }\n'
+        "model Ticket {\n id Int @id\n status String\n note String?\n}\n"
+        'model OpenTicket {\n id Int @id\n status String\n note String\n @@outside.view(Ticket, "open")\n}\n'
+    )
+    registry = orm.Registry()
+    models = orm.loads(source, registry=registry)
+    Ticket, OpenTicket = models["Ticket"], models["OpenTicket"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        await Ticket.objects.using(db).insert_many(
+            [
+                {"id": 1, "status": "open", "note": None},
+                {"id": 2, "status": "closed", "note": "kept"},
+                {"id": 3, "status": "open", "note": "seen"},
+            ]
+        )
+        capfd.readouterr()
+        rows = await OpenTicket.objects.using(db).order_by(OpenTicket.id)
+        assert [r.id for r in rows] == [1, 3]
+        warnings = [json.loads(line) for line in capfd.readouterr().err.splitlines() if line.startswith('{"code":"acme.outside.shape"')]
+        assert [(w["model"], w["field"], w["occurrence_count"]) for w in warnings] == [("OpenTicket", "note", 1)]
+        assert await OpenTicket.objects.using(db).filter(OpenTicket.id == 2).count() == 0
+        await OpenTicket.objects.using(db).insert(id=4, status="open", note="new")
+        assert (await Ticket.objects.using(db).filter(Ticket.id == 4).count()) == 1
+        await OpenTicket.objects.using(db).filter(OpenTicket.id == 2).update(note="changed")
+        await OpenTicket.objects.using(db).filter(OpenTicket.id == 2).delete()
+        [closed] = await Ticket.objects.using(db).filter(Ticket.id == 2)
+        assert closed.note == "kept"
+    finally:
+        await db.close()

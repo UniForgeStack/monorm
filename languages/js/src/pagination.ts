@@ -31,7 +31,7 @@ export type PageOptions =
 /** @internal */
 export type Key = readonly [FieldMeta, Ordering<string, unknown>];
 
-/** @internal Whether the column can hold NULL; a proxy can declare a nullable column non-null. */
+/** @internal Whether the column can hold NULL; a model view can declare a nullable column non-null. */
 export function storedNullable(meta: ModelMeta, f: FieldMeta): boolean {
   return f.nullable || meta.narrowed.has(f.ir);
 }

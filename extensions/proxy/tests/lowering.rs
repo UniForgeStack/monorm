@@ -1,4 +1,4 @@
-use orm_contracts::{extension::{ProxyField, ProxyModel, ProxySelection}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
+use orm_contracts::{extension::{ProxyField, ProxyModel, ProxySelection, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
 use orm_proxy::lower_specs;
 use serde_json::json;
 
@@ -73,6 +73,15 @@ fn chains_preserve_physical_constraints_enum_representation_and_relation_identit
         ProxyField { field: "status".into(), non_null: false, subset: Some(names(&["ACTIVE"])) },
         ProxyField { field: "name".into(), non_null: true, subset: None },
     ]);
+    assert_eq!(ir.behavior.result_checks, [
+        ResultCheck { model: "Active".into(), field: "status".into(), non_null: false, allowed: Some(names(&["ACTIVE"])), code: "orm.proxy.shape".into() },
+        ResultCheck { model: "Named".into(), field: "status".into(), non_null: false, allowed: Some(names(&["ACTIVE"])), code: "orm.proxy.shape".into() },
+        ResultCheck { model: "Named".into(), field: "name".into(), non_null: true, allowed: None, code: "orm.proxy.shape".into() },
+    ]);
+    assert_eq!(ir.behavior.model_views.len(), 2);
+    assert_eq!((ir.behavior.model_views[0].model.as_str(), ir.behavior.model_views[0].source.as_str(), ir.behavior.model_views[0].root.as_str()), ("Active", "User", "User"));
+    assert_eq!((ir.behavior.model_views[1].model.as_str(), ir.behavior.model_views[1].source.as_str(), ir.behavior.model_views[1].root.as_str()), ("Named", "Active", "User"));
+    assert!(ir.behavior.model_views.iter().all(|v| v.row_filter.is_none() && v.insert_table.is_none()));
     assert_eq!(ir.models[3].relations[0].target, "Named");
     let storage = ir.behavior.storage.as_ref().unwrap();
     assert_eq!(storage.models.len(), 3);
@@ -378,6 +387,14 @@ fn partition_ownership_rejects_proxy_sources_but_plain_children_keep_the_bound()
     lower_specs(&mut ir, &[partition_spec(json!(["positive"])), spec("Child", "Positive")]).unwrap();
     assert_eq!(ir.partitions.len(), 1);
     assert_eq!(ir.behavior.proxy_models[0].partition, ir.behavior.proxy_models[1].partition);
+    let views = &ir.behavior.model_views;
+    assert_eq!(views.len(), 2);
+    for view in views {
+        assert_eq!(view.root, "Reward");
+        assert_eq!(view.row_filter, Some(RowFilter { field: "kind".into(), values: vec!["positive".into()] }));
+        assert_eq!(view.insert_table.as_deref(), Some("positive"));
+    }
+    assert_eq!((views[0].source.as_str(), views[1].source.as_str()), ("Reward", "Positive"));
 }
 
 #[test]

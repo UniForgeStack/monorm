@@ -9,8 +9,8 @@ pub fn validate(ir: &SchemaIr) -> Result<(), String> {
     let mut tables = HashSet::new();
     for m in &models {
         if !names.insert(&m.name) { return Err(format!("{}: duplicate partition/model name", m.name)); }
-        // Ordinary proxies share their root's storage and do not declare a physical parent.
-        if ir.behavior.proxy_models.iter().any(|p| p.model == m.name) { continue; }
+        // Views share their root's storage and do not declare a physical parent.
+        if ir.behavior.model_views.iter().any(|v| v.model == m.name) { continue; }
         if !tables.insert(&m.table) { return Err(format!("{}: duplicate partition/model table {}", m.name, m.table)); }
         let Some(key) = &m.partition else { continue };
         if !ir.dialect.is_postgres() { return Err(format!("{}: @@partition requires PostgreSQL", m.name)); }
@@ -73,7 +73,7 @@ pub fn validate(ir: &SchemaIr) -> Result<(), String> {
     }
     for p in &ir.partitions {
         let parent = models.iter().find(|m| m.name == p.of).ok_or_else(|| format!("{}: unknown parent {}", p.objects.name, p.of))?;
-        if ir.behavior.proxy_models.iter().any(|proxy| proxy.model == p.of) { return Err(format!("{}: partition blocks require a physical parent, not proxy {}", p.objects.name, p.of)); }
+        if ir.behavior.model_views.iter().any(|view| view.model == p.of) { return Err(format!("{}: partition blocks require a physical parent, not view {}", p.objects.name, p.of)); }
         if parent.partition.is_none() { return Err(format!("{}: {} has no @@partition", p.objects.name, p.of)); }
     }
     Ok(())
@@ -100,7 +100,7 @@ pub fn split_sql(s: &str) -> Vec<&str> {
 pub fn warnings(ir: &SchemaIr) -> Vec<String> {
     let mut out = vec![];
     for m in ir.models.iter().chain(ir.partitions.iter().map(|p| &p.objects)) {
-        if ir.behavior.proxy_models.iter().any(|p| p.model == m.name) { continue; }
+        if ir.behavior.model_views.iter().any(|v| v.model == m.name) { continue; }
         let Some(key) = &m.partition else { continue };
         if key.strategy != "list" || key.keys.len() != 1 { continue; }
         let parts: Vec<_> = ir.partitions.iter().filter(|p| p.of == m.name).collect();
@@ -297,16 +297,6 @@ default = true
         assert!(dsl::compile(&src.replace("values = [A]", "values = [\"c\"]"), None).unwrap_err().contains("not a member"));
         let pulled = migrate::pull::pull(&migrate::snapshot(&schema(&src)).unwrap(), &[]);
         schema(&pulled.schema);
-    }
-    #[cfg(feature = "proxy-models")]
-    #[test]
-    fn ordinary_proxies_share_a_partitioned_base_without_owning_a_table() {
-        let source = format!("{LIST}\nmodel RewardView {{\n @@proxy.of(Reward)\n}}\n");
-        let s = schema(&source);
-        let snapshot = migrate::snapshot(&s).unwrap();
-        assert_eq!(snapshot.tables.len(), 3);
-        assert_eq!(snapshot.tables.iter().filter(|t| t.partition_of.is_some()).count(), 2);
-        assert!(migrate::plan(&s, &snapshot).unwrap().up.is_empty());
     }
     #[test]
     fn range_hash_and_subpartition_syntax() {

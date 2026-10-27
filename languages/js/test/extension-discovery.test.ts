@@ -293,3 +293,38 @@ test("ESM-only and dual packages share runtime identity across generated models,
     assert.doesNotMatch(execute.stderr, /OrmStaleModelsWarning/);
   }
 });
+
+test("an outside view reads and writes through the row filter and warns with its own code", { timeout: 300_000 }, (t) => {
+  const root = directory(t);
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+  write(manifest, readFileSync(join(OUTSIDE, "orm-extension.toml"), "utf8"));
+  const library = outsideLibrary(t);
+  copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
+  project(root, { "acme-outside": "1.0.0" });
+  const source = 'datasource db { provider = "sqlite" }\nmodel Ticket {\n id Int @id\n status String\n note String?\n}\n'
+    + 'model OpenTicket {\n id Int @id\n status String\n note String\n @@outside.view(Ticket, "open")\n}\n';
+  const runtime = new URL(`../src/index.${CLI.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href;
+  // The warning goes to the stderr of the native layer, so the program runs in a process of its own.
+  const done = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from 'node:assert/strict';
+    import { connect, loads, Registry } from ${JSON.stringify(runtime)};
+    const registry = new Registry();
+    const { Ticket, OpenTicket } = loads(${JSON.stringify(source)}, { registry });
+    const db = await connect('sqlite://:memory:', { default: false, registry });
+    await db.createTables();
+    await Ticket.objects.using(db).insertMany([{ id: 1, status: 'open', note: null }, { id: 2, status: 'closed', note: 'kept' }, { id: 3, status: 'open', note: 'seen' }]);
+    const rows = await OpenTicket.objects.using(db).all();
+    assert.deepEqual(rows.map((r) => r.id).sort(), [1, 3]);
+    assert.equal(await OpenTicket.objects.using(db).filter(OpenTicket.id.eq(2)).count(), 0);
+    await OpenTicket.objects.using(db).insert({ id: 4, status: 'open', note: 'new' });
+    assert.equal(await Ticket.objects.using(db).filter(Ticket.id.eq(4)).count(), 1);
+    assert.equal(await OpenTicket.objects.using(db).filter(OpenTicket.id.eq(2)).update({ note: 'changed' }), 0);
+    assert.equal(await OpenTicket.objects.using(db).filter(OpenTicket.id.eq(2)).delete(), 0);
+    const closed = await Ticket.objects.using(db).filter(Ticket.id.eq(2)).get();
+    assert.equal(closed.note, 'kept');
+    await db.close();
+  `], { cwd: root, encoding: "utf8", env: process.env });
+  assert.equal(done.status, 0, done.stderr);
+  const warnings = done.stderr.split("\n").filter((line) => line.startsWith('{"code":"acme.outside.shape"')).map((line) => JSON.parse(line) as { model: string; field: string; occurrence_count: number });
+  assert.deepEqual(warnings.map((w) => [w.model, w.field, w.occurrence_count]), [["OpenTicket", "note", 1]]);
+});

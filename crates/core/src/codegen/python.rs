@@ -206,8 +206,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     let adapters = super::Adapters::resolve(options, ir, "python")?;
     let field_type = |m: &Model, f: &FieldIr| adapters.value(m, f, "None").unwrap_or_else(|| value_type(f));
     let input_type = |m: &Model, f: &FieldIr| adapters.input(m, f, "None").unwrap_or_else(|| value_type(f));
-    // A proxy takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
-    // which the stub cannot combine with the proxy's `QuerySet[Proxy]`, so the stub types its methods as `Any`.
+    // A model view takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
+    // which the stub cannot combine with the view's `QuerySet[View]`, so the stub types its methods as `Any`.
     let inherits = |model: &str| query_sets.get(model).is_some_and(|q| q.2);
     // A class that an abstract model declares takes the model as its type parameter (`class UserQueries[M: AbstractUserFields]`).
     let generic = |model: &str| super::declares_generic(ir, &query_sets, model);

@@ -115,7 +115,7 @@ impl ExtensionCode {
 
     /// Whether the model gets the members of this extension: it, or one of its fields,
     /// declares an attribute of the extension, or a record the extension prepared names it.
-    /// A proxy declares nothing, but the extension prepares the records of its root for it.
+    /// A view model declares nothing, but the extension prepares the records of its root for it.
     /// An extension that adds no query-set or instance member and names no bound query-set export never applies.
     /// The manifest always names a query-set and an instance export, so only a bound export counts by its name:
     /// its members can all be private, and the model still needs the class.
@@ -193,29 +193,29 @@ impl Options {
 
 impl Options {
     /// The query sets split at `sep` into (module, class, inherited), checked against the schema.
-    /// A proxy without a class of its own gets the class of its nearest ancestor that has one, and `inherited` is true.
+    /// A view model without a class of its own gets the class of its nearest ancestor that has one, and `inherited` is true.
     pub fn query_sets<'a>(&'a self, ir: &'a crate::ir::SchemaIr, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str, bool)>, String> {
         let mut out: std::collections::BTreeMap<&str, (&str, &str, bool)> =
             split_targets(lookup::ClassKind::QuerySet.flag(), &self.query_sets, schema, sep)?.into_iter().map(|(m, (module, class))| (m, (module, class, false))).collect();
-        for proxy in &ir.behavior.proxy_models {
-            if out.contains_key(proxy.model.as_str()) { continue; }
-            let ancestors = ir.behavior.ancestors(&proxy.model).unwrap_or_default();
+        for view in &ir.behavior.model_views {
+            if out.contains_key(view.model.as_str()) { continue; }
+            let ancestors = ir.behavior.ancestors(&view.model).unwrap_or_default();
             if let Some(&(module, class, _)) = ancestors.iter().find_map(|a| out.get(a)) {
-                out.insert(proxy.model.as_str(), (module, class, true));
+                out.insert(view.model.as_str(), (module, class, true));
             }
         }
         Ok(out)
     }
 
     /// The instance-methods classes split at `sep` into (module, class), checked against the schema.
-    /// A proxy without a class of its own gets the class of its nearest ancestor that has one.
+    /// A view model without a class of its own gets the class of its nearest ancestor that has one.
     pub fn model_methods<'a>(&'a self, ir: &'a crate::ir::SchemaIr, schema: &crate::schema::Schema, sep: char) -> Result<std::collections::BTreeMap<&'a str, (&'a str, &'a str)>, String> {
         let mut out = split_targets(lookup::ClassKind::ModelMethods.flag(), &self.model_methods, schema, sep)?;
-        for proxy in &ir.behavior.proxy_models {
-            if out.contains_key(proxy.model.as_str()) { continue; }
-            let ancestors = ir.behavior.ancestors(&proxy.model).unwrap_or_default();
+        for view in &ir.behavior.model_views {
+            if out.contains_key(view.model.as_str()) { continue; }
+            let ancestors = ir.behavior.ancestors(&view.model).unwrap_or_default();
             if let Some(&target) = ancestors.iter().find_map(|a| out.get(a)) {
-                out.insert(proxy.model.as_str(), target);
+                out.insert(view.model.as_str(), target);
             }
         }
         Ok(out)
@@ -518,10 +518,9 @@ mod reference_tests {
     /// `Post`, its proxy `Draft` and a proxy of that, `Final`, and an unrelated `Note`.
     fn proxied() -> (crate::ir::SchemaIr, crate::schema::Schema) {
         let mut ir = crate::dsl::compile("model Post {\n id Int @id\n}\nmodel Draft {\n id Int @id\n}\nmodel Final {\n id Int @id\n}\nmodel Note {\n id Int @id\n}", None).unwrap();
-        // The schema is built first: only an artifact with the proxy-models capability accepts a proxy there.
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         for (model, parent) in [("Draft", "Post"), ("Final", "Draft")] {
-            ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: model.into(), parent: parent.into(), storage_owner: "Post".into(), ..Default::default() });
+            ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: model.into(), source: parent.into(), root: "Post".into(), row_filter: None, insert_table: None });
         }
         (ir, schema)
     }

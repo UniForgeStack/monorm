@@ -7,7 +7,7 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(3, 4);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(3, 5);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -21,6 +21,8 @@ pub const FIELD_ADAPTER_OPTIONS_MINOR: u32 = 3;
 /// The minor that an IR carries when it holds a record of slice 2c: a hook of point 5, 6 or 7, an `Expr` or
 /// `ExprHook` write assignment, or an `Expr` or `Hook` client default. An older engine fails to parse them.
 pub const EXPRESSION_RECORDS_MINOR: u32 = 4;
+/// The minor that an IR carries when it has a model view or a result check (3.5 records).
+pub const SCHEMA_CONTRACT_VIEWS_MINOR: u32 = 5;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -56,6 +58,12 @@ pub struct Requirements {
     /// Same-table logical views, prepared by the selected proxy compiler.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proxy_models: Vec<ProxyModel>,
+    /// Models that read and write the table of another model, with an optional fixed row filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_views: Vec<ModelView>,
+    /// Checks on the rows that a read returns; a failed check is a warning, never an error.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub result_checks: Vec<ResultCheck>,
     #[serde(default)]
     pub read_defaults: Vec<ReadDefault>,
     #[serde(default)]
@@ -157,17 +165,23 @@ pub struct PackageStamp {
 }
 
 impl Requirements {
-    /// The proxy ancestors of `model`, nearest first, ending at the root.
-    /// `None` when the proxy parents form a cycle.
+    /// The view ancestors of `model`, nearest first, ending at the root.
+    /// `None` when the view sources form a cycle.
     pub fn ancestors<'a>(&'a self, model: &'a str) -> Option<Vec<&'a str>> {
         let mut out = vec![];
         let mut current = model;
-        while let Some(proxy) = self.proxy_models.iter().find(|p| p.model == current) {
-            if proxy.parent == model || out.contains(&proxy.parent.as_str()) { return None; }
-            out.push(proxy.parent.as_str());
-            current = proxy.parent.as_str();
+        while let Some(view) = self.model_views.iter().find(|v| v.model == current) {
+            if view.source == model || out.contains(&view.source.as_str()) { return None; }
+            out.push(view.source.as_str());
+            current = view.source.as_str();
         }
         Some(out)
+    }
+
+    /// The model that `model` derives its fields from: its view source, else its owner-link parent.
+    pub fn derived_parent<'a>(&'a self, model: &str) -> Option<&'a str> {
+        self.model_views.iter().find(|v| v.model == model).map(|v| v.source.as_str())
+            .or_else(|| self.owner_links.iter().find(|l| l.child == model).map(|l| l.parent.as_str()))
     }
 
     /// The extensions that prepared a read default, delete rewrite, write assignment or instance guard for `model`.
@@ -183,10 +197,11 @@ impl Requirements {
         if !self.hooks.is_empty() || !self.extension_data.is_empty() { self.schema_contract_minor = self.schema_contract_minor.max(SCHEMA_CONTRACT_MINOR); }
         let has_adapter_runtime = self.packages.values().any(|p| p.language_members.values().any(|s| !s.field_adapters.is_empty()));
         if has_adapter_runtime || self.field_adapters.iter().any(|a| !a.options.is_null()) { self.schema_contract_minor = self.schema_contract_minor.max(FIELD_ADAPTER_OPTIONS_MINOR); }
+        if !self.model_views.is_empty() || !self.result_checks.is_empty() { self.schema_contract_minor = self.schema_contract_minor.max(SCHEMA_CONTRACT_VIEWS_MINOR); }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
+        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
@@ -309,6 +324,46 @@ pub fn validate_field_adapters(ir: &SchemaIr) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A model that reads and writes the table of its `root`, with fields taken from its `source`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelView {
+    pub model: String,
+    /// The nearest parent: the model whose fields this one keeps.
+    pub source: String,
+    /// The model that owns the table.
+    pub root: String,
+    /// Reads, joins, updates and deletes through the view see only these rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_filter: Option<RowFilter>,
+    /// Inserts go to this table instead of the table of the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_table: Option<String>,
+}
+
+/// The rows of `field` that a view keeps. The core builds the SQL literal from `values` at `define()`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RowFilter {
+    pub field: String,
+    /// Enum member names when `field` is an enum field, else the values as text.
+    pub values: Vec<String>,
+}
+
+/// A warning check on the rows of one model. `code` names the check in the warning.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ResultCheck {
+    pub model: String,
+    pub field: String,
+    #[serde(default, skip_serializing_if = "crate::ir::is_false")]
+    pub non_null: bool,
+    /// Enum member names that the field may hold. None means no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<Vec<String>>,
+    pub code: String,
 }
 
 /// Intended shape only. Physical encoding, enum representation and constraints
@@ -589,6 +644,9 @@ pub struct Attribute {
     /// A schema that uses this attribute needs model identities.
     #[serde(default, skip_serializing_if = "crate::ir::is_false")]
     pub identities: bool,
+    /// A model attribute only: the model that declares it is a view of the model that its first positional argument names.
+    #[serde(default, skip_serializing_if = "crate::ir::is_false")]
+    pub view_source: bool,
 }
 fn member_default() -> bool { true }
 fn is_true(b: &bool) -> bool { *b }
@@ -1109,6 +1167,8 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.lowered_models.sort(); c.lowered_models.dedup();
     c.declarations.extend(n.declarations);
     c.proxy_models.extend(n.proxy_models);
+    c.model_views.extend(n.model_views);
+    c.result_checks.extend(n.result_checks);
     c.read_defaults.extend(n.read_defaults);
     c.specializations.extend(n.specializations);
     c.result_fields.extend(n.result_fields);
@@ -1633,5 +1693,62 @@ mod tests {
         capture_storage(&mut ir).unwrap();
         let owners: Vec<_> = ir.behavior.storage.unwrap().models.into_iter().map(|m| (m.name, m.table)).collect();
         assert_eq!(owners, [("User".to_string(), "user".to_string()), ("Other".into(), "other".into())]);
+    }
+
+    fn view(model: &str, source: &str, root: &str) -> ModelView {
+        ModelView { model: model.into(), source: source.into(), root: root.into(), row_filter: None, insert_table: None }
+    }
+
+    #[test]
+    fn ancestors_follow_the_view_sources_to_the_root_and_stop_at_a_cycle() {
+        let mut r = Requirements::default();
+        r.model_views = vec![view("C", "B", "A"), view("B", "A", "A")];
+        assert_eq!(r.ancestors("C"), Some(vec!["B", "A"]));
+        assert_eq!(r.ancestors("A"), Some(vec![]));
+        r.model_views = vec![view("A", "B", "B"), view("B", "A", "A")];
+        assert_eq!(r.ancestors("A"), None);
+    }
+
+    #[test]
+    fn the_derived_parent_is_the_view_source_else_the_owner_link_parent() {
+        let mut r = Requirements::default();
+        r.model_views = vec![view("V", "Src", "Root")];
+        r.owner_links = vec![OwnerLink { child: "Child".into(), parent: "Base".into(), child_key: "id".into(), parent_key: "id".into() }];
+        assert_eq!(r.derived_parent("V"), Some("Src"));
+        assert_eq!(r.derived_parent("Child"), Some("Base"));
+        assert_eq!(r.derived_parent("Base"), None);
+    }
+
+    #[test]
+    fn view_and_check_records_set_the_minor_merge_and_count_as_behavior() {
+        let mut ir = SchemaIr::default();
+        ir.behavior.schema_contract = SCHEMA_CONTRACT;
+        ir.behavior.stamp_minor();
+        assert_eq!(ir.behavior.schema_contract_minor, 0);
+        ir.behavior.model_views.push(ModelView { row_filter: Some(RowFilter { field: "kind".into(), values: vec!["a".into()] }), insert_table: Some("t_a".into()), ..view("V", "S", "S") });
+        assert!(!ir.behavior.is_empty());
+        ir.behavior.stamp_minor();
+        assert_eq!(ir.behavior.schema_contract_minor, SCHEMA_CONTRACT_VIEWS_MINOR);
+        let json = serde_json::to_string(&ir).unwrap();
+        assert!(json.contains("\"model_views\"") && json.contains("\"schema_contract_minor\":5") && !json.contains("result_checks"), "{json}");
+        let mut checks = SchemaIr::default();
+        checks.behavior.result_checks.push(ResultCheck { model: "V".into(), field: "n".into(), non_null: true, allowed: None, code: "acme.shape".into() });
+        assert!(!checks.behavior.is_empty());
+        checks.behavior.stamp_minor();
+        assert_eq!(checks.behavior.schema_contract_minor, SCHEMA_CONTRACT_VIEWS_MINOR);
+        let merged = merge_definition(ir, checks).unwrap();
+        assert_eq!((merged.behavior.model_views.len(), merged.behavior.result_checks.len()), (1, 1));
+        let error = check_requirements(&SchemaIr { behavior: Requirements { schema_contract: SCHEMA_CONTRACT, schema_contract_minor: SCHEMA_CONTRACT_VERSION.minor as u32 + 1, ..Requirements::default() }, ..SchemaIr::default() }, &Artifact::default()).unwrap_err();
+        assert!(error.contains(&format!("schema contract {}.{} is newer than this engine ({SCHEMA_CONTRACT_VERSION})", SCHEMA_CONTRACT_VERSION.major, SCHEMA_CONTRACT_VERSION.minor + 1)), "{error}");
+    }
+
+    #[test]
+    fn a_view_source_attribute_is_a_manifest_key_that_defaults_to_false() {
+        let attribute: Attribute = serde_json::from_value(serde_json::json!({"name": "acme.view", "target": "model"})).unwrap();
+        assert!(!attribute.view_source);
+        assert!(!serde_json::to_string(&attribute).unwrap().contains("view_source"));
+        let attribute: Attribute = serde_json::from_value(serde_json::json!({"name": "acme.view", "target": "model", "view_source": true})).unwrap();
+        assert!(attribute.view_source);
+        assert!(serde_json::to_string(&attribute).unwrap().contains("\"view_source\":true"));
     }
 }

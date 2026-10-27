@@ -553,7 +553,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         }
         writeln!(body, "export const {name} = models[{}] as unknown as {name}Model;\n", quote(name)).unwrap();
         if let Some(class) = query_set(name) {
-            // an inherited class is a `QuerySet` of the root spec, which `useQuerySet` rejects for the proxy
+            // an inherited class is a `QuerySet` of the root spec, which `useQuerySet` rejects for the view
             let inherited = query_sets[name.as_str()].2;
             let class = if generic(name) { format!("{class}<{name}Spec>") } else { class };
             let class = if inherited { format!("(() => {class}) as never") } else { format!("() => {class}") };

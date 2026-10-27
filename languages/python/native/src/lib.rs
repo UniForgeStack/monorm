@@ -958,8 +958,7 @@ fn outcome_to_py(
 ) -> PyResult<Py<PyAny>> {
     #[cfg(feature = "composition")]
     let out = orm_engine::behavior::results(&classes.native, out).map_err(db_err)?;
-    #[cfg(feature = "proxy-models")]
-    orm_engine::proxy::emit(&orm_engine::proxy::diagnostics(&classes.proxies, &out).map_err(db_err)?);
+    orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
     let db = db.map(|d| d.into_bound(py));
     let b = Builder::new(py, classes, db.as_ref());
     match out {
@@ -1000,8 +999,7 @@ fn key_rows(
 fn prefetched_to_py(py: Python<'_>, out: Outcome, classes: &Classes, db: Option<Py<PyAny>>, parents: Vec<Py<PyAny>>) -> PyResult<Py<PyAny>> {
     #[cfg(feature = "composition")]
     let out = orm_engine::behavior::results(&classes.native, out).map_err(db_err)?;
-    #[cfg(feature = "proxy-models")]
-    orm_engine::proxy::emit(&orm_engine::proxy::diagnostics(&classes.proxies, &out).map_err(db_err)?);
+    orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
     let Outcome::Prefetched { parents: rows, prefetched } = out else {
         return Err(query_err("prefetch gave no prefetched rows".into()));
     };

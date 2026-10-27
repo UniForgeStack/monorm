@@ -1025,8 +1025,8 @@ export function define(
     const records = (key: string) => ((ir.behavior as Record<string, { model: string; field: string }[] | undefined> | undefined)?.[key] ?? []).filter((d) => d.model === m.name);
     meta.guards = [...new Set(records("instance_guards").map((d) => d.field))].flatMap((f) => meta.fieldByIr.get(f) ?? []);
     meta.upsertDrop = new Set((records("write_assignments") as unknown as { field: string; on: string[]; upsert?: string }[]).filter((d) => (d.upsert ?? "drop") === "drop" && d.on.includes("upsert")).map((d) => d.field));
-    const proxy = ((ir.behavior as { proxy_models?: { model: string; fields?: { field: string; non_null?: boolean }[] }[] } | undefined)?.proxy_models ?? []).find((p) => p.model === m.name);
-    meta.narrowed = new Set((proxy?.fields ?? []).filter((f) => f.non_null).map((f) => f.field));
+    const checks = (ir.behavior as { result_checks?: { model: string; field: string; non_null?: boolean }[] } | undefined)?.result_checks ?? [];
+    meta.narrowed = new Set(checks.filter((c) => c.model === m.name && c.non_null).map((c) => c.field));
     const computed = new Set(((ir.behavior as { result_fields?: { model: string; field: string }[] } | undefined)?.result_fields ?? []).filter((f) => f.model === m.name).map((f) => f.field));
     if (computed.size) {
       meta.inputFieldList = meta.publicList.filter((f) => !computed.has(f.ir));

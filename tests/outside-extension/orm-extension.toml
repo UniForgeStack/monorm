@@ -44,6 +44,26 @@ id = "acme.outside.fields"
 phase = "declaration"
 effects = ["fields.outside", "behavior.extension_data"]
 
+# `@@outside.view(Source, "open")` makes the model a view of `Source` that sees only the rows with `status = 'open'`.
+# The pass writes a model view with a row filter, and a result check with its own code for each field that the view declares non-null and `Source` stores as nullable.
+[[attributes]]
+name = "outside.view"
+target = "model"
+view_source = true
+
+[[attributes.positional]]
+kind = "value"
+required = true
+
+[[attributes.positional]]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.view"
+phase = "logical"
+effects = ["models.view", "behavior.model_views", "behavior.result_checks"]
+
 # `@@outside.guard` binds the hooks of the library to the fields `text`, `start`, `end`, `shop_id` and `updated_by` of the model.
 [[attributes]]
 name = "outside.guard"

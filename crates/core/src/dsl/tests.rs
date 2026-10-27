@@ -262,7 +262,7 @@ fn errors_point_at_the_problem() {
         ("model A {\n  id BigInt @id\n  e Unsupported(\"nope(1)\")\n}".into(), "unknown type nope"),
         ("model A {\n  id BigInt @id\n  e String @db.Nope\n}".into(), "unknown native type @db.Nope"),
         ("model A {\n  id BigInt @id @default(foo())\n}".into(), "not foo"),
-        ("enum E {\n  a\n  b\n}\nmodel A {\n  id BigInt @id\n  e E(a)\n}".into(), "A.e: an enum subset E(...) is only allowed on a field of a proxy model"),
+        ("enum E {\n  a\n  b\n}\nmodel A {\n  id BigInt @id\n  e E(a)\n}".into(), "A.e: an enum subset E(...) is only allowed on a field of a view model"),
         ("model A {\n  id String @id @default(cuid())\n}".into(), "A.id: cuid() is not supported; use @client_default(uuid())"),
         ("model A {\n  id String @id @default(uuid(5))\n}".into(), "uuid() takes no argument, 4 or 7"),
         ("model A {\n  id BigInt @id @client_default(autoincrement())\n}".into(), "A.id: only the database can make autoincrement(); use @default"),
@@ -334,10 +334,10 @@ fn the_model_placeholder_error_names_no_extension() {
 fn a_through_name_with_the_model_placeholder_lowers_on_a_deferred_model_only() {
     let source = "model A {\n  id Int @id\n  bs B[] @relation(through: \"{model}B\")\n}\nmodel B {\n  id Int @id\n}";
     let load = |_: &str| Err("no imports".to_owned());
-    let proxies = std::collections::HashSet::new();
+    let views = std::collections::HashSet::new();
     let lower_with = |deferred: &[&str], source: &str| {
         let deferred = deferred.iter().map(|m| m.to_string()).collect();
-        lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies, owned_types: &Default::default() }.lower(syntax::parse(source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
+        lower::Lowering { load: &load, deferred_identity: &deferred, views: &views, owned_types: &Default::default() }.lower(syntax::parse(source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
     };
     let ir = lower_with(&["A"], source).unwrap();
     let r = &ir.models[0].relations[0];
@@ -706,15 +706,20 @@ fn client_defaults_stay_out_of_the_database_schema() {
 }
 
 #[test]
-fn enum_subsets_lower_only_on_proxy_fields() {
-    let lowered = |field: &str| compile(&format!("enum E {{\n  a\n  b\n}}\nmodel M {{\n  id Int @id\n  e E\n}}\nmodel V {{\n  {field}\n  @@proxy.of(M)\n}}"), None);
+fn enum_subsets_lower_only_on_view_model_fields() {
+    let load = |_: &str| Err("no imports".to_owned());
+    let views = std::collections::HashSet::from(["V".to_owned()]);
+    let lowered = |field: &str| {
+        let source = format!("enum E {{\n  a\n  b\n}}\nmodel M {{\n  id Int @id\n  e E\n}}\nmodel V {{\n  {field}\n}}");
+        lower::Lowering { load: &load, deferred_identity: &Default::default(), views: &views, owned_types: &Default::default() }.lower(syntax::parse(&source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
+    };
     for (field, message) in [("e E(c)", "V.e: E has no value c"), ("e E(a, a)", "V.e: a is listed twice"), ("e E(\"a\")", "V.e: an enum subset lists member names")] {
         let error = lowered(field).unwrap_err();
         assert!(error.contains(message), "{error}");
     }
     let mut ir = ok("enum E {\n  a\n  b\n}\nmodel M {\n  id Int @id\n  e E\n}");
     ir.models[0].fields[1].enum_subset = Some(vec!["a".into()]);
-    assert!(check(ir).err().unwrap().contains("M.e: an enum subset is only allowed on a field of a proxy model"));
+    assert!(check(ir).err().unwrap().contains("M.e: an enum subset is only allowed on a field of a view model"));
 }
 
 #[test]
@@ -788,8 +793,8 @@ fn a_manifest_attribute_owns_a_field_type_or_drops_a_field() {
     let owned = super::lower::owned_types(std::slice::from_ref(&manifest));
     assert_eq!(owned.get("Generic").map(String::as_str), Some("generic.relation"));
     let load = |_: &str| Err("no imports".to_owned());
-    let (deferred, proxies) = Default::default();
-    let error = lower::Lowering { load: &load, deferred_identity: &deferred, proxies: &proxies, owned_types: &owned }.lower(items).unwrap_err().msg;
+    let (deferred, views) = Default::default();
+    let error = lower::Lowering { load: &load, deferred_identity: &deferred, views: &views, owned_types: &owned }.lower(items).unwrap_err().msg;
     assert!(error.contains("unknown type Generic; a Generic field needs @generic.relation(...) (namespace generic.*)"), "{error}");
     // Without an owner, the type is plain unknown.
     let error = compile("model Tag {\n id Int @id\n target Generic?\n}", None).unwrap_err();
