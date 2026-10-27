@@ -4,9 +4,8 @@ import asyncio
 
 import pytest
 import orm
-from artifact_caps import artifact_capabilities, has_extension
+from artifact_caps import has_extension
 
-CAPABILITIES = artifact_capabilities()
 
 SOURCE = """datasource db {
   provider = "sqlite"
@@ -171,7 +170,7 @@ async def test_a_proxy_writes_the_table_of_its_protected_root():
         )
 
 
-@pytest.mark.skipif("model-composition" not in CAPABILITIES, reason="requires a model-composition artifact")
+@pytest.mark.skipif(not has_extension("orm.composition"), reason="requires the orm.composition package")
 async def test_a_composed_write_also_writes_its_protected_parent():
     source = """datasource db {
   provider = "sqlite"

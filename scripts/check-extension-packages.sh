@@ -95,6 +95,18 @@ SCHEMA
   (cd "$proxy" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
   (cd "$proxy" && ORM_DATABASE_URL="$url" node use.mjs)
   (cd "$proxy" && ORM_DATABASE_URL="$url" bun use.mjs)
+  # The composition package: a composed insert through the installed package.
+  composition=$consumer/composition
+  mkdir -p "$composition"
+  { printf 'datasource db { provider = "%s" }\n' "$dialect"; grep -v '^//' "$ROOT/examples/blog/demo/model-composition.prisma"; } > "$composition/schema.prisma"
+  (cd "$WORK/js" && "$WORK/venv/bin/python" -m orm --schema "$composition/schema.prisma" generate python -o "$composition/models.py")
+  (cd "$WORK/js" && node node_modules/orm/dist/src/cli.js --schema "$composition/schema.prisma" generate typescript -o "$composition/models.ts")
+  "$ROOT/languages/js/node_modules/.bin/tsc" "$composition/models.ts" --outDir "$composition" --module ESNext --target ES2022 --moduleResolution Bundler --skipLibCheck --noCheck
+  cp "$ROOT/scripts/tests/composition_consumer.py" "$composition/use.py"
+  cp "$ROOT/scripts/tests/composition_consumer.mjs" "$composition/use.mjs"
+  (cd "$composition" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
+  (cd "$composition" && ORM_DATABASE_URL="$url" node use.mjs)
+  (cd "$composition" && ORM_DATABASE_URL="$url" bun use.mjs)
 done
 # Without its package, `@@query.*` fails and neutral read defaults still work.
 uv venv --python "$PYTHON" "$WORK/bare-venv"

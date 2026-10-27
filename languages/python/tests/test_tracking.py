@@ -7,16 +7,15 @@ from typing import NamedTuple
 import pytest
 
 import orm
-from artifact_caps import artifact_capabilities, has_extension
+from artifact_caps import has_extension
 
 DATABASES = ["sqlite", "postgres"]
 OLD = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
 def requires(name: str) -> pytest.MarkDecorator:
-    """Skip unless the artifact has the extension (`orm.locking`) or the host capability (`model-composition`)."""
-    present = has_extension(name) if name.startswith("orm.") else name in artifact_capabilities()
-    return pytest.mark.skipif(not present, reason=f"requires {name} in the native artifact")
+    """Skip unless the artifact or an installed package has the extension, such as `orm.locking`."""
+    return pytest.mark.skipif(not has_extension(name), reason=f"requires {name} in the native artifact")
 
 
 async def connect(dialect: str, source: str) -> tuple[orm.Database, dict]:
@@ -596,7 +595,7 @@ async def test_an_instance_rejects_an_explicit_version(dialect):
         await db.close()
 
 
-@requires("model-composition")
+@requires("orm.composition")
 @pytest.mark.parametrize(
     "extension,field,attribute",
     [
@@ -612,6 +611,7 @@ def test_composed_ownership_chain_rejects_tracking_records(extension, field, att
     source = f"""
 model Person {{
  id Int @id
+ name String
  {attribute if owner == "Person" else ""}
 }}
 model Employee {{

@@ -2,9 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { allowWrites, connect, loads, Registry, SchemaError, WriteProtected, type Database } from "../src/index.js";
-import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const capabilities = artifactCapabilities();
 const source = `datasource db {
   provider = "sqlite"
 }
@@ -118,7 +117,7 @@ test("a proxy writes the table of its protected root", { skip: !hasExtension("or
   } finally { await db.close(); }
 });
 
-test("a composed write also writes its protected parent", { skip: !capabilities.includes("model-composition") }, async () => {
+test("a composed write also writes its protected parent", { skip: !hasExtension("orm.composition") }, async () => {
   const { models, db } = await blog(`datasource db {
   provider = "sqlite"
 }

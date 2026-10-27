@@ -1,4 +1,4 @@
-// Needs the model-composition extension (orm-model-composition).
+// Needs the orm-composition package (@@composition.model).
 
 model Person {
   id   Int    @id @default(autoincrement())

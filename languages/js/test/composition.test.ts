@@ -1,10 +1,10 @@
-/** Model composition through the public API; needs an artifact with orm-model-composition selected. */
+/** Model composition through the public API; needs the @orm/composition package. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, IntegrityError, TransactionAborted, loads, Registry, statementInspection, type InspectedStatement } from "../src/index.js";
-import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const enabled = (artifactCapabilities()).includes("model-composition");
+const enabled = hasExtension("orm.composition");
 const source = `
 model Person {
  id Int @id @default(autoincrement())
@@ -138,6 +138,7 @@ for (const [attribute, extension] of [
     const roleSource = `datasource db {\n provider = "sqlite"\n}
 model Person {
  id Int @id
+ name String
  @@map("composition06_node_role_people")
 }
 model Employee {

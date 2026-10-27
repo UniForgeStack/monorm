@@ -17,13 +17,13 @@ fn definition() -> Value {
 #[test]
 fn lowering_changes_only_storage_ownership_once() {
     let ir: SchemaIr = serde_json::from_value(definition()).unwrap();
-    let effects = orm_contracts::extension::pass_effects(&ir, orm_model_composition::lower).unwrap();
+    let effects = orm_contracts::extension::pass_effects(&ir, orm_composition::lower).unwrap();
     assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.field_storage", "behavior.owner_links", "behavior.storage", "models"]);
 }
 #[test]
 fn chains_and_siblings_keep_physical_storage_separate() {
     let mut ir: SchemaIr = serde_json::from_value(definition()).unwrap();
-    orm_model_composition::lower(&mut ir).unwrap();
+    orm_composition::lower(&mut ir).unwrap();
     assert_eq!(
         ir.models[0]
             .fields
@@ -64,7 +64,7 @@ fn chains_and_siblings_keep_physical_storage_separate() {
         d.lowered = true;
     }
     let before = serde_json::to_value(&ir).unwrap();
-    orm_model_composition::lower(&mut ir).unwrap();
+    orm_composition::lower(&mut ir).unwrap();
     assert_eq!(serde_json::to_value(ir).unwrap(), before);
 }
 #[test]
@@ -84,7 +84,7 @@ fn rejected_candidates_are_unchanged() {
         let mut ir: SchemaIr = serde_json::from_value(v).unwrap();
         let before = serde_json::to_value(&ir).unwrap();
         assert!(
-            orm_model_composition::lower(&mut ir).is_err(),
+            orm_composition::lower(&mut ir).is_err(),
             "mutation {mutation}"
         );
         assert_eq!(serde_json::to_value(ir).unwrap(), before);

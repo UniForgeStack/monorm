@@ -105,38 +105,3 @@ fn core_only_build_adds_no_composition() {
     }
     fs::remove_dir_all(root).unwrap();
 }
-
-#[test]
-fn manifest_capability_selects_the_host_feature() {
-    let host = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
-    let root = host.join("target/extension-proof-tests").join(format!("orm-extension-feature-test-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
-    for (feature, alias, package, path) in [
-        ("model-composition", "composition", "orm-model-composition", "extensions/model-composition"),
-    ] {
-        let output = root.join(feature);
-        let config = root.join(format!("{feature}.json"));
-        fs::write(&config, serde_json::to_vec(&serde_json::json!({
-            "host": host, "output": output, "offline": true, "prepare_only": true,
-            "bindings": ["python", "node"], "dependencies": {alias: {"package": package, "path": host.join(path)}}
-        })).unwrap()).unwrap();
-        let result = Command::new(env!("CARGO_BIN_EXE_orm-extension-build")).arg(config).output().unwrap();
-        assert!(result.status.success(), "{feature}: {}", String::from_utf8_lossy(&result.stderr));
-        let selected = toml::Value::String(feature.into());
-        for binding in ["python", "node"] {
-            let manifest: toml::Value = toml::from_str(&fs::read_to_string(output.join(format!("languages/{}/native/Cargo.toml", if binding == "node" { "js" } else { binding }))).unwrap()).unwrap();
-            let defaults = manifest["features"]["default"].as_array().unwrap();
-            assert!(defaults.contains(&selected), "{feature}: {binding} default features");
-            // Extension artifacts keep the binding defaults, reference loading included.
-            assert!(defaults.contains(&toml::Value::String("reference-loading".into())), "{feature}: {binding} default features");
-            assert!(manifest["dependencies"]["orm-core"]["features"].as_array().unwrap().contains(&selected), "{feature}: {binding} orm-core features");
-        }
-        let artifact: serde_json::Value = serde_json::from_slice(&fs::read(output.join("artifact.json")).unwrap()).unwrap();
-        assert!(artifact["capabilities"].as_array().unwrap().contains(&serde_json::json!(feature)), "{feature}: {artifact}");
-        // The orm-core and orm-engine tests of the snapshot read these host files.
-        for file in ["examples/blog/schema.prisma", "examples/sqlite/schema.prisma", "docs/schema/prisma-syntax.md", "docs/schema/schema.md"] {
-            assert_eq!(fs::read(output.join(file)).unwrap(), fs::read(host.join(file)).unwrap(), "{feature}: {file}");
-        }
-    }
-    fs::remove_dir_all(root).unwrap();
-}

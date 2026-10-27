@@ -67,7 +67,8 @@
     "@orm/inherit": "file:../../target/extension-packages/inherit/npm",
     "@orm/query-defaults": "file:../../target/extension-packages/query-defaults/npm",
     "@orm/generic": "file:../../target/extension-packages/generic/npm",
-    "@orm/proxy": "file:../../target/extension-packages/proxy/npm"
+    "@orm/proxy": "file:../../target/extension-packages/proxy/npm",
+    "@orm/composition": "file:../../target/extension-packages/model-composition/npm"
   },
   "files": [
     "dist/src",

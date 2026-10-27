@@ -11,10 +11,6 @@
     ]
   },
   "dependencies": {
-    "composition": {
-      "package": "orm-model-composition",
-      "path": "../../../../extensions/model-composition"
-    },
     "file_storage": {
       "package": "orm-file-storage-extension",
       "path": "../../../../extensions/file-storage"
