@@ -276,7 +276,6 @@ mod schema_json {
     }
     #[test]
     fn an_ir_with_proxy_records_of_the_old_major_names_the_cure() {
-        // The removed key is built, so no source line names it.
         let key = ["proxy", "models"].join("_");
         let old = format!(r#"{{"models":[],"behavior":{{"schema_contract":3,"{key}":[{{"model":"A","parent":"U"}}]}}}}"#);
         let error = super::SchemaIr::from_json(&old).unwrap_err();

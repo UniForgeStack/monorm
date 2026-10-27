@@ -163,7 +163,7 @@ It also gives the profile its name in `profile_metadata()`.
 `build-full-wheel.py` and `build-node-profile.mjs full` run the steps above.
 The Python script then runs `maturin build --release` in the emitted workspace.
 The Node script runs `cargo build -p orm-node` there.
-[Static native profiles](optional-packaging.md#the-full-profile) has the list of the three extensions, the install lines and the rest of the contract.
+[Static native profiles](optional-packaging.md#the-full-profile) has the list of the two extensions, the install lines and the rest of the contract.
 
 ## Application source modules
 
@@ -335,8 +335,8 @@ An `Err` becomes status ERROR with its text, and a panic becomes status PANIC.
 A manifest of a library lists its hooks as `[[exports]]` with `id`, `point` (1 to 7), `input` and `output` (a value type). A compiled extension keeps `rust`, `kind` and `input`.
 When the manifest has `exports`, the loader needs `orm_ext_hooks` and, when `init` exists, `orm_ext_drop_state`, and the hook table needs a hook of the same name for each export id. A mismatch is an error when the library opens, and it names the export. A manifest without `exports` has no hooks to resolve, so a pass-only library needs none of the three symbols.
 `Plan::library(id)` gives a `Library` of a manifest with `exports`; `Library::init(&json)` gives a `State`, and `State::call(hook, &args, &context)` runs one hook. The `State` calls `orm_ext_drop_state` once when it drops.
-Schema contract 2.1 adds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). The IR sets `schema_contract_minor = 1` only when one of them has content, so an IR without them stays readable by a 2.0 engine. A 2.0 engine that reads an IR with them stops at the unknown field with a parse error; the "newer than this engine" message comes only from an engine of contract 2.1 or later.
-Schema contract 2.3 adds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute. The IR sets `schema_contract_minor = 3` only when one of them has content.
+Schema contract 4.0 holds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). A major bump resets the minor. The IR sets `schema_contract_minor` only for a feature that a later minor adds; an engine of an older minor stops at the unknown field with a parse error, and the "newer than this engine" message comes only from an engine that knows the minor.
+Schema contract 4.0 holds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.

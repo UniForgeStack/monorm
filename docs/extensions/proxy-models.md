@@ -1,6 +1,7 @@
 # Same-table proxy models
 
-The `orm-proxy` package (`@orm/proxy` for Node) supplies proxy models. A proxy is a different logical view of one physical model.
+The `orm-proxy` package (`@orm/proxy` for Node) supplies proxy models.
+A proxy is a different logical view of one physical model.
 Default filters and default selection come from the `orm-query-defaults` package
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
@@ -120,7 +121,8 @@ These contracts give warnings and do not enforce the shape, thus returned values
 can violate those hints. Strict validation requires a separately declared validator.
 
 The proxy pass emits `model_views`, `result_checks` and `storage`, which the host reads.
-Its own data stays in `extension_data["orm.proxy"]`. The host has no proxy feature and no proxy record.
+Its own data stays in `extension_data["orm.proxy"]`.
+The host has no proxy feature and no proxy record.
 Without the installed package, `@@proxy.of` fails at definition with an unknown attribute.
 
 ## Owning a list partition (PostgreSQL)
