@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { connect } from 'orm';
 import { Note } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
-assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'orm.inherit', 'orm.locking', 'orm.soft-delete', 'orm.timestamps']);
+assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'orm.inherit', 'orm.locking', 'orm.query-defaults', 'orm.soft-delete', 'orm.timestamps']);
 for (const [id, stamp] of Object.entries(locked.behavior.packages)) {
   const [scope, name] = id.split('.');
   assert.equal((await import(`@${scope}/${name}`)).manifestHash, stamp.manifest_hash);
@@ -12,7 +12,10 @@ const db = await connect(process.env.ORM_DATABASE_URL);
 await db.dropTables();
 await db.createTables();
 try {
+  await Note.objects.using(db).insert({ id: -1, text: 'hidden' });
   const row = await Note.objects.using(db).insert({ id: 1, text: 'first' });
+  assert.equal(await Note.objects.using(db).count(), 1);
+  assert.equal(await Note.objects.using(db).withoutDefaults().count(), 2);
   assert.equal(row.tagLabel(), 'installed');
   assert.equal(row.version, 0);
   await row.update({ text: 'updated' });

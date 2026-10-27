@@ -12,14 +12,17 @@ async def run():
     # The generated lock and the installed runtime expose the same manifest identity.
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
     packages = locked["behavior"]["packages"]
-    assert set(packages) == {"acme.outside", "orm.inherit", "orm.locking", "orm.soft-delete", "orm.timestamps"}
+    assert set(packages) == {"acme.outside", "orm.inherit", "orm.locking", "orm.query-defaults", "orm.soft-delete", "orm.timestamps"}
     for ident, stamp in packages.items():
         assert import_runtime(ident).MANIFEST_HASH == stamp["manifest_hash"]
     db = await orm.connect(os.environ["ORM_DATABASE_URL"])
     await db.drop_tables()
     await db.create_tables()
     try:
+        await Note.objects.using(db).insert(id=-1, text="hidden")
         row = await Note.objects.using(db).insert(id=1, text="first")
+        assert await Note.objects.using(db).count() == 1
+        assert await Note.objects.using(db).without_defaults().count() == 2
         assert row.tag_label() == "installed"
         assert row.version == 0
         await row.update(text="updated")

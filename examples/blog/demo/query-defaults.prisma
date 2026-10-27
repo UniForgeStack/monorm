@@ -1,4 +1,4 @@
-// Needs the query-defaults extension (orm-query-defaults).
+// Needs the orm-query-defaults package.
 
 model Article {
   id         Int      @id @default(autoincrement())

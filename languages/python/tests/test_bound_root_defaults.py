@@ -6,7 +6,7 @@ import pytest
 
 import orm
 from orm import func
-from artifact_caps import artifact_capabilities
+from artifact_caps import has_extension
 
 SOURCE = """
 model BqOwner {
@@ -28,7 +28,7 @@ model BqKid {
 """
 
 query_defaults = pytest.mark.skipif(
-    "query-defaults" not in artifact_capabilities(), reason="requires a native artifact with query-defaults"
+    not has_extension("orm.query-defaults"), reason="requires the orm.query-defaults package"
 )
 
 

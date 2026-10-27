@@ -26,13 +26,12 @@ filters or reference loading. Column expressions and writes remain usable for
 excluded fields. Insert requirements remain unchanged.
 A bare relation path beside columns of that relation (`load(Book.author, Book.author.bio)`) loads the related model's default selection united with those columns.
 
-`only()` is in the core. Schema query defaults need the `query-defaults` extension.
+`only()` is in the core. Schema query defaults need the `orm-query-defaults` package.
 
-**Enable:** select the `orm-query-defaults` crate (`extensions/query-defaults/`) in your build.
-See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
+**Enable:** install `orm-query-defaults` (Python) or `@orm/query-defaults` (npm).
+See [Installable packages](../contracts/build-time-extensions.md#installable-packages).
 
-The optional `query-defaults` native capability and compiler crate
-`orm-query-defaults` support schema policies:
+The `orm-query-defaults` package supports schema policies:
 
 ```prisma
 model User {
@@ -107,8 +106,7 @@ A child (`@@query.parent`, a proxy or a composed model) inherits each name of it
 A filter with the same name on the child replaces the inherited one; `parent.default_filter` in it means
 the parent's filter of that name. `@@query.filter("<name>", "none")` removes the inherited name.
 
-Build-select the compiler as a dependency with alias `query_defaults`; its
-manifest selects the `query-defaults` host capability. Without that compiler,
+Without the package,
 `@@query.*` declarations fail at definition. The neutral `read_defaults` prepared
 contract is accepted in every build; other extensions can contribute to it.
 An `annotate` item of that contract must be a relation aggregate.

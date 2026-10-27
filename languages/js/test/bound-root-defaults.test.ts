@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, func, loads, of, Registry } from "../src/index.js";
-import { artifactCapabilities } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 
 const source = `
 model BqOwner {
@@ -25,7 +25,7 @@ model BqKid {
 `;
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
-const skip = !artifactCapabilities().includes("query-defaults");
+const skip = !hasExtension("orm.query-defaults");
 
 for (const provider of ["sqlite", "postgresql"]) {
   const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];

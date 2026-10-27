@@ -1,15 +1,14 @@
 """Partial output shapes and compiled defaults on both supported databases."""
 
 import asyncio
-import json
 import os
 
 import pytest
 import orm
 from orm import func
-from orm import _native
+from artifact_caps import has_extension
 
-QUERY_DEFAULTS = "query-defaults" in json.loads(_native.native_artifact()).get("capabilities", [])
+QUERY_DEFAULTS = has_extension("orm.query-defaults")
 
 
 def schema(dialect, defaults=True):
@@ -146,7 +145,7 @@ async def test_an_update_of_a_hidden_key_drops_the_cached_relation(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_selection_defaults(dialect):
     db, Author, Book = await open_db(dialect, defaults=True)
@@ -256,7 +255,7 @@ async def open_annotated(dialect):
     return db, classes["SelectedAuthor"], classes["SelectedBook"]
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_keeps_model_instances(dialect):
     db, Author, Book = await open_annotated(dialect)
@@ -283,7 +282,7 @@ async def test_default_annotation_keeps_model_instances(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_applies_to_prefetched_rows(dialect):
     db, Author, Book = await open_annotated(dialect)
@@ -303,7 +302,7 @@ async def test_default_annotation_applies_to_prefetched_rows(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_stays_out_of_projections(dialect):
     db, Author, Book = await open_annotated(dialect)
@@ -360,7 +359,7 @@ model Note {
 """
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_order(dialect):
     registry = orm.Registry()
@@ -571,7 +570,7 @@ async def test_one_row_prepared(one_row_topics, observe_queries):
         await t.filter(Topic.name == "missing").require().first().prepare()()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 def test_default_order_options_have_one_source():
     both = ORDERED.replace(
         '@@query.defaults(order: ["-body"])', '@@query.defaults(order: ["-body"])\n  @@query.order("id")'
@@ -597,7 +596,7 @@ def test_default_order_options_have_one_source():
         )
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 async def test_a_joined_model_brings_its_related_default():
     def field(name, kind="string", **flags):
         return {"name": name, "column": name, "type": kind, **flags}
@@ -660,7 +659,7 @@ async def test_a_joined_model_brings_its_related_default():
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_join(request, dialect):
     db, A, B, P = await open_unset(request, dialect, True)
@@ -679,7 +678,7 @@ async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_joi
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="requires the query-defaults artifact")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_the_target_flag_does_not_depend_on_model_order(request, dialect):
     # Put the book before the filtered author in the public schema.
@@ -693,7 +692,7 @@ async def test_the_target_flag_does_not_depend_on_model_order(request, dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_load_path_with_columns_unites_the_default_selection(dialect):
     db, Author, Book = await open_db(dialect, defaults=True)
@@ -722,7 +721,7 @@ async def test_load_path_with_columns_unites_the_default_selection(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
     ir = schema("postgres")
     book = ir["models"][1]
@@ -914,7 +913,7 @@ async def test_base_getter_keeps_none_for_has_one_and_label(base_getter, unset):
     assert books[1].__dict__["writer"] is None
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_base_getter_filtered_target_is_none_and_bypassed_prefetch_is_not_loaded(base_getter, request, dialect):
     db, A, B, P = await open_unset(request, dialect, True)
@@ -972,7 +971,7 @@ async def test_plain_load_of_a_nullable_dangling_key_keeps_none(unset):
 @pytest.mark.parametrize("method", ["join", "prefetch", "instance"])
 async def test_absent_reference_message_tracks_the_loaded_key(request, dialect, composite, filtered, method):
     if filtered and not QUERY_DEFAULTS:
-        pytest.skip("needs a native build with the query-defaults feature")
+        pytest.skip("needs the orm.query-defaults package")
     db, A, B, P = await open_unset(request, dialect, filtered, composite=composite)
     message = "the key is set and no row of the target has it"
     try:
@@ -1032,7 +1031,7 @@ async def test_unknown_bypass_name_lists_the_defaults_of_the_model():
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs a native build with the query-defaults feature")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_bypass_by_name_keeps_the_other_defaults(dialect):
     db, Author, Book = await open_db(dialect, defaults=True)

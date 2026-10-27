@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { connect, define, getDatabase, loads, of, param, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
-import { native } from '../src/native.js';
+import { hasExtension } from './artifact-caps.js';
 import { Post, User } from './blog/models.js';
 import { useDatabase, otherDatabase, DATABASE_URL } from './helpers.js';
 
@@ -412,7 +412,7 @@ test('db.tenant sets app.tenant in each transaction for row-level security', asy
   }
 });
 
-const queryDefaults = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes('query-defaults') ?? false;
+const queryDefaults = hasExtension("orm.query-defaults");
 
 function scopedSchema(dialect: string) {
   const field = (name: string, type = 'int', flags = {}) => ({ name, column: name, type, ...flags });

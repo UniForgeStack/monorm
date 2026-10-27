@@ -532,3 +532,6 @@ mod tests {
         assert!(Parser::parse("a < null", None).is_err());
     }
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("query.defaults.lower", lower));

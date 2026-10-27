@@ -2,7 +2,7 @@
 
 The `orm-proxy` schema compiler and the optional `proxy-models` native capability
 supply proxy models. A proxy is a different logical view of one physical model.
-Default filters and default selection come from the `query-defaults` extension
+Default filters and default selection come from the `orm-query-defaults` package
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
 **Enable:** select the `orm-proxy` crate (`extensions/proxy`) in your build.

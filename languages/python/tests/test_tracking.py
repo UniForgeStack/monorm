@@ -169,7 +169,7 @@ model Doc {
 
 
 @requires("orm.soft-delete")
-@requires("query-defaults")
+@requires("orm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
     db, models = await connect(dialect, TENANT_SOFT_DELETE)
@@ -205,7 +205,7 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
 
 
 @requires("orm.soft-delete")
-@requires("query-defaults")
+@requires("orm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
     db, models = await connect(dialect, TENANT_SOFT_DELETE)
@@ -227,7 +227,7 @@ async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
 
 @requires("orm.soft-delete")
 @requires("orm.locking")
-@requires("query-defaults")
+@requires("orm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
@@ -501,7 +501,7 @@ model PostTag {
 
 
 @requires("orm.soft-delete")
-@requires("query-defaults")
+@requires("orm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect):
     db, models = await connect(dialect, FILTERED_JOIN_MODEL)
@@ -994,7 +994,7 @@ model Doc {
 
 
 @requires("orm.soft-delete")
-@requires("query-defaults")
+@requires("orm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_user_default_named_deleted_clashes_with_the_soft_delete_default(dialect):
     with pytest.raises(Exception, match=r'default name is set by both orm\.soft-delete default "deleted" and orm\.query-defaults default "deleted"'):

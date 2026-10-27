@@ -62,13 +62,14 @@ Declare all selected behavioral extension crates in `dependencies`, including ex
 Cargo resolves Rust package versions;
 the frontend checks extension dependency constraints against that resolved selection.
 
-A manifest capability in `HOST_FEATURE_CAPABILITIES` (`query-defaults`, `model-composition`,
+A manifest capability in `HOST_FEATURE_CAPABILITIES` (`model-composition`,
 `proxy-models`, `generic-relations`) also turns on the host Cargo feature of the same name in both bindings.
 `file-storage` is not one: it has no host code and only requires `async-field-adapter.v1`.
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
 The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
-These four are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
-`scripts/feature-check.sh` builds one artifact per host feature and one with all of them, installs the four packages in every environment, and runs every suite on each.
+The query-defaults extension (`orm.query-defaults`) has none either: its pass writes only the neutral `read_defaults` record.
+These five are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
+`scripts/feature-check.sh` builds one artifact per host feature and one with all of them, installs the five packages in every environment, and runs every suite on each.
 
 Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
 For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
@@ -81,19 +82,18 @@ Selection is recorded in the build configuration and emitted binding manifests, 
 
 ## Select feature extensions
 
-The repository ships five feature extensions.
+The repository ships four feature extensions.
 Each is a crate that you put in `dependencies`; its manifest capability turns on the host feature.
 
 | Feature | Dependency entry (`"alias": {...}`) | Doc |
 |---|---|---|
 | proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](../extensions/proxy-models.md) |
-| query-defaults | `"query_defaults": {"package": "orm-query-defaults", "path": "extensions/query-defaults"}` | [selection-and-defaults.md](../schema/selection-and-defaults.md) |
 | model-composition | `"composition": {"package": "orm-model-composition", "path": "extensions/model-composition"}` | [model-composition.md](../extensions/model-composition.md) |
 | file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](../extensions/file-storage.md) |
 | generic-relations | `"generic": {"package": "orm-generic", "path": "extensions/generic"}` | [generic-identities.md](../schema/generic-identities.md) |
 
 Paths are relative to the repository root; write them relative to your configuration file.
-This configuration selects all five and emits the workspace only (`prepare_only`):
+This configuration selects all four and emits the workspace only (`prepare_only`):
 
 ```json
 {
@@ -103,7 +103,6 @@ This configuration selects all five and emits the workspace only (`prepare_only`
   "bindings": ["python", "node"],
   "dependencies": {
     "proxy": {"package": "orm-proxy", "path": "/path/to/orm/extensions/proxy"},
-    "query_defaults": {"package": "orm-query-defaults", "path": "/path/to/orm/extensions/query-defaults"},
     "composition": {"package": "orm-model-composition", "path": "/path/to/orm/extensions/model-composition"},
     "file_storage": {"package": "orm-file-storage-extension", "path": "/path/to/orm/extensions/file-storage"},
     "generic": {"package": "orm-generic", "path": "/path/to/orm/extensions/generic"}
@@ -159,15 +158,15 @@ A bound query set mixin reads the objects of a bound write with these helpers (t
 ### The full profile
 
 `languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.
-They select the five static first-party extensions.
-The timestamps, soft-delete, locking and inherit extensions are installable packages, not part of the profile.
+They select the four static first-party extensions.
+The timestamps, soft-delete, locking, inherit and query-defaults extensions are installable packages, not part of the profile.
 They set `prepare_only` and `binding_features` to `["profile-full"]`.
 `profile-full` has the features of `profile-tooling`: the backends, `cli`, both generators and `reference-loading`.
 It also gives the profile its name in `profile_metadata()`.
 `build-full-wheel.py` and `build-node-profile.mjs full` run the steps above.
 The Python script then runs `maturin build --release` in the emitted workspace.
 The Node script runs `cargo build -p orm-node` there.
-[Static native profiles](optional-packaging.md#the-full-profile) has the list of the five extensions, the install lines and the rest of the contract.
+[Static native profiles](optional-packaging.md#the-full-profile) has the list of the four extensions, the install lines and the rest of the contract.
 
 ## Application source modules
 
@@ -369,4 +368,4 @@ TypeScript runtime packages and their dependencies must be synchronously loadabl
 The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `orm-extension.toml` with `abi` and `library`.
 The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
 Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.
-`scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking and inherit packages and installs them into `.venv` and `languages/js`.
+`scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking, inherit and query-defaults packages and installs them into `.venv` and `languages/js`.

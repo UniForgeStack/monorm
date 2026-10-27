@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, define, func, IntegrityError, loads, NotLoaded, of, Registry } from "../src/index.js";
-import { native } from "../src/native.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const queryDefaults = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes("query-defaults") ?? false;
+const queryDefaults = hasExtension("orm.query-defaults");
 
 async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated = false) {
   const registry = new Registry();
@@ -88,7 +88,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 
   test(`schema query defaults: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs a native build with the query-defaults feature");
+      t.skip("needs the orm.query-defaults package");
       return;
     }
     const { db, Author, Book, a, b } = await open(dialect, true);
@@ -179,7 +179,7 @@ model Note {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`schema default order: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs a native build with the query-defaults feature");
+      t.skip("needs the orm.query-defaults package");
       return;
     }
     const registry = new Registry();
@@ -227,7 +227,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`a default annotation stays an instance read: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs a native build with the query-defaults feature");
+      t.skip("needs the orm.query-defaults package");
       return;
     }
     const { db, Author, a, b } = await open(dialect, true, true);
@@ -254,7 +254,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`a default annotation applies to prefetched rows: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs a native build with the query-defaults feature");
+      t.skip("needs the orm.query-defaults package");
       return;
     }
     const { db, Author, Book, a, b } = await open(dialect, true, true);
@@ -274,7 +274,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 
 test("schema default order: one source per option", (t) => {
   if (!queryDefaults) {
-    t.skip("needs a native build with the query-defaults feature");
+    t.skip("needs the orm.query-defaults package");
     return;
   }
   const both = ordered.replace('@@query.defaults(order: ["-body"])', '@@query.defaults(order: ["-body"])\n  @@query.order("id")');
@@ -286,7 +286,7 @@ test("schema default order: one source per option", (t) => {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`load() of a path with columns unites the default selection: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs a native build with the query-defaults feature");
+      t.skip("needs the orm.query-defaults package");
       return;
     }
     const { db, Author, Book, a, b } = await open(dialect, true);
@@ -396,7 +396,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   }
 
   test(`the target flag does not depend on model order: ${dialect}`, async (t) => {
-    if (!queryDefaults) { t.skip("needs a native build with the query-defaults feature"); return; }
+    if (!queryDefaults) { t.skip("needs the orm.query-defaults package"); return; }
     const { db, Book } = await openUnset(dialect, true, false, true);
     try {
       const books = Book.objects.using(db).orderBy(Book.id);
@@ -436,7 +436,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   });
 
   test(`a filtered target is null and a bypassed prefetch is not loaded: ${dialect}`, async (t) => {
-    if (!queryDefaults) { t.skip("needs a native build with the query-defaults feature"); return; }
+    if (!queryDefaults) { t.skip("needs the orm.query-defaults package"); return; }
     const { db, Book } = await openUnset(dialect, true);
     try {
       const prefetched = await Book.objects.using(db).orderBy(Book.id).load(Book.author.objects.asPrefetch()).all();
@@ -468,7 +468,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   });
 
   test(`a missing reference is null only when the engine filtered the join: ${dialect}`, async (t) => {
-    if (!queryDefaults) { t.skip("needs a native build with the query-defaults feature"); return; }
+    if (!queryDefaults) { t.skip("needs the orm.query-defaults package"); return; }
     const { db, Book, Profile } = await openUnset(dialect, true);
     try {
       for (const Model of [Book, Profile]) {
