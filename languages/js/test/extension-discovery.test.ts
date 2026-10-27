@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
-import { connect, define, load, loads, Registry, SchemaError, type SchemaIR } from "../src/index.js";
+import { connect, define, IntegrityError, load, loads, Registry, SchemaError, type SchemaIR } from "../src/index.js";
 import { resolveExtensions } from "../src/packages.js";
 
 // `npx orm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
@@ -201,6 +201,33 @@ test("an installed outside library lowers the schema through load(), loads() and
   const noClasses = spawnSync(process.execPath, ["--input-type=module", "-e", `import { Post } from './models.mjs'; if (typeof Post.objects.tagged !== 'undefined') throw Error('unexpected mixin');`], { cwd: root, encoding: "utf8", env: process.env });
   assert.equal(noClasses.status, 0, noClasses.stderr);
   assert.doesNotMatch(noClasses.stderr, /OrmStaleModelsWarning/);
+});
+
+test("an outside pass writes a two-table model that inserts, reads, updates and attaches", { timeout: 300_000 }, async (t) => {
+  const root = directory(t);
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+  write(manifest, readFileSync(join(OUTSIDE, "orm-extension.toml"), "utf8"));
+  const library = outsideLibrary(t);
+  copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
+  project(root, { "acme-outside": "1.0.0" });
+  const schema = write(
+    join(root, "schema.prisma"),
+    'datasource db { provider = "sqlite" }\nmodel Account {\n id Int @id @default(autoincrement())\n email String\n}\nmodel Profile {\n bio String\n @@outside.base(parent: "Account", parentRef: "account", childRef: "profile")\n}\n',
+  );
+  const { Account, Profile } = load(schema, { registry: new Registry() }) as Record<string, any>;
+  const db = await connect("sqlite://:memory:", { default: false, registry: Profile._meta.registry });
+  try {
+    await db.createTables();
+    const ada = await Profile.objects.using(db).insert({ email: "ada@example.com", bio: "maths" });
+    assert.deepEqual([ada.email, ada.bio], ["ada@example.com", "maths"]);
+    assert.equal(await Account.objects.using(db).count(), 1);
+    await Profile.objects.using(db).filter(Profile.email.eq("ada@example.com")).update({ bio: "engines" });
+    assert.equal((await Profile.objects.using(db).filter(Profile.id.eq(ada.id)).get()).bio, "engines");
+    const bob = await Account.objects.using(db).insert({ email: "bob@example.com" });
+    const attached = await Profile.objects.using(db).attach(bob.id, { bio: "chess" });
+    assert.deepEqual([attached.id, attached.email, attached.bio], [bob.id, "bob@example.com", "chess"]);
+    await assert.rejects(Profile.objects.using(db).attach(bob.id, { bio: "again" }), IntegrityError);
+  } finally { await db.close(); }
 });
 
 test("ESM-only and dual packages share runtime identity across generated models, load and loads", { timeout: 300_000 }, async (t) => {

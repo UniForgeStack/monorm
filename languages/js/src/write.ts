@@ -135,7 +135,7 @@ export function assignments(meta: ModelMeta, values: object, ctx: IRContext): IR
 /** Validate explicit local-only attachment using definition-prepared inputs. */
 export function prepareAttach(meta: ModelMeta, row: object): { fields: string[]; rows: unknown[][] } {
   const local = meta.attachInputFields;
-  if (local === undefined) throw new TypeError(`${meta.name} is not a composed child`);
+  if (local === undefined) throw new TypeError(`${meta.name} is not a child of a multi-table model`);
   const values = normalize(meta, row, "attach", false);
   const allowed = new Set(local.map((f) => f.ir));
   for (const name of values.keys()) {

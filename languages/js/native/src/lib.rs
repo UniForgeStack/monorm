@@ -1153,7 +1153,6 @@ pub fn connect<'env>(
     })
 }
 
-#[cfg(feature = "model-composition")]
 #[napi]
 impl Engine {
     /// Attach local values to an existing shared-key parent.
@@ -1163,13 +1162,13 @@ impl Engine {
         let model_idx = self.schema.model_idx(&model).map_err(schema_err)?;
         let identity = conv(env)?.value(parent_id.raw(), Some(self.schema.model(model_idx).pk_field().value_type())).map_err(engine_err)?;
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
-        let plan = orm_engine::composed::prepare_attach(&self.schema, self.target, &model, identity, &fields, values).map_err(engine_err)?;
+        let plan = orm_engine::multi_table::prepare_attach(&self.schema, self.target, &model, identity, &fields, values).map_err(engine_err)?;
         let target = self.target;
         let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let schema = self.schema.clone();
         env.spawn_future_with_callback(
-            async move { orm_engine::composed::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
+            async move { orm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
             move |env, out| outcome_js(env, &schema, out),
         )
     }

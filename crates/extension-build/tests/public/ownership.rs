@@ -34,7 +34,7 @@ async fn check(url: &str) {
     let plan = Planner::plan(&schema,target,&select,&NoParams).unwrap();
     let sql = exec::sql(target,&plan);
     assert!(sql.contains("extension_owner_parents"));
-    let Outcome::Select(result) = exec::run(db.as_ref(),target,plan).await.unwrap() else { panic!("missing composed read") };
+    let Outcome::Select(result) = exec::run(db.as_ref(),target,plan).await.unwrap() else { panic!("missing multi-table read") };
     assert_eq!(result.rows.len(),1);
     assert_eq!(result.rows.cell(0,2,result.plan.types[2]).unwrap(),db::Cell::Text("Alice"));
     let cte = orm_engine::parse_op(r#"{"op":"select","model":"OwnerChild","from":"owned","with":[{"name":"owned","query":{"model":"OwnerChild"}}]}"#).unwrap();

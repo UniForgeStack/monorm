@@ -613,7 +613,6 @@ impl Engine {
     }
 
     /// Attach local values to an existing shared-key parent.
-    #[cfg(feature = "model-composition")]
     #[pyo3(signature = (model, parent_id, fields, rows, tx = None, db = None, allowed = vec![], trace = None))]
     #[allow(clippy::too_many_arguments)]
     fn attach<'py>(&self, py: Python<'py>, model: &str, parent_id: &Bound<'py, PyAny>, fields: Vec<String>, rows: &Bound<'py, PyList>, tx: Option<&Bound<'py, Transaction>>, db: Option<Bound<'py, PyAny>>, allowed: Vec<String>, trace: Option<&Bound<'py, Trace>>) -> PyResult<Bound<'py, PyAny>> {
@@ -621,14 +620,14 @@ impl Engine {
         let model_idx = self.schema.model_idx(model).map_err(schema_err)?;
         let identity = py_to_value(parent_id, Some(self.schema.model(model_idx).pk_field().value_type()))?;
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
-        let plan = orm_engine::composed::prepare_attach(&self.schema, self.target, model, identity, &fields, values).map_err(engine_err)?;
+        let plan = orm_engine::multi_table::prepare_attach(&self.schema, self.target, model, identity, &fields, values).map_err(engine_err)?;
         let target = self.target;
         let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let classes = self.classes.clone();
         let db = db.map(Bound::unbind);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let out = orm_engine::composed::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err)?;
+            let out = orm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err)?;
             Python::attach(|py| outcome_to_py(py, out, &classes, db, None))
         })
     }

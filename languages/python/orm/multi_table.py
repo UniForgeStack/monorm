@@ -1,4 +1,4 @@
-"""Explicit composition operations; imported only when attach is requested."""
+"""Explicit multi-table operations; imported only when attach is requested."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ async def attach(qs: QuerySet[M], parent_id: Any, values: Mapping[str, Any]) -> 
     meta = qs.model._meta
     fields = meta.attach_fields
     if fields is None:
-        raise TypeError(f"{meta.name} is not a composed child")
+        raise TypeError(f"{meta.name} is not a child of a multi-table model")
     local: dict[str, Any] = {}
     for name, value in values.items():
         if name not in fields:

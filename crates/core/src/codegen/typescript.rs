@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
-use super::{groups, has_server_value, sub_has_default, type_requires};
+use super::{groups, has_server_value_in, sub_has_default, type_requires};
 use crate::schema::{Model, Schema};
 
 const WIDTH: usize = 89;
@@ -373,7 +373,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
             let _ = position;
-            let optional = f.nullable || has_server_value(f) || f.client_default.is_some();
+            let optional = f.nullable || has_server_value_in(schema, m, f) || f.client_default.is_some();
             match belongs_to(m, &f.name) {
                 Some(r) if !optional && r.from.len() == 1 => one_of.push((f, r)),
                 Some(r) => {
@@ -452,11 +452,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         }
         writeln!(body, "}}\n").unwrap();
 
-        let composed = pk.hints.get("composition.child").is_some_and(|v| v == "true");
-        if composed {
+        let attach = schema.attach_fields(m);
+        if let Some(attach) = &attach {
             writeln!(body, "export interface {name}Attach {{").unwrap();
-            for field in m.fields().iter().filter(|f| f.hints.get("composition.local").is_some_and(|v| v == "true")) {
-                let optional = if field.nullable || has_server_value(field) { "?" } else { "" };
+            for field in attach.iter().map(|&p| &m.fields()[p]) {
+                let optional = if field.nullable || has_server_value_in(schema, m, field) { "?" } else { "" };
                 writeln!(body, "  {}{optional}: {};", camel(&field.name), input_type(field)).unwrap();
             }
             writeln!(body, "}}\n").unwrap();
@@ -471,7 +471,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         if !default_names.is_empty() {
             writeln!(body, "  readonly defaults: {};", default_names.iter().map(|n| quote(n)).collect::<Vec<_>>().join(" | ")).unwrap();
         }
-        if composed { writeln!(body, "  readonly attach: {name}Attach;").unwrap(); }
+        if attach.is_some() { writeln!(body, "  readonly attach: {name}Attach;").unwrap(); }
         writeln!(body, "  readonly update: {name}Update;").unwrap();
         writeln!(body, "  readonly updateRow: {name}UpdateRow;").unwrap();
         match m.key_fields().as_slice() {

@@ -10,7 +10,7 @@ pub mod typescript;
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 use crate::ir::{FieldIr, NestedStorage, SchemaIr, TypeFieldIr, TypeIr};
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
-use crate::schema::Model;
+use crate::schema::{Model, Schema};
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 /// A nested field of a model: the `columns` group of its leaf fields, or the one `json` field.
@@ -70,7 +70,13 @@ pub(super) fn type_requires(ir: &SchemaIr, name: &str) -> bool {
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 pub(super) fn has_server_value(f: &FieldIr) -> bool {
-    f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some() || f.hints.get("composition.key-default").is_some_and(|v| v == "true")
+    f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some()
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// `has_server_value`, or the key of a child model whose root table fills it.
+pub(super) fn has_server_value_in(schema: &Schema, m: &Model, f: &FieldIr) -> bool {
+    has_server_value(f) || (std::ptr::eq(f, m.pk_field()) && schema.key_fills_itself(m))
 }
 
 /// Generator options that are not part of the schema.

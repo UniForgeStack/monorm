@@ -147,6 +147,6 @@ model Employee {
  @@map("composition06_node_role_employees")
 }
 `;
-    assert.throws(() => loads(roleSource, { registry: new Registry() }), /not supported in a composed model's ownership chain/);
+    assert.throws(() => loads(roleSource, { registry: new Registry() }), /not supported in a multi-table model's ownership chain/);
   });
 }
