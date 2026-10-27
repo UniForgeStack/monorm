@@ -315,7 +315,7 @@ fn check_compares_extension_locks_and_python_facades() {
     let models = std::fs::read_to_string(dir.join("out/models.ts")).unwrap();
     assert!(models.contains("manifest_hash"), "{models}");
     // Independently measured with shasum -a 256 on the fixture's raw bytes.
-    assert!(models.contains("d070ba4a0cb9aac50a4e1a6a1fdb7b6570464b8f6d0bdddd5aebbc40c1bb2df1"));
+    assert!(models.contains("8b70221cf0df36bcc0e94b55919cfce4120d915ec1139e681e5efd65d2cbbab1"));
     let original = std::fs::read_to_string(dir.join("orm-extension.toml")).unwrap();
     for output in ["out/models.ts", "models.py"] {
         let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "--extension-module", "acme.outside=acme_outside", "-o", output]);

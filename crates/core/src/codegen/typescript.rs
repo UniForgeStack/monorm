@@ -404,8 +404,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
-            #[cfg(not(feature = "composition"))]
-            let _ = position;
             let t = field_type(m, f);
             let expression = !m.hooks.as_ref().is_some_and(|h| h.required.contains(&position));
             if expression {

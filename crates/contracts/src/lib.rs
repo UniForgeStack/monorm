@@ -11,7 +11,6 @@ pub mod native;
 
 pub mod identity;
 
-pub mod generic;
 
 
 pub mod writes;

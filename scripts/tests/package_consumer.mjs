@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { connect, scope } from 'orm';
+import { QueryError, connect, scope } from 'orm';
 import { Wrapped } from '@acme/outside';
 import { Note, configureOutside } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
@@ -16,6 +16,7 @@ try {
   const notes = Note.objects.using(db);
   const fails = async (promise, ...parts) => {
     try { await promise; } catch (error) {
+      assert.ok(error instanceof QueryError, `${error} is not a QueryError`);
       for (const part of parts) assert.ok(String(error.message).includes(part), `${part} is missing from ${error.message}`);
       return;
     }
@@ -33,7 +34,7 @@ try {
     assert.equal(row.tagLabel(), 'installed');
     assert.equal(row.version, 0);
     assert.equal(row.updatedBy, null);
-    await fails(notes.insert({ id: 9, text: '   ', start: 1, end: 2, shopId: 1 }), 'must not be empty');
+    await fails(notes.insert({ id: 9, text: '   ', start: 1, end: 2, shopId: 1 }), 'Note.text: must not be empty');
     // acme.outside.ordered (point 3) reads two fields.
     await fails(notes.insert({ id: 9, text: 'x', start: 3, end: 1, shopId: 1 }), 'start 3 must be before end 1');
     assert.equal(await notes.filter(Note.id.eq(9)).count(), 0);
@@ -41,6 +42,9 @@ try {
     await row.update({ text: 'updated' });
     assert.equal(row.version, 1);
     assert.ok(row.changed instanceof Date);
+    assert.equal((await notes.get(Note.id.eq(1))).updatedBy, 'ann');
+    // A value that the caller sets for that field goes through the hook too.
+    await row.update({ updatedBy: 'eve' });
     assert.equal((await notes.get(Note.id.eq(1))).updatedBy, 'ann');
     assert.equal((await notes.tagged().all())[0].text, 'updated');
     // `@outside.wrapped("w:")` installs the second consumer of the field adapter runtime: label = runtime prefix + option prefix.

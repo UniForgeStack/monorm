@@ -6,7 +6,7 @@ assert.ok(!('orm.query-defaults' in resolveExtensions()), 'run this script in an
 const registry = new Registry();
 const field = { name: 'id', column: 'id', type: 'int', primary_key: true };
 define({ models: [{ name: 'Plain', table: 'plain', fields: [field] }], behavior: {
-  schema_contract: 2, read_defaults: [{ source: 'another-extension', name: 'selection', model: 'Plain', fields: [] }]
+  schema_contract: 3, read_defaults: [{ source: 'another-extension', name: 'selection', model: 'Plain', fields: [] }]
 } }, { registry });
 const before = registry.ir();
 assert.throws(() => loads('model Bad {\n id Int @id\n @@query.filter("positive", "id > 0")\n}', { registry }),
