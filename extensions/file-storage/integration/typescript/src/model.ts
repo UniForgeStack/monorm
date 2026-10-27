@@ -58,3 +58,9 @@ export function installModel(prototype: object, fields: ReadonlyMap<string, File
   if (host) for (const [name, field] of fields) registerFieldAdapter(host, name, new FileAdapter(field, () => adapter.currentRegistry()));
   return adapter;
 }
+
+/** The generated-code entry for the `file-storage.reference.v1` adapter: `fields` maps a name to its options and nullability. */
+export function install(model: { readonly _meta: ModelMeta & { readonly Row: { readonly prototype: object } } }, fields: ReadonlyMap<string, { options: { storage: string }; nullable: boolean }>): ModelAdapter {
+  const files = new Map([...fields].map(([name, { options, nullable }]) => [name, new FileField(name, options.storage, nullable)] as const));
+  return installModel(model._meta.Row.prototype, files, undefined, model._meta);
+}

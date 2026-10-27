@@ -54,3 +54,8 @@ def install_model(model: type[Any], fields: Mapping[str, FileField], registry: R
         for name, field in fields.items():
             register_field_adapter(model, name, FileAdapter(field, lambda: adapter.registry))
     return adapter
+
+
+def install(model: type[Any], fields: Mapping[str, tuple[Mapping[str, Any], bool]]) -> ModelAdapter:
+    """The generated-code entry for the `file-storage.reference.v1` adapter: `fields` maps a name to its options and nullability."""
+    return install_model(model, {name: FileField(name, options["storage"], nullable) for name, (options, nullable) in fields.items()})

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import ts from "typescript";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,8 @@ function pkg(root: string, name: string, id: string | null, manifest: boolean = 
   const dir = join(root, "node_modules", name);
   write(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", ...(id ? { orm: { extension: id } } : {}) }));
   if (id === "acme.outside") {
+    // The package imports `orm`, so the project needs it installed.
+    if (!existsSync(join(root, "node_modules", "orm"))) symlinkSync(process.cwd(), join(root, "node_modules", "orm"), "dir");
     const source = readFileSync(join(OUTSIDE, "typescript/index.ts"), "utf8");
     write(join(dir, "index.ts"), source);
     write(join(dir, "index.cjs"), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
@@ -262,7 +264,9 @@ test("ESM-only and dual packages share runtime identity across generated models,
       "tagged() {", "runtimeIdentity() { return OutsideQuerySet; } tagged() {",
     );
     write(join(dir, "index.mjs"), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
-    write(join(dir, "index.cjs"), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
+    // Bun cannot `require` the ESM `orm`, and this test never installs an adapter.
+    const withoutOrm = source.replace(/^import \{ registerFieldAdapter.*$/m, 'import type { FieldAdapter, ModelMeta } from "orm"; const registerFieldAdapter = (): never => { throw Error("not installed"); };');
+    write(join(dir, "index.cjs"), ts.transpileModule(withoutOrm, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
     write(join(dir, "package.json"), JSON.stringify({ name: "acme-outside", type: "module", orm: { extension: "acme.outside" },
       exports: format === "ESM-only" ? "./index.mjs" : format === "dual"
         ? { import: "./index.mjs", require: "./index.cjs" }

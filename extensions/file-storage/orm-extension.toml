@@ -19,3 +19,36 @@ id = "file-storage.fields.v1"
 phase = "behavior"
 rust = "crate::lower"
 effects = ["behavior.file_fields", "behavior.field_adapters"]
+
+[python]
+[[python.field_adapters]]
+adapter = "file-storage.reference.v1"
+module = "orm_file_storage.model"
+install = "install"
+imports = [
+  "from collections.abc import AsyncIterator",
+  "from orm_file_storage import Reference, Registry as StorageRegistry, Upload",
+]
+value = "Reference"
+input = "Reference | Upload"
+members = [
+  "async def {field}_signed_url(self, *, expires_in: int = 300) -> str: ...",
+  "def {field}_open(self) -> AsyncIterator[bytes]: ...",
+]
+methods = ["{field}_signed_url", "{field}_open"]
+module_functions = [{ name = "configure_file_storage", method = "configure", stub = "(registry: StorageRegistry) -> None" }]
+
+[typescript]
+[[typescript.field_adapters]]
+adapter = "file-storage.reference.v1"
+module = "@orm/file-storage/model"
+install = "install"
+imports = ['import type { Reference, Registry as StorageRegistry, Upload } from "@orm/file-storage";']
+value = "Reference"
+input = "Reference | Upload"
+members = [
+  "{field}SignedUrl(options?: { expiresIn?: number }): Promise<string>;",
+  "{field}Open(): AsyncIterable<Uint8Array>;",
+]
+methods = ["{field}SignedUrl", "{field}Open"]
+module_functions = [{ name = "configureFileStorage", method = "configure", stub = "(registry: StorageRegistry) => void" }]

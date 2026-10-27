@@ -55,6 +55,21 @@ fn fields(ir: &mut SchemaIr) -> Result<(), String> {
     Ok(())
 }
 
+const WRAPPED: &str = "outside.wrapped";
+const WRAPPED_ADAPTER: &str = "acme.outside.wrapped.v1";
+
+/// `@outside.wrapped("prefix")` adapts a Json field: the options of the adapter are the prefix.
+fn wrapped(ir: &mut SchemaIr) -> Result<(), String> {
+    use orm_contracts::extension::FieldAdapter;
+    let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == WRAPPED).cloned().collect();
+    for d in declarations {
+        let field = d.field.clone().ok_or_else(|| format!("@{WRAPPED} on {}: it needs a field", d.model))?;
+        let prefix = d.positional.first().and_then(|v| v.as_str()).ok_or_else(|| format!("{}.{field}: the prefix must be a string", d.model))?;
+        ir.behavior.field_adapters.push(FieldAdapter { model: d.model, field, adapter: WRAPPED_ADAPTER.into(), options: serde_json::json!({"prefix": prefix}) });
+    }
+    orm_contracts::extension::validate_field_adapters(ir)
+}
+
 const GUARD: &str = "outside.guard";
 const SOURCE: &str = "acme.outside";
 
@@ -167,7 +182,8 @@ macro_rules! export {
             };
             ("acme.outside.tag", tag),
             ("acme.outside.fields", fields),
-            ("acme.outside.guard", guard)
+            ("acme.outside.guard", guard),
+            ("acme.outside.wrapped", wrapped)
         }
     };
 }
@@ -192,7 +208,7 @@ mod slice_one {
     /// Called by the ORM loader with readable ranges and a writable `out`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
-        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.guard", super::guard as PassFn)];
+        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.guard", super::guard as PassFn), ("acme.outside.wrapped", super::wrapped as PassFn)];
         // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
         unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
     }

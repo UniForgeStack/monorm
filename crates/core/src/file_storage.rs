@@ -1,43 +1,20 @@
-//! File fields declared by the file-storage extension, resolved to positions for the code
-//! generators. The reference codec and the upload belong to the language packages.
+//! The key and default rule for the file fields that the file-storage extension declares.
+//! The reference codec and the upload belong to the language packages.
 use crate::ir::SchemaIr;
 
-#[derive(Clone, Debug)]
-pub struct PreparedFileField {
-    pub position: usize,
-    pub storage: String,
-    pub nullable: bool,
-}
-
-pub fn prepare(ir: &SchemaIr) -> Result<Vec<Vec<PreparedFileField>>, String> {
-    crate::behavior::validate_field_adapters(ir)?;
-    let mut prepared = vec![vec![]; ir.models.len()];
+/// A file field is a value, not a key: no key flag and no database default.
+pub fn check(ir: &SchemaIr) -> Result<(), String> {
     for file in &ir.behavior.file_fields {
-        let model = ir.models.iter().position(|m| m.name == file.model)
-            .ok_or_else(|| format!("unknown file model {}", file.model))?;
-        let position = ir.models[model].fields.iter().position(|f| f.name == file.field)
+        let field = ir.models.iter().find(|m| m.name == file.model)
+            .ok_or_else(|| format!("unknown file model {}", file.model))?
+            .fields.iter().find(|f| f.name == file.field)
             .ok_or_else(|| format!("unknown file field {}", file.field))?;
-        let field = &ir.models[model].fields[position];
         if field.primary_key || field.default.is_some() || field.default_now
             || field.default_sql.is_some() || field.auto_increment {
             return Err(format!("{}.{}: file fields cannot be keys or have defaults", file.model, file.field));
         }
-        crate::behavior::check_file_methods(ir, &ir.models[model], &file.field)?;
-        prepared[model].push(PreparedFileField {
-            position, storage: file.storage.clone(), nullable: field.nullable,
-        });
     }
-    // A proxy writes the table of its storage owner, so its rows get the same file checks.
-    for proxy in &ir.behavior.proxy_models {
-        let (Some(model), Some(owner)) = (ir.models.iter().position(|m| m.name == proxy.model), ir.models.iter().position(|m| m.name == proxy.storage_owner)) else { continue };
-        for file in prepared[owner].clone() {
-            let name = &ir.models[owner].fields[file.position].name;
-            let Some(position) = ir.models[model].fields.iter().position(|f| f.name == *name) else { continue };
-            crate::behavior::check_file_methods(ir, &ir.models[model], name)?;
-            prepared[model].push(PreparedFileField { position, nullable: ir.models[model].fields[position].nullable, ..file });
-        }
-    }
-    Ok(prepared)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -48,33 +25,18 @@ mod tests {
     fn schema() -> SchemaIr {
         let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}", None).unwrap();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into() });
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
         ir.behavior.file_fields.push(FileField { model: "Report".into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
         ir
     }
 
     #[test]
-    fn definition_resolves_positions() {
+    fn definition_resolves_positions_and_options() {
         let schema = crate::schema::Schema::from_ir(schema()).unwrap();
-        assert_eq!(schema.models[0].file_fields[0].position, 1);
-    }
-
-    #[test]
-    fn generated_types_and_methods_are_selected_only() {
-        let ir = schema();
-        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
-        let py = crate::codegen::python::generate(&ir, &schema, "report.prisma").unwrap();
-        assert!(py.module.contains("_install_file_model"));
-        assert!(py.stub.contains("Reference | None | Upload"));
-        assert!(py.stub.contains("file_signed_url"));
-        let ts = crate::codegen::typescript::generate(&ir, &schema, "report.prisma", "orm").unwrap();
-        assert!(ts.contains("installModel"));
-        assert!(ts.contains("fileSignedUrl"));
-        assert!(ts.contains("Reference | null | Upload"));
-        let ir = crate::dsl::compile("model Plain {\n id Int @id\n data Json?\n}", None).unwrap();
-        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
-        assert!(!crate::codegen::python::generate(&ir, &schema, "plain").unwrap().module.contains("orm_file_storage"));
-        assert!(!crate::codegen::typescript::generate(&ir, &schema, "plain", "orm").unwrap().contains("@orm/file-storage"));
+        let adapter = schema.models[0].adapter_for("file").unwrap();
+        assert_eq!(adapter.position, 1);
+        assert_eq!(adapter.options, serde_json::json!({"storage": "reports"}));
+        assert!(schema.models[0].adapter_for("id").is_none());
     }
 
     #[test]

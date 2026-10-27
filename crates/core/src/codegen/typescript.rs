@@ -90,20 +90,6 @@ fn input_type(f: &FieldIr) -> String {
     format!("In<{}>", value_type(f))
 }
 
-fn file_value_type(m: &Model, f: &FieldIr) -> String {
-    if m.is_file_field(&f.name) {
-        return if f.nullable { "Reference | null".into() } else { "Reference".into() };
-    }
-    value_type(f)
-}
-
-fn file_input_type(m: &Model, f: &FieldIr) -> String {
-    if m.is_file_field(&f.name) {
-        return format!("{} | Upload", file_value_type(m, f));
-    }
-    input_type(f)
-}
-
 fn quote(s: &str) -> String {
     serde_json::to_string(s).expect("a string serializes")
 }
@@ -225,6 +211,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     let modules: Vec<&str> = query_sets.values().map(|(module, ..)| *module).collect::<BTreeSet<_>>().into_iter().collect();
     let query_set = |model: &str| query_sets.get(model).map(|(module, class, _)| format!("_q{}.{class}", modules.iter().position(|m| m == module).unwrap()));
     let model_methods = options.model_methods(ir, schema, '#')?;
+    let adapters = super::Adapters::resolve(options, ir, "typescript")?;
+    let field_type = |m: &Model, f: &FieldIr| adapters.value(m, f, "null").unwrap_or_else(|| value_type(f));
+    let field_input = |m: &Model, f: &FieldIr| adapters.input(m, f, "null").unwrap_or_else(|| input_type(f));
     let method_modules: Vec<&str> = model_methods.values().map(|(module, _)| *module).collect::<BTreeSet<_>>().into_iter().collect();
     let methods_of = |model: &str| model_methods.get(model).map(|(module, class)| format!("_m{}.{class}", method_modules.iter().position(|m| m == module).unwrap()));
     // A class that an abstract model declares takes the model's spec as its type parameter (`class UserQueries<S extends AbstractUserSpec>`).
@@ -302,7 +291,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         let groups = groups(m);
         writeln!(body, "{}\n", section(name)).unwrap();
         for f in m.fields() {
-            let t = file_value_type(m, f);
+            let t = field_type(m, f);
             for (word, import) in [("Decimal", "Decimal"), ("JsonValue", "JsonValue")] {
                 if t.split(|c: char| !c.is_alphanumeric()).any(|w| w == word) {
                     used.insert(import);
@@ -315,7 +304,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "export interface {name}Data {{").unwrap();
         for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             let optional = m.read_flags.fields.as_ref().is_some_and(|fields| !fields.contains(&f.name));
-            writeln!(body, "  readonly {}{}: {};", camel(&f.name), if optional { "?" } else { "" }, file_value_type(m, f)).unwrap();
+            writeln!(body, "  readonly {}{}: {};", camel(&f.name), if optional { "?" } else { "" }, field_type(m, f)).unwrap();
         }
         for g in &groups {
             writeln!(body, "  readonly {}: {};", camel(g.name), or_null(g.ty.to_owned(), g.nullable)).unwrap();
@@ -334,9 +323,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             write!(instances, ", {class}").unwrap();
         }
         writeln!(body, "export interface {name} extends {name}Data, Instance<{name}Spec>{instances} {{").unwrap();
-        for file in &m.file_fields {
-            let field = camel(&m.fields()[file.position].name);
-            writeln!(body, "  {field}SignedUrl(options?: {{ expiresIn?: number }}): Promise<string>;\n  {field}Open(): AsyncIterable<Uint8Array>;").unwrap();
+        for a in &m.field_adapters {
+            let Some((_, u)) = adapters.of(&a.adapter) else { continue };
+            for member in &u.runtime.members {
+                writeln!(body, "  {}", orm_contracts::extension::expand_adapter_template(member, "typescript", &m.fields()[a.position].name)).unwrap();
+            }
         }
         for r in &m.ir.relations {
             match r.kind {
@@ -379,14 +370,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 Some(r) => {
                     // several key fields: the key or the relation is checked at runtime
                     let null = if f.nullable { " | null" } else { "" };
-                    writeln!(body, "  {}?: {};", camel(&f.name), file_input_type(m, f)).unwrap();
+                    writeln!(body, "  {}?: {};", camel(&f.name), field_input(m, f)).unwrap();
                     if last_key(r, &f.name) {
                         writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
                     }
                 }
                 None => {
                     let q = if optional { "?" } else { "" };
-                    writeln!(body, "  {}{q}: {};", camel(&f.name), file_input_type(m, f)).unwrap();
+                    writeln!(body, "  {}{q}: {};", camel(&f.name), field_input(m, f)).unwrap();
                 }
             }
         }
@@ -401,7 +392,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             write!(
                 body,
                 " & (\n  | {{ {key}: {}; {rel}?: never }}\n  | {{ {rel}: {}; {key}?: never }}\n)",
-                file_input_type(m, f),
+                field_input(m, f),
                 related_ref(schema, r)?
             )
             .unwrap();
@@ -413,11 +404,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
-            let t = file_value_type(m, f);
+            let t = field_type(m, f);
             let expression = !m.hooks.as_ref().is_some_and(|h| h.required.contains(&position));
             if expression {
-                writeln!(body, "  {}?: {} | Expression<Compat<{t}>, \"{name}\" | \"~{name}\", {{}}>;", camel(&f.name), file_input_type(m, f)).unwrap();
-            } else { writeln!(body, "  {}?: {};", camel(&f.name), file_input_type(m, f)).unwrap(); }
+                writeln!(body, "  {}?: {} | Expression<Compat<{t}>, \"{name}\" | \"~{name}\", {{}}>;", camel(&f.name), field_input(m, f)).unwrap();
+            } else { writeln!(body, "  {}?: {};", camel(&f.name), field_input(m, f)).unwrap(); }
             if let Some(r) = belongs_to(m, &f.name).filter(|r| last_key(r, &f.name)) {
                 let null = if f.nullable { " | null" } else { "" };
                 writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
@@ -436,7 +427,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             #[cfg(not(feature = "composition"))]
             let _ = position;
             let q = if f.primary_key { "" } else { "?" };
-            writeln!(body, "  {}{q}: {};", camel(&f.name), file_input_type(m, f)).unwrap();
+            writeln!(body, "  {}{q}: {};", camel(&f.name), field_input(m, f)).unwrap();
             if let Some(r) = belongs_to(m, &f.name).filter(|r| last_key(r, &f.name)) {
                 let null = if f.nullable { " | null" } else { "" };
                 writeln!(body, "  {}?: {}{null};", camel(&r.name), related_ref(schema, r)?).unwrap();
@@ -507,7 +498,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         )
         .unwrap();
         for f in m.fields().iter().filter(|f| f.nested.is_none()) {
-            writeln!(body, "  readonly {}: Column<O extends true ? {} | null : {}, S, {}, H>;", camel(&f.name), file_value_type(m, f), file_value_type(m, f), quote(&camel(&f.name)))
+            writeln!(body, "  readonly {}: Column<O extends true ? {} | null : {}, S, {}, H>;", camel(&f.name), field_type(m, f), field_type(m, f), quote(&camel(&f.name)))
                 .unwrap();
         }
         for g in &groups {
@@ -593,7 +584,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     if !ir.behavior.type_models.is_empty() {
         types.push("ModelSpec");
     }
-    let used_exts: BTreeSet<usize> = schema.models.iter().flat_map(|m| options.model_extensions(ir, &m.ir.name).into_iter().map(|(i, _)| i)).chain(options.extensions.iter().enumerate().filter(|(_, e)| e.runtime_module.is_some()).map(|(i, _)| i)).collect();
+    let used_exts: BTreeSet<usize> = schema.models.iter().flat_map(|m| options.model_extensions(ir, &m.ir.name).into_iter().map(|(i, _)| i)).chain(options.extensions.iter().enumerate().filter(|(_, e)| e.runtime_module.is_some() && !e.members.query_set.is_empty()).map(|(i, _)| i)).collect();
     if !query_sets.is_empty() || !used_exts.is_empty() {
         types.push("QueriesOf");
     }
@@ -639,18 +630,20 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     if !ir.types.is_empty() {
         out.push_str("const nested = (models as unknown as { readonly $types: Record<string, unknown> }).$types;\n\n");
     }
-    if !ir.behavior.file_fields.is_empty() {
-        out.push_str("import { FileField, type Reference, type Registry as StorageRegistry, type Upload } from \"@orm/file-storage\";\nimport { installModel } from \"@orm/file-storage/model\";\n");
-        let mut adapters = Vec::new();
-        for m in &schema.models {
-            if m.file_fields.is_empty() { continue; }
-            let fields = m.file_fields.iter().map(|f| {
-                let name = camel(&m.fields()[f.position].name);
-                format!("[{name:?}, new FileField({name:?}, {:?}, {})]", f.storage, f.nullable)
-            }).collect::<Vec<_>>().join(", ");
-            adapters.push(format!("installModel(models[{:?}]!._meta.Row.prototype, new Map([{fields}]), undefined, models[{:?}]!._meta)", m.ir.name, m.ir.name));
+    for (i, u) in adapters.uses.iter().enumerate() {
+        for line in &u.runtime.imports { writeln!(out, "{line}").unwrap(); }
+        writeln!(out, "import {{ {} as _fa{i} }} from {};", u.runtime.install, quote(&u.module("typescript"))).unwrap();
+        let installs: Vec<String> = schema.models.iter().filter_map(|m| {
+            let fields: Vec<String> = m.field_adapters.iter().filter(|a| a.adapter == u.id).map(|a| {
+                format!("[{}, {{ options: {}, nullable: {} }}]", quote(&camel(&m.fields()[a.position].name)), a.options, a.nullable)
+            }).collect();
+            (!fields.is_empty()).then(|| format!("_fa{i}(models[{}]!, new Map([{}]))", quote(&m.ir.name), fields.join(", ")))
+        }).collect();
+        writeln!(out, "const _FA{i} = [{}];", installs.join(", ")).unwrap();
+        for function in &u.runtime.module_functions {
+            writeln!(out, "export const {}: {} = (...args) => {{ for (const adapter of _FA{i}) adapter.{}(...args); }};", function.name, function.stub, function.method).unwrap();
         }
-        writeln!(out, "const FILE_ADAPTERS = [{}];\nexport function configureFileStorage(registry: StorageRegistry): void {{ for (const adapter of FILE_ADAPTERS) adapter.configure(registry); }}\n", adapters.join(", ")).unwrap();
+        out.push('\n');
     }
     out.push_str(&body);
     Ok(out)
