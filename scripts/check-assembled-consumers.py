@@ -78,7 +78,7 @@ js = work / "js"
 js.mkdir()
 (js / "package.json").write_text('{"private":true,"type":"module"}\n')
 run(npm, "install", "--ignore-scripts", "--no-audit", "--no-fund", *glob.glob(str(tarballs / "*.tgz")), *glob.glob(str(dist / "*.tgz")), cwd=js)
-bun = shutil.which("bun")
+bun = tool("bun")
 for dialect in dialects:
     consumer = js / dialect
     consumer.mkdir()
@@ -92,6 +92,5 @@ for dialect in dialects:
     env = {"ORM_DATABASE_URL": "sqlite://:memory:" if dialect == "sqlite" else os.environ["ORM_TEST_DATABASE_URL"]}
     run(python, "use.py", cwd=consumer, env=env)
     run(node, "use.mjs", cwd=consumer, env=env)
-    if bun:
-        run(bun, "use.mjs", cwd=consumer, env=env)
+    run(bun, "use.mjs", cwd=consumer, env=env)
 shutil.rmtree(work, ignore_errors=True)
