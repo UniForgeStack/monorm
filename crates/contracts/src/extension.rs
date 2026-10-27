@@ -752,7 +752,8 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
         }
     }
     for result in &r.result_fields {
-        if !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
+        let hooked = r.hooks.iter().any(|h| h.point == 5 && h.model == result.model && h.field.as_deref() == Some(result.field.as_str()));
+        if !hooked && !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
             return Err(format!("{}.{}: native result requires a compiled specialization; rebuild", result.model, result.field));
         }
     }
@@ -841,6 +842,12 @@ fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> R
         return Err(format!("{}: {who} is bound at point {}, and the manifest says point {}", at(hook.field.as_deref()), hook.point, export.point.map_or("none".into(), |p| p.to_string())));
     }
     let Some(field) = field else { return Ok(()) };
+    if hook.point == 5 {
+        let result = |name: &str| ir.behavior.result_fields.iter().any(|r| r.model == hook.model && r.field == name);
+        if !result(&field.name) { return Err(format!("{}.{}: {who} is a computed field (point 5), so the pass must declare the field in `result_fields`", model.name, field.name)); }
+        if hook.dependencies.is_empty() { return Err(format!("{}.{}: {who} is a computed field and names no dependencies", model.name, field.name)); }
+        if let Some(d) = hook.dependencies.iter().find(|d| result(d)) { return Err(format!("{}.{}: {who} depends on the computed field {d}; a computed field may read stored fields only", model.name, field.name)); }
+    }
     let mismatch = |role: &str, export_type: ColType, wanted: String| format!(
         "{}.{}: {who} {role} {} but the field is {wanted}", model.name, field.name, col_name(export_type));
     if field.array { return Err(format!("{}.{}: {who} cannot bind an array field; ABI 0.2 has no typed array value", model.name, field.name)); }

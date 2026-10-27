@@ -132,7 +132,7 @@ pub fn prepare_insert(
     }
     if positions
         .iter()
-        .any(|p| logical.native.computed().contains(p))
+        .any(|p| logical.computed(*p))
     {
         return Err(Error::query("computed fields are read-only"));
     }

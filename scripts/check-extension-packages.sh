@@ -43,6 +43,8 @@ model Note {
   end Int
   shop_id Int
   updated_by String?
+  first String @default("")
+  last String @default("")
   @@inherit.extends(Base)
   @@outside.tag("installed")
   @@query.filter("positive", "id > 0")

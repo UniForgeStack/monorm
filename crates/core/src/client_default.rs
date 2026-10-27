@@ -1,12 +1,14 @@
 //! `@client_default`: values the ORM fills into omitted insert values. Definition
 //! parses each literal once; inserts copy it or make a new value for each row.
-use crate::ir::{ClientCall, ClientDefaultIr, ColType, EnumIr, FieldIr, ValueType};
+use crate::ir::{ClientCall, ClientDefaultIr, ColType, EnumIr, Expr, FieldIr, ValueType};
 use serde_json::Value;
 
 #[derive(Clone, Debug)]
 pub enum ClientDefault {
     Literal(Literal),
     Call(ClientCall),
+    /// An expression the insert writes into each omitted value, parsed once.
+    Expr(Expr),
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +70,7 @@ pub fn prepare(model: &str, fields: &[FieldIr], enums: &[EnumIr]) -> Result<Vec<
                 if !fits { return Err(what(&format!("{call:?} does not fit a {:?} field", f.ty).to_lowercase())); }
                 ClientDefault::Call(*call)
             }
+            ClientDefaultIr::Expr(json) => ClientDefault::Expr(crate::writes::parse_expr(json, false).map_err(|e| what(&e))?),
         };
         out.push((position, prepared));
     }

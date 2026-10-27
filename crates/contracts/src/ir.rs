@@ -408,6 +408,9 @@ pub enum ClientDefaultIr {
     Value(serde_json::Value),
     /// A value made for each row.
     Call(ClientCall),
+    /// A query IR expression (the JSON of `Expr`) over `scope.<name>` and literals. The insert puts it in the
+    /// VALUES of each row that omits the field; the field takes no transform or validator.
+    Expr(serde_json::Value),
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]

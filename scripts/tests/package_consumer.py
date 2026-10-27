@@ -49,6 +49,13 @@ async def run():
             assert row.version == 1 and row.changed is not None
             assert (await notes.get(Note.id == 1)).updated_by == "ann"
             assert (await notes.tagged().all())[0].text == "updated"
+            # acme.outside.initials (point 5) computes `initials` from `first` and `last` on read.
+            await notes.insert(id=3, text="named", start=1, end=2, shop_id=1, first="ada", last="lovelace")
+            assert (await notes.get(Note.id == 3)).initials == "AL"
+            assert [n.initials for n in await notes.filter(Note.id.in_([1, 3])).order_by(Note.id).all()] == ["", "AL"]
+            await fails(notes.filter(Note.id == 3).update(initials="ZZ"), "read-only")
+            await fails(notes.filter(Note.initials == "AL").count(), "computed fields")
+            await notes.filter(Note.id == 3).delete()
             # Another shop's row is outside the default filter `shop_id == scope.shop`.
             await notes.insert(id=2, text="other", start=1, end=2, shop_id=2)
             assert [n.id for n in await notes.all()] == [1]

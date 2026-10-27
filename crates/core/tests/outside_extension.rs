@@ -567,3 +567,74 @@ fn a_point_four_hook_that_returns_the_wrong_type_fails_define() {
     let error = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).err().expect("type");
     assert!(error.contains("Post.tag") && error.contains("acme.outside.actor"), "{error}");
 }
+
+// Hook 5: a point-5 binding on a result field gives a computed field that the library fills on read.
+
+fn initials_ir(mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
+    let id = FieldIr { primary_key: true, ..FieldIr::plain("id", ColType::Int) };
+    let fields = [id, FieldIr::plain("first", ColType::Text), FieldIr::plain("last", ColType::Text), FieldIr::plain("initials", ColType::Text)];
+    let person = serde_json::json!({ "name": "Person", "table": "person", "fields": fields });
+    let mut ir = hooked(vec![], serde_json::Value::Null);
+    ir.models = vec![serde_json::from_value(person).unwrap()];
+    ir.behavior.hooks.push(HookBinding {
+        source: ID.into(), point: 5, model: "Person".into(), field: Some("initials".into()), export: "acme.outside.initials".into(),
+        dependencies: vec!["first".into(), "last".into()], reads_context: false,
+    });
+    ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
+    mutate(&mut ir);
+    ir
+}
+
+#[test]
+fn a_point_five_binding_resolves_into_the_computed_list_of_the_hook_plan() {
+    let manifest = installed("", "0.2");
+    let schema = orm_core::schema::Schema::from_ir_with_packages(initials_ir(|_| {}), &packages(&manifest)).unwrap();
+    let model = schema.model(0);
+    let plan = model.hooks.as_deref().expect("the model has a plan");
+    assert_eq!(plan.computed.len(), 1);
+    let (position, hook, dependencies) = &plan.computed[0];
+    assert_eq!((*position, dependencies.as_slice()), (3, &[1, 2][..]));
+    assert!(model.computed(3) && !model.computed(1) && model.dependencies(3) == [1, 2]);
+    assert_eq!(hook.compute(&[arg("first", text("ada")), arg("last", text("lovelace"))], &Context::default()), Ok(text("AL")));
+}
+
+/// Lowers the `Person` schema of `initials_ir(mutate)` through the pass hook of the plan, which validates it.
+fn lower_initials(mutate: impl FnOnce(&mut SchemaIr)) -> Result<SchemaIr, String> {
+    let plan = bind_plan(&installed("", "0.2"));
+    let seed = std::cell::RefCell::new(Some(initials_ir(mutate)));
+    let run = |ir: &mut SchemaIr, _: &str| {
+        let seed = seed.borrow_mut().take().expect("one run");
+        ir.models = seed.models;
+        ir.behavior.hooks = seed.behavior.hooks;
+        ir.behavior.result_fields = seed.behavior.result_fields;
+        Ok(true)
+    };
+    let mut ir = unlowered();
+    plan.lower(&mut ir, None, &run).map(|_| ir)
+}
+
+#[test]
+fn a_point_five_binding_on_a_declared_result_field_lowers() {
+    let ir = lower_initials(|_| {}).unwrap();
+    assert_eq!(ir.behavior.result_fields.len(), 1);
+}
+
+#[test]
+fn a_computed_field_that_depends_on_a_computed_field_fails() {
+    let error = lower_initials(|ir| {
+        ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "last".into(), dependencies: vec!["first".into()] });
+        ir.behavior.hooks.push(HookBinding {
+            source: ID.into(), point: 5, model: "Person".into(), field: Some("last".into()), export: "acme.outside.initials".into(),
+            dependencies: vec!["first".into()], reads_context: false,
+        });
+    }).unwrap_err();
+    assert!(error.contains("Person.initials") && error.contains("depends on the computed field last"), "{error}");
+}
+
+#[test]
+fn a_point_five_binding_without_a_result_field_or_with_the_wrong_type_fails() {
+    let error = lower_initials(|ir| ir.behavior.result_fields.clear()).unwrap_err();
+    assert!(error.contains("Person.initials") && error.contains("result_fields"), "{error}");
+    let error = lower_initials(|ir| ir.models[0].fields[3] = FieldIr::plain("initials", ColType::Int)).unwrap_err();
+    assert!(error.contains("Person.initials") && error.contains("acme.outside.initials"), "{error}");
+}

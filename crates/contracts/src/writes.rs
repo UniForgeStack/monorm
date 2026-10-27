@@ -25,6 +25,9 @@ pub enum AssignValue {
     /// The value that a library hook (point 4) returns. `source` owns the export, and the hook binding of
     /// the field names it; the hook reads the request context.
     Hook { export: String },
+    /// A query IR expression (the JSON of `Expr`) over the row's own columns and `scope.<name>`. The model's
+    /// `define()` parses it once; the statement puts it in the SET list.
+    Expr(serde_json::Value),
 }
 
 /// Whether the default `on_conflict(update=True)` column list takes the field.

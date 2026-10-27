@@ -60,6 +60,7 @@ const SOURCE: &str = "acme.outside";
 
 /// `@@outside.guard` binds the `acme.outside.*` hooks to a model that has the fields `text`, `start`, `end`, `shop_id` and `updated_by`:
 /// trim and non-empty on `text`, `start < end`, the request `user` as `updated_by` on update, and the default filter `shop_id == scope.shop`.
+/// A model that also has the text fields `first` and `last` gets the computed field `initials`.
 fn guard(ir: &mut SchemaIr) -> Result<(), String> {
     use orm_contracts::{extension::{HookBinding, ReadDefault}, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
     let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == GUARD).cloned().collect();
@@ -69,6 +70,7 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
         for name in ["text", "start", "end", "shop_id", "updated_by"] {
             if !m.fields.iter().any(|f| f.name == name) { return Err(format!("@@{GUARD} on {model}: the model needs a field {name}")); }
         }
+        let has_initials = ["first", "last"].iter().all(|n| m.fields.iter().any(|f| f.name == *n));
         let bind = |point: u8, field: Option<&str>, export: &str, dependencies: &[&str], reads_context: bool| HookBinding {
             source: SOURCE.into(), point, model: model.clone(), field: field.map(Into::into), export: export.into(),
             dependencies: dependencies.iter().map(|s| (*s).into()).collect(), reads_context,
@@ -79,6 +81,13 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
             bind(3, None, "acme.outside.ordered", &["start", "end"], false),
             bind(4, Some("updated_by"), "acme.outside.actor", &[], true),
         ]);
+        // A model with the text fields `first` and `last` also gets the computed field `initials`.
+        if has_initials {
+            let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
+            for m in models.filter(|m| m.name == model) { m.fields.push(FieldIr::plain("initials", ColType::Text)); }
+            ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: model.clone(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
+            ir.behavior.hooks.push(bind(5, Some("initials"), "acme.outside.initials", &["first", "last"], false));
+        }
         ir.behavior.write_assignments.push(WriteAssignment {
             source: SOURCE.into(), model: model.clone(), field: "updated_by".into(), on: vec![WriteKind::Update],
             value: AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: UpsertDefault::Drop,
@@ -142,6 +151,11 @@ fn ordered(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
 fn actor(_: &State, _: &[Arg], ctx: &Context) -> Result<Value, String> {
     match ctx.get("user") { Some(Value::Text(user)) => Ok(Value::Text(user.clone())), _ => Err("no user in the request scope".into()) }
 }
+/// A computed field: the capital letters of two text fields.
+fn initials(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
+    let letter = |name| text(args, name).map(|s| s.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default());
+    Ok(Value::Text(letter("first")? + &letter("last")?))
+}
 fn drops(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Int(DROPS.load(Ordering::SeqCst) as i64)) }
 fn fail(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Err("the hook failed".into()) }
 fn explode(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { panic!("the hook panicked") }
@@ -162,7 +176,7 @@ macro_rules! export {
             init = init;
             hooks {
                 "outside.prefix" => prefix, "outside.audit" => audit, "outside.context" => context, "outside.drops" => drops,
-                "acme.outside.trim" => trim, "acme.outside.nonempty" => nonempty, "acme.outside.ordered" => ordered, "acme.outside.actor" => actor,
+                "acme.outside.trim" => trim, "acme.outside.nonempty" => nonempty, "acme.outside.ordered" => ordered, "acme.outside.actor" => actor, "acme.outside.initials" => initials,
                 "outside.fail" => fail, "outside.panic" => explode, "outside.echo" => echo, "outside.add" => add,
             };
             ("acme.outside.tag", tag),

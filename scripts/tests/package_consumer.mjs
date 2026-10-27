@@ -42,6 +42,13 @@ try {
     assert.ok(row.changed instanceof Date);
     assert.equal((await notes.get(Note.id.eq(1))).updatedBy, 'ann');
     assert.equal((await notes.tagged().all())[0].text, 'updated');
+    // acme.outside.initials (point 5) computes `initials` from `first` and `last` on read.
+    await notes.insert({ id: 3, text: 'named', start: 1, end: 2, shopId: 1, first: 'ada', last: 'lovelace' });
+    assert.equal((await notes.get(Note.id.eq(3))).initials, 'AL');
+    assert.deepEqual((await notes.filter(Note.id.in([1, 3])).orderBy(Note.id).all()).map((n) => n.initials), ['', 'AL']);
+    await fails(notes.filter(Note.id.eq(3)).update({ initials: 'ZZ' }), 'read-only');
+    await fails(notes.filter(Note.initials.eq('AL')).count(), 'computed fields');
+    await notes.filter(Note.id.eq(3)).delete();
     // Another shop's row is outside the default filter `shop_id == scope.shop`.
     await notes.insert({ id: 2, text: 'other', start: 1, end: 2, shopId: 2 });
     assert.deepEqual((await notes.all()).map((n) => n.id), [1]);

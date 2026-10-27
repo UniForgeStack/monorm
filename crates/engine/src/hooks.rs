@@ -1,9 +1,10 @@
 //! Change-set hooks at the write seams. Each seam reads `Model.hooks` once per statement and
 //! runs the transforms, the validators and the record validators of `HookPlan` on the supplied values.
+use crate::db::{Cell, DbError, DbResult, RowSet};
 use crate::error::{Error, Result};
 use crate::params::Params;
 use orm_contracts::abi::{Arg, Context, Value as Abi};
-use orm_core::{hooks::{HookPlan, HookRef}, schema::Model};
+use orm_core::{hooks::{HookPlan, HookRef}, ir::ValueType, schema::Model};
 use sea_query::Value;
 
 /// Map a logical field position to its supplied row slot, once per operation.
@@ -76,7 +77,7 @@ impl Contexts {
     }
 }
 
-fn context(params: &dyn Params) -> Result<Context> {
+pub(crate) fn context(params: &dyn Params) -> Result<Context> {
     let mut values = Vec::new();
     for (name, i) in params.scope_values() {
         let value = params.value(i, None)?;
@@ -88,11 +89,15 @@ fn context(params: &dyn Params) -> Result<Context> {
 
 /// The database value for what a hook returned. The original value gives the type.
 fn from_abi(model: &Model, position: usize, original: &Value, out: Abi) -> Result<Value> {
-    use chrono::DateTime;
     let field = &model.fields()[position];
-    let bad = |what: &str| Error::query(format!("{}.{}: hook returned {what} for this field", model.ir.name, field.name));
+    convert(&format!("{}.{}", model.ir.name, field.name), field.nullable, original, out)
+}
+
+fn convert(label: &str, nullable: bool, original: &Value, out: Abi) -> Result<Value> {
+    use chrono::DateTime;
+    let bad = |what: &str| Error::query(format!("{label}: hook returned {what} for this field"));
     if matches!(out, Abi::Null) {
-        if !field.nullable { return Err(bad("null")); }
+        if !nullable { return Err(bad("null")); }
         return Ok(original.as_null());
     }
     let int = |v: i64, lo: i64, hi: i64| if (lo..=hi).contains(&v) { Ok(v) } else { Err(bad("an integer out of range")) };
@@ -209,4 +214,77 @@ pub fn assigned(model: &Model, position: usize, params: &dyn Params) -> Result<O
     let out = hook.produce(contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
     let seed = crate::params::null_of(Some(field.value_type()));
     from_abi(model, position, &seed, out).map(Some)
+}
+
+/// A computed field (point 5) of a read: the hook runs on each returned row, on the dependency columns of the same statement.
+pub struct Computed { column: usize, hook: HookRef, ty: ValueType, nullable: bool, label: String, args: Vec<(String, usize, ValueType)>, context: Context }
+
+/// The computed fields among the result columns `positions` of `model`, which start at column `start`.
+pub fn computations(model: &Model, start: usize, positions: &[usize], params: &dyn Params) -> Result<Vec<Computed>> {
+    let Some(plan) = model.hooks.as_deref().filter(|p| !p.computed.is_empty()) else { return Ok(vec![]) };
+    let mut out = vec![];
+    for (slot, &position) in positions.iter().enumerate() {
+        let Some((hook, dependencies)) = plan.computed_at(position) else { continue };
+        let field = &model.fields()[position];
+        let args = dependencies.iter().map(|d| {
+            let at = positions.iter().position(|p| p == d).ok_or_else(|| Error::query(format!("{}.{}: the read does not select its dependency {}", model.ir.name, field.name, model.fields()[*d].name)))?;
+            Ok((model.fields()[*d].name.clone(), start + at, model.fields()[*d].value_type()))
+        }).collect::<Result<_>>()?;
+        let context = if hook.reads_context() { context(params)? } else { Context::default() };
+        out.push(Computed { column: start + slot, hook: hook.clone(), ty: field.value_type(), nullable: field.nullable, label: format!("{}.{}", model.ir.name, field.name), args, context });
+    }
+    Ok(out)
+}
+
+struct ComputedRows {
+    inner: Box<dyn RowSet>,
+    /// Indexed by result column; `Some` holds the computed values of that column.
+    values: Vec<Option<Vec<Value>>>,
+}
+
+impl RowSet for ComputedRows {
+    fn len(&self) -> usize { self.inner.len() }
+    fn cell(&self, row: usize, col: usize, ty: ValueType) -> DbResult<Cell<'_>> {
+        let Some(Some(values)) = self.values.get(col) else { return self.inner.cell(row, col, ty) };
+        Ok(match &values[row] {
+            Value::Bool(v) => v.map_or(Cell::Null, Cell::Bool),
+            Value::Int(v) => v.map_or(Cell::Null, Cell::Int),
+            Value::BigInt(v) => v.map_or(Cell::Null, Cell::BigInt),
+            Value::Double(v) => v.map_or(Cell::Null, Cell::Float),
+            Value::String(v) => v.as_deref().map_or(Cell::Null, Cell::Text),
+            Value::Uuid(v) => v.map_or(Cell::Null, Cell::Uuid),
+            Value::Json(v) => v.as_ref().map_or(Cell::Null, |j| Cell::Json((**j).clone())),
+            Value::BigDecimal(v) => v.as_ref().map_or(Cell::Null, |d| Cell::Decimal(d.to_string())),
+            Value::ChronoDate(v) => v.map_or(Cell::Null, Cell::Date),
+            Value::ChronoDateTimeWithTimeZone(v) => v.map_or(Cell::Null, |d| Cell::DateTime(d.with_timezone(&chrono::Utc))),
+            other => return Err(DbError::other(format!("a computed value cannot be {other:?}"))),
+        })
+    }
+    fn value(&self, row: usize, col: usize, ty: ValueType) -> DbResult<Value> {
+        match self.values.get(col) { Some(Some(values)) => Ok(values[row].clone()), _ => self.inner.value(row, col, ty) }
+    }
+    fn get_i64(&self, row: usize, col: usize) -> DbResult<i64> { self.inner.get_i64(row, col) }
+    fn get_bool(&self, row: usize, col: usize) -> DbResult<bool> { self.inner.get_bool(row, col) }
+}
+
+/// `rows` with the computed columns filled: one hook call for each row.
+pub fn compute(rows: Box<dyn RowSet>, computed: &[Computed]) -> DbResult<Box<dyn RowSet>> {
+    if computed.is_empty() { return Ok(rows); }
+    let mut values = vec![None; computed.iter().map(|c| c.column + 1).max().unwrap_or(0)];
+    for c in computed {
+        let original = crate::params::null_of(Some(c.ty));
+        let mut column = Vec::with_capacity(rows.len());
+        for row in 0..rows.len() {
+            let mut args = Vec::with_capacity(c.args.len());
+            for (name, col, ty) in &c.args {
+                let value = rows.value(row, *col, *ty)?;
+                let value = abi_of(&value).ok_or_else(|| DbError::other(format!("{}: hooks do not support the type of {name}", c.label)))?;
+                args.push(Arg { name: name.clone(), value });
+            }
+            let out = c.hook.compute(&args, &c.context).map_err(|m| DbError::other(format!("{}: {m}", c.label)))?;
+            column.push(convert(&c.label, c.nullable, &original, out).map_err(|e| DbError::other(e.to_string()))?);
+        }
+        values[c.column] = Some(column);
+    }
+    Ok(Box::new(ComputedRows { inner: rows, values }))
 }
