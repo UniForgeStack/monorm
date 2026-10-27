@@ -55,7 +55,7 @@ def schema(dialect, defaults=True):
             },
         ],
         "behavior": {
-            "schema_contract": 2,
+            "schema_contract": 3,
             "read_defaults": [
                 {
                     "source": "orm.query-defaults",
@@ -637,7 +637,7 @@ async def test_a_joined_model_brings_its_related_default():
             },
         ],
         "behavior": {
-            "schema_contract": 2,
+            "schema_contract": 3,
             "read_defaults": [
                 {"source": "orm.query-defaults", "name": "query", "model": "JBook", "load": [["author"]]}
             ],

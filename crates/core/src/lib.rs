@@ -31,9 +31,6 @@ pub mod identity;
 pub mod client_default;
 pub mod writes;
 
-#[cfg(any(feature = "generic-relations", test))]
-pub mod generic;
-
 #[cfg(feature = "proxy-models")]
 pub use orm_proxy_runtime as proxy;
 pub mod selection;

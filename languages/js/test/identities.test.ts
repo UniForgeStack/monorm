@@ -6,6 +6,7 @@ import { resolve, join } from "node:path";
 import { main as cli } from "../src/cli.js";
 import { connect, IntegrityError, load, Migrations, Registry, SchemaError } from "../src/index.js";
 import { native } from "../src/native.js";
+import { hasExtension } from "./artifact-caps.js";
 
 const scratch = resolve("../.test-tmp/node-identities");
 mkdirSync(scratch, { recursive: true });
@@ -70,7 +71,7 @@ test("a generic relation schema follows the artifact capability", async () => {
   try {
     writeFileSync(path, `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\n@@map("generic08_node_posts")\n}\nmodel Tag {\nid Int @id\ncontent_type ContentType?\nobject_id Int?\n@@generic.relation("target", type: "content_type", key: "object_id", targets: ["Post"])\n@@map("generic08_node_tags")\n}`);
     assert.equal(await cli(["--schema", path, "identities"]), 0);
-    if (!(JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("generic-relations")) {
+    if (!hasExtension("orm.generic")) {
       assert.throws(() => load(path, { registry: new Registry() }), /rebuild/);
       return;
     }
@@ -90,7 +91,7 @@ test("a generic relation schema follows the artifact capability", async () => {
 });
 
 const genericHeader = `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\ntags Tag[] @generic.reverse\n@@map("generic_field_node_posts")\n}\nmodel Photo {\nid Int @id\n@@map("generic_field_node_photos")\n}\n`;
-const hasGeneric = () => (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("generic-relations");
+const hasGeneric = () => hasExtension("orm.generic");
 
 test("a Generic field creates its pair, its index and the reverse field", async () => {
   const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null);
@@ -111,7 +112,7 @@ test("a Generic field creates its pair, its index and the reverse field", async 
     assert.deepEqual(tag.fields.map((f) => [f.name, f.nullable ?? false, f.enum ?? null]),
       [["id", false, null], ["target_type", true, "ContentType"], ["target_id", true, null], ["note", false, null]]);
     assert.deepEqual(tag.indexes, [{ columns: [{ field: "target_type" }, { field: "target_id" }] }]);
-    assert.deepEqual(ir.behavior["generic_reverse"], [{ model: "Post", name: "tags", source: "Tag", relation: "target" }]);
+    assert.deepEqual((ir.behavior["extension_data"] as Record<string, { reverse: unknown }>)["orm.generic"]!.reverse, [{ model: "Post", name: "tags", source: "Tag", relation: "target" }]);
   } finally { rmSync(dir, { recursive: true }); }
 });
 
@@ -133,3 +134,9 @@ test("moving to the Generic field form needs no migration", { skip: !hasGeneric(
     }
   } finally { rmSync(dir, { recursive: true }); }
 });
+
+for (const behavior of ['{"schema_contract":2,"generic_relations":[{"model":"Tag"}]}', '{"schema_contract":2}']) {
+  test(`models generated for contract 2 ask for regeneration (${behavior.length})`, () => {
+    assert.throws(() => native().prepareSchema(`{"models":[],"behavior":${behavior}}`), /regenerate/);
+  });
+}
