@@ -1654,7 +1654,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** Attaches local child values to an existing parent, without a change to the parent.
-   * Only composed child models accept it. */
+   * Only the child models of a multi-table model accept it. */
   async attach(parentId: In<M["pk"]>, values: M extends { readonly attach: infer A extends object } ? A : never): Promise<M["row"]> {
     const prepared = prepareAttach(this.meta, values);
     const db = this.db();

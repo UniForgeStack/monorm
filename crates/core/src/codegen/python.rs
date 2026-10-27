@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
-use super::{groups, has_server_value, sub_has_default, type_requires};
+use super::{groups, has_server_value_in, sub_has_default, type_requires};
 use crate::schema::{Model, Schema};
 
 pub struct Generated {
@@ -224,8 +224,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     exported.extend(names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]));
     exported.extend(names.iter().map(|n| format!("{n}QuerySet")));
     exported.extend(ir.behavior.type_models.iter().map(|t| format!("{}Fields", t.name)));
-    let composed_names: Vec<_> = schema.models.iter().filter(|m| m.pk_field().hints.get("composition.child").is_some_and(|v| v == "true")).map(|m| &m.ir.name).collect();
-    exported.extend(composed_names.iter().map(|n| format!("{n}Attach")));
+    let attach_names: Vec<_> = schema.models.iter().filter(|m| schema.attach_fields(m).is_some()).map(|m| &m.ir.name).collect();
+    exported.extend(attach_names.iter().map(|n| format!("{n}Attach")));
     let all = exported.iter().map(|n| format!("    \"{n}\",\n")).collect::<String>();
 
     // -- models.py -------------------------------------------------------------------
@@ -309,7 +309,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     if !type_stubs.is_empty() { writeln!(py, "{} = Model", type_stubs.join(" = ")).unwrap(); }
     let mut dicts: Vec<String> =
         names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]).collect();
-    dicts.extend(composed_names.iter().map(|n| format!("{n}Attach")));
+    dicts.extend(attach_names.iter().map(|n| format!("{n}Attach")));
     if !dicts.is_empty() { writeln!(py, "{} = dict\n", dicts.join(" = ")).unwrap(); }
     writeln!(py, "__all__ = [\n{all}]").unwrap();
 
@@ -476,13 +476,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             match belongs(&f.name) {
                 Some(r) => {
                     let target = if f.nullable { format!("{} | None", r.target) } else { r.target.clone() };
-                    if !f.nullable && !has_server_value(f) && f.client_default.is_none() {
+                    if !f.nullable && !has_server_value_in(schema, m, f) && f.client_default.is_none() {
                         writeln!(body, "    # One of {} / {} is required (checked at runtime).", f.name, r.name).unwrap();
                     }
                     writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap();
                     if last(r, &f.name) { writeln!(body, "    {}: NotRequired[{target}]", r.name).unwrap(); }
                 }
-                None if f.nullable || has_server_value(f) || f.client_default.is_some() => writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap(),
+                None if f.nullable || has_server_value_in(schema, m, f) || f.client_default.is_some() => writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap(),
                 None => writeln!(body, "    {}: {t}", f.name).unwrap(),
             }
         }
@@ -490,13 +490,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let t = or_none(format!("{} | {}Input", g.ty, g.ty), g.nullable);
             if g.nullable || !type_requires(ir, g.ty) { writeln!(body, "    {}: NotRequired[{t}]", g.name).unwrap(); } else { writeln!(body, "    {}: {t}", g.name).unwrap(); }
         }
-        if composed_names.contains(&&m.ir.name) {
+        if attach_names.contains(&&m.ir.name) {
             writeln!(body, "\nclass {name}Attach(TypedDict):").unwrap();
-            let local: Vec<_> = m.fields().iter().filter(|f| f.hints.get("composition.local").is_some_and(|v| v == "true")).collect();
+            let local: Vec<_> = schema.attach_fields(m).unwrap_or_default().into_iter().map(|p| &m.fields()[p]).collect();
             if local.is_empty() { writeln!(body, "    pass").unwrap(); }
             for field in local {
                 let ty = value_type(field);
-                let ty = if field.nullable || has_server_value(field) { format!("NotRequired[{ty}]") } else { ty };
+                let ty = if field.nullable || has_server_value_in(schema, m, field) { format!("NotRequired[{ty}]") } else { ty };
                 writeln!(body, "    {}: {ty}", field.name).unwrap();
             }
         }
@@ -559,7 +559,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let literal = default_names.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", ");
             writeln!(body, "    def without_defaults(self, *names: Literal[{literal}]) -> Self: ...  # type: ignore[override]").unwrap();
         }
-        if composed_names.contains(&&m.ir.name) {
+        if attach_names.contains(&&m.ir.name) {
             let key_type = value_type(m.pk_field());
             writeln!(body, "    async def attach(self, parent_id: {key_type}, values: {name}Attach) -> {name}: ...  # type: ignore[override]").unwrap();
         }
@@ -708,7 +708,7 @@ pub fn facade(unit: &crate::dsl::SchemaUnit, shared_path: &str, stub_import: &st
     }
     for name in &unit.models {
         names.extend([name.clone(), format!("{name}Insert"), format!("{name}Update"), format!("{name}UpdateRow"), format!("{name}QuerySet")]);
-        if schema.models.iter().any(|m| m.ir.name == *name && m.pk_field().hints.get("composition.child").is_some_and(|v| v == "true")) { names.push(format!("{name}Attach")); }
+        if schema.models.iter().any(|m| m.ir.name == *name && schema.attach_fields(m).is_some()) { names.push(format!("{name}Attach")); }
     }
     let path = serde_json::to_string(shared_path).unwrap();
     let exports = serde_json::to_string(&names).unwrap();

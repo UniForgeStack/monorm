@@ -330,13 +330,11 @@ fn append(plan: &Plan, batching: bool, statements: &mut Vec<Statement>) {
         Plan::RowUpdate(s, _) => s.clone().inspection_statement().into_sub_query_statement(),
         Plan::Delete(s, _) => s.clone().into_sub_query_statement(),
         Plan::Insert(s, _) => s.clone().into_sub_query_statement(),
-        #[cfg(feature = "model-composition")]
-        Plan::ComposedInsert(insert) => {
+        Plan::MultiTableInsert(insert) => {
             statements.extend(insert.inspection());
             return;
         }
-        #[cfg(feature = "model-composition")]
-        Plan::ComposedMutation(mutation) => {
+        Plan::MultiTableMutation(mutation) => {
             statements.extend(mutation.inspection());
             return;
         }

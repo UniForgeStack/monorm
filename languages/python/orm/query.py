@@ -1375,7 +1375,7 @@ class QuerySet(Generic[M]):
 
     async def attach(self, parent_id: Any, values: Mapping[str, Any]) -> M:
         """Attach local child values to an existing parent without altering it."""
-        from .composition import attach
+        from .multi_table import attach
 
         return await attach(self, parent_id, values)
 

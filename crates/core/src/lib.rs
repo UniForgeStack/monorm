@@ -24,7 +24,6 @@ pub mod behavior;
 pub mod hooks;
 pub mod loader;
 
-#[cfg(feature = "composition")]
 pub mod ownership;
 
 pub mod field_adapters;

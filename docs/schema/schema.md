@@ -596,11 +596,11 @@ model Post {
 ```
 
 * All ORM writes to a protected model fail outside an `allow_writes` scope (`allowWrites` in TypeScript) with `WriteProtected`:
-  inserts, bulk inserts, updates, `update_many`, deletes, upserts, instance writes and composed writes.
+  inserts, bulk inserts, updates, `update_many`, deletes, upserts, instance writes and multi-table writes.
 * The check is on the table that the SQL writes.
   `post.tags.add()` writes `PostTag` rows, so `PostTag` must be protected for it to fail.
   A proxy writes the table of its root, so the protection of the root applies to the proxy.
-  A composed write also writes the tables of its storage ancestors.
+  A multi-table write also writes the tables of its storage ancestors.
 * A scope allows the tables of the models it names. Scopes nest: an inner scope adds its models to the outer ones.
 * Reads are not changed.
 * `@@protected_write` creates no trigger, no grant and no DDL. Migrations ignore it.

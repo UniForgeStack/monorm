@@ -234,10 +234,12 @@ A field owner must be the local owner or an ancestor.
 Inherited scalar reads, projections and filters use ordinary SQL through those prepared owners.
 Inherited relation links, `outer()` and `distinct(on=...)` on inherited columns need an expanded host primitive.
 
-Writes across owner tables belong to `orm_engine::composed`, the executor of the `model-composition` package.
+Writes across owner tables belong to `orm_engine::multi_table`.
+It is in every build, so any extension can write a two-table model with these records; `tests/outside-extension` does so.
 It plans creates, attaches, filtered updates and deletes, and each runs in one transaction or savepoint.
-`update_many` on a composed model is rejected.
+`update_many` on a multi-table model is rejected.
 Ordinary model writes reject inherited storage instead of writing nonexistent columns.
+Code generation and both runtimes derive the child models, their own fields and the key default from `behavior.owner_links` and `behavior.field_storage`; a pass writes no hint for them.
 The language APIs of these features are in [model-composition.md](../extensions/model-composition.md), [proxy-models.md](../extensions/proxy-models.md) and [selection-and-defaults.md](../schema/selection-and-defaults.md).
 
 ## Native behavior profiles

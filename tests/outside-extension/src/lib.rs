@@ -1,6 +1,6 @@
 // `pass-only` builds no hook, no state and no `init`.
 #![cfg_attr(feature = "pass-only", allow(dead_code, unused_macros))]
-use orm_contracts::{abi::{Arg, Context, Value}, extension::{capture_storage, Declaration, ModelView, ResultCheck, RowFilter}, ir::{ColType, FieldIr, SchemaIr}};
+use orm_contracts::{abi::{Arg, Context, Value}, extension::{capture_storage, Declaration, FieldStorage, ModelView, OwnerLink, ResultCheck, RowFilter}, ir::{ColType, FieldIr, ModelIr, OnDelete, RelKind, RelationIr, SchemaIr}};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const ATTRIBUTE: &str = "outside.tag";
@@ -19,6 +19,53 @@ fn tag(ir: &mut SchemaIr) -> Result<(), String> {
             model.fields.push(FieldIr { nullable: false, default: Some(label.into()), ..FieldIr::plain("tag", ColType::Text) });
         }
         if !found { return Err(format!("unknown model {}", d.model)); }
+    }
+    Ok(())
+}
+
+fn link(name: &str, target: &str, key: &str, foreign_key: bool) -> RelationIr {
+    RelationIr {
+        name: name.into(), kind: RelKind::One, target: target.into(), from: vec![key.into()], to: vec![key.into()],
+        foreign_key, on_delete: foreign_key.then_some(OnDelete::Cascade), on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
+    }
+}
+
+/// `@@outside.base(parent: "A", parentRef: "a", childRef: "b")` stores the fields of `A` in the table of `A` and the other fields in its own table; both share one key.
+fn base(ir: &mut SchemaIr) -> Result<(), String> {
+    let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == "outside.base").cloned().collect();
+    if declarations.is_empty() { return Ok(()); }
+    capture_storage(ir)?;
+    for d in declarations {
+        let argument = |key: &str| d.arguments.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned).ok_or_else(|| format!("@@outside.base on {}: {key} must be a non-empty string", d.model));
+        let (parent_name, parent_ref, child_ref) = (argument("parent")?, argument("parentRef")?, argument("childRef")?);
+        let at = |ir: &SchemaIr, name: &str| ir.models.iter().position(|m| m.name == name).ok_or_else(|| format!("unknown model {name}"));
+        let (child_at, parent_at) = (at(ir, &d.model)?, at(ir, &parent_name)?);
+        let parent: &ModelIr = &ir.models[parent_at];
+        let keys: Vec<&FieldIr> = parent.fields.iter().filter(|f| f.primary_key).collect();
+        let [root] = keys.as_slice() else { return Err(format!("{parent_name} needs one primary key")) };
+        if ir.models[child_at].fields.iter().any(|f| f.primary_key) { return Err(format!("{} takes its key from {parent_name}", d.model)); }
+        let mut key = (*root).clone();
+        (key.auto_increment, key.default, key.default_now, key.default_sql, key.unique, key.index) = (false, None, false, None, false, false);
+        let inherited: Vec<FieldIr> = parent.fields.iter().filter(|f| !f.primary_key).cloned().collect();
+        for f in &inherited {
+            let owner = ir.behavior.field_storage.iter().find(|s| s.model == parent_name && s.field == f.name).cloned();
+            ir.behavior.field_storage.push(FieldStorage {
+                model: d.model.clone(), field: f.name.clone(),
+                owner: owner.as_ref().map_or_else(|| parent_name.clone(), |s| s.owner.clone()),
+                column: owner.map_or_else(|| f.column.clone(), |s| s.column),
+            });
+        }
+        let child = &mut ir.models[child_at];
+        child.fields.insert(0, key.clone());
+        child.fields.extend(inherited);
+        child.relations.push(link(&parent_ref, &parent_name, &key.name, true));
+        ir.models[parent_at].relations.push(link(&child_ref, &d.model, &key.name, false));
+        let physical = &mut ir.behavior.storage.as_mut().ok_or("outside.base needs the captured storage")?.models;
+        physical.iter_mut().find(|m| m.name == parent_name).ok_or("the parent has no physical owner")?.relations.push(link(&child_ref, &d.model, &key.name, false));
+        let own = physical.iter_mut().find(|m| m.name == d.model).ok_or("the child has no physical owner")?;
+        own.fields.insert(0, key.clone());
+        own.relations.push(link(&parent_ref, &parent_name, &key.name, true));
+        ir.behavior.owner_links.push(OwnerLink { child: d.model.clone(), parent: parent_name.clone(), child_key: key.name.clone(), parent_key: key.name });
     }
     Ok(())
 }
@@ -281,6 +328,7 @@ macro_rules! export {
                 "acme.outside.seal" => seal, "acme.outside.unseal" => unseal, "acme.outside.label" => label, "acme.outside.region" => region, "acme.outside.editor" => by_user, "acme.outside.owner" => by_user,
                 "outside.fail" => fail, "outside.panic" => explode, "outside.echo" => echo, "outside.add" => add,
             };
+            ("acme.outside.base", base),
             ("acme.outside.tag", tag),
             ("acme.outside.fields", fields),
             ("acme.outside.view", view),
@@ -310,7 +358,7 @@ mod slice_one {
     /// Called by the ORM loader with readable ranges and a writable `out`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
-        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.view", super::view as PassFn), ("acme.outside.guard", super::guard as PassFn), ("acme.outside.wrapped", super::wrapped as PassFn)];
+        let passes: &[(&str, PassFn)] = &[("acme.outside.base", super::base as PassFn), ("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.view", super::view as PassFn), ("acme.outside.guard", super::guard as PassFn), ("acme.outside.wrapped", super::wrapped as PassFn)];
         // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
         unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
     }

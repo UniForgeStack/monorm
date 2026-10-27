@@ -10,9 +10,9 @@ use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, proce
 const ID: &str = "acme.outside";
 /// The passes and attributes that the manifest of `tests/outside-extension` stamps on a lowered schema.
 /// The passes in the order the stamp lists them; `PASSES` is the order they run in.
-const DECLARED_PASSES: [&str; 5] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.wrapped", "acme.outside.view"];
-const PASSES: [&str; 5] = ["acme.outside.fields", "acme.outside.wrapped", "acme.outside.tag", "acme.outside.guard", "acme.outside.view"];
-const ATTRIBUTES: [&str; 6] = ["outside.tag", "outside.money", "outside.note", "outside.view", "outside.guard", "outside.wrapped"];
+const DECLARED_PASSES: [&str; 6] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.wrapped", "acme.outside.base", "acme.outside.view"];
+const PASSES: [&str; 6] = ["acme.outside.fields", "acme.outside.wrapped", "acme.outside.tag", "acme.outside.guard", "acme.outside.base", "acme.outside.view"];
+const ATTRIBUTES: [&str; 7] = ["outside.tag", "outside.money", "outside.note", "outside.view", "outside.base", "outside.guard", "outside.wrapped"];
 const SCHEMA: &str = "model Post {\n id Int @id\n @@outside.tag(\"blue\")\n}\n";
 
 struct Builds {
@@ -498,6 +498,33 @@ fn an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model() {
     assert_eq!(ir.behavior.extension_data[ID]["notes"]["Order.memo"], "remember");
 }
 
+const BASE: &str = "model Account {\n id Int @id @default(autoincrement())\n email String\n}\nmodel Profile {\n bio String\n @@outside.base(parent: \"Account\", parentRef: \"account\", childRef: \"profile\")\n}\n";
+
+#[test]
+fn an_outside_pass_writes_a_two_table_model_that_the_schema_marks_as_foreign_storage() {
+    let manifest = installed("", "0.2");
+    let ir = compile("base", BASE, &[(ID, &manifest)]).unwrap();
+    assert_eq!(ir.behavior.owner_links.len(), 1);
+    assert_eq!((ir.behavior.owner_links[0].child.as_str(), ir.behavior.owner_links[0].parent.as_str()), ("Profile", "Account"));
+    assert_eq!(ir.behavior.field_storage.iter().map(|s| (s.model.as_str(), s.field.as_str(), s.owner.as_str())).collect::<Vec<_>>(), [("Profile", "email", "Account")]);
+    assert!(ir.models.iter().all(|m| m.fields.iter().all(|f| f.hints.keys().all(|k| !k.starts_with("composition.")))), "the pass writes no hint");
+    let names: Vec<&str> = ir.models[1].fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["id", "bio", "email"]);
+    let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+    let flags: Vec<(&str, bool)> = schema.models.iter().map(|m| (m.ir.name.as_str(), m.has_foreign_storage)).collect();
+    assert_eq!(flags, [("Account", false), ("Profile", true)]);
+}
+
+#[test]
+fn an_owner_link_that_no_field_storage_reads_through_fails_the_schema() {
+    let manifest = installed("", "0.2");
+    let mut ir = compile("base-orphan", BASE, &[(ID, &manifest)]).unwrap();
+    ir.behavior.field_storage.clear();
+    ir.models[1].fields.retain(|f| f.name != "email");
+    let error = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).err().expect("the schema must fail");
+    assert!(error.to_string().contains("owner link Profile -> Account: no field_storage reads a field through it"), "{error}");
+}
+
 // `Schema::from_ir_with_packages` opens the library of each package that has bindings and resolves them into `Model.hooks`.
 
 /// `Post { id, tag }` with the bindings `hooks`, the extension data of `data`, and the stamp of the library.
@@ -661,6 +688,7 @@ fn lower_initials(mutate: impl FnOnce(&mut SchemaIr)) -> Result<SchemaIr, String
     let run = |ir: &mut SchemaIr, _: &str| {
         let seed = seed.borrow_mut().take().expect("one run");
         ir.models = seed.models;
+        ir.behavior.storage = None;
         ir.behavior.hooks = seed.behavior.hooks;
         ir.behavior.result_fields = seed.behavior.result_fields;
         Ok(true)
@@ -721,6 +749,7 @@ fn lower_expressions(seed: SchemaIr) -> Result<SchemaIr, String> {
     let run = |ir: &mut SchemaIr, _: &str| {
         let seed = seed.borrow_mut().take().expect("one run");
         ir.models = seed.models;
+        ir.behavior.storage = None;
         ir.behavior.hooks = seed.behavior.hooks;
         ir.behavior.write_assignments = seed.behavior.write_assignments;
         Ok(true)

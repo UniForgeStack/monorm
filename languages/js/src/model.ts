@@ -188,7 +188,7 @@ export class ModelMeta implements Source {
   ) {
     const leaves = new Map<string, FieldMeta[]>();
     for (const f of ir.fields) {
-      const physicalDefault = !!(f.auto_increment || f.default !== undefined || f.default_now || f.default_sql || f.hints?.["composition.key-default"] === "true");
+      const physicalDefault = !!(f.auto_increment || f.default !== undefined || f.default_now || f.default_sql || (f.primary_key && registry.multiTable(ir.name)?.keyDefault));
       const n = f.nested;
       const base: FieldMeta = {
         name: camel(f.name),
@@ -257,9 +257,8 @@ export class ModelMeta implements Source {
       this.fieldByIr.set(group.ir, group);
       this.groups.push(group);
     }
-    if (ir.fields.some((f) => f.primary_key && f.hints?.["composition.child"] === "true")) {
-      this.attachInputFields = ir.fields.filter((f) => f.hints?.["composition.local"] === "true").map((f) => this.fieldByIr.get(f.name)!);
-    }
+    const chain = registry.multiTable(ir.name);
+    if (chain) this.attachInputFields = ir.fields.filter((f) => chain.local.has(f.name)).map((f) => this.fieldByIr.get(f.name)!);
     for (const r of ir.relations ?? []) {
       const kind: RelationKind = r.through
         ? "manyToMany"
@@ -884,6 +883,32 @@ export class Registry {
   /** @internal: normalized context is owned by this candidate. */
   setBehavior(value: unknown): void { this.behavior = detached((value ?? {}) as Record<string, unknown>); }
 
+  private readonly chains = new Map<string, { local: Set<string>; keyDefault: boolean }>();
+
+  /** For a child of a shared-key chain: its own field names, and whether the root key fills itself. */
+  multiTable(model: string): { local: Set<string>; keyDefault: boolean } | undefined { return this.chains.get(model); }
+
+  /** Derive every chain child from the prepared `owner_links` and `field_storage`; call after `setBehavior`. */
+  deriveMultiTable(ir: SchemaIR): void {
+    this.chains.clear();
+    const links = (this.behavior["owner_links"] ?? []) as { child: string; parent: string }[];
+    if (!links.length) return;
+    const parents = new Map(links.map((l) => [l.child, l.parent]));
+    const stored = new Map(((this.behavior["field_storage"] ?? []) as { model: string; field: string; owner: string }[]).map((f) => [`${f.model}\0${f.field}`, f.owner]));
+    const tables = new Map(((this.behavior["storage"] as { models?: { name: string; table: string }[] } | undefined)?.models ?? []).map((m) => [m.table, m.name]));
+    const ownerOf = new Map(ir.models.map((m) => [m.name, tables.get(m.table) ?? m.name]));
+    const byOwner = new Map([...ir.models].reverse().map((m) => [ownerOf.get(m.name)!, m]));
+    for (const model of ir.models) {
+      const owner = ownerOf.get(model.name)!;
+      if (!parents.has(owner)) continue;
+      const local = new Set(model.fields.filter((f) => !f.primary_key && (stored.get(`${model.name}\0${f.name}`) ?? owner) === owner).map((f) => f.name));
+      let root = owner;
+      while (parents.has(root)) root = parents.get(root)!;
+      const key = byOwner.get(root)?.fields.find((f) => f.primary_key);
+      this.chains.set(model.name, { local, keyDefault: !!(key && (key.auto_increment || key.default !== undefined || key.default_now || key.default_sql)) });
+    }
+  }
+
   /** The prepared behavior record of `kind` that is not a list of per-model records, `undefined` if absent. */
   behaviorValue(kind: string): unknown { return this.behavior[kind]; }
 
@@ -1008,6 +1033,7 @@ export function define(
   const reg = destination.candidate();
   reg.addExtra(ir);
   reg.setBehavior(ir.behavior);
+  reg.deriveMultiTable(ir);
   reg.setIdentities(ir.identities);
   for (const e of ir.enums ?? []) {
     reg.addEnum(e);

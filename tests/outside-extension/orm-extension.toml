@@ -63,6 +63,27 @@ required = true
 id = "acme.outside.view"
 phase = "logical"
 effects = ["models.view", "behavior.model_views", "behavior.result_checks"]
+# `@@outside.base(parent: "A", parentRef: "a", childRef: "b")` stores the fields of `A` in the table of `A`, the others in its own table, under one shared key.
+[[attributes]]
+name = "outside.base"
+target = "model"
+
+[attributes.arguments.parent]
+kind = "string"
+required = true
+
+[attributes.arguments.parentRef]
+kind = "string"
+required = true
+
+[attributes.arguments.childRef]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.base"
+phase = "logical"
+effects = ["outside.base.storage-ownership"]
 
 # `@@outside.guard` binds the hooks of the library to the fields `text`, `start`, `end`, `shop_id` and `updated_by` of the model.
 [[attributes]]

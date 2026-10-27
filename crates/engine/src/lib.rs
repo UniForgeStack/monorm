@@ -32,11 +32,9 @@ pub fn parse_op(op_json: &str) -> Result<Operation> {
 pub mod behavior;
 pub mod hooks;
 
-#[cfg(feature = "composition")]
 pub mod ownership;
 
-#[cfg(feature = "model-composition")]
-pub mod composed;
+pub mod multi_table;
 
 
 /// Database backends compiled into this engine, independent of installed packages.

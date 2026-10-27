@@ -88,16 +88,16 @@ fn a_composed_chain_rejects_every_write_record() {
     let mut parent = assign("changed", "now", json!(["update"]));
     parent["model"] = "Parent".into();
     let err = build(json!({"write_assignments": [parent]})).err().unwrap();
-    assert!(err.contains("write record from ext-a on Parent.changed is not supported in a composed model's ownership chain"), "{err}");
+    assert!(err.contains("write record from ext-a on Parent.changed is not supported in a multi-table model's ownership chain"), "{err}");
     let rewrite = json!({"source": "ext-b", "model": "Parent", "field": "removed", "guard": {"t": "is_null", "item": {"t": "col", "path": [], "name": "removed"}, "neg": false}});
     let err = build(json!({"delete_rewrites": [rewrite]})).err().unwrap();
-    assert!(err.contains("write record from ext-b on Parent.removed is not supported in a composed model's ownership chain"), "{err}");
+    assert!(err.contains("write record from ext-b on Parent.removed is not supported in a multi-table model's ownership chain"), "{err}");
     let err = build(json!({"instance_guards": [{"source": "ext-c", "model": "Parent", "field": "changed"}]})).err().unwrap();
-    assert!(err.contains("write record from ext-c on Parent.changed is not supported in a composed model's ownership chain"), "{err}");
+    assert!(err.contains("write record from ext-c on Parent.changed is not supported in a multi-table model's ownership chain"), "{err}");
     let mut own = assign("changed", "now", json!(["update"]));
     own["model"] = "Child".into();
     let err = build(json!({"write_assignments": [own]})).err().unwrap();
-    assert!(err.contains("write record from ext-a on Child.changed is not supported in a composed model's ownership chain"), "{err}");
+    assert!(err.contains("write record from ext-a on Child.changed is not supported in a multi-table model's ownership chain"), "{err}");
 }
 
 #[cfg(feature = "composition")]
@@ -124,5 +124,5 @@ fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
     let mut root = assign("changed", "now", json!(["update"]));
     root["model"] = "Grand".into();
     let err = build(json!({"write_assignments": [root]})).err().unwrap();
-    assert!(err.contains("model Child: a write record from ext-a on Grand.changed is not supported in a composed model's ownership chain"), "{err}");
+    assert!(err.contains("model Child: a write record from ext-a on Grand.changed is not supported in a multi-table model's ownership chain"), "{err}");
 }

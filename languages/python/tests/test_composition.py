@@ -208,5 +208,5 @@ model Employee {{
  @@map("composition06_role_employees")
 }}
 """
-    with pytest.raises(Exception, match="not supported in a composed model.s ownership chain"):
+    with pytest.raises(Exception, match="not supported in a multi-table model.s ownership chain"):
         orm.loads('datasource db {\n provider = "sqlite"\n}\n' + source, registry=orm.Registry())
