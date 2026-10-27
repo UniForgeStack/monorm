@@ -3810,11 +3810,18 @@ pub fn plan_insert(
         let inline = cols.iter().map(|c| nested::leaf_default(c, target.dialect)).collect::<Result<Vec<_>>>()?;
         // An omitted value of a field with an expression default takes the expression, planned once.
         let mut expr_defaults: Vec<Option<SExpr>> = vec![None; cols.len()];
-        if m.client_defaults.iter().any(|(_, d)| matches!(d, orm_core::client_default::ClientDefault::Expr(_))) {
+        if m.client_defaults.iter().any(|(_, d)| matches!(d, orm_core::client_default::ClientDefault::Expr(_) | orm_core::client_default::ClientDefault::Hook(_))) {
             let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
             for (slot, c) in expr_defaults.iter_mut().zip(&cols) {
-                if let Some((_, orm_core::client_default::ClientDefault::Expr(e))) = m.client_defaults.iter().find(|(p, _)| m.fields()[*p].name == c.name) {
-                    *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?);
+                let Some((position, default)) = m.client_defaults.iter().find(|(p, _)| m.fields()[*p].name == c.name) else { continue };
+                match default {
+                    orm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
+                    orm_core::client_default::ClientDefault::Hook(export) => {
+                        let e = crate::hooks::expression(m, *position, true, params)?
+                            .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, c.name)))?;
+                        *slot = Some(planner.value(&e, Hint { ty: Some(c.value_type()), field: Some(c) })?);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -4012,6 +4019,11 @@ pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&st
             AssignValue::Expr(_) => {
                 let expr = a.expr.as_ref().ok_or_else(|| Error::query(format!("{}.{}: the expression assignment is not prepared", m.ir.name, f.name)))?;
                 planner.value(expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
+            }
+            AssignValue::ExprHook { export } => {
+                let expr = crate::hooks::expression(m, a.field, false, params)?
+                    .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
+                planner.value(&expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
             }
         };
         out.push((f.column.as_str(), v));

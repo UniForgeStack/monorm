@@ -216,6 +216,17 @@ pub fn assigned(model: &Model, position: usize, params: &dyn Params) -> Result<O
     from_abi(model, position, &seed, out).map(Some)
 }
 
+/// The expression that the hook of field `position` gives to one statement: point 7 for an insert default, point 6 for an update
+/// assignment. The hook runs once for the statement. `None` when the model has no such hook.
+pub fn expression(model: &Model, position: usize, insert: bool, params: &dyn Params) -> Result<Option<orm_core::ir::Expr>> {
+    let Some(plan) = model.hooks.as_deref() else { return Ok(None) };
+    let Some(hook) = (if insert { plan.expr_defaulter(position) } else { plan.expr_assigner(position) }) else { return Ok(None) };
+    let contexts = Contexts::new(plan, params)?;
+    let json = hook.expression(contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
+    let label = format!("{}.{}", model.ir.name, model.fields()[position].name);
+    orm_core::writes::parse_expr(&json, !insert).map(Some).map_err(|e| Error::query(format!("{label}: the expression hook returned an expression that a statement cannot use: {e}")))
+}
+
 /// A computed field (point 5) of a read: the hook runs on each returned row, on the dependency columns of the same statement.
 pub struct Computed { column: usize, hook: HookRef, ty: ValueType, nullable: bool, label: String, args: Vec<(String, usize, ValueType)>, context: Context }
 

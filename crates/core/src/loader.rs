@@ -221,7 +221,42 @@ impl Plan {
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
         ir.behavior.stamp_minor();
         ir.behavior.extensions = self.manifests.iter().filter(|m| !m.is_dynamic()).map(|m| (m.id.clone(), m.version.clone())).collect();
-        validate_requirements(ir, &self.manifests, language)
+        validate_requirements(ir, &self.manifests, language)?;
+        self.evaluate_expression_hooks(ir)
+    }
+
+    /// Calls each expression hook (point 6 or 7) of a library that reads no context once, with `init` of its extension,
+    /// and stores the expression in the record. `define()` then loads no library for the hook.
+    fn evaluate_expression_hooks(&self, ir: &mut SchemaIr) -> Result<(), String> {
+        use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+        let (once, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut ir.behavior.hooks).into_iter()
+            .partition(|h| matches!(h.point, 6 | 7) && !h.reads_context && self.dynamic.iter().any(|d| d.manifest.id == h.source));
+        ir.behavior.hooks = kept;
+        let mut states: BTreeMap<String, (Library, State)> = BTreeMap::new();
+        for hook in once {
+            let at = format!("{}.{}", hook.model, hook.field.as_deref().unwrap_or_default());
+            if !states.contains_key(&hook.source) {
+                let library = self.library(&hook.source)?;
+                let state = library.init(ir.behavior.extension_data.get(&hook.source).unwrap_or(&serde_json::Value::Null))?;
+                states.insert(hook.source.clone(), (library, state));
+            }
+            let (_, state) = &states[&hook.source];
+            let json = match state.call(&hook.export, &[], &Context::default())? {
+                Value::Json(text) => serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("{at}: hook {} returned json that does not parse: {e}", hook.export))?,
+                other => return Err(format!("{at}: hook {} must return json (query IR), not {other:?}", hook.export)),
+            };
+            let (columns, what) = if hook.point == 6 { (true, "write assignment") } else { (false, "expression default") };
+            crate::writes::parse_expr(&json, columns).map_err(|e| format!("{at}: the {what} hook {} of {}: {e}", hook.export, hook.source))?;
+            if hook.point == 6 {
+                let record = ir.behavior.write_assignments.iter_mut()
+                    .find(|a| a.source == hook.source && a.model == hook.model && Some(&a.field) == hook.field.as_ref() && a.value == (AssignValue::ExprHook { export: hook.export.clone() }));
+                record.expect("validated binding names a record").value = AssignValue::Expr(json);
+            } else {
+                let field = ir.models.iter_mut().find(|m| m.name == hook.model).and_then(|m| m.fields.iter_mut().find(|f| Some(&f.name) == hook.field.as_ref()));
+                field.expect("validated binding names a field").client_default = Some(ClientDefaultIr::Expr(json));
+            }
+        }
+        Ok(())
     }
 }
 

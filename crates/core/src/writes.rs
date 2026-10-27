@@ -74,6 +74,12 @@ pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Require
                 at
             }
             AssignValue::Expr(_) => position(models, index, &a.model, &a.field, "an expression assignment", |_| true)?,
+            AssignValue::ExprHook { export } => {
+                let at = position(models, index, &a.model, &a.field, "an expression hook assignment", |_| true)?;
+                let bound = r.hooks.iter().any(|h| h.point == 6 && h.source == a.source && h.model == a.model && h.field.as_deref() == Some(a.field.as_str()) && h.export == *export);
+                if !bound { return Err(format!("{}.{}: the write assignment from {} runs expression hook {export}, but no point-6 binding names it; bind it to the field", a.model, a.field, a.source)); }
+                at
+            }
         };
         let expr = match &a.value {
             AssignValue::Expr(json) => Some(parse_expr(json, true).map_err(|e| format!("{}.{}: the write assignment from {}: {e}", a.model, a.field, a.source))?),

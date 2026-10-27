@@ -9,6 +9,8 @@ pub enum ClientDefault {
     Call(ClientCall),
     /// An expression the insert writes into each omitted value, parsed once.
     Expr(Expr),
+    /// A library hook (point 7) returns the expression once for each insert statement.
+    Hook(String),
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +73,7 @@ pub fn prepare(model: &str, fields: &[FieldIr], enums: &[EnumIr]) -> Result<Vec<
                 ClientDefault::Call(*call)
             }
             ClientDefaultIr::Expr(json) => ClientDefault::Expr(crate::writes::parse_expr(json, false).map_err(|e| what(&e))?),
+            ClientDefaultIr::Hook { export } => ClientDefault::Hook(export.clone()),
         };
         out.push((position, prepared));
     }

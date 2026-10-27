@@ -800,6 +800,39 @@ pub fn validate_requirements(ir: &SchemaIr, manifests: &[Manifest], language: Op
         }
     }
     for hook in &ir.behavior.hooks { validate_hook(ir, hook, manifests)?; }
+    validate_expression_hooks(ir)
+}
+
+/// An expression hook record (`ExprHook`, `ClientDefaultIr::Hook`) needs the binding of its point. A field with an
+/// expression default takes no transform or validator, because the value of the expression is not a value that a hook could check.
+fn validate_expression_hooks(ir: &SchemaIr) -> Result<(), String> {
+    let bound = |point: u8, source: Option<&str>, model: &str, field: &str, export: &str|
+        ir.behavior.hooks.iter().any(|h| h.point == point && source.is_none_or(|s| h.source == s) && h.model == model && h.field.as_deref() == Some(field) && h.export == export);
+    for a in &ir.behavior.write_assignments {
+        let crate::writes::AssignValue::ExprHook { export } = &a.value else { continue };
+        if !bound(6, Some(&a.source), &a.model, &a.field, export) {
+            return Err(format!("{}.{}: the write assignment from {} runs expression hook {export}, but no point-6 binding names it; bind it to the field", a.model, a.field, a.source));
+        }
+    }
+    for model in &ir.models {
+        for field in &model.fields {
+            let hook = match &field.client_default {
+                Some(crate::ir::ClientDefaultIr::Hook { export }) => {
+                    if !bound(7, None, &model.name, &field.name, export) {
+                        return Err(format!("{}.{}: the expression default runs hook {export}, but no point-7 binding names it; bind it to the field", model.name, field.name));
+                    }
+                    true
+                }
+                Some(crate::ir::ClientDefaultIr::Expr(_)) => true,
+                _ => false,
+            };
+            if hook {
+                if let Some(h) = ir.behavior.hooks.iter().find(|h| matches!(h.point, 1 | 2) && h.model == model.name && h.field.as_deref() == Some(field.name.as_str())) {
+                    return Err(format!("{}.{}: a field with an expression default takes no transform or validator, but {} binds hook {} at point {}", model.name, field.name, h.source, h.export, h.point));
+                }
+            }
+        }
+    }
     Ok(())
 }
 

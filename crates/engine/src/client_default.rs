@@ -56,8 +56,8 @@ pub fn fill<'a>(model: &Model, fields: &'a [String], mut rows: Rows) -> Result<(
                 row[slot] = match default {
                     ClientDefault::Literal(v) => Some(literal(v)),
                     ClientDefault::Call(c) => Some(call(*c, field.ty)),
-                    // The insert planner writes the expression into the omitted value.
-                    ClientDefault::Expr(_) => None,
+                    // The insert planner writes the expression, or the one the hook gives, into the omitted value.
+                    ClientDefault::Expr(_) | ClientDefault::Hook(_) => None,
                 };
             }
         }

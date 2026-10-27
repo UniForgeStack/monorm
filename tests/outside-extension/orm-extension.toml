@@ -93,6 +93,37 @@ point = 5
 output = "string"
 
 [[exports]]
+id = "acme.outside.seal"
+point = 1
+input = "string"
+output = "string"
+
+[[exports]]
+id = "acme.outside.unseal"
+point = 5
+output = "string"
+
+[[exports]]
+id = "acme.outside.label"
+point = 6
+output = "json"
+
+[[exports]]
+id = "acme.outside.editor"
+point = 6
+output = "json"
+
+[[exports]]
+id = "acme.outside.region"
+point = 7
+output = "json"
+
+[[exports]]
+id = "acme.outside.owner"
+point = 7
+output = "json"
+
+[[exports]]
 id = "outside.context"
 point = 6
 output = "json"

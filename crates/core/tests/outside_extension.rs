@@ -638,3 +638,94 @@ fn a_point_five_binding_without_a_result_field_or_with_the_wrong_type_fails() {
     let error = lower_initials(|ir| ir.models[0].fields[3] = FieldIr::plain("initials", ColType::Int)).unwrap_err();
     assert!(error.contains("Person.initials") && error.contains("acme.outside.initials"), "{error}");
 }
+
+// Hooks 6 and 7: an expression hook gives the expression of a write assignment or of an insert default.
+
+/// `Post { id, tag, note }`: `tag` has a write assignment from point 6 and `note` has an insert default from point 7.
+fn expression_ir(reads_context: bool, mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
+    let (write, default) = if reads_context { ("acme.outside.editor", "acme.outside.owner") } else { ("acme.outside.label", "acme.outside.region") };
+    let mut ir = hooked(vec![], serde_json::Value::Null);
+    let note = FieldIr { client_default: Some(orm_contracts::ir::ClientDefaultIr::Hook { export: default.into() }), ..FieldIr::plain("note", ColType::Text) };
+    ir.models[0].fields.push(note);
+    for (point, field, export) in [(6, "tag", write), (7, "note", default)] {
+        ir.behavior.hooks.push(HookBinding { reads_context, ..binding(point, field, export) });
+    }
+    ir.behavior.write_assignments.push(orm_contracts::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![orm_contracts::writes::WriteKind::Update],
+        value: orm_contracts::writes::AssignValue::ExprHook { export: write.into() }, upsert: Default::default(),
+    });
+    mutate(&mut ir);
+    ir
+}
+
+/// Lowers `seed` through the pass hook of the plan, which validates it and evaluates the hooks that read no context.
+fn lower_expressions(seed: SchemaIr) -> Result<SchemaIr, String> {
+    let plan = bind_plan(&installed("", "0.2"));
+    let seed = RefCell::new(Some(seed));
+    let run = |ir: &mut SchemaIr, _: &str| {
+        let seed = seed.borrow_mut().take().expect("one run");
+        ir.models = seed.models;
+        ir.behavior.hooks = seed.behavior.hooks;
+        ir.behavior.write_assignments = seed.behavior.write_assignments;
+        Ok(true)
+    };
+    let mut ir = unlowered();
+    plan.lower(&mut ir, None, &run)?;
+    // The test binary has no compiled `acme.static` extension for `define()` to find.
+    ir.behavior.extensions.clear();
+    ir.behavior.completed_passes.clear();
+    Ok(ir)
+}
+
+#[test]
+fn an_expression_hook_that_reads_no_context_becomes_a_stored_expression_at_lowering() {
+    use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    let ir = lower_expressions(expression_ir(false, |_| {})).unwrap();
+    assert!(ir.behavior.hooks.is_empty(), "the bindings are gone: {:?}", ir.behavior.hooks);
+    let guarded = serde_json::json!({"t": "text", "value": "guarded"});
+    assert_eq!(ir.behavior.write_assignments[0].value, AssignValue::Expr(guarded));
+    assert!(matches!(&ir.models[0].fields[2].client_default, Some(ClientDefaultIr::Expr(e)) if *e == serde_json::json!({"t": "text", "value": "eu"})));
+    // `define()` needs no package directory and loads no library for a stored expression.
+    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).unwrap();
+    assert!(schema.model(0).hooks.is_none());
+    assert!(schema.model(0).assignments[0].expr.is_some());
+}
+
+#[test]
+fn an_expression_hook_that_reads_the_context_stays_a_record_and_runs_on_each_statement() {
+    use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    let ir = lower_expressions(expression_ir(true, |_| {})).unwrap();
+    assert_eq!(ir.behavior.hooks.len(), 2);
+    assert!(matches!(ir.behavior.write_assignments[0].value, AssignValue::ExprHook { .. }));
+    assert!(matches!(ir.models[0].fields[2].client_default, Some(ClientDefaultIr::Hook { .. })));
+    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
+    assert!(error.contains(ID) && error.contains("no package directory"), "{error}");
+    let manifest = installed("", "0.2");
+    let ir = lower_expressions(expression_ir(true, |_| {})).unwrap();
+    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
+    let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
+    assert_eq!((plan.expr_assign.len(), plan.expr_default.len(), plan.reads_context()), (1, 1, true));
+    let context = Context { values: vec![arg("user", text("ada"))] };
+    assert_eq!(plan.expr_assigner(1).unwrap().expression(&context), Ok(serde_json::json!({"t": "text", "value": "by:ada"})));
+    assert_eq!(plan.expr_defaulter(2).unwrap().expression(&context), Ok(serde_json::json!({"t": "text", "value": "by:ada"})));
+    assert!(plan.expr_assigner(1).unwrap().expression(&Context::default()).unwrap_err().contains("no user in the request scope"));
+}
+
+#[test]
+fn an_expression_record_without_its_binding_or_with_a_transform_fails_at_lowering() {
+    let error = lower_expressions(expression_ir(false, |ir| ir.behavior.hooks.retain(|h| h.point != 6))).unwrap_err();
+    assert!(error.contains("Post.tag") && error.contains("acme.outside.label") && error.contains("no point-6 binding"), "{error}");
+    let error = lower_expressions(expression_ir(false, |ir| ir.behavior.hooks.retain(|h| h.point != 7))).unwrap_err();
+    assert!(error.contains("Post.note") && error.contains("acme.outside.region") && error.contains("no point-7 binding"), "{error}");
+    let error = lower_expressions(expression_ir(false, |ir| ir.behavior.hooks.push(binding(1, "note", "outside.prefix")))).unwrap_err();
+    assert!(error.contains("Post.note") && error.contains("takes no transform or validator"), "{error}");
+}
+
+#[test]
+fn an_expression_hook_binds_only_at_the_point_of_its_export() {
+    let plan = bind_plan(&installed("", "0.2"));
+    let error = lower_with(&plan, &binding(6, "tag", "outside.prefix")).unwrap_err();
+    assert!(error.contains("is bound at point 6, and the manifest says point 1"), "{error}");
+    let error = lower_with(&plan, &binding(7, "tag", "outside.prefix")).unwrap_err();
+    assert!(error.contains("is bound at point 7, and the manifest says point 1"), "{error}");
+}

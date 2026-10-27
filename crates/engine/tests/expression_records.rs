@@ -112,3 +112,9 @@ fn an_expression_record_rejects_nodes_that_a_statement_cannot_bind() {
     let error = schema(json!({"expr":col}), json!({})).err().unwrap();
     assert!(error.contains("`col`"), "{error}");
 }
+
+#[test]
+fn a_hook_default_without_its_binding_fails_define() {
+    let error = schema(json!({"hook":{"export":"x.y"}}), json!({})).err().unwrap();
+    assert!(error.contains("Post.shop") && error.contains("no point-7 binding"), "{error}");
+}
