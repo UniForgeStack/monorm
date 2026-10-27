@@ -51,8 +51,6 @@ pub async fn run(conn: &dyn Executor, target: Target, plan: Plan) -> Result<Outc
 /// [`run`]; `own_tx` is false when `conn` is already a transaction, so a multi-statement
 /// plan opens no savepoint in it.
 pub async fn run_in(conn: &dyn Executor, target: Target, plan: Plan, own_tx: bool) -> Result<Outcome> {
-    #[cfg(not(feature = "model-composition"))]
-    let _ = own_tx;
     let d = target.dialect;
     Ok(match plan {
         Plan::Select(p) => Outcome::Select(Box::new(run_select(conn, target, p).await?)),
@@ -85,10 +83,8 @@ pub async fn run_in(conn: &dyn Executor, target: Target, plan: Plan, own_tx: boo
                 None => Outcome::Affected(conn.execute(sql, args).await?),
             }
         }
-        #[cfg(feature = "model-composition")]
-        Plan::ComposedInsert(insert) => return crate::composed::run_insert(conn, target, *insert, own_tx).await,
-        #[cfg(feature = "model-composition")]
-        Plan::ComposedMutation(plan) => return crate::composed::run_mutation(conn, target, *plan, own_tx).await,
+        Plan::MultiTableInsert(insert) => return crate::multi_table::run_insert(conn, target, *insert, own_tx).await,
+        Plan::MultiTableMutation(plan) => return crate::multi_table::run_mutation(conn, target, *plan, own_tx).await,
     })
 }
 
@@ -102,10 +98,8 @@ pub fn sql(target: Target, plan: &Plan) -> String {
         Plan::RowUpdate(s, _) => db::to_string(d, s),
         Plan::Delete(s, _) => db::to_string(d, s),
         Plan::Insert(s, _) => db::to_string(d, s),
-        #[cfg(feature = "model-composition")]
-        Plan::ComposedInsert(_) => "-- Composed insert executes ancestor inserts and a final read in one transaction".into(),
-        #[cfg(feature = "model-composition")]
-        Plan::ComposedMutation(_) => "-- Composed mutation captures identities and writes owners in one transaction".into(),
+        Plan::MultiTableInsert(_) => "-- Multi-table insert executes ancestor inserts and a final read in one transaction".into(),
+        Plan::MultiTableMutation(_) => "-- Multi-table mutation captures identities and writes owners in one transaction".into(),
     }
 }
 
@@ -119,8 +113,7 @@ pub fn statement(target: Target, plan: &Plan) -> String {
         Plan::RowUpdate(s, _) => db::build(d, s).0,
         Plan::Delete(s, _) => db::build(d, s).0,
         Plan::Insert(s, _) => db::build(d, s).0,
-        #[cfg(feature = "model-composition")]
-        Plan::ComposedInsert(_) | Plan::ComposedMutation(_) => sql(target, plan),
+        Plan::MultiTableInsert(_) | Plan::MultiTableMutation(_) => sql(target, plan),
     }
 }
 
@@ -382,7 +375,7 @@ pub fn plan_insert(
 }
 
 /// [`plan_insert`]; without `returning` the insert gives the affected-row count. A
-/// composed model's insert reads its rows back in any case.
+/// multi-table model's insert reads its rows back in any case.
 #[allow(clippy::too_many_arguments)]
 fn plan_insert_with(
     schema: &Schema,
@@ -395,10 +388,9 @@ fn plan_insert_with(
     returning: bool,
     without_defaults: &ir::Bypass,
 ) -> Result<Plan> {
-    #[cfg(feature = "model-composition")]
-    if crate::composed::is_composed(schema, model)? {
-        if conflict.is_some() { return Err(Error::query("composed inserts do not support on_conflict")); }
-        return Ok(Plan::ComposedInsert(Box::new(crate::composed::prepare_insert(schema, target, model, fields, rows)?)));
+    if crate::multi_table::is_multi_table(schema, model)? {
+        if conflict.is_some() { return Err(Error::query("multi-table inserts do not support on_conflict")); }
+        return Ok(Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_insert(schema, target, model, fields, rows)?)));
     }
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let on_conflict = conflict.map(|c| match c {
@@ -430,8 +422,7 @@ pub fn plan_inserts(
     if batch_size == Some(0) {
         return Err(Error::query("batch_size must be at least 1"));
     }
-    #[cfg(feature = "model-composition")]
-    if crate::composed::is_composed(schema, model)? {
+    if crate::multi_table::is_multi_table(schema, model)? {
         return Ok(vec![plan_insert_with(schema, target, model, fields, rows, conflict, params, returning, without_defaults)?]);
     }
     let m = schema.model(schema.model_idx(model).map_err(query_err)?);
@@ -531,9 +522,8 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
     if target.dialect != orm_core::dialect::Dialect::Postgres {
         return Err(Error::query("insert_many(copy=True) needs Postgres"));
     }
-    #[cfg(feature = "model-composition")]
-    if crate::composed::is_composed(schema, model)? {
-        return Err(Error::query("insert_many(copy=True) does not support composed models"));
+    if crate::multi_table::is_multi_table(schema, model)? {
+        return Err(Error::query("insert_many(copy=True) does not support multi-table models"));
     }
     let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);

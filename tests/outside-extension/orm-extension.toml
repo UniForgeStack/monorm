@@ -44,6 +44,28 @@ id = "acme.outside.fields"
 phase = "declaration"
 effects = ["fields.outside", "behavior.extension_data"]
 
+# `@@outside.base(parent: "A", parentRef: "a", childRef: "b")` stores the fields of `A` in the table of `A`, the others in its own table, under one shared key.
+[[attributes]]
+name = "outside.base"
+target = "model"
+
+[attributes.arguments.parent]
+kind = "string"
+required = true
+
+[attributes.arguments.parentRef]
+kind = "string"
+required = true
+
+[attributes.arguments.childRef]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.base"
+phase = "logical"
+effects = ["outside.base.storage-ownership"]
+
 # Hooks of the library. `outside.prefix` reads the `{"prefix": ...}` of its `extension_data` entry.
 [[exports]]
 id = "outside.prefix"

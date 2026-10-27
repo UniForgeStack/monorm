@@ -37,10 +37,10 @@ pub struct Model {
     pub guards: Vec<usize>,
     #[cfg(feature = "composition")]
     pub native: crate::behavior::NativeModel,
-    #[cfg(feature = "composition")]
     pub resolved_fields: Vec<crate::behavior::ResolvedField>,
-    #[cfg(feature = "composition")]
     pub owner: crate::behavior::OwnerId,
+    /// Some field lives in another table than the model's own, or the model's table joins a parent table.
+    pub has_foreign_storage: bool,
     field_index: HashMap<String, usize>,
     /// relation name -> (index into `ir.relations`, target model index)
     relation_index: HashMap<String, (usize, usize)>,
@@ -82,12 +82,27 @@ impl Model {
             read_flags: ReadFlags::default(),
             assignments: vec![], delete_rewrite: None, guards: vec![],
             #[cfg(feature = "composition")] native: crate::behavior::NativeModel::None,
-            #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
-            #[cfg(feature = "composition")] resolved_fields: vec![] })
+            owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false })
     }
 
     pub fn table(&self) -> &str {
         &self.ir.table
+    }
+
+    /// The field position a native field reads its stored value from.
+    pub fn native_dependency(&self, position: usize) -> Option<usize> {
+        #[cfg(feature = "composition")]
+        { self.native.dependency(position) }
+        #[cfg(not(feature = "composition"))]
+        { let _ = position; None }
+    }
+
+    /// Positions of the fields a native extension computes on read.
+    pub fn native_computed(&self) -> &[usize] {
+        #[cfg(feature = "composition")]
+        { self.native.computed() }
+        #[cfg(not(feature = "composition"))]
+        { &[] }
     }
 
     pub fn fields(&self) -> &[FieldIr] {
@@ -148,9 +163,7 @@ pub struct Schema {
     model_index: HashMap<String, usize>,
     #[cfg(feature = "composition")]
     pub native_models: Vec<crate::behavior::NativeModel>,
-    #[cfg(feature = "composition")]
     storage: Option<Box<Schema>>,
-    #[cfg(feature = "composition")]
     pub owner_links: Vec<crate::behavior::PreparedOwnerLink>,
 }
 
@@ -161,13 +174,8 @@ impl Schema {
         crate::identity::validate(&ir)?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
-        #[cfg(not(feature = "model-composition"))]
-        if ir.behavior.extensions.contains_key("composition") {
-            return Err("model-composition is absent from this native artifact; rebuild with model-composition enabled".into());
-        }
         #[cfg(feature = "composition")]
         let native_models = if behavioral { crate::behavior::bind(&mut ir)? } else { vec![crate::behavior::NativeModel::None; ir.models.len()] };
-        #[cfg(feature = "composition")]
         let storage = match ir.behavior.storage.take() {
             Some(storage) => {
                 let physical = serde_json::from_value(serde_json::json!({
@@ -251,8 +259,7 @@ impl Schema {
                 read_flags: ReadFlags::default(),
                 assignments: vec![], delete_rewrite: None, guards: vec![],
                 #[cfg(feature = "composition")] native: native.next().expect("prepared model"),
-                #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
-            #[cfg(feature = "composition")] resolved_fields: vec![] });
+                owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false });
         }
         // Validate relation targets now that every model is indexed.
         for m in &models {
@@ -274,10 +281,8 @@ impl Schema {
         }
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
-        #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
-        #[cfg(feature = "composition")]
-        crate::writes::reject_composed(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
+        crate::writes::reject_multi_table(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
         #[cfg(feature = "proxy-models")]
         let proxy_models = {
             let mut seen = std::collections::BTreeSet::new();
@@ -311,14 +316,13 @@ impl Schema {
             catalog: ir.catalog,
             model_index,
             #[cfg(feature = "composition")] native_models,
-            #[cfg(feature = "composition")] storage,
-            #[cfg(feature = "composition")] owner_links,
+            storage,
+            owner_links,
         })
     }
 
     /// Schema used by physical migrations; logical views retain their storage.
     pub fn physical(&self) -> &Schema {
-        #[cfg(feature = "composition")]
         if let Some(storage) = &self.storage { return storage; }
         self
     }

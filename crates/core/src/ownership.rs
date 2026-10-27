@@ -38,20 +38,21 @@ pub fn resolve(models: &mut [Model], physical: Option<&Schema>, mappings: &[Fiel
         named_owner(&mapping.owner)?;
     }
     let mut resolved = vec![];
+    let mut reached = BTreeSet::new();
     for (logical, model) in models.iter().enumerate() {
         let local = owners.iter().position(|o| o.table() == model.table()).ok_or_else(|| format!("{}: no physical owner for {}; declare storage explicitly", model.ir.name, model.table()))?;
         if model.pk_field().column != owners[local].pk_field().column { return Err(format!("{}: logical primary key differs from physical identity", model.ir.name)); }
         let mut fields = vec![];
         let mut writable = BTreeSet::new();
         for (position, field) in model.fields().iter().enumerate() {
-            let source = model.native.dependency(position).map(|p| &model.fields()[p]).unwrap_or(field);
+            let source = model.native_dependency(position).map(|p| &model.fields()[p]).unwrap_or(field);
             let (owner, column) = match by_field.get(&(model.ir.name.as_str(), source.name.as_str())) {
                 Some(mapping) => (named_owner(&mapping.owner)?, mapping.column.as_str()),
                 None => (local, source.column.as_str()),
             };
             if owner == local && source.column != column { return Err("local storage mappings must agree with the logical column encoding".into()); }
             let column_pos = owners[owner].fields().iter().position(|f| f.column == column).ok_or_else(|| format!("{}.{}: no physical column {column}; contribute storage explicitly", model.ir.name, field.name))?;
-            if !model.native.computed().contains(&position) && !writable.insert((owner, column_pos)) {
+            if !model.native_computed().contains(&position) && !writable.insert((owner, column_pos)) {
                 return Err(format!("{}: duplicate writable ownership of a physical column", model.ir.name));
             }
             let stored = &owners[owner].fields()[column_pos];
@@ -60,6 +61,7 @@ pub fn resolve(models: &mut [Model], physical: Option<&Schema>, mappings: &[Fiel
             }
             let mut current = OwnerId(local);
             while current != OwnerId(owner) {
+                reached.insert(current.0);
                 current = prepared.iter().find(|l| l.child == current).ok_or_else(|| format!("{}.{}: storage owner is not an ancestor", model.ir.name, field.name))?.parent;
             }
             if position == model.pk && owner != local { return Err("logical identity must belong to its local storage owner".into()); }
@@ -74,6 +76,32 @@ pub fn resolve(models: &mut [Model], physical: Option<&Schema>, mappings: &[Fiel
         }
         resolved.push((OwnerId(local), fields));
     }
-    for (model, (owner, fields)) in models.iter_mut().zip(resolved) { model.owner = owner; model.resolved_fields = fields; }
+    if let Some(link) = prepared.iter().find(|l| !reached.contains(&l.child.0)) {
+        return Err(format!("owner link {} -> {}: no field_storage reads a field through it", owners[link.child.0].ir.name, owners[link.parent.0].ir.name));
+    }
+    for (model, (owner, fields)) in models.iter_mut().zip(resolved) {
+        model.has_foreign_storage = fields.iter().any(|f| f.storage.owner != owner) || prepared.iter().any(|l| l.child == owner);
+        model.owner = owner;
+        model.resolved_fields = fields;
+    }
     Ok(prepared)
+}
+
+impl Schema {
+    /// The own non-key field positions of a model whose table joins a parent table; `None` for any other model.
+    pub fn attach_fields(&self, model: &Model) -> Option<Vec<usize>> {
+        if !self.owner_links.iter().any(|l| l.child == model.owner) { return None; }
+        Some((0..model.fields().len()).filter(|&p| p != model.pk && model.resolved_fields[p].storage.owner == model.owner).collect())
+    }
+
+    /// Whether the key of a child model is filled by the root table of its chain.
+    pub fn key_fills_itself(&self, model: &Model) -> bool {
+        if self.attach_fields(model).is_none() { return false; }
+        let mut root = model.owner;
+        while let Some(link) = self.owner_links.iter().find(|l| l.child == root) { root = link.parent; }
+        self.models.iter().find(|m| m.owner == root).is_some_and(|m| {
+            let key = m.pk_field();
+            key.auto_increment || key.default.is_some() || key.default_now || key.default_sql.is_some()
+        })
+    }
 }

@@ -107,7 +107,7 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
     let stamp = &ir.behavior.packages[ID];
-    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.fields".to_owned(), "acme.outside.tag".to_owned()].as_slice(), ["outside.tag".to_owned(), "outside.money".to_owned(), "outside.note".to_owned()].as_slice()));
+    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.fields".to_owned(), "acme.outside.tag".to_owned(), "acme.outside.base".to_owned()].as_slice(), ["outside.tag".to_owned(), "outside.money".to_owned(), "outside.note".to_owned(), "outside.base".to_owned()].as_slice()));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     assert_eq!(*seen.borrow(), [("acme.static.prep".to_owned(), false), ("acme.static.late".to_owned(), true)]);
     let behavior = &ir.behavior;
     assert_eq!(behavior.completed_passes, order);
-    assert_eq!(behavior.packages[ID].passes, ["acme.outside.fields", "acme.outside.tag"]);
+    assert_eq!(behavior.packages[ID].passes, ["acme.outside.fields", "acme.outside.tag", "acme.outside.base"]);
     assert_eq!(behavior.extensions.get("acme.static").map(String::as_str), Some("1.0.0"));
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));
@@ -451,4 +451,31 @@ fn an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model() {
     let names: Vec<&str> = ir.models[0].fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["id", "price_amount", "price_currency"], "Money becomes two columns and the note is no column");
     assert_eq!(ir.behavior.extension_data[ID]["notes"]["Order.memo"], "remember");
+}
+
+const BASE: &str = "model Account {\n id Int @id @default(autoincrement())\n email String\n}\nmodel Profile {\n bio String\n @@outside.base(parent: \"Account\", parentRef: \"account\", childRef: \"profile\")\n}\n";
+
+#[test]
+fn an_outside_pass_writes_a_two_table_model_that_the_schema_marks_as_foreign_storage() {
+    let manifest = installed("", "0.2");
+    let ir = compile("base", BASE, &[(ID, &manifest)]).unwrap();
+    assert_eq!(ir.behavior.owner_links.len(), 1);
+    assert_eq!((ir.behavior.owner_links[0].child.as_str(), ir.behavior.owner_links[0].parent.as_str()), ("Profile", "Account"));
+    assert_eq!(ir.behavior.field_storage.iter().map(|s| (s.model.as_str(), s.field.as_str(), s.owner.as_str())).collect::<Vec<_>>(), [("Profile", "email", "Account")]);
+    assert!(ir.models.iter().all(|m| m.fields.iter().all(|f| f.hints.keys().all(|k| !k.starts_with("composition.")))), "the pass writes no hint");
+    let names: Vec<&str> = ir.models[1].fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["id", "bio", "email"]);
+    let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+    let flags: Vec<(&str, bool)> = schema.models.iter().map(|m| (m.ir.name.as_str(), m.has_foreign_storage)).collect();
+    assert_eq!(flags, [("Account", false), ("Profile", true)]);
+}
+
+#[test]
+fn an_owner_link_that_no_field_storage_reads_through_fails_the_schema() {
+    let manifest = installed("", "0.2");
+    let mut ir = compile("base-orphan", BASE, &[(ID, &manifest)]).unwrap();
+    ir.behavior.field_storage.clear();
+    ir.models[1].fields.retain(|f| f.name != "email");
+    let error = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).err().expect("the schema must fail");
+    assert!(error.to_string().contains("owner link Profile -> Account: no field_storage reads a field through it"), "{error}");
 }

@@ -65,9 +65,8 @@ pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Require
     Ok(())
 }
 
-/// A model in an ownership chain accepts no write record: a composed write cannot run it on every owner.
-#[cfg(feature = "composition")]
-pub fn reject_composed(models: &[Model], owners: &[Model], owner_links: &[crate::behavior::PreparedOwnerLink], r: &Requirements) -> Result<()> {
+/// A model in an ownership chain accepts no write record: a multi-table write cannot run it on every owner.
+pub fn reject_multi_table(models: &[Model], owners: &[Model], owner_links: &[crate::behavior::PreparedOwnerLink], r: &Requirements) -> Result<()> {
     let mut records = r.write_assignments.iter().map(|x| (&x.model, &x.field, &x.source))
         .chain(r.delete_rewrites.iter().map(|x| (&x.model, &x.field, &x.source)))
         .chain(r.instance_guards.iter().map(|x| (&x.model, &x.field, &x.source)))
@@ -79,7 +78,7 @@ pub fn reject_composed(models: &[Model], owners: &[Model], owner_links: &[crate:
         loop {
             let owner = &owners[current.0].ir.name;
             if let Some((_, field, source)) = records.iter().find(|(model, _, _)| *model == owner) {
-                return Err(format!("model {}: a write record from {source} on {owner}.{field} is not supported in a composed model's ownership chain", m.ir.name));
+                return Err(format!("model {}: a write record from {source} on {owner}.{field} is not supported in a multi-table model's ownership chain", m.ir.name));
             }
             let Some(link) = owner_links.iter().find(|l| l.child == current) else { break };
             current = link.parent;

@@ -154,10 +154,8 @@ pub enum Plan {
     Delete(DeleteStatement, Option<Returned>),
     /// The model and column types of the returned rows when the insert has `RETURNING`.
     Insert(InsertStatement, Option<(usize, Vec<ValueType>)>),
-    #[cfg(feature = "model-composition")]
-    ComposedInsert(Box<crate::composed::Insert>),
-    #[cfg(feature = "model-composition")]
-    ComposedMutation(Box<crate::composed::Mutation>),
+    MultiTableInsert(Box<crate::multi_table::Insert>),
+    MultiTableMutation(Box<crate::multi_table::Mutation>),
 }
 
 /// What a bound value is compared with or assigned to: its type drives the conversion
@@ -946,18 +944,17 @@ impl<'s> Planner<'s> {
             Operation::Update(q) => {
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
-                #[cfg(feature = "model-composition")]
-                if crate::composed::is_composed(schema, &q.model)? {
+                if crate::multi_table::is_multi_table(schema, &q.model)? {
                     let mut select: Select = serde_json::from_value(serde_json::json!({"model":q.model,"without_defaults":q.without_defaults,"without_root_filter":q.without_root_filter})).map_err(|e| query_err(e.to_string()))?;
                     select.filters = q.filters.clone(); select.with = q.with.clone();
                     let mut matched = p.build_select(&select)?.stmt;
                     let prior_joins = p.joins.len();
-                    let expressions = p.composed_update_values(q)?;
+                    let expressions = p.multi_table_update_values(q)?;
                     for (scope, on) in p.joins.iter().skip(prior_joins) {
                         matched.join_as(JoinType::LeftJoin, Alias::new(p.model(scope.model).table()), Alias::new(&scope.alias), on.clone());
                     }
                     if let Some(with) = p.with_clause(&q.with)? { matched.with_cte(with); }
-                    return Ok(Plan::ComposedMutation(Box::new(crate::composed::prepare_update(schema, target, q, params, expressions, matched)?)));
+                    return Ok(Plan::MultiTableMutation(Box::new(crate::multi_table::prepare_update(schema, target, q, params, expressions, matched)?)));
                 }
                 let (mut stmt, types) = p.update(q)?;
                 if let Some(w) = p.with_clause(&q.with)? {
@@ -972,9 +969,8 @@ impl<'s> Planner<'s> {
                 }
             }
             Operation::Delete(q) => {
-                #[cfg(feature = "model-composition")]
-                if crate::composed::is_composed(schema, &q.model)? {
-                    return Ok(Plan::ComposedMutation(Box::new(crate::composed::prepare_delete(schema, target, q, params)?)));
+                if crate::multi_table::is_multi_table(schema, &q.model)? {
+                    return Ok(Plan::MultiTableMutation(Box::new(crate::multi_table::prepare_delete(schema, target, q, params)?)));
                 }
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
@@ -1657,8 +1653,7 @@ impl<'s> Planner<'s> {
         }
         #[cfg(feature = "composition")]
         self.reject_computed(self.model(model), name)?;
-        #[cfg(feature = "composition")]
-        if self.model(model).resolved_fields[self.model(model).field_pos(name).map_err(query_err)?].storage.owner != self.model(model).owner {
+        if self.model(model).has_foreign_storage && self.model(model).resolved_fields[self.model(model).field_pos(name).map_err(query_err)?].storage.owner != self.model(model).owner {
             return Err(Error::query("outer() on inherited storage requires an explicit owner projection"));
         }
         Ok((alias, self.model(model).field(name).map_err(query_err)?))
@@ -1718,7 +1713,6 @@ impl<'s> Planner<'s> {
 
     fn resolve(&self, path: &[String], name: &str) -> Result<SExpr> {
         let (alias, column) = self.resolve_parts(path, name)?;
-        #[cfg(feature = "composition")]
         if let Some(scope) = self.scopes.iter().rev().chain(self.joins.iter().map(|(s, _)| s)).find(|s| s.path == path) {
             if scope.model < self.schema.models.len() {
                 let model = self.model(scope.model);
@@ -1728,12 +1722,6 @@ impl<'s> Planner<'s> {
         Ok(col(&alias, &column))
     }
 
-    #[cfg(not(feature = "composition"))]
-    fn read_field(&self, _model: usize, alias: &str, _position: usize, field: &FieldIr) -> Result<SExpr> {
-        Ok(read_col(alias, field))
-    }
-
-    #[cfg(feature = "composition")]
     fn read_field(&self, model: usize, alias: &str, position: usize, field: &FieldIr) -> Result<SExpr> {
         let value = self.stored_field(model, alias, position, field)?;
         Ok(match &field.read_sql { Some(t) => SExpr::cust_with_expr(t.replace("{}", "$1"), value), None => value })
@@ -1741,12 +1729,9 @@ impl<'s> Planner<'s> {
 
     /// The stored value, without `read_sql`: CTE columns hold stored values, and the outer read applies `read_sql`.
     fn stored_field(&self, model: usize, alias: &str, position: usize, field: &FieldIr) -> Result<SExpr> {
-        #[cfg(feature = "composition")]
         if model < self.schema.models.len() {
             return crate::ownership::column_at(self.schema, self.model(model), alias, position);
         }
-        #[cfg(not(feature = "composition"))]
-        let _ = (model, position);
         Ok(col(alias, &field.column))
     }
 
@@ -2588,10 +2573,9 @@ impl<'s> Planner<'s> {
                 self.join_paths(e, "distinct(on=...)")?;
                 #[cfg(feature = "composition")]
                 self.reject_computed(self.model(self.walk(self.root, path)?), name)?;
-                #[cfg(feature = "composition")]
                 {
                     let model = self.model(self.walk(self.root, path)?);
-                    if model.resolved_fields[model.field_pos(name).map_err(query_err)?].storage.owner != model.owner { return Err(Error::query("distinct(on=...) on inherited storage requires an explicit owner projection")); }
+                    if model.has_foreign_storage && model.resolved_fields[model.field_pos(name).map_err(query_err)?].storage.owner != model.owner { return Err(Error::query("distinct(on=...) on inherited storage requires an explicit owner projection")); }
                 }
                 let (alias, column) = self.resolve_parts(path, name)?;
                 cols.push((Alias::new(alias), Alias::new(column)));
@@ -3062,8 +3046,7 @@ impl<'s> Planner<'s> {
         Ok(stmt)
     }
 
-    #[cfg(feature = "model-composition")]
-    fn composed_update_values(&mut self, q: &Update) -> Result<Vec<SExpr>> {
+    fn multi_table_update_values(&mut self, q: &Update) -> Result<Vec<SExpr>> {
         if q.set.is_empty() { return Err(Error::query("update() needs at least one field")); }
         self.enter(&serde_json::from_value(serde_json::json!({"model":q.model})).map_err(|e| query_err(e.to_string()))?)?;
         let root = self.model(self.root);
@@ -3072,9 +3055,19 @@ impl<'s> Planner<'s> {
         self.set_values(&q.set)
     }
 
-    /// `SET` values in `q.set` order, after the model's native field and record checks.
-    #[cfg(feature = "composition")]
+    /// `SET` values in `q.set` order, with the model's native field and record checks when the `composition` feature is on.
     fn set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
+        #[cfg(not(feature = "composition"))]
+        return set.iter().map(|a| {
+            let f = self.model(self.root).field(&a.field).map_err(query_err)?;
+            self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
+        }).collect();
+        #[cfg(feature = "composition")]
+        self.native_set_values(set)
+    }
+
+    #[cfg(feature = "composition")]
+    fn native_set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
         let root = self.model(self.root);
         let positions: Vec<_> = set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<_>>()?;
         if positions.iter().any(|p| root.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
@@ -3206,20 +3199,13 @@ impl<'s> Planner<'s> {
 
     pub fn update(&mut self, q: &Update) -> Result<(RowUpdate, Option<ReturnColumns>)> {
         let root = self.model(self.root);
-        #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
         let mut stmt = RowUpdate::new(root.table());
         if q.set.is_empty() {
             return Err(Error::query("update() needs at least one field"));
         }
         let (set, nested) = self.nested_sets(&q.set)?;
-        #[cfg(feature = "composition")]
         let values = self.set_values(&set)?;
-        #[cfg(not(feature = "composition"))]
-        let values = set.iter().map(|a| {
-            let f = root.field(&a.field).map_err(query_err)?;
-            self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
-        }).collect::<Result<Vec<_>>>()?;
         self.update_assignments(&mut stmt, &set, values)?;
         for (column, v) in nested {
             stmt.value(column.to_owned(), v);
@@ -3248,7 +3234,6 @@ impl<'s> Planner<'s> {
     /// A delete of a model with a delete rewrite: `UPDATE ... SET <field> = <now> WHERE ... AND <guard>`.
     fn delete_rewrite(&mut self, q: &Delete, rewrite: &orm_core::writes::PreparedDeleteRewrite) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
         let root = self.model(self.root);
-        #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
         let field = &root.fields()[rewrite.field];
         let mut stmt = Query::update();
@@ -3278,7 +3263,6 @@ impl<'s> Planner<'s> {
 
     pub fn delete(&mut self, q: &Delete) -> Result<(DeleteStatement, Option<ReturnColumns>)> {
         let root = self.model(self.root);
-        #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
         let mut stmt = Query::delete();
         stmt.from_table(Alias::new(root.table()));
@@ -3796,7 +3780,6 @@ pub fn plan_insert(
     let (fields, mut rows) = crate::client_default::fill(m, fields, rows)?;
     let (fields, forced) = nested::null_nested(m, fields.as_ref(), &mut rows);
     let fields: &[String] = &fields;
-    #[cfg(feature = "composition")]
     crate::ownership::require_local_write(m)?;
     #[cfg(feature = "composition")]
     let rows = {
@@ -3942,7 +3925,6 @@ pub fn plan_update_many(
 ) -> Result<(Vec<UpdateStatement>, Option<Vec<ValueType>>)> {
     let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
     let m = schema.model(planner.root);
-    #[cfg(feature = "composition")]
     crate::ownership::require_local_write(m)?;
     let table = m.table().to_owned();
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;

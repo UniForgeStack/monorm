@@ -11,6 +11,10 @@ pub fn column(schema: &Schema, model: &Model, alias: &str, field: &FieldIr) -> R
 
 /// `column` for the field at `position` of `model`.
 pub fn column_at(schema: &Schema, model: &Model, alias: &str, position: usize) -> Result<SimpleExpr> {
+    if !model.has_foreign_storage {
+        let source = model.native_dependency(position).unwrap_or(position);
+        return Ok(Expr::col((Alias::new(alias), Alias::new(&model.fields()[source].column))).into());
+    }
     debug_assert!(position < model.resolved_fields.len(), "column_at takes a position of model.fields()");
     let resolved = &model.resolved_fields[position];
     let owners = &schema.physical().models;
@@ -39,8 +43,8 @@ pub fn column_at(schema: &Schema, model: &Model, alias: &str, position: usize) -
 }
 
 pub fn require_local_write(model: &Model) -> Result<()> {
-    if model.resolved_fields.iter().any(|f| f.storage.owner != model.owner) {
-        return Err(Error::query("multi-owner model writes require a prepared owner statement sequence; use the storage-composition API"));
+    if model.has_foreign_storage && model.resolved_fields.iter().any(|f| f.storage.owner != model.owner) {
+        return Err(Error::query("a write of fields stored in several tables needs the multi-table write path"));
     }
     Ok(())
 }
