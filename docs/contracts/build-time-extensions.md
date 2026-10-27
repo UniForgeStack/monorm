@@ -402,6 +402,7 @@ An engine with a lower minor refuses such an IR with the "newer than this engine
 ## Installable packages
 
 `orm-extension-package package <crate dir> --out <dir>` builds one extension crate for the host platform.
+The `library` and `assemble` commands build one package for 3 platforms; see [Extension packages for 3 platforms](optional-packaging.md#extension-packages-for-3-platforms).
 The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `orm-extension.toml` with `abi` and `library`.
 The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
 Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.
