@@ -1140,8 +1140,8 @@ await post.load(Post.views, reload=True)         # some fields
   count, not instances. It is one statement: a duplicate key stops the whole load and
   no row is written. Client defaults fill values first; a field must be set in every
   row or in none, because COPY has no per-row `DEFAULT`. `on_conflict()`,
-  `batch_size`, SQLite, composed models, models with native write behavior and fields
-  that write through an SQL template (other than enums: arrays with a `@db.*` type and
+  `batch_size`, SQLite, composed models, models with native write behavior or change-set
+  hooks and fields that write through an SQL template (other than enums: arrays with a `@db.*` type and
   extension types do) raise. Values fit the column's type (`Int` on a `smallint`
   column); a value out of its range raises. COPY fails when row-level security
   applies to the role (a non-owner without `BYPASSRLS`, or the owner with

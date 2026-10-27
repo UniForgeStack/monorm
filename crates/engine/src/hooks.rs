@@ -3,8 +3,9 @@
 use crate::error::{Error, Result};
 use crate::params::Params;
 use orm_contracts::abi::{Arg, Context, Value as Abi};
-use orm_core::{hooks::{HookPlan, HookRef}, schema::Model};
+use orm_core::{hooks::{HookPlan, HookRef}, schema::Model, writes::{AssignValue, WriteKind}};
 use sea_query::Value;
+use std::cell::OnceCell;
 
 /// Map a logical field position to its supplied row slot, once per operation.
 pub fn input_map(width: usize, positions: &[usize]) -> Result<Vec<Option<usize>>> {
@@ -30,7 +31,7 @@ impl Slots for [Option<Value>] {
     fn width(&self) -> usize { self.len() }
 }
 
-const RESTRICTED: &str = "native validated fields require supplied values; database defaults and expressions need a constraint or explicit transaction strategy";
+const RESTRICTED: &str = "hooked fields require supplied values; database defaults and expressions need a constraint or explicit transaction strategy";
 const PARTIAL: &str = "record validation requires all non-null supplied dependencies; use an explicit transaction for partial records";
 
 fn abi_of(value: &Value) -> Option<Abi> {
@@ -62,17 +63,17 @@ fn to_abi(model: &Model, position: usize, value: &Value) -> Result<Abi> {
     abi_of(value).ok_or_else(|| Error::query(format!("{}.{}: hooks do not support this field type", model.ir.name, model.fields()[position].name)))
 }
 
-/// The request context of one statement: the scope values for a hook that reads them, and nothing for the rest.
-pub struct Contexts { full: Option<Context>, empty: Context }
+/// The request context of one statement. A hook that reads it gets the scope values, built when the first such hook runs; the others get none.
+pub struct Contexts<'a> { params: &'a dyn Params, full: OnceCell<Context>, empty: Context }
 
-impl Contexts {
-    pub fn new(plan: &HookPlan, params: &dyn Params) -> Result<Self> {
-        let full = if plan.reads_context() { Some(context(params)?) } else { None };
-        Ok(Self { full, empty: Context::default() })
-    }
+impl<'a> Contexts<'a> {
+    pub fn new(params: &'a dyn Params) -> Self { Self { params, full: OnceCell::new(), empty: Context::default() } }
 
-    pub fn of(&self, hook: &HookRef) -> &Context {
-        match (&self.full, hook.reads_context()) { (Some(full), true) => full, _ => &self.empty }
+    pub fn of(&self, hook: &HookRef) -> Result<&Context> {
+        if !hook.reads_context() { return Ok(&self.empty); }
+        if let Some(full) = self.full.get() { return Ok(full); }
+        let built = context(self.params)?;
+        Ok(self.full.get_or_init(|| built))
     }
 }
 
@@ -128,14 +129,15 @@ fn failure(model: &Model, position: Option<usize>, hook: &HookRef, message: Stri
 /// Runs the hooks of one field on `value`.
 fn field(model: &Model, plan: &HookPlan, position: usize, value: &mut Value, contexts: &Contexts) -> Result<()> {
     let mut abi = to_abi(model, position, value)?;
+    let mut rewritten = false;
     for (_, hook) in plan.transforms.iter().filter(|(p, _)| *p == position) {
-        hook.rewrite(&mut abi, contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.rewrite(&mut abi, contexts.of(hook)?).map_err(|m| failure(model, Some(position), hook, m))?;
+        rewritten = true;
     }
     for (_, hook) in plan.validators.iter().filter(|(p, _)| *p == position) {
-        hook.check(&abi, contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.check(&abi, contexts.of(hook)?).map_err(|m| failure(model, Some(position), hook, m))?;
     }
-    if !plan.transforms.iter().any(|(p, _)| *p == position) { return Ok(()); }
-    *value = from_abi(model, position, value, abi)?;
+    if rewritten { *value = from_abi(model, position, value, abi)?; }
     Ok(())
 }
 
@@ -143,7 +145,7 @@ fn field(model: &Model, plan: &HookPlan, position: usize, value: &mut Value, con
 /// (the key slot of `update_many`).
 fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>], row: &mut R, skip: usize, contexts: &Contexts) -> Result<()> {
     let slot = |p: usize| map.get(p).copied().flatten().filter(|s| *s >= skip);
-    for &p in plan.required.iter().filter(|p| plan.watches(**p)) {
+    for &p in &plan.watched {
         let Some(s) = slot(p) else { continue };
         match row.slot(s) {
             Some(value) => field(model, plan, p, value, contexts)?,
@@ -157,7 +159,24 @@ fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>],
             let value = slot(p).and_then(|s| row.slot(s)).ok_or_else(|| Error::query(PARTIAL))?;
             args.push(Arg { name: model.fields()[p].name.clone(), value: to_abi(model, p, value)? });
         }
-        record.hook.check_record(&args, contexts.of(&record.hook)).map_err(|m| failure(model, None, &record.hook, m))?;
+        record.hook.check_record(&args, contexts.of(&record.hook)?).map_err(|m| failure(model, None, &record.hook, m))?;
+    }
+    Ok(())
+}
+
+/// Gives the value that the caller supplied for an assigned field to its point-4 hook, which keeps, replaces or rejects it.
+/// A field that the caller leaves out gets its value from `assigned`.
+fn assign_row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>], row: &mut R, skip: usize, contexts: &Contexts) -> Result<()> {
+    for (p, hook) in &plan.assign {
+        let Some(s) = map.get(*p).copied().flatten().filter(|s| *s >= skip) else { continue };
+        let on_update = model.assignments.iter().any(|a| a.field == *p && matches!(a.value, AssignValue::Hook { .. }) && a.applies_to(WriteKind::Update));
+        if !on_update { continue; }
+        let Some(value) = row.slot(s) else {
+            return Err(Error::query(format!("{}.{}: a hook assigns this field; supply a value, not a database expression", model.ir.name, model.fields()[*p].name)));
+        };
+        let mut abi = to_abi(model, *p, value)?;
+        hook.rewrite(&mut abi, contexts.of(hook)?).map_err(|m| failure(model, Some(*p), hook, m))?;
+        *value = from_abi(model, *p, value, abi)?;
     }
     Ok(())
 }
@@ -166,18 +185,20 @@ fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>],
 pub fn update_set(model: &Model, positions: &[usize], values: &mut [Option<Value>], params: &dyn Params) -> Result<()> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
     let map = input_map(model.fields().len(), positions)?;
-    row(model, plan, &map, values, 0, &Contexts::new(plan, params)?)
+    let contexts = Contexts::new(params);
+    row(model, plan, &map, values, 0, &contexts)?;
+    assign_row(model, plan, &map, values, 0, &contexts)
 }
 
 /// The statement-level checks of an insert: the supplied fields, and the upsert.
 fn insert_fields(model: &Model, plan: &HookPlan, map: &[Option<usize>], upsert: bool) -> Result<()> {
     if upsert && plan.no_upsert {
-        return Err(Error::query("native validation does not support upsert conflict outcomes; use an explicit transaction or database constraint"));
+        return Err(Error::query("hooks do not support upsert conflict outcomes; use an explicit transaction or database constraint"));
     }
     for &p in &plan.required {
         if map.get(p).copied().flatten().is_some() { continue; }
         return Err(Error::query(if plan.watches(p) {
-            format!("{}.{}: native validation requires an explicitly supplied insert value", model.ir.name, model.fields()[p].name)
+            format!("{}.{}: a hook requires an explicitly supplied insert value", model.ir.name, model.fields()[p].name)
         } else {
             "record validation requires all insert dependencies".to_owned()
         }));
@@ -189,24 +210,25 @@ fn insert_fields(model: &Model, plan: &HookPlan, map: &[Option<usize>], upsert: 
 pub fn insert_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Option<Value>>], upsert: bool, params: &dyn Params) -> Result<()> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
     insert_fields(model, plan, map, upsert)?;
-    let contexts = Contexts::new(plan, params)?;
+    let contexts = Contexts::new(params);
     rows.iter_mut().try_for_each(|r| row(model, plan, map, r.as_mut_slice(), 0, &contexts))
 }
 
 /// Runs the hooks on the rows of an `update_many`; slot 0 is the key.
 pub fn update_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Value>], params: &dyn Params) -> Result<()> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
-    let contexts = Contexts::new(plan, params)?;
-    rows.iter_mut().try_for_each(|r| row(model, plan, map, r.as_mut_slice(), 1, &contexts))
+    let contexts = Contexts::new(params);
+    rows.iter_mut().try_for_each(|r| {
+        row(model, plan, map, r.as_mut_slice(), 1, &contexts)?;
+        assign_row(model, plan, map, r.as_mut_slice(), 1, &contexts)
+    })
 }
 
-/// The value that the point-4 hook of field `position` gives to a write. `None` when the model has no such hook.
-pub fn assigned(model: &Model, position: usize, params: &dyn Params) -> Result<Option<Value>> {
-    let Some(plan) = model.hooks.as_deref() else { return Ok(None) };
-    let Some(hook) = plan.assigner(position) else { return Ok(None) };
-    let contexts = Contexts::new(plan, params)?;
+/// The value that the point-4 hook of field `position` gives to a write that leaves the field out. `None` when the model has no such hook.
+pub fn assigned(model: &Model, position: usize, contexts: &Contexts) -> Result<Option<Value>> {
+    let Some(hook) = model.hooks.as_deref().and_then(|plan| plan.assigner(position)) else { return Ok(None) };
     let field = &model.fields()[position];
-    let out = hook.produce(contexts.of(hook)).map_err(|m| failure(model, Some(position), hook, m))?;
+    let out = hook.produce(contexts.of(hook)?).map_err(|m| failure(model, Some(position), hook, m))?;
     let seed = crate::params::null_of(Some(field.value_type()));
     from_abi(model, position, &seed, out).map(Some)
 }

@@ -269,7 +269,7 @@ fn init_gets_the_extension_data_and_a_hook_reads_the_state() {
     assert_eq!(state.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("xhello")));
     let bare = library.init(&serde_json::Value::Null).unwrap();
     assert_eq!(bare.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("hello")));
-    assert!(library.hook_names().unwrap().contains(&"outside.echo"));
+    assert!(state.hook("outside.echo").is_some() && state.hook("outside.gone").is_none());
 }
 
 #[test]
@@ -297,11 +297,11 @@ fn a_hook_reads_the_request_context() {
 }
 
 #[test]
-fn an_error_and_a_panic_of_a_hook_or_of_init_name_the_extension() {
+fn a_hook_error_is_its_own_text_and_a_panic_or_an_init_failure_names_the_extension() {
     let library = open(&installed("", "0.2"));
     let state = library.init(&serde_json::Value::Null).unwrap();
-    let error = state.call("outside.fail", &[], &Context::default()).unwrap_err();
-    assert!(error.contains(ID) && error.contains("outside.fail") && error.contains("the hook failed"), "{error}");
+    // The text of a hook that returns `Err` is the whole error: the caller adds the model and the field.
+    assert_eq!(state.call("outside.fail", &[], &Context::default()), Err("the hook failed".to_owned()));
     let error = state.call("outside.panic", &[], &Context::default()).unwrap_err();
     assert!(error.contains(ID) && error.contains("panicked") && error.contains("the hook panicked"), "{error}");
     assert!(state.call("outside.prefix", &[], &Context::default()).unwrap_err().contains("missing argument value"));
@@ -319,7 +319,7 @@ fn a_hook_of_point_two_returns_nothing_and_refuses_a_value_that_is_not_text() {
     let state = open(&installed("", "0.2")).init(&serde_json::Value::Null).unwrap();
     assert_eq!(state.call("outside.audit", &[arg("value", text("hello"))], &Context::default()), Ok(Value::Null));
     let error = state.call("outside.audit", &[arg("value", Value::Int(1))], &Context::default()).unwrap_err();
-    assert!(error.contains(ID) && error.contains("outside.audit") && error.contains("value must be text"), "{error}");
+    assert_eq!(error, "value must be text, got Int(1)");
 }
 
 #[test]
@@ -511,6 +511,20 @@ fn a_binding_to_a_missing_export_and_a_failing_init_fail_define_with_the_id() {
     assert!(error.contains("Post.tag") && error.contains(ID) && error.contains("outside.gone"), "{error}");
     let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::json!({"fail": true})), &packages(&manifest)).err().expect("init fails");
     assert!(error.contains(ID) && error.contains("init asked to fail"), "{error}");
+}
+
+// `define()` validates the IR first, so only a direct call reaches the check of `bind` itself.
+#[test]
+fn bind_refuses_a_binding_of_an_extension_that_did_not_run_as_a_library() {
+    let manifest = installed("", "0.2");
+    let hooks = || hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
+    let mut requirements = hooks().behavior;
+    requirements.packages.clear();
+    let mut schema = orm_core::schema::Schema::from_ir_unbound(hooks()).unwrap();
+    let index = [("Post".to_owned(), 0)].into();
+    let error = orm_core::hooks::bind(&mut schema.models, &index, &requirements, &packages(&manifest)).unwrap_err();
+    assert!(error.contains("Post.tag") && error.contains(ID) && error.contains("did not run as a library"), "{error}");
+    assert!(schema.models[0].hooks.is_none(), "a refused binding leaves no plan");
 }
 
 #[test]

@@ -274,7 +274,7 @@ Relation-dependent computation is not supported by this primitive.
 A proxy model takes the spec of its nearest ancestor and adds its own entries to it; an own entry replaces the inherited one of the same name (see [proxy-models.md](../extensions/proxy-models.md)).
 Static model methods use scalar string exports with generated Python/TypeScript types and collision checks.
 Names must be valid Python identifiers, excluding keywords and `__debug__`.
-Generated write types omit computed fields and exclude expressions for native validated fields.
+Generated write types omit computed fields and exclude expressions for hooked fields.
 Generation and runtime definition both consume normalized schema requirements and the same compiled adapters.
 
 Profiles fingerprint the normalized model, relevant enums/storage, native configuration, extension composition, resolved dependencies and local source content.
@@ -301,9 +301,11 @@ Core uses them without knowledge of the extension that sets them.
 
 ## Execution and performance
 
-A core-only build has no composition dependencies, model behavior state or execution hooks.
-Enabled profiles generate direct Rust calls and numeric field positions;
-runtime execution does not parse manifests or declarations.
+A core-only build has no composition dependencies or model behavior state.
+Every build has the hook plan of a model; a model without a hook has no plan.
+Enabled profiles generate direct Rust calls and numeric field positions.
+A hook of a static profile is a function pointer; a hook of a packaged extension calls its library through the ABI.
+Runtime execution parses no declaration; `define()` reads the manifest of a packaged extension once to open its library.
 Dispatch for computation is resolved at the output-shape boundary rather than for each row.
 The host retains binding, SQL execution and transaction ownership.
 
@@ -355,7 +357,7 @@ All hosts check `models.py` and `models.ts` beside the schema when they carry a 
 Rust models are outside this lock check.
 Python schema facades are checked through their shared `_orm_models.py`.
 With no generated models file, the command compiles the schema as usual.
-Generated models import every selected package's runtime module, including packages without runtime classes; `load()` and `loads()` discover and import the same modules. Definition merges their runtime members with the native artifact's static members; an extension id present in both is an error. Definition loads no package native library or pass.
+Generated models import every selected package's runtime module, including packages without runtime classes; `load()` and `loads()` discover and import the same modules. Definition merges their runtime members with the native artifact's static members; an extension id present in both is an error. Definition runs no pass. It opens the native library of a package only to resolve the hooks that the schema binds to it; code generation and migrations open no library.
 
 Each runtime module exports `MANIFEST_HASH` (Python) or `manifestHash` (TypeScript), the lowercase SHA-256 of the raw manifest bytes. `define()` compares it with the embedded stamp once per extension per definition. A changed or missing constant warns with the id, both hashes and a run `orm generate` hint, then continues. Python uses `orm.OrmStaleModelsWarning`, a `UserWarning` subclass (subject to Python warning filters); Node and Bun emit `OrmStaleModelsWarning`. This warning does not replace the CI lock check above.
 
