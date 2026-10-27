@@ -11,17 +11,6 @@ pub struct Composition {
 }
 
 impl Composition {
-    /// Whether any selected extension declares `capability`.
-    pub fn has_capability(&self, capability: &str) -> bool {
-        self.manifests.iter().any(|m| m.capabilities.iter().any(|c| c == capability))
-    }
-
-    /// Host Cargo features that the selected manifests turn on, in a stable order.
-    pub fn host_features(&self) -> Vec<String> {
-        orm_contracts::extension::HOST_FEATURE_CAPABILITIES.iter()
-            .filter(|feature| self.has_capability(feature)).map(|feature| (*feature).to_owned()).collect()
-    }
-
     pub fn resolve(manifests: Vec<Manifest>) -> Result<Self, String> {
         if let Some(m) = manifests.iter().find(|m| m.is_dynamic()) {
             return Err(format!("{}: a library cannot be compiled into an artifact; the loader runs it", m.id));
@@ -49,7 +38,6 @@ impl Composition {
         };
         let mut artifact = artifact;
         artifact.language_members = self.languages.iter().map(|l| l.members.clone()).collect();
-        artifact.capabilities.extend(self.host_features());
         if let Some(native) = native {
             artifact.specializations = native.specializations.clone();
             artifact.capabilities.extend(["native-string-values", "native-string-records", "native-string-results"].into_iter().map(str::to_owned));

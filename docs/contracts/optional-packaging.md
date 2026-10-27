@@ -11,7 +11,7 @@ schemas, objects, pools and transactions cannot switch engines.
 | sqlite | SQLite | no | no | none | none |
 | combined | PostgreSQL + SQLite | no | no | none | none |
 | tooling | PostgreSQL + SQLite | yes | Python + TypeScript | none | none |
-| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | two static first-party |
+| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | one static first-party |
 
 Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]`, `orm[tooling]` or `orm[full]`.
 These extras select complete distributions, not changes to an installed binary.
@@ -55,9 +55,8 @@ npx orm generate typescript
 
 ## The full profile
 
-The `full` profile is the `tooling` profile plus the two static first-party extensions:
-the model-composition extension (`composition`) and `file-storage`.
-The proxy, timestamps, soft-delete, locking, inherit, query-defaults and generic extensions are installable packages, not part of any profile; see [Installable packages](build-time-extensions.md#installable-packages).
+The `full` profile is the `tooling` profile plus the static first-party extension `file-storage`.
+The proxy, composition, timestamps, soft-delete, locking, inherit, query-defaults and generic extensions are installable packages, not part of any profile; see [Installable packages](build-time-extensions.md#installable-packages).
 It has the generators because only the artifact that holds the extensions can write their `orm_ext/` files during `orm generate`.
 
 ```bash
@@ -91,12 +90,11 @@ including through an optional CLI dependency. `composition` selects the build-ti
 static extension host; extension contract/compiler logic belongs to the build-time
 extension system. It is distinct from model composition.
 
-Baseline native profiles do not claim optional reference-loading,
-model-composition or file-storage support.
+Baseline native profiles do not claim optional reference-loading
+or file-storage support.
 The tooling profile and the default binding builds add `reference-loading`.
-The two feature extensions come only from extension crates selected in
-`orm-extension-build`; do not pass their host features by hand (for example
-`maturin build --features model-composition`). A marker package cannot add code to an
+The feature extension comes only from an extension crate selected in
+`orm-extension-build`; do not pass its host feature by hand. A marker package cannot add code to an
 already compiled engine. [Build-time extensions](build-time-extensions.md#select-feature-extensions)
 has the configuration, the build commands and the packaging step: the Python library
 goes into an `orm_native_custom` package (`ORM_PROFILE=custom`), and the Node library

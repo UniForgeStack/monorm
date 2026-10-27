@@ -1016,11 +1016,7 @@ pub fn capture_storage(ir: &mut SchemaIr) -> Result<(), String> {
 pub const HOST_CAPABILITIES: &[&str] = &[
     "schema-transformations", "physical-schema", "native-string-values",
     "native-string-records", "native-string-results", "file-storage",
-    "model-composition",
 ];
-
-/// Capabilities that a build selects as the host Cargo feature of the same name.
-pub const HOST_FEATURE_CAPABILITIES: &[&str] = &["model-composition"];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
 /// declarations retain their phase state; new declarations are the only pass inputs.

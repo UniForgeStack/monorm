@@ -41,8 +41,7 @@ scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Py
 ## Feature artifacts
 
 The checks above build no optional feature. `scripts/feature-check.sh` builds one
-artifact per feature extension (model-composition,
-file-storage) and one with all of them through `orm-extension-build`;
+artifact per feature extension (file-storage) and one with all of them through `orm-extension-build`;
 the extension manifests select the Cargo features, never a hand-set `--features`.
 On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
 and inherit public scripts, and once the `extensions/file-storage` packages and their end-to-end scripts.
@@ -53,7 +52,7 @@ to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature
 
 ```bash
 PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/orm_test \
-  scripts/feature-check.sh            # or name artifacts: scripts/feature-check.sh model-composition all
+  scripts/feature-check.sh            # or name artifacts: scripts/feature-check.sh file-storage all
 ```
 
 It needs `uv`, `node`, `npm` and `bun`, and writes `target/feature-check/matrix.txt` and `logs/`.

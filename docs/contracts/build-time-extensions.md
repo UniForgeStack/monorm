@@ -62,14 +62,14 @@ Declare all selected behavioral extension crates in `dependencies`, including ex
 Cargo resolves Rust package versions;
 the frontend checks extension dependency constraints against that resolved selection.
 
-A manifest capability in `HOST_FEATURE_CAPABILITIES` (`model-composition`)
-also turns on the host Cargo feature of the same name in both bindings.
-`file-storage` is not one: it has no host code and only requires `async-field-adapter.v1`.
+No manifest capability turns on a host Cargo feature.
+`file-storage` has no host code and only requires `async-field-adapter.v1`.
+The model-composition extension (`orm.composition`, `extensions/model-composition`) has none either.
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
 The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
 The query-defaults extension (`orm.query-defaults`) has none either: its pass writes only the neutral `read_defaults` record.
-These six are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
-`scripts/feature-check.sh` builds one artifact per host feature and one with all of them, installs the six packages in every environment, and runs every suite on each.
+These seven are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
+`scripts/feature-check.sh` builds one artifact per feature extension and one with all of them, installs the seven packages in every environment, and runs every suite on each.
 
 Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
 For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
@@ -82,16 +82,14 @@ Selection is recorded in the build configuration and emitted binding manifests, 
 
 ## Select feature extensions
 
-The repository ships three static feature extensions.
-Each is a crate that you put in `dependencies`; its manifest capability turns on the host feature.
+The repository ships static feature extensions as crates that you put in `dependencies`.
 
 | Feature | Dependency entry (`"alias": {...}`) | Doc |
 |---|---|---|
-| model-composition | `"composition": {"package": "orm-model-composition", "path": "extensions/model-composition"}` | [model-composition.md](../extensions/model-composition.md) |
 | file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](../extensions/file-storage.md) |
 
 Paths are relative to the repository root; write them relative to your configuration file.
-This configuration selects all three and emits the workspace only (`prepare_only`):
+This configuration selects them and emits the workspace only (`prepare_only`):
 
 ```json
 {
@@ -101,7 +99,6 @@ This configuration selects all three and emits the workspace only (`prepare_only
   "bindings": ["python", "node"],
   "dependencies": {
     "proxy": {"package": "orm-proxy", "path": "/path/to/orm/extensions/proxy"},
-    "composition": {"package": "orm-model-composition", "path": "/path/to/orm/extensions/model-composition"},
     "file_storage": {"package": "orm-file-storage-extension", "path": "/path/to/orm/extensions/file-storage"}
   }
 }
@@ -155,8 +152,8 @@ A bound query set mixin reads the objects of a bound write with these helpers (t
 ### The full profile
 
 `languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.
-They select the three static first-party extensions.
-The timestamps, soft-delete, locking, inherit, query-defaults and generic extensions are installable packages, not part of the profile.
+They select the static first-party extension `file-storage`.
+The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy and composition extensions are installable packages, not part of the profile.
 They set `prepare_only` and `binding_features` to `["profile-full"]`.
 `profile-full` has the features of `profile-tooling`: the backends, `cli`, both generators and `reference-loading`.
 It also gives the profile its name in `profile_metadata()`.
