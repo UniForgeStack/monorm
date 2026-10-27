@@ -14,5 +14,5 @@ def test_define_rejects_an_old_schema_contract_and_names_the_cure():
 
 def test_define_rejects_old_proxy_models_and_names_the_cure():
     ir = {"models": [], "behavior": {"proxy_models": [{"model": "A", "parent": "U", "defaults": {}}]}}
-    with pytest.raises(orm.SchemaError, match=r"unknown field `defaults`.*regenerate them and rebuild the native artifact"):
+    with pytest.raises(orm.SchemaError, match=r"unknown field `proxy_models`.*regenerate the models and rebuild the native artifact"):
         orm.define(ir, registry=orm.Registry())
