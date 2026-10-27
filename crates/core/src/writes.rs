@@ -41,13 +41,19 @@ fn position(models: &[Model], index: &HashMap<String, usize>, model: &str, field
 
 pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Requirements) -> Result<()> {
     for a in &r.write_assignments {
-        let (m, p) = match a.value {
+        let (m, p) = match &a.value {
             AssignValue::Now => position(models, index, &a.model, &a.field, "a time assignment", |f| f.ty == ColType::DateTime)?,
             AssignValue::Increment => position(models, index, &a.model, &a.field, "an increment assignment", |f| matches!(f.ty, ColType::Int | ColType::BigInt))?,
+            AssignValue::Hook { export } => {
+                let at = position(models, index, &a.model, &a.field, "a hook assignment", |_| true)?;
+                let bound = r.hooks.iter().any(|h| h.point == 4 && h.source == a.source && h.model == a.model && h.field.as_deref() == Some(a.field.as_str()) && h.export == *export);
+                if !bound { return Err(format!("{}.{}: the write assignment from {} runs hook {export}, but no point-4 binding names it; bind it to the field", a.model, a.field, a.source)); }
+                at
+            }
         };
         if a.on.is_empty() { return Err(format!("{}.{}: a write assignment from {} names no statement kind", a.model, a.field, a.source)); }
         if models[m].assignments.iter().any(|x| x.field == p) { return Err(format!("{}.{}: assigned by two write assignments", a.model, a.field)); }
-        models[m].assignments.push(PreparedAssignment { source: a.source.clone(), field: p, on: a.on.clone(), value: a.value, upsert: a.upsert });
+        models[m].assignments.push(PreparedAssignment { source: a.source.clone(), field: p, on: a.on.clone(), value: a.value.clone(), upsert: a.upsert });
     }
     for d in &r.delete_rewrites {
         let (m, p) = position(models, index, &d.model, &d.field, "a delete rewrite", |f| f.ty == ColType::DateTime)?;

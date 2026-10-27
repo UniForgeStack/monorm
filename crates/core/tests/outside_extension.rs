@@ -8,6 +8,9 @@ use orm_core::ir::{ColType, FieldIr, SchemaIr};
 use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, process::Command, sync::Mutex};
 
 const ID: &str = "acme.outside";
+/// The passes and attributes that the manifest of `tests/outside-extension` stamps on a lowered schema.
+const PASSES: [&str; 4] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.base"];
+const ATTRIBUTES: [&str; 5] = ["outside.tag", "outside.money", "outside.note", "outside.base", "outside.guard"];
 const SCHEMA: &str = "model Post {\n id Int @id\n @@outside.tag(\"blue\")\n}\n";
 
 struct Builds {
@@ -107,7 +110,7 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
     let stamp = &ir.behavior.packages[ID];
-    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.fields".to_owned(), "acme.outside.tag".to_owned(), "acme.outside.base".to_owned()].as_slice(), ["outside.tag".to_owned(), "outside.money".to_owned(), "outside.note".to_owned(), "outside.base".to_owned()].as_slice()));
+    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", PASSES.map(String::from).as_slice(), ATTRIBUTES.map(String::from).as_slice()));
 }
 
 #[test]
@@ -138,7 +141,7 @@ fn a_missing_extension_says_how_to_install_it() {
 fn two_extensions_that_own_one_effect_conflict() {
     let manifest = installed("", "0.2");
     let rival = scratch("rival").join("orm-extension.toml");
-    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"2.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
+    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"3.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
     let schema = "generator client {\n extensions = [\"acme.outside\", \"acme.rival\"]\n}\nmodel Post {\n id Int @id\n}\n";
     let error = compile("conflict", schema, &[(ID, &manifest), ("acme.rival", &rival)]).unwrap_err();
     assert!(error.contains("models.outside") && error.contains(ID) && error.contains("acme.rival"), "{error}");
@@ -224,7 +227,7 @@ fn unlowered() -> SchemaIr {
 fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     let manifest = installed("", "0.2");
     let ordered = manifest.with_file_name("ordered.toml");
-    fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replace("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n")).unwrap();
+    fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replacen("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n", 1)).unwrap();
     let compiled: Manifest = toml::from_str(&format!(
         "id = \"acme.static\"\nversion = \"1.0.0\"\nhost_contract = \"{HOST_CONTRACT_VERSION}\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
          languages = [\"python\"]\ndatabases = [\"postgres\"]\n\
@@ -246,7 +249,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     assert_eq!(*seen.borrow(), [("acme.static.prep".to_owned(), false), ("acme.static.late".to_owned(), true)]);
     let behavior = &ir.behavior;
     assert_eq!(behavior.completed_passes, order);
-    assert_eq!(behavior.packages[ID].passes, ["acme.outside.fields", "acme.outside.tag", "acme.outside.base"]);
+    assert_eq!(behavior.packages[ID].passes, PASSES);
     assert_eq!(behavior.extensions.get("acme.static").map(String::as_str), Some("1.0.0"));
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));
@@ -266,7 +269,7 @@ fn init_gets_the_extension_data_and_a_hook_reads_the_state() {
     assert_eq!(state.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("xhello")));
     let bare = library.init(&serde_json::Value::Null).unwrap();
     assert_eq!(bare.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("hello")));
-    assert!(library.hook_names().unwrap().contains(&"outside.echo"));
+    assert!(state.hook("outside.echo").is_some() && state.hook("outside.gone").is_none());
 }
 
 #[test]
@@ -294,11 +297,11 @@ fn a_hook_reads_the_request_context() {
 }
 
 #[test]
-fn an_error_and_a_panic_of_a_hook_or_of_init_name_the_extension() {
+fn a_hook_error_is_its_own_text_and_a_panic_or_an_init_failure_names_the_extension() {
     let library = open(&installed("", "0.2"));
     let state = library.init(&serde_json::Value::Null).unwrap();
-    let error = state.call("outside.fail", &[], &Context::default()).unwrap_err();
-    assert!(error.contains(ID) && error.contains("outside.fail") && error.contains("the hook failed"), "{error}");
+    // The text of a hook that returns `Err` is the whole error: the caller adds the model and the field.
+    assert_eq!(state.call("outside.fail", &[], &Context::default()), Err("the hook failed".to_owned()));
     let error = state.call("outside.panic", &[], &Context::default()).unwrap_err();
     assert!(error.contains(ID) && error.contains("panicked") && error.contains("the hook panicked"), "{error}");
     assert!(state.call("outside.prefix", &[], &Context::default()).unwrap_err().contains("missing argument value"));
@@ -316,7 +319,7 @@ fn a_hook_of_point_two_returns_nothing_and_refuses_a_value_that_is_not_text() {
     let state = open(&installed("", "0.2")).init(&serde_json::Value::Null).unwrap();
     assert_eq!(state.call("outside.audit", &[arg("value", text("hello"))], &Context::default()), Ok(Value::Null));
     let error = state.call("outside.audit", &[arg("value", Value::Int(1))], &Context::default()).unwrap_err();
-    assert!(error.contains(ID) && error.contains("outside.audit") && error.contains("value must be text"), "{error}");
+    assert_eq!(error, "value must be text, got Int(1)");
 }
 
 #[test]
@@ -371,7 +374,7 @@ fn a_manifest_without_exports_has_no_library_to_open() {
 
 #[test]
 fn a_library_of_slice_one_lowers_a_schema_without_a_hook_table() {
-    let text = without_exports(&manifest("0.1")).replace("schema_contract = \"2.1\"", "schema_contract = \"2.0\"");
+    let text = without_exports(&manifest("0.1")).replace("schema_contract = \"3.1\"", "schema_contract = \"3.0\"");
     let path = package("pass-only", "pass-only", &text);
     let ir = compile("pass-only", SCHEMA, &[(ID, &path)]).unwrap();
     assert!(ir.models[0].fields.iter().any(|f| f.name == "tag"));
@@ -478,4 +481,130 @@ fn an_owner_link_that_no_field_storage_reads_through_fails_the_schema() {
     ir.models[1].fields.retain(|f| f.name != "email");
     let error = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).err().expect("the schema must fail");
     assert!(error.to_string().contains("owner link Profile -> Account: no field_storage reads a field through it"), "{error}");
+}
+
+// `Schema::from_ir_with_packages` opens the library of each package that has bindings and resolves them into `Model.hooks`.
+
+/// `Post { id, tag }` with the bindings `hooks`, the extension data of `data`, and the stamp of the library.
+fn hooked(hooks: Vec<HookBinding>, data: serde_json::Value) -> SchemaIr {
+    let id = FieldIr { primary_key: true, ..FieldIr::plain("id", ColType::Int) };
+    let post = serde_json::json!({ "name": "Post", "table": "post", "fields": [id, FieldIr::plain("tag", ColType::Text)] });
+    let mut ir = SchemaIr { models: vec![serde_json::from_value(post).unwrap()], ..SchemaIr::default() };
+    ir.behavior.hooks = hooks;
+    ir.behavior.extension_data.insert(ID.to_owned(), data);
+    ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
+    ir.behavior.schema_contract_minor = SCHEMA_CONTRACT_MINOR;
+    ir.behavior.packages.insert(ID.to_owned(), orm_contracts::extension::PackageStamp { version: "0.1.0".into(), languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
+    ir
+}
+
+fn packages(manifest: &Path) -> BTreeMap<String, PathBuf> { [(ID.to_owned(), manifest.parent().unwrap().to_path_buf())].into() }
+
+#[test]
+fn define_resolves_the_bindings_of_a_library_into_the_hook_plan_of_the_model() {
+    let manifest = installed("", "0.2");
+    let ir = hooked(vec![binding(1, "tag", "outside.prefix"), binding(2, "tag", "outside.audit")], serde_json::json!({"prefix": "x"}));
+    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
+    let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
+    assert_eq!((plan.transforms.len(), plan.validators.len(), plan.records.len()), (1, 1, 0));
+    let (position, hook) = &plan.transforms[0];
+    assert_eq!(*position, 1);
+    let mut value = text("hello");
+    hook.rewrite(&mut value, &Context::default()).unwrap();
+    assert_eq!(value, text("xhello"), "init got the extension data");
+}
+
+#[test]
+fn a_hook_binding_without_a_package_directory_fails_define() {
+    let ir = hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
+    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
+    assert!(error.contains(ID) && error.contains("no package directory"), "{error}");
+}
+
+// Code generation, migrations and compile-time checks build a schema without any extension library.
+#[test]
+fn a_schema_with_hook_bindings_builds_unbound_without_a_package_directory() {
+    let ir = hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
+    let schema = orm_core::schema::Schema::from_ir_unbound(ir).unwrap();
+    assert!(schema.models.iter().all(|m| m.hooks.is_none()), "no binding is resolved");
+    let (_, checked) = orm_core::dsl::check(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null)).unwrap();
+    assert!(checked.models.iter().all(|m| m.hooks.is_none()));
+}
+
+#[test]
+fn a_binding_to_a_missing_export_and_a_failing_init_fail_define_with_the_id() {
+    let manifest = installed("", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.gone")], serde_json::Value::Null), &packages(&manifest)).err().expect("no export");
+    assert!(error.contains("Post.tag") && error.contains(ID) && error.contains("outside.gone"), "{error}");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::json!({"fail": true})), &packages(&manifest)).err().expect("init fails");
+    assert!(error.contains(ID) && error.contains("init asked to fail"), "{error}");
+}
+
+// `define()` validates the IR first, so only a direct call reaches the check of `bind` itself.
+#[test]
+fn bind_refuses_a_binding_of_an_extension_that_did_not_run_as_a_library() {
+    let manifest = installed("", "0.2");
+    let hooks = || hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
+    let mut requirements = hooks().behavior;
+    requirements.packages.clear();
+    let mut schema = orm_core::schema::Schema::from_ir_unbound(hooks()).unwrap();
+    let index = [("Post".to_owned(), 0)].into();
+    let error = orm_core::hooks::bind(&mut schema.models, &index, &requirements, &packages(&manifest)).unwrap_err();
+    assert!(error.contains("Post.tag") && error.contains(ID) && error.contains("did not run as a library"), "{error}");
+    assert!(schema.models[0].hooks.is_none(), "a refused binding leaves no plan");
+}
+
+#[test]
+fn a_binding_of_an_unknown_field_fails_define() {
+    let manifest = installed("", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "nope", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("no field");
+    assert!(error.contains("Post.nope") && error.contains("outside.prefix"), "{error}");
+}
+
+#[test]
+fn a_library_with_the_wrong_abi_fails_define_with_both_versions() {
+    let manifest = installed("abi-newer", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("abi");
+    assert!(error.contains(ID) && error.contains("ABI 0.3") && error.contains("ABI 0.2"), "{error}");
+}
+
+// Hook 4: a point-4 binding plus a write assignment give a field the value of a hook on update.
+
+fn actor_ir(binding_ok: bool) -> SchemaIr {
+    let mut hook = binding(4, "tag", "acme.outside.actor");
+    hook.reads_context = true;
+    let mut ir = hooked(if binding_ok { vec![hook] } else { vec![] }, serde_json::Value::Null);
+    ir.behavior.write_assignments.push(orm_contracts::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![orm_contracts::writes::WriteKind::Update],
+        value: orm_contracts::writes::AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: Default::default(),
+    });
+    ir
+}
+
+#[test]
+fn a_point_four_binding_resolves_into_the_assign_list_and_reads_the_context() {
+    let manifest = installed("", "0.2");
+    let schema = orm_core::schema::Schema::from_ir_with_packages(actor_ir(true), &packages(&manifest)).unwrap();
+    let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
+    assert_eq!((plan.assign.len(), plan.no_upsert, plan.reads_context()), (1, false, true));
+    let hook = plan.assigner(1).expect("the tag field has a hook");
+    let context = Context { values: vec![arg("user", text("ada"))] };
+    assert_eq!(hook.produce(&context), Ok(text("ada")));
+    assert!(hook.produce(&Context::default()).unwrap_err().contains("no user in the request scope"));
+}
+
+#[test]
+fn a_hook_assignment_without_its_point_four_binding_fails_define() {
+    let manifest = installed("", "0.2");
+    let error = orm_core::schema::Schema::from_ir_with_packages(actor_ir(false), &packages(&manifest)).err().expect("no binding");
+    assert!(error.contains("Post.tag") && error.contains("acme.outside.actor") && error.contains("no point-4 binding"), "{error}");
+}
+
+#[test]
+fn a_point_four_hook_that_returns_the_wrong_type_fails_define() {
+    let manifest = installed("", "0.2");
+    let mut ir = actor_ir(true);
+    ir.models[0].fields[1] = FieldIr::plain("tag", ColType::Int);
+    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).err().expect("type");
+    assert!(error.contains("Post.tag") && error.contains("acme.outside.actor"), "{error}");
 }

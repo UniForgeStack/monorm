@@ -35,6 +35,8 @@ pub struct Model {
     pub delete_rewrite: Option<crate::writes::PreparedDeleteRewrite>,
     /// Field positions an instance write must match against the loaded value.
     pub guards: Vec<usize>,
+    /// The change-set hooks of this model; `None` when it has no binding.
+    pub hooks: Option<Box<crate::hooks::HookPlan>>,
     #[cfg(feature = "composition")]
     pub native: crate::behavior::NativeModel,
     pub resolved_fields: Vec<crate::behavior::ResolvedField>,
@@ -80,7 +82,7 @@ impl Model {
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
-            assignments: vec![], delete_rewrite: None, guards: vec![],
+            assignments: vec![], delete_rewrite: None, guards: vec![], hooks: None,
             #[cfg(feature = "composition")] native: crate::behavior::NativeModel::None,
             owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false })
     }
@@ -168,9 +170,19 @@ pub struct Schema {
 }
 
 impl Schema {
-    pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true) }
+    pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, Some(&Default::default())) }
 
-    fn from_ir_impl(mut ir: SchemaIr, behavioral: bool) -> Result<Self> {
+    /// Like `from_ir`, and leaves the hook bindings unresolved: code generation, migrations and compile-time checks
+    /// need no extension library.
+    pub fn from_ir_unbound(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, None) }
+
+    /// Like `from_ir`, and loads the library of each package in `packages` (extension id to package directory)
+    /// that has hook bindings in the IR.
+    pub fn from_ir_with_packages(ir: SchemaIr, packages: &std::collections::BTreeMap<String, std::path::PathBuf>) -> Result<Self> {
+        Self::from_ir_impl(ir, true, Some(packages))
+    }
+
+    fn from_ir_impl(mut ir: SchemaIr, behavioral: bool, packages: Option<&std::collections::BTreeMap<String, std::path::PathBuf>>) -> Result<Self> {
         crate::identity::validate(&ir)?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
@@ -183,7 +195,7 @@ impl Schema {
                     "native_expression_slots": ir.native_expression_slots,
                     "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities, "partitions": ir.partitions,
                 })).map_err(|e| e.to_string())?;
-                Some(Box::new(Self::from_ir_impl(physical, false)?))
+                Some(Box::new(Self::from_ir_impl(physical, false, None)?))
             }
             None => None,
         };
@@ -252,13 +264,17 @@ impl Schema {
                 return Err(format!("{}.{}: an enum subset is only allowed on a field of a proxy model", m.name, f.name));
             }
             let client_defaults = crate::client_default::prepare(&m.name, &m.fields, &enums)?;
+            #[cfg(feature = "composition")]
+            let kind = native.next().expect("prepared model");
             models.push(Model {
                 file_fields: file_fields.next().expect("prepared file model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
                 assignments: vec![], delete_rewrite: None, guards: vec![],
-                #[cfg(feature = "composition")] native: native.next().expect("prepared model"),
+                #[cfg(feature = "composition")] hooks: kind.static_hooks(),
+                #[cfg(not(feature = "composition"))] hooks: None,
+                #[cfg(feature = "composition")] native: kind,
                 owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false });
         }
         // Validate relation targets now that every model is indexed.
@@ -281,6 +297,7 @@ impl Schema {
         }
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
+        if let (true, Some(packages)) = (behavioral, packages) { crate::hooks::bind(&mut models, &model_index, &ir.behavior, packages)?; }
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
         crate::writes::reject_multi_table(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
         #[cfg(feature = "proxy-models")]

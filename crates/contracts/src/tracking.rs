@@ -128,7 +128,7 @@ mod tests {
             "attribute": attribute, "model": "Post", "field": null, "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": 4, "column": 3}})).collect();
         let mut ir: SchemaIr = serde_json::from_value(json!({
             "models": [{"name": "Post", "table": "posts", "fields": fields}],
-            "behavior": {"schema_contract": 2, "declarations": declarations}
+            "behavior": {"schema_contract": 3, "declarations": declarations}
         })).unwrap();
         crate::extension::capture_storage(&mut ir).unwrap();
         ir

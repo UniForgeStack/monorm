@@ -3,10 +3,10 @@
 #
 #   ORM_TEST_DATABASE_URL=postgres://... scripts/feature-check.sh [artifact...]
 #
-# Artifacts: proxy-models model-composition file-storage generic-relations
+# Artifacts: proxy-models model-composition file-storage
 # all (default: every one). Each artifact selects only extension crates; the manifests turn on
 # the host Cargo features, so no cargo command here passes --features.
-# The timestamps, soft-delete, locking, inherit and query-defaults packages are installed in every environment,
+# The timestamps, soft-delete, locking, inherit, query-defaults and generic packages are installed in every environment,
 # so the auth app (apps/auth) and the inherit and query-defaults public scripts run on every artifact.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
 set -uo pipefail
@@ -19,7 +19,7 @@ export ORM_TEST_DATABASE_URL
 # Not CARGO_TARGET_DIR: sccache hashes every CARGO_* variable, and a per-checkout path would block cache hits.
 TARGET=$WORK/target
 mkdir -p "$WORK/.cargo" && printf '[build]\ntarget-dir = "%s"\n' "$TARGET" >"$WORK/.cargo/config.toml"
-ARTIFACTS=${*:-proxy-models model-composition file-storage generic-relations all}
+ARTIFACTS=${*:-proxy-models model-composition file-storage all}
 LOGS=$WORK/logs
 MATRIX=$WORK/matrix.txt
 case "$(uname -s)" in
@@ -33,13 +33,12 @@ dependency() {
     proxy-models) echo '"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}' ;;
     model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}' ;;
     file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}' ;;
-    generic-relations) echo '"generic":{"package":"orm-generic","path":"'"$ROOT"'/extensions/generic"}' ;;
     *) echo "unknown feature $1" >&2; return 1 ;;
   esac
 }
-FEATURES="proxy-models model-composition file-storage generic-relations"
+FEATURES="proxy-models model-composition file-storage"
 # file-storage has no host capability.
-HOST_FEATURES=${FEATURES/file-storage /}
+HOST_FEATURES=${FEATURES/ file-storage/}
 features_of() { if [ "$1" = all ]; then echo "$FEATURES"; else echo "$1"; fi; }
 has() { case " $(features_of "$1") " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 

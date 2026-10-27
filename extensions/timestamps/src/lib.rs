@@ -116,7 +116,7 @@ mod tests {
             "models": [{"name": "Post", "table": "posts", "fields": [
                 {"name": "id", "column": "id", "type": "int", "primary_key": true}
             ]}],
-            "behavior": {"schema_contract": 2, "declarations": [
+            "behavior": {"schema_contract": 3, "declarations": [
                 {"attribute": "timestamps.updated_at", "model": "Post", "field": field, "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 4, "column": 3}}
             ]}
         })).unwrap()
@@ -267,7 +267,7 @@ mod tests {
             prepared(&mut ir).unwrap();
             let a = &ir.behavior.write_assignments;
             assert_eq!(a.len(), 1);
-            assert_eq!((a[0].source.as_str(), a[0].model.as_str(), a[0].field.as_str(), a[0].value, a[0].upsert), ("orm.timestamps", "Post", "changed", AssignValue::Now, UpsertDefault::Drop));
+            assert_eq!((a[0].source.as_str(), a[0].model.as_str(), a[0].field.as_str(), a[0].value.clone(), a[0].upsert), ("orm.timestamps", "Post", "changed", AssignValue::Now, UpsertDefault::Drop));
             assert_eq!(a[0].on, [WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite]);
         }
     }

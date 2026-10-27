@@ -1,4 +1,4 @@
-// Needs the generic-relations extension (orm-generic). `orm identities` freezes the
+// Needs the orm-generic package (npm: @orm/generic). `orm identities` freezes the
 // ContentType values into generic-relations.identities.json first.
 
 model Photo {

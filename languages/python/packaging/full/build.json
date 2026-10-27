@@ -22,10 +22,6 @@
     "file_storage": {
       "package": "orm-file-storage-extension",
       "path": "../../../../extensions/file-storage"
-    },
-    "generic": {
-      "package": "orm-generic",
-      "path": "../../../../extensions/generic"
     }
   }
 }

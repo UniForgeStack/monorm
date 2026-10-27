@@ -442,11 +442,18 @@ impl JsSchema {
     }
 
     #[napi(constructor)]
-    pub fn new(schema_json: String) -> napi::Result<Self> {
+    pub fn new(schema_json: String, packages: Option<std::collections::BTreeMap<String, String>>) -> napi::Result<Self> {
         let mut ir: ir::SchemaIr =
             ir::SchemaIr::from_json(&schema_json).map_err(schema_err)?;
         orm_core::behavior::prepare(&mut ir, Some("typescript")).map_err(schema_err)?;
-        let inner = schema::Schema::from_ir(ir).map_err(schema_err)?;
+        let inner = match packages {
+            Some(packages) => {
+                let packages = packages.into_iter().map(|(id, dir)| (id, std::path::PathBuf::from(dir))).collect();
+                schema::Schema::from_ir_with_packages(ir, &packages)
+            }
+            None => schema::Schema::from_ir_unbound(ir),
+        }
+        .map_err(schema_err)?;
         db::require_dialect(inner.dialect).map_err(|e| schema_err(e.to_string()))?;
         Ok(JsSchema { inner: Arc::new(inner) })
     }

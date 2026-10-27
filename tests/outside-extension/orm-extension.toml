@@ -1,6 +1,6 @@
 id = "acme.outside"
 version = "0.1.0"
-schema_contract = "2.2"
+schema_contract = "3.2"
 abi = "0.2"
 library = "outside_extension"
 language_contract = 1
@@ -66,6 +66,17 @@ id = "acme.outside.base"
 phase = "logical"
 effects = ["outside.base.storage-ownership"]
 
+# `@@outside.guard` binds the hooks of the library to the fields `text`, `start`, `end`, `shop_id` and `updated_by` of the model.
+[[attributes]]
+name = "outside.guard"
+target = "model"
+
+[[passes]]
+id = "acme.outside.guard"
+phase = "declaration"
+after = ["acme.outside.tag"]
+effects = ["behavior.hooks.outside", "behavior.write_assignments.outside", "behavior.outside_read_defaults"]
+
 # Hooks of the library. `outside.prefix` reads the `{"prefix": ...}` of its `extension_data` entry.
 [[exports]]
 id = "outside.prefix"
@@ -77,6 +88,26 @@ output = "string"
 id = "outside.audit"
 point = 2
 input = "string"
+
+[[exports]]
+id = "acme.outside.trim"
+point = 1
+input = "string"
+output = "string"
+
+[[exports]]
+id = "acme.outside.nonempty"
+point = 2
+input = "string"
+
+[[exports]]
+id = "acme.outside.ordered"
+point = 3
+
+[[exports]]
+id = "acme.outside.actor"
+point = 4
+output = "string"
 
 [[exports]]
 id = "outside.context"

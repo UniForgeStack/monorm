@@ -26,7 +26,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | proxy-models | `extensions/proxy` (`orm-proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
 | model-composition | `extensions/model-composition/` (`orm-model-composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
 | file-storage | `extensions/file-storage` (`orm-file-storage-extension`) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
-| generic-relations | `extensions/generic` (`orm-generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
+| generic | `extensions/generic` (`orm-generic`, `@orm/generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
 | timestamps | `extensions/timestamps` (`orm-timestamps`) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | soft-delete | `extensions/soft-delete` (`orm-soft-delete`) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | locking | `extensions/locking` (`orm-locking`) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |

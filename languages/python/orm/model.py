@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from . import _capabilities, _extensions, _native
 from ._apps import resolve_apps
-from ._packages import resolve_extensions
+from ._packages import package_dirs, resolve_extensions
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
 from collections.abc import Iterable, Sequence
 
@@ -335,7 +335,7 @@ class Registry:
             if name in _RESERVED or hasattr(model, name):
                 raise TypeError(f"{method['model']}.{name}: generated method collides with an existing model member")
             methods_by_model.setdefault(method["model"], {})[name] = getattr(_native, method["native_function"])
-        native = _native.Schema(prepared_json, classes)
+        native = _native.Schema(prepared_json, classes, package_dirs() if prepared.get("behavior", {}).get("hooks") else None)
         snapshot._native = native
         read_flags: dict[str, dict[str, Any]] = json.loads(native.read_flags())
         snapshot._behavior = prepared.get("behavior", {})

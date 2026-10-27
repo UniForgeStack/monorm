@@ -153,12 +153,18 @@ struct PySchema {
 impl PySchema {
     /// `classes` maps model names to the classes queries build instances of.
     #[new]
-    #[pyo3(signature = (schema_json, classes = None))]
-    fn new(py: Python<'_>, schema_json: &str, classes: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    /// `packages` maps an extension id to its package directory, for the libraries that the hook bindings name.
+    /// Without `packages` the hook bindings stay unresolved: migrations and code generation need no library.
+    #[pyo3(signature = (schema_json, classes = None, packages = None))]
+    fn new(py: Python<'_>, schema_json: &str, classes: Option<&Bound<'_, PyDict>>, packages: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<Self> {
         let mut ir: ir::SchemaIr =
             ir::SchemaIr::from_json(schema_json).map_err(schema_err)?;
         orm_core::behavior::prepare(&mut ir, Some("python")).map_err(schema_err)?;
-        let inner = schema::Schema::from_ir(ir).map_err(schema_err)?;
+        let inner = match &packages {
+            Some(packages) => schema::Schema::from_ir_with_packages(ir, packages),
+            None => schema::Schema::from_ir_unbound(ir),
+        }
+        .map_err(schema_err)?;
         db::require_dialect(inner.dialect).map_err(db_err)?;
         let classes = match classes {
             Some(c) => Classes::new(py, &inner, c)?,

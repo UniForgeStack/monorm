@@ -10,6 +10,7 @@ name = "orm_engine"
 
 [dependencies]
 orm-core = { path = "../core", default-features = false }
+orm-contracts = { path = "../contracts" }
 # SQL building: one builder per dialect (multi-database support lives here).
 sea-query = { version = "1.0", default-features = false, features = ["with-chrono", "with-json", "with-uuid", "with-bigdecimal", "postgres-array", "thread-safe", "hashable-value"] }
 # Postgres driver (see src/db/postgres.rs).
@@ -31,8 +32,8 @@ rusqlite = { optional = true, version = "0.37", features = ["bundled"] }
 blake2 = "0.10"
 
 [dev-dependencies]
-# Unit tests also cover the optional generic module.
-orm-core = { path = "../core", features = ["generic-relations"] }
+# The tests generate models through the default code generators.
+orm-core = { path = "../core" }
 tokio = { version = "1", features = ["time"] }
 
 [features]
@@ -41,5 +42,4 @@ postgres = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:tokio-postgres-r
 sqlite = ["dep:rusqlite", "sea-query/backend-sqlite"]
 composition = ["orm-core/composition"]
 model-composition = ["composition", "orm-core/model-composition"]
-generic-relations = ["orm-core/generic-relations"]
 proxy-models = ["composition", "orm-core/proxy-models"]

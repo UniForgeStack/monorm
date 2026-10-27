@@ -21,6 +21,7 @@ pub mod schema;
 pub mod features;
 
 pub mod behavior;
+pub mod hooks;
 pub mod loader;
 
 pub mod ownership;
@@ -29,9 +30,6 @@ pub mod file_storage;
 pub mod identity;
 pub mod client_default;
 pub mod writes;
-
-#[cfg(any(feature = "generic-relations", test))]
-pub mod generic;
 
 #[cfg(feature = "proxy-models")]
 pub use orm_proxy_runtime as proxy;

@@ -364,7 +364,7 @@ pub fn compile_file_with(path: &Path, installed: &Installed) -> Result<SchemaIr,
 /// objects), so a bad schema fails at compile time rather than at connect.
 pub fn check(ir: SchemaIr) -> Result<(SchemaIr, Schema), String> {
     let json = serde_json::to_string(&ir).map_err(|e| e.to_string())?;
-    let schema = Schema::from_ir(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
+    let schema = Schema::from_ir_unbound(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
     crate::migrate::snapshot(&schema)?;
     for warning in crate::partition::warnings(&ir) { eprintln!("warning: {warning}"); }
     Ok((ir, schema))

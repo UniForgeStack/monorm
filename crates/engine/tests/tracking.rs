@@ -14,7 +14,7 @@ impl Params for Ints {
 
 fn schema(behavior: Json) -> std::result::Result<Schema, String> {
     let mut behavior = behavior;
-    behavior["schema_contract"] = json!(2);
+    behavior["schema_contract"] = json!(3);
     Schema::from_ir(serde_json::from_value(json!({"models":[{"name":"Post","table":"posts","fields":[
         {"name":"id","column":"id","type":"int","primary_key":true},
         {"name":"views","column":"views","type":"int"},

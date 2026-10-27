@@ -16,8 +16,10 @@ import pytest
 
 import orm
 from orm.__main__ import main as cli
+from orm import _native
 from orm._native import SchemaError
-from orm._packages import resolve_extensions
+from orm._packages import package_dirs, resolve_extensions
+from orm.migrations import Migrations
 
 MANIFEST = 'id = "acme.fixture"\nversion = "0.1.0"\nabi = "0.2"\nlibrary = "libfixture"\n'
 
@@ -228,6 +230,85 @@ async def test_packaged_generated_models_use_runtime_without_the_pass_library(si
     schema["behavior"]["packages"]["acme.outside"]["languages"] = ["typescript"]
     with pytest.raises(SchemaError, match="does not support this language binding"):
         orm.define(schema, registry=orm.Registry(), extensions={"acme.outside": acme_outside})
+
+
+GUARDED = (
+    'datasource db { provider = "sqlite" }\n'
+    "model Note {\n id Int @id\n text String\n start Int\n end Int\n shop_id Int\n updated_by String?\n @@outside.guard\n}\n"
+)
+
+
+def install_outside(site: Path, outside_library: Path) -> Path:
+    manifest = install(site, "acme-outside", "acme_outside", ident="acme.outside")
+    manifest.write_bytes((OUTSIDE / "orm-extension.toml").read_bytes())
+    shutil.copy(outside_library, manifest.parent / outside_library.name)
+    return manifest
+
+
+async def test_a_hook_error_names_the_model_and_field_once(site: Path, outside_library: Path) -> None:
+    install_outside(site, outside_library)
+    registry = orm.Registry()
+    Note = orm.loads(GUARDED, registry=registry)["Note"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        with orm.scope(shop=1, user="ann"):
+            with pytest.raises(orm.QueryError) as empty:
+                await Note.objects.using(db).insert(id=1, text="  ", start=1, end=2, shop_id=1)
+            with pytest.raises(orm.QueryError) as ordered:
+                await Note.objects.using(db).insert(id=1, text="x", start=3, end=1, shop_id=1)
+        assert str(empty.value).endswith("Note.text: must not be empty")
+        assert str(ordered.value).endswith("Note: start 3 must be before end 1")
+        assert "extension" not in f"{empty.value}{ordered.value}"
+    finally:
+        await db.close()
+
+
+async def test_a_value_that_the_caller_sets_goes_through_the_hook_that_assigns_the_field(site: Path, outside_library: Path) -> None:
+    install_outside(site, outside_library)
+    registry = orm.Registry()
+    Note = orm.loads(GUARDED, registry=registry)["Note"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        notes = Note.objects.using(db)
+        with orm.scope(shop=1, user="ann"):
+            rows = [{"id": i, "text": "a", "start": 1, "end": 2, "shop_id": 1, "updated_by": "mallory"} for i in (1, 2, 3)]
+            await notes.insert_many(rows)
+            # An insert keeps the value that the caller supplies; the hook assigns on update only.
+            assert {n.updated_by for n in await notes.all()} == {"mallory"}
+            await (await notes.get(Note.id == 1)).update(updated_by="eve")
+            assert (await notes.get(Note.id == 1)).updated_by == "ann"
+            assert await notes.filter(Note.id > 1).update(updated_by="eve") == 2
+            assert {n.updated_by for n in await notes.all()} == {"ann"}
+        with orm.scope(shop=1):
+            with pytest.raises(orm.QueryError, match="no user in the request scope"):
+                await notes.filter(Note.id == 1).update(updated_by="eve")
+    finally:
+        await db.close()
+
+
+def test_a_native_schema_without_package_directories_leaves_the_hook_bindings_unresolved(site: Path, outside_library: Path, tmp_path: Path) -> None:
+    install_outside(site, outside_library)
+    schema = tmp_path / "schema.prisma"
+    schema.write_text(GUARDED)
+    ir = _native.compile_schema_file(str(schema), {}, resolve_extensions())
+    _native.Schema(ir)
+    with pytest.raises(SchemaError, match="acme.outside: the schema binds its hooks, but no package directory was given"):
+        _native.Schema(ir, None, {})
+    assert _native.Schema(ir, None, package_dirs()) is not None
+    assert Migrations(tmp_path / "migrations", schema).make() is not None
+
+
+def test_define_needs_the_library_of_a_package_whose_hooks_the_schema_binds(site: Path, outside_library: Path, tmp_path: Path) -> None:
+    manifest = install_outside(site, outside_library)
+    source = tmp_path / "schema.prisma"
+    source.write_text(GUARDED)
+    schema = json.loads(_native.compile_schema_file(str(source), {}, resolve_extensions()))
+    orm.define(schema, registry=orm.Registry())
+    (manifest.parent / outside_library.name).unlink()
+    with pytest.raises(SchemaError, match=r"extension acme\.outside: library .*No such file or directory"):
+        orm.define(schema, registry=orm.Registry())
 
 
 def test_hash_only_package_is_imported_by_generated_models(site: Path, outside_library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

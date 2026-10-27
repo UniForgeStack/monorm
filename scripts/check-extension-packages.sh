@@ -39,9 +39,14 @@ model Base {
 }
 model Note {
   text String
+  start Int
+  end Int
+  shop_id Int
+  updated_by String?
   @@inherit.extends(Base)
   @@outside.tag("installed")
   @@query.filter("positive", "id > 0")
+  @@outside.guard
   @@map("pkg1d_seam_notes")
 }
 SCHEMA
@@ -55,6 +60,19 @@ SCHEMA
   (cd "$consumer" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
   (cd "$consumer" && ORM_DATABASE_URL="$url" node use.mjs)
   (cd "$consumer" && ORM_DATABASE_URL="$url" bun use.mjs)
+  # The generic package: identities are frozen before generation.
+  generic=$consumer/generic
+  mkdir -p "$generic"
+  { printf 'datasource db { provider = "%s" }\n' "$dialect"; cat "$ROOT/examples/blog/demo/generic-relations.prisma"; } > "$generic/schema.prisma"
+  (cd "$WORK/js" && "$WORK/venv/bin/python" -m orm --schema "$generic/schema.prisma" identities)
+  (cd "$WORK/js" && "$WORK/venv/bin/python" -m orm --schema "$generic/schema.prisma" generate python -o "$generic/models.py")
+  (cd "$WORK/js" && node node_modules/orm/dist/src/cli.js --schema "$generic/schema.prisma" generate typescript -o "$generic/models.ts")
+  "$ROOT/languages/js/node_modules/.bin/tsc" "$generic/models.ts" --outDir "$generic" --module ESNext --target ES2022 --moduleResolution Bundler --skipLibCheck --noCheck
+  cp "$ROOT/scripts/tests/generic_consumer.py" "$generic/use.py"
+  cp "$ROOT/scripts/tests/generic_consumer.mjs" "$generic/use.mjs"
+  (cd "$generic" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
+  (cd "$generic" && ORM_DATABASE_URL="$url" node use.mjs)
+  (cd "$generic" && ORM_DATABASE_URL="$url" bun use.mjs)
 done
 # Without its package, `@@query.*` fails and neutral read defaults still work.
 uv venv --python "$PYTHON" "$WORK/bare-venv"
@@ -67,3 +85,15 @@ for tarball in "$WORK/tarballs"/*.tgz; do
   case "$tarball" in *query-defaults*) ;; *) bare_tarballs+=("$tarball") ;; esac
 done
 (cd "$WORK/bare-js" && npm install --ignore-scripts --no-audit --no-fund "${bare_tarballs[@]}" && node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs")
+# A library of a newer ABI minor fails `define()` with both versions in the message.
+cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-package -- package "$ROOT/tests/outside-extension" --out "$WORK/outside-newer" --tsc "$ROOT/languages/js/node_modules/.bin/tsc" --features abi-newer
+uv venv --python "$PYTHON" "$WORK/venv-newer"
+uv pip install --python "$WORK/venv-newer/bin/python" "$WORK/wheels"/*.whl "$ROOT/target/extension-packages"/*/*.whl "$WORK/outside-newer"/*.whl
+if (cd "$WORK/js/sqlite" && "$WORK/venv-newer/bin/python" -c "import models") 2> "$WORK/newer.err"; then
+  echo "a library of ABI 0.3 must fail define()" >&2
+  exit 1
+fi
+if ! grep -q "ABI 0.3" "$WORK/newer.err" || ! grep -q "ABI 0.2" "$WORK/newer.err"; then
+  cat "$WORK/newer.err" >&2
+  exit 1
+fi

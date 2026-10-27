@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
-import { connect, define, IntegrityError, load, loads, Registry, SchemaError, type SchemaIR } from "../src/index.js";
+import { connect, define, IntegrityError, load, loads, QueryError, Registry, SchemaError, scope, type SchemaIR } from "../src/index.js";
+import { native } from "../src/native.js";
 import { resolveExtensions } from "../src/packages.js";
 
 // `npx orm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
@@ -228,6 +229,52 @@ test("an outside pass writes a two-table model that inserts, reads, updates and 
     assert.deepEqual([attached.id, attached.email, attached.bio], [bob.id, "bob@example.com", "chess"]);
     await assert.rejects(Profile.objects.using(db).attach(bob.id, { bio: "again" }), IntegrityError);
   } finally { await db.close(); }
+});
+
+const GUARDED = 'datasource db { provider = "sqlite" }\nmodel Note {\n id Int @id\n text String\n start Int\n end Int\n shop_id Int\n updated_by String?\n @@outside.guard\n}\n';
+
+test("hooks of an outside library: one error prefix, a caller value for a hook 4 field, and the unbound native schema", { timeout: 300_000 }, async (t) => {
+  const root = directory(t);
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+  write(manifest, readFileSync(join(OUTSIDE, "orm-extension.toml"), "utf8"));
+  const library = outsideLibrary(t);
+  copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
+  project(root, { "acme-outside": "1.0.0" });
+  const schema = write(join(root, "schema.prisma"), GUARDED);
+  const { Note } = load(schema, { registry: new Registry() }) as Record<string, any>;
+  const db = await connect("sqlite://:memory:", { default: false, registry: Note._meta.registry });
+  try {
+    await db.createTables();
+    const notes = Note.objects.using(db);
+    await scope({ shop: 1, user: "ann" }, async () => {
+      const failure = async (row: Record<string, unknown>) => {
+        try { await notes.insert(row); } catch (error) { return error as Error; }
+        return assert.fail("expected a hook error");
+      };
+      const empty = await failure({ id: 1, text: "  ", start: 1, end: 2, shopId: 1 });
+      const ordered = await failure({ id: 1, text: "x", start: 3, end: 1, shopId: 1 });
+      assert.ok(empty instanceof QueryError && ordered instanceof QueryError);
+      assert.ok(empty.message.endsWith("Note.text: must not be empty"), empty.message);
+      assert.ok(ordered.message.endsWith("Note: start 3 must be before end 1"), ordered.message);
+      assert.doesNotMatch(`${empty.message}${ordered.message}`, /extension/);
+      // An insert keeps the value that the caller supplies; the hook assigns on update only.
+      await notes.insertMany([1, 2, 3].map((id) => ({ id, text: "a", start: 1, end: 2, shopId: 1, updatedBy: "mallory" })));
+      assert.deepEqual((await notes.all()).map((n: any) => n.updatedBy), ["mallory", "mallory", "mallory"]);
+      await (await notes.get(Note.id.eq(1))).update({ updatedBy: "eve" });
+      assert.equal((await notes.get(Note.id.eq(1))).updatedBy, "ann");
+      assert.equal(await notes.filter(Note.id.gt(1)).update({ updatedBy: "eve" }), 2);
+      assert.deepEqual((await notes.all()).map((n: any) => n.updatedBy), ["ann", "ann", "ann"]);
+    });
+    await scope({ shop: 1 }, async () => {
+      await assert.rejects(notes.filter(Note.id.eq(1)).update({ updatedBy: "eve" }), /no user in the request scope/);
+    });
+  } finally { await db.close(); }
+
+  // Migrations and code generation bind no hook, so the native schema needs no package directory; `define()` passes them.
+  const ir = native().compileSchemaFile(schema, {}, resolveExtensions(schema));
+  const Schema = native().Schema;
+  assert.doesNotThrow(() => new Schema(ir));
+  assert.throws(() => new Schema(ir, {}), /acme\.outside: the schema binds its hooks, but no package directory was given/);
 });
 
 test("ESM-only and dual packages share runtime identity across generated models, load and loads", { timeout: 300_000 }, async (t) => {

@@ -30,6 +30,7 @@ pub fn parse_op(op_json: &str) -> Result<Operation> {
 
 #[cfg(feature = "composition")]
 pub mod behavior;
+pub mod hooks;
 
 pub mod ownership;
 
@@ -43,8 +44,6 @@ pub fn compiled_backends() -> Vec<&'static str> {
     if cfg!(feature = "sqlite") { names.push("sqlite"); }
     names
 }
-#[cfg(any(feature = "generic-relations", test))]
-pub mod generic;
 
 pub mod client_default;
 #[cfg(feature = "proxy-models")]
