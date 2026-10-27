@@ -14,7 +14,7 @@ plain = {
         }
     ],
     "behavior": {
-        "schema_contract": 3,
+        "schema_contract": 4,
         "read_defaults": [{"source": "another-extension", "name": "selection", "model": "Plain", "fields": []}],
     },
 }

@@ -171,7 +171,7 @@ fn a_missing_extension_says_how_to_install_it() {
 fn two_extensions_that_own_one_effect_conflict() {
     let manifest = installed("", "0.2");
     let rival = scratch("rival").join("orm-extension.toml");
-    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"3.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
+    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"4.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
     let schema = "generator client {\n extensions = [\"acme.outside\", \"acme.rival\"]\n}\nmodel Post {\n id Int @id\n}\n";
     let error = compile("conflict", schema, &[(ID, &manifest), ("acme.rival", &rival)]).unwrap_err();
     assert!(error.contains("models.outside") && error.contains(ID) && error.contains("acme.rival"), "{error}");
@@ -404,7 +404,7 @@ fn a_manifest_without_exports_has_no_library_to_open() {
 
 #[test]
 fn a_library_of_slice_one_lowers_a_schema_without_a_hook_table() {
-    let text = without_exports(&manifest("0.1")).replace("schema_contract = \"3.1\"", "schema_contract = \"3.0\"");
+    let text = without_exports(&manifest("0.1")).replace("schema_contract = \"4.1\"", "schema_contract = \"4.0\"");
     let path = package("pass-only", "pass-only", &text);
     let ir = compile("pass-only", SCHEMA, &[(ID, &path)]).unwrap();
     assert!(ir.models[0].fields.iter().any(|f| f.name == "tag"));

@@ -1,10 +1,10 @@
 id = "file-storage"
 version = "0.1.0"
 host_contract = 1
-schema_contract = 3
+schema_contract = 4
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
-capabilities = ["schema-transformations", "file-storage"]
+capabilities = ["schema-transformations"]
 requires = ["async-field-adapter.v1"]
 
 [[attributes]]
@@ -18,7 +18,7 @@ required = true
 id = "file-storage.fields.v1"
 phase = "behavior"
 rust = "crate::lower"
-effects = ["behavior.file_fields", "behavior.field_adapters"]
+effects = ["behavior.field_adapters"]
 
 [python]
 [[python.field_adapters]]

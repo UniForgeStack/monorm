@@ -1,8 +1,19 @@
 //! Compile namespaced file declarations into provider-independent binding metadata.
 use orm_contracts::{
-    extension::{validate_field_adapters, FieldAdapter, FileField, FILE_REFERENCE_ADAPTER},
+    extension::{check_adapter_methods, expand_adapter_template, validate_field_adapters, FieldAdapter},
     ir::{ColType, SchemaIr},
 };
+
+const ADAPTER: &str = "file-storage.reference.v1";
+
+/// The method names that the language runtime adds for `field`, in the Python and TypeScript forms.
+fn method_names(field: &str) -> Vec<String> {
+    ["{field}_signed_url", "{field}_open"]
+        .iter()
+        .map(|t| expand_adapter_template(t, "python", field))
+        .chain(["{field}SignedUrl", "{field}Open"].iter().map(|t| expand_adapter_template(t, "typescript", field)))
+        .collect()
+}
 
 /// A proxy writes the table of its storage owner, so its rows get the file fields of the owner.
 /// The copy is idempotent: a proxy field that has a record keeps it.
@@ -10,22 +21,14 @@ fn copy_to_proxies(ir: &mut SchemaIr) -> Result<(), String> {
     let mut copies = Vec::new();
     for proxy in &ir.behavior.proxy_models {
         let Some(model) = ir.models.iter().find(|m| m.name == proxy.model) else { continue };
-        for file in ir.behavior.file_fields.iter().filter(|f| f.model == proxy.storage_owner) {
-            if !model.fields.iter().any(|f| f.name == file.field) { continue; }
-            if ir.behavior.field_adapters.iter().any(|a| a.model == proxy.model && a.field == file.field) { continue; }
-            orm_contracts::extension::check_adapter_methods(ir, model, &orm_contracts::extension::file_method_names(&file.field))?;
-            copies.push(FileField { model: proxy.model.clone(), ..file.clone() });
+        for owner in ir.behavior.field_adapters.iter().filter(|a| a.adapter == ADAPTER && a.model == proxy.storage_owner) {
+            if !model.fields.iter().any(|f| f.name == owner.field) { continue; }
+            if ir.behavior.field_adapters.iter().any(|a| a.model == proxy.model && a.field == owner.field) { continue; }
+            check_adapter_methods(ir, model, &method_names(&owner.field))?;
+            copies.push(FieldAdapter { model: proxy.model.clone(), ..owner.clone() });
         }
     }
-    for file in copies {
-        ir.behavior.field_adapters.push(FieldAdapter {
-            model: file.model.clone(),
-            field: file.field.clone(),
-            adapter: FILE_REFERENCE_ADAPTER.into(),
-            options: serde_json::json!({"storage": file.storage}),
-        });
-        ir.behavior.file_fields.push(file);
-    }
+    ir.behavior.field_adapters.extend(copies);
     Ok(())
 }
 
@@ -83,27 +86,19 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
             .any(|a| a.model == model.name && a.field == *name)
             || contributions
                 .iter()
-                .any(|f: &FileField| f.model == model.name && f.field == *name)
+                .any(|f: &FieldAdapter| f.model == model.name && f.field == *name)
         {
             return Err(fail("duplicate file-field adapter"));
         }
-        orm_contracts::extension::check_adapter_methods(ir, model, &orm_contracts::extension::file_method_names(name)).map_err(|e| fail(&e))?;
-        contributions.push(FileField {
+        check_adapter_methods(ir, model, &method_names(name)).map_err(|e| fail(&e))?;
+        contributions.push(FieldAdapter {
             model: model.name.clone(),
             field: name.clone(),
-            storage: storage.to_owned(),
-            reference_contract: 1,
+            adapter: ADAPTER.into(),
+            options: serde_json::json!({"storage": storage}),
         });
     }
-    for field in contributions {
-        ir.behavior.field_adapters.push(FieldAdapter {
-            model: field.model.clone(),
-            field: field.field.clone(),
-            adapter: FILE_REFERENCE_ADAPTER.into(),
-            options: serde_json::json!({"storage": field.storage}),
-        });
-        ir.behavior.file_fields.push(field);
-    }
+    ir.behavior.field_adapters.extend(contributions);
     copy_to_proxies(ir)?;
     validate_field_adapters(ir)
 }
@@ -113,25 +108,21 @@ mod tests {
     fn schema(ty: &str) -> SchemaIr {
         serde_json::from_value(serde_json::json!({"models":[{"name":"Report","table":"reports","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"file","column":"file","type":ty}]}],"behavior":{"declarations":[{"attribute":"storage.file","model":"Report","field":"file","arguments":{"storage":"reports"},"positional":[],"location":{"file":"schema.prisma","line":3,"column":9}}]}})).unwrap()
     }
-    /// Declared effects `behavior.file_fields` and `behavior.field_adapters`.
+    /// Declared effect `behavior.field_adapters`.
     #[test]
     fn lowering_changes_only_its_declared_effects_once() {
         let effects = orm_contracts::extension::pass_effects(&schema("json"), lower).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.field_adapters", "behavior.file_fields"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.field_adapters"]);
     }
     #[test]
     fn json_metadata_without_provider_configuration() {
         let mut ir = schema("json");
         lower(&mut ir).unwrap();
-        assert_eq!(
-            ir.behavior.field_adapters[0].adapter,
-            FILE_REFERENCE_ADAPTER
-        );
-        assert_eq!(ir.behavior.file_fields[0].storage, "reports");
+        assert_eq!(ir.behavior.field_adapters[0].adapter, ADAPTER);
         assert_eq!(ir.behavior.field_adapters[0].options, serde_json::json!({"storage": "reports"}));
         ir.behavior.declarations[0].lowered = true;
         lower(&mut ir).unwrap();
-        assert_eq!(ir.behavior.file_fields.len(), 1);
+        assert_eq!(ir.behavior.field_adapters.len(), 1);
     }
     #[test]
     fn a_proxy_gets_the_records_of_its_storage_owner_once() {
@@ -145,28 +136,27 @@ mod tests {
         lower(&mut ir).unwrap();
         let adapters: Vec<_> = ir.behavior.field_adapters.iter().map(|a| (a.model.as_str(), a.options.clone())).collect();
         assert_eq!(adapters, [("Report", serde_json::json!({"storage": "reports"})), ("Draft", serde_json::json!({"storage": "reports"}))]);
-        assert_eq!(ir.behavior.file_fields.len(), 2);
     }
     #[test]
     fn invalid_shape_and_collision_fail_without_mutation() {
         let mut invalid = schema("string");
         assert!(lower(&mut invalid).is_err());
-        assert!(invalid.behavior.file_fields.is_empty());
+        assert!(invalid.behavior.field_adapters.is_empty());
         let mut collision = schema("json");
         let mut field = collision.models[0].fields[0].clone();
         field.name = "file_open".into();
         collision.models[0].fields.push(field);
         assert!(lower(&mut collision).unwrap_err().contains("collides"));
-        assert!(collision.behavior.file_fields.is_empty());
+        assert!(collision.behavior.field_adapters.is_empty());
     }
     #[test]
-    fn disabled_artifact_rejects_file_contract() {
-        let mut ir = schema("json");
-        lower(&mut ir).unwrap();
-        assert!(
-            orm_contracts::extension::check_requirements(&ir, &Default::default())
-                .unwrap_err()
-                .contains("rebuild")
-        );
+    fn a_key_or_a_default_is_rejected() {
+        for case in 0..3 {
+            let mut ir = schema("json");
+            let field = &mut ir.models[0].fields[1];
+            match case { 0 => field.primary_key = true, 1 => field.default_now = true, _ => field.auto_increment = true }
+            assert!(lower(&mut ir).unwrap_err().contains("cannot have database defaults or be primary keys"));
+            assert!(ir.behavior.field_adapters.is_empty());
+        }
     }
 }

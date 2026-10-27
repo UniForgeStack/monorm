@@ -223,7 +223,7 @@ mod tests {
                     {"name": "author_id", "column": "author_id", "type": "int"}
                 ], "relations": [{"name": "author", "kind": "one", "target": "Author", "from": "author_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}
             ],
-            "behavior": {"schema_contract": 3, "write_assignments": [lock("Author"), lock("Book")]}
+            "behavior": {"schema_contract": 4, "write_assignments": [lock("Author"), lock("Book")]}
         })).unwrap();
         ir.behavior.declarations = declarations;
         ir

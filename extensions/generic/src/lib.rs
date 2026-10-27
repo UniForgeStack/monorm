@@ -249,7 +249,7 @@ mod tests {
                 {"name":"Photo","table":"photos","fields":[{"name":"id","column":"id","type":"int","primary_key":true}]},
                 {"name":"Tag","table":"tags","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"content_type","column":"kind","type":"int","enum":"ContentType","nullable":true},{"name":"object_id","column":"target_id","type":"int","nullable":true}]}
             ],
-            "behavior":{"schema_contract":3,"declarations":[
+            "behavior":{"schema_contract":4,"declarations":[
                 {"attribute":"generic.relation","model":"Tag","field":null,"positional":["target"],"arguments":{"type":"content_type","key":"object_id","targets":["Post","Photo"]},"location":{"file":"schema.prisma","line":10,"column":3}},
                 {"attribute":"generic.reverse","model":"Post","field":"tags","field_type":"Tag[]","positional":[],"arguments":{"relation":"target"},"location":{"file":"schema.prisma","line":3,"column":3}}
             ]}

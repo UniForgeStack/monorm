@@ -34,7 +34,7 @@ fn crate_dir(root: &Path, library: &str) -> PathBuf {
     fs::write(
         dir.join("orm-extension.toml"),
         format!(
-            "id = \"acme.demo\"\nversion = \"0.1.0\"\nabi = \"0.2\"\nlibrary = \"{library}\"\nschema_contract = 3\nlanguage_contract = 1\nlanguages = [\"python\"]\ndatabases = [\"postgres\"]\n"
+            "id = \"acme.demo\"\nversion = \"0.1.0\"\nabi = \"0.2\"\nlibrary = \"{library}\"\nschema_contract = 4\nlanguage_contract = 1\nlanguages = [\"python\"]\ndatabases = [\"postgres\"]\n"
         ),
     )
     .unwrap();

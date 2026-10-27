@@ -289,7 +289,7 @@ mod schema_json {
         assert!(error.contains(&format!("schema contract 2 is older than this engine (schema contract {engine})")) && error.contains("regenerate"), "{error}");
         let records = r#"{"models":[],"behavior":{"schema_contract":2,"generic_relations":[{"model":"A"}]}}"#;
         assert!(super::SchemaIr::from_json(records).unwrap_err().contains("regenerate"));
-        let same = r#"{"models":[],"behavior":{"schema_contract":3,"schema_contract_minor":1,"hooks":[{"source":"a","point":2,"model":"M","export":"e"}]}}"#;
+        let same = r#"{"models":[],"behavior":{"schema_contract":4,"schema_contract_minor":1,"hooks":[{"source":"a","point":2,"model":"M","export":"e"}]}}"#;
         assert_eq!(super::SchemaIr::from_json(same).unwrap().behavior.hooks.len(), 1);
     }
     #[test]
