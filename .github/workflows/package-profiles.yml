@@ -14,7 +14,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-14, windows-latest]
         python: ['3.11', '3.12', '3.13', '3.14']
-        profile: [postgres, sqlite, combined, tooling, full]
+        profile: [postgres, sqlite, combined, tooling]
     runs-on: ${{ matrix.os }}
     services:
       postgres:
@@ -32,23 +32,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - uses: actions/setup-node@v4
-        if: matrix.profile == 'full'
-        with:
-          node-version: 22
-      - run: npm ci --ignore-scripts
-        if: matrix.profile == 'full'
-        working-directory: languages/js
       - run: python -m pip install maturin setuptools wheel
-      - run: python -m pip install mypy pyright
-        if: matrix.profile == 'full'
       - run: python languages/python/packaging/check-dependencies.py
       - run: python -m pip wheel --no-deps --no-build-isolation -w target/wheels .
       - run: maturin build --release --out ../../../../target/wheels
-        if: matrix.profile != 'full'
         working-directory: languages/python/packaging/${{ matrix.profile }}
-      - run: python languages/python/packaging/build-full-wheel.py target/wheels
-        if: matrix.profile == 'full'
       - run: python languages/python/packaging/check-wheel.py target/wheels ${{ matrix.profile }}
       - name: Record the native wheel size
         shell: bash
@@ -64,12 +52,46 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.python }}-${{ matrix.profile }}
           path: target/wheels/*.whl
+  full-extra:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python -m pip install maturin setuptools wheel pytest
+      - run: python languages/python/packaging/check-full-extra.py
+      - run: python -m pytest -q languages/python/tests/packaging/test_check_full_extra.py
+      - run: python -m pip wheel --no-deps --no-build-isolation -w target/wheels .
+      - run: maturin build --release --out ../../../../target/wheels
+        working-directory: languages/python/packaging/tooling
+      - name: Build the extension packages for this host
+        run: |
+          npm install --prefix target/tools --no-audit --no-fund typescript@^5.9.0
+          for dir in extensions/*/; do
+            name=$(basename "$dir")
+            [ "$name" = file-storage ] && continue
+            cargo run -q -p orm-extension-package -- package "$dir" --out "target/wheels/$name" --tsc target/tools/node_modules/.bin/tsc
+          done
+      - name: Install orm[full] from local wheels
+        run: |
+          python -m venv target/full-env
+          target/full-env/bin/python -m pip install --no-index $(for d in target/wheels target/wheels/*/; do echo --find-links $d; done) "orm[full]"
+      - run: target/full-env/bin/python languages/python/packaging/smoke-full-extra.py
   node:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14, windows-latest]
-        profile: [postgres, sqlite, combined, tooling, full]
+        profile: [postgres, sqlite, combined, tooling]
     runs-on: ${{ matrix.os }}
     services:
       postgres:
@@ -89,12 +111,6 @@ jobs:
           node-version: 22
       - run: npm ci --ignore-scripts
         working-directory: languages/js
-      - uses: actions/setup-python@v5
-        if: matrix.profile == 'full'
-        with:
-          python-version: '3.14'
-      - run: python -m pip install mypy pyright
-        if: matrix.profile == 'full'
       - run: npx tsc -p tsconfig.json
         working-directory: languages/js
       - run: node languages/js/packaging/build-node-profile.mjs ${{ matrix.profile }} --release
