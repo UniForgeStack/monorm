@@ -1,6 +1,6 @@
 id = "acme.outside"
 version = "0.1.0"
-schema_contract = "3.3"
+schema_contract = "3.4"
 abi = "0.2"
 library = "outside_extension"
 language_contract = 1
@@ -53,7 +53,7 @@ target = "model"
 id = "acme.outside.guard"
 phase = "declaration"
 after = ["acme.outside.tag"]
-effects = ["behavior.hooks.outside", "behavior.write_assignments.outside", "behavior.outside_read_defaults"]
+effects = ["behavior.hooks.outside", "behavior.write_assignments.outside", "behavior.outside_read_defaults", "behavior.result_fields.outside"]
 
 # `note Json? @outside.wrapped("w:")` shows the stored JSON as a `Wrapped` and adds the method `note_unwrap`.
 # The pass pushes a field adapter whose options are the prefix; the `[[python.field_adapters]]` and `[[typescript.field_adapters]]` entries below name the runtime.
@@ -101,6 +101,42 @@ point = 3
 id = "acme.outside.actor"
 point = 4
 output = "string"
+
+[[exports]]
+id = "acme.outside.initials"
+point = 5
+output = "string"
+
+[[exports]]
+id = "acme.outside.seal"
+point = 1
+input = "string"
+output = "string"
+
+[[exports]]
+id = "acme.outside.unseal"
+point = 5
+output = "string"
+
+[[exports]]
+id = "acme.outside.label"
+point = 6
+output = "json"
+
+[[exports]]
+id = "acme.outside.editor"
+point = 6
+output = "json"
+
+[[exports]]
+id = "acme.outside.region"
+point = 7
+output = "json"
+
+[[exports]]
+id = "acme.outside.owner"
+point = 7
+output = "json"
 
 [[exports]]
 id = "outside.context"

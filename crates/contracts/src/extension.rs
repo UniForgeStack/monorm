@@ -7,7 +7,7 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(3, 3);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(3, 4);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -18,6 +18,9 @@ pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT_MINOR: u32 = 1;
 /// The minor that an IR carries when a field adapter record has `options`.
 pub const FIELD_ADAPTER_OPTIONS_MINOR: u32 = 3;
+/// The minor that an IR carries when it holds a record of slice 2c: a hook of point 5, 6 or 7, an `Expr` or
+/// `ExprHook` write assignment, or an `Expr` or `Hook` client default. An older engine fails to parse them.
+pub const EXPRESSION_RECORDS_MINOR: u32 = 4;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -821,7 +824,8 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
         }
     }
     for result in &r.result_fields {
-        if !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
+        let hooked = r.hooks.iter().any(|h| h.point == 5 && h.model == result.model && h.field.as_deref() == Some(result.field.as_str()));
+        if !hooked && !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
             return Err(format!("{}.{}: native result requires a compiled specialization; rebuild", result.model, result.field));
         }
     }
@@ -868,6 +872,39 @@ pub fn validate_requirements(ir: &SchemaIr, manifests: &[Manifest], language: Op
         }
     }
     for hook in &ir.behavior.hooks { validate_hook(ir, hook, manifests)?; }
+    validate_expression_hooks(ir)
+}
+
+/// An expression hook record (`ExprHook`, `ClientDefaultIr::Hook`) needs the binding of its point. A field with an
+/// expression default takes no transform or validator, because the value of the expression is not a value that a hook could check.
+fn validate_expression_hooks(ir: &SchemaIr) -> Result<(), String> {
+    let bound = |point: u8, source: Option<&str>, model: &str, field: &str, export: &str|
+        ir.behavior.hooks.iter().any(|h| h.point == point && source.is_none_or(|s| h.source == s) && h.model == model && h.field.as_deref() == Some(field) && h.export == export);
+    for a in &ir.behavior.write_assignments {
+        let crate::writes::AssignValue::ExprHook { export } = &a.value else { continue };
+        if !bound(6, Some(&a.source), &a.model, &a.field, export) {
+            return Err(format!("{}.{}: the write assignment from {} runs expression hook {export}, but no point-6 binding names it; bind it to the field", a.model, a.field, a.source));
+        }
+    }
+    for model in &ir.models {
+        for field in &model.fields {
+            let hook = match &field.client_default {
+                Some(crate::ir::ClientDefaultIr::Hook { export }) => {
+                    if !bound(7, None, &model.name, &field.name, export) {
+                        return Err(format!("{}.{}: the expression default runs hook {export}, but no point-7 binding names it; bind it to the field", model.name, field.name));
+                    }
+                    true
+                }
+                Some(crate::ir::ClientDefaultIr::Expr(_)) => true,
+                _ => false,
+            };
+            if hook {
+                if let Some(h) = ir.behavior.hooks.iter().find(|h| matches!(h.point, 1 | 2) && h.model == model.name && h.field.as_deref() == Some(field.name.as_str())) {
+                    return Err(format!("{}.{}: a field with an expression default takes no transform or validator, but {} binds hook {} at point {}", model.name, field.name, h.source, h.export, h.point));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -910,6 +947,12 @@ fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> R
         return Err(format!("{}: {who} is bound at point {}, and the manifest says point {}", at(hook.field.as_deref()), hook.point, export.point.map_or("none".into(), |p| p.to_string())));
     }
     let Some(field) = field else { return Ok(()) };
+    if hook.point == 5 {
+        let result = |name: &str| ir.behavior.result_fields.iter().any(|r| r.model == hook.model && r.field == name);
+        if !result(&field.name) { return Err(format!("{}.{}: {who} is a computed field (point 5), so the pass must declare the field in `result_fields`", model.name, field.name)); }
+        if hook.dependencies.is_empty() { return Err(format!("{}.{}: {who} is a computed field and names no dependencies", model.name, field.name)); }
+        if let Some(d) = hook.dependencies.iter().find(|d| result(d)) { return Err(format!("{}.{}: {who} depends on the computed field {d}; a computed field may read stored fields only", model.name, field.name)); }
+    }
     let mismatch = |role: &str, export_type: ColType, wanted: String| format!(
         "{}.{}: {who} {role} {} but the field is {wanted}", model.name, field.name, col_name(export_type));
     if field.array { return Err(format!("{}.{}: {who} cannot bind an array field; ABI 0.2 has no typed array value", model.name, field.name)); }
@@ -1341,9 +1384,9 @@ mod tests {
         let next_minor = |v: ContractVersion| format!("{}.{}", v.major, v.minor + 1);
         assert!(check(&|_| {}).is_ok());
         let error = check(&|v| v["schema_contract"] = format!("{}.0", SCHEMA_CONTRACT_VERSION.major + 1).into()).unwrap_err();
-        assert!(error.contains("schema contract 4.0") && error.contains("schema contract 3.3") && error.contains("major versions differ"), "{error}");
+        assert!(error.contains(&format!("schema contract {}.0", SCHEMA_CONTRACT_VERSION.major + 1)) && error.contains(&format!("schema contract {SCHEMA_CONTRACT_VERSION}")) && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("schema contract 3.4 is newer than this engine (schema contract 3.3)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains(&format!("schema contract {} is newer than this engine (schema contract {SCHEMA_CONTRACT_VERSION})", next_minor(SCHEMA_CONTRACT_VERSION))) && error.contains("update the ORM"), "{error}");
         let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
         let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
@@ -1497,13 +1540,48 @@ mod tests {
         newer.behavior.schema_contract = SCHEMA_CONTRACT;
         newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_VERSION.minor as u32 + 1;
         let error = check_requirements(&newer, &Artifact::default()).unwrap_err();
-        assert!(error.contains("schema contract 3.4 is newer than this engine (3.3)"), "{error}");
+        assert!(error.contains(&format!("schema contract {}.{} is newer than this engine ({SCHEMA_CONTRACT_VERSION})", SCHEMA_CONTRACT_VERSION.major, SCHEMA_CONTRACT_VERSION.minor + 1)), "{error}");
         let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir.behavior.stamp_minor(); ir };
         let merged = merge_definition(data("a"), data("b")).unwrap();
         assert_eq!(merged.behavior.extension_data.len(), 2);
         assert_eq!(merged.behavior.schema_contract_minor, 1);
         let error = merge_definition(data("a"), data("a")).unwrap_err();
         assert!(error.contains("extension_data of a is declared twice"), "{error}");
+    }
+
+    #[test]
+    fn contract_3_4_records_set_the_minor_that_an_older_engine_refuses() {
+        let stamped = |behavior: serde_json::Value, client_default: serde_json::Value| {
+            let mut name = serde_json::json!({"name": "name", "column": "name", "type": "string"});
+            if !client_default.is_null() { name["client_default"] = client_default; }
+            let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+                "models": [{"name": "User", "table": "users", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, name]}],
+                "behavior": behavior,
+            })).unwrap();
+            ir.behavior.stamp_minor();
+            ir.stamp_expression_records();
+            ir
+        };
+        let assign = |value: serde_json::Value| serde_json::json!({"write_assignments": [{"source": "acme.lib", "model": "User", "field": "name", "on": ["update"], "value": value}]});
+        let hooked = |point| serde_json::json!({"hooks": [binding(point, Some("name"), "acme.lib.x")]});
+        let expr = serde_json::json!({"t": "scope", "name": "shop"});
+        let minor = |ir: &SchemaIr| ir.behavior.schema_contract_minor;
+        let none = serde_json::Value::Null;
+        assert_eq!(minor(&stamped(serde_json::json!({}), none.clone())), 0);
+        assert_eq!(minor(&stamped(assign(serde_json::json!("now")), none.clone())), 0);
+        assert_eq!(minor(&stamped(hooked(2), none.clone())), SCHEMA_CONTRACT_MINOR);
+        for (what, ir) in [
+            ("an expression default", stamped(serde_json::json!({}), serde_json::json!({"expr": expr}))),
+            ("a hook default", stamped(serde_json::json!({}), serde_json::json!({"hook": {"export": "acme.lib.x"}}))),
+            ("an expression assignment", stamped(assign(serde_json::json!({"expr": expr})), none.clone())),
+            ("a hook assignment", stamped(assign(serde_json::json!({"expr_hook": {"export": "acme.lib.x"}})), none.clone())),
+            ("a hook of point 5", stamped(hooked(5), none.clone())),
+            ("a hook of point 6", stamped(hooked(6), none.clone())),
+            ("a hook of point 7", stamped(hooked(7), none.clone())),
+        ] {
+            assert_eq!((ir.behavior.schema_contract, minor(&ir)), (SCHEMA_CONTRACT, EXPRESSION_RECORDS_MINOR), "{what}");
+            assert!(serde_json::to_string(&ir).unwrap().contains(&format!("\"schema_contract_minor\":{EXPRESSION_RECORDS_MINOR}")), "{what}");
+        }
     }
 
     #[test]

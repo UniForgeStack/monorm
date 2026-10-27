@@ -16,6 +16,8 @@ pub struct PreparedAssignment {
     pub field: usize,
     pub on: Vec<WriteKind>,
     pub value: AssignValue,
+    /// The parsed expression of an `AssignValue::Expr`.
+    pub expr: Option<Expr>,
     pub upsert: UpsertDefault,
 }
 
@@ -39,6 +41,27 @@ fn position(models: &[Model], index: &HashMap<String, usize>, model: &str, field
     Ok((m, p))
 }
 
+/// Parses the query IR JSON of a write record's expression. The statement has no parameters, no outer query
+/// and no `EXCLUDED` row, so those nodes fail here; `columns` tells whether the row's own columns are in range.
+pub fn parse_expr(json: &serde_json::Value, columns: bool) -> std::result::Result<Expr, String> {
+    fn forbidden(json: &serde_json::Value, columns: bool) -> Option<String> {
+        match json {
+            serde_json::Value::Object(map) => {
+                if let Some(tag) = map.get("t").and_then(|t| t.as_str()) {
+                    if matches!(tag, "param" | "outer" | "excluded" | "in_select" | "exists") || (tag == "col" && !columns) {
+                        return Some(tag.to_owned());
+                    }
+                }
+                map.values().find_map(|v| forbidden(v, columns))
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(|v| forbidden(v, columns)),
+            _ => None,
+        }
+    }
+    if let Some(tag) = forbidden(json, columns) { return Err(format!("an expression record cannot use `{tag}` nodes")); }
+    serde_json::from_value(json.clone()).map_err(|e| format!("invalid expression IR: {e}"))
+}
+
 pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Requirements) -> Result<()> {
     for a in &r.write_assignments {
         let (m, p) = match &a.value {
@@ -50,10 +73,21 @@ pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Require
                 if !bound { return Err(format!("{}.{}: the write assignment from {} runs hook {export}, but no point-4 binding names it; bind it to the field", a.model, a.field, a.source)); }
                 at
             }
+            AssignValue::Expr(_) => position(models, index, &a.model, &a.field, "an expression assignment", |_| true)?,
+            AssignValue::ExprHook { export } => {
+                let at = position(models, index, &a.model, &a.field, "an expression hook assignment", |_| true)?;
+                let bound = r.hooks.iter().any(|h| h.point == 6 && h.source == a.source && h.model == a.model && h.field.as_deref() == Some(a.field.as_str()) && h.export == *export);
+                if !bound { return Err(format!("{}.{}: the write assignment from {} runs expression hook {export}, but no point-6 binding names it; bind it to the field", a.model, a.field, a.source)); }
+                at
+            }
+        };
+        let expr = match &a.value {
+            AssignValue::Expr(json) => Some(parse_expr(json, true).map_err(|e| format!("{}.{}: the write assignment from {}: {e}", a.model, a.field, a.source))?),
+            _ => None,
         };
         if a.on.is_empty() { return Err(format!("{}.{}: a write assignment from {} names no statement kind", a.model, a.field, a.source)); }
         if models[m].assignments.iter().any(|x| x.field == p) { return Err(format!("{}.{}: assigned by two write assignments", a.model, a.field)); }
-        models[m].assignments.push(PreparedAssignment { source: a.source.clone(), field: p, on: a.on.clone(), value: a.value.clone(), upsert: a.upsert });
+        models[m].assignments.push(PreparedAssignment { source: a.source.clone(), field: p, on: a.on.clone(), value: a.value.clone(), expr, upsert: a.upsert });
     }
     for d in &r.delete_rewrites {
         let (m, p) = position(models, index, &d.model, &d.field, "a delete rewrite", |f| f.ty == ColType::DateTime)?;

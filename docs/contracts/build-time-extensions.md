@@ -261,11 +261,13 @@ Null is rejected unless a field rule explicitly sets `allow_null: true`, in whic
 Record dependencies require all non-null values whenever any dependency is updated; partial records are rejected.
 Raw SQL bypasses ORM write validation.
 
-Computed fields are read-only and depend on one stored scalar string field.
+A `string_computed` field is read-only and depends on one stored scalar string field.
 Projection loads that dependency; model and returning shapes reuse its selected value.
 Computation occurs inside the existing native call before materialization, without language callbacks or hidden queries.
 NULL dependencies produce NULL.
 Native-only computations cannot be used in SQL filters, ordering, grouping, expressions, conflict targets or CTE outputs.
+A point-5 hook field is read-only too, and SQL cannot use it.
+It depends on the fields that its binding lists (see [Read and expression hooks](#read-and-expression-hooks-points-5-to-7)).
 Nested/cyclic computed dependencies require an expanded profile and currently fail at build time.
 Relation-dependent computation is not supported by this primitive.
 
@@ -365,6 +367,31 @@ It also shows the three optional keys of a field attribute in `orm-extension.tom
 `field_type = "Money"` makes the attribute own that DSL type: a field of that type lowers to an `Int` placeholder, and the pass replaces it.
 `member = false` makes the field no model member: lowering drops the field and keeps its declaration for the pass.
 `identities = true` makes a schema that uses the attribute need model identities (`orm identities`).
+
+### Read and expression hooks (points 5 to 7)
+
+Point 5 gives a computed field.
+The binding names the field and its `dependencies`, which are stored fields of any type.
+The field is a result field of the model: a write cannot set it, and SQL cannot use it.
+A read selects the dependencies only when it asks for the computed field, and the host calls the hook for each row.
+A write that returns the row gives NULL for the computed field. Read the row again to get the value.
+
+Points 6 and 7 give an expression, not a value.
+The hook returns a `json` value that holds a query IR expression.
+A point-6 hook serves a write assignment of `AssignValue::ExprHook`: an update assigns the expression to the field.
+A point-7 hook serves a field with `ClientDefaultIr::Hook`: an insert plans the expression for each row that omits the value.
+`AssignValue::Expr` and `ClientDefaultIr::Expr` store such an expression in the IR, with no hook.
+The expression has no parameters, no outer query and no `EXCLUDED` row.
+Only a point-6 expression or an `AssignValue::Expr` can name the columns of the row.
+An assignment expression reads the row as it was before the update.
+An update that sets `text` and has `slug = lower(text)` stores the lower case of the old `text`.
+
+A hook of point 6 or 7 with `reads_context = false` runs once when the schema is generated.
+The IR then stores its expression as `Expr`, and `define()` opens no library for it.
+A hook that reads the context runs for each statement.
+
+Schema contract 3.4 sets `schema_contract_minor = 4` for an IR that has one of these records or a hook of point 5, 6 or 7.
+An engine with a lower minor refuses such an IR with the "newer than this engine" message.
 
 ## Installable packages
 

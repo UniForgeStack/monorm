@@ -68,6 +68,25 @@ impl HookRef {
         }
     }
 
+    /// The value of a computed field (point 5): one argument for each dependency, in order.
+    pub fn compute(&self, args: &[Arg], context: &Context) -> Result<Value, String> {
+        match self {
+            Self::Static(_) => Err("a static function cannot compute a field here".into()),
+            Self::Abi { state, hook, .. } => state.call_hook(hook, args, context),
+        }
+    }
+
+    /// The query IR JSON of an expression hook (point 6 or 7); the hook takes no argument.
+    pub fn expression(&self, context: &Context) -> Result<serde_json::Value, String> {
+        match self {
+            Self::Static(_) => Err("a static function cannot give an expression".into()),
+            Self::Abi { state, hook, .. } => match state.call_hook(hook, &[], context)? {
+                Value::Json(text) => serde_json::from_str(&text).map_err(|e| format!("hook {} returned json that does not parse: {e}", hook.name())),
+                other => Err(format!("hook {} must return json (query IR), not {other:?}", hook.name())),
+            },
+        }
+    }
+
     /// Checks a record: one argument for each dependency.
     pub fn check_record(&self, args: &[Arg], context: &Context) -> Result<(), String> {
         match self {
@@ -93,6 +112,12 @@ pub struct HookPlan {
     pub records: Vec<RecordHook>,
     /// The hook that gives the value of a field on update, by field position (point 4).
     pub assign: Vec<(usize, HookRef)>,
+    /// The hook of each computed field (point 5): the field position, the hook and the positions of its dependencies.
+    pub computed: Vec<(usize, HookRef, Vec<usize>)>,
+    /// The hook that gives the expression of a field on update (point 6), by field position.
+    pub expr_assign: Vec<(usize, HookRef)>,
+    /// The hook that gives the expression of an omitted insert value (point 7), by field position.
+    pub expr_default: Vec<(usize, HookRef)>,
     /// Positions that a transform or a validator watches, sorted.
     pub watched: Vec<usize>,
     /// Positions of fields that must be supplied on insert, and cannot be a database expression.
@@ -105,7 +130,7 @@ impl HookPlan {
     /// Fills `watched`, `required` and `no_upsert` from the hooks; `None` for a plan without any hook.
     pub fn finish(mut self) -> Option<Box<HookPlan>> {
         let change_set = self.changes_set();
-        if !change_set && self.assign.is_empty() { return None; }
+        if !change_set && self.assign.is_empty() && self.computed.is_empty() && self.expr_assign.is_empty() && self.expr_default.is_empty() { return None; }
         let mut watched: Vec<usize> = self.transforms.iter().chain(&self.validators).map(|(p, _)| *p).collect();
         watched.sort_unstable();
         watched.dedup();
@@ -123,11 +148,24 @@ impl HookPlan {
 
     /// True when a hook of the plan reads the request context.
     pub fn reads_context(&self) -> bool {
-        self.transforms.iter().chain(&self.validators).chain(&self.assign).any(|(_, h)| h.reads_context()) || self.records.iter().any(|r| r.hook.reads_context())
+        self.transforms.iter().chain(&self.validators).chain(&self.assign).chain(&self.expr_assign).chain(&self.expr_default).any(|(_, h)| h.reads_context())
+            || self.records.iter().any(|r| r.hook.reads_context())
+            || self.computed.iter().any(|(_, h, _)| h.reads_context())
     }
 
     /// The hook that assigns `position`.
     pub fn assigner(&self, position: usize) -> Option<&HookRef> { self.assign.iter().find(|(p, _)| *p == position).map(|(_, h)| h) }
+
+    /// The expression hook of a write assignment (point 6) at `position`.
+    pub fn expr_assigner(&self, position: usize) -> Option<&HookRef> { self.expr_assign.iter().find(|(p, _)| *p == position).map(|(_, h)| h) }
+
+    /// The expression hook of an insert default (point 7) at `position`.
+    pub fn expr_defaulter(&self, position: usize) -> Option<&HookRef> { self.expr_default.iter().find(|(p, _)| *p == position).map(|(_, h)| h) }
+
+    /// The hook of the computed field at `position` and the positions of its dependencies.
+    pub fn computed_at(&self, position: usize) -> Option<(&HookRef, &[usize])> {
+        self.computed.iter().find(|(p, _, _)| *p == position).map(|(_, h, d)| (h, d.as_slice()))
+    }
 
     /// True when a transform or validator watches `position`.
     pub fn watches(&self, position: usize) -> bool { self.watched.binary_search(&position).is_ok() }
@@ -136,13 +174,13 @@ impl HookPlan {
 /// A library that `bind` opened, with the state of its `init`.
 struct Opened { library: Library, state: Arc<State> }
 
-/// Opens the library of each package that has change-set bindings (points 1 to 4), calls its `init` with
+/// Opens the library of each package that has hook bindings (points 1 to 7), calls its `init` with
 /// `extension_data[id]`, and resolves each binding into the `HookPlan` of its model. `packages` maps an extension id
 /// to the directory of its installed package. Any failure fails `define()`.
 pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requirements, packages: &BTreeMap<String, PathBuf>) -> Result<(), String> {
     let mut opened: BTreeMap<&str, Opened> = BTreeMap::new();
     let mut plans: BTreeMap<usize, HookPlan> = BTreeMap::new();
-    for binding in r.hooks.iter().filter(|b| (1..=4).contains(&b.point)) {
+    for binding in r.hooks.iter().filter(|b| (1..=7).contains(&b.point)) {
         let id = binding.source.as_str();
         let at = match &binding.field { Some(f) => format!("{}.{f}", binding.model), None => binding.model.clone() };
         if !r.packages.contains_key(id) {
@@ -175,6 +213,27 @@ pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requiremen
                 }
                 plan.assign.push((p, hook));
             }
+            (5, Some(f)) => {
+                let p = position(f)?;
+                let field = &models[m].fields()[p];
+                let output = library.export(&binding.export).and_then(|e| e.point.zip(e.output));
+                match output {
+                    Some((5, ty)) if orm_contracts::extension::same_value_type(ty, field.ty) => {}
+                    Some((5, ty)) => return Err(format!("{at}: hook {} returns {ty:?}, but the field is {:?}; rebuild the package or fix the binding", binding.export, field.ty)),
+                    _ => return Err(format!("{at}: hook {} is not a point-5 export with an output type; rebuild the package or fix the binding", binding.export)),
+                }
+                if binding.dependencies.is_empty() { return Err(format!("{at}: computed field hook {} names no dependencies", binding.export)); }
+                let positions = binding.dependencies.iter().map(|d| position(d)).collect::<Result<Vec<_>, _>>()?;
+                plan.computed.push((p, hook, positions));
+            }
+            (6 | 7, Some(f)) => {
+                let p = position(f)?;
+                let output = library.export(&binding.export).and_then(|e| e.point.zip(e.output));
+                if output != Some((binding.point, orm_contracts::ir::ColType::Json)) {
+                    return Err(format!("{at}: hook {} is not a point-{} export that returns json (query IR); rebuild the package or fix the binding", binding.export, binding.point));
+                }
+                if binding.point == 6 { plan.expr_assign.push((p, hook)) } else { plan.expr_default.push((p, hook)) }
+            }
             (3, None) => {
                 if binding.dependencies.is_empty() { return Err(format!("{at}: record validator {} names no dependencies", binding.export)); }
                 let positions = binding.dependencies.iter().map(|d| position(d)).collect::<Result<Vec<_>, _>>()?;
@@ -184,12 +243,30 @@ pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requiremen
         }
     }
     for (m, mut plan) in plans {
+        for (p, _, deps) in &plan.computed {
+            if let Some(d) = deps.iter().find(|d| plan.computed.iter().any(|(c, _, _)| c == *d)) {
+                return Err(format!("{}.{}: a computed field depends on the computed field {}; it may read stored fields only", models[m].ir.name, models[m].fields()[*p].name, models[m].fields()[*d].name));
+            }
+        }
         // A model can already have static hooks of the artifact; both producers share one plan.
         if let Some(existing) = models[m].hooks.take() {
             let existing = *existing;
             plan.transforms.splice(0..0, existing.transforms);
             plan.validators.splice(0..0, existing.validators);
             plan.records.splice(0..0, existing.records);
+            plan.computed.splice(0..0, existing.computed);
+        }
+        for (p, default) in &models[m].client_defaults {
+            let hook = match default {
+                crate::client_default::ClientDefault::Hook(_) => true,
+                crate::client_default::ClientDefault::Expr(_) => false,
+                _ => continue,
+            };
+            let field = &models[m].fields()[*p].name;
+            if plan.watches(*p) { return Err(format!("{}.{field}: a field with an expression default takes no transform or validator", models[m].ir.name)); }
+            if hook && plan.expr_defaulter(*p).is_none() {
+                return Err(format!("{}.{field}: the expression default runs a hook, but no point-7 binding names it; bind it to the field", models[m].ir.name));
+            }
         }
         models[m].hooks = plan.finish();
     }

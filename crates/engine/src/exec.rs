@@ -179,6 +179,7 @@ async fn run_select(conn: &dyn Executor, target: Target, mut plan: SelectPlan) -
     let (sql, args) = db::build(target.dialect, &plan.stmt);
     let rows = conn.query(sql, args).await?;
     let prefetched = run_prefetch(conn, target, rows.as_ref(), std::mem::take(&mut plan.prefetch)).await?;
+    let rows = crate::hooks::compute(rows, &plan.computed)?;
     Ok(Selected { rows, plan, prefetched })
 }
 
@@ -265,6 +266,7 @@ fn run_prefetch<'a>(
             };
             let nested = std::mem::take(&mut p.children);
             let children = run_prefetch(conn, target, rows.as_ref(), nested).await?;
+            let rows = crate::hooks::compute(rows, &p.computed)?;
             out.push(Fetched { plan: p, rows, children });
         }
         Ok(out)
@@ -556,6 +558,9 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
             return Err(Error::query(format!("insert_many(copy=True): {}.{name} writes through SQL; use insert_many()", m.ir.name)));
         }
         let set = rows.iter().filter(|r| r.get(i).is_some_and(Option::is_some)).count();
+        if set != rows.len() && m.client_defaults.iter().any(|(p, d)| m.fields()[*p].name == *name && matches!(d, orm_core::client_default::ClientDefault::Expr(_) | orm_core::client_default::ClientDefault::Hook(_))) {
+            return Err(Error::query(format!("insert_many(copy=True): {}.{name} has an expression default; use insert_many()", m.ir.name)));
+        }
         if set == 0 {
             continue; // the database default for every row
         }
@@ -619,13 +624,9 @@ pub fn plan_update_many(
     let rows = {
         let m = schema.model(schema.model_idx(model).map_err(query_err)?);
         let mut rows = rows;
-        #[cfg(feature = "composition")]
         let positions = plan::field_positions(m, fields)?;
-        #[cfg(feature = "composition")]
-        if positions.iter().skip(1).any(|p| m.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
+        if positions.iter().skip(1).any(|p| m.computed(*p)) { return Err(Error::query("computed fields are read-only")); }
         if m.hooks.is_some() {
-            #[cfg(not(feature = "composition"))]
-            let positions = plan::field_positions(m, fields)?;
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
             crate::hooks::update_rows(m, &map, &mut rows, params)?;
         }

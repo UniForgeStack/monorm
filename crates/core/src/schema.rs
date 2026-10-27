@@ -116,6 +116,22 @@ impl Model {
             .ok_or_else(|| format!("model {} has no field {name:?}", self.ir.name))
     }
 
+    /// True when the value of the field at `position` is computed on read, not stored: a hook of point 5 or a compiled computation.
+    pub fn computed(&self, position: usize) -> bool {
+        if self.hooks.as_ref().is_some_and(|h| h.computed_at(position).is_some()) { return true; }
+        #[cfg(feature = "composition")]
+        if self.native.computed().contains(&position) { return true; }
+        false
+    }
+
+    /// The positions of the fields that a read must select to compute the field at `position`; empty for a stored field.
+    pub fn dependencies(&self, position: usize) -> Vec<usize> {
+        if let Some((_, deps)) = self.hooks.as_ref().and_then(|h| h.computed_at(position)) { return deps.to_vec(); }
+        #[cfg(feature = "composition")]
+        if let Some(d) = self.native.dependency(position) { return vec![d]; }
+        vec![]
+    }
+
     pub fn pk_field(&self) -> &FieldIr {
         &self.ir.fields[self.pk]
     }
