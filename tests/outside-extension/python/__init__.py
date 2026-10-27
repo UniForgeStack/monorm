@@ -1,10 +1,12 @@
 """An outside package's runtime; its pass library is used only at compile time."""
-from typing import Self
+from collections.abc import Mapping
+from typing import Any, Self
 
 from orm import QuerySet
+from orm.adapters import Pending, register_field_adapter
 from orm.ext import ModelT
 
-MANIFEST_HASH = "b5c4d2f71cda38fb002bf627b8802fdd1997cfe698a0885d036351f8a94f43d4"
+MANIFEST_HASH = "d070ba4a0cb9aac50a4e1a6a1fdb7b6570464b8f6d0bdddd5aebbc40c1bb2df1"
 
 
 class OutsideQuerySet(QuerySet[ModelT]):
@@ -15,3 +17,45 @@ class OutsideQuerySet(QuerySet[ModelT]):
 class OutsideInstance:
     def tag_label(self) -> str:
         return str(getattr(self, "tag"))
+
+
+class Wrapped:
+    """What an `acme.outside.wrapped.v1` field shows: the stored value with a label."""
+
+    def __init__(self, label: str, payload: object):
+        self.label = label
+        self.payload = payload
+
+
+class _Runtime:
+    def __init__(self) -> None:
+        self.prefix = ""
+
+    def configure(self, prefix: str) -> None:
+        self.prefix = prefix
+
+
+class _WrappedAdapter:
+    def __init__(self, runtime: _Runtime, prefix: str):
+        self.runtime, self.prefix = runtime, prefix
+
+    def validate(self, value: Any) -> Any | Pending:
+        return value.payload if isinstance(value, Wrapped) else value
+
+    async def prepare(self, value: Any) -> Any:
+        return value
+
+    def decode(self, stored: Any) -> Wrapped | None:
+        return None if stored is None else Wrapped(self.runtime.prefix + self.prefix, stored)
+
+
+def install(model: type[Any], fields: Mapping[str, tuple[Mapping[str, Any], bool]]) -> _Runtime:
+    """The generated-code entry for the `acme.outside.wrapped.v1` adapter."""
+    runtime = _Runtime()
+    for name, (options, _nullable) in fields.items():
+
+        def unwrap(self: Any, _name: str = name) -> object:
+            return getattr(self, _name).payload
+
+        register_field_adapter(model, name, _WrappedAdapter(runtime, options["prefix"]), {f"{name}_unwrap": unwrap})
+    return runtime

@@ -43,6 +43,7 @@ model Note {
   end Int
   shop_id Int
   updated_by String?
+  note Json? @outside.wrapped("w:")
   @@inherit.extends(Base)
   @@outside.tag("installed")
   @@query.filter("positive", "id > 0")

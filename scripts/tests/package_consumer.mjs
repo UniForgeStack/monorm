@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { connect, scope } from 'orm';
-import { Note } from './models.js';
+import { Wrapped } from '@acme/outside';
+import { Note, configureOutside } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
 assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'orm.inherit', 'orm.locking', 'orm.query-defaults', 'orm.soft-delete', 'orm.timestamps']);
 for (const [id, stamp] of Object.entries(locked.behavior.packages)) {
@@ -42,6 +43,18 @@ try {
     assert.ok(row.changed instanceof Date);
     assert.equal((await notes.get(Note.id.eq(1))).updatedBy, 'ann');
     assert.equal((await notes.tagged().all())[0].text, 'updated');
+    // `@outside.wrapped("w:")` installs the second consumer of the field adapter runtime: label = runtime prefix + option prefix.
+    assert.equal((await notes.get(Note.id.eq(1))).note, null);
+    configureOutside('rt-');
+    await notes.filter(Note.id.eq(1)).update({ note: { a: 1 } });
+    const loaded = await notes.get(Note.id.eq(1));
+    assert.ok(loaded.note instanceof Wrapped);
+    assert.equal(loaded.note.label, 'rt-w:');
+    assert.deepEqual(loaded.note.payload, { a: 1 });
+    assert.deepEqual(loaded.noteUnwrap(), { a: 1 });
+    await notes.filter(Note.id.eq(1)).update({ note: new Wrapped('ignored', { b: 2 }) });
+    row = await notes.get(Note.id.eq(1)); // the bulk updates changed the version
+    assert.deepEqual(row.noteUnwrap(), { b: 2 });
     // Another shop's row is outside the default filter `shop_id == scope.shop`.
     await notes.insert({ id: 2, text: 'other', start: 1, end: 2, shopId: 2 });
     assert.deepEqual((await notes.all()).map((n) => n.id), [1]);

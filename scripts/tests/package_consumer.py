@@ -4,7 +4,8 @@ import json
 import os
 from pathlib import Path
 import orm
-from models import Note
+from acme_outside import Wrapped
+from models import Note, configure_outside
 from orm._packages import import_runtime
 
 
@@ -49,6 +50,16 @@ async def run():
             assert row.version == 1 and row.changed is not None
             assert (await notes.get(Note.id == 1)).updated_by == "ann"
             assert (await notes.tagged().all())[0].text == "updated"
+            # `@outside.wrapped("w:")` installs the second consumer of the field adapter runtime: label = runtime prefix + option prefix.
+            assert (await notes.get(Note.id == 1)).note is None
+            configure_outside("rt-")
+            await notes.filter(Note.id == 1).update(note={"a": 1})
+            loaded = await notes.get(Note.id == 1)
+            assert isinstance(loaded.note, Wrapped) and loaded.note.label == "rt-w:" and loaded.note.payload == {"a": 1}
+            assert loaded.note_unwrap() == {"a": 1}
+            await notes.filter(Note.id == 1).update(note=Wrapped("ignored", {"b": 2}))
+            row = await notes.get(Note.id == 1)  # the bulk updates changed the version
+            assert row.note_unwrap() == {"b": 2}
             # Another shop's row is outside the default filter `shop_id == scope.shop`.
             await notes.insert(id=2, text="other", start=1, end=2, shop_id=2)
             assert [n.id for n in await notes.all()] == [1]

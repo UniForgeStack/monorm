@@ -232,6 +232,31 @@ fn extension_flag_gives_the_loader_an_installed_library() {
 }
 
 #[test]
+fn outside_adapter_generates_its_runtime_and_rejects_a_method_collision() {
+    let dir = extension_fixture("adapter");
+    let flags = ["--extension", "acme.outside=orm-extension.toml", "--extension-module", "acme.outside=acme_outside"];
+    std::fs::write(dir.join("schema.prisma"), "model Note {\n  id Int @id\n  note Json? @outside.wrapped(\"w:\")\n}\n").unwrap();
+    for (language, output, expected) in [
+        ("python", "models.py", ["from acme_outside import install", "configure_outside"]),
+        ("typescript", "models.ts", ["from \"@acme/outside\"", "configureOutside"]),
+    ] {
+        let generated = orm(&dir, &[&["generate", language, "--schema", "schema.prisma", "-o", output][..], &flags].concat());
+        assert!(generated.status.success(), "{language}: {}", text(&generated.stderr));
+        let models = std::fs::read_to_string(dir.join(output)).unwrap();
+        for part in expected { assert!(models.contains(part), "{language}: {part} is missing from {models}"); }
+    }
+    // `note_unwrap` is the Python method and `noteUnwrap` the TypeScript one; TypeScript also camel-cases the field name.
+    for (language, field, method) in [("python", "note_unwrap", "note_unwrap"), ("typescript", "noteUnwrap", "noteUnwrap"), ("typescript", "note_unwrap", "noteUnwrap")] {
+        std::fs::write(dir.join("schema.prisma"), format!("model Note {{\n  id Int @id\n  note Json? @outside.wrapped(\"w:\")\n  {field} String\n}}\n")).unwrap();
+        let rejected = orm(&dir, &[&["generate", language, "--schema", "schema.prisma", "-o", "clash.out"][..], &flags].concat());
+        assert_eq!(rejected.status.code(), Some(1), "{language} {field}");
+        assert!(text(&rejected.stderr).contains(method), "{language} {field}: {}", text(&rejected.stderr));
+        assert!(!dir.join("clash.out").exists(), "{language} {field}: a rejected generate wrote its output");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_skips_handwritten_defaults_and_rust_models_on_every_host() {
     let dir = std::env::temp_dir().join(format!("orm-cli-check-defaults-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -290,7 +315,7 @@ fn check_compares_extension_locks_and_python_facades() {
     let models = std::fs::read_to_string(dir.join("out/models.ts")).unwrap();
     assert!(models.contains("manifest_hash"), "{models}");
     // Independently measured with shasum -a 256 on the fixture's raw bytes.
-    assert!(models.contains("b5c4d2f71cda38fb002bf627b8802fdd1997cfe698a0885d036351f8a94f43d4"));
+    assert!(models.contains("d070ba4a0cb9aac50a4e1a6a1fdb7b6570464b8f6d0bdddd5aebbc40c1bb2df1"));
     let original = std::fs::read_to_string(dir.join("orm-extension.toml")).unwrap();
     for output in ["out/models.ts", "models.py"] {
         let generated = orm(&dir, &["generate", "--extension", "acme.outside=orm-extension.toml", "--extension-module", "acme.outside=acme_outside", "-o", output]);
