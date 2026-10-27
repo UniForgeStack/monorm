@@ -206,3 +206,41 @@ model Employee {{
 """
     with pytest.raises(Exception, match="not supported in a multi-table model.s ownership chain"):
         orm.loads('datasource db {\n provider = "sqlite"\n}\n' + source, registry=orm.Registry())
+
+
+COMPUTED = """
+model Person {
+ id Int @id @default(autoincrement())
+ name String
+ @@map("composition_computed_people")
+}
+model Staff {
+ text String
+ start Int
+ end Int
+ shop_id Int
+ updated_by String?
+ first String
+ last String
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "staff")
+ @@outside.guard
+ @@map("composition_computed_staff")
+}
+"""
+
+
+@pytest.mark.skipif(not has_extension("acme.outside"), reason="requires the acme.outside test extension")
+async def test_a_composed_write_returns_the_computed_field():
+    registry = orm.Registry()
+    models = orm.loads('datasource db {\n provider = "sqlite"\n}\n' + COMPUTED, registry=registry)
+    Staff = models["Staff"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    await db.create_tables()
+    try:
+        with orm.scope(shop=1, user="ann"):
+            row = await Staff.objects.using(db).insert(name="Ada", text="t", start=1, end=2, first="grace", last="hopper")
+            assert row.initials == "GH"
+            updated = await Staff.objects.using(db).filter(Staff.id == row.id).update(first="mary", last="shelley").returning()
+            assert [r.initials for r in updated] == ["MS"]
+    finally:
+        await db.close()

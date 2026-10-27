@@ -1,6 +1,6 @@
 //! Engine-managed writes for a model that stores its fields in several tables joined by shared primary keys.
 use crate::{
-    db::{self, Executor, RowSet, Transaction},
+    db::{self, Executor, Transaction},
     error::{query_err, Error, Result},
     exec::{ChainedRows, Outcome},
     params::NoParams,
@@ -30,6 +30,7 @@ pub struct Insert {
     key: FieldIr,
     model: usize,
     types: Vec<ValueType>,
+    computed: Vec<crate::hooks::Computed>,
 }
 
 impl Insert {
@@ -112,6 +113,7 @@ pub fn prepare_insert(
     model: &str,
     fields: &[String],
     rows: Vec<Vec<Option<Value>>>,
+    params: &dyn crate::Params,
 ) -> Result<Insert> {
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let logical = schema.model(model_idx);
@@ -181,6 +183,7 @@ pub fn prepare_insert(
         key: logical.pk_field().clone(),
         model: model_idx,
         types: logical.fields().iter().map(|f| f.value_type()).collect(),
+        computed: crate::exec::all_computed(schema, model_idx, params)?,
     })
 }
 
@@ -243,7 +246,7 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own
         Ok(Outcome::Rows {
             model: insert.model,
             types: insert.types,
-            rows: Box::new(ChainedRows::new(fetched)) as Box<dyn RowSet>,
+            rows: crate::hooks::compute(Box::new(ChainedRows::new(fetched)), &insert.computed)?,
             shape: None,
         })
     }
@@ -266,6 +269,7 @@ pub struct Mutation {
     key_position: usize,
     model: usize,
     types: Vec<ValueType>,
+    computed: Vec<crate::hooks::Computed>,
     assignments: Vec<Assignment>,
     returning: bool,
     delete: bool,
@@ -361,6 +365,7 @@ fn mutation(
         key_position: logical.pk,
         model: model_idx,
         types: logical.fields().iter().map(|f| f.value_type()).collect(),
+        computed: if returning { crate::exec::all_computed(schema, model_idx, params)? } else { vec![] },
         assignments: vec![],
         returning,
         delete,
@@ -493,7 +498,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
             return Ok(Outcome::Rows {
                 model: plan.model,
                 types: plan.types,
-                rows: matched,
+                rows: crate::hooks::compute(matched, &plan.computed)?,
                 shape: None,
             });
         }
@@ -514,7 +519,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
         Ok(Outcome::Rows {
             model: plan.model,
             types: plan.types,
-            rows: Box::new(ChainedRows::new(returned)),
+            rows: crate::hooks::compute(Box::new(ChainedRows::new(returned)), &plan.computed)?,
             shape: None,
         })
     }
@@ -555,7 +560,7 @@ pub fn prepare_attach(
             row
         })
         .collect();
-    let mut insert = prepare_insert(schema, target, model, &fields, rows)?;
+    let mut insert = prepare_insert(schema, target, model, &fields, rows, &NoParams)?;
     for row in &mut insert.rows {
         let mut leaf = row.pop().expect("prepared multi-table leaf");
         // Complete creates place a supplied shared key at the root. Attach places

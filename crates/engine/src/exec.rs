@@ -360,7 +360,7 @@ pub fn index_target(indexes: Option<Vec<String>>) -> OnConflictTarget {
 }
 
 /// The hook-computed fields (point 5) of rows that return every column of the model.
-fn all_computed(schema: &Schema, model: usize, params: &dyn Params) -> Result<Vec<crate::hooks::Computed>> {
+pub(crate) fn all_computed(schema: &Schema, model: usize, params: &dyn Params) -> Result<Vec<crate::hooks::Computed>> {
     let m = schema.model(model);
     crate::hooks::computations(m, 0, &(0..m.fields().len()).collect::<Vec<_>>(), params)
 }
@@ -398,7 +398,7 @@ fn plan_insert_with(
 ) -> Result<Plan> {
     if crate::multi_table::is_multi_table(schema, model)? {
         if conflict.is_some() { return Err(Error::query("multi-table inserts do not support on_conflict")); }
-        return Ok(Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_insert(schema, target, model, fields, rows)?)));
+        return Ok(Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_insert(schema, target, model, fields, rows, params)?)));
     }
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let on_conflict = conflict.map(|c| match c {
