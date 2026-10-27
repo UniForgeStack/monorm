@@ -34,7 +34,17 @@ postgres = ["orm-native-postgres==0.1.0"]
 sqlite = ["orm-native-sqlite==0.1.0"]
 combined = ["orm-native-combined==0.1.0"]
 tooling = ["orm-native-tooling==0.1.0"]
-full = ["orm-native-full==0.1.0"]
+full = [
+  "orm-native-tooling==0.1.0",
+  "orm-generic==0.1.0",
+  "orm-inherit==0.1.0",
+  "orm-locking==0.1.0",
+  "orm-composition==0.1.0",
+  "orm-proxy==0.1.0",
+  "orm-query-defaults==0.1.0",
+  "orm-soft-delete==0.1.0",
+  "orm-timestamps==0.1.0",
+]
 otel = ["opentelemetry-api>=1.20"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.11", "pyright"]
 

@@ -203,7 +203,7 @@ interface Addon {
 }
 
 const profiles: Record<string, readonly string[]> = {
-  postgres: ["postgres"], sqlite: ["sqlite"], combined: ["postgres", "sqlite"], tooling: ["postgres", "sqlite"], full: ["postgres", "sqlite"],
+  postgres: ["postgres"], sqlite: ["sqlite"], combined: ["postgres", "sqlite"], tooling: ["postgres", "sqlite"],
 };
 
 /** The artifact's embedded Cargo features, rustc, target, profile and git revision. */
@@ -231,8 +231,8 @@ function validate(addon: Addon, profile?: string): void {
     throw new Error("incompatible orm native artifact; rebuild or install matching orm 0.1.0 packages");
   }
   if (profile) {
-    const tooling = profile === "tooling" || profile === "full";
-    const capabilities = { cli: tooling, "generate-python": tooling, "generate-typescript": tooling, composition: profile === "full" };
+    const tooling = profile === "tooling";
+    const capabilities = { cli: tooling, "generate-python": tooling, "generate-typescript": tooling, composition: false };
     if (meta.profile !== profile || meta.adapters.length !== 0 || JSON.stringify(meta.backends) !== JSON.stringify(profiles[profile]) ||
         Object.keys(capabilities).some(key => meta.capabilities[key] !== capabilities[key as keyof typeof capabilities]) ||
         Object.keys(meta.capabilities).length !== Object.keys(capabilities).length) {
@@ -281,7 +281,7 @@ function load(): Addon {
       return addon;
     }
   }
-  throw new Error("install @orm/native-postgres, @orm/native-sqlite, @orm/native-combined, @orm/native-tooling or @orm/native-full alongside orm");
+  throw new Error("install @orm/native-postgres, @orm/native-sqlite, @orm/native-combined or @orm/native-tooling alongside orm");
 }
 
 let addon: Addon | undefined;

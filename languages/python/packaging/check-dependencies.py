@@ -4,7 +4,7 @@ import json
 import subprocess
 
 for binding in ("orm-python", "orm-node"):
-    for profile in ("postgres", "sqlite", "combined", "tooling", "full"):
+    for profile in ("postgres", "sqlite", "combined", "tooling"):
         feature = f"profile-{profile}"
         tree = subprocess.check_output(
             [
@@ -37,7 +37,7 @@ for binding in ("orm-python", "orm-node"):
                 "ring",
                 "webpki-roots",
             }
-        if profile not in ("tooling", "full"):
+        if profile != "tooling":
             excluded.add("orm-cli")
         assert not (packages & excluded), (binding, profile, packages & excluded)
         features = subprocess.check_output(

@@ -93,7 +93,7 @@ You need `uv`, Rust (`cargo`), and Node 20.19+ or 22.12+ (or Bun) for the TypeSc
 | TypeScript API with the same sections | [typescript-api.md](docs/api/typescript-api.md) |
 | Migrations from the schema | [schema.md](docs/schema/schema.md) |
 | Protected writes, cursor pagination, the N+1 finder (`orm.debug`) | [python-api.md](docs/api/python-api.md) |
-| Native profiles (`postgres`, `sqlite`, `combined`, `tooling`, `full`) | [optional-packaging.md](docs/contracts/optional-packaging.md) |
+| Native profiles (`postgres`, `sqlite`, `combined`, `tooling`) | [optional-packaging.md](docs/contracts/optional-packaging.md) |
 | Auth app (`orm-auth`) | [auth.md](docs/apps/auth.md) |
 
 Build-time extensions are Rust crates that you select when you build the native library:

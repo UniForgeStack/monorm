@@ -149,19 +149,6 @@ A bound query set mixin reads the objects of a bound write with these helpers (t
 * `loadedValue(object, field)` (TypeScript only) gives the loaded value of a field and throws `NotLoaded` when it is not loaded.
 * `key_condition(model, key)` (Python only) gives the condition of the row with the primary key `key`.
 
-### The full profile
-
-`languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.
-They select the static first-party extension `file-storage`.
-The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy and composition extensions are installable packages, not part of the profile.
-They set `prepare_only` and `binding_features` to `["profile-full"]`.
-`profile-full` has the features of `profile-tooling`: the backends, `cli`, both generators and `reference-loading`.
-It also gives the profile its name in `profile_metadata()`.
-`build-full-wheel.py` and `build-node-profile.mjs full` run the steps above.
-The Python script then runs `maturin build --release` in the emitted workspace.
-The Node script runs `cargo build -p orm-node` there.
-[Static native profiles](optional-packaging.md#the-full-profile) has the list of the two extensions, the install lines and the rest of the contract.
-
 ## Application source modules
 
 Instead of a dependency, `modules` accepts an application source module:

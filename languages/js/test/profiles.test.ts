@@ -36,24 +36,6 @@ test("native profiles reject invalid selections and compatibility before use", (
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("the full profile is tooling plus composition", () => {
-  const artifacts = fileURLToPath(new URL("../../target/", import.meta.url));
-  mkdirSync(artifacts, { recursive: true });
-  const directory = mkdtempSync(join(artifacts, "orm-profile-"));
-  const path = join(directory, "mock.cjs");
-  const build = { features: ["postgres", "sqlite", "profile-full"], rustc: "rustc 1.0.0", target: "t", profile: "release", revision: "r" };
-  const metadata = { abi: 1, version: "0.1.0", language: "node", profile: "full", backends: ["postgres", "sqlite"], adapters: [], build,
-    capabilities: { cli: true, "generate-python": true, "generate-typescript": true, composition: true } };
-  const run = (profile: string) => execFileSync(process.execPath,
-    ["--input-type=module", "-e", `const { native } = await import(${JSON.stringify(nativeUrl)}); native();`],
-    { env: { ...process.env, ORM_NATIVE: path, ORM_PROFILE: profile }, stdio: "pipe" });
-  try {
-    writeFileSync(path, `module.exports={setDecimalClass(){},profileMetadata(){return ${JSON.stringify(JSON.stringify(metadata))}}};`);
-    run("full");
-    assert.throws(() => run("tooling"), /incompatible orm native profile/);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
 test("the loaded native artifact embeds its build record", async () => {
   const { native } = await import(nativeUrl);
   const metadata = JSON.parse(native().profileMetadata());

@@ -79,7 +79,6 @@
     "@orm/native-sqlite": "0.1.0",
     "@orm/native-combined": "0.1.0",
     "@orm/native-tooling": "0.1.0",
-    "@orm/native-full": "0.1.0",
     "@opentelemetry/api": "^1.0.0"
   },
   "peerDependenciesMeta": {
@@ -93,9 +92,6 @@
       "optional": true
     },
     "@orm/native-tooling": {
-      "optional": true
-    },
-    "@orm/native-full": {
       "optional": true
     },
     "@opentelemetry/api": {
