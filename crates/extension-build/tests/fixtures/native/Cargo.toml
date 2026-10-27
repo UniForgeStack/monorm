@@ -9,7 +9,7 @@ orm-contracts = { path = "../../../../contracts" }
 id = "example.native"
 version = "1.0.0"
 host_contract = 1
-schema_contract = 3
+schema_contract = "3.0"
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 [[package.metadata.orm-extension.exports]]

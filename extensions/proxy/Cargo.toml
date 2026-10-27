@@ -17,7 +17,7 @@ orm-core = { path = "../../crates/core" }
 id = "orm.proxy"
 version = "0.1.0"
 host_contract = 1
-schema_contract = 3
+schema_contract = "3.0"
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["proxy-models"]

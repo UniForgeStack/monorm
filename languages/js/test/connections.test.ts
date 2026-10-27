@@ -236,7 +236,7 @@ async function assertBackends(url: string, expected: number): Promise<void> {
   assert.equal(actual, expected, 'PostgreSQL replica sessions after pool closure');
 }
 
-test('replicas answer reads outside a transaction; writes and transactions use the primary', async () => {
+test('replicas answer reads outside a transaction; writes and transactions use the primary', { timeout: 30_000 }, async () => {
   const db = getDatabase(), url = await replicaUrl(), url2 = await replicaUrl(2);
   const routed = await connect(db.url, { replicas: [url, url2], default: false, maxConnections: 2 });
   try {
