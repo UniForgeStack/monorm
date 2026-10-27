@@ -4,13 +4,15 @@ use orm_contracts::abi::{Arg, Context, Value};
 use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_VERSION};
 use orm_core::dsl::{compile_file_with, Installed};
 use orm_core::loader::{Library, Plan};
-use orm_core::ir::{ColType, FieldIr, SchemaIr};
+use orm_core::ir::{ClientDefaultIr, ColType, FieldIr, SchemaIr};
 use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, process::Command, sync::Mutex};
 
 const ID: &str = "acme.outside";
 /// The passes and attributes that the manifest of `tests/outside-extension` stamps on a lowered schema.
-const PASSES: [&str; 4] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.view"];
-const ATTRIBUTES: [&str; 5] = ["outside.tag", "outside.money", "outside.note", "outside.view", "outside.guard"];
+/// The passes in the order the stamp lists them; `PASSES` is the order they run in.
+const DECLARED_PASSES: [&str; 6] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.wrapped", "acme.outside.base", "acme.outside.view"];
+const PASSES: [&str; 6] = ["acme.outside.fields", "acme.outside.wrapped", "acme.outside.tag", "acme.outside.guard", "acme.outside.base", "acme.outside.view"];
+const ATTRIBUTES: [&str; 7] = ["outside.tag", "outside.money", "outside.note", "outside.view", "outside.base", "outside.guard", "outside.wrapped"];
 const SCHEMA: &str = "model Post {\n id Int @id\n @@outside.tag(\"blue\")\n}\n";
 
 struct Builds {
@@ -110,7 +112,7 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
     let stamp = &ir.behavior.packages[ID];
-    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", PASSES.map(String::from).as_slice(), ATTRIBUTES.map(String::from).as_slice()));
+    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", DECLARED_PASSES.map(String::from).as_slice(), ATTRIBUTES.map(String::from).as_slice()));
 }
 
 const VIEW_SCHEMA: &str = "model Ticket {\n id Int @id\n status String\n note String?\n}\n\
@@ -450,6 +452,18 @@ fn a_hook_of_the_library_lowers_and_runs_with_its_extension_data() {
 }
 
 #[test]
+fn an_expression_record_stamps_no_minor_also_after_generate_removed_its_hook() {
+    let plan = bind_plan(&installed("", "0.2"));
+    let ir = lower_with(&plan, &binding(7, "tag", "acme.outside.region")).unwrap();
+    assert!(ir.behavior.hooks.is_empty(), "a hook that reads no context is evaluated at generate");
+    let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap();
+    assert!(matches!(tag.client_default, Some(ClientDefaultIr::Expr(_))), "{:?}", tag.client_default);
+    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (orm_contracts::extension::SCHEMA_CONTRACT, 0));
+    let ir = lower_with(&plan, &HookBinding { reads_context: true, ..binding(7, "tag", "acme.outside.region") }).unwrap();
+    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, 0));
+}
+
+#[test]
 fn lowering_refuses_a_hook_that_the_manifest_of_the_library_does_not_allow() {
     let plan = bind_plan(&installed("", "0.2"));
     for (hook, message) in [
@@ -481,6 +495,33 @@ fn an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model() {
     let names: Vec<&str> = ir.models[0].fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["id", "price_amount", "price_currency"], "Money becomes two columns and the note is no column");
     assert_eq!(ir.behavior.extension_data[ID]["notes"]["Order.memo"], "remember");
+}
+
+const BASE: &str = "model Account {\n id Int @id @default(autoincrement())\n email String\n}\nmodel Profile {\n bio String\n @@outside.base(parent: \"Account\", parentRef: \"account\", childRef: \"profile\")\n}\n";
+
+#[test]
+fn an_outside_pass_writes_a_two_table_model_that_the_schema_marks_as_foreign_storage() {
+    let manifest = installed("", "0.2");
+    let ir = compile("base", BASE, &[(ID, &manifest)]).unwrap();
+    assert_eq!(ir.behavior.owner_links.len(), 1);
+    assert_eq!((ir.behavior.owner_links[0].child.as_str(), ir.behavior.owner_links[0].parent.as_str()), ("Profile", "Account"));
+    assert_eq!(ir.behavior.field_storage.iter().map(|s| (s.model.as_str(), s.field.as_str(), s.owner.as_str())).collect::<Vec<_>>(), [("Profile", "email", "Account")]);
+    assert!(ir.models.iter().all(|m| m.fields.iter().all(|f| f.hints.keys().all(|k| !k.starts_with("composition.")))), "the pass writes no hint");
+    let names: Vec<&str> = ir.models[1].fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["id", "bio", "email"]);
+    let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+    let flags: Vec<(&str, bool)> = schema.models.iter().map(|m| (m.ir.name.as_str(), m.has_foreign_storage)).collect();
+    assert_eq!(flags, [("Account", false), ("Profile", true)]);
+}
+
+#[test]
+fn an_owner_link_that_no_field_storage_reads_through_fails_the_schema() {
+    let manifest = installed("", "0.2");
+    let mut ir = compile("base-orphan", BASE, &[(ID, &manifest)]).unwrap();
+    ir.behavior.field_storage.clear();
+    ir.models[1].fields.retain(|f| f.name != "email");
+    let error = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).err().expect("the schema must fail");
+    assert!(error.to_string().contains("owner link Profile -> Account: no field_storage reads a field through it"), "{error}");
 }
 
 // `Schema::from_ir_with_packages` opens the library of each package that has bindings and resolves them into `Model.hooks`.
@@ -606,4 +647,168 @@ fn a_point_four_hook_that_returns_the_wrong_type_fails_define() {
     ir.models[0].fields[1] = FieldIr::plain("tag", ColType::Int);
     let error = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).err().expect("type");
     assert!(error.contains("Post.tag") && error.contains("acme.outside.actor"), "{error}");
+}
+
+// Hook 5: a point-5 binding on a result field gives a computed field that the library fills on read.
+
+fn initials_ir(mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
+    let id = FieldIr { primary_key: true, ..FieldIr::plain("id", ColType::Int) };
+    let fields = [id, FieldIr::plain("first", ColType::Text), FieldIr::plain("last", ColType::Text), FieldIr::plain("initials", ColType::Text)];
+    let person = serde_json::json!({ "name": "Person", "table": "person", "fields": fields });
+    let mut ir = hooked(vec![], serde_json::Value::Null);
+    ir.models = vec![serde_json::from_value(person).unwrap()];
+    ir.behavior.hooks.push(HookBinding {
+        source: ID.into(), point: 5, model: "Person".into(), field: Some("initials".into()), export: "acme.outside.initials".into(),
+        dependencies: vec!["first".into(), "last".into()], reads_context: false,
+    });
+    ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
+    mutate(&mut ir);
+    ir
+}
+
+#[test]
+fn a_point_five_binding_resolves_into_the_computed_list_of_the_hook_plan() {
+    let manifest = installed("", "0.2");
+    let schema = orm_core::schema::Schema::from_ir_with_packages(initials_ir(|_| {}), &packages(&manifest)).unwrap();
+    let model = schema.model(0);
+    let plan = model.hooks.as_deref().expect("the model has a plan");
+    assert_eq!(plan.computed.len(), 1);
+    let (position, hook, dependencies) = &plan.computed[0];
+    assert_eq!((*position, dependencies.as_slice()), (3, &[1, 2][..]));
+    assert!(model.computed(3) && !model.computed(1) && model.dependencies(3) == [1, 2]);
+    assert_eq!(hook.compute(&[arg("first", text("ada")), arg("last", text("lovelace"))], &Context::default()), Ok(text("AL")));
+}
+
+/// Lowers the `Person` schema of `initials_ir(mutate)` through the pass hook of the plan, which validates it.
+fn lower_initials(mutate: impl FnOnce(&mut SchemaIr)) -> Result<SchemaIr, String> {
+    let plan = bind_plan(&installed("", "0.2"));
+    let seed = std::cell::RefCell::new(Some(initials_ir(mutate)));
+    let run = |ir: &mut SchemaIr, _: &str| {
+        let seed = seed.borrow_mut().take().expect("one run");
+        ir.models = seed.models;
+        ir.behavior.storage = None;
+        ir.behavior.hooks = seed.behavior.hooks;
+        ir.behavior.result_fields = seed.behavior.result_fields;
+        Ok(true)
+    };
+    let mut ir = unlowered();
+    plan.lower(&mut ir, None, &run).map(|_| ir)
+}
+
+#[test]
+fn a_point_five_binding_on_a_declared_result_field_lowers() {
+    let ir = lower_initials(|_| {}).unwrap();
+    assert_eq!(ir.behavior.result_fields.len(), 1);
+}
+
+#[test]
+fn a_computed_field_that_depends_on_a_computed_field_fails() {
+    let error = lower_initials(|ir| {
+        ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "last".into(), dependencies: vec!["first".into()] });
+        ir.behavior.hooks.push(HookBinding {
+            source: ID.into(), point: 5, model: "Person".into(), field: Some("last".into()), export: "acme.outside.initials".into(),
+            dependencies: vec!["first".into()], reads_context: false,
+        });
+    }).unwrap_err();
+    assert!(error.contains("Person.initials") && error.contains("depends on the computed field last"), "{error}");
+}
+
+#[test]
+fn a_point_five_binding_without_a_result_field_or_with_the_wrong_type_fails() {
+    let error = lower_initials(|ir| ir.behavior.result_fields.clear()).unwrap_err();
+    assert!(error.contains("Person.initials") && error.contains("result_fields"), "{error}");
+    let error = lower_initials(|ir| ir.models[0].fields[3] = FieldIr::plain("initials", ColType::Int)).unwrap_err();
+    assert!(error.contains("Person.initials") && error.contains("acme.outside.initials"), "{error}");
+}
+
+// Hooks 6 and 7: an expression hook gives the expression of a write assignment or of an insert default.
+
+/// `Post { id, tag, note }`: `tag` has a write assignment from point 6 and `note` has an insert default from point 7.
+fn expression_ir(reads_context: bool, mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
+    let (write, default) = if reads_context { ("acme.outside.editor", "acme.outside.owner") } else { ("acme.outside.label", "acme.outside.region") };
+    let mut ir = hooked(vec![], serde_json::Value::Null);
+    let note = FieldIr { client_default: Some(orm_contracts::ir::ClientDefaultIr::Hook { export: default.into() }), ..FieldIr::plain("note", ColType::Text) };
+    ir.models[0].fields.push(note);
+    for (point, field, export) in [(6, "tag", write), (7, "note", default)] {
+        ir.behavior.hooks.push(HookBinding { reads_context, ..binding(point, field, export) });
+    }
+    ir.behavior.write_assignments.push(orm_contracts::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![orm_contracts::writes::WriteKind::Update],
+        value: orm_contracts::writes::AssignValue::ExprHook { export: write.into() }, upsert: Default::default(),
+    });
+    mutate(&mut ir);
+    ir
+}
+
+/// Lowers `seed` through the pass hook of the plan, which validates it and evaluates the hooks that read no context.
+fn lower_expressions(seed: SchemaIr) -> Result<SchemaIr, String> {
+    let plan = bind_plan(&installed("", "0.2"));
+    let seed = RefCell::new(Some(seed));
+    let run = |ir: &mut SchemaIr, _: &str| {
+        let seed = seed.borrow_mut().take().expect("one run");
+        ir.models = seed.models;
+        ir.behavior.storage = None;
+        ir.behavior.hooks = seed.behavior.hooks;
+        ir.behavior.write_assignments = seed.behavior.write_assignments;
+        Ok(true)
+    };
+    let mut ir = unlowered();
+    plan.lower(&mut ir, None, &run)?;
+    // The test binary has no compiled `acme.static` extension for `define()` to find.
+    ir.behavior.extensions.clear();
+    ir.behavior.completed_passes.clear();
+    Ok(ir)
+}
+
+#[test]
+fn an_expression_hook_that_reads_no_context_becomes_a_stored_expression_at_lowering() {
+    use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    let ir = lower_expressions(expression_ir(false, |_| {})).unwrap();
+    assert!(ir.behavior.hooks.is_empty(), "the bindings are gone: {:?}", ir.behavior.hooks);
+    let guarded = serde_json::json!({"t": "text", "value": "guarded"});
+    assert_eq!(ir.behavior.write_assignments[0].value, AssignValue::Expr(guarded));
+    assert!(matches!(&ir.models[0].fields[2].client_default, Some(ClientDefaultIr::Expr(e)) if *e == serde_json::json!({"t": "text", "value": "eu"})));
+    // `define()` needs no package directory and loads no library for a stored expression.
+    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).unwrap();
+    assert!(schema.model(0).hooks.is_none());
+    assert!(schema.model(0).assignments[0].expr.is_some());
+}
+
+#[test]
+fn an_expression_hook_that_reads_the_context_stays_a_record_and_runs_on_each_statement() {
+    use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    let ir = lower_expressions(expression_ir(true, |_| {})).unwrap();
+    assert_eq!(ir.behavior.hooks.len(), 2);
+    assert!(matches!(ir.behavior.write_assignments[0].value, AssignValue::ExprHook { .. }));
+    assert!(matches!(ir.models[0].fields[2].client_default, Some(ClientDefaultIr::Hook { .. })));
+    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
+    assert!(error.contains(ID) && error.contains("no package directory"), "{error}");
+    let manifest = installed("", "0.2");
+    let ir = lower_expressions(expression_ir(true, |_| {})).unwrap();
+    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
+    let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
+    assert_eq!((plan.expr_assign.len(), plan.expr_default.len(), plan.reads_context()), (1, 1, true));
+    let context = Context { values: vec![arg("user", text("ada"))] };
+    assert_eq!(plan.expr_assigner(1).unwrap().expression(&context), Ok(serde_json::json!({"t": "text", "value": "by:ada"})));
+    assert_eq!(plan.expr_defaulter(2).unwrap().expression(&context), Ok(serde_json::json!({"t": "text", "value": "by:ada"})));
+    assert!(plan.expr_assigner(1).unwrap().expression(&Context::default()).unwrap_err().contains("no user in the request scope"));
+}
+
+#[test]
+fn an_expression_record_without_its_binding_or_with_a_transform_fails_at_lowering() {
+    let error = lower_expressions(expression_ir(false, |ir| ir.behavior.hooks.retain(|h| h.point != 6))).unwrap_err();
+    assert!(error.contains("Post.tag") && error.contains("acme.outside.label") && error.contains("no point-6 binding"), "{error}");
+    let error = lower_expressions(expression_ir(false, |ir| ir.behavior.hooks.retain(|h| h.point != 7))).unwrap_err();
+    assert!(error.contains("Post.note") && error.contains("acme.outside.region") && error.contains("no point-7 binding"), "{error}");
+    let error = lower_expressions(expression_ir(false, |ir| ir.behavior.hooks.push(binding(1, "note", "outside.prefix")))).unwrap_err();
+    assert!(error.contains("Post.note") && error.contains("takes no transform or validator"), "{error}");
+}
+
+#[test]
+fn an_expression_hook_binds_only_at_the_point_of_its_export() {
+    let plan = bind_plan(&installed("", "0.2"));
+    let error = lower_with(&plan, &binding(6, "tag", "outside.prefix")).unwrap_err();
+    assert!(error.contains("is bound at point 6, and the manifest says point 1"), "{error}");
+    let error = lower_with(&plan, &binding(7, "tag", "outside.prefix")).unwrap_err();
+    assert!(error.contains("is bound at point 7, and the manifest says point 1"), "{error}");
 }

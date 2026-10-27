@@ -122,7 +122,7 @@ model Book {
 ### Behavior changes
 
 * Error messages changed when the role code left the host.
-  A composed-chain error names the extension id, not the attribute: `a write record from orm.timestamps on Person.changed is not supported in a composed model's ownership chain`.
+  A composed-chain error names the extension id, not the attribute: `a write record from orm.timestamps on Person.changed is not supported in a multi-table model's ownership chain`.
   A write record on a field of the wrong type says `wrong type for a time assignment` (it said `wrong type for updated_at`).
   The soft-delete extension still requires a nullable `DateTime`; the host rule for a delete rewrite accepts any `DateTime`, so another extension can rewrite deletes on a required column.
 

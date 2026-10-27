@@ -91,7 +91,7 @@ class ModelMeta:
         # The model's schema IR when it was built from a compiled schema: it carries
         # everything (indexes, triggers, extension types) the Python side doesn't use.
         self.schema_ir: dict[str, Any] | None = None
-        # Local fields that `attach` accepts; `None` for a model that is not a composed child.
+        # Local fields that `attach` accepts; `None` for a model that is not a child of a multi-table model.
         self.attach_fields: dict[str, Field[Any]] | None = None
         self.fields: dict[str, Field[Any]] = {}
         self.relations: dict[str, Relation[Any, Any]] = {}
@@ -277,6 +277,7 @@ class Registry:
         associations: list[
             tuple[type[Model], dict[str, Any], dict[str, Field[Any]], dict[str, Relation[Any, Any]]]
         ] = []
+        multi_table = _multi_table(prepared["models"], prepared.get("behavior", {}))
         for ir in prepared["models"]:
             if ir["name"] not in snapshot._models:
                 raise TypeError(
@@ -293,7 +294,7 @@ class Registry:
                 existing = model._meta.fields.get(name)
                 if existing is None and hasattr(model, name):
                     raise TypeError(f"{ir['name']}.{name}: generated field collides with an existing model member")
-                field = existing if existing is not None and existing.ir() == f else _field(f)
+                field = existing if existing is not None and existing.ir() == f else _field(f, key_default=_key_default(multi_table, ir, f))
                 if field is not existing:
                     original = existing or next(
                         (old for old in model._meta.fields.values() if old.column == f["column"]), None
@@ -376,15 +377,8 @@ class Registry:
             )
             meta.field_names = tuple(fields)
             meta.index_nested()
-            pk_ir = next(f for f in ir["fields"] if f["name"] == meta.key[0].name)
             meta.attach_fields = (
-                {
-                    f["name"]: fields[f["name"]]
-                    for f in ir["fields"]
-                    if f.get("hints", {}).get("composition.local") == "true"
-                }
-                if pk_ir.get("hints", {}).get("composition.child") == "true"
-                else None
+                {name: fields[name] for name in multi_table[meta.name][0]} if meta.name in multi_table else None
             )
             computed = {f["field"] for f in snapshot._behavior.get("result_fields", ()) if f["model"] == meta.name}
             meta.input_fields = {k: v for k, v in fields.items() if k not in computed} if computed else fields
@@ -437,7 +431,38 @@ def _default_registry() -> Registry:
     return registry
 
 
-def _field(ir: dict[str, Any], nested_types: dict[str, NestedType] | None = None) -> Field[Any]:
+def _multi_table(models: Sequence[dict[str, Any]], behavior: dict[str, Any]) -> dict[str, tuple[tuple[str, ...], bool]]:
+    """Per child model of a shared-key chain: its own field names, and whether the root key fills itself."""
+    parents = {link["child"]: link["parent"] for link in behavior.get("owner_links", ())}
+    if not parents:
+        return {}
+    stored = {(s["model"], s["field"]): s["owner"] for s in behavior.get("field_storage", ())}
+    tables = {p["table"]: p["name"] for p in (behavior.get("storage") or {}).get("models", ())}
+    owner_of = {m["name"]: tables.get(m["table"], m["name"]) for m in models}
+    by_owner = {owner_of[m["name"]]: m for m in reversed(models)}
+    out: dict[str, tuple[tuple[str, ...], bool]] = {}
+    for model in models:
+        name = model["name"]
+        owner = owner_of[name]
+        if owner not in parents:
+            continue
+        local = tuple(
+            f["name"] for f in model["fields"] if not f.get("primary_key") and stored.get((name, f["name"]), owner) == owner
+        )
+        root = owner
+        while root in parents:
+            root = parents[root]
+        key: dict[str, Any] = next((f for f in by_owner[root]["fields"] if f.get("primary_key")), {}) if root in by_owner else {}
+        filled = key.get("auto_increment", False) or "default" in key or key.get("default_now", False) or "default_sql" in key
+        out[name] = (local, bool(filled))
+    return out
+
+
+def _key_default(multi_table: dict[str, tuple[tuple[str, ...], bool]], model: dict[str, Any], field: dict[str, Any]) -> bool:
+    return bool(field.get("primary_key")) and multi_table.get(model["name"], ((), False))[1]
+
+
+def _field(ir: dict[str, Any], nested_types: dict[str, NestedType] | None = None, *, key_default: bool = False) -> Field[Any]:
     kwargs: dict[str, Any] = {
         "primary_key": ir.get("primary_key", False),
         "auto_increment": ir.get("auto_increment", False),
@@ -446,7 +471,7 @@ def _field(ir: dict[str, Any], nested_types: dict[str, NestedType] | None = None
         "index": ir.get("index", False),
         "column": ir["column"],
         "default_now": ir.get("default_now", False),
-        "server_default": "default_sql" in ir or ir.get("hints", {}).get("composition.key-default") == "true",
+        "server_default": "default_sql" in ir or key_default,
     }
     if "default" in ir:
         kwargs["default"] = ir["default"]
@@ -570,6 +595,7 @@ def define(
     if ir.get("types"):
         nested_types = build_types(ir["types"], reg._enums, module)
         out.update({n: t.cls for n, t in nested_types.items()})
+    multi_table = _multi_table(ir["models"], ir.get("behavior", {}))
     for m in ir["models"]:
         if m["name"] in destination._models:
             if m != destination._models[m["name"]]._meta.ir():
@@ -577,7 +603,9 @@ def define(
                     f"extension changed existing model {m['name']}; define dependent schemas together in a new registry"
                 )
             continue
-        ns: dict[str, Any] = {f["name"]: _field(f, nested_types) for f in m["fields"]}
+        ns: dict[str, Any] = {
+            f["name"]: _field(f, nested_types, key_default=_key_default(multi_table, m, f)) for f in m["fields"]
+        }
         for group, leaves in leaf_names(m).items():
             if group in ns:
                 raise TypeError(f"{m['name']}.{group}: nested field collides with a field")

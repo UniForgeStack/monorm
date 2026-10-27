@@ -194,6 +194,9 @@ pub struct FieldAdapter {
     pub model: String,
     pub field: String,
     pub adapter: String,
+    /// Configuration for the language runtime of the adapter; the core never reads it, and the code generator writes it into the generated code unchanged.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub options: serde_json::Value,
 }
 
 /// File-field configuration has durable identity only; clients remain application configuration.
@@ -215,19 +218,33 @@ pub const FILE_REFERENCE_ADAPTER: &str = "file-storage.reference.v1";
 pub const RESERVED_MEMBERS: [&str; 14] =
     ["objects", "qs", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then"];
 
-/// Reject a file field whose generated Python or TypeScript operations collide with a model member.
-pub fn check_file_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, field: &str) -> Result<(), String> {
-    for method in [format!("{field}_signed_url"), format!("{field}_open"), format!("{}SignedUrl", camel(field)), format!("{}Open", camel(field))] {
-        let taken = |name: &str| name == method || camel(name) == method;
+/// The method names that the file-storage runtime adds for `field`, in the Python and TypeScript forms.
+pub fn file_method_names(field: &str) -> Vec<String> {
+    vec![format!("{field}_signed_url"), format!("{field}_open"), format!("{}SignedUrl", camel(field)), format!("{}Open", camel(field))]
+}
+
+/// Reject an adapter field whose generated operations (`names`) collide with a model member.
+pub fn check_adapter_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, names: &[String]) -> Result<(), String> {
+    for method in names {
+        let taken = |name: &str| name == method || camel(name) == *method;
         if RESERVED_MEMBERS.contains(&method.as_str())
             || model.fields.iter().any(|f| taken(&f.name))
             || model.relations.iter().any(|r| taken(&r.name))
             || ir.behavior.methods.iter().any(|m| m.model == model.name && taken(&m.name))
         {
-            return Err(format!("{}.{method}: generated file method collides with a model member", model.name));
+            return Err(format!("{}.{method}: generated adapter method collides with a model member", model.name));
         }
     }
     Ok(())
+}
+
+/// Expands a runtime template for `field`: Python `{field}` is the field name; TypeScript `{field}` is its camel form and `{Field}` the same with a capital first letter.
+pub fn expand_adapter_template(template: &str, language: &str, field: &str) -> String {
+    if language != "typescript" { return template.replace("{field}", field); }
+    let lower = camel(field);
+    let mut chars = lower.chars();
+    let upper: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+    template.replace("{field}", &lower).replace("{Field}", &upper)
 }
 
 /// `author_id` -> `authorId`: an underscore after a letter or digit is dropped and the
@@ -444,14 +461,17 @@ impl Manifest {
 }
 
 /// The code that an extension ships for one language.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LanguageSection {
-    /// The source directory, relative to the extension crate.
+    /// The source directory, relative to the extension crate. Empty when the runtime is an installed package that `field_adapters` names.
+    #[serde(default)]
     pub source: String,
-    /// The export that adds query-set members: a `QuerySet` subclass in Python, a mixin function in TypeScript.
+    /// The export that adds query-set members: a `QuerySet` subclass in Python, a mixin function in TypeScript. Empty only when `field_adapters` is not.
+    #[serde(default)]
     pub query_set: String,
-    /// The export that adds instance members.
+    /// The export that adds instance members. Empty only when `field_adapters` is not.
+    #[serde(default)]
     pub instance: String,
     /// Optional export for the bound query set (`orm.of(objs)`): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript, whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
     #[serde(default)]
@@ -459,6 +479,56 @@ pub struct LanguageSection {
     /// The host members that the extension replaces; every other name collision is an error.
     #[serde(default)]
     pub overrides: Vec<String>,
+    /// The language runtimes of the field adapters that this extension binds.
+    #[serde(default)]
+    pub field_adapters: Vec<AdapterRuntime>,
+}
+
+/// The language runtime of one field adapter: what the generated code imports, calls, types and re-exports.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterRuntime {
+    /// The adapter id, equal to `FieldAdapter.adapter`.
+    pub adapter: String,
+    /// The export of the runtime module that the generated code calls once for each model with such a field.
+    pub install: String,
+    /// The module of the runtime. Empty: the module of the language section (`--extension-module` or the derived one).
+    #[serde(default)]
+    pub module: String,
+    /// The stub import lines (Python `.pyi`, TypeScript type imports).
+    #[serde(default)]
+    pub imports: Vec<String>,
+    /// The field value type; a nullable field gets `| None` (Python) or `| null` (TypeScript).
+    pub value: String,
+    /// The input type for create and update. Empty: `value`.
+    #[serde(default)]
+    pub input: String,
+    /// Member stub templates, one per member, with `{field}` (and `{Field}` in TypeScript).
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// The method name templates for the collision check.
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// Functions that the generated module defines as a call of `method` on each install result.
+    #[serde(default)]
+    pub module_functions: Vec<ModuleFunction>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleFunction {
+    pub name: String,
+    pub method: String,
+    /// The stub signature. Python: the parameters and the return type, `(registry: Registry) -> None`.
+    /// TypeScript: the function type, `(registry: Registry) => void`.
+    pub stub: String,
+}
+
+impl AdapterRuntime {
+    /// The method names of this runtime for `field`.
+    pub fn method_names(&self, language: &str, field: &str) -> Vec<String> {
+        self.methods.iter().map(|m| expand_adapter_template(m, language, field)).collect()
+    }
 }
 
 /// What the artifact records about the language code of one extension and language.
@@ -479,6 +549,8 @@ pub struct LanguageMembers {
     #[serde(default)]
     pub bound_query_set_members: Vec<String>,
     pub overrides: Vec<String>,
+    #[serde(default)]
+    pub field_adapters: Vec<AdapterRuntime>,
     /// SHA-256 of the embedded source files (name, length and content of each, in name order).
     pub hash: String,
 }
@@ -736,7 +808,8 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
         }
     }
     for result in &r.result_fields {
-        if !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
+        let hooked = r.hooks.iter().any(|h| h.point == 5 && h.model == result.model && h.field.as_deref() == Some(result.field.as_str()));
+        if !hooked && !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
             return Err(format!("{}.{}: native result requires a compiled specialization; rebuild", result.model, result.field));
         }
     }
@@ -783,6 +856,39 @@ pub fn validate_requirements(ir: &SchemaIr, manifests: &[Manifest], language: Op
         }
     }
     for hook in &ir.behavior.hooks { validate_hook(ir, hook, manifests)?; }
+    validate_expression_hooks(ir)
+}
+
+/// An expression hook record (`ExprHook`, `ClientDefaultIr::Hook`) needs the binding of its point. A field with an
+/// expression default takes no transform or validator, because the value of the expression is not a value that a hook could check.
+fn validate_expression_hooks(ir: &SchemaIr) -> Result<(), String> {
+    let bound = |point: u8, source: Option<&str>, model: &str, field: &str, export: &str|
+        ir.behavior.hooks.iter().any(|h| h.point == point && source.is_none_or(|s| h.source == s) && h.model == model && h.field.as_deref() == Some(field) && h.export == export);
+    for a in &ir.behavior.write_assignments {
+        let crate::writes::AssignValue::ExprHook { export } = &a.value else { continue };
+        if !bound(6, Some(&a.source), &a.model, &a.field, export) {
+            return Err(format!("{}.{}: the write assignment from {} runs expression hook {export}, but no point-6 binding names it; bind it to the field", a.model, a.field, a.source));
+        }
+    }
+    for model in &ir.models {
+        for field in &model.fields {
+            let hook = match &field.client_default {
+                Some(crate::ir::ClientDefaultIr::Hook { export }) => {
+                    if !bound(7, None, &model.name, &field.name, export) {
+                        return Err(format!("{}.{}: the expression default runs hook {export}, but no point-7 binding names it; bind it to the field", model.name, field.name));
+                    }
+                    true
+                }
+                Some(crate::ir::ClientDefaultIr::Expr(_)) => true,
+                _ => false,
+            };
+            if hook {
+                if let Some(h) = ir.behavior.hooks.iter().find(|h| matches!(h.point, 1 | 2) && h.model == model.name && h.field.as_deref() == Some(field.name.as_str())) {
+                    return Err(format!("{}.{}: a field with an expression default takes no transform or validator, but {} binds hook {} at point {}", model.name, field.name, h.source, h.export, h.point));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -825,6 +931,12 @@ fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> R
         return Err(format!("{}: {who} is bound at point {}, and the manifest says point {}", at(hook.field.as_deref()), hook.point, export.point.map_or("none".into(), |p| p.to_string())));
     }
     let Some(field) = field else { return Ok(()) };
+    if hook.point == 5 {
+        let result = |name: &str| ir.behavior.result_fields.iter().any(|r| r.model == hook.model && r.field == name);
+        if !result(&field.name) { return Err(format!("{}.{}: {who} is a computed field (point 5), so the pass must declare the field in `result_fields`", model.name, field.name)); }
+        if hook.dependencies.is_empty() { return Err(format!("{}.{}: {who} is a computed field and names no dependencies", model.name, field.name)); }
+        if let Some(d) = hook.dependencies.iter().find(|d| result(d)) { return Err(format!("{}.{}: {who} depends on the computed field {d}; a computed field may read stored fields only", model.name, field.name)); }
+    }
     let mismatch = |role: &str, export_type: ColType, wanted: String| format!(
         "{}.{}: {who} {role} {} but the field is {wanted}", model.name, field.name, col_name(export_type));
     if field.array { return Err(format!("{}.{}: {who} cannot bind an array field; ABI 0.2 has no typed array value", model.name, field.name)); }
@@ -1257,15 +1369,61 @@ mod tests {
         let next_minor = |v: ContractVersion| format!("{}.{}", v.major, v.minor + 1);
         assert!(check(&|_| {}).is_ok());
         let error = check(&|v| v["schema_contract"] = format!("{}.0", SCHEMA_CONTRACT_VERSION.major + 1).into()).unwrap_err();
-        assert!(error.contains("schema contract 5.0") && error.contains("schema contract 4.0") && error.contains("major versions differ"), "{error}");
+        assert!(error.contains(&format!("schema contract {}.0", SCHEMA_CONTRACT_VERSION.major + 1)) && error.contains(&format!("schema contract {SCHEMA_CONTRACT_VERSION}")) && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("schema contract 4.1 is newer than this engine (schema contract 4.0)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains(&format!("schema contract {} is newer than this engine (schema contract {SCHEMA_CONTRACT_VERSION})", next_minor(SCHEMA_CONTRACT_VERSION))) && error.contains("update the ORM"), "{error}");
         let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
         let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
         assert!(error.contains("ABI 0.3 is newer than this engine (ABI 0.2)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| { v.as_object_mut().unwrap().remove("host_contract"); }).unwrap_err();
         assert!(error.contains("app: a manifest with no `abi` needs `host_contract`"), "{error}");
+    }
+
+    fn adapter_ir() -> SchemaIr {
+        serde_json::from_value(serde_json::json!({
+            "models": [{"name": "Note", "table": "notes", "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": true},
+                {"name": "note", "column": "note", "type": "json"},
+                {"name": "note_unwrap", "column": "note_unwrap", "type": "string"},
+            ], "relations": []}],
+        })).unwrap()
+    }
+
+    #[test]
+    fn adapter_templates_expand_by_language() {
+        assert_eq!(expand_adapter_template("{field}_unwrap", "python", "note_text"), "note_text_unwrap");
+        assert_eq!(expand_adapter_template("{field}Unwrap", "typescript", "note_text"), "noteTextUnwrap");
+        assert_eq!(expand_adapter_template("{Field}Unwrap", "typescript", "note_text"), "NoteTextUnwrap");
+        let runtime = AdapterRuntime { adapter: "a.b.v1".into(), install: "install".into(), value: "X".into(), methods: vec!["{field}_unwrap".into()], ..Default::default() };
+        assert_eq!(runtime.method_names("python", "note"), ["note_unwrap"]);
+    }
+
+    #[test]
+    fn an_adapter_method_that_collides_names_the_model_and_the_method() {
+        let ir = adapter_ir();
+        let model = &ir.models[0];
+        let error = check_adapter_methods(&ir, model, &["note_unwrap".into()]).unwrap_err();
+        assert_eq!(error, "Note.note_unwrap: generated adapter method collides with a model member");
+        let error = check_adapter_methods(&ir, model, &["noteUnwrap".into()]).unwrap_err();
+        assert!(error.contains("Note.noteUnwrap"), "{error}");
+        let error = check_adapter_methods(&ir, model, &["toJSON".into()]).unwrap_err();
+        assert!(error.contains("Note.toJSON"), "{error}");
+        assert!(check_adapter_methods(&ir, model, &["note_wrap".into(), "noteWrap".into()]).is_ok());
+    }
+
+    #[test]
+    fn a_language_section_of_adapters_needs_no_query_set() {
+        let section: LanguageSection = serde_json::from_value(serde_json::json!({
+            "field_adapters": [{"adapter": "a.b.v1", "install": "install", "value": "X", "module_functions": [{"name": "configure", "method": "configure", "stub": "(x: int) -> None"}]}],
+        })).unwrap();
+        assert!(section.query_set.is_empty() && section.source.is_empty() && section.field_adapters[0].module_functions.len() == 1);
+        assert!(serde_json::from_value::<LanguageSection>(serde_json::json!({"field_adapters": [{"adapter": "a", "install": "i", "value": "X", "extra": 1}]})).is_err());
+        let mut ir = adapter_ir();
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Note".into(), field: "note".into(), adapter: "a.b.v1".into(), options: serde_json::Value::Null });
+        assert!(!serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("options"));
+        ir.behavior.field_adapters[0].options = serde_json::json!({"prefix": "x"});
+        assert!(serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("options"));
     }
 
     fn hook_ir(binding: serde_json::Value) -> SchemaIr {
@@ -1360,12 +1518,45 @@ mod tests {
         newer.behavior.schema_contract = SCHEMA_CONTRACT;
         newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_VERSION.minor as u32 + 1;
         let error = check_requirements(&newer, &Artifact::default()).unwrap_err();
-        assert!(error.contains("schema contract 4.1 is newer than this engine (4.0)"), "{error}");
+        assert!(error.contains(&format!("schema contract {}.{} is newer than this engine ({SCHEMA_CONTRACT_VERSION})", SCHEMA_CONTRACT_VERSION.major, SCHEMA_CONTRACT_VERSION.minor + 1)), "{error}");
         let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir };
         let merged = merge_definition(data("a"), data("b")).unwrap();
         assert_eq!(merged.behavior.extension_data.len(), 2);
         let error = merge_definition(data("a"), data("a")).unwrap_err();
         assert!(error.contains("extension_data of a is declared twice"), "{error}");
+    }
+
+    #[test]
+    fn expression_records_set_the_major_that_an_older_engine_refuses() {
+        let stamped = |behavior: serde_json::Value, client_default: serde_json::Value| {
+            let mut name = serde_json::json!({"name": "name", "column": "name", "type": "string"});
+            if !client_default.is_null() { name["client_default"] = client_default; }
+            let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+                "models": [{"name": "User", "table": "users", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, name]}],
+                "behavior": behavior,
+            })).unwrap();
+            ir.stamp_expression_records();
+            ir
+        };
+        let assign = |value: serde_json::Value| serde_json::json!({"write_assignments": [{"source": "acme.lib", "model": "User", "field": "name", "on": ["update"], "value": value}]});
+        let hooked = |point| serde_json::json!({"hooks": [binding(point, Some("name"), "acme.lib.x")]});
+        let expr = serde_json::json!({"t": "scope", "name": "shop"});
+        let minor = |ir: &SchemaIr| ir.behavior.schema_contract_minor;
+        let none = serde_json::Value::Null;
+        assert_eq!(minor(&stamped(serde_json::json!({}), none.clone())), 0);
+        assert_eq!(minor(&stamped(assign(serde_json::json!("now")), none.clone())), 0);
+        assert_eq!(stamped(hooked(2), none.clone()).behavior.schema_contract, 0);
+        for (what, ir) in [
+            ("an expression default", stamped(serde_json::json!({}), serde_json::json!({"expr": expr}))),
+            ("a hook default", stamped(serde_json::json!({}), serde_json::json!({"hook": {"export": "acme.lib.x"}}))),
+            ("an expression assignment", stamped(assign(serde_json::json!({"expr": expr})), none.clone())),
+            ("a hook assignment", stamped(assign(serde_json::json!({"expr_hook": {"export": "acme.lib.x"}})), none.clone())),
+            ("a hook of point 5", stamped(hooked(5), none.clone())),
+            ("a hook of point 6", stamped(hooked(6), none.clone())),
+            ("a hook of point 7", stamped(hooked(7), none.clone())),
+        ] {
+            assert_eq!((ir.behavior.schema_contract, minor(&ir)), (SCHEMA_CONTRACT, 0), "{what}");
+        }
     }
 
     #[test]
@@ -1457,7 +1648,7 @@ mod tests {
         let merged = merge_definition(ir, checks).unwrap();
         assert_eq!((merged.behavior.model_views.len(), merged.behavior.result_checks.len()), (1, 1));
         let error = check_requirements(&SchemaIr { behavior: Requirements { schema_contract: SCHEMA_CONTRACT, schema_contract_minor: SCHEMA_CONTRACT_VERSION.minor as u32 + 1, ..Requirements::default() }, ..SchemaIr::default() }, &Artifact::default()).unwrap_err();
-        assert!(error.contains("schema contract 4.1 is newer than this engine (4.0)"), "{error}");
+        assert!(error.contains(&format!("schema contract {}.{} is newer than this engine ({SCHEMA_CONTRACT_VERSION})", SCHEMA_CONTRACT_VERSION.major, SCHEMA_CONTRACT_VERSION.minor + 1)), "{error}");
     }
 
     #[test]

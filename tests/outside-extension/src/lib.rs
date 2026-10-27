@@ -1,6 +1,6 @@
 // `pass-only` builds no hook, no state and no `init`.
 #![cfg_attr(feature = "pass-only", allow(dead_code, unused_macros))]
-use orm_contracts::{abi::{Arg, Context, Value}, extension::{capture_storage, Declaration, ModelView, ResultCheck, RowFilter}, ir::{ColType, FieldIr, SchemaIr}};
+use orm_contracts::{abi::{Arg, Context, Value}, extension::{capture_storage, Declaration, FieldStorage, ModelView, OwnerLink, ResultCheck, RowFilter}, ir::{ColType, FieldIr, ModelIr, OnDelete, RelKind, RelationIr, SchemaIr}};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const ATTRIBUTE: &str = "outside.tag";
@@ -19,6 +19,53 @@ fn tag(ir: &mut SchemaIr) -> Result<(), String> {
             model.fields.push(FieldIr { nullable: false, default: Some(label.into()), ..FieldIr::plain("tag", ColType::Text) });
         }
         if !found { return Err(format!("unknown model {}", d.model)); }
+    }
+    Ok(())
+}
+
+fn link(name: &str, target: &str, key: &str, foreign_key: bool) -> RelationIr {
+    RelationIr {
+        name: name.into(), kind: RelKind::One, target: target.into(), from: vec![key.into()], to: vec![key.into()],
+        foreign_key, on_delete: foreign_key.then_some(OnDelete::Cascade), on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
+    }
+}
+
+/// `@@outside.base(parent: "A", parentRef: "a", childRef: "b")` stores the fields of `A` in the table of `A` and the other fields in its own table; both share one key.
+fn base(ir: &mut SchemaIr) -> Result<(), String> {
+    let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == "outside.base").cloned().collect();
+    if declarations.is_empty() { return Ok(()); }
+    capture_storage(ir)?;
+    for d in declarations {
+        let argument = |key: &str| d.arguments.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned).ok_or_else(|| format!("@@outside.base on {}: {key} must be a non-empty string", d.model));
+        let (parent_name, parent_ref, child_ref) = (argument("parent")?, argument("parentRef")?, argument("childRef")?);
+        let at = |ir: &SchemaIr, name: &str| ir.models.iter().position(|m| m.name == name).ok_or_else(|| format!("unknown model {name}"));
+        let (child_at, parent_at) = (at(ir, &d.model)?, at(ir, &parent_name)?);
+        let parent: &ModelIr = &ir.models[parent_at];
+        let keys: Vec<&FieldIr> = parent.fields.iter().filter(|f| f.primary_key).collect();
+        let [root] = keys.as_slice() else { return Err(format!("{parent_name} needs one primary key")) };
+        if ir.models[child_at].fields.iter().any(|f| f.primary_key) { return Err(format!("{} takes its key from {parent_name}", d.model)); }
+        let mut key = (*root).clone();
+        (key.auto_increment, key.default, key.default_now, key.default_sql, key.unique, key.index) = (false, None, false, None, false, false);
+        let inherited: Vec<FieldIr> = parent.fields.iter().filter(|f| !f.primary_key).cloned().collect();
+        for f in &inherited {
+            let owner = ir.behavior.field_storage.iter().find(|s| s.model == parent_name && s.field == f.name).cloned();
+            ir.behavior.field_storage.push(FieldStorage {
+                model: d.model.clone(), field: f.name.clone(),
+                owner: owner.as_ref().map_or_else(|| parent_name.clone(), |s| s.owner.clone()),
+                column: owner.map_or_else(|| f.column.clone(), |s| s.column),
+            });
+        }
+        let child = &mut ir.models[child_at];
+        child.fields.insert(0, key.clone());
+        child.fields.extend(inherited);
+        child.relations.push(link(&parent_ref, &parent_name, &key.name, true));
+        ir.models[parent_at].relations.push(link(&child_ref, &d.model, &key.name, false));
+        let physical = &mut ir.behavior.storage.as_mut().ok_or("outside.base needs the captured storage")?.models;
+        physical.iter_mut().find(|m| m.name == parent_name).ok_or("the parent has no physical owner")?.relations.push(link(&child_ref, &d.model, &key.name, false));
+        let own = physical.iter_mut().find(|m| m.name == d.model).ok_or("the child has no physical owner")?;
+        own.fields.insert(0, key.clone());
+        own.relations.push(link(&parent_ref, &parent_name, &key.name, true));
+        ir.behavior.owner_links.push(OwnerLink { child: d.model.clone(), parent: parent_name.clone(), child_key: key.name.clone(), parent_key: key.name });
     }
     Ok(())
 }
@@ -55,6 +102,21 @@ fn fields(ir: &mut SchemaIr) -> Result<(), String> {
     Ok(())
 }
 
+const WRAPPED: &str = "outside.wrapped";
+const WRAPPED_ADAPTER: &str = "acme.outside.wrapped.v1";
+
+/// `@outside.wrapped("prefix")` adapts a Json field: the options of the adapter are the prefix.
+fn wrapped(ir: &mut SchemaIr) -> Result<(), String> {
+    use orm_contracts::extension::FieldAdapter;
+    let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == WRAPPED).cloned().collect();
+    for d in declarations {
+        let field = d.field.clone().ok_or_else(|| format!("@{WRAPPED} on {}: it needs a field", d.model))?;
+        let prefix = d.positional.first().and_then(|v| v.as_str()).ok_or_else(|| format!("{}.{field}: the prefix must be a string", d.model))?;
+        ir.behavior.field_adapters.push(FieldAdapter { model: d.model, field, adapter: WRAPPED_ADAPTER.into(), options: serde_json::json!({"prefix": prefix}) });
+    }
+    orm_contracts::extension::validate_field_adapters(ir)
+}
+
 /// The warning code of the view check.
 const SHAPE_CODE: &str = "acme.outside.shape";
 
@@ -89,8 +151,12 @@ const SOURCE: &str = "acme.outside";
 
 /// `@@outside.guard` binds the `acme.outside.*` hooks to a model that has the fields `text`, `start`, `end`, `shop_id` and `updated_by`:
 /// trim and non-empty on `text`, `start < end`, the request `user` as `updated_by` on update, and the default filter `shop_id == scope.shop`.
+/// A model that also has the text fields `first` and `last` gets the computed field `initials`.
+/// Optional text fields get expression records: `slug` (`lower(text)` on update), `stamp` and `editor` (expression hooks on update),
+/// `region` and `owner` (expression hooks as insert defaults), `secret` (sealed by hook 1, read back as the computed field `secret_plain`). `shop_id` and `updated_by` default to the request scope on insert.
+/// `touched_by` takes the request `user` on update through an expression assignment that reads the request scope.
 fn guard(ir: &mut SchemaIr) -> Result<(), String> {
-    use orm_contracts::{extension::{HookBinding, ReadDefault}, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
+    use orm_contracts::{extension::{HookBinding, ReadDefault}, ir::ClientDefaultIr, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
     let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == GUARD).cloned().collect();
     for d in declarations {
         let model = d.model.clone();
@@ -98,6 +164,10 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
         for name in ["text", "start", "end", "shop_id", "updated_by"] {
             if !m.fields.iter().any(|f| f.name == name) { return Err(format!("@@{GUARD} on {model}: the model needs a field {name}")); }
         }
+        let has_initials = ["first", "last"].iter().all(|n| m.fields.iter().any(|f| f.name == *n));
+        let has = |name: &str| m.fields.iter().any(|f| f.name == name);
+        let (has_slug, has_stamp, has_editor, has_region, has_owner, has_secret) = (has("slug"), has("stamp"), has("editor"), has("region"), has("owner"), has("secret"));
+        let has_touched = has("touched_by");
         let bind = |point: u8, field: Option<&str>, export: &str, dependencies: &[&str], reads_context: bool| HookBinding {
             source: SOURCE.into(), point, model: model.clone(), field: field.map(Into::into), export: export.into(),
             dependencies: dependencies.iter().map(|s| (*s).into()).collect(), reads_context,
@@ -108,10 +178,54 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
             bind(3, None, "acme.outside.ordered", &["start", "end"], false),
             bind(4, Some("updated_by"), "acme.outside.actor", &[], true),
         ]);
+        // A model with the text fields `first` and `last` also gets the computed field `initials`.
+        if has_initials {
+            let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
+            for m in models.filter(|m| m.name == model) { m.fields.push(FieldIr::plain("initials", ColType::Text)); }
+            ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: model.clone(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
+            ir.behavior.hooks.push(bind(5, Some("initials"), "acme.outside.initials", &["first", "last"], false));
+        }
+        let assign = |field: &str, value: AssignValue| WriteAssignment {
+            source: SOURCE.into(), model: model.clone(), field: field.into(), on: vec![WriteKind::Update], value, upsert: UpsertDefault::Drop,
+        };
+        if has_slug {
+            let lower = serde_json::json!({"t": "func", "name": "lower", "args": [{"t": "col", "path": [], "name": "text"}]});
+            ir.behavior.write_assignments.push(assign("slug", AssignValue::Expr(lower)));
+        }
+        for (present, field, export, reads_context) in [(has_stamp, "stamp", "acme.outside.label", false), (has_editor, "editor", "acme.outside.editor", true)] {
+            if !present { continue; }
+            ir.behavior.hooks.push(bind(6, Some(field), export, &[], reads_context));
+            ir.behavior.write_assignments.push(assign(field, AssignValue::ExprHook { export: export.into() }));
+        }
+        let mut defaults = vec![("shop_id", ClientDefaultIr::Expr(serde_json::json!({"t": "scope", "name": "shop"}))), ("updated_by", ClientDefaultIr::Expr(serde_json::json!({"t": "scope", "name": "user"})))];
+        for (present, field, export, reads_context) in [(has_region, "region", "acme.outside.region", false), (has_owner, "owner", "acme.outside.owner", true)] {
+            if !present { continue; }
+            ir.behavior.hooks.push(bind(7, Some(field), export, &[], reads_context));
+            defaults.push((field, ClientDefaultIr::Hook { export: export.into() }));
+        }
+        let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
+        for m in models.filter(|m| m.name == model) {
+            for (field, default) in &defaults {
+                if let Some(f) = m.fields.iter_mut().find(|f| f.name == *field) { f.client_default = Some(default.clone()); }
+            }
+        }
+        if has_secret {
+            let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
+            for m in models.filter(|m| m.name == model) { m.fields.push(FieldIr::plain("secret_plain", ColType::Text)); }
+            ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: model.clone(), field: "secret_plain".into(), dependencies: vec!["secret".into()] });
+            ir.behavior.hooks.extend([
+                bind(1, Some("secret"), "acme.outside.seal", &[], false),
+                bind(5, Some("secret_plain"), "acme.outside.unseal", &["secret"], false),
+            ]);
+        }
         ir.behavior.write_assignments.push(WriteAssignment {
             source: SOURCE.into(), model: model.clone(), field: "updated_by".into(), on: vec![WriteKind::Update],
             value: AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: UpsertDefault::Drop,
         });
+        // After the hook assignments: a request without a user fails on the hooks first.
+        if has_touched {
+            ir.behavior.write_assignments.push(assign("touched_by", AssignValue::Expr(serde_json::json!({"t": "scope", "name": "user"}))));
+        }
         ir.behavior.read_defaults.push(ReadDefault {
             source: SOURCE.into(), name: "tenant".into(), model,
             filter: Some(serde_json::json!({"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "shop_id"}, "r": {"t": "scope", "name": "shop"}})),
@@ -171,6 +285,25 @@ fn ordered(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
 fn actor(_: &State, _: &[Arg], ctx: &Context) -> Result<Value, String> {
     match ctx.get("user") { Some(Value::Text(user)) => Ok(Value::Text(user.clone())), _ => Err("no user in the request scope".into()) }
 }
+/// A computed field: the capital letters of two text fields.
+fn initials(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
+    let letter = |name| text(args, name).map(|s| s.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default());
+    Ok(Value::Text(letter("first")? + &letter("last")?))
+}
+/// Expression hooks (points 6 and 7): each returns the query IR of one text value.
+fn text_expr(value: &str) -> Value { Value::Json(serde_json::json!({"t": "text", "value": value}).to_string()) }
+fn label(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(text_expr("guarded")) }
+fn region(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(text_expr("eu")) }
+fn by_user(_: &State, _: &[Arg], ctx: &Context) -> Result<Value, String> {
+    match ctx.get("user") { Some(Value::Text(user)) => Ok(text_expr(&format!("by:{user}"))), _ => Err("no user in the request scope".into()) }
+}
+/// The stored form of `secret`: `enc:` and the reversed text. The reverse is not encryption; it makes the stored value differ from the plain one.
+fn seal(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Text(format!("enc:{}", text(args, "value")?.chars().rev().collect::<String>()))) }
+fn unseal(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
+    let sealed = text(args, "secret")?;
+    let body = sealed.strip_prefix("enc:").ok_or_else(|| format!("{sealed:?} is not sealed"))?;
+    Ok(Value::Text(body.chars().rev().collect()))
+}
 fn drops(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Int(DROPS.load(Ordering::SeqCst) as i64)) }
 fn fail(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Err("the hook failed".into()) }
 fn explode(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { panic!("the hook panicked") }
@@ -191,13 +324,16 @@ macro_rules! export {
             init = init;
             hooks {
                 "outside.prefix" => prefix, "outside.audit" => audit, "outside.context" => context, "outside.drops" => drops,
-                "acme.outside.trim" => trim, "acme.outside.nonempty" => nonempty, "acme.outside.ordered" => ordered, "acme.outside.actor" => actor,
+                "acme.outside.trim" => trim, "acme.outside.nonempty" => nonempty, "acme.outside.ordered" => ordered, "acme.outside.actor" => actor, "acme.outside.initials" => initials,
+                "acme.outside.seal" => seal, "acme.outside.unseal" => unseal, "acme.outside.label" => label, "acme.outside.region" => region, "acme.outside.editor" => by_user, "acme.outside.owner" => by_user,
                 "outside.fail" => fail, "outside.panic" => explode, "outside.echo" => echo, "outside.add" => add,
             };
+            ("acme.outside.base", base),
             ("acme.outside.tag", tag),
             ("acme.outside.fields", fields),
             ("acme.outside.view", view),
-            ("acme.outside.guard", guard)
+            ("acme.outside.guard", guard),
+            ("acme.outside.wrapped", wrapped)
         }
     };
 }
@@ -222,7 +358,7 @@ mod slice_one {
     /// Called by the ORM loader with readable ranges and a writable `out`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
-        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.view", super::view as PassFn), ("acme.outside.guard", super::guard as PassFn)];
+        let passes: &[(&str, PassFn)] = &[("acme.outside.base", super::base as PassFn), ("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.view", super::view as PassFn), ("acme.outside.guard", super::guard as PassFn), ("acme.outside.wrapped", super::wrapped as PassFn)];
         // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
         unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
     }

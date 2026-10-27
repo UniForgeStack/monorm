@@ -1,4 +1,4 @@
-//! Engine-managed writes for shared-primary-key model composition.
+//! Engine-managed writes for a model that stores its fields in several tables joined by shared primary keys.
 use crate::{
     db::{self, Executor, RowSet, Transaction},
     error::{query_err, Error, Result},
@@ -66,7 +66,7 @@ impl Insert {
     }
 }
 
-pub fn is_composed(schema: &Schema, model: &str) -> Result<bool> {
+pub fn is_multi_table(schema: &Schema, model: &str) -> Result<bool> {
     let m = schema.model(schema.model_idx(model).map_err(query_err)?);
     Ok(schema.owner_links.iter().any(|l| l.child == m.owner))
 }
@@ -132,7 +132,7 @@ pub fn prepare_insert(
     }
     if positions
         .iter()
-        .any(|p| logical.native.computed().contains(p))
+        .any(|p| logical.computed(*p))
     {
         return Err(Error::query("computed fields are read-only"));
     }
@@ -222,7 +222,7 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own
                 let (sql, args) = db::build(target.dialect, &statement);
                 let returned = exec.query(sql, args).await?;
                 if returned.len() != 1 {
-                    return Err(Error::query("composed insert must return one identity"));
+                    return Err(Error::query("multi-table insert must return one identity"));
                 }
                 identity = Some(returned.value(0, 0, step.key.value_type())?);
             }
@@ -235,7 +235,7 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own
             let returned = exec.query(sql, args).await?;
             if returned.len() != 1 {
                 return Err(Error::query(
-                    "composed insert could not read its stored row",
+                    "multi-table insert could not read its stored row",
                 ));
             }
             fetched.push(returned);
@@ -415,7 +415,7 @@ pub fn prepare_update(
         let position = logical.field_pos(&assignment.field).map_err(query_err)?;
         if position == logical.pk {
             return Err(Error::query(
-                "composed update cannot change the shared primary key",
+                "multi-table update cannot change the shared primary key",
             ));
         }
         let storage = logical.resolved_fields[position].storage;
@@ -458,7 +458,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
                 );
                 let (sql, args) = db::build(target.dialect, &delete);
                 if exec.execute(sql, args).await? != 1 {
-                    return Err(Error::query("captured composed identity disappeared"));
+                    return Err(Error::query("captured multi-table identity disappeared"));
                 }
             } else {
                 let mut writes = std::collections::BTreeMap::new();
@@ -481,7 +481,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
                 for statement in writes.into_values() {
                     let (sql, args) = db::build(target.dialect, &statement);
                     if exec.execute(sql, args).await? != 1 {
-                        return Err(Error::query("captured composed owner disappeared"));
+                        return Err(Error::query("captured multi-table owner disappeared"));
                     }
                 }
             }
@@ -507,7 +507,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
             let (sql, args) = db::build(target.dialect, &read);
             let row = exec.query(sql, args).await?;
             if row.len() != 1 {
-                return Err(Error::query("updated composed identity disappeared"));
+                return Err(Error::query("updated multi-table identity disappeared"));
             }
             returned.push(row);
         }
@@ -532,8 +532,8 @@ pub fn prepare_attach(
     fields: &[String],
     rows: Vec<Vec<Option<Value>>>,
 ) -> Result<Insert> {
-    if !is_composed(schema, model)? {
-        return Err(Error::query("attach requires a composed child model"));
+    if !is_multi_table(schema, model)? {
+        return Err(Error::query("attach requires a child model of several tables"));
     }
     let logical = schema.model(schema.model_idx(model).map_err(query_err)?);
     for field in fields {
@@ -557,10 +557,10 @@ pub fn prepare_attach(
         .collect();
     let mut insert = prepare_insert(schema, target, model, &fields, rows)?;
     for row in &mut insert.rows {
-        let mut leaf = row.pop().expect("prepared composed leaf");
+        let mut leaf = row.pop().expect("prepared multi-table leaf");
         // Complete creates place a supplied shared key at the root. Attach places
         // that same validated value directly in the sole child statement.
-        let root = row.first().expect("composed ancestor");
+        let root = row.first().expect("multi-table ancestor");
         let value = root
             .fields
             .iter()

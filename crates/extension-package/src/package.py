@@ -27,10 +27,7 @@ scope, name = ident.split(".", 1)
 npm_name = f"@{scope}/{name}"
 raw = (root / "orm-extension.toml").read_bytes()
 digest = hashlib.sha256(raw).hexdigest()
-library = Path(config["library"])
-lib_name = manifest["library"]
-if not Path(lib_name).suffix:
-    lib_name = ("" if sys.platform == "win32" else "lib") + lib_name + library.suffix
+files = config["files"]
 
 
 def copy_runtime(language, destination):
@@ -48,7 +45,8 @@ def copy_runtime(language, destination):
     text = re.sub(rf'^(?:export const )?{constant}\s*=.*\n?', "", text, flags=re.M)
     entry.write_text(text + f'\n{constant} = "{digest}"\n' if language == "python" else text + f'\nexport const {constant} = "{digest}";\n')
     (destination / "orm-extension.toml").write_bytes(raw)
-    shutil.copy2(library, destination / lib_name)
+    for file in files:
+        shutil.copy2(file["source"], destination / file["name"])
 
 
 with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
@@ -59,8 +57,10 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
     info = stage / f"{module}-{version}.dist-info"
     info.mkdir()
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\nRequires-Python: >=3.11\n")
-    tag = "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_")
-    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: orm-extension-package\nRoot-Is-Purelib: false\nTag: {tag}\n")
+    # `any`: the wheel holds the libraries of all platforms, and the loader picks its own file.
+    tag = "py3-none-any" if config["tag"] == "any" else "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_")
+    purelib = "true" if config["tag"] == "any" else "false"
+    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: orm-extension-package\nRoot-Is-Purelib: {purelib}\nTag: {tag}\n")
     (info / "entry_points.txt").write_text(f"[orm.extensions]\n{ident} = {module}\n")
     records = []
     wheel = out / f"{module}-{version}-{tag}.whl"
@@ -83,10 +83,13 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
     copy_runtime("typescript", npm)
     sources = sorted(str(p) for p in npm.rglob("*.ts"))
     subprocess.run([config["tsc"], *sources, "--outDir", str(npm), "--module", "ESNext", "--moduleResolution", "Bundler", "--target", "ES2022", "--declaration", "--noCheck"], check=True)
+    # No `os` or `cpu` field: the package holds the libraries of all platforms.
+    listed = sorted(p.relative_to(npm).as_posix() for p in npm.rglob("*") if p.is_file())
     (npm / "package.json").write_text(json.dumps({
         "name": npm_name, "version": version, "type": "module",
         "main": "./index.js", "types": "./index.d.ts",
         "exports": {".": {"types": "./index.d.ts", "default": "./index.js"}},
+        "files": listed,
         "orm": {"extension": ident},
     }, indent=2) + "\n")
     if (out / "npm").exists():

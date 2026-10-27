@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use crate::ir::{ColType, EnumStorage, FieldIr, RelKind, RelationIr, SchemaIr, TypeFieldIr, TypeIr};
-use super::{groups, has_server_value, sub_has_default, type_requires};
+use super::{groups, has_server_value_in, sub_has_default, type_requires};
 use crate::schema::{Model, Schema};
 
 pub struct Generated {
@@ -89,11 +89,17 @@ fn value_type(f: &FieldIr) -> String {
     }
 }
 
-fn file_value_type(m: &Model, f: &FieldIr) -> String {
-    if m.is_file_field(&f.name) {
-        return if f.nullable { "Reference | None".into() } else { "Reference".into() };
+/// A Python literal of a JSON value (adapter options).
+fn py_literal(v: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match v {
+        Value::Null => "None".into(),
+        Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        Value::Number(n) => n.to_string(),
+        Value::String(t) => serde_json::to_string(t).unwrap_or_default(),
+        Value::Array(a) => format!("[{}]", a.iter().map(py_literal).collect::<Vec<_>>().join(", ")),
+        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, v)| format!("{}: {}", serde_json::to_string(k).unwrap_or_default(), py_literal(v))).collect::<Vec<_>>().join(", ")),
     }
-    value_type(f)
 }
 
 /// The stub bases of a model: the type models that extend directly into it, descendants first, else `Model`.
@@ -197,6 +203,9 @@ pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str) -> Result<Generate
 pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &super::Options) -> Result<Generated, String> {
     let query_sets = options.query_sets(ir, schema, ':')?;
     let model_methods = options.model_methods(ir, schema, ':')?;
+    let adapters = super::Adapters::resolve(options, ir, "python")?;
+    let field_type = |m: &Model, f: &FieldIr| adapters.value(m, f, "None").unwrap_or_else(|| value_type(f));
+    let input_type = |m: &Model, f: &FieldIr| adapters.input(m, f, "None").unwrap_or_else(|| value_type(f));
     // A model view takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
     // which the stub cannot combine with the view's `QuerySet[View]`, so the stub types its methods as `Any`.
     let inherits = |model: &str| query_sets.get(model).is_some_and(|q| q.2);
@@ -215,8 +224,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     exported.extend(names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]));
     exported.extend(names.iter().map(|n| format!("{n}QuerySet")));
     exported.extend(ir.behavior.type_models.iter().map(|t| format!("{}Fields", t.name)));
-    let composed_names: Vec<_> = schema.models.iter().filter(|m| m.pk_field().hints.get("composition.child").is_some_and(|v| v == "true")).map(|m| &m.ir.name).collect();
-    exported.extend(composed_names.iter().map(|n| format!("{n}Attach")));
+    let attach_names: Vec<_> = schema.models.iter().filter(|m| schema.attach_fields(m).is_some()).map(|m| &m.ir.name).collect();
+    exported.extend(attach_names.iter().map(|n| format!("{n}Attach")));
     let all = exported.iter().map(|n| format!("    \"{n}\",\n")).collect::<String>();
 
     // -- models.py -------------------------------------------------------------------
@@ -238,7 +247,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
     // the extensions some model uses, with the models that use each, in chain order
     let model_exts: Vec<(&str, Vec<(usize, &super::ExtensionCode)>)> = names.iter().map(|n| (*n, options.model_extensions(ir, n))).filter(|(_, e)| !e.is_empty()).collect();
-    let used_exts: BTreeSet<usize> = model_exts.iter().flat_map(|(_, e)| e.iter().map(|(i, _)| *i)).chain(options.extensions.iter().enumerate().filter(|(_, e)| e.runtime_module.is_some()).map(|(i, _)| i)).collect();
+    let used_exts: BTreeSet<usize> = model_exts.iter().flat_map(|(_, e)| e.iter().map(|(i, _)| *i)).chain(options.extensions.iter().enumerate().filter(|(_, e)| e.runtime_module.is_some() && !e.members.query_set.is_empty()).map(|(i, _)| i)).collect();
     let ext_base = options.ext_import.as_deref().unwrap_or("orm_ext");
     let mut ext_kwargs = String::new();
     if !used_exts.is_empty() {
@@ -263,17 +272,21 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     writeln!(py, "_models = define(_SCHEMA, module=__name__, required_capabilities=(\"reference-loading\",){ext_kwargs})").unwrap();
     #[cfg(not(feature = "reference-loading"))]
     writeln!(py, "_models = define(_SCHEMA, module=__name__{ext_kwargs})").unwrap();
-    if !ir.behavior.file_fields.is_empty() {
-        py.push_str("from orm_file_storage import FileField as _FileField\nfrom orm_file_storage.model import install_model as _install_file_model\n\n_FILE_ADAPTERS = []\n");
+    for (i, u) in adapters.uses.iter().enumerate() {
+        writeln!(py, "from {} import {} as _fa{i}", u.module("python"), u.runtime.install).unwrap();
+        writeln!(py, "_FA{i} = []").unwrap();
         for m in &schema.models {
-            if m.file_fields.is_empty() { continue; }
-            let fields = m.file_fields.iter().map(|f| {
-                let name = &m.fields()[f.position].name;
-                format!("{name:?}: _FileField({name:?}, {:?}, {})", f.storage, if f.nullable { "True" } else { "False" })
-            }).collect::<Vec<_>>().join(", ");
-            writeln!(py, "_FILE_ADAPTERS.append(_install_file_model(_models[{:?}], {{{fields}}}))", m.ir.name).unwrap();
+            let fields: Vec<String> = m.field_adapters.iter().filter(|a| a.adapter == u.id).map(|a| {
+                let name = &m.fields()[a.position].name;
+                format!("{name:?}: ({}, {})", py_literal(&a.options), if a.nullable { "True" } else { "False" })
+            }).collect();
+            if fields.is_empty() { continue; }
+            writeln!(py, "_FA{i}.append(_fa{i}(_models[{:?}], {{{}}}))", m.ir.name, fields.join(", ")).unwrap();
         }
-        py.push_str("\ndef configure_file_storage(registry):\n    for adapter in _FILE_ADAPTERS:\n        adapter.configure(registry)\n\n");
+        for function in &u.runtime.module_functions {
+            writeln!(py, "\ndef {}(*args, **kwargs):\n    for adapter in _FA{i}:\n        adapter.{}(*args, **kwargs)", function.name, function.method).unwrap();
+        }
+        py.push('\n');
     }
     for n in enums.iter().chain(&type_names).chain(&names) {
         writeln!(py, "{n} = _models[\"{n}\"]").unwrap();
@@ -296,7 +309,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     if !type_stubs.is_empty() { writeln!(py, "{} = Model", type_stubs.join(" = ")).unwrap(); }
     let mut dicts: Vec<String> =
         names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]).collect();
-    dicts.extend(composed_names.iter().map(|n| format!("{n}Attach")));
+    dicts.extend(attach_names.iter().map(|n| format!("{n}Attach")));
     if !dicts.is_empty() { writeln!(py, "{} = dict\n", dicts.join(" = ")).unwrap(); }
     writeln!(py, "__all__ = [\n{all}]").unwrap();
 
@@ -371,13 +384,15 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let output = if method.output.is_some() { "str" } else { "None" };
             writeln!(body, "    @staticmethod\n    def {}(value: str) -> {output}: ...", method.name).unwrap();
         }
-        for file in &m.file_fields {
-            let field = &m.fields()[file.position].name;
-            writeln!(body, "    async def {field}_signed_url(self, *, expires_in: int = 300) -> str: ...\n    def {field}_open(self) -> AsyncIterator[bytes]: ...").unwrap();
+        for a in &m.field_adapters {
+            let Some((_, u)) = adapters.of(&a.adapter) else { continue };
+            for member in &u.runtime.members {
+                writeln!(body, "    {}", orm_contracts::extension::expand_adapter_template(member, "python", &m.fields()[a.position].name)).unwrap();
+            }
         }
         let inherited = type_model_lines(type_models, name, false);
         for f in m.fields().iter().filter(|f| f.nested.is_none()) {
-            let line = format!("{}: f.{}[{}]", f.name, field_class(f), file_value_type(m, f));
+            let line = format!("{}: f.{}[{}]", f.name, field_class(f), field_type(m, f));
             let clash = inherited.iter().any(|(n, l)| *n == f.name && *l != line);
             writeln!(body, "    {line}{}", if clash { "  # type: ignore[assignment]" } else { "" }).unwrap();
         }
@@ -426,7 +441,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
 
         writeln!(body, "class _{name}Path(RelationPath[{name}]):").unwrap();
         for f in m.fields().iter().filter(|f| f.nested.is_none()) {
-            writeln!(body, "    {}: ColumnRef[{}]", f.name, file_value_type(m, f)).unwrap();
+            writeln!(body, "    {}: ColumnRef[{}]", f.name, field_type(m, f)).unwrap();
         }
         for g in &groups {
             writeln!(body, "    {}: _{}Ref", g.name, g.ty).unwrap();
@@ -457,18 +472,17 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
             let _ = position;
-            let t = file_value_type(m, f);
-            let t = if m.is_file_field(&f.name) { format!("{t} | Upload") } else { t };
+            let t = input_type(m, f);
             match belongs(&f.name) {
                 Some(r) => {
                     let target = if f.nullable { format!("{} | None", r.target) } else { r.target.clone() };
-                    if !f.nullable && !has_server_value(f) && f.client_default.is_none() {
+                    if !f.nullable && !has_server_value_in(schema, m, f) && f.client_default.is_none() {
                         writeln!(body, "    # One of {} / {} is required (checked at runtime).", f.name, r.name).unwrap();
                     }
                     writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap();
                     if last(r, &f.name) { writeln!(body, "    {}: NotRequired[{target}]", r.name).unwrap(); }
                 }
-                None if f.nullable || has_server_value(f) || f.client_default.is_some() => writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap(),
+                None if f.nullable || has_server_value_in(schema, m, f) || f.client_default.is_some() => writeln!(body, "    {}: NotRequired[{t}]", f.name).unwrap(),
                 None => writeln!(body, "    {}: {t}", f.name).unwrap(),
             }
         }
@@ -476,13 +490,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let t = or_none(format!("{} | {}Input", g.ty, g.ty), g.nullable);
             if g.nullable || !type_requires(ir, g.ty) { writeln!(body, "    {}: NotRequired[{t}]", g.name).unwrap(); } else { writeln!(body, "    {}: {t}", g.name).unwrap(); }
         }
-        if composed_names.contains(&&m.ir.name) {
+        if attach_names.contains(&&m.ir.name) {
             writeln!(body, "\nclass {name}Attach(TypedDict):").unwrap();
-            let local: Vec<_> = m.fields().iter().filter(|f| f.hints.get("composition.local").is_some_and(|v| v == "true")).collect();
+            let local: Vec<_> = schema.attach_fields(m).unwrap_or_default().into_iter().map(|p| &m.fields()[p]).collect();
             if local.is_empty() { writeln!(body, "    pass").unwrap(); }
             for field in local {
                 let ty = value_type(field);
-                let ty = if field.nullable || has_server_value(field) { format!("NotRequired[{ty}]") } else { ty };
+                let ty = if field.nullable || has_server_value_in(schema, m, field) { format!("NotRequired[{ty}]") } else { ty };
                 writeln!(body, "    {}: {ty}", field.name).unwrap();
             }
         }
@@ -490,10 +504,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
             #[cfg(feature = "composition")]
             if m.native.computed().contains(&position) { continue; }
-            let t = file_value_type(m, f);
+            let t = input_type(m, f);
             let expression = !m.hooks.as_ref().is_some_and(|h| h.required.contains(&position));
-            let expression = expression && !m.is_file_field(&f.name);
-            let t = if m.is_file_field(&f.name) { format!("{t} | Upload") } else { t };
+            let expression = expression && m.adapter_for(&f.name).is_none();
             if expression { writeln!(body, "    {}: {t} | Expression[{t}]", f.name).unwrap(); }
             else { writeln!(body, "    {}: {t}", f.name).unwrap(); }
             if let Some(r) = belongs(&f.name).filter(|r| last(r, &f.name)) {
@@ -511,7 +524,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
             let _ = position;
-            let t = file_value_type(m, f);
+            let t = field_type(m, f);
             if f.primary_key {
                 writeln!(body, "    {}: Required[{t}]", f.name).unwrap();
             } else {
@@ -532,7 +545,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             if m.native.computed().contains(&position) { continue; }
             #[cfg(not(feature = "composition"))]
             let _ = position;
-            writeln!(body, "    {}: {}", f.name, file_value_type(m, f)).unwrap();
+            writeln!(body, "    {}: {}", f.name, field_type(m, f)).unwrap();
             if let Some(r) = belongs(&f.name).filter(|r| last(r, &f.name)) {
                 writeln!(body, "    {}: {}", r.name, r.target).unwrap();
             }
@@ -546,7 +559,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             let literal = default_names.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", ");
             writeln!(body, "    def without_defaults(self, *names: Literal[{literal}]) -> Self: ...  # type: ignore[override]").unwrap();
         }
-        if composed_names.contains(&&m.ir.name) {
+        if attach_names.contains(&&m.ir.name) {
             let key_type = value_type(m.pk_field());
             writeln!(body, "    async def attach(self, parent_id: {key_type}, values: {name}Attach) -> {name}: ...  # type: ignore[override]").unwrap();
         }
@@ -674,9 +687,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     if !query_sets.is_empty() || !used_exts.is_empty() || !model_methods.is_empty() {
         pyi.push('\n');
     }
-    if !ir.behavior.file_fields.is_empty() {
-        pyi.push_str("from collections.abc import AsyncIterator\nfrom orm_file_storage import Reference, Registry as StorageRegistry, Upload\n\ndef configure_file_storage(registry: StorageRegistry) -> None: ...\n\n");
+    for u in &adapters.uses {
+        for line in &u.runtime.imports { writeln!(pyi, "{line}").unwrap(); }
     }
+    for u in &adapters.uses {
+        for function in &u.runtime.module_functions { writeln!(pyi, "\ndef {}{}: ...", function.name, function.stub).unwrap(); }
+    }
+    if !adapters.uses.is_empty() { pyi.push('\n'); }
     pyi.push_str(&body);
     writeln!(pyi, "__all__ = [\n{all}]").unwrap();
     Ok(Generated { module: py, stub: pyi })
@@ -691,7 +708,7 @@ pub fn facade(unit: &crate::dsl::SchemaUnit, shared_path: &str, stub_import: &st
     }
     for name in &unit.models {
         names.extend([name.clone(), format!("{name}Insert"), format!("{name}Update"), format!("{name}UpdateRow"), format!("{name}QuerySet")]);
-        if schema.models.iter().any(|m| m.ir.name == *name && m.pk_field().hints.get("composition.child").is_some_and(|v| v == "true")) { names.push(format!("{name}Attach")); }
+        if schema.models.iter().any(|m| m.ir.name == *name && schema.attach_fields(m).is_some()) { names.push(format!("{name}Attach")); }
     }
     let path = serde_json::to_string(shared_path).unwrap();
     let exports = serde_json::to_string(&names).unwrap();

@@ -233,10 +233,12 @@ A field owner must be the local owner or an ancestor.
 Inherited scalar reads, projections and filters use ordinary SQL through those prepared owners.
 Inherited relation links, `outer()` and `distinct(on=...)` on inherited columns need an expanded host primitive.
 
-Writes across owner tables belong to `orm_engine::composed`, the executor of the `model-composition` package.
+Writes across owner tables belong to `orm_engine::multi_table`.
+It is in every build, so any extension can write a two-table model with these records; `tests/outside-extension` does so.
 It plans creates, attaches, filtered updates and deletes, and each runs in one transaction or savepoint.
-`update_many` on a composed model is rejected.
+`update_many` on a multi-table model is rejected.
 Ordinary model writes reject inherited storage instead of writing nonexistent columns.
+Code generation and both runtimes derive the child models, their own fields and the key default from `behavior.owner_links` and `behavior.field_storage`; a pass writes no hint for them.
 The language APIs of these features are in [model-composition.md](../extensions/model-composition.md), [proxy-models.md](../extensions/proxy-models.md) and [selection-and-defaults.md](../schema/selection-and-defaults.md).
 
 ## Native behavior profiles
@@ -260,11 +262,13 @@ Null is rejected unless a field rule explicitly sets `allow_null: true`, in whic
 Record dependencies require all non-null values whenever any dependency is updated; partial records are rejected.
 Raw SQL bypasses ORM write validation.
 
-Computed fields are read-only and depend on one stored scalar string field.
+A `string_computed` field is read-only and depends on one stored scalar string field.
 Projection loads that dependency; model and returning shapes reuse its selected value.
 Computation occurs inside the existing native call before materialization, without language callbacks or hidden queries.
 NULL dependencies produce NULL.
 Native-only computations cannot be used in SQL filters, ordering, grouping, expressions, conflict targets or CTE outputs.
+A point-5 hook field is read-only too, and SQL cannot use it.
+It depends on the fields that its binding lists (see [Read and expression hooks](#read-and-expression-hooks-points-5-to-7)).
 Nested/cyclic computed dependencies require an expanded profile and currently fail at build time.
 Relation-dependent computation is not supported by this primitive.
 
@@ -369,9 +373,34 @@ It also shows the three optional keys of a field attribute in `orm-extension.tom
 `member = false` makes the field no model member: lowering drops the field and keeps its declaration for the pass.
 `identities = true` makes a schema that uses the attribute need model identities (`orm identities`).
 
+### Read and expression hooks (points 5 to 7)
+
+Point 5 gives a computed field.
+The binding names the field and its `dependencies`, which are stored fields of any type.
+The field is a result field of the model: a write cannot set it, and SQL cannot use it.
+A read selects the dependencies only when it asks for the computed field, and the host calls the hook for each row.
+A write that returns the row gives NULL for the computed field. Read the row again to get the value.
+
+Points 6 and 7 give an expression, not a value.
+The hook returns a `json` value that holds a query IR expression.
+A point-6 hook serves a write assignment of `AssignValue::ExprHook`: an update assigns the expression to the field.
+A point-7 hook serves a field with `ClientDefaultIr::Hook`: an insert plans the expression for each row that omits the value.
+`AssignValue::Expr` and `ClientDefaultIr::Expr` store such an expression in the IR, with no hook.
+The expression has no parameters, no outer query and no `EXCLUDED` row.
+Only a point-6 expression or an `AssignValue::Expr` can name the columns of the row.
+An assignment expression reads the row as it was before the update.
+An update that sets `text` and has `slug = lower(text)` stores the lower case of the old `text`.
+
+A hook of point 6 or 7 with `reads_context = false` runs once when the schema is generated.
+The IR then stores its expression as `Expr`, and `define()` opens no library for it.
+A hook that reads the context runs for each statement.
+
+Schema contract 4.0 holds these records. An engine of an older major refuses an IR that has one of them or a hook of point 5, 6 or 7 with the "newer than this engine" message.
+
 ## Installable packages
 
 `orm-extension-package package <crate dir> --out <dir>` builds one extension crate for the host platform.
+The `library` and `assemble` commands build one package for 3 platforms; see [Extension packages for 3 platforms](optional-packaging.md#extension-packages-for-3-platforms).
 The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `orm-extension.toml` with `abi` and `library`.
 The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
 Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.

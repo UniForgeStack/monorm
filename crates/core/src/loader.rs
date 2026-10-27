@@ -220,7 +220,44 @@ impl Plan {
         ir.behavior.lowered_models = ir.models.iter().map(|m| m.name.clone()).collect();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
         ir.behavior.extensions = self.manifests.iter().filter(|m| !m.is_dynamic()).map(|m| (m.id.clone(), m.version.clone())).collect();
-        validate_requirements(ir, &self.manifests, language)
+        validate_requirements(ir, &self.manifests, language)?;
+        self.evaluate_expression_hooks(ir)?;
+        ir.stamp_expression_records();
+        Ok(())
+    }
+
+    /// Calls each expression hook (point 6 or 7) of a library that reads no context once, with `init` of its extension,
+    /// and stores the expression in the record. `define()` then loads no library for the hook.
+    fn evaluate_expression_hooks(&self, ir: &mut SchemaIr) -> Result<(), String> {
+        use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+        let (once, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut ir.behavior.hooks).into_iter()
+            .partition(|h| matches!(h.point, 6 | 7) && !h.reads_context && self.dynamic.iter().any(|d| d.manifest.id == h.source));
+        ir.behavior.hooks = kept;
+        let mut states: BTreeMap<String, (Library, State)> = BTreeMap::new();
+        for hook in once {
+            let at = format!("{}.{}", hook.model, hook.field.as_deref().unwrap_or_default());
+            if !states.contains_key(&hook.source) {
+                let library = self.library(&hook.source)?;
+                let state = library.init(ir.behavior.extension_data.get(&hook.source).unwrap_or(&serde_json::Value::Null))?;
+                states.insert(hook.source.clone(), (library, state));
+            }
+            let (_, state) = &states[&hook.source];
+            let json = match state.call(&hook.export, &[], &Context::default())? {
+                Value::Json(text) => serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("{at}: hook {} returned json that does not parse: {e}", hook.export))?,
+                other => return Err(format!("{at}: hook {} must return json (query IR), not {other:?}", hook.export)),
+            };
+            let (columns, what) = if hook.point == 6 { (true, "write assignment") } else { (false, "expression default") };
+            crate::writes::parse_expr(&json, columns).map_err(|e| format!("{at}: the {what} hook {} of {}: {e}", hook.export, hook.source))?;
+            if hook.point == 6 {
+                let record = ir.behavior.write_assignments.iter_mut()
+                    .find(|a| a.source == hook.source && a.model == hook.model && Some(&a.field) == hook.field.as_ref() && a.value == (AssignValue::ExprHook { export: hook.export.clone() }));
+                record.expect("validated binding names a record").value = AssignValue::Expr(json);
+            } else {
+                let field = ir.models.iter_mut().find(|m| m.name == hook.model).and_then(|m| m.fields.iter_mut().find(|f| Some(&f.name) == hook.field.as_ref()));
+                field.expect("validated binding names a field").client_default = Some(ClientDefaultIr::Expr(json));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -338,6 +375,10 @@ pub struct State { native: Arc<Native>, id: String, raw: *mut c_void }
 /// A hook that `State::hook` resolved by name. It holds the library, so the pointer stays valid, and only the states of that library call it.
 #[derive(Clone)]
 pub struct Hook { native: Arc<Native>, call: HookFn, name: String }
+
+impl Hook {
+    pub fn name(&self) -> &str { &self.name }
+}
 
 // SAFETY: a state is `Send + Sync` by the ABI (see `orm_contracts::abi`): the host may call the hooks of one state
 // from several threads at once and drop it on another thread. `raw` is the only field that is not `Send + Sync` by itself.
@@ -648,7 +689,7 @@ mod tests {
         let dir = scratch("manifest");
         let (_, path) = install(&dir, "acme.audit", TAG);
         assert!(read_manifest("acme.other", &path).err().unwrap().contains("describes acme.audit"));
-        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 3\nhost_contract = 1\nlanguages = []\ndatabases = []\n").unwrap();
+        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 4\nhost_contract = 1\nlanguages = []\ndatabases = []\n").unwrap();
         assert!(check_library(&read_manifest("acme.audit", &path).unwrap()).err().unwrap().contains("no `abi`"));
         assert!(read_manifest("acme.audit", &dir.join("gone.toml")).err().unwrap().contains("gone.toml"));
         std::fs::remove_dir_all(&dir).ok();
@@ -692,15 +733,16 @@ mod tests {
     #[test]
     fn a_manifest_of_a_later_release_fails_only_for_a_package_that_the_compile_selects() {
         // The later release adds a key to the manifest, or to one of its attributes.
-        for (name, extra) in [("later", format!("future_field = true\n{KIT}")), ("later-attribute", format!("{KIT}field_type = \"Money\"\nfuture_key = true\n"))] {
+        let later = format!("{}.{}", SCHEMA_CONTRACT_VERSION.major, SCHEMA_CONTRACT_VERSION.minor + 1);
+        for (name, extra) in [("later", format!("future_field = true\n{KIT}")), ("later-attribute", format!("{KIT}field_type = \"Money\"\nfuture_key = true\n")), ("later-adapters", format!("{KIT}\n[python]\nfield_adapters = [{{ adapter = \"a.b.v1\", install = \"install\", value = \"X\" }}]\n"))] {
             let dir = scratch(name);
             let (_, newer) = install(&dir.join("b"), "other.kit", &extra);
-            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"4.0\"", "schema_contract = \"4.1\"")).unwrap();
+            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"4.0\"", &format!("schema_contract = \"{later}\""))).unwrap();
             let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), newer)];
             assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
             for selected in [select(&available, &used("kit"), &[]), select(&available, &BTreeSet::new(), &["other.kit".into()])] {
                 let error = selected.err().unwrap();
-                assert!(error.contains("other.kit") && error.contains("schema contract 4.1") && error.contains("schema contract 4.0") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
+                assert!(error.contains("other.kit") && error.contains(&format!("schema contract {later}")) && error.contains(&format!("schema contract {SCHEMA_CONTRACT_VERSION}")) && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
             }
             std::fs::remove_dir_all(&dir).ok();
         }

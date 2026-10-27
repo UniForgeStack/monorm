@@ -41,6 +41,8 @@ mod nested;
 mod update;
 use update::RowUpdate;
 
+const COMPUTED_READ_ONLY_USE: &str = "computed fields cannot be filtered, ordered, aggregated, or used in expressions";
+const COMPUTED_READ_ONLY: &str = "computed fields are read-only";
 const ALIAS_PLACES: &str = "alias() marks another related row in a filter condition; it works only in filter() and exclude()";
 
 /// A `select_related` object inside each row: its columns start at `start` and it is
@@ -104,6 +106,8 @@ pub struct PrefetchPlan {
     pub output: Output,
     #[cfg(feature = "composition")]
     pub computations: Vec<crate::behavior::Computation>,
+    /// Computed fields of hook point 5, filled after the statement returns.
+    pub computed: Vec<crate::hooks::Computed>,
     pub children: Vec<PrefetchPlan>,
 }
 
@@ -139,6 +143,8 @@ pub struct SelectPlan {
     pub filtered: bool,
     #[cfg(feature = "composition")]
     pub computations: Vec<crate::behavior::Computation>,
+    /// Computed fields of hook point 5, filled after the statement returns.
+    pub computed: Vec<crate::hooks::Computed>,
     pub prefetch: Vec<PrefetchPlan>,
 }
 
@@ -154,10 +160,8 @@ pub enum Plan {
     Delete(DeleteStatement, Option<Returned>),
     /// The model and column types of the returned rows when the insert has `RETURNING`.
     Insert(InsertStatement, Option<(usize, Vec<ValueType>)>),
-    #[cfg(feature = "model-composition")]
-    ComposedInsert(Box<crate::composed::Insert>),
-    #[cfg(feature = "model-composition")]
-    ComposedMutation(Box<crate::composed::Mutation>),
+    MultiTableInsert(Box<crate::multi_table::Insert>),
+    MultiTableMutation(Box<crate::multi_table::Mutation>),
 }
 
 /// What a bound value is compared with or assigned to: its type drives the conversion
@@ -946,18 +950,17 @@ impl<'s> Planner<'s> {
             Operation::Update(q) => {
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
-                #[cfg(feature = "model-composition")]
-                if crate::composed::is_composed(schema, &q.model)? {
+                if crate::multi_table::is_multi_table(schema, &q.model)? {
                     let mut select: Select = serde_json::from_value(serde_json::json!({"model":q.model,"without_defaults":q.without_defaults,"without_root_filter":q.without_root_filter})).map_err(|e| query_err(e.to_string()))?;
                     select.filters = q.filters.clone(); select.with = q.with.clone();
                     let mut matched = p.build_select(&select)?.stmt;
                     let prior_joins = p.joins.len();
-                    let expressions = p.composed_update_values(q)?;
+                    let expressions = p.multi_table_update_values(q)?;
                     for (scope, on) in p.joins.iter().skip(prior_joins) {
                         matched.join_as(JoinType::LeftJoin, Alias::new(p.model(scope.model).table()), Alias::new(&scope.alias), on.clone());
                     }
                     if let Some(with) = p.with_clause(&q.with)? { matched.with_cte(with); }
-                    return Ok(Plan::ComposedMutation(Box::new(crate::composed::prepare_update(schema, target, q, params, expressions, matched)?)));
+                    return Ok(Plan::MultiTableMutation(Box::new(crate::multi_table::prepare_update(schema, target, q, params, expressions, matched)?)));
                 }
                 let (mut stmt, types) = p.update(q)?;
                 if let Some(w) = p.with_clause(&q.with)? {
@@ -972,9 +975,8 @@ impl<'s> Planner<'s> {
                 }
             }
             Operation::Delete(q) => {
-                #[cfg(feature = "model-composition")]
-                if crate::composed::is_composed(schema, &q.model)? {
-                    return Ok(Plan::ComposedMutation(Box::new(crate::composed::prepare_delete(schema, target, q, params)?)));
+                if crate::multi_table::is_multi_table(schema, &q.model)? {
+                    return Ok(Plan::MultiTableMutation(Box::new(crate::multi_table::prepare_delete(schema, target, q, params)?)));
                 }
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
@@ -1652,10 +1654,8 @@ impl<'s> Planner<'s> {
             }
             model = target;
         }
-        #[cfg(feature = "composition")]
         self.reject_computed(self.model(model), name)?;
-        #[cfg(feature = "composition")]
-        if self.model(model).resolved_fields[self.model(model).field_pos(name).map_err(query_err)?].storage.owner != self.model(model).owner {
+        if self.model(model).has_foreign_storage && self.model(model).resolved_fields[self.model(model).field_pos(name).map_err(query_err)?].storage.owner != self.model(model).owner {
             return Err(Error::query("outer() on inherited storage requires an explicit owner projection"));
         }
         Ok((alias, self.model(model).field(name).map_err(query_err)?))
@@ -1676,10 +1676,9 @@ impl<'s> Planner<'s> {
         Ok(SExpr::SubQuery(None, Box::new(sub.into())))
     }
 
-    #[cfg(feature = "composition")]
     fn reject_computed(&self, model: &Model, name: &str) -> Result<()> {
-        if model.native.computed().contains(&model.field_pos(name).map_err(query_err)?) {
-            return Err(Error::query("native computed fields cannot be filtered, ordered, aggregated, or used in expressions"));
+        if model.computed(model.field_pos(name).map_err(query_err)?) {
+            return Err(Error::query(COMPUTED_READ_ONLY_USE));
         }
         Ok(())
     }
@@ -1715,7 +1714,6 @@ impl<'s> Planner<'s> {
 
     fn resolve(&self, path: &[String], name: &str) -> Result<SExpr> {
         let (alias, column) = self.resolve_parts(path, name)?;
-        #[cfg(feature = "composition")]
         if let Some(scope) = self.scopes.iter().rev().chain(self.joins.iter().map(|(s, _)| s)).find(|s| s.path == path) {
             if scope.model < self.schema.models.len() {
                 let model = self.model(scope.model);
@@ -1725,12 +1723,6 @@ impl<'s> Planner<'s> {
         Ok(col(&alias, &column))
     }
 
-    #[cfg(not(feature = "composition"))]
-    fn read_field(&self, _model: usize, alias: &str, _position: usize, field: &FieldIr) -> Result<SExpr> {
-        Ok(read_col(alias, field))
-    }
-
-    #[cfg(feature = "composition")]
     fn read_field(&self, model: usize, alias: &str, position: usize, field: &FieldIr) -> Result<SExpr> {
         let value = self.stored_field(model, alias, position, field)?;
         Ok(match &field.read_sql { Some(t) => SExpr::cust_with_expr(t.replace("{}", "$1"), value), None => value })
@@ -1738,12 +1730,9 @@ impl<'s> Planner<'s> {
 
     /// The stored value, without `read_sql`: CTE columns hold stored values, and the outer read applies `read_sql`.
     fn stored_field(&self, model: usize, alias: &str, position: usize, field: &FieldIr) -> Result<SExpr> {
-        #[cfg(feature = "composition")]
         if model < self.schema.models.len() {
             return crate::ownership::column_at(self.schema, self.model(model), alias, position);
         }
-        #[cfg(not(feature = "composition"))]
-        let _ = (model, position);
         Ok(col(alias, &field.column))
     }
 
@@ -1753,12 +1742,9 @@ impl<'s> Planner<'s> {
                 if alias.iter().any(|a| *a != 0) && !self.alias_ok {
                     return Err(Error::query(ALIAS_PLACES));
                 }
-                #[cfg(feature = "composition")]
                 {
                     let m = self.model(self.walk(self.root, path)?);
-                    if m.field_pos(name).is_ok_and(|p| m.native.computed().contains(&p)) {
-                        return Err(Error::query("native computed fields cannot be filtered, ordered, aggregated, or used in expressions"));
-                    }
+                    if m.field_pos(name).is_ok_and(|p| m.computed(p)) { return Err(Error::query(COMPUTED_READ_ONLY_USE)); }
                 }
                 match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
                     SubRef::Column(f) => self.resolve(path, &f.name)?,
@@ -1788,7 +1774,6 @@ impl<'s> Planner<'s> {
                 if !self.allow_excluded {
                     return Err(Error::query("excluded() can only be used in on_conflict(..., update=True)"));
                 }
-                #[cfg(feature = "composition")]
                 self.reject_computed(self.model(self.root), name)?;
                 let f = self.model(self.root).field(name).map_err(query_err)?;
                 col("excluded", &f.column)
@@ -2481,28 +2466,27 @@ impl<'s> Planner<'s> {
         let mut shape = vec![];
         #[cfg(feature = "composition")]
         let mut computations = vec![];
+        let mut computed = vec![];
         let mut aggregated = !q.group_by.is_empty() || !q.having.is_empty();
         let mut windowed = false;
         self.plan_lateral(q, items, cte);
         for item in items {
             match item {
                 SelectItem::Model => {
-                    #[cfg(feature = "composition")]
-                    if cte && !root.native.computed().is_empty() { return Err(Error::query("native computed model outputs cannot be used in a CTE")); }
                     if self.root >= self.schema.models.len() {
                         return Err(Error::query("a CTE without a model has no model to select"));
                     }
+                    if cte && (0..root.fields().len()).any(|p| root.computed(p)) { return Err(Error::query("computed model outputs cannot be used in a CTE")); }
                     #[cfg(feature = "composition")]
                     computations.extend(crate::behavior::model_computations(root.native, types.len()));
-                    for (_position, f) in root.fields().iter().enumerate() {
-            #[cfg(not(feature = "composition"))]
-            let _ = _position;
-                        #[cfg(feature = "composition")]
-                        if root.native.computed().contains(&_position) { stmt.expr(SExpr::cust("NULL")); types.push(f.value_type()); continue; }
+                    let all: Vec<usize> = (0..root.fields().len()).collect();
+                    computed.extend(crate::hooks::computations(root, types.len(), &all, self.params)?);
+                    for (position, f) in root.fields().iter().enumerate() {
+                        if root.computed(position) { stmt.expr(SExpr::cust("NULL")); types.push(f.value_type()); continue; }
                         if cte {
-                            stmt.expr_as(self.stored_field(self.root, &alias, _position, f)?, Alias::new(&f.column));
+                            stmt.expr_as(self.stored_field(self.root, &alias, position, f)?, Alias::new(&f.column));
                         } else {
-                            stmt.expr(self.read_field(self.root, &alias, _position, f)?);
+                            stmt.expr(self.read_field(self.root, &alias, position, f)?);
                         }
                         types.push(f.value_type());
                     }
@@ -2585,10 +2569,9 @@ impl<'s> Planner<'s> {
                 self.join_paths(e, "distinct(on=...)")?;
                 #[cfg(feature = "composition")]
                 self.reject_computed(self.model(self.walk(self.root, path)?), name)?;
-                #[cfg(feature = "composition")]
                 {
                     let model = self.model(self.walk(self.root, path)?);
-                    if model.resolved_fields[model.field_pos(name).map_err(query_err)?].storage.owner != model.owner { return Err(Error::query("distinct(on=...) on inherited storage requires an explicit owner projection")); }
+                    if model.has_foreign_storage && model.resolved_fields[model.field_pos(name).map_err(query_err)?].storage.owner != model.owner { return Err(Error::query("distinct(on=...) on inherited storage requires an explicit owner projection")); }
                 }
                 let (alias, column) = self.resolve_parts(path, name)?;
                 cols.push((Alias::new(alias), Alias::new(column)));
@@ -2600,6 +2583,9 @@ impl<'s> Planner<'s> {
         #[cfg(feature = "composition")]
         if !computations.is_empty() && (aggregated || q.distinct || !q.distinct_on.is_empty()) {
             return Err(Error::query("native computed outputs cannot use SQL grouping or distinct; select stored dependencies instead"));
+        }
+        if !computed.is_empty() && (aggregated || q.distinct || !q.distinct_on.is_empty()) {
+            return Err(Error::query("computed outputs cannot use SQL grouping or distinct; select stored dependencies instead"));
         }
         windowed |= q.order.iter().any(|o| has_window(&o.expr));
         self.base_select(q, &mut stmt, true)?;
@@ -2619,7 +2605,7 @@ impl<'s> Planner<'s> {
             self.apply_lock(&mut stmt, lock)?;
         }
         Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, filtered: self.root_filtered, prefetch: vec![],
-            #[cfg(feature = "composition")] computations })
+            #[cfg(feature = "composition")] computations, computed })
     }
 
     /// LEFT JOINs for the to-one paths `e` reads outside aggregates.
@@ -2842,16 +2828,10 @@ impl<'s> Planner<'s> {
         for name in extra { helpers.push(m.field_pos(name).map_err(query_err)?); }
         for pos in helpers { if !positions.as_slice().contains(&pos) { positions.push(pos); } }
         // Computed fields need their inputs, including computed helpers.
-        #[cfg(feature = "composition")]
-        for i in 0..positions.len() { if let Some(d) = m.native.dependency(positions[i]) { if !positions.contains(&d) { positions.push(d); } } }
+        for i in 0..positions.len() { for d in m.dependencies(positions[i]) { if !positions.contains(&d) { positions.push(d); } } }
         Ok(Some(ResultShape { model: ModelId(model), fields: positions.into_iter().enumerate().map(|(slot, field)| ResultField {
             field: FieldId { model: ModelId(model), position: field }, physical: Some(slot), public: slot < public,
-            dependencies: {
-                #[cfg(feature = "composition")]
-                { m.native.dependency(field).map(|position| FieldId { model: ModelId(model), position }).into_iter().collect() }
-                #[cfg(not(feature = "composition"))]
-                { vec![] }
-            },
+            dependencies: m.dependencies(field).into_iter().map(|position| FieldId { model: ModelId(model), position }).collect(),
         }).collect() }))
     }
 
@@ -2915,10 +2895,10 @@ impl<'s> Planner<'s> {
         let mut types = vec![];
         let shape = self.instance_shape(self.root, q.model_fields.as_deref(), &q.model_helpers)?;
         let positions = shape_positions(root, shape.as_ref());
+        let mut computed = crate::hooks::computations(root, 0, &positions.to_vec(), self.params)?;
         for position in positions.iter() {
             let f = &root.fields()[position];
-            #[cfg(feature = "composition")]
-            if root.native.computed().contains(&position) { stmt.expr(SExpr::cust("NULL")); types.push(f.value_type()); continue; }
+            if root.computed(position) { stmt.expr(SExpr::cust("NULL")); types.push(f.value_type()); continue; }
             stmt.expr(self.read_field(self.root, &alias, position, f)?);
             types.push(f.value_type());
         }
@@ -2961,10 +2941,10 @@ impl<'s> Planner<'s> {
                 filtered,
                 unset_when_absent: holds_key && !filtered,
             });
+            computed.extend(crate::hooks::computations(m, types.len(), &joined_positions.to_vec(), self.params)?);
             for position in joined_positions.iter() {
                 let f = &m.fields()[position];
-                #[cfg(feature = "composition")]
-                if m.native.computed().contains(&position) { stmt.expr(SExpr::cust("NULL")); types.push(f.value_type()); continue; }
+                if m.computed(position) { stmt.expr(SExpr::cust("NULL")); types.push(f.value_type()); continue; }
                 stmt.expr(self.read_field(model, &alias, position, f)?);
                 types.push(f.value_type());
             }
@@ -2997,7 +2977,7 @@ impl<'s> Planner<'s> {
             out
         };
         Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins, annotations }, filtered: self.root_filtered, prefetch,
-            #[cfg(feature = "composition")] computations })
+            #[cfg(feature = "composition")] computations, computed })
     }
 
     /// One select-list column per annotation, after the joined models' columns: a
@@ -3058,8 +3038,7 @@ impl<'s> Planner<'s> {
         Ok(stmt)
     }
 
-    #[cfg(feature = "model-composition")]
-    fn composed_update_values(&mut self, q: &Update) -> Result<Vec<SExpr>> {
+    fn multi_table_update_values(&mut self, q: &Update) -> Result<Vec<SExpr>> {
         if q.set.is_empty() { return Err(Error::query("update() needs at least one field")); }
         self.enter(&serde_json::from_value(serde_json::json!({"model":q.model})).map_err(|e| query_err(e.to_string()))?)?;
         let root = self.model(self.root);
@@ -3071,18 +3050,14 @@ impl<'s> Planner<'s> {
     /// `SET` values in `q.set` order, after the model's hook checks.
     fn set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
         let root = self.model(self.root);
-        #[cfg(feature = "composition")]
         let positions = field_positions(root, set.iter().map(|a| &a.field))?;
-        #[cfg(feature = "composition")]
-        if positions.iter().any(|p| root.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
+        if positions.iter().any(|p| root.computed(*p)) { return Err(Error::query(COMPUTED_READ_ONLY)); }
         if root.hooks.is_none() {
             return set.iter().map(|a| {
                 let f = root.field(&a.field).map_err(query_err)?;
                 self.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })
             }).collect();
         }
-        #[cfg(not(feature = "composition"))]
-        let positions = field_positions(root, set.iter().map(|a| &a.field))?;
         let mut values = Vec::with_capacity(set.len());
         for (a, &position) in set.iter().zip(&positions) {
             let f = &root.fields()[position];
@@ -3203,7 +3178,6 @@ impl<'s> Planner<'s> {
 
     pub fn update(&mut self, q: &Update) -> Result<(RowUpdate, Option<ReturnColumns>)> {
         let root = self.model(self.root);
-        #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
         let mut stmt = RowUpdate::new(root.table());
         if q.set.is_empty() {
@@ -3215,7 +3189,7 @@ impl<'s> Planner<'s> {
         for (column, v) in nested {
             stmt.value(column.to_owned(), v);
         }
-        for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name), self.params)? {
+        for (column, v) in maintained(root, AssignKind::Update, |name| q.set.iter().any(|a| a.field == name), self)? {
             stmt.value(column.to_owned(), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
@@ -3229,8 +3203,7 @@ impl<'s> Planner<'s> {
         let positions = shape_positions(root, shape.as_ref());
         stmt.returning(Query::returning().exprs(positions.iter().map(|pos| {
             let f = &root.fields()[pos];
-            #[cfg(feature = "composition")]
-            if root.native.computed().contains(&pos) { return SExpr::cust("NULL"); }
+            if root.computed(pos) { return SExpr::cust("NULL"); }
             returning_col(f)
         })));
         Ok((stmt, Some((positions.iter().map(|pos| root.fields()[pos].value_type()).collect(), shape))))
@@ -3239,13 +3212,12 @@ impl<'s> Planner<'s> {
     /// A delete of a model with a delete rewrite: `UPDATE ... SET <field> = <now> WHERE ... AND <guard>`.
     fn delete_rewrite(&mut self, q: &Delete, rewrite: &orm_core::writes::PreparedDeleteRewrite) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
         let root = self.model(self.root);
-        #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
         let field = &root.fields()[rewrite.field];
         let mut stmt = Query::update();
         stmt.table(Alias::new(root.table()));
         stmt.value(Alias::new(&field.column), bind(crate::client_default::now(field.ty), Some(field)));
-        for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false, self.params)? {
+        for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false, self)? {
             stmt.value(Alias::new(column), v);
         }
         for w in self.apply_filters(&q.filters, &q.without_defaults, q.without_root_filter)? {
@@ -3260,8 +3232,7 @@ impl<'s> Planner<'s> {
         let positions = shape_positions(root, shape.as_ref());
         stmt.returning(Query::returning().exprs(positions.iter().map(|pos| {
             let f = &root.fields()[pos];
-            #[cfg(feature = "composition")]
-            if root.native.computed().contains(&pos) { return SExpr::cust("NULL"); }
+            if root.computed(pos) { return SExpr::cust("NULL"); }
             returning_col(f)
         })));
         Ok((stmt, Some((positions.iter().map(|pos| root.fields()[pos].value_type()).collect(), shape))))
@@ -3269,7 +3240,6 @@ impl<'s> Planner<'s> {
 
     pub fn delete(&mut self, q: &Delete) -> Result<(DeleteStatement, Option<ReturnColumns>)> {
         let root = self.model(self.root);
-        #[cfg(feature = "composition")]
         crate::ownership::require_local_write(root)?;
         let mut stmt = Query::delete();
         stmt.from_table(Alias::new(root.table()));
@@ -3284,8 +3254,7 @@ impl<'s> Planner<'s> {
         let positions = shape_positions(root, shape.as_ref());
         stmt.returning(Query::returning().exprs(positions.iter().map(|pos| {
             let f = &root.fields()[pos];
-            #[cfg(feature = "composition")]
-            if root.native.computed().contains(&pos) { return SExpr::cust("NULL"); }
+            if root.computed(pos) { return SExpr::cust("NULL"); }
             returning_col(f)
         })));
         Ok((stmt, Some((positions.iter().map(|pos| root.fields()[pos].value_type()).collect(), shape))))
@@ -3620,6 +3589,7 @@ fn plan_prefetch(
         types: plan.types,
         output: plan.output,
         #[cfg(feature = "composition")] computations: plan.computations,
+        computed: plan.computed,
         children: plan.prefetch,
     })
 }
@@ -3787,17 +3757,12 @@ pub fn plan_insert(
     let (fields, mut rows) = crate::client_default::fill(m, fields, rows)?;
     let (fields, forced) = nested::null_nested(m, fields.as_ref(), &mut rows);
     let fields: &[String] = &fields;
-    #[cfg(feature = "composition")]
     crate::ownership::require_local_write(m)?;
     let rows = {
         let mut rows = rows;
-        #[cfg(feature = "composition")]
         let positions = field_positions(m, fields)?;
-        #[cfg(feature = "composition")]
-        if positions.iter().any(|p| m.native.computed().contains(p)) { return Err(Error::query("computed fields are read-only")); }
+        if positions.iter().any(|p| m.computed(*p)) { return Err(Error::query(COMPUTED_READ_ONLY)); }
         if m.hooks.is_some() {
-            #[cfg(not(feature = "composition"))]
-            let positions = field_positions(m, fields)?;
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
             crate::hooks::insert_rows(m, &map, &mut rows, on_conflict.is_some(), params)?;
         }
@@ -3815,14 +3780,35 @@ pub fn plan_insert(
     } else {
         stmt.columns(cols.iter().map(|c| Alias::new(&c.column)));
         let inline = cols.iter().map(|c| nested::leaf_default(c, target.dialect)).collect::<Result<Vec<_>>>()?;
+        // An omitted value of a field with an expression default takes the expression, planned once.
+        // A request that sets the value in every row needs neither the scope value nor the hook.
+        let mut expr_defaults: Vec<Option<SExpr>> = vec![None; cols.len()];
+        let omitted = |i: usize| rows.iter().zip(&forced).any(|(row, mask)| row.get(i).is_some_and(Option::is_none) && !mask[i]);
+        if m.client_defaults.iter().any(|(_, d)| matches!(d, orm_core::client_default::ClientDefault::Expr(_) | orm_core::client_default::ClientDefault::Hook(_))) {
+            let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
+            for (i, (slot, c)) in expr_defaults.iter_mut().zip(&cols).enumerate() {
+                if !omitted(i) { continue; }
+                let Some((position, default)) = m.client_defaults.iter().find(|(p, _)| m.fields()[*p].name == c.name) else { continue };
+                match default {
+                    orm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
+                    orm_core::client_default::ClientDefault::Hook(export) => {
+                        let e = crate::hooks::expression(m, *position, true, &crate::hooks::Contexts::new(params))?
+                            .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, c.name)))?;
+                        *slot = Some(planner.value(&e, Hint { ty: Some(c.value_type()), field: Some(c) })?);
+                    }
+                    _ => {}
+                }
+            }
+        }
         for (row, forced) in rows.into_iter().zip(forced) {
             if row.len() != cols.len() {
                 return Err(Error::query("insert row length does not match fields"));
             }
-            let values = cols.iter().zip(&inline).zip(row).zip(forced).map(|(((c, inline), item), forced)| match item {
-                None if forced => SExpr::cust("NULL"),
-                None if inline.is_some() => SExpr::cust(inline.clone().unwrap_or_default()),
-                None if target.dialect == Dialect::Sqlite => {
+            let values = cols.iter().zip(&inline).zip(&expr_defaults).zip(row).zip(forced).map(|((((c, inline), expr), item), forced)| match (item, expr) {
+                (None, _) if forced => SExpr::cust("NULL"),
+                (None, Some(e)) => e.clone(),
+                (None, None) if inline.is_some() => SExpr::cust(inline.clone().unwrap_or_default()),
+                (None, None) if target.dialect == Dialect::Sqlite => {
                     let default = if c.default_now { "CURRENT_TIMESTAMP".to_owned() }
                     else if let Some(sql) = &c.default_sql { sql.clone() }
                     else if let Some(v) = &c.default {
@@ -3834,8 +3820,8 @@ pub fn plan_insert(
                     } else { "NULL".to_owned() };
                     SExpr::cust(default)
                 }
-                None => SExpr::cust("DEFAULT"),
-                Some(v) => bind(v, Some(c)),
+                (None, None) => SExpr::cust("DEFAULT"),
+                (Some(v), _) => bind(v, Some(c)),
             });
             stmt.values(values.collect::<Vec<_>>()).map_err(|e| query_err(e.to_string()))?;
         }
@@ -3851,8 +3837,7 @@ pub fn plan_insert(
             names
                 .iter()
                 .map(|n| {
-                    #[cfg(feature = "composition")]
-                    if m.native.computed().contains(&m.field_pos(n).map_err(query_err)?) {
+                    if m.computed(m.field_pos(n).map_err(query_err)?) {
                         return Err(Error::query("computed fields cannot be conflict targets or write assignments"));
                     }
                     m.field(n).map(|f| Alias::new(&f.column)).map_err(query_err)
@@ -3881,15 +3866,14 @@ pub fn plan_insert(
                     clause.action_and_where(planner.cond(&filter)?);
                 }
                 for a in &set {
-                    #[cfg(feature = "composition")]
-                    if m.native.computed().contains(&m.field_pos(&a.field).map_err(query_err)?) {
-                        return Err(Error::query("computed fields are read-only"));
+                    if m.computed(m.field_pos(&a.field).map_err(query_err)?) {
+                        return Err(Error::query(COMPUTED_READ_ONLY));
                     }
                     let f = m.field(&a.field).map_err(query_err)?;
                     let v = planner.value(&a.value, Hint { ty: Some(f.value_type()), field: Some(f) })?;
                     clause.value(Alias::new(&f.column), v);
                 }
-                for (column, expr) in maintained(m, AssignKind::Upsert, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name), planner.params)? {
+                for (column, expr) in maintained(m, AssignKind::Upsert, |name| update.iter().any(|u| u == name) || set.iter().any(|a| a.field == name), &mut planner)? {
                     clause.value(Alias::new(column), expr);
                 }
                 clause.to_owned()
@@ -3898,10 +3882,7 @@ pub fn plan_insert(
         stmt.on_conflict(clause);
     }
     if returning {
-        #[cfg(feature = "composition")]
-        stmt.returning(Query::returning().exprs(m.fields().iter().enumerate().map(|(pos, f)| if m.native.computed().contains(&pos) { SExpr::cust("NULL") } else { returning_col(f) })));
-        #[cfg(not(feature = "composition"))]
-        stmt.returning(Query::returning().exprs(m.fields().iter().map(returning_col)));
+        stmt.returning(Query::returning().exprs(m.fields().iter().enumerate().map(|(pos, f)| if m.computed(pos) { SExpr::cust("NULL") } else { returning_col(f) })));
     }
     Ok((stmt, m.fields().iter().map(|f| f.value_type()).collect()))
 }
@@ -3934,7 +3915,6 @@ pub fn plan_update_many(
 ) -> Result<(Vec<UpdateStatement>, Option<Vec<ValueType>>)> {
     let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
     let m = schema.model(planner.root);
-    #[cfg(feature = "composition")]
     crate::ownership::require_local_write(m)?;
     let table = m.table().to_owned();
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;
@@ -3980,17 +3960,14 @@ pub fn plan_update_many(
                 _ => stmt.and_where(row_in(target.dialect, key_cols.clone(), chunk.iter().map(|r| r.iter().zip(&cols).take(width).map(|(v, c)| bind(v.clone(), Some(c))).collect()).collect())),
             };
         }
-        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name), params)? {
+        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name), &mut planner)? {
             stmt.value(Alias::new(column), v);
         }
         for w in &where_ {
             stmt.and_where(w.clone());
         }
         if returning {
-            #[cfg(feature = "composition")]
-            stmt.returning(Query::returning().exprs(m.fields().iter().enumerate().map(|(pos, f)| if m.native.computed().contains(&pos) { SExpr::cust("NULL") } else { read_col(&table, f) })));
-            #[cfg(not(feature = "composition"))]
-            stmt.returning(Query::returning().exprs(m.fields().iter().map(|f| read_col(&table, f))));
+            stmt.returning(Query::returning().exprs(m.fields().iter().enumerate().map(|(pos, f)| if m.computed(pos) { SExpr::cust("NULL") } else { read_col(&table, f) })));
         }
         stmts.push(stmt);
     }
@@ -4004,7 +3981,8 @@ pub(crate) fn field_positions<'a>(m: &Model, names: impl IntoIterator<Item = &'a
 
 /// Assignments that extensions registered for `kind` and the caller does not set: the current
 /// time, `column + 1` or the value of a hook.
-pub(crate) fn maintained<'m>(m: &'m Model, kind: AssignKind, is_set: impl Fn(&str) -> bool, params: &dyn Params) -> Result<Vec<(&'m str, SExpr)>> {
+pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&str) -> bool, planner: &mut Planner<'s>) -> Result<Vec<(&'s str, SExpr)>> {
+    let params = planner.params;
     let contexts = crate::hooks::Contexts::new(params);
     let mut out = vec![];
     for a in m.assignments.iter().filter(|a| a.applies_to(kind)) {
@@ -4017,6 +3995,15 @@ pub(crate) fn maintained<'m>(m: &'m Model, kind: AssignKind, is_set: impl Fn(&st
                 let value = crate::hooks::assigned(m, a.field, &contexts)?
                     .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
                 bind(value, Some(f))
+            }
+            AssignValue::Expr(_) => {
+                let expr = a.expr.as_ref().ok_or_else(|| Error::query(format!("{}.{}: the expression assignment is not prepared", m.ir.name, f.name)))?;
+                planner.value(expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
+            }
+            AssignValue::ExprHook { export } => {
+                let expr = crate::hooks::expression(m, a.field, false, &contexts)?
+                    .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
+                planner.value(&expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
             }
         };
         out.push((f.column.as_str(), v));
@@ -4044,7 +4031,6 @@ impl Positions {
         all.chain(shaped.iter().copied())
     }
 
-    #[cfg(feature = "composition")]
     fn to_vec(&self) -> Vec<usize> { self.iter().collect() }
 }
 

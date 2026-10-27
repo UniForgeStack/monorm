@@ -124,6 +124,37 @@ async def test_an_installed_outside_library_lowers_the_schema_through_load_and_l
         orm.load(schema, registry=orm.Registry())
 
 
+async def test_an_outside_pass_writes_a_two_table_model_that_inserts_reads_updates_and_attaches(
+    site: Path, outside_library: Path
+) -> None:
+    manifest = install(site, "acme-outside", "acme_outside", ident="acme.outside")
+    manifest.write_text((OUTSIDE / "orm-extension.toml").read_text())
+    shutil.copy(outside_library, manifest.parent / outside_library.name)
+    source = (
+        'datasource db { provider = "sqlite" }\n'
+        "model Account {\n id Int @id @default(autoincrement())\n email String\n}\n"
+        'model Profile {\n bio String\n @@outside.base(parent: "Account", parentRef: "account", childRef: "profile")\n}\n'
+    )
+    registry = orm.Registry()
+    models = orm.loads(source, registry=registry)
+    Account, Profile = models["Account"], models["Profile"]
+    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        ada = await Profile.objects.using(db).insert(email="ada@example.com", bio="maths")
+        assert (ada.email, ada.bio) == ("ada@example.com", "maths")
+        assert await Account.objects.using(db).count() == 1
+        await Profile.objects.using(db).filter(Profile.email == "ada@example.com").update(bio="engines")
+        assert (await Profile.objects.using(db).filter(Profile.id == ada.id).get()).bio == "engines"
+        bob = await Account.objects.using(db).insert(email="bob@example.com")
+        attached = await Profile.objects.using(db).attach(bob.id, {"bio": "chess"})
+        assert (attached.id, attached.email, attached.bio) == (bob.id, "bob@example.com", "chess")
+        with pytest.raises(orm.IntegrityError):
+            await Profile.objects.using(db).attach(bob.id, {"bio": "again"})
+    finally:
+        await db.close()
+
+
 def test_the_command_line_lowers_the_schema_with_an_installed_outside_library(
     site: Path, outside_library: Path, tmp_path: Path, capfd: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

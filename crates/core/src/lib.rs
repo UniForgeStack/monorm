@@ -24,9 +24,9 @@ pub mod behavior;
 pub mod hooks;
 pub mod loader;
 
-#[cfg(feature = "composition")]
 pub mod ownership;
 
+pub mod field_adapters;
 pub mod file_storage;
 pub mod identity;
 pub mod client_default;

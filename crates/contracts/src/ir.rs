@@ -229,6 +229,20 @@ pub struct SchemaIr {
 }
 
 impl SchemaIr {
+    /// Sets the contract major when a record of slice 2c is in use (a hook of point 5 to 7, an `Expr` or
+    /// `ExprHook` write assignment, an `Expr` or `Hook` client default), so that an older engine refuses the IR
+    /// with both versions in the text and not with a parse error.
+    /// Call it after the generate-time evaluation of expression hooks: that step swaps a binding for an `Expr` record.
+    pub fn stamp_expression_records(&mut self) {
+        use crate::{extension::SCHEMA_CONTRACT, writes::AssignValue};
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        let defaults = self.models.iter().chain(physical).flat_map(|m| &m.fields)
+            .any(|f| matches!(f.client_default, Some(ClientDefaultIr::Expr(_) | ClientDefaultIr::Hook { .. })));
+        let assigns = self.behavior.write_assignments.iter().any(|a| matches!(a.value, AssignValue::Expr(_) | AssignValue::ExprHook { .. }));
+        let hooks = self.behavior.hooks.iter().any(|h| (5..=7).contains(&h.point));
+        if defaults || assigns || hooks { self.behavior.schema_contract = SCHEMA_CONTRACT; }
+    }
+
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
     pub fn from_json(json: &str) -> Result<Self, String> {
         // The version comes first: an IR of a newer contract fails with both versions, not with a serde error about a record.
@@ -261,14 +275,15 @@ mod schema_json {
     }
     #[test]
     fn an_ir_of_a_newer_contract_names_both_versions_before_any_record_error() {
-        let newer = r#"{"models":[],"behavior":{"schema_contract":4,"schema_contract_minor":1,"hooks":[{"from_the_future":1}]}}"#;
-        let error = super::SchemaIr::from_json(newer).unwrap_err();
-        assert!(error.contains("schema contract 4.1 is newer than this engine (4.0)"), "{error}");
-        let major = r#"{"models":[],"behavior":{"schema_contract":5}}"#;
-        assert!(super::SchemaIr::from_json(major).unwrap_err().contains("schema contract 5.0 is newer than this engine (4.0)"));
+        let engine = crate::extension::SCHEMA_CONTRACT_VERSION;
+        let newer = format!(r#"{{"models":[],"behavior":{{"schema_contract":{},"schema_contract_minor":{},"hooks":[{{"from_the_future":1}}]}}}}"#, engine.major, engine.minor + 1);
+        let error = super::SchemaIr::from_json(&newer).unwrap_err();
+        assert!(error.contains(&format!("schema contract {}.{} is newer than this engine ({engine})", engine.major, engine.minor + 1)), "{error}");
+        let major = format!(r#"{{"models":[],"behavior":{{"schema_contract":{}}}}}"#, engine.major + 1);
+        assert!(super::SchemaIr::from_json(&major).unwrap_err().contains(&format!("schema contract {}.0 is newer than this engine ({engine})", engine.major + 1)));
         let older = r#"{"models":[],"behavior":{"schema_contract":2}}"#;
         let error = super::SchemaIr::from_json(older).unwrap_err();
-        assert!(error.contains("schema contract 2 is older than this engine (schema contract 4.0)") && error.contains("regenerate"), "{error}");
+        assert!(error.contains(&format!("schema contract 2 is older than this engine (schema contract {engine})")) && error.contains("regenerate"), "{error}");
         let records = r#"{"models":[],"behavior":{"schema_contract":2,"generic_relations":[{"model":"A"}]}}"#;
         assert!(super::SchemaIr::from_json(records).unwrap_err().contains("regenerate"));
         let same = r#"{"models":[],"behavior":{"schema_contract":4,"hooks":[{"source":"a","point":2,"model":"M","export":"e"}]}}"#;
@@ -419,6 +434,13 @@ pub enum ClientDefaultIr {
     Value(serde_json::Value),
     /// A value made for each row.
     Call(ClientCall),
+    /// A query IR expression (the JSON of `Expr`) over `scope.<name>` and literals. The insert puts it in the
+    /// VALUES of each row that omits the field; the field takes no transform or validator.
+    Expr(serde_json::Value),
+    /// A query IR expression that a library hook (point 7) returns. The hook reads the request context, and the
+    /// engine calls it once for each insert statement. `orm generate` evaluates a hook that reads no context once
+    /// and stores the result as `Expr`.
+    Hook { export: String },
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]

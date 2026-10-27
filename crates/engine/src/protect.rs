@@ -2,7 +2,7 @@
 //! allows them. An application-level check; raw SQL and other clients still write.
 //!
 //! Protection and permission go by table: a proxy writes the table of its root, and a
-//! composed write also writes the tables of its storage ancestors.
+//! multi-table write also writes the tables of its storage ancestors.
 
 use crate::error::{Error, Result};
 use orm_core::schema::Schema;
@@ -28,14 +28,12 @@ fn protector<'s>(schema: &'s Schema, table: &str) -> Option<&'s str> {
         .map(|m| m.ir.name.as_str())
 }
 
-/// The tables a write of model `idx` writes: its own, and with model composition the
+/// The tables a write of model `idx` writes: its own, and the
 /// tables of its storage ancestors.
 fn written_tables(schema: &Schema, idx: usize) -> Vec<&str> {
     let model = schema.model(idx);
-    #[allow(unused_mut)]
     let mut tables = vec![model.table()];
-    #[cfg(feature = "model-composition")]
-    {
+    if model.has_foreign_storage {
         let owners = &schema.physical().models;
         let mut current = model.owner;
         while let Some(link) = schema.owner_links.iter().find(|l| l.child == current) {

@@ -25,7 +25,8 @@ pub struct Model {
     pub key: Vec<usize>,
     /// Prepared `@client_default`s by field position.
     pub client_defaults: Vec<(usize, crate::client_default::ClientDefault)>,
-    pub file_fields: Vec<crate::file_storage::PreparedFileField>,
+    /// The field adapters bound to this model's fields, in record order.
+    pub field_adapters: Vec<crate::field_adapters::PreparedAdapter>,
     pub read_defaults: crate::selection::PreparedDefaults,
     /// What read defaults mean for this model, for codegen and bindings; empty without any default.
     pub read_flags: ReadFlags,
@@ -41,10 +42,10 @@ pub struct Model {
     pub hooks: Option<Box<crate::hooks::HookPlan>>,
     #[cfg(feature = "composition")]
     pub native: crate::behavior::NativeModel,
-    #[cfg(feature = "composition")]
     pub resolved_fields: Vec<crate::behavior::ResolvedField>,
-    #[cfg(feature = "composition")]
     pub owner: crate::behavior::OwnerId,
+    /// Some field lives in another table than the model's own, or the model's table joins a parent table.
+    pub has_foreign_storage: bool,
     field_index: HashMap<String, usize>,
     /// relation name -> (index into `ir.relations`, target model index)
     relation_index: HashMap<String, (usize, usize)>,
@@ -80,18 +81,33 @@ impl Model {
             classes_from: None,
         };
         Ok(Model {
-            file_fields: vec![],
+            field_adapters: vec![],
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
             assignments: vec![], delete_rewrite: None, guards: vec![], view: None, hooks: None,
             #[cfg(feature = "composition")] native: crate::behavior::NativeModel::None,
-            #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
-            #[cfg(feature = "composition")] resolved_fields: vec![] })
+            owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false })
     }
 
     pub fn table(&self) -> &str {
         &self.ir.table
+    }
+
+    /// The field position a native field reads its stored value from.
+    pub fn native_dependency(&self, position: usize) -> Option<usize> {
+        #[cfg(feature = "composition")]
+        { self.native.dependency(position) }
+        #[cfg(not(feature = "composition"))]
+        { let _ = position; None }
+    }
+
+    /// Positions of the fields a native extension computes on read.
+    pub fn native_computed(&self) -> &[usize] {
+        #[cfg(feature = "composition")]
+        { self.native.computed() }
+        #[cfg(not(feature = "composition"))]
+        { &[] }
     }
 
     pub fn fields(&self) -> &[FieldIr] {
@@ -105,9 +121,9 @@ impl Model {
             .ok_or_else(|| format!("model {} has no field {name:?}", self.ir.name))
     }
 
-    /// True if the file-storage extension declares the field.
-    pub fn is_file_field(&self, name: &str) -> bool {
-        self.file_fields.iter().any(|file| self.fields()[file.position].name == name)
+    /// The field adapter bound to the field, if any.
+    pub fn adapter_for(&self, name: &str) -> Option<&crate::field_adapters::PreparedAdapter> {
+        self.field_adapters.iter().find(|a| self.fields()[a.position].name == name)
     }
 
     pub fn field_pos(&self, name: &str) -> Result<usize> {
@@ -115,6 +131,22 @@ impl Model {
             .get(name)
             .copied()
             .ok_or_else(|| format!("model {} has no field {name:?}", self.ir.name))
+    }
+
+    /// True when the value of the field at `position` is computed on read, not stored: a hook of point 5 or a compiled computation.
+    pub fn computed(&self, position: usize) -> bool {
+        if self.hooks.as_ref().is_some_and(|h| h.computed_at(position).is_some()) { return true; }
+        #[cfg(feature = "composition")]
+        if self.native.computed().contains(&position) { return true; }
+        false
+    }
+
+    /// The positions of the fields that a read must select to compute the field at `position`; empty for a stored field.
+    pub fn dependencies(&self, position: usize) -> Vec<usize> {
+        if let Some((_, deps)) = self.hooks.as_ref().and_then(|h| h.computed_at(position)) { return deps.to_vec(); }
+        #[cfg(feature = "composition")]
+        if let Some(d) = self.native.dependency(position) { return vec![d]; }
+        vec![]
     }
 
     pub fn pk_field(&self) -> &FieldIr {
@@ -153,7 +185,6 @@ pub struct Schema {
     #[cfg(feature = "composition")]
     pub native_models: Vec<crate::behavior::NativeModel>,
     storage: Option<Box<Schema>>,
-    #[cfg(feature = "composition")]
     pub owner_links: Vec<crate::behavior::PreparedOwnerLink>,
 }
 
@@ -198,10 +229,6 @@ impl Schema {
         crate::identity::validate(&ir, crate::behavior::manifests())?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
-        #[cfg(not(feature = "model-composition"))]
-        if ir.behavior.extensions.contains_key("composition") {
-            return Err("model-composition is absent from this native artifact; rebuild with model-composition enabled".into());
-        }
         #[cfg(feature = "composition")]
         let native_models = if behavioral { crate::behavior::bind(&mut ir)? } else { vec![crate::behavior::NativeModel::None; ir.models.len()] };
         let storage = match ir.behavior.storage.take() {
@@ -227,7 +254,7 @@ impl Schema {
         if model_index.len() != ir.models.len() {
             return Err("duplicate model name in schema".into());
         }
-        let mut file_fields = crate::file_storage::prepare(&ir)?.into_iter();
+        let mut field_adapters = crate::field_adapters::prepare(&ir)?.into_iter();
         let enums = ir.enums;
         let types = ir.types;
         let mut models = Vec::with_capacity(ir.models.len());
@@ -283,7 +310,7 @@ impl Schema {
             #[cfg(feature = "composition")]
             let kind = native.next().expect("prepared model");
             models.push(Model {
-                file_fields: file_fields.next().expect("prepared file model"),
+                field_adapters: field_adapters.next().expect("prepared adapter model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
@@ -291,8 +318,7 @@ impl Schema {
                 #[cfg(feature = "composition")] hooks: kind.static_hooks(),
                 #[cfg(not(feature = "composition"))] hooks: None,
                 #[cfg(feature = "composition")] native: kind,
-                #[cfg(feature = "composition")] owner: crate::behavior::OwnerId(0),
-            #[cfg(feature = "composition")] resolved_fields: vec![] });
+                owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false });
         }
         // Validate relation targets now that every model is indexed.
         for m in &models {
@@ -315,10 +341,8 @@ impl Schema {
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
         if let (true, Some(packages)) = (behavioral, packages) { crate::hooks::bind(&mut models, &model_index, &ir.behavior, packages)?; }
-        #[cfg(feature = "composition")]
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
-        #[cfg(feature = "composition")]
-        crate::writes::reject_composed(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
+        crate::writes::reject_multi_table(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
         let physical = storage.as_deref();
         validate_views(&ir.behavior, &models, &model_index, physical)?;
         let mut result_checks = Vec::with_capacity(models.len());
@@ -345,7 +369,7 @@ impl Schema {
             model_index,
             #[cfg(feature = "composition")] native_models,
             storage,
-            #[cfg(feature = "composition")] owner_links,
+            owner_links,
         })
     }
 

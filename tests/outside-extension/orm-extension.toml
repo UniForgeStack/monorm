@@ -63,6 +63,27 @@ required = true
 id = "acme.outside.view"
 phase = "logical"
 effects = ["models.view", "behavior.model_views", "behavior.result_checks"]
+# `@@outside.base(parent: "A", parentRef: "a", childRef: "b")` stores the fields of `A` in the table of `A`, the others in its own table, under one shared key.
+[[attributes]]
+name = "outside.base"
+target = "model"
+
+[attributes.arguments.parent]
+kind = "string"
+required = true
+
+[attributes.arguments.parentRef]
+kind = "string"
+required = true
+
+[attributes.arguments.childRef]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.base"
+phase = "logical"
+effects = ["outside.base.storage-ownership"]
 
 # `@@outside.guard` binds the hooks of the library to the fields `text`, `start`, `end`, `shop_id` and `updated_by` of the model.
 [[attributes]]
@@ -73,7 +94,22 @@ target = "model"
 id = "acme.outside.guard"
 phase = "declaration"
 after = ["acme.outside.tag"]
-effects = ["behavior.hooks.outside", "behavior.write_assignments.outside", "behavior.outside_read_defaults"]
+effects = ["behavior.hooks.outside", "behavior.write_assignments.outside", "behavior.outside_read_defaults", "behavior.result_fields.outside"]
+
+# `note Json? @outside.wrapped("w:")` shows the stored JSON as a `Wrapped` and adds the method `note_unwrap`.
+# The pass pushes a field adapter whose options are the prefix; the `[[python.field_adapters]]` and `[[typescript.field_adapters]]` entries below name the runtime.
+[[attributes]]
+name = "outside.wrapped"
+target = "field"
+
+[[attributes.positional]]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.wrapped"
+phase = "declaration"
+effects = ["behavior.field_adapters"]
 
 # Hooks of the library. `outside.prefix` reads the `{"prefix": ...}` of its `extension_data` entry.
 [[exports]]
@@ -108,6 +144,42 @@ point = 4
 output = "string"
 
 [[exports]]
+id = "acme.outside.initials"
+point = 5
+output = "string"
+
+[[exports]]
+id = "acme.outside.seal"
+point = 1
+input = "string"
+output = "string"
+
+[[exports]]
+id = "acme.outside.unseal"
+point = 5
+output = "string"
+
+[[exports]]
+id = "acme.outside.label"
+point = 6
+output = "json"
+
+[[exports]]
+id = "acme.outside.editor"
+point = 6
+output = "json"
+
+[[exports]]
+id = "acme.outside.region"
+point = 7
+output = "json"
+
+[[exports]]
+id = "acme.outside.owner"
+point = 7
+output = "json"
+
+[[exports]]
 id = "outside.context"
 point = 6
 output = "json"
@@ -117,7 +189,27 @@ source = "python"
 query_set = "OutsideQuerySet"
 instance = "OutsideInstance"
 
+[[python.field_adapters]]
+adapter = "acme.outside.wrapped.v1"
+module = "acme_outside"
+install = "install"
+imports = ["from acme_outside import Wrapped"]
+value = "Wrapped"
+members = ["def {field}_unwrap(self) -> object: ..."]
+methods = ["{field}_unwrap"]
+module_functions = [{ name = "configure_outside", method = "configure", stub = "(prefix: str) -> None" }]
+
 [typescript]
 source = "typescript"
 query_set = "OutsideQuerySet"
 instance = "OutsideInstance"
+
+[[typescript.field_adapters]]
+adapter = "acme.outside.wrapped.v1"
+module = "@acme/outside"
+install = "install"
+imports = ['import type { Wrapped } from "@acme/outside";']
+value = "Wrapped"
+members = ["{field}Unwrap(): unknown;"]
+methods = ["{field}Unwrap"]
+module_functions = [{ name = "configureOutside", method = "configure", stub = "(prefix: string) => void" }]

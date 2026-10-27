@@ -60,6 +60,7 @@ fn with_hook_4() -> Schema {
         field: UPDATED_BY,
         on: vec![WriteKind::Update],
         value: AssignValue::Hook { export: "stamp".into() },
+        expr: None,
         upsert: UpsertDefault::Drop,
     });
     schema

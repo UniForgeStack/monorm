@@ -39,7 +39,8 @@ fn call(call: ClientCall, ty: ColType) -> Value {
 pub fn now(ty: ColType) -> Value { call(ClientCall::Now, ty) }
 
 /// Explicit SQL NULL is Some(typed null); None is an omitted value. Client defaults
-/// fill omission before native transforms/validation or SQL planning.
+/// fill omission before native transforms/validation or SQL planning; an expression
+/// default adds its column and leaves the omitted value for the planner.
 pub fn fill<'a>(model: &Model, fields: &'a [String], mut rows: Rows) -> Result<(std::borrow::Cow<'a, [String]>, Rows)> {
     if model.client_defaults.is_empty() { return Ok((std::borrow::Cow::Borrowed(fields), rows)); }
     let mut fields = fields.to_vec();
@@ -52,7 +53,12 @@ pub fn fill<'a>(model: &Model, fields: &'a [String], mut rows: Rows) -> Result<(
         };
         for row in &mut rows {
             if row[slot].is_none() {
-                row[slot] = Some(match default { ClientDefault::Literal(v) => literal(v), ClientDefault::Call(c) => call(*c, field.ty) });
+                row[slot] = match default {
+                    ClientDefault::Literal(v) => Some(literal(v)),
+                    ClientDefault::Call(c) => Some(call(*c, field.ty)),
+                    // The insert planner writes the expression, or the one the hook gives, into the omitted value.
+                    ClientDefault::Expr(_) | ClientDefault::Hook(_) => None,
+                };
             }
         }
     }

@@ -111,7 +111,8 @@ try {
   assert.deepEqual(await Child.objects.using(ownerDb).select({name:Child.name}),[{name:"Alice"}]);
   await child.load({ reload: true });
   assert.equal(child.name,"Alice");
-  await assert.rejects(() => child.update({role:"customer"}),/owner statement sequence/);
+  await child.update({role:"customer"});
+  assert.equal((await Child.objects.using(ownerDb).get()).role,"customer");
 } finally {
   await ownerDb.dropTables();
   await ownerDb.close();

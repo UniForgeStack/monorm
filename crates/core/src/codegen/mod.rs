@@ -10,7 +10,7 @@ pub mod typescript;
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 use crate::ir::{FieldIr, NestedStorage, SchemaIr, TypeFieldIr, TypeIr};
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
-use crate::schema::Model;
+use crate::schema::{Model, Schema};
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 /// A nested field of a model: the `columns` group of its leaf fields, or the one `json` field.
@@ -70,7 +70,13 @@ pub(super) fn type_requires(ir: &SchemaIr, name: &str) -> bool {
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 pub(super) fn has_server_value(f: &FieldIr) -> bool {
-    f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some() || f.hints.get("composition.key-default").is_some_and(|v| v == "true")
+    f.auto_increment || f.default.is_some() || f.default_now || f.default_sql.is_some()
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// `has_server_value`, or the key of a child model whose root table fills it.
+pub(super) fn has_server_value_in(schema: &Schema, m: &Model, f: &FieldIr) -> bool {
+    has_server_value(f) || (std::ptr::eq(f, m.pk_field()) && schema.key_fills_itself(m))
 }
 
 /// Generator options that are not part of the schema.
@@ -164,15 +170,23 @@ impl Options {
             if self.extensions.iter().any(|e| e.members.extension == *id) {
                 return Err(format!("extension {id} is in both the generated packages and the native artifact"));
             }
-            let module = modules.get(id).ok_or_else(|| format!("extension {id}: missing runtime module; pass --extension-module ID=MODULE"))?;
+            // A runtime that names its own module needs no `--extension-module`.
+            let section = package.language_members.get(language);
+            let self_contained = section.is_some_and(|s| s.query_set.is_empty() && !s.field_adapters.is_empty() && s.field_adapters.iter().all(|a| !a.module.is_empty()));
+            let module = match modules.get(id) {
+                Some(module) => Some(module.clone()),
+                None if self_contained => None,
+                None => return Err(format!("extension {id}: missing runtime module; pass --extension-module ID=MODULE")),
+            };
             let mut members = orm_contracts::extension::LanguageMembers { extension: id.clone(), version: package.version.clone(), language: language.into(), ..Default::default() };
-            if let Some(section) = package.language_members.get(language) {
+            if let Some(section) = section {
+                members.field_adapters = section.field_adapters.clone();
                 members.query_set = section.query_set.clone();
                 members.instance = section.instance.clone();
                 members.bound_query_set = section.bound_query_set.clone();
                 members.overrides = section.overrides.clone();
             }
-            self.extensions.push(ExtensionCode { runtime_module: Some(module.clone()), members, attributes: package.attributes.clone(), files: vec![] });
+            self.extensions.push(ExtensionCode { runtime_module: module, members, attributes: package.attributes.clone(), files: vec![] });
         }
         Ok(())
     }
@@ -262,6 +276,79 @@ pub fn embedded_schema_json(ir: &crate::ir::SchemaIr) -> Result<String, String> 
 /// A default filter on `target` can hide it, so a reference to it can be absent.
 pub fn reference_target_filtered(schema: &crate::schema::Schema, target: &str) -> bool {
     schema.models.iter().any(|m| m.ir.name == target && m.read_flags.filtered)
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+/// The field adapter runtimes that the schema needs, one for each adapter id, in first-use order.
+pub(super) struct Adapters<'a> {
+    pub(super) uses: Vec<AdapterUse<'a>>,
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+pub(super) struct AdapterUse<'a> {
+    pub(super) id: &'a str,
+    pub(super) extension: &'a ExtensionCode,
+    pub(super) runtime: &'a orm_contracts::extension::AdapterRuntime,
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+impl AdapterUse<'_> {
+    /// The runtime module: the entry's own, else the module of the extension.
+    pub(super) fn module(&self, language: &str) -> String {
+        if !self.runtime.module.is_empty() { return self.runtime.module.clone(); }
+        match &self.extension.runtime_module {
+            Some(module) => module.clone(),
+            None if language == "python" => format!("orm_ext.{}", self.extension.python_package()),
+            None => format!("./{}", self.extension.typescript_dir()),
+        }
+    }
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+impl<'a> Adapters<'a> {
+    /// Finds the runtime entry of each adapter id in the manifests of `options`, and checks the methods of each record against its model.
+    pub(super) fn resolve(options: &'a Options, ir: &'a SchemaIr, language: &str) -> Result<Self, String> {
+        let mut uses: Vec<AdapterUse<'a>> = vec![];
+        for record in &ir.behavior.field_adapters {
+            let found = || options.extensions.iter().filter(|e| e.members.language == language || e.members.language.is_empty())
+                .flat_map(|e| e.members.field_adapters.iter().map(move |r| (e, r))).filter(|(_, r)| r.adapter == record.adapter);
+            let Some((extension, runtime)) = found().next() else {
+                return Err(format!("{}.{}: no {language} runtime entry for field adapter {}; an installed extension must declare it in its manifest", record.model, record.field, record.adapter));
+            };
+            if let Some((other, _)) = found().nth(1) {
+                return Err(format!("field adapter {} has a runtime entry in both {} and {}", record.adapter, extension.members.extension, other.members.extension));
+            }
+            if let Some(model) = ir.models.iter().find(|m| m.name == record.model) {
+                orm_contracts::extension::check_adapter_methods(ir, model, &runtime.method_names(language, &record.field))?;
+            }
+            if !uses.iter().any(|u| u.id == record.adapter) {
+                uses.push(AdapterUse { id: &record.adapter, extension, runtime });
+            }
+        }
+        Ok(Adapters { uses })
+    }
+
+    pub(super) fn of(&self, id: &str) -> Option<(usize, &AdapterUse<'a>)> {
+        self.uses.iter().enumerate().find(|(_, u)| u.id == id)
+    }
+
+    /// The type of the field when an adapter owns it: the runtime `value`, with `none` for a nullable field.
+    pub(super) fn value(&self, m: &Model, f: &FieldIr, none: &str) -> Option<String> {
+        let (_, u) = self.of(&m.adapter_for(&f.name)?.adapter)?;
+        Some(nullable(&u.runtime.value, f.nullable, none))
+    }
+
+    /// The type that create and update take for the field when an adapter owns it.
+    pub(super) fn input(&self, m: &Model, f: &FieldIr, none: &str) -> Option<String> {
+        let (_, u) = self.of(&m.adapter_for(&f.name)?.adapter)?;
+        let t = if u.runtime.input.is_empty() { &u.runtime.value } else { &u.runtime.input };
+        Some(nullable(t, f.nullable, none))
+    }
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+fn nullable(t: &str, nullable: bool, none: &str) -> String {
+    if nullable { format!("{t} | {none}") } else { t.to_owned() }
 }
 
 #[cfg(test)]
@@ -693,4 +780,115 @@ mod reference_tests {
         assert!(ts.contains("/** Immutable `Address` value, compared with `equals()`. */"), "{ts}");
         assert!(!ts.contains("A `Address`"), "{ts}");
     }
+
+    fn adapter_ir() -> (crate::ir::SchemaIr, crate::schema::Schema) {
+        use crate::behavior::{FieldAdapter, FILE_REFERENCE_ADAPTER, SCHEMA_CONTRACT};
+        let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}\nmodel Plain {\n id Int @id\n}", None).unwrap();
+        ir.behavior.schema_contract = SCHEMA_CONTRACT;
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
+        ir.behavior.file_fields.push(crate::behavior::FileField { model: "Report".into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        (ir, schema)
+    }
+
+    fn adapter_extension(language: &str) -> ExtensionCode {
+        use orm_contracts::extension::{AdapterRuntime, ModuleFunction};
+        let python = language == "python";
+        let runtime = AdapterRuntime {
+            adapter: crate::behavior::FILE_REFERENCE_ADAPTER.into(),
+            install: "install".into(),
+            module: "acme_runtime".into(),
+            imports: vec![if python { "from acme_runtime import Ref, Reg, Up".into() } else { "import type { Ref, Reg, Up } from \"acme-runtime\";".into() }],
+            value: "Ref".into(),
+            input: "Ref | Up".into(),
+            members: vec![if python { "def {field}_url(self) -> str: ...".into() } else { "{field}Url(): string;".into() }],
+            methods: vec![if python { "{field}_url".into() } else { "{field}Url".into() }],
+            module_functions: vec![ModuleFunction { name: "configure_acme".into(), method: "configure".into(), stub: if python { "(registry: Reg) -> None".into() } else { "(registry: Reg) => void".into() } }],
+        };
+        ExtensionCode {
+            runtime_module: None,
+            members: orm_contracts::extension::LanguageMembers { extension: "acme.runtime".into(), version: "1.0.0".into(), language: language.into(), field_adapters: vec![runtime], ..Default::default() },
+            attributes: vec![],
+            files: vec![],
+        }
+    }
+
+    #[test]
+    fn adapter_runtime_data_drives_the_generated_code() {
+        let (ir, schema) = adapter_ir();
+        let options = Options { extensions: vec![adapter_extension("python")], ..Options::default() };
+        let py = python::generate_with(&ir, &schema, "report.prisma", &options).unwrap();
+        assert!(py.module.contains("from acme_runtime import install as _fa0"), "{}", py.module);
+        assert!(py.module.contains("_FA0.append(_fa0(_models[\"Report\"], {\"file\": ({\"storage\": \"reports\"}, True)}))"), "{}", py.module);
+        assert!(py.module.contains("def configure_acme(*args, **kwargs):") && py.module.contains("adapter.configure(*args, **kwargs)"));
+        assert!(py.stub.contains("from acme_runtime import Ref, Reg, Up") && py.stub.contains("def configure_acme(registry: Reg) -> None: ..."), "{}", py.stub);
+        assert!(py.stub.contains("def file_url(self) -> str: ...") && py.stub.contains("file: f.Json[Ref | None]"), "{}", py.stub);
+        assert!(py.stub.contains("file: NotRequired[Ref | Up | None]"), "{}", py.stub);
+        let options = Options { extensions: vec![adapter_extension("typescript")], ..Options::default() };
+        let ts = typescript::generate_with(&ir, &schema, "report.prisma", "orm", &options).unwrap();
+        assert!(ts.contains("import { install as _fa0 } from \"acme_runtime\";"), "{ts}");
+        assert!(ts.contains("_fa0(models[\"Report\"]!, new Map([[\"file\", { options: {\"storage\":\"reports\"}, nullable: true }]]))"), "{ts}");
+        assert!(ts.contains("export const configure_acme: (registry: Reg) => void = (...args) =>"), "{ts}");
+        assert!(ts.contains("fileUrl(): string;") && ts.contains("readonly file: Ref | null;") && ts.contains("file?: Ref | Up | null"), "{ts}");
+    }
+
+    #[test]
+    fn a_proxy_with_a_copied_adapter_record_gets_the_members_and_the_install() {
+        use crate::behavior::{FieldAdapter, FileField, FILE_REFERENCE_ADAPTER, SCHEMA_CONTRACT};
+        let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}\nmodel ReportView {\n id Int @id\n file Json?\n}", None).unwrap();
+        ir.behavior.schema_contract = SCHEMA_CONTRACT;
+        for model in ["Report", "ReportView"] {
+            ir.behavior.field_adapters.push(FieldAdapter { model: model.into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
+            ir.behavior.file_fields.push(FileField { model: model.into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
+        }
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        let options = Options { extensions: vec![adapter_extension("python")], ..Options::default() };
+        let py = python::generate_with(&ir, &schema, "report.prisma", &options).unwrap();
+        for model in ["Report", "ReportView"] {
+            assert!(py.module.contains(&format!("_fa0(_models[\"{model}\"], {{\"file\": ({{\"storage\": \"reports\"}}, True)}})")), "{}", py.module);
+        }
+        assert_eq!(py.stub.matches("def file_url(self) -> str: ...").count(), 2, "{}", py.stub);
+        let options = Options { extensions: vec![adapter_extension("typescript")], ..Options::default() };
+        let ts = typescript::generate_with(&ir, &schema, "report.prisma", "orm", &options).unwrap();
+        assert_eq!(ts.matches("fileUrl(): string;").count(), 2, "{ts}");
+    }
+
+    #[test]
+    fn a_schema_without_adapter_records_emits_no_adapter_code() {
+        let (_, schema) = schema();
+        let ir = crate::dsl::compile("model Plain {\n id Int @id\n data Json?\n}", None).unwrap();
+        let options = Options { extensions: vec![adapter_extension("python")], ..Options::default() };
+        assert!(!python::generate_with(&ir, &schema, "plain", &options).unwrap().module.contains("_fa0"));
+        let options = Options { extensions: vec![adapter_extension("typescript")], ..Options::default() };
+        assert!(!typescript::generate_with(&ir, &schema, "plain", "orm", &options).unwrap().contains("_fa0"));
+    }
+
+    #[test]
+    fn a_record_without_a_runtime_entry_names_model_field_and_adapter() {
+        let (ir, schema) = adapter_ir();
+        let python = python::generate_with(&ir, &schema, "report.prisma", &Options::default()).err().unwrap();
+        let typescript = typescript::generate_with(&ir, &schema, "report.prisma", "orm", &Options::default()).err().unwrap();
+        for (language, error) in [("python", python), ("typescript", typescript)] {
+            assert!(error.contains("Report.file") && error.contains(crate::behavior::FILE_REFERENCE_ADAPTER) && error.contains(language), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_adapter_method_that_collides_with_a_field_fails_in_each_language_form() {
+        for (language, field) in [("python", "file_url"), ("typescript", "fileUrl")] {
+            let mut ir = crate::dsl::compile(&format!("model Report {{\n id Int @id\n file Json?\n {field} Int?\n}}"), None).unwrap();
+            ir.behavior.schema_contract = crate::behavior::SCHEMA_CONTRACT;
+            ir.behavior.field_adapters.push(orm_contracts::extension::FieldAdapter { model: "Report".into(), field: "file".into(), adapter: crate::behavior::FILE_REFERENCE_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
+            ir.behavior.file_fields.push(crate::behavior::FileField { model: "Report".into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
+            let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+            let options = Options { extensions: vec![adapter_extension(language)], ..Options::default() };
+            let error = if language == "python" {
+                python::generate_with(&ir, &schema, "report.prisma", &options).err().unwrap()
+            } else {
+                typescript::generate_with(&ir, &schema, "report.prisma", "orm", &options).err().unwrap()
+            };
+            assert!(error.contains(field), "{language}: {error}");
+        }
+    }
 }
+

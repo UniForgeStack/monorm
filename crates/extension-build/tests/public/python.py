@@ -229,12 +229,9 @@ async def check_ownership():
         assert tuple((await Child.objects.using(db).select(Child.name))[0]) == ("Alice",)
         await child.load(reload=True)
         assert child.name == "Alice"
-        try:
-            await child.update(role="customer")
-        except orm.QueryError as e:
-            assert "owner statement sequence" in str(e)
-        else:
-            raise AssertionError("ordinary update bypassed multi-owner planning")
+        await child.update(role="customer")
+        assert (await Child.objects.using(db).get()).role == "customer"
+        assert (await db.fetch("SELECT name FROM extension_owner_parents"))[0]["name"] == "Alice"
     finally:
         await db.drop_tables()
         await db.close()

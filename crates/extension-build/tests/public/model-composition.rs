@@ -4,7 +4,7 @@ use orm_core::{
     schema::Schema,
 };
 use orm_engine::{
-    composed,
+    multi_table,
     db::{self, Cell},
     exec::{self, Outcome},
     NoParams,
@@ -25,6 +25,15 @@ async fn check(url: &str) {
     let ir = dsl::compile(&source, None).unwrap();
     let encoded=serde_json::to_string(&ir).unwrap();
     let schema = Schema::from_ir(ir).unwrap();
+    // child, own fields and whether the root key fills itself, derived from the owner links and field storage
+    let derived: Vec<_> = schema.models.iter().map(|m| (m.ir.name.as_str(), schema.attach_fields(m).map(|p| p.into_iter().map(|p| m.fields()[p].name.as_str()).collect::<Vec<_>>()), schema.key_fills_itself(m))).collect();
+    assert_eq!(derived, [
+        ("Person", None, false),
+        ("Employee", Some(vec!["salary"]), true),
+        ("Manager", Some(vec!["level"]), true),
+        ("Customer", Some(vec!["points"]), true),
+    ]);
+    assert!(schema.models.iter().all(|m| m.fields().iter().all(|f| !f.hints.keys().any(|k| k.starts_with("composition.")))));
     let ir=serde_json::from_str(&encoded).unwrap();
     let py=orm_core::codegen::python::generate(&ir,&schema,"composition.prisma").unwrap();
     let ts=orm_core::codegen::typescript::generate(&ir,&schema,"composition.prisma","orm").unwrap();
@@ -67,7 +76,7 @@ async fn check(url: &str) {
     };
     assert_eq!(rows.cell(0, 2, types[2]).unwrap(), Cell::Int(21));
     assert_eq!(rows.cell(0, 3, types[3]).unwrap(), Cell::Text("ALICE"));
-    let customer = composed::prepare_attach(
+    let customer = multi_table::prepare_attach(
         &schema,
         target,
         "Customer",
@@ -76,7 +85,7 @@ async fn check(url: &str) {
         vec![vec![Some(10i32.into())]],
     )
     .unwrap();
-    let Outcome::Rows { rows, types, .. } = composed::run_insert(db.as_ref(), target, customer, true)
+    let Outcome::Rows { rows, types, .. } = multi_table::run_insert(db.as_ref(), target, customer, true)
         .await
         .unwrap()
     else {
@@ -93,7 +102,7 @@ async fn check(url: &str) {
     };
     assert_eq!(result.rows.len(), 1);
     // Attach touches no parent values and is protected by the ordinary FK/PK.
-    let attach = composed::prepare_attach(
+    let attach = multi_table::prepare_attach(
         &schema,
         target,
         "Employee",
@@ -102,10 +111,10 @@ async fn check(url: &str) {
         vec![vec![Some(99i32.into())]],
     )
     .unwrap();
-    assert!(composed::run_insert(db.as_ref(), target, attach, true)
+    assert!(multi_table::run_insert(db.as_ref(), target, attach, true)
         .await
         .is_err());
-    assert!(composed::prepare_attach(
+    assert!(multi_table::prepare_attach(
         &schema,
         target,
         "Employee",
@@ -116,7 +125,7 @@ async fn check(url: &str) {
     .is_err());
     // A second attach fails on the shared PK; an attach to a missing parent fails on the FK.
     for parent in [1i32, 999] {
-        let again = composed::prepare_attach(
+        let again = multi_table::prepare_attach(
             &schema,
             target,
             "Customer",
@@ -125,7 +134,7 @@ async fn check(url: &str) {
             vec![vec![Some(5i32.into())]],
         )
         .unwrap();
-        assert!(composed::run_insert(db.as_ref(), target, again, true)
+        assert!(multi_table::run_insert(db.as_ref(), target, again, true)
             .await
             .is_err());
     }

@@ -106,6 +106,7 @@ pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> 
         static VERSIONS: OnceLock<std::collections::BTreeMap<String, String>> = OnceLock::new();
         ir.behavior.extensions = VERSIONS.get_or_init(|| serde_json::from_str({:?}).expect("generated versions")).clone();
     }}
+    ir.stamp_expression_records();
     validate_requirements(ir, manifests, language)?;
     Ok(())
 }}
