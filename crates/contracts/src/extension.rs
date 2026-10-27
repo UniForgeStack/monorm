@@ -7,7 +7,7 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 2);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 3);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -16,6 +16,8 @@ pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
 /// The minor that an IR carries only when it uses a record that a 2.0 engine lacks (`hooks`, `extension_data`).
 /// Manifest-only keys (minor 2) never reach an IR, so this stays at the IR minor.
 pub const SCHEMA_CONTRACT_MINOR: u32 = 1;
+/// The minor that an IR carries when a field adapter record has `options`.
+pub const FIELD_ADAPTER_OPTIONS_MINOR: u32 = 3;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -179,7 +181,8 @@ impl Requirements {
 
     /// Sets the minor of the contract when a 2.1 record is in use, so that an engine of 2.0 reads every other IR.
     pub fn stamp_minor(&mut self) {
-        if !self.hooks.is_empty() || !self.extension_data.is_empty() { self.schema_contract_minor = SCHEMA_CONTRACT_MINOR; }
+        if !self.hooks.is_empty() || !self.extension_data.is_empty() { self.schema_contract_minor = self.schema_contract_minor.max(SCHEMA_CONTRACT_MINOR); }
+        if self.field_adapters.iter().any(|a| !a.options.is_null()) { self.schema_contract_minor = self.schema_contract_minor.max(FIELD_ADAPTER_OPTIONS_MINOR); }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -197,6 +200,9 @@ pub struct FieldAdapter {
     pub model: String,
     pub field: String,
     pub adapter: String,
+    /// Configuration for the language runtime of the adapter; the core never reads it, and the code generator writes it into the generated code unchanged.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub options: serde_json::Value,
 }
 
 /// File-field configuration has durable identity only; clients remain application configuration.
@@ -218,19 +224,33 @@ pub const FILE_REFERENCE_ADAPTER: &str = "file-storage.reference.v1";
 pub const RESERVED_MEMBERS: [&str; 14] =
     ["objects", "qs", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then"];
 
-/// Reject a file field whose generated Python or TypeScript operations collide with a model member.
-pub fn check_file_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, field: &str) -> Result<(), String> {
-    for method in [format!("{field}_signed_url"), format!("{field}_open"), format!("{}SignedUrl", camel(field)), format!("{}Open", camel(field))] {
-        let taken = |name: &str| name == method || camel(name) == method;
+/// The method names that the file-storage runtime adds for `field`, in the Python and TypeScript forms.
+pub fn file_method_names(field: &str) -> Vec<String> {
+    vec![format!("{field}_signed_url"), format!("{field}_open"), format!("{}SignedUrl", camel(field)), format!("{}Open", camel(field))]
+}
+
+/// Reject an adapter field whose generated operations (`names`) collide with a model member.
+pub fn check_adapter_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, names: &[String]) -> Result<(), String> {
+    for method in names {
+        let taken = |name: &str| name == method || camel(name) == *method;
         if RESERVED_MEMBERS.contains(&method.as_str())
             || model.fields.iter().any(|f| taken(&f.name))
             || model.relations.iter().any(|r| taken(&r.name))
             || ir.behavior.methods.iter().any(|m| m.model == model.name && taken(&m.name))
         {
-            return Err(format!("{}.{method}: generated file method collides with a model member", model.name));
+            return Err(format!("{}.{method}: generated adapter method collides with a model member", model.name));
         }
     }
     Ok(())
+}
+
+/// Expands a runtime template for `field`: Python `{field}` is the field name; TypeScript `{field}` is its camel form and `{Field}` the same with a capital first letter.
+pub fn expand_adapter_template(template: &str, language: &str, field: &str) -> String {
+    if language != "typescript" { return template.replace("{field}", field); }
+    let lower = camel(field);
+    let mut chars = lower.chars();
+    let upper: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+    template.replace("{field}", &lower).replace("{Field}", &upper)
 }
 
 /// `author_id` -> `authorId`: an underscore after a letter or digit is dropped and the
@@ -457,14 +477,17 @@ impl Manifest {
 }
 
 /// The code that an extension ships for one language.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LanguageSection {
-    /// The source directory, relative to the extension crate.
+    /// The source directory, relative to the extension crate. Empty when the runtime is an installed package that `field_adapters` names.
+    #[serde(default)]
     pub source: String,
-    /// The export that adds query-set members: a `QuerySet` subclass in Python, a mixin function in TypeScript.
+    /// The export that adds query-set members: a `QuerySet` subclass in Python, a mixin function in TypeScript. Empty only when `field_adapters` is not.
+    #[serde(default)]
     pub query_set: String,
-    /// The export that adds instance members.
+    /// The export that adds instance members. Empty only when `field_adapters` is not.
+    #[serde(default)]
     pub instance: String,
     /// Optional export for the bound query set (`orm.of(objs)`): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript, whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
     #[serde(default)]
@@ -472,6 +495,55 @@ pub struct LanguageSection {
     /// The host members that the extension replaces; every other name collision is an error.
     #[serde(default)]
     pub overrides: Vec<String>,
+    /// The language runtimes of the field adapters that this extension binds.
+    #[serde(default)]
+    pub field_adapters: Vec<AdapterRuntime>,
+}
+
+/// The language runtime of one field adapter: what the generated code imports, calls, types and re-exports.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterRuntime {
+    /// The adapter id, equal to `FieldAdapter.adapter`.
+    pub adapter: String,
+    /// The export of the runtime module that the generated code calls once for each model with such a field.
+    pub install: String,
+    /// The module of the runtime. Empty: the module of the language section (`--extension-module` or the derived one).
+    #[serde(default)]
+    pub module: String,
+    /// The stub import lines (Python `.pyi`, TypeScript type imports).
+    #[serde(default)]
+    pub imports: Vec<String>,
+    /// The field value type; a nullable field gets `| None` (Python) or `| null` (TypeScript).
+    pub value: String,
+    /// The input type for create and update. Empty: `value`.
+    #[serde(default)]
+    pub input: String,
+    /// Member stub templates, one per member, with `{field}` (and `{Field}` in TypeScript).
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// The method name templates for the collision check.
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// Functions that the generated module defines as a call of `method` on each install result.
+    #[serde(default)]
+    pub module_functions: Vec<ModuleFunction>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleFunction {
+    pub name: String,
+    pub method: String,
+    /// The stub: the parenthesised parameters and the return type, for example `(registry: Registry) -> None`.
+    pub stub: String,
+}
+
+impl AdapterRuntime {
+    /// The method names of this runtime for `field`.
+    pub fn method_names(&self, language: &str, field: &str) -> Vec<String> {
+        self.methods.iter().map(|m| expand_adapter_template(m, language, field)).collect()
+    }
 }
 
 /// What the artifact records about the language code of one extension and language.
@@ -492,6 +564,8 @@ pub struct LanguageMembers {
     #[serde(default)]
     pub bound_query_set_members: Vec<String>,
     pub overrides: Vec<String>,
+    #[serde(default)]
+    pub field_adapters: Vec<AdapterRuntime>,
     /// SHA-256 of the embedded source files (name, length and content of each, in name order).
     pub hash: String,
 }
@@ -1274,15 +1348,65 @@ mod tests {
         let next_minor = |v: ContractVersion| format!("{}.{}", v.major, v.minor + 1);
         assert!(check(&|_| {}).is_ok());
         let error = check(&|v| v["schema_contract"] = format!("{}.0", SCHEMA_CONTRACT_VERSION.major + 1).into()).unwrap_err();
-        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.2") && error.contains("major versions differ"), "{error}");
+        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.3") && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("schema contract 2.3 is newer than this engine (schema contract 2.2)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains("schema contract 2.4 is newer than this engine (schema contract 2.3)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
         let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
         assert!(error.contains("ABI 0.3 is newer than this engine (ABI 0.2)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| { v.as_object_mut().unwrap().remove("host_contract"); }).unwrap_err();
         assert!(error.contains("app: a manifest with no `abi` needs `host_contract`"), "{error}");
+    }
+
+    fn adapter_ir() -> SchemaIr {
+        serde_json::from_value(serde_json::json!({
+            "models": [{"name": "Note", "table": "notes", "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": true},
+                {"name": "note", "column": "note", "type": "json"},
+                {"name": "note_unwrap", "column": "note_unwrap", "type": "string"},
+            ], "relations": []}],
+        })).unwrap()
+    }
+
+    #[test]
+    fn adapter_templates_expand_by_language() {
+        assert_eq!(expand_adapter_template("{field}_unwrap", "python", "note_text"), "note_text_unwrap");
+        assert_eq!(expand_adapter_template("{field}Unwrap", "typescript", "note_text"), "noteTextUnwrap");
+        assert_eq!(expand_adapter_template("{Field}Unwrap", "typescript", "note_text"), "NoteTextUnwrap");
+        let runtime = AdapterRuntime { adapter: "a.b.v1".into(), install: "install".into(), value: "X".into(), methods: vec!["{field}_unwrap".into()], ..Default::default() };
+        assert_eq!(runtime.method_names("python", "note"), ["note_unwrap"]);
+    }
+
+    #[test]
+    fn an_adapter_method_that_collides_names_the_model_and_the_method() {
+        let ir = adapter_ir();
+        let model = &ir.models[0];
+        let error = check_adapter_methods(&ir, model, &["note_unwrap".into()]).unwrap_err();
+        assert_eq!(error, "Note.note_unwrap: generated adapter method collides with a model member");
+        let error = check_adapter_methods(&ir, model, &["noteUnwrap".into()]).unwrap_err();
+        assert!(error.contains("Note.noteUnwrap"), "{error}");
+        let error = check_adapter_methods(&ir, model, &["toJSON".into()]).unwrap_err();
+        assert!(error.contains("Note.toJSON"), "{error}");
+        assert!(check_adapter_methods(&ir, model, &["note_wrap".into(), "noteWrap".into()]).is_ok());
+    }
+
+    #[test]
+    fn a_language_section_of_adapters_needs_no_query_set_and_options_set_the_minor() {
+        let section: LanguageSection = serde_json::from_value(serde_json::json!({
+            "field_adapters": [{"adapter": "a.b.v1", "install": "install", "value": "X", "module_functions": [{"name": "configure", "method": "configure", "stub": "(x: int) -> None"}]}],
+        })).unwrap();
+        assert!(section.query_set.is_empty() && section.source.is_empty() && section.field_adapters[0].module_functions.len() == 1);
+        assert!(serde_json::from_value::<LanguageSection>(serde_json::json!({"field_adapters": [{"adapter": "a", "install": "i", "value": "X", "extra": 1}]})).is_err());
+        let mut ir = adapter_ir();
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Note".into(), field: "note".into(), adapter: "a.b.v1".into(), options: serde_json::Value::Null });
+        ir.behavior.stamp_minor();
+        assert_eq!(ir.behavior.schema_contract_minor, 0);
+        assert!(!serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("options"));
+        ir.behavior.field_adapters[0].options = serde_json::json!({"prefix": "x"});
+        ir.behavior.stamp_minor();
+        assert_eq!(ir.behavior.schema_contract_minor, FIELD_ADAPTER_OPTIONS_MINOR);
+        assert!(FIELD_ADAPTER_OPTIONS_MINOR as u16 <= SCHEMA_CONTRACT_VERSION.minor);
     }
 
     fn hook_ir(binding: serde_json::Value) -> SchemaIr {
@@ -1380,7 +1504,7 @@ mod tests {
         newer.behavior.schema_contract = SCHEMA_CONTRACT;
         newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_VERSION.minor as u32 + 1;
         let error = check_requirements(&newer, &Artifact::default()).unwrap_err();
-        assert!(error.contains("schema contract 2.3 is newer than this engine (2.2)"), "{error}");
+        assert!(error.contains("schema contract 2.4 is newer than this engine (2.3)"), "{error}");
         let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir.behavior.stamp_minor(); ir };
         let merged = merge_definition(data("a"), data("b")).unwrap();
         assert_eq!(merged.behavior.extension_data.len(), 2);

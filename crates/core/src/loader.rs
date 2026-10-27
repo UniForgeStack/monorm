@@ -664,15 +664,15 @@ mod tests {
     #[test]
     fn a_manifest_of_a_later_release_fails_only_for_a_package_that_the_compile_selects() {
         // The later release adds a key to the manifest, or to one of its attributes.
-        for (name, extra) in [("later", format!("future_field = true\n{KIT}")), ("later-attribute", format!("{KIT}field_type = \"Money\"\nfuture_key = true\n"))] {
+        for (name, extra) in [("later", format!("future_field = true\n{KIT}")), ("later-attribute", format!("{KIT}field_type = \"Money\"\nfuture_key = true\n")), ("later-adapters", format!("{KIT}\n[python]\nfield_adapters = [{{ adapter = \"a.b.v1\", install = \"install\", value = \"X\" }}]\n"))] {
             let dir = scratch(name);
             let (_, newer) = install(&dir.join("b"), "other.kit", &extra);
-            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"2.0\"", "schema_contract = \"2.3\"")).unwrap();
+            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"2.0\"", "schema_contract = \"2.4\"")).unwrap();
             let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), newer)];
             assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
             for selected in [select(&available, &used("kit"), &[]), select(&available, &BTreeSet::new(), &["other.kit".into()])] {
                 let error = selected.err().unwrap();
-                assert!(error.contains("other.kit") && error.contains("schema contract 2.3") && error.contains("schema contract 2.2") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
+                assert!(error.contains("other.kit") && error.contains("schema contract 2.4") && error.contains("schema contract 2.3") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
             }
             std::fs::remove_dir_all(&dir).ok();
         }

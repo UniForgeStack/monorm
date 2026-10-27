@@ -62,7 +62,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         {
             return Err(fail("duplicate file-field adapter"));
         }
-        orm_contracts::extension::check_file_methods(ir, model, name).map_err(|e| fail(&e))?;
+        orm_contracts::extension::check_adapter_methods(ir, model, &orm_contracts::extension::file_method_names(name)).map_err(|e| fail(&e))?;
         contributions.push(FileField {
             model: model.name.clone(),
             field: name.clone(),
@@ -75,6 +75,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
             model: field.model.clone(),
             field: field.field.clone(),
             adapter: FILE_REFERENCE_ADAPTER.into(),
+            options: serde_json::Value::Null,
         });
         ir.behavior.file_fields.push(field);
     }

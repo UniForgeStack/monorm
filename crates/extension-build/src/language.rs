@@ -163,14 +163,20 @@ fn members(language: &str, files: &[(String, String)], export: &str) -> Result<V
 pub fn collect(manifest: &Manifest, package: &Path) -> Result<Vec<Embedded>, String> {
     let mut out = vec![];
     for (language, section) in manifest.language_sections() {
+        if section.source.is_empty() {
+            // The runtime is an installed package that the adapter entries name: nothing to embed or check.
+            out.push(Embedded { members: members_record(manifest, language, section, &[], vec![], vec![], vec![], vec![]), dir: package.to_path_buf(), files: vec![] });
+            continue;
+        }
         let dir = package.join(&section.source).canonicalize().map_err(|e| format!("{}: {language} source {}: {e}", manifest.id, section.source))?;
         if !dir.starts_with(package) { return Err(format!("{}: {language} source must be packaged with its crate", manifest.id)); }
         let mut files = vec![];
         walk(&dir, &dir, extensions(language), &mut files)?;
         files.sort();
         if files.is_empty() { return Err(format!("{}: {language} source {} has no source files", manifest.id, section.source)); }
-        let query_set_members = members(language, &files, &section.query_set).map_err(|e| format!("{}: {e}", manifest.id))?;
-        let instance_members = members(language, &files, &section.instance).map_err(|e| format!("{}: {e}", manifest.id))?;
+        let exported = |name: &str| if name.is_empty() { Ok(vec![]) } else { members(language, &files, name).map_err(|e| format!("{}: {e}", manifest.id)) };
+        let query_set_members = exported(&section.query_set)?;
+        let instance_members = exported(&section.instance)?;
         let bound_query_set_members = if section.bound_query_set.is_empty() { vec![] } else {
             members(language, &files, &section.bound_query_set).map_err(|e| format!("{}: {e}", manifest.id))?
         };
@@ -186,16 +192,22 @@ pub fn collect(manifest: &Manifest, package: &Path) -> Result<Vec<Embedded>, Str
         }
         let mut overrides = section.overrides.clone();
         overrides.sort();
-        out.push(Embedded {
-            members: LanguageMembers {
-                extension: manifest.id.clone(), version: manifest.version.clone(), language: language.into(),
-                query_set: section.query_set.clone(), instance: section.instance.clone(),
-                query_set_members, instance_members, bound_query_set: section.bound_query_set.clone(), bound_query_set_members, overrides, hash: hash(&files),
-            },
-            dir, files,
-        });
+        let record = members_record(manifest, language, section, &files, query_set_members, instance_members, bound_query_set_members, overrides);
+        out.push(Embedded { members: record, dir, files });
     }
     Ok(out)
+}
+
+/// The adapter entries join the hash, so a changed runtime entry changes the record that `define()` compares.
+fn members_record(manifest: &Manifest, language: &str, section: &LanguageSection, files: &[(String, String)], query_set_members: Vec<String>, instance_members: Vec<String>, bound_query_set_members: Vec<String>, overrides: Vec<String>) -> LanguageMembers {
+    let mut hashed = files.to_vec();
+    if !section.field_adapters.is_empty() { hashed.push(("@field_adapters".into(), serde_json::to_string(&section.field_adapters).expect("json"))); }
+    LanguageMembers {
+        extension: manifest.id.clone(), version: manifest.version.clone(), language: language.into(),
+        query_set: section.query_set.clone(), instance: section.instance.clone(),
+        query_set_members, instance_members, bound_query_set: section.bound_query_set.clone(), bound_query_set_members, overrides,
+        field_adapters: section.field_adapters.clone(), hash: hash(&hashed),
+    }
 }
 
 fn tool(name: &str, host: &Path) -> PathBuf {
@@ -214,7 +226,7 @@ fn json(value: serde_json::Value) -> String { serde_json::to_string_pretty(&valu
 
 /// Type-check each language of each extension against the host packages; `work` holds the tool configs.
 pub fn check(embedded: &[Embedded], host: &Path, work: &Path) -> Result<(), String> {
-    for item in embedded {
+    for item in embedded.iter().filter(|i| !i.files.is_empty()) {
         let id = &item.members.extension;
         let dir = work.join("language-check").join(format!("{id}-{}", item.members.language));
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -270,8 +282,19 @@ pub fn validate_section(manifest: &Manifest, language: &str, section: &LanguageS
     if !manifest.languages.iter().any(|l| l == language) {
         return Err(format!("{}: {language} language section requires {language} in languages", manifest.id));
     }
-    for name in [&section.query_set, &section.instance] {
-        if name.is_empty() { return Err(format!("{}: {language} section needs a query-set and an instance export", manifest.id)); }
+    if section.field_adapters.is_empty() {
+        for name in [&section.query_set, &section.instance] {
+            if name.is_empty() { return Err(format!("{}: {language} section needs a query-set and an instance export", manifest.id)); }
+        }
+    }
+    if section.source.is_empty() && (!section.query_set.is_empty() || !section.instance.is_empty() || !section.bound_query_set.is_empty() || !section.overrides.is_empty()) {
+        return Err(format!("{}: {language} section names exports but no `source`", manifest.id));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for runtime in &section.field_adapters {
+        if runtime.adapter.is_empty() || runtime.install.is_empty() || runtime.value.is_empty() || !seen.insert(&runtime.adapter) {
+            return Err(format!("{}: {language} field adapter {:?} needs a unique `adapter`, an `install` and a `value`", manifest.id, runtime.adapter));
+        }
     }
     Ok(())
 }

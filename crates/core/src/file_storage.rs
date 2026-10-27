@@ -22,7 +22,7 @@ pub fn prepare(ir: &SchemaIr) -> Result<Vec<Vec<PreparedFileField>>, String> {
             || field.default_sql.is_some() || field.auto_increment {
             return Err(format!("{}.{}: file fields cannot be keys or have defaults", file.model, file.field));
         }
-        crate::behavior::check_file_methods(ir, &ir.models[model], &file.field)?;
+        crate::behavior::check_adapter_methods(ir, &ir.models[model], &crate::behavior::file_method_names(&file.field))?;
         prepared[model].push(PreparedFileField {
             position, storage: file.storage.clone(), nullable: field.nullable,
         });
@@ -33,7 +33,7 @@ pub fn prepare(ir: &SchemaIr) -> Result<Vec<Vec<PreparedFileField>>, String> {
         for file in prepared[owner].clone() {
             let name = &ir.models[owner].fields[file.position].name;
             let Some(position) = ir.models[model].fields.iter().position(|f| f.name == *name) else { continue };
-            crate::behavior::check_file_methods(ir, &ir.models[model], name)?;
+            crate::behavior::check_adapter_methods(ir, &ir.models[model], &crate::behavior::file_method_names(name))?;
             prepared[model].push(PreparedFileField { position, nullable: ir.models[model].fields[position].nullable, ..file });
         }
     }
@@ -48,7 +48,7 @@ mod tests {
     fn schema() -> SchemaIr {
         let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}", None).unwrap();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into() });
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into(), options: serde_json::Value::Null });
         ir.behavior.file_fields.push(FileField { model: "Report".into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
         ir
     }
