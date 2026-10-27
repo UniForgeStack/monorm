@@ -63,6 +63,7 @@ const SOURCE: &str = "acme.outside";
 /// A model that also has the text fields `first` and `last` gets the computed field `initials`.
 /// Optional text fields get expression records: `slug` (`lower(text)` on update), `stamp` and `editor` (expression hooks on update),
 /// `region` and `owner` (expression hooks as insert defaults), `secret` (sealed by hook 1, read back as the computed field `secret_plain`). `shop_id` and `updated_by` default to the request scope on insert.
+/// `touched_by` takes the request `user` on update through an expression assignment that reads the request scope.
 fn guard(ir: &mut SchemaIr) -> Result<(), String> {
     use orm_contracts::{extension::{HookBinding, ReadDefault}, ir::ClientDefaultIr, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
     let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == GUARD).cloned().collect();
@@ -75,6 +76,7 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
         let has_initials = ["first", "last"].iter().all(|n| m.fields.iter().any(|f| f.name == *n));
         let has = |name: &str| m.fields.iter().any(|f| f.name == name);
         let (has_slug, has_stamp, has_editor, has_region, has_owner, has_secret) = (has("slug"), has("stamp"), has("editor"), has("region"), has("owner"), has("secret"));
+        let has_touched = has("touched_by");
         let bind = |point: u8, field: Option<&str>, export: &str, dependencies: &[&str], reads_context: bool| HookBinding {
             source: SOURCE.into(), point, model: model.clone(), field: field.map(Into::into), export: export.into(),
             dependencies: dependencies.iter().map(|s| (*s).into()).collect(), reads_context,
@@ -129,6 +131,10 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
             source: SOURCE.into(), model: model.clone(), field: "updated_by".into(), on: vec![WriteKind::Update],
             value: AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: UpsertDefault::Drop,
         });
+        // After the hook assignments: a request without a user fails on the hooks first.
+        if has_touched {
+            ir.behavior.write_assignments.push(assign("touched_by", AssignValue::Expr(serde_json::json!({"t": "scope", "name": "user"}))));
+        }
         ir.behavior.read_defaults.push(ReadDefault {
             source: SOURCE.into(), name: "tenant".into(), model,
             filter: Some(serde_json::json!({"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "shop_id"}, "r": {"t": "scope", "name": "shop"}})),

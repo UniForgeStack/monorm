@@ -8,14 +8,20 @@ for (const [id, stamp] of Object.entries(locked.behavior.packages)) {
   const [scope, name] = id.split('.');
   assert.equal((await import(`@${scope}/${name}`)).manifestHash, stamp.manifest_hash);
 }
+// The lock stores an expression default as a record: `region` from a hook that generate evaluated, `owner` still a hook.
+const defaults = Object.fromEntries(locked.models.find((m) => m.name === 'Note').fields.map((f) => [f.name, f.client_default]));
+assert.deepEqual(defaults.shop_id, { expr: { t: 'scope', name: 'shop' } });
+assert.deepEqual(defaults.region, { expr: { t: 'text', value: 'eu' } });
+assert.deepEqual(defaults.owner, { hook: { export: 'acme.outside.owner' } });
 const db = await connect(process.env.ORM_DATABASE_URL);
 await db.dropTables();
 await db.createTables();
 try {
   const notes = Note.objects.using(db);
-  const fails = async (promise, ...parts) => {
+  const fails = async (promise, ...parts) => failsWith([QueryError], promise, ...parts);
+  const failsWith = async (errors, promise, ...parts) => {
     try { await promise; } catch (error) {
-      assert.ok(error instanceof QueryError || error instanceof TypeError, `${error} is not a QueryError or a TypeError`);
+      assert.ok(errors.some((type) => error instanceof type), `${error} is not a ${errors.map((type) => type.name).join(' or a ')}`);
       for (const part of parts) assert.ok(String(error.message).includes(part), `${part} is missing from ${error.message}`);
       return;
     }
@@ -48,6 +54,8 @@ try {
     // `stamp` comes from a hook that reads no context and `editor` from one that reads the user of the request scope.
     const changed = await notes.get(Note.id.eq(1));
     assert.deepEqual([changed.updatedBy, changed.slug, changed.stamp, changed.editor], ['ann', 'first', 'guarded', 'by:ann']);
+    // `touchedBy` is an expression assignment that reads the request scope: `scope.user`.
+    assert.equal(changed.touchedBy, 'ann');
     // A value that the caller sets for that field goes through the hook too.
     await row.update({ updatedBy: 'eve' });
     assert.equal((await notes.get(Note.id.eq(1))).updatedBy, 'ann');
@@ -55,7 +63,8 @@ try {
     await notes.insert({ id: 3, text: 'named', start: 1, end: 2, first: 'ada', last: 'lovelace', secret: '' });
     assert.equal((await notes.get(Note.id.eq(3))).initials, 'AL');
     assert.deepEqual((await notes.filter(Note.id.in([1, 3])).orderBy(Note.id).all()).map((n) => n.initials), ['', 'AL']);
-    await fails(notes.filter(Note.id.eq(3)).update({ initials: 'ZZ' }), 'initials');
+    // The bindings drop a computed field from the update input, so the call can fail before the engine runs.
+    await failsWith([QueryError, TypeError], notes.filter(Note.id.eq(3)).update({ initials: 'ZZ' }), 'initials');
     await fails(notes.filter(Note.initials.eq('AL')).count(), 'computed fields');
     await notes.filter(Note.id.eq(3)).delete();
     // Hook 1 seals `secret` before the write; hook 5 reads it back as `secretPlain`.
@@ -72,6 +81,7 @@ try {
     assert.equal(await notes.filter(Note.text.eq('other')).update({ text: 'bulk' }), 1);
     assert.equal((await notes.get(Note.id.eq(2))).updatedBy, 'bob');
     assert.equal((await notes.get(Note.id.eq(2))).editor, 'by:bob');
+    assert.equal((await notes.get(Note.id.eq(2))).touchedBy, 'bob');
   });
   await scope({ shop: 1 }, async () => {
     await fails(row.update({ text: 'again' }), 'no user in the request scope');

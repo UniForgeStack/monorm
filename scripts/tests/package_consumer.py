@@ -15,16 +15,21 @@ async def run():
     assert set(packages) == {"acme.outside", "orm.inherit", "orm.locking", "orm.query-defaults", "orm.soft-delete", "orm.timestamps"}
     for ident, stamp in packages.items():
         assert import_runtime(ident).MANIFEST_HASH == stamp["manifest_hash"]
+    # The lock stores an expression default as a record: `region` from a hook that generate evaluated, `owner` still a hook.
+    defaults = {f["name"]: f.get("client_default") for m in locked["models"] if m["name"] == "Note" for f in m["fields"]}
+    assert defaults["shop_id"] == {"expr": {"t": "scope", "name": "shop"}}
+    assert defaults["region"] == {"expr": {"t": "text", "value": "eu"}}
+    assert defaults["owner"] == {"hook": {"export": "acme.outside.owner"}}
     db = await orm.connect(os.environ["ORM_DATABASE_URL"])
     await db.drop_tables()
     await db.create_tables()
     try:
         notes = Note.objects.using(db)
 
-        async def fails(coro, *parts):
+        async def fails(coro, *parts, errors=(orm.QueryError,)):
             try:
                 await (coro() if callable(coro) else coro)
-            except (orm.QueryError, TypeError) as error:
+            except errors as error:
                 for part in parts:
                     assert part in str(error), f"{part!r} is missing from {error}"
                 return
@@ -55,6 +60,8 @@ async def run():
             # `stamp` comes from a hook that reads no context and `editor` from one that reads the user of the request scope.
             changed = await notes.get(Note.id == 1)
             assert (changed.updated_by, changed.slug, changed.stamp, changed.editor) == ("ann", "first", "guarded", "by:ann")
+            # `touched_by` is an expression assignment that reads the request scope: `scope.user`.
+            assert changed.touched_by == "ann"
             # A value that the caller sets for that field goes through the hook too.
             await row.update(updated_by="eve")
             assert (await notes.get(Note.id == 1)).updated_by == "ann"
@@ -62,7 +69,8 @@ async def run():
             await notes.insert(id=3, text="named", start=1, end=2, first="ada", last="lovelace", secret="")
             assert (await notes.get(Note.id == 3)).initials == "AL"
             assert [n.initials for n in await notes.filter(Note.id.in_([1, 3])).order_by(Note.id).all()] == ["", "AL"]
-            await fails(lambda: notes.filter(Note.id == 3).update(initials="ZZ"), "initials")
+            # The bindings drop a computed field from the update input, so the call fails before the engine runs.
+            await fails(lambda: notes.filter(Note.id == 3).update(initials="ZZ"), "initials", errors=(orm.QueryError, TypeError))
             await fails(lambda: notes.filter(Note.initials == "AL").count(), "computed fields")
             await notes.filter(Note.id == 3).delete()
             # Hook 1 seals `secret` before the write; hook 5 reads it back as `secret_plain`.
@@ -78,6 +86,7 @@ async def run():
             assert await notes.filter(Note.text == "other").update(text="bulk") == 1
             assert (await notes.get(Note.id == 2)).updated_by == "bob"
             assert (await notes.get(Note.id == 2)).editor == "by:bob"
+            assert (await notes.get(Note.id == 2)).touched_by == "bob"
         with orm.scope(shop=1):
             await fails(notes.insert(id=8, text="x", start=1, end=2, secret=""), "user")
             assert await notes.filter(Note.id == 8).count() == 0

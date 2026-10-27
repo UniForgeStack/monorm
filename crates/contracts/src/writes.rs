@@ -26,7 +26,8 @@ pub enum AssignValue {
     /// and the hook binding of the field names it; the hook reads the request context.
     Hook { export: String },
     /// A query IR expression (the JSON of `Expr`) over the row's own columns and `scope.<name>`. The model's
-    /// `define()` parses it once; the statement puts it in the SET list.
+    /// `define()` parses it once; the statement puts it in the SET list. A column reads the row as it was before
+    /// the update, as in SQL.
     Expr(serde_json::Value),
     /// A query IR expression that a library hook (point 6) returns. The hook reads the request context, and the
     /// engine calls it once for each update statement. `orm generate` evaluates a hook that reads no context once

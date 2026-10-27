@@ -3811,10 +3811,13 @@ pub fn plan_insert(
         stmt.columns(cols.iter().map(|c| Alias::new(&c.column)));
         let inline = cols.iter().map(|c| nested::leaf_default(c, target.dialect)).collect::<Result<Vec<_>>>()?;
         // An omitted value of a field with an expression default takes the expression, planned once.
+        // A request that sets the value in every row needs neither the scope value nor the hook.
         let mut expr_defaults: Vec<Option<SExpr>> = vec![None; cols.len()];
+        let omitted = |i: usize| rows.iter().zip(&forced).any(|(row, mask)| row.get(i).is_some_and(Option::is_none) && !mask[i]);
         if m.client_defaults.iter().any(|(_, d)| matches!(d, orm_core::client_default::ClientDefault::Expr(_) | orm_core::client_default::ClientDefault::Hook(_))) {
             let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
-            for (slot, c) in expr_defaults.iter_mut().zip(&cols) {
+            for (i, (slot, c)) in expr_defaults.iter_mut().zip(&cols).enumerate() {
+                if !omitted(i) { continue; }
                 let Some((position, default)) = m.client_defaults.iter().find(|(p, _)| m.fields()[*p].name == c.name) else { continue };
                 match default {
                     orm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
@@ -3831,11 +3834,11 @@ pub fn plan_insert(
             if row.len() != cols.len() {
                 return Err(Error::query("insert row length does not match fields"));
             }
-            let values = cols.iter().zip(&inline).zip(&expr_defaults).zip(row).zip(forced).map(|((((c, inline), expr), item), forced)| match item {
-                None if forced => SExpr::cust("NULL"),
-                None if expr.is_some() => expr.clone().unwrap_or_else(|| SExpr::cust("NULL")),
-                None if inline.is_some() => SExpr::cust(inline.clone().unwrap_or_default()),
-                None if target.dialect == Dialect::Sqlite => {
+            let values = cols.iter().zip(&inline).zip(&expr_defaults).zip(row).zip(forced).map(|((((c, inline), expr), item), forced)| match (item, expr) {
+                (None, _) if forced => SExpr::cust("NULL"),
+                (None, Some(e)) => e.clone(),
+                (None, None) if inline.is_some() => SExpr::cust(inline.clone().unwrap_or_default()),
+                (None, None) if target.dialect == Dialect::Sqlite => {
                     let default = if c.default_now { "CURRENT_TIMESTAMP".to_owned() }
                     else if let Some(sql) = &c.default_sql { sql.clone() }
                     else if let Some(v) = &c.default {
@@ -3847,8 +3850,8 @@ pub fn plan_insert(
                     } else { "NULL".to_owned() };
                     SExpr::cust(default)
                 }
-                None => SExpr::cust("DEFAULT"),
-                Some(v) => bind(v, Some(c)),
+                (None, None) => SExpr::cust("DEFAULT"),
+                (Some(v), _) => bind(v, Some(c)),
             });
             stmt.values(values.collect::<Vec<_>>()).map_err(|e| query_err(e.to_string()))?;
         }

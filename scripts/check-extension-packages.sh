@@ -50,6 +50,7 @@ model Note {
   editor String?
   region String?
   owner String?
+  touched_by String?
   secret String
   @@inherit.extends(Base)
   @@outside.tag("installed")

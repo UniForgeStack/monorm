@@ -1,10 +1,10 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
 use orm_contracts::abi::{Arg, Context, Value};
-use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_MINOR, SCHEMA_CONTRACT_VERSION};
+use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, EXPRESSION_RECORDS_MINOR, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_MINOR, SCHEMA_CONTRACT_VERSION};
 use orm_core::dsl::{compile_file_with, Installed};
 use orm_core::loader::{Library, Plan};
-use orm_core::ir::{ColType, FieldIr, SchemaIr};
+use orm_core::ir::{ClientDefaultIr, ColType, FieldIr, SchemaIr};
 use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, process::Command, sync::Mutex};
 
 const ID: &str = "acme.outside";
@@ -420,6 +420,18 @@ fn a_hook_of_the_library_lowers_with_the_new_minor_and_runs_with_its_extension_d
     assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, SCHEMA_CONTRACT_MINOR));
     let state = plan.library(ID).unwrap().init(&ir.behavior.extension_data[ID]).unwrap();
     assert_eq!(state.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("xhello")));
+}
+
+#[test]
+fn an_expression_record_sets_minor_4_also_after_generate_removed_its_hook() {
+    let plan = bind_plan(&installed("", "0.2"));
+    let ir = lower_with(&plan, &binding(7, "tag", "acme.outside.region")).unwrap();
+    assert!(ir.behavior.hooks.is_empty(), "a hook that reads no context is evaluated at generate");
+    let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap();
+    assert!(matches!(tag.client_default, Some(ClientDefaultIr::Expr(_))), "{:?}", tag.client_default);
+    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (orm_contracts::extension::SCHEMA_CONTRACT, EXPRESSION_RECORDS_MINOR));
+    let ir = lower_with(&plan, &HookBinding { reads_context: true, ..binding(7, "tag", "acme.outside.region") }).unwrap();
+    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, EXPRESSION_RECORDS_MINOR));
 }
 
 #[test]
