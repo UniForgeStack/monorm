@@ -18,7 +18,6 @@ fn build_artifact() -> Artifact {
     let compiled = [
         (cfg!(feature = "reference-loading"), "reference-loading"),
         (cfg!(feature = "model-composition"), "model-composition"),
-        (cfg!(feature = "proxy-models"), "proxy-models"),
     ];
     for (_, capability) in compiled.into_iter().filter(|(on, _)| *on) {
         if !artifact.capabilities.iter().any(|c| c == capability) { artifact.capabilities.push(capability.into()); }

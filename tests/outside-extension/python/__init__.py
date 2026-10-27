@@ -4,7 +4,7 @@ from typing import Self
 from orm import QuerySet
 from orm.ext import ModelT
 
-MANIFEST_HASH = "9894b1df7f88bdd60f2ecc0c2924cb04def4099f24f376015ead8fad1a46b790"
+MANIFEST_HASH = "49078d804127b38d85523fa45f79c7259143261ba617603a6d273b2864ce5295"
 
 
 class OutsideQuerySet(QuerySet[ModelT]):

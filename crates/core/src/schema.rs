@@ -159,9 +159,6 @@ pub struct Schema {
 
 /// The view and check records must name known models, and a view shares the table of its root.
 fn validate_views(behavior: &crate::behavior::Requirements, models: &[Model], model_index: &HashMap<String, usize>, physical: Option<&Schema>) -> Result<()> {
-    if !behavior.proxy_models.is_empty() && behavior.model_views.is_empty() {
-        return Err("the models carry proxy records from an older release and no model views; run `orm generate`".into());
-    }
     let mut seen = std::collections::BTreeSet::new();
     for view in &behavior.model_views {
         let known = |name: &str| model_index.get(name).map(|&i| &models[i]);

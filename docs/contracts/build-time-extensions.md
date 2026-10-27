@@ -62,8 +62,8 @@ Declare all selected behavioral extension crates in `dependencies`, including ex
 Cargo resolves Rust package versions;
 the frontend checks extension dependency constraints against that resolved selection.
 
-A manifest capability in `HOST_FEATURE_CAPABILITIES` (`model-composition`,
-`proxy-models`) also turns on the host Cargo feature of the same name in both bindings.
+A manifest capability in `HOST_FEATURE_CAPABILITIES` (`model-composition`)
+also turns on the host Cargo feature of the same name in both bindings.
 `file-storage` is not one: it has no host code and only requires `async-field-adapter.v1`.
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
 The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
@@ -87,7 +87,6 @@ Each is a crate that you put in `dependencies`; its manifest capability turns on
 
 | Feature | Dependency entry (`"alias": {...}`) | Doc |
 |---|---|---|
-| proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](../extensions/proxy-models.md) |
 | model-composition | `"composition": {"package": "orm-model-composition", "path": "extensions/model-composition"}` | [model-composition.md](../extensions/model-composition.md) |
 | file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](../extensions/file-storage.md) |
 

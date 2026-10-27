@@ -1,7 +1,6 @@
 # Same-table proxy models
 
-The `orm-proxy` schema compiler and the optional `proxy-models` native capability
-supply proxy models. A proxy is a different logical view of one physical model.
+The `orm-proxy` package (`@orm/proxy` for Node) supplies proxy models. A proxy is a different logical view of one physical model.
 Default filters and default selection come from the `orm-query-defaults` package
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
@@ -120,12 +119,9 @@ Generated Python and TypeScript types describe the intended non-null/subset view
 These contracts give warnings and do not enforce the shape, thus returned values
 can violate those hints. Strict validation requires a separately declared validator.
 
-A native build without the feature excludes prepared proxy state, runtime
-dependencies and diagnostics. Definition rejects proxy metadata without the
-compiled capability and asks for a rebuild. The `orm-proxy` manifest declares the
-`proxy-models` capability, so selecting it in `orm-extension-build` selects both the
-compiler and the `proxy-models` host feature; the runtime code alone does not install
-the source declarations.
+The proxy pass emits `model_views`, `result_checks` and `storage`, which the host reads.
+Its own data stays in `extension_data["orm.proxy"]`. The host has no proxy feature and no proxy record.
+Without the installed package, `@@proxy.of` fails at definition with an unknown attribute.
 
 ## Owning a list partition (PostgreSQL)
 

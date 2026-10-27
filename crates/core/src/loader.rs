@@ -219,7 +219,6 @@ impl Plan {
         ir.behavior.declarations.extend(previous);
         ir.behavior.lowered_models = ir.models.iter().map(|m| m.name.clone()).collect();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.stamp_minor();
         ir.behavior.extensions = self.manifests.iter().filter(|m| !m.is_dynamic()).map(|m| (m.id.clone(), m.version.clone())).collect();
         validate_requirements(ir, &self.manifests, language)
     }
@@ -455,7 +454,7 @@ mod tests {
     fn install(dir: &Path, id: &str, body: &str) -> (String, PathBuf) {
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join(MANIFEST_FILE);
-        std::fs::write(&path, format!("id = \"{id}\"\nversion = \"1.0.0\"\nschema_contract = \"3.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n{body}")).unwrap();
+        std::fs::write(&path, format!("id = \"{id}\"\nversion = \"1.0.0\"\nschema_contract = \"4.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n{body}")).unwrap();
         (id.to_owned(), path)
     }
 
@@ -631,7 +630,7 @@ mod tests {
 
     #[test]
     fn the_generator_key_may_name_an_extension_that_the_artifact_has() {
-        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"3.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n").unwrap();
+        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"4.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n").unwrap();
         assert!(plan(&[], &BTreeSet::new(), &["acme.compiled".into()], &[compiled], &[]).unwrap().is_none());
     }
 
@@ -680,7 +679,7 @@ mod tests {
     fn an_unrelated_package_that_is_no_library_never_fails_a_compile() {
         let dir = scratch("unrelated");
         let (_, other) = install(&dir.join("b"), "other.kit", KIT);
-        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"3.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
+        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"4.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
         let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), other.clone())];
         assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
         let error = select(&available, &used("kit"), &[]).err().unwrap();
@@ -696,12 +695,12 @@ mod tests {
         for (name, extra) in [("later", format!("future_field = true\n{KIT}")), ("later-attribute", format!("{KIT}field_type = \"Money\"\nfuture_key = true\n"))] {
             let dir = scratch(name);
             let (_, newer) = install(&dir.join("b"), "other.kit", &extra);
-            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"3.0\"", "schema_contract = \"3.4\"")).unwrap();
+            std::fs::write(&newer, std::fs::read_to_string(&newer).unwrap().replace("schema_contract = \"4.0\"", "schema_contract = \"4.1\"")).unwrap();
             let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), newer)];
             assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
             for selected in [select(&available, &used("kit"), &[]), select(&available, &BTreeSet::new(), &["other.kit".into()])] {
                 let error = selected.err().unwrap();
-                assert!(error.contains("other.kit") && error.contains("schema contract 3.4") && error.contains("schema contract 3.3") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
+                assert!(error.contains("other.kit") && error.contains("schema contract 4.1") && error.contains("schema contract 4.0") && error.contains("newer than this engine") && error.contains("update the ORM"), "{error}");
             }
             std::fs::remove_dir_all(&dir).ok();
         }

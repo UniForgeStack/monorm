@@ -18,7 +18,7 @@ async fn check(url: &str) {
     let mut logical = physical.clone();
     logical[1]["fields"].as_array_mut().unwrap().push(serde_json::json!({"name":"name","column":"name","type":"string"}));
     let definition = serde_json::json!({"dialect":dialect,"models":logical,
-        "behavior":{"schema_contract":3,"storage":{"models":physical},
+        "behavior":{"schema_contract":4,"storage":{"models":physical},
             "field_storage":[{"model":"OwnerChild","field":"name","owner":"OwnerParent","column":"name"}],
             "owner_links":[{"child":"OwnerChild","parent":"OwnerParent","child_key":"id","parent_key":"id"}]}
     });

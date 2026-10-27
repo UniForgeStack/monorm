@@ -42,4 +42,3 @@ postgres = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:tokio-postgres-r
 sqlite = ["dep:rusqlite", "sea-query/backend-sqlite"]
 composition = ["orm-core/composition"]
 model-composition = ["composition", "orm-core/model-composition"]
-proxy-models = ["composition", "orm-core/proxy-models"]

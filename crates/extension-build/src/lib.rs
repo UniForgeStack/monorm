@@ -102,7 +102,7 @@ pub fn prepare(ir: &mut SchemaIr, language: Option<&str>) -> Result<(), String> 
         source.push_str(&format!(r#"    {binding}
     ir.behavior.lowered_models = ir.models.iter().map(|m| m.name.clone()).collect();
     if !ir.behavior.is_empty() {{
-        ir.behavior.schema_contract = SCHEMA_CONTRACT; ir.behavior.stamp_minor();
+        ir.behavior.schema_contract = SCHEMA_CONTRACT;
         static VERSIONS: OnceLock<std::collections::BTreeMap<String, String>> = OnceLock::new();
         ir.behavior.extensions = VERSIONS.get_or_init(|| serde_json::from_str({:?}).expect("generated versions")).clone();
     }}

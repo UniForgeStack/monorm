@@ -41,4 +41,3 @@ profile-combined = ["postgres", "sqlite"]
 profile-tooling = ["postgres", "sqlite", "cli", "generate-python", "generate-typescript", "reference-loading"]
 # The tooling features; `orm-extension-build` adds the first-party extensions (never pass them by hand).
 profile-full = ["postgres", "sqlite", "cli", "generate-python", "generate-typescript", "reference-loading"]
-proxy-models = ["composition", "orm-engine/proxy-models", "orm-core/proxy-models"]

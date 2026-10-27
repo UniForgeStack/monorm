@@ -92,11 +92,11 @@ static extension host; extension contract/compiler logic belongs to the build-ti
 extension system. It is distinct from model composition.
 
 Baseline native profiles do not claim optional reference-loading,
-proxy-models, model-composition or file-storage support.
+model-composition or file-storage support.
 The tooling profile and the default binding builds add `reference-loading`.
-The three feature extensions come only from extension crates selected in
+The two feature extensions come only from extension crates selected in
 `orm-extension-build`; do not pass their host features by hand (for example
-`maturin build --features proxy-models`). A marker package cannot add code to an
+`maturin build --features model-composition`). A marker package cannot add code to an
 already compiled engine. [Build-time extensions](build-time-extensions.md#select-feature-extensions)
 has the configuration, the build commands and the packaging step: the Python library
 goes into an `orm_native_custom` package (`ORM_PROFILE=custom`), and the Node library
