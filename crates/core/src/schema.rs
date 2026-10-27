@@ -25,7 +25,8 @@ pub struct Model {
     pub key: Vec<usize>,
     /// Prepared `@client_default`s by field position.
     pub client_defaults: Vec<(usize, crate::client_default::ClientDefault)>,
-    pub file_fields: Vec<crate::file_storage::PreparedFileField>,
+    /// The field adapters bound to this model's fields, in record order.
+    pub field_adapters: Vec<crate::field_adapters::PreparedAdapter>,
     pub read_defaults: crate::selection::PreparedDefaults,
     /// What read defaults mean for this model, for codegen and bindings; empty without any default.
     pub read_flags: ReadFlags,
@@ -78,7 +79,7 @@ impl Model {
             classes_from: None,
         };
         Ok(Model {
-            file_fields: vec![],
+            field_adapters: vec![],
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
@@ -103,9 +104,9 @@ impl Model {
             .ok_or_else(|| format!("model {} has no field {name:?}", self.ir.name))
     }
 
-    /// True if the file-storage extension declares the field.
-    pub fn is_file_field(&self, name: &str) -> bool {
-        self.file_fields.iter().any(|file| self.fields()[file.position].name == name)
+    /// The field adapter bound to the field, if any.
+    pub fn adapter_for(&self, name: &str) -> Option<&crate::field_adapters::PreparedAdapter> {
+        self.field_adapters.iter().find(|a| self.fields()[a.position].name == name)
     }
 
     pub fn field_pos(&self, name: &str) -> Result<usize> {
@@ -203,7 +204,7 @@ impl Schema {
         if model_index.len() != ir.models.len() {
             return Err("duplicate model name in schema".into());
         }
-        let mut file_fields = crate::file_storage::prepare(&ir)?.into_iter();
+        let mut field_adapters = crate::field_adapters::prepare(&ir)?.into_iter();
         let enums = ir.enums;
         let types = ir.types;
         let mut models = Vec::with_capacity(ir.models.len());
@@ -259,7 +260,7 @@ impl Schema {
             #[cfg(feature = "composition")]
             let kind = native.next().expect("prepared model");
             models.push(Model {
-                file_fields: file_fields.next().expect("prepared file model"),
+                field_adapters: field_adapters.next().expect("prepared adapter model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),

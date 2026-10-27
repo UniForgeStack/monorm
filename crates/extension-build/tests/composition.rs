@@ -121,3 +121,15 @@ fn an_artifact_without_requires_keeps_its_old_shape() {
     let artifact = serde_json::to_value(Composition::resolve(vec![manifest("a", "a.lower", &[], &[])]).unwrap().artifact(None)).unwrap();
     assert!(artifact.get("requires").is_none());
 }
+
+#[test]
+fn an_adapter_only_section_needs_a_module_in_each_entry() {
+    use orm_contracts::extension::{AdapterRuntime, LanguageSection};
+    let runtime = |module: &str| AdapterRuntime { adapter: "a.field.v1".into(), install: "install".into(), module: module.into(), value: "V".into(), ..Default::default() };
+    let mut m = manifest("a", "a.lower", &[], &[]);
+    m.language_contract = Some(orm_contracts::extension::LANGUAGE_CONTRACT);
+    m.python = Some(LanguageSection { field_adapters: vec![runtime("")], ..Default::default() });
+    assert!(Composition::resolve(vec![m.clone()]).unwrap_err().contains("needs a `module`"));
+    m.python = Some(LanguageSection { field_adapters: vec![runtime("a_runtime")], ..Default::default() });
+    assert!(Composition::resolve(vec![m]).is_ok());
+}

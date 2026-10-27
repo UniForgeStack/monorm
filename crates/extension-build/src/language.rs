@@ -165,7 +165,7 @@ pub fn collect(manifest: &Manifest, package: &Path) -> Result<Vec<Embedded>, Str
     for (language, section) in manifest.language_sections() {
         if section.source.is_empty() {
             // The runtime is an installed package that the adapter entries name: nothing to embed or check.
-            out.push(Embedded { members: members_record(manifest, language, section, &[], vec![], vec![], vec![], vec![]), dir: package.to_path_buf(), files: vec![] });
+            out.push(Embedded { members: members_record(manifest, language, section, &[], Default::default()), dir: package.to_path_buf(), files: vec![] });
             continue;
         }
         let dir = package.join(&section.source).canonicalize().map_err(|e| format!("{}: {language} source {}: {e}", manifest.id, section.source))?;
@@ -192,14 +192,15 @@ pub fn collect(manifest: &Manifest, package: &Path) -> Result<Vec<Embedded>, Str
         }
         let mut overrides = section.overrides.clone();
         overrides.sort();
-        let record = members_record(manifest, language, section, &files, query_set_members, instance_members, bound_query_set_members, overrides);
+        let record = members_record(manifest, language, section, &files, (query_set_members, instance_members, bound_query_set_members, overrides));
         out.push(Embedded { members: record, dir, files });
     }
     Ok(out)
 }
 
 /// The adapter entries join the hash, so a changed runtime entry changes the record that `define()` compares.
-fn members_record(manifest: &Manifest, language: &str, section: &LanguageSection, files: &[(String, String)], query_set_members: Vec<String>, instance_members: Vec<String>, bound_query_set_members: Vec<String>, overrides: Vec<String>) -> LanguageMembers {
+fn members_record(manifest: &Manifest, language: &str, section: &LanguageSection, files: &[(String, String)], scanned: (Vec<String>, Vec<String>, Vec<String>, Vec<String>)) -> LanguageMembers {
+    let (query_set_members, instance_members, bound_query_set_members, overrides) = scanned;
     let mut hashed = files.to_vec();
     if !section.field_adapters.is_empty() { hashed.push(("@field_adapters".into(), serde_json::to_string(&section.field_adapters).expect("json"))); }
     LanguageMembers {
@@ -294,6 +295,9 @@ pub fn validate_section(manifest: &Manifest, language: &str, section: &LanguageS
     for runtime in &section.field_adapters {
         if runtime.adapter.is_empty() || runtime.install.is_empty() || runtime.value.is_empty() || !seen.insert(&runtime.adapter) {
             return Err(format!("{}: {language} field adapter {:?} needs a unique `adapter`, an `install` and a `value`", manifest.id, runtime.adapter));
+        }
+        if section.source.is_empty() && runtime.module.is_empty() {
+            return Err(format!("{}: {language} field adapter {:?} needs a `module` when the section has no `source`", manifest.id, runtime.adapter));
         }
     }
     Ok(())

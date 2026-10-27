@@ -182,7 +182,8 @@ impl Requirements {
     /// Sets the minor of the contract when a 2.1 record is in use, so that an engine of 2.0 reads every other IR.
     pub fn stamp_minor(&mut self) {
         if !self.hooks.is_empty() || !self.extension_data.is_empty() { self.schema_contract_minor = self.schema_contract_minor.max(SCHEMA_CONTRACT_MINOR); }
-        if self.field_adapters.iter().any(|a| !a.options.is_null()) { self.schema_contract_minor = self.schema_contract_minor.max(FIELD_ADAPTER_OPTIONS_MINOR); }
+        let runtimes = self.packages.values().any(|p| p.language_members.values().any(|s| !s.field_adapters.is_empty()));
+        if runtimes || self.field_adapters.iter().any(|a| !a.options.is_null()) { self.schema_contract_minor = self.schema_contract_minor.max(FIELD_ADAPTER_OPTIONS_MINOR); }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -535,7 +536,8 @@ pub struct AdapterRuntime {
 pub struct ModuleFunction {
     pub name: String,
     pub method: String,
-    /// The stub: the parenthesised parameters and the return type, for example `(registry: Registry) -> None`.
+    /// The stub signature. Python: the parameters and the return type, `(registry: Registry) -> None`.
+    /// TypeScript: the function type, `(registry: Registry) => void`.
     pub stub: String,
 }
 

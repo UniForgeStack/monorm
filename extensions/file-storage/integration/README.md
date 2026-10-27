@@ -69,9 +69,11 @@ insert/update/bulk-update references without provider calls. Both bindings expos
 selected insert preflight that converts and plans all inputs without executing
 SQL. No storage dependency or prepared file layout exists in disabled native core.
 
-Selected code generation uses the fixed `file-storage.reference.v1` adapter:
-Python imports `orm_file_storage.model.install_model`; TypeScript imports
-`installModel` from `@orm/file-storage/model`. Generated modules expose
+Code generation reads the `file-storage.reference.v1` runtime entry of the
+extension manifest (`[[python.field_adapters]]`, `[[typescript.field_adapters]]`).
+The generated module imports `install` from `orm_file_storage.model` (Python) or
+`@orm/file-storage/model` (TypeScript) and calls it once for each model with the
+field names, their options and nullability. Generated modules expose
 `configure_file_storage(registry)` / `configureFileStorage(registry)` for the
 application's storage Registry. Methods delegate signing/opening explicitly;
 reference-only writes normalize without uploading. Insert, bulk and
