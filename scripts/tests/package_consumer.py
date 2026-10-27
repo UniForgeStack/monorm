@@ -1,7 +1,9 @@
 """Runs against generated models in a fresh package consumer."""
 import asyncio
+import importlib
 import json
 import os
+from importlib.metadata import requires
 from pathlib import Path
 import orm
 from acme_outside import Wrapped
@@ -10,6 +12,9 @@ from orm._packages import import_runtime
 
 
 async def run():
+    # The dependency that acme.outside declares is in its metadata and installed with it.
+    assert "typing-extensions>=4.0" in (requires("acme-outside") or [])
+    importlib.import_module("typing_extensions")
     # The generated lock and the installed runtime expose the same manifest identity.
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
     packages = locked["behavior"]["packages"]

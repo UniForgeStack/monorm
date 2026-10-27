@@ -240,3 +240,71 @@ fn library_copies_the_host_library_under_its_platform_key() {
     assert!(platform.join(name).is_file());
     fs::remove_dir_all(root).unwrap();
 }
+
+const RUNTIMES: &str = "[python]\nsource = \"python\"\ndependencies = [\"opendal>=0.47,<0.48\", \"orm>=0.1,<0.2\"]\n[typescript]\nsource = \"typescript\"\ndependencies = { opendal = \"^0.47.0\", orm = \"^0.1.0\" }\nexports = { \"./model\" = \"model.js\" }\n";
+
+/// A crate with runtime sources and `RUNTIMES` (or another tail) after the header keys.
+fn crate_with_runtimes(root: &Path, tail: &str) -> PathBuf {
+    let dir = crate_dir(root, "orm_demo");
+    let manifest = dir.join("orm-extension.toml");
+    let header = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{header}languages = [\"python\", \"typescript\"]\n{tail}").replace("languages = [\"python\"]\ndatabases", "databases")).unwrap();
+    fs::create_dir_all(dir.join("python")).unwrap();
+    fs::write(dir.join("python/__init__.py"), "").unwrap();
+    fs::create_dir_all(dir.join("typescript")).unwrap();
+    fs::write(dir.join("typescript/index.ts"), "export {};\n").unwrap();
+    fs::write(dir.join("typescript/model.ts"), "export const model = 1;\n").unwrap();
+    dir
+}
+
+#[test]
+fn dependencies_and_subpath_exports_reach_the_wheel_and_the_npm_package() {
+    let root = scratch("keys");
+    let dir = crate_with_runtimes(&root, RUNTIMES);
+    let output = assemble(&root, &dir, &libraries(&root, None));
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let wheel = root.join("out/acme_demo-0.1.0-py3-none-any.whl");
+    let metadata = zip_reader(&wheel).read("acme_demo-0.1.0.dist-info/METADATA");
+    let requires: Vec<_> = metadata.lines().filter(|l| l.starts_with("Requires-Dist: ")).collect();
+    assert_eq!(requires, ["Requires-Dist: opendal>=0.47,<0.48", "Requires-Dist: orm>=0.1,<0.2"]);
+    let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
+    assert_eq!(package["dependencies"], serde_json::json!({"opendal": "^0.47.0", "orm": "^0.1.0"}));
+    assert_eq!(package["exports"]["."]["default"], "./index.js");
+    assert_eq!(package["exports"]["./model"], serde_json::json!({"types": "./model.d.ts", "default": "./model.js"}));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_package_without_the_keys_has_no_requires_dist_and_no_dependencies() {
+    let root = scratch("nokeys");
+    let dir = crate_with_runtimes(&root, "[python]\nsource = \"python\"\n[typescript]\nsource = \"typescript\"\n");
+    let output = assemble(&root, &dir, &libraries(&root, None));
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let wheel = root.join("out/acme_demo-0.1.0-py3-none-any.whl");
+    assert!(!zip_reader(&wheel).read("acme_demo-0.1.0.dist-info/METADATA").contains("Requires-Dist"));
+    let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
+    assert!(package.get("dependencies").is_none());
+    assert_eq!(package["exports"].as_object().unwrap().len(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_wrong_dependency_shape_or_export_is_an_error() {
+    let cases = [
+        ("[python]\nsource = \"python\"\ndependencies = { opendal = \"1\" }\n", "python.dependencies must be a list"),
+        ("[typescript]\nsource = \"typescript\"\ndependencies = [\"opendal\"]\n", "typescript.dependencies must be a table"),
+        ("[python]\nsource = \"python\"\nexports = { \"./a\" = \"a.js\" }\n", "python.exports is not allowed"),
+        ("[typescript]\nsource = \"typescript\"\nexports = { \"model\" = \"model.js\" }\n", "use a subpath like"),
+        ("[typescript]\nsource = \"typescript\"\nexports = { \"./m\" = \"../model.js\" }\n", "use a subpath like"),
+        ("[typescript]\nsource = \"typescript\"\nexports = { \"./gone\" = \"gone.js\" }\n", "no source gone.ts"),
+    ];
+    for (index, (tail, message)) in cases.into_iter().enumerate() {
+        let root = scratch(&format!("bad{index}"));
+        let dir = crate_with_runtimes(&root, tail);
+        let output = assemble(&root, &dir, &libraries(&root, None));
+        assert!(!output.status.success(), "{tail}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(message), "{tail}: {error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+}

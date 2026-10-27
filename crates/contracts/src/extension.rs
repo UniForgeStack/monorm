@@ -519,6 +519,51 @@ pub struct LanguageSection {
     /// The language runtimes of the field adapters that this extension binds.
     #[serde(default)]
     pub field_adapters: Vec<AdapterRuntime>,
+    /// Runtime dependencies of the built package: a list of requirements in Python, a map of names to ranges in TypeScript.
+    #[serde(default, skip_serializing_if = "Dependencies::is_empty")]
+    pub dependencies: Dependencies,
+    /// npm subpath exports of the built package (TypeScript only): a subpath such as `./model` to the compiled file, such as `model.js`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exports: BTreeMap<String, String>,
+}
+
+/// The `dependencies` of a language section; the package builder checks the shape that its language needs.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Dependencies {
+    List(Vec<String>),
+    Map(BTreeMap<String, String>),
+}
+
+impl Default for Dependencies {
+    fn default() -> Self { Dependencies::List(Vec::new()) }
+}
+
+impl Dependencies {
+    pub fn is_empty(&self) -> bool {
+        match self { Dependencies::List(l) => l.is_empty(), Dependencies::Map(m) => m.is_empty() }
+    }
+}
+
+impl LanguageSection {
+    /// The keys that only the package builder reads, against the shape of `language`.
+    pub fn check_package_keys(&self, language: &str) -> Result<(), String> {
+        match (language, &self.dependencies) {
+            ("python", Dependencies::Map(m)) if !m.is_empty() => return Err("python.dependencies must be a list of requirements".into()),
+            ("typescript", Dependencies::List(l)) if !l.is_empty() => return Err("typescript.dependencies must be a table of package names to ranges".into()),
+            _ => {}
+        }
+        if language != "typescript" && !self.exports.is_empty() {
+            return Err(format!("{language}.exports is not allowed; only typescript has subpath exports"));
+        }
+        for (subpath, file) in &self.exports {
+            let relative = file.strip_suffix(".js").filter(|f| !f.is_empty() && !f.starts_with('/') && !f.split('/').any(|p| p.is_empty() || p == ".."));
+            if !subpath.starts_with("./") || subpath.len() < 3 || relative.is_none() {
+                return Err(format!("typescript.exports entry {subpath:?} = {file:?}: use a subpath like \"./model\" and a compiled file like \"model.js\" inside the package"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The language runtime of one field adapter: what the generated code imports, calls, types and re-exports.
