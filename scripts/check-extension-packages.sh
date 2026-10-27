@@ -45,6 +45,12 @@ model Note {
   updated_by String?
   first String @default("")
   last String @default("")
+  slug String?
+  stamp String?
+  editor String?
+  region String?
+  owner String?
+  secret String
   @@inherit.extends(Base)
   @@outside.tag("installed")
   @@query.filter("positive", "id > 0")
