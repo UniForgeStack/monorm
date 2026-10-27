@@ -19,8 +19,7 @@ class FeatureCheckSetupTest(unittest.TestCase):
             installer = root / "scripts/install-extension-packages.sh"
             installer.write_text("#!/bin/sh\nexit 0\n")
             installer.chmod(0o755)
-            for directory in ("languages/js", "extensions/file-storage/integration/typescript"):
-                (root / directory).mkdir(parents=True)
+            (root / "languages/js").mkdir(parents=True)
             tools = root / "tools"
             tools.mkdir()
             work = root / "work"
@@ -36,12 +35,13 @@ class FeatureCheckSetupTest(unittest.TestCase):
             executable(venv / "python", f'''
 case "$*" in
   *sysconfig*) exec "{sys.executable}" "$@" ;;
+  *native_artifact*|*profile_metadata*) echo proxy-models ;;
   *) exit 0 ;;
 esac
 ''')
             for program in ("mypy", "pyright"):
                 executable(venv / program, "exit 0\n")
-            executable(tools / "node", "exit 0\n")
+            executable(tools / "node", "echo proxy-models\n")
             executable(tools / "bun", "exit 0\n")
             (root / "apps/auth/typescript").mkdir(parents=True)
             package = root / "languages/python/packaging/custom/orm_native_custom"
@@ -57,14 +57,14 @@ esac
 case "$*" in
   test*) command -v mypy && command -v pyright ;;
   run*)
-    mkdir -p "$ORM_FEATURE_CHECK_DIR/file-storage/build" "$ORM_FEATURE_CHECK_DIR/target/debug"
+    mkdir -p "$ORM_FEATURE_CHECK_DIR/proxy-models/build" "$ORM_FEATURE_CHECK_DIR/target/debug"
     for library in lib_native.so lib_native.dylib liborm_node.so liborm_node.dylib; do
       touch "$ORM_FEATURE_CHECK_DIR/target/debug/$library"
     done ;;
 esac
 ''')
             result = subprocess.run(
-                ["/bin/bash", str(root / "scripts/feature-check.sh"), "file-storage"],
+                ["/bin/bash", str(root / "scripts/feature-check.sh"), "proxy-models"],
                 env={
                     **os.environ,
                     "PATH": f"{tools}:/usr/bin:/bin",
@@ -78,13 +78,7 @@ esac
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             matrix = (work / "matrix.txt").read_text()
             self.assertTrue((work / "js-built").exists(), "orm declarations must be built")
-            for expected in (
-                "storage rust-extension PASS",
-                "storage typescript-integration PASS",
-                "file-storage build PASS",
-            ):
-                with self.subTest(expected=expected):
-                    self.assertIn(expected, matrix)
+            self.assertIn("proxy-models build PASS", matrix)
 
 
 if __name__ == "__main__":

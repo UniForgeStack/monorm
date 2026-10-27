@@ -13,7 +13,7 @@
  *
  *     ORM_NATIVE=$PWD/../../target/feature-check/all/orm.node node demo.ts sqlite://:memory:    (an absolute path)
  *
- * The file-storage section also needs `npm install && npm run build` in extensions/file-storage/integration/typescript. Each section creates its demo_* tables and drops them.
+ * The file-storage section also needs the `@orm/file-storage` package (`scripts/install-extension-packages.sh` installs it into languages/js). Each section creates its demo_* tables and drops them.
  *
  * The demo loads its schemas at run time (`loads`), so its models are untyped. Generated
  * models (`orm generate typescript`, see examples/blog/models.ts) type every column and row.
@@ -176,13 +176,13 @@ async function modelComposition(db: Database, m: Models): Promise<void> {
 
 async function fileStorage(db: Database, m: Models): Promise<void> {
   // Imported by path: the storage package and opendal are not dependencies of this example.
-  const root = new URL("../../extensions/file-storage/integration/typescript/", import.meta.url);
+  const root = new URL("../../languages/js/node_modules/@orm/file-storage/", import.meta.url);
   let files: Models, model: Models, opendal: Models;
   try {
-    [files, model] = await Promise.all(["dist/src/index.js", "dist/src/model.js"].map((path) => import(new URL(path, root).href)));
-    opendal = createRequire(new URL("package.json", root))("opendal");
+    [files, model] = await Promise.all(["index.js", "model.js"].map((path) => import(new URL(path, root).href)));
+    opendal = createRequire(new URL("../../languages/js/package.json", import.meta.url))("opendal");
   } catch {
-    console.log("skipped: run `npm install && npm run build` in extensions/file-storage/integration/typescript");
+    console.log("skipped: install @orm/file-storage with scripts/install-extension-packages.sh");
     return;
   }
   const { Report } = m;

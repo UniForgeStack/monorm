@@ -1,4 +1,4 @@
-"""Public selected-native tests; run with the worktree's own installed wheel."""
+"""Public tests of the installed `orm-file-storage` package; run in a consumer with the package installed."""
 
 import json
 import asyncio
@@ -238,16 +238,13 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await db.close()
 
-    async def test_the_artifact_requires_the_adapter_capability(self):
-        from orm import _native
-        from orm._capabilities import check_requires
-
-        artifact = json.loads(_native.native_artifact())
-        self.assertEqual(artifact["requires"]["file-storage"], ["async-field-adapter.v1"])
-        check_requires(artifact)
-        # A language adapter without the capability refuses the artifact and names both.
-        with self.assertRaisesRegex(ImportError, "file-storage.*async-field-adapter.v1"):
-            check_requires(artifact, frozenset())
+    async def test_models_of_the_previous_contract_fail_define(self):
+        ir = {
+            "models": [{"name": "Old", "table": "old", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": True}]}],
+            "behavior": {"schema_contract": 3},
+        }
+        with self.assertRaisesRegex(Exception, "schema contract 3 is older.*regenerate the models and rebuild"):
+            orm.define(ir, registry=orm.Registry())
 
 
 if __name__ == "__main__":

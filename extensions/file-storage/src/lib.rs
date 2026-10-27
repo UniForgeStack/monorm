@@ -102,6 +102,10 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
     copy_to_proxies(ir)?;
     validate_field_adapters(ir)
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.file-storage.fields", lower));
+
 #[cfg(test)]
 mod tests {
     use super::*;

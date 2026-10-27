@@ -41,12 +41,12 @@ scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Py
 ## Feature artifacts
 
 The checks above build no optional feature. `scripts/feature-check.sh` builds one
-artifact per feature extension (proxy-models, model-composition,
-file-storage) and one with all of them through `orm-extension-build`;
+artifact per feature extension (proxy-models, model-composition)
+and one with all of them through `orm-extension-build`;
 the extension manifests select the Cargo features, never a hand-set `--features`.
 On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
-and inherit public scripts, and once the `extensions/file-storage` packages and their end-to-end scripts.
-The timestamps, soft-delete, locking, inherit, query-defaults and generic packages are installed on every artifact.
+and inherit public scripts.
+The timestamps, soft-delete, locking, inherit, query-defaults, generic and file-storage packages are installed on every artifact.
 Each artifact also runs the `apps/auth` Python, `npm test` and bun tests.
 CI runs it (`.github/workflows/feature-check.yml`). Run it before you commit a change
 to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code:

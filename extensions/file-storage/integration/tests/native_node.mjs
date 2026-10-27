@@ -4,13 +4,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '../../../../languages/js/dist/src/index.js';
-import { Reference, Registry, Upload, FileField, FileFieldError } from '../typescript/dist/src/index.js';
-import { checkRequires } from '../../../../languages/js/dist/src/adapters.js';
-import { createRequire } from 'node:module';
-import { installModel } from '../typescript/dist/src/model.js';
-
-const { Operator } = createRequire(new URL('../typescript/package.json', import.meta.url))('opendal');
+import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from 'orm';
+import { Reference, Registry, Upload, FileField, FileFieldError } from '@orm/file-storage';
+import { installModel } from '@orm/file-storage/model';
+import { Operator } from 'opendal';
 
 class CountingRegistry extends Registry {
   uploads = 0;
@@ -145,10 +142,7 @@ test('a failed bulk insert keeps every upload and retries without one', () => fi
   assert.equal((await bytes((await Report.objects.filter(Report.id.eq(1)).get()).fileOpen())).toString(), 'one');
 }));
 
-test('the artifact requires the adapter capability', () => {
-  const artifact = JSON.parse(createRequire(import.meta.url)(process.env.ORM_NATIVE).nativeArtifact());
-  assert.deepEqual(artifact.requires['file-storage'], ['async-field-adapter.v1']);
-  checkRequires(artifact);
-  // A language adapter without the capability refuses the artifact and names both.
-  assert.throws(() => checkRequires(artifact, new Set()), /file-storage.*async-field-adapter\.v1/);
+test('models of the previous contract fail define', () => {
+  const ir = { models: [{ name: 'Old', table: 'old', fields: [{ name: 'id', column: 'id', type: 'int', primary_key: true }] }], behavior: { schema_contract: 3 } };
+  assert.throws(() => define(ir, { registry: new ModelRegistry() }), /schema contract 3 is older.*regenerate the models and rebuild/);
 });

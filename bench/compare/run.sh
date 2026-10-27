@@ -108,7 +108,6 @@ build_node() {
 build_all() {
   local deps='"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}'
   deps+=',"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}'
-  deps+=',"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}'
   rm -rf "$ALL" && mkdir -p "$ALL/py/orm_native_custom"
   printf '{"host":"%s","output":"%s/build","prepare_only":true,"bindings":["python","node"],"dependencies":{%s}}\n' \
     "$ROOT" "$ALL" "$deps" >"$ALL/config.json"

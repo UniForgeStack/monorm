@@ -66,7 +66,9 @@
     "@orm/locking": "file:../../target/extension-packages/locking/npm",
     "@orm/inherit": "file:../../target/extension-packages/inherit/npm",
     "@orm/query-defaults": "file:../../target/extension-packages/query-defaults/npm",
-    "@orm/generic": "file:../../target/extension-packages/generic/npm"
+    "@orm/generic": "file:../../target/extension-packages/generic/npm",
+    "@orm/file-storage": "file:../../target/extension-packages/file-storage/npm",
+    "opendal": "^0.49.0"
   },
   "files": [
     "dist/src",
