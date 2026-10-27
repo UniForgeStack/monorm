@@ -1048,7 +1048,7 @@ export function define(
     reg.add(meta);
     out[m.name] = meta.model;
   }
-  const flags = JSON.parse(reg.prepareFrom(prepared, hookPackages(ir.behavior as never, options.extensionSchema)).readFlags()) as Record<string, { filtered: boolean; indexes?: string[] }>;
+  const flags = JSON.parse(reg.prepareFrom(prepared, hookPackages(ir.behavior as Parameters<typeof hookPackages>[0], options.extensionSchema)).readFlags()) as Record<string, { filtered: boolean; indexes?: string[] }>;
   for (const name of Object.keys(out)) {
     const meta = reg.get(name);
     meta.filtered = flags[name]?.filtered ?? false;

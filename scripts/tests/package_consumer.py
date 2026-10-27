@@ -24,7 +24,7 @@ async def run():
         async def fails(coro, *parts):
             try:
                 await coro
-            except Exception as error:
+            except orm.QueryError as error:
                 for part in parts:
                     assert part in str(error), f"{part!r} is missing from {error}"
                 return
@@ -36,13 +36,16 @@ async def run():
             assert row.text == "first"
             assert row.tag_label() == "installed"
             assert row.version == 0 and row.updated_by is None
-            await fails(notes.insert(id=9, text="   ", start=1, end=2, shop_id=1), "must not be empty")
+            await fails(notes.insert(id=9, text="   ", start=1, end=2, shop_id=1), "Note.text: must not be empty")
             # acme.outside.ordered (point 3) reads two fields.
             await fails(notes.insert(id=9, text="x", start=3, end=1, shop_id=1), "start 3 must be before end 1")
             assert await notes.filter(Note.id == 9).count() == 0
             # acme.outside.actor (point 4) takes the user of the request scope on update.
             await row.update(text="updated")
             assert row.version == 1 and row.changed is not None
+            assert (await notes.get(Note.id == 1)).updated_by == "ann"
+            # A value that the caller sets for that field goes through the hook too.
+            await row.update(updated_by="eve")
             assert (await notes.get(Note.id == 1)).updated_by == "ann"
             assert (await notes.tagged().all())[0].text == "updated"
             # Another shop's row is outside the default filter `shop_id == scope.shop`.
