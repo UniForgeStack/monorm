@@ -59,7 +59,7 @@ Key = tuple["Field[Any]", Ordering]
 
 
 def stored_nullable(model: type[Model], f: Field[Any]) -> bool:
-    """Whether the column can hold NULL; a proxy can declare a nullable column non-null."""
+    """Whether the column can hold NULL; a model view can declare a nullable column non-null."""
     return f.nullable or f.name in model._meta.narrowed
 
 

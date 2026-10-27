@@ -197,8 +197,8 @@ pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str) -> Result<Generate
 pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &super::Options) -> Result<Generated, String> {
     let query_sets = options.query_sets(ir, schema, ':')?;
     let model_methods = options.model_methods(ir, schema, ':')?;
-    // A proxy takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
-    // which the stub cannot combine with the proxy's `QuerySet[Proxy]`, so the stub types its methods as `Any`.
+    // A model view takes the class of its root. That class has the root's `QuerySet[Root]` as a base,
+    // which the stub cannot combine with the view's `QuerySet[View]`, so the stub types its methods as `Any`.
     let inherits = |model: &str| query_sets.get(model).is_some_and(|q| q.2);
     // A class that an abstract model declares takes the model as its type parameter (`class UserQueries[M: AbstractUserFields]`).
     let generic = |model: &str| super::declares_generic(ir, &query_sets, model);
