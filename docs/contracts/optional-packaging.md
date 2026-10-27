@@ -167,3 +167,33 @@ checks the dependency lock and runs installed-package smoke tests. Python
 SQLite checks use in-memory databases. CI Linux jobs provide an isolated service.
 The release workflow keeps the wheels and tarballs as CI artifacts. It does not
 publish them.
+
+## Extension packages for 3 platforms
+
+An installable extension is one wheel and one npm package.
+Each holds the libraries of `darwin-arm64`, `linux-x64` and `win32-x64` side by side; the loader opens the file of its own platform.
+Two commands build them:
+
+```bash
+# on each platform
+orm-extension-package library <crate-dir> --out <libraries>/<extension>
+# once, with the three results in <libraries>/<extension>/<platform>/
+orm-extension-package assemble <crate-dir> --libraries <libraries>/<extension> --out <dir> [--tsc <exe>]
+```
+
+`library` builds the cdylib and copies it to `<out>/<platform>/`.
+It fails on a host with no platform key and lists the 3 keys.
+`assemble` writes `<dir>/<module>-<version>-py3-none-any.whl` and the npm package directory `<dir>/npm`.
+It fails with the platform key when a library is missing.
+The npm `package.json` lists the 3 libraries in `files` and has no `os` or `cpu` field.
+`package` stays for local work: it builds the host library only and writes a wheel with a host platform tag.
+Do not publish that wheel.
+
+The manifest `library` is a name without a file extension, for example `library = "orm_inherit"`.
+The file name is `lib<name>.dylib`, `lib<name>.so` or `<name>.dll`.
+`assemble` rejects a name with an extension, because three platforms cannot share it.
+
+The `py3-none-any` tag lets pip install the wheel on a platform with no library; the loader then fails with "cannot load".
+The Linux library links against the glibc of the CI runner (`ubuntu-24.04`).
+`.github/workflows/extension-packages.yml` builds the libraries (`libraries`), assembles and checks the packages and records their sizes (`assemble`), and installs them on each platform and runs the main seam (`consumers`).
+It publishes nothing.
