@@ -1,0 +1,242 @@
+//! Run the builder as an extension author does and read the files it writes.
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
+
+const KEYS: [(&str, &str); 3] = [
+    ("darwin-arm64", "liborm_demo.dylib"),
+    ("linux-x64", "liborm_demo.so"),
+    ("win32-x64", "orm_demo.dll"),
+];
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "orm-extension-package-{name}-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn crate_dir(root: &Path, library: &str) -> PathBuf {
+    let dir = root.join("demo");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"orm_demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\ncrate-type = [\"cdylib\"]\n[workspace]\n",
+    )
+    .unwrap();
+    fs::write(dir.join("src/lib.rs"), "").unwrap();
+    fs::write(
+        dir.join("orm-extension.toml"),
+        format!(
+            "id = \"acme.demo\"\nversion = \"0.1.0\"\nabi = \"0.2\"\nlibrary = \"{library}\"\nschema_contract = 3\nlanguage_contract = 1\nlanguages = [\"python\"]\ndatabases = [\"postgres\"]\n"
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+fn tsc(root: &Path) -> PathBuf {
+    let path = root.join("tsc");
+    fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+fn libraries(root: &Path, skip: Option<&str>) -> PathBuf {
+    let dir = root.join("libraries");
+    for (key, name) in KEYS {
+        if Some(key) != skip {
+            fs::create_dir_all(dir.join(key)).unwrap();
+            fs::write(dir.join(key).join(name), key).unwrap();
+        }
+    }
+    dir
+}
+
+fn builder(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orm-extension-package"));
+    for arg in args {
+        command.arg(arg.as_ref());
+    }
+    command.output().unwrap()
+}
+
+fn assemble(root: &Path, dir: &Path, libraries: &Path) -> Output {
+    builder(&[
+        &"assemble",
+        &dir,
+        &"--libraries",
+        &libraries,
+        &"--out",
+        &root.join("out"),
+        &"--tsc",
+        &tsc(root),
+    ])
+}
+
+fn wheel_names(wheel: &Path) -> (Vec<String>, String, String) {
+    let mut archive = zip_reader(wheel);
+    let names = archive.names();
+    let record = archive.read("acme_demo-0.1.0.dist-info/RECORD");
+    let wheel_file = archive.read("acme_demo-0.1.0.dist-info/WHEEL");
+    (names, record, wheel_file)
+}
+
+/// A minimal reader through the Python standard library; the crate has no zip dependency.
+struct Zip(PathBuf);
+
+fn zip_reader(path: &Path) -> Zip {
+    Zip(path.to_owned())
+}
+
+impl Zip {
+    fn python(&self, code: &str, arg: &str) -> String {
+        let out = Command::new(std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into()))
+            .args(["-I", "-c", code])
+            .arg(&self.0)
+            .arg(arg)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let mut text = String::new();
+        out.stdout.as_slice().read_to_string(&mut text).unwrap();
+        text
+    }
+    fn names(&self) -> Vec<String> {
+        let text = self.python(
+            "import sys,zipfile;print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))",
+            "",
+        );
+        text.lines().map(str::to_owned).collect()
+    }
+    fn read(&mut self, name: &str) -> String {
+        self.python("import sys,zipfile;print(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]).decode(),end='')", name)
+    }
+}
+
+/// The stub compiler writes no `.js`, so read the TypeScript entry that it would compile.
+fn manifest_hash(npm: &Path) -> String {
+    let entry = fs::read_to_string(npm.join("index.ts")).unwrap();
+    let line = entry
+        .lines()
+        .find_map(|l| l.strip_prefix("export const manifestHash = "))
+        .unwrap();
+    line.trim_end_matches(';').trim_matches('"').to_owned()
+}
+
+#[test]
+fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
+    let root = scratch("assemble");
+    let dir = crate_dir(&root, "orm_demo");
+    let output = assemble(&root, &dir, &libraries(&root, None));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let wheel = root.join("out/acme_demo-0.1.0-py3-none-any.whl");
+    let (names, record, wheel_file) = wheel_names(&wheel);
+    assert!(wheel_file.contains("Tag: py3-none-any"));
+    for (_, name) in KEYS {
+        assert!(names.contains(&format!("acme_demo/{name}")), "{names:?}");
+        assert!(
+            record.contains(&format!("acme_demo/{name},sha256=")),
+            "{record}"
+        );
+    }
+    let package: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap())
+            .unwrap();
+    let files: Vec<_> = package["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    for (_, name) in KEYS {
+        assert!(files.contains(&name), "{files:?}");
+        assert!(root.join("out/npm").join(name).is_file());
+    }
+    assert!(package.get("os").is_none() && package.get("cpu").is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn assemble_names_the_missing_platform() {
+    let root = scratch("missing");
+    let dir = crate_dir(&root, "orm_demo");
+    let output = assemble(&root, &dir, &libraries(&root, Some("win32-x64")));
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("win32-x64") && error.contains("orm_demo.dll"),
+        "{error}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_library_with_an_extension_cannot_be_assembled() {
+    let root = scratch("extension");
+    let dir = crate_dir(&root, "liborm_demo.so");
+    let output = assemble(&root, &dir, &libraries(&root, None));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no file extension"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn package_and_assemble_stamp_the_same_manifest_hash() {
+    let root = scratch("hash");
+    let dir = crate_dir(&root, "orm_demo");
+    let output = assemble(&root, &dir, &libraries(&root, None));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let assembled = manifest_hash(&root.join("out/npm"));
+    let single = root.join("single");
+    let output = builder(&[&"package", &dir, &"--out", &single, &"--tsc", &tsc(&root)]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(manifest_hash(&single.join("npm")), assembled);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn library_copies_the_host_library_under_its_platform_key() {
+    let root = scratch("library");
+    let dir = crate_dir(&root, "orm_demo");
+    let out = root.join("built");
+    let output = builder(&[&"library", &dir, &"--out", &out]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let built: Vec<_> = fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    let [platform] = built.as_slice() else {
+        panic!("{built:?}")
+    };
+    let key = platform.file_name().unwrap().to_str().unwrap();
+    let (_, name) = KEYS.iter().find(|k| k.0 == key).unwrap();
+    assert!(platform.join(name).is_file());
+    fs::remove_dir_all(root).unwrap();
+}
