@@ -144,7 +144,7 @@ mod tests {
 
     fn library(extra: serde_json::Value) -> Manifest {
         let mut value = serde_json::json!({
-            "id": "acme.lib", "version": "1.0.0", "schema_contract": "2.0", "abi": "0.2", "library": "lib",
+            "id": "acme.lib", "version": "1.0.0", "schema_contract": "3.0", "abi": "0.2", "library": "lib",
             "languages": ["python"], "databases": ["sqlite"],
         });
         value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
@@ -173,7 +173,7 @@ mod tests {
     fn an_attribute_owns_a_field_type_once_and_only_on_a_field() {
         let owner = |id: &str, attribute: serde_json::Value| -> Manifest {
             serde_json::from_value(serde_json::json!({
-                "id": id, "version": "1.0.0", "schema_contract": "2.2", "host_contract": "1.0", "languages": [], "databases": [],
+                "id": id, "version": "1.0.0", "schema_contract": "3.2", "host_contract": "1.0", "languages": [], "databases": [],
                 "attributes": [attribute],
             })).unwrap()
         };
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn a_compiled_manifest_keeps_the_string_form() {
         let compiled = |export: serde_json::Value| -> Manifest {
-            serde_json::from_value(serde_json::json!({"id": "acme.c", "version": "1.0.0", "schema_contract": "2.0", "host_contract": "1.0", "languages": [], "databases": [], "exports": [export]})).unwrap()
+            serde_json::from_value(serde_json::json!({"id": "acme.c", "version": "1.0.0", "schema_contract": "3.0", "host_contract": "1.0", "languages": [], "databases": [], "exports": [export]})).unwrap()
         };
         let valid = serde_json::json!({"id": "acme.c.x", "rust": "crate::x", "kind": "string_validator", "input": "string"});
         assert!(resolve_all(vec![compiled(valid)]).is_ok());

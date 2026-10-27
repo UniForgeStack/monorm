@@ -55,6 +55,19 @@ SCHEMA
   (cd "$consumer" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
   (cd "$consumer" && ORM_DATABASE_URL="$url" node use.mjs)
   (cd "$consumer" && ORM_DATABASE_URL="$url" bun use.mjs)
+  # The generic package: identities are frozen before generation.
+  generic=$consumer/generic
+  mkdir -p "$generic"
+  { printf 'datasource db { provider = "%s" }\n' "$dialect"; cat "$ROOT/examples/blog/demo/generic-relations.prisma"; } > "$generic/schema.prisma"
+  (cd "$WORK/js" && "$WORK/venv/bin/python" -m orm --schema "$generic/schema.prisma" identities)
+  (cd "$WORK/js" && "$WORK/venv/bin/python" -m orm --schema "$generic/schema.prisma" generate python -o "$generic/models.py")
+  (cd "$WORK/js" && node node_modules/orm/dist/src/cli.js --schema "$generic/schema.prisma" generate typescript -o "$generic/models.ts")
+  "$ROOT/languages/js/node_modules/.bin/tsc" "$generic/models.ts" --outDir "$generic" --module ESNext --target ES2022 --moduleResolution Bundler --skipLibCheck --noCheck
+  cp "$ROOT/scripts/tests/generic_consumer.py" "$generic/use.py"
+  cp "$ROOT/scripts/tests/generic_consumer.mjs" "$generic/use.mjs"
+  (cd "$generic" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
+  (cd "$generic" && ORM_DATABASE_URL="$url" node use.mjs)
+  (cd "$generic" && ORM_DATABASE_URL="$url" bun use.mjs)
 done
 # Without its package, `@@query.*` fails and neutral read defaults still work.
 uv venv --python "$PYTHON" "$WORK/bare-venv"

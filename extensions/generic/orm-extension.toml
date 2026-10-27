@@ -1,10 +1,12 @@
 id = "orm.generic"
 version = "0.1.0"
-host_contract = 1
-schema_contract = "2.2"
+abi = "0.2"
+library = "orm_generic"
+schema_contract = "3.2"
+language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
-capabilities = ["schema-transformations", "physical-schema", "generic-relations"]
+capabilities = ["schema-transformations", "physical-schema"]
 
 [[attributes]]
 name = "generic.relation"
@@ -39,5 +41,4 @@ relation = { kind = "string" }
 [[passes]]
 id = "orm.generic.prepare"
 phase = "behavior"
-rust = "crate::prepare"
-effects = ["behavior.generic_relations", "behavior.generic_reverse", "storage.generic_checks"]
+effects = ["behavior.extension_data.generic", "storage.generic_checks"]

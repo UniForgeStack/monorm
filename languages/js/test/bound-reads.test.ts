@@ -283,7 +283,7 @@ test("of() applies no query default on the root; withoutDefaults() stays accepte
   const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
   const models = define({ dialect: "sqlite", models: [
     { name: "BoundNote", table: "bound_note", fields: [field("id", "int", { primary_key: true }), field("visible", "bool", { default: true }), field("body")], relations: [] },
-  ], behavior: { schema_contract: 2, read_defaults: [
+  ], behavior: { schema_contract: 3, read_defaults: [
     { source: "orm.query-defaults", name: "query", model: "BoundNote", filter: { t: "col", path: [], name: "visible" } },
   ] } } as never, { registry });
   const Note = models["BoundNote"] as Any;

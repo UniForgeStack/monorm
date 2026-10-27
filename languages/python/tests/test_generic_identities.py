@@ -5,6 +5,7 @@ import os
 
 import pytest
 import orm
+from artifact_caps import has_extension
 from orm.__main__ import main as cli
 
 
@@ -142,7 +143,7 @@ async def test_generic_relation_schema_follows_the_artifact_capability(tmp_path)
         '@@generic.relation("target", type: "content_type", key: "object_id", targets: ["Post"])\n@@map("generic08_tags")\n}'
     )
     generate(schema)
-    if "generic-relations" not in json.loads(_native.native_artifact())["capabilities"]:
+    if not has_extension("orm.generic"):
         with pytest.raises(orm.SchemaError, match="rebuild"):
             orm.load(schema, registry=orm.Registry())
         return
@@ -170,7 +171,7 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, cap
         GENERIC_HEADER
         + 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nnote String\n@@map("generic_field_tags")\n}'
     )
-    if "generic-relations" not in json.loads(_native.native_artifact())["capabilities"]:
+    if not has_extension("orm.generic"):
         assert cli(["--schema", str(schema), "identities"]) != 0
         # The first declaration in the file (`@generic.reverse` on Post) reports the missing extension.
         assert "@generic.reverse: not compiled into this artifact" in capfd.readouterr().err
@@ -186,8 +187,8 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, cap
         ("note", False, None),
     ]
     assert tag["indexes"] == [{"columns": [{"field": "target_type"}, {"field": "target_id"}]}]
-    behavior = registry.ir()["behavior"]
-    assert behavior["generic_relations"] == [
+    data = registry.ir()["behavior"]["extension_data"]["orm.generic"]
+    assert data["relations"] == [
         {
             "model": "Tag",
             "name": "target",
@@ -196,7 +197,7 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, cap
             "targets": ["Photo", "Post"],
         }
     ]
-    assert behavior["generic_reverse"] == [{"model": "Post", "name": "tags", "source": "Tag", "relation": "target"}]
+    assert data["reverse"] == [{"model": "Post", "name": "tags", "source": "Tag", "relation": "target"}]
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
@@ -213,8 +214,8 @@ def test_moving_to_the_generic_field_form_needs_no_migration(tmp_path):
     from orm import _native
     from orm.migrations import Migrations
 
-    if "generic-relations" not in json.loads(_native.native_artifact())["capabilities"]:
-        pytest.skip("needs an artifact with generic-relations")
+    if not has_extension("orm.generic"):
+        pytest.skip("needs the orm.generic extension")
     schema = tmp_path / "schema.prisma"
     explicit = (
         "model Tag {\nid Int @id\ntarget_type ContentType?\ntarget_id Int?\nkind ContentType\nobject_id Int\n"
@@ -243,8 +244,8 @@ async def test_a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads
     from orm import _native
 
     capabilities = json.loads(_native.native_artifact())["capabilities"]
-    if "generic-relations" not in capabilities or "proxy-models" not in capabilities:
-        pytest.skip("needs an artifact with generic-relations and proxy-models")
+    if not has_extension("orm.generic") or "proxy-models" not in capabilities:
+        pytest.skip("needs the orm.generic extension and proxy-models")
     schema = tmp_path / "schema.prisma"
     tag = 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post"])\nnote String\n@@map("generic_field_tags")\n}\n'
     for fields in ['include: ["id", "note"]', 'exclude: ["target"]']:
@@ -267,3 +268,14 @@ async def test_a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads
     schema.write_text(GENERIC_HEADER + tag + "model NotedTag {\n@@proxy.of(Tag)\n}")
     with pytest.raises(orm.SchemaError, match="Tag.target: NotedTag keeps the Generic field"):
         orm.load(schema, registry=orm.Registry())
+
+
+@pytest.mark.parametrize(
+    "behavior",
+    ['{"schema_contract": 2, "generic_relations": [{"model": "Tag"}]}', '{"schema_contract": 2}'],
+)
+def test_models_generated_for_contract_2_ask_for_regeneration(behavior):
+    from orm import _native
+
+    with pytest.raises(_native.SchemaError, match="regenerate"):
+        _native.prepare_schema('{"models": [], "behavior": ' + behavior + "}")

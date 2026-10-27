@@ -116,7 +116,7 @@ mod tests {
             "models": [{"name": "Post", "table": "posts", "fields": [
                 {"name": "id", "column": "id", "type": "int", "primary_key": true}
             ]}],
-            "behavior": {"schema_contract": 2, "declarations": [
+            "behavior": {"schema_contract": 3, "declarations": [
                 {"attribute": "timestamps.updated_at", "model": "Post", "field": field, "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 4, "column": 3}}
             ]}
         })).unwrap()
