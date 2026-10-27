@@ -41,3 +41,111 @@ jobs:
         with:
           name: extension-package-consumers
           path: target/package-seam-*/js
+  # One wheel and one npm package hold the libraries of all 3 platforms, so each platform builds its own.
+  libraries:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the library of each extension
+        shell: bash
+        run: |
+          for manifest in extensions/*/orm-extension.toml tests/outside-extension/orm-extension.toml; do
+            grep -q '^library' "$manifest" || continue
+            dir=$(dirname "$manifest")
+            cargo run -q -p orm-extension-package -- library "$dir" --out "target/libraries/$(basename "$dir")"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libraries-${{ matrix.os }}
+          path: target/libraries
+  assemble:
+    needs: libraries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHON: python3.14
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+        working-directory: languages/js
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: libraries-*
+          merge-multiple: true
+          path: target/libraries
+      - name: Assemble one wheel and one npm package per extension
+        run: |
+          for manifest in extensions/*/orm-extension.toml tests/outside-extension/orm-extension.toml; do
+            grep -q '^library' "$manifest" || continue
+            dir=$(dirname "$manifest")
+            name=$(basename "$dir")
+            cargo run -q -p orm-extension-package -- assemble "$dir" --libraries "target/libraries/$name" --out "target/assembled/$name" --tsc "$PWD/languages/js/node_modules/.bin/tsc"
+          done
+      - name: Check the contents and record the sizes
+        run: python3 scripts/check-assembled-packages.py target/assembled target/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assembled-packages
+          path: target/dist
+  consumers:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            dialects: sqlite,postgres
+          - os: macos-14
+            dialects: sqlite
+          - os: windows-latest
+            dialects: sqlite
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'postgres:18' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: ${{ matrix.os == 'ubuntu-24.04' && 'postgres://postgres:postgres@localhost/orm_test' || '' }}
+      CARGO_INCREMENTAL: 0
+      UV_PYTHON: '3.14'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - run: python -m pip install maturin
+      - run: npm ci --ignore-scripts
+        working-directory: languages/js
+      - uses: actions/download-artifact@v4
+        with:
+          name: assembled-packages
+          path: target/dist
+      - name: Install the assembled packages and run the main seam
+        run: python scripts/check-assembled-consumers.py target/dist "${{ matrix.dialects }}"
