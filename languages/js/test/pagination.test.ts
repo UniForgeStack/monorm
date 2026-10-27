@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { connect, loads, NotLoaded, QueryError, Registry } from "../src/index.js";
-import { native } from "../src/native.js";
+import { hasExtension } from "./artifact-caps.js";
 import { after } from "../src/pagination.js";
 
 const schema = `
@@ -299,11 +299,11 @@ test("a date order column past year 9999: postgres", async () => {
   }
 });
 
-const proxies = (JSON.parse(native().nativeArtifact()) as { capabilities?: string[] }).capabilities?.includes("proxy-models") ?? false;
+const proxies = hasExtension("orm.proxy");
 
 test("a proxy narrowed order column: postgres", async (t) => {
   if (!proxies) {
-    t.skip("needs a native build with the proxy-models feature");
+    t.skip("needs the orm-proxy package");
     return;
   }
   const { db, models } = await postgres(`

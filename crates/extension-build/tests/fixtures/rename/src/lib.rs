@@ -1,5 +1,5 @@
 //! A third-party logical rename. The physical column retains its identity.
-use orm_contracts::ir::SchemaIr;
+use orm_contracts::{extension::ModelView, ir::SchemaIr};
 
 pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
     // A contribution independent of namespaced attributes exercises raw batches.
@@ -14,10 +14,12 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
             let parent = ir.models.iter().find(|m| m.name == parent).ok_or("unknown proxy parent")?;
             let fields = serde_json::from_value(serde_json::to_value(&parent.fields).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             let table = parent.table.clone();
+            let parent = parent.name.clone();
             let m = ir.models.iter_mut().find(|m| m.name == d.model).ok_or("unknown proxy model")?;
             m.table = table;
             m.fields = fields;
             ir.behavior.storage.as_mut().ok_or("host must capture physical storage")?.models.retain(|m| m.name != d.model);
+            ir.behavior.model_views.push(ModelView { model: d.model.clone(), source: parent.clone(), root: parent, row_filter: None, insert_table: None });
             continue;
         }
         if d.attribute == "example.hide" {

@@ -229,21 +229,18 @@ pub struct SchemaIr {
 }
 
 impl SchemaIr {
-    /// Sets the minor of the contract when a record of slice 2c is in use (a hook of point 5 to 7, an `Expr` or
+    /// Sets the contract major when a record of slice 2c is in use (a hook of point 5 to 7, an `Expr` or
     /// `ExprHook` write assignment, an `Expr` or `Hook` client default), so that an older engine refuses the IR
     /// with both versions in the text and not with a parse error.
     /// Call it after the generate-time evaluation of expression hooks: that step swaps a binding for an `Expr` record.
     pub fn stamp_expression_records(&mut self) {
-        use crate::{extension::{EXPRESSION_RECORDS_MINOR, SCHEMA_CONTRACT}, writes::AssignValue};
+        use crate::{extension::SCHEMA_CONTRACT, writes::AssignValue};
         let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
         let defaults = self.models.iter().chain(physical).flat_map(|m| &m.fields)
             .any(|f| matches!(f.client_default, Some(ClientDefaultIr::Expr(_) | ClientDefaultIr::Hook { .. })));
         let assigns = self.behavior.write_assignments.iter().any(|a| matches!(a.value, AssignValue::Expr(_) | AssignValue::ExprHook { .. }));
         let hooks = self.behavior.hooks.iter().any(|h| (5..=7).contains(&h.point));
-        if defaults || assigns || hooks {
-            self.behavior.schema_contract = SCHEMA_CONTRACT;
-            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(EXPRESSION_RECORDS_MINOR);
-        }
+        if defaults || assigns || hooks { self.behavior.schema_contract = SCHEMA_CONTRACT; }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
@@ -259,7 +256,7 @@ impl SchemaIr {
                 return Err(format!("schema contract {found} is newer than this engine ({}); update the ORM, or regenerate the models with an older one", crate::extension::SCHEMA_CONTRACT_VERSION));
             }
         }
-        let ir: Self = serde_json::from_str(json).map_err(|e| format!("invalid schema IR: {e}; if another ORM version generated the models, regenerate them and rebuild the native artifact"))?;
+        let ir: Self = serde_json::from_str(json).map_err(|e| format!("invalid schema IR: {e}; if another ORM version generated the models, regenerate the models and rebuild the native artifact"))?;
         let (found, engine) = (ir.behavior.schema_contract, crate::extension::SCHEMA_CONTRACT);
         if found != 0 && found < engine {
             return Err(format!("schema contract {found} is older than this engine (schema contract {}); regenerate the models and rebuild the native artifact", crate::extension::SCHEMA_CONTRACT_VERSION));
@@ -289,14 +286,15 @@ mod schema_json {
         assert!(error.contains(&format!("schema contract 2 is older than this engine (schema contract {engine})")) && error.contains("regenerate"), "{error}");
         let records = r#"{"models":[],"behavior":{"schema_contract":2,"generic_relations":[{"model":"A"}]}}"#;
         assert!(super::SchemaIr::from_json(records).unwrap_err().contains("regenerate"));
-        let same = r#"{"models":[],"behavior":{"schema_contract":3,"schema_contract_minor":1,"hooks":[{"source":"a","point":2,"model":"M","export":"e"}]}}"#;
+        let same = r#"{"models":[],"behavior":{"schema_contract":4,"hooks":[{"source":"a","point":2,"model":"M","export":"e"}]}}"#;
         assert_eq!(super::SchemaIr::from_json(same).unwrap().behavior.hooks.len(), 1);
     }
     #[test]
-    fn an_ir_from_an_older_version_names_the_cure() {
-        let old = r#"{"models":[],"behavior":{"proxy_models":[{"model":"A","parent":"U","defaults":{}}]}}"#;
-        let error = super::SchemaIr::from_json(old).unwrap_err();
-        assert!(error.contains("unknown field `defaults`") && error.contains("regenerate them"), "{error}");
+    fn an_ir_with_proxy_records_of_the_old_major_names_the_cure() {
+        let key = ["proxy", "models"].join("_");
+        let old = format!(r#"{{"models":[],"behavior":{{"schema_contract":3,"{key}":[{{"model":"A","parent":"U"}}]}}}}"#);
+        let error = super::SchemaIr::from_json(&old).unwrap_err();
+        assert!(error.contains(&format!("unknown field `{key}`")) && error.contains("regenerate the models and rebuild the native artifact"), "{error}");
     }
 }
 

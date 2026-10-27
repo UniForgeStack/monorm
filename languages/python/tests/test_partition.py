@@ -4,7 +4,7 @@ import pytest
 
 import orm
 from conftest import DATABASE_URL
-from artifact_caps import artifact_capabilities, has_extension
+from artifact_caps import has_extension
 
 SOURCE = """
 model PartitionRow {
@@ -73,8 +73,8 @@ async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
     from pathlib import Path
     from orm import _native
 
-    if "proxy-models" not in artifact_capabilities():
-        pytest.skip("requires proxy native artifact")
+    if not has_extension("orm.proxy"):
+        pytest.skip("requires the orm-proxy package")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
     registry = orm.Registry()
     models = orm.loads(source, registry=registry)
@@ -117,8 +117,7 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
     from pathlib import Path
     from orm import _native
 
-    capabilities = artifact_capabilities()
-    if "proxy-models" not in capabilities or not has_extension("orm.query-defaults", "orm.soft-delete"):
+    if not has_extension("orm.proxy", "orm.query-defaults", "orm.soft-delete"):
         pytest.skip("requires proxy, orm.query-defaults and orm.soft-delete")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
     source = source.replace("deleted DateTime?", '@@soft_delete.deleted_at("deleted")')
@@ -154,8 +153,8 @@ async def test_multi_value_proxy_partition_requires_a_key_and_owns_only_its_valu
     import json
     from orm import _native
 
-    if "proxy-models" not in artifact_capabilities():
-        pytest.skip("requires proxy native artifact")
+    if not has_extension("orm.proxy"):
+        pytest.skip("requires the orm-proxy package")
     source = """
 model Item {
  id Int
@@ -204,7 +203,7 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
     from pathlib import Path
     from orm import _native
 
-    if "proxy-models" not in artifact_capabilities() or not has_extension("orm.query-defaults", "orm.soft-delete"):
+    if not has_extension("orm.proxy", "orm.query-defaults", "orm.soft-delete"):
         pytest.skip("requires proxy, orm.query-defaults and orm.soft-delete")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-rewards.prisma").read_text()
     registry = orm.Registry()

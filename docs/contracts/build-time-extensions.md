@@ -62,14 +62,14 @@ Declare all selected behavioral extension crates in `dependencies`, including ex
 Cargo resolves Rust package versions;
 the frontend checks extension dependency constraints against that resolved selection.
 
-A manifest capability in `HOST_FEATURE_CAPABILITIES` (`model-composition`,
-`proxy-models`) also turns on the host Cargo feature of the same name in both bindings.
-`file-storage` is not one: it has no host code and only requires `async-field-adapter.v1`.
+No manifest capability turns on a host Cargo feature.
+`file-storage` has no host code and only requires `async-field-adapter.v1`.
+The model-composition extension (`orm.composition`, `extensions/model-composition`) has none either.
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
 The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
 The query-defaults extension (`orm.query-defaults`) has none either: its pass writes only the neutral `read_defaults` record.
-These six are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
-`scripts/feature-check.sh` builds one artifact per host feature and one with all of them, installs the six packages in every environment, and runs every suite on each.
+These eight are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
+`scripts/feature-check.sh` builds one artifact per feature extension and one with all of them, installs the eight packages in every environment, and runs every suite on each.
 
 Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
 For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
@@ -82,17 +82,14 @@ Selection is recorded in the build configuration and emitted binding manifests, 
 
 ## Select feature extensions
 
-The repository ships three static feature extensions.
-Each is a crate that you put in `dependencies`; its manifest capability turns on the host feature.
+The repository ships static feature extensions as crates that you put in `dependencies`.
 
 | Feature | Dependency entry (`"alias": {...}`) | Doc |
 |---|---|---|
-| proxy-models | `"proxy": {"package": "orm-proxy", "path": "extensions/proxy"}` | [proxy-models.md](../extensions/proxy-models.md) |
-| model-composition | `"composition": {"package": "orm-model-composition", "path": "extensions/model-composition"}` | [model-composition.md](../extensions/model-composition.md) |
 | file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](../extensions/file-storage.md) |
 
 Paths are relative to the repository root; write them relative to your configuration file.
-This configuration selects all three and emits the workspace only (`prepare_only`):
+This configuration selects them and emits the workspace only (`prepare_only`):
 
 ```json
 {
@@ -102,7 +99,6 @@ This configuration selects all three and emits the workspace only (`prepare_only
   "bindings": ["python", "node"],
   "dependencies": {
     "proxy": {"package": "orm-proxy", "path": "/path/to/orm/extensions/proxy"},
-    "composition": {"package": "orm-model-composition", "path": "/path/to/orm/extensions/model-composition"},
     "file_storage": {"package": "orm-file-storage-extension", "path": "/path/to/orm/extensions/file-storage"}
   }
 }
@@ -152,19 +148,6 @@ A bound query set mixin reads the objects of a bound write with these helpers (t
   When the block fails, the write rolls back and the objects get the state that they had before.
 * `loadedValue(object, field)` (TypeScript only) gives the loaded value of a field and throws `NotLoaded` when it is not loaded.
 * `key_condition(model, key)` (Python only) gives the condition of the row with the primary key `key`.
-
-### The full profile
-
-`languages/python/packaging/full/build.json` and `languages/js/packaging/full/build.json` are configurations of this kind.
-They select the three static first-party extensions.
-The timestamps, soft-delete, locking, inherit, query-defaults and generic extensions are installable packages, not part of the profile.
-They set `prepare_only` and `binding_features` to `["profile-full"]`.
-`profile-full` has the features of `profile-tooling`: the backends, `cli`, both generators and `reference-loading`.
-It also gives the profile its name in `profile_metadata()`.
-`build-full-wheel.py` and `build-node-profile.mjs full` run the steps above.
-The Python script then runs `maturin build --release` in the emitted workspace.
-The Node script runs `cargo build -p orm-node` there.
-[Static native profiles](optional-packaging.md#the-full-profile) has the list of the three extensions, the install lines and the rest of the contract.
 
 ## Application source modules
 
@@ -340,8 +323,8 @@ An `Err` becomes status ERROR with its text, and a panic becomes status PANIC.
 A manifest of a library lists its hooks as `[[exports]]` with `id`, `point` (1 to 7), `input` and `output` (a value type). A compiled extension keeps `rust`, `kind` and `input`.
 When the manifest has `exports`, the loader needs `orm_ext_hooks` and, when `init` exists, `orm_ext_drop_state`, and the hook table needs a hook of the same name for each export id. A mismatch is an error when the library opens, and it names the export. A manifest without `exports` has no hooks to resolve, so a pass-only library needs none of the three symbols.
 `Plan::library(id)` gives a `Library` of a manifest with `exports`; `Library::init(&json)` gives a `State`, and `State::call(hook, &args, &context)` runs one hook. The `State` calls `orm_ext_drop_state` once when it drops.
-Schema contract 2.1 adds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). The IR sets `schema_contract_minor = 1` only when one of them has content, so an IR without them stays readable by a 2.0 engine. A 2.0 engine that reads an IR with them stops at the unknown field with a parse error; the "newer than this engine" message comes only from an engine of contract 2.1 or later.
-Schema contract 2.3 adds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute. The IR sets `schema_contract_minor = 3` only when one of them has content.
+Schema contract 4.0 holds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). A major bump resets the minor. The IR sets `schema_contract_minor` only for a feature that a later minor adds; an engine of an older minor stops at the unknown field with a parse error, and the "newer than this engine" message comes only from an engine that knows the minor.
+Schema contract 4.0 holds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.
@@ -396,8 +379,7 @@ A hook of point 6 or 7 with `reads_context = false` runs once when the schema is
 The IR then stores its expression as `Expr`, and `define()` opens no library for it.
 A hook that reads the context runs for each statement.
 
-Schema contract 3.4 sets `schema_contract_minor = 4` for an IR that has one of these records or a hook of point 5, 6 or 7.
-An engine with a lower minor refuses such an IR with the "newer than this engine" message.
+Schema contract 4.0 holds these records. An engine of an older major refuses an IR that has one of them or a hook of point 5, 6 or 7 with the "newer than this engine" message.
 
 ## Installable packages
 

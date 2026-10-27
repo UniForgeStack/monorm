@@ -1,7 +1,7 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
 use orm_contracts::abi::{Arg, Context, Value};
-use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, EXPRESSION_RECORDS_MINOR, FIELD_ADAPTER_OPTIONS_MINOR, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_MINOR, SCHEMA_CONTRACT_VERSION};
+use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_VERSION};
 use orm_core::dsl::{compile_file_with, Installed};
 use orm_core::loader::{Library, Plan};
 use orm_core::ir::{ClientDefaultIr, ColType, FieldIr, SchemaIr};
@@ -127,8 +127,7 @@ fn an_outside_view_writes_the_general_records_that_the_core_reads() {
     assert_eq!(view.row_filter.as_ref().map(|f| (f.field.as_str(), f.values.as_slice())), Some(("status", ["open".to_owned()].as_slice())));
     let check = &ir.behavior.result_checks[0];
     assert_eq!((check.model.as_str(), check.field.as_str(), check.non_null, check.code.as_str()), ("OpenTicket", "note", true, "acme.outside.shape"));
-    assert!(ir.behavior.proxy_models.is_empty());
-    assert_eq!((ir.behavior.schema_contract_minor, ir.models.iter().find(|m| m.name == "OpenTicket").unwrap().table.as_str()), (orm_contracts::extension::SCHEMA_CONTRACT_VIEWS_MINOR, "ticket"));
+    assert_eq!((ir.behavior.schema_contract_minor, ir.models.iter().find(|m| m.name == "OpenTicket").unwrap().table.as_str()), (0, "ticket"));
     let schema = orm_core::schema::Schema::from_ir(ir).unwrap();
     let at = schema.model_idx("OpenTicket").unwrap();
     let filter = schema.model(at).view.as_ref().and_then(|v| v.filter.as_ref()).expect("the filter is prepared at define()");
@@ -171,7 +170,7 @@ fn a_missing_extension_says_how_to_install_it() {
 fn two_extensions_that_own_one_effect_conflict() {
     let manifest = installed("", "0.2");
     let rival = scratch("rival").join("orm-extension.toml");
-    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"3.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
+    fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"4.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
     let schema = "generator client {\n extensions = [\"acme.outside\", \"acme.rival\"]\n}\nmodel Post {\n id Int @id\n}\n";
     let error = compile("conflict", schema, &[(ID, &manifest), ("acme.rival", &rival)]).unwrap_err();
     assert!(error.contains("models.outside") && error.contains(ID) && error.contains("acme.rival"), "{error}");
@@ -404,7 +403,7 @@ fn a_manifest_without_exports_has_no_library_to_open() {
 
 #[test]
 fn a_library_of_slice_one_lowers_a_schema_without_a_hook_table() {
-    let text = without_exports(&manifest("0.1")).replace("schema_contract = \"3.1\"", "schema_contract = \"3.0\"");
+    let text = without_exports(&manifest("0.1"));
     let path = package("pass-only", "pass-only", &text);
     let ir = compile("pass-only", SCHEMA, &[(ID, &path)]).unwrap();
     assert!(ir.models[0].fields.iter().any(|f| f.name == "tag"));
@@ -444,24 +443,24 @@ fn lower_with(plan: &Plan, hook: &HookBinding) -> Result<SchemaIr, String> {
 }
 
 #[test]
-fn a_hook_of_the_library_lowers_with_the_new_minor_and_runs_with_its_extension_data() {
+fn a_hook_of_the_library_lowers_and_runs_with_its_extension_data() {
     let plan = bind_plan(&installed("", "0.2"));
     let ir = lower_with(&plan, &binding(1, "tag", "outside.prefix")).unwrap();
-    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, FIELD_ADAPTER_OPTIONS_MINOR));
+    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, 0));
     let state = plan.library(ID).unwrap().init(&ir.behavior.extension_data[ID]).unwrap();
     assert_eq!(state.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("xhello")));
 }
 
 #[test]
-fn an_expression_record_sets_minor_4_also_after_generate_removed_its_hook() {
+fn an_expression_record_stamps_no_minor_also_after_generate_removed_its_hook() {
     let plan = bind_plan(&installed("", "0.2"));
     let ir = lower_with(&plan, &binding(7, "tag", "acme.outside.region")).unwrap();
     assert!(ir.behavior.hooks.is_empty(), "a hook that reads no context is evaluated at generate");
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap();
     assert!(matches!(tag.client_default, Some(ClientDefaultIr::Expr(_))), "{:?}", tag.client_default);
-    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (orm_contracts::extension::SCHEMA_CONTRACT, EXPRESSION_RECORDS_MINOR));
+    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (orm_contracts::extension::SCHEMA_CONTRACT, 0));
     let ir = lower_with(&plan, &HookBinding { reads_context: true, ..binding(7, "tag", "acme.outside.region") }).unwrap();
-    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, EXPRESSION_RECORDS_MINOR));
+    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, 0));
 }
 
 #[test]
@@ -535,7 +534,6 @@ fn hooked(hooks: Vec<HookBinding>, data: serde_json::Value) -> SchemaIr {
     ir.behavior.hooks = hooks;
     ir.behavior.extension_data.insert(ID.to_owned(), data);
     ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
-    ir.behavior.schema_contract_minor = SCHEMA_CONTRACT_MINOR;
     ir.behavior.packages.insert(ID.to_owned(), orm_contracts::extension::PackageStamp { version: "0.1.0".into(), languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
     ir
 }

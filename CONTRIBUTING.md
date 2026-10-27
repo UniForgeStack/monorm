@@ -51,7 +51,7 @@ It needs `uv`, `node`, `npm` and `bun`, and takes a long time. CI runs it on eve
 
 ```bash
 PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/orm_test \
-  scripts/feature-check.sh            # or name artifacts: scripts/feature-check.sh proxy-models all
+  scripts/feature-check.sh            # or name artifacts: scripts/feature-check.sh file-storage all
 ```
 
 ### Generated example models

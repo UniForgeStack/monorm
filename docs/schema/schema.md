@@ -681,9 +681,9 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 
 | Attribute | Extension | Doc |
 |---|---|---|
-| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | proxy-models | [proxy-models.md](../extensions/proxy-models.md) |
+| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | orm-proxy | [proxy-models.md](../extensions/proxy-models.md) |
 | `@@query.defaults(filter:, fields:, related:, parent:, order:)`, `@@query.filter`, `@@query.fields`, `@@query.related`, `@@query.order`, `@@query.parent`, `@query.selectOut` | query-defaults | [selection-and-defaults.md](selection-and-defaults.md) |
-| `@@composition.model(parent:, parentRef:, childRef:)` | model-composition | [model-composition.md](../extensions/model-composition.md) |
+| `@@composition.model(parent:, parentRef:, childRef:)` | orm-composition | [model-composition.md](../extensions/model-composition.md) |
 | `@storage.file(storage:)` | file-storage | [file-storage.md](../extensions/file-storage.md) |
 | `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic (package) | [generic-identities.md](generic-identities.md) |
 

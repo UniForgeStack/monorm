@@ -1,0 +1,32 @@
+"""Runs against generated models that use the installed orm-proxy package."""
+import asyncio
+import json
+import os
+from pathlib import Path
+import orm
+from models import Account, ActiveAccount
+from orm._packages import import_runtime
+
+
+async def run():
+    locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
+    stamp = locked["behavior"]["packages"]["orm.proxy"]
+    assert import_runtime("orm.proxy").MANIFEST_HASH == stamp["manifest_hash"]
+    assert "proxy_models" not in locked["behavior"]
+    db = await orm.connect(os.environ["ORM_DATABASE_URL"])
+    await db.drop_tables()
+    await db.create_tables()
+    try:
+        await Account.objects.using(db).insert_many([
+            {"id": 1, "name": "old one", "status": "OLD", "note": "n"},
+            {"id": 2, "name": "live", "status": "ACTIVE", "note": "n"},
+        ])
+        rows = await ActiveAccount.objects.using(db).all()
+        assert [row.name for row in rows] == ["live"]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+asyncio.run(run())
+print("proxy consumer python ok")

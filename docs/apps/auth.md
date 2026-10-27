@@ -7,7 +7,7 @@ The Python package is `orm-auth` (import `orm_auth`).
 The npm package is `orm-auth`.
 
 The app needs the `orm.inherit` extension.
-Use a build that has it, for example the `full` profile.
+Use a build that has it, for example `orm[full]`.
 See [inherit.md](../extensions/inherit.md).
 
 ## Install and import

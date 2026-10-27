@@ -421,7 +421,7 @@ function scopedSchema(dialect: string) {
       relations: [{ name: 'orders', kind: 'many', target: 'Order', from: 'id', to: 'shop_id' }] },
     { name: 'Order', table: 's6_js_orders', fields: [field('id', 'int', { primary_key: true, auto_increment: true }), field('shop_id'), field('total')],
       relations: [{ name: 'shop', kind: 'one', target: 'Shop', from: 'shop_id', to: 'id', foreign_key: true, on_delete: 'cascade' }] },
-  ], behavior: { schema_contract: 3, read_defaults: [{ source: "orm.query-defaults", name: "query", model: 'Order', filter: {
+  ], behavior: { schema_contract: 4, read_defaults: [{ source: "orm.query-defaults", name: "query", model: 'Order', filter: {
     t: 'cmp', op: 'eq', l: { t: 'col', path: [], name: 'shop_id' }, r: { t: 'scope', name: 'shop' } } }] } };
 }
 

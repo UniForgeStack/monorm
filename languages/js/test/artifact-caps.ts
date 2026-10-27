@@ -11,11 +11,11 @@ export function artifactCapabilities(): string[] {
 
 /**
  * True when the native artifact or an installed package contains every named extension, such as `orm.file-storage`.
- * A missing `orm.timestamps`, `orm.soft-delete`, `orm.locking`, `orm.inherit`, `orm.query-defaults` or `orm.generic` package fails with an assert.
+ * A missing `orm.timestamps`, `orm.soft-delete`, `orm.locking`, `orm.inherit`, `orm.query-defaults`, `orm.generic`, `orm.proxy` or `orm.composition` package fails with an assert.
  */
 export function hasExtension(...ids: string[]): boolean {
   const installed = { ...artifact.extensions, ...resolveExtensions() };
-  for (const id of ids) if (["orm.timestamps", "orm.soft-delete", "orm.locking", "orm.inherit", "orm.query-defaults", "orm.generic"].includes(id))
+  for (const id of ids) if (["orm.timestamps", "orm.soft-delete", "orm.locking", "orm.inherit", "orm.query-defaults", "orm.generic", "orm.proxy", "orm.composition"].includes(id))
     assert.ok(id in installed, `install ${id} with scripts/install-extension-packages.sh`);
   return ids.every((id) => id in installed);
 }

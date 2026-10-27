@@ -66,7 +66,9 @@
     "@orm/locking": "file:../../target/extension-packages/locking/npm",
     "@orm/inherit": "file:../../target/extension-packages/inherit/npm",
     "@orm/query-defaults": "file:../../target/extension-packages/query-defaults/npm",
-    "@orm/generic": "file:../../target/extension-packages/generic/npm"
+    "@orm/generic": "file:../../target/extension-packages/generic/npm",
+    "@orm/proxy": "file:../../target/extension-packages/proxy/npm",
+    "@orm/composition": "file:../../target/extension-packages/model-composition/npm"
   },
   "files": [
     "dist/src",
@@ -77,7 +79,6 @@
     "@orm/native-sqlite": "0.1.0",
     "@orm/native-combined": "0.1.0",
     "@orm/native-tooling": "0.1.0",
-    "@orm/native-full": "0.1.0",
     "@opentelemetry/api": "^1.0.0"
   },
   "peerDependenciesMeta": {
@@ -91,9 +92,6 @@
       "optional": true
     },
     "@orm/native-tooling": {
-      "optional": true
-    },
-    "@orm/native-full": {
       "optional": true
     },
     "@opentelemetry/api": {

@@ -17,13 +17,9 @@ mod pack;
     all(feature = "profile-postgres", feature = "profile-sqlite"),
     all(feature = "profile-postgres", feature = "profile-combined"),
     all(feature = "profile-postgres", feature = "profile-tooling"),
-    all(feature = "profile-postgres", feature = "profile-full"),
     all(feature = "profile-sqlite", feature = "profile-combined"),
     all(feature = "profile-sqlite", feature = "profile-tooling"),
-    all(feature = "profile-sqlite", feature = "profile-full"),
-    all(feature = "profile-combined", feature = "profile-tooling"),
-    all(feature = "profile-combined", feature = "profile-full"),
-    all(feature = "profile-tooling", feature = "profile-full")
+    all(feature = "profile-combined", feature = "profile-tooling")
 ))]
 compile_error!("select exactly one named native profile; use a custom feature build for exact combinations");
 
@@ -1311,8 +1307,7 @@ mod methods { include!(env!("ORM_NODE_METHODS")); }
 /// Static packaging compatibility metadata (separate from extension manifests).
 #[napi]
 pub fn profile_metadata() -> napi::Result<String> {
-    let profile = if cfg!(feature = "profile-full") { "full" }
-        else if cfg!(feature = "profile-tooling") { "tooling" }
+    let profile = if cfg!(feature = "profile-tooling") { "tooling" }
         else if cfg!(feature = "profile-combined") { "combined" }
         else if cfg!(feature = "profile-postgres") { "postgres" }
         else if cfg!(feature = "profile-sqlite") { "sqlite" }

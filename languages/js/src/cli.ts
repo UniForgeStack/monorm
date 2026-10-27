@@ -20,7 +20,7 @@ import { native } from "./native.js";
 /** Runs the command line; gives the exit code. Output goes to stdout / stderr. */
 export async function main(rawArgv: readonly string[]): Promise<number> {
   const addon = native();
-  if (typeof addon.cli !== "function") throw new Error("CLI unavailable; install @orm/native-tooling or @orm/native-full and set ORM_PROFILE");
+  if (typeof addon.cli !== "function") throw new Error("CLI unavailable; install @orm/native-tooling and set ORM_PROFILE");
   const argv = [...rawArgv];
   try {
     const schema = addon.cliSchema(argv);

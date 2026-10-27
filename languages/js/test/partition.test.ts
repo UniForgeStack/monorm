@@ -57,8 +57,8 @@ test("partition routes inserts and validates row moves", { skip: !url }, async (
 });
 
 import { readFileSync } from "node:fs";
-import { native } from "../src/native.js";
-const proxyEnabled = (JSON.parse(native().nativeArtifact()).capabilities as string[]).includes("proxy-models");
+import { hasExtension } from "./artifact-caps.js";
+const proxyEnabled = hasExtension("orm.proxy");
 test("proxy partition fills its key and keeps its predicate without defaults", { skip: !url || !proxyEnabled }, async () => {
   const registry = new Registry();
   const models = loads(readFileSync("../../fixtures/partition-proxy.prisma", "utf8").replaceAll("partition_proxy_", "partition_proxy_js_"), { registry });

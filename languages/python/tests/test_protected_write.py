@@ -4,9 +4,8 @@ import asyncio
 
 import pytest
 import orm
-from artifact_caps import artifact_capabilities
+from artifact_caps import has_extension
 
-CAPABILITIES = artifact_capabilities()
 
 SOURCE = """datasource db {
   provider = "sqlite"
@@ -143,7 +142,7 @@ def test_protected_write_creates_no_ddl_and_no_snapshot_change():
         orm.loads(SOURCE.replace("@@protected_write", "@@protected_write(true)", 1), registry=orm.Registry())
 
 
-@pytest.mark.skipif("proxy-models" not in CAPABILITIES, reason="requires a proxy-models artifact")
+@pytest.mark.skipif(not has_extension("orm.proxy"), reason="requires the orm-proxy package")
 async def test_a_proxy_writes_the_table_of_its_protected_root():
     source = SOURCE + "model Draft {\n  @@proxy.of(Post)\n}\n"
     registry = orm.Registry()
@@ -171,7 +170,7 @@ async def test_a_proxy_writes_the_table_of_its_protected_root():
         )
 
 
-@pytest.mark.skipif("model-composition" not in CAPABILITIES, reason="requires a model-composition artifact")
+@pytest.mark.skipif(not has_extension("orm.composition"), reason="requires the orm.composition package")
 async def test_a_composed_write_also_writes_its_protected_parent():
     source = """datasource db {
   provider = "sqlite"

@@ -1,17 +1,12 @@
-"""Model composition through the public API; needs an artifact with orm-model-composition selected."""
+"""Model composition through the public API; needs the orm-composition package."""
 
-import json
 import os
 
 import pytest
 import orm
-from orm import _native
 from artifact_caps import has_extension
 
-pytestmark = pytest.mark.skipif(
-    "model-composition" not in json.loads(_native.native_artifact())["capabilities"],
-    reason="requires a model-composition native artifact",
-)
+pytestmark = pytest.mark.skipif(not has_extension("orm.composition"), reason="requires the orm.composition package")
 
 SOURCE = """
 model Person {
@@ -199,6 +194,7 @@ def test_a_tracking_attribute_on_a_composed_model_is_rejected(attribute, extensi
     source = f"""
 model Person {{
  id Int @id
+ name String
  @@map("composition06_role_people")
 }}
 model Employee {{

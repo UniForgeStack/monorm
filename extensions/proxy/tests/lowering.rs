@@ -1,4 +1,5 @@
-use orm_contracts::{extension::{ProxyField, ProxyModel, ProxySelection, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
+use orm_proxy::{models, ProxyField, ProxyModel, ProxySelection};
+use orm_contracts::{extension::{ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
 use orm_proxy::lower_specs;
 use serde_json::json;
 
@@ -69,7 +70,7 @@ fn chains_preserve_physical_constraints_enum_representation_and_relation_identit
     // Generated TypeScript enums are const objects, so a member type needs `typeof`.
     assert_eq!(field(&ir, "Active", "status").hints["typescript"], "typeof Status.ACTIVE");
     assert_eq!(field(&ir, "Active", "status").hints["python"], "Literal[Status.ACTIVE]");
-    assert_eq!(ir.behavior.proxy_models[1].fields, [
+    assert_eq!(models(&ir).unwrap()[1].fields, [
         ProxyField { field: "status".into(), non_null: false, subset: Some(names(&["ACTIVE"])) },
         ProxyField { field: "name".into(), non_null: true, subset: None },
     ]);
@@ -121,12 +122,12 @@ fn include_and_exclude_select_inherited_fields_and_relations() {
     let mut all = schema();
     lower_specs(&mut all, &[spec("Active", "User")]).unwrap();
     assert_eq!(all.models[1].fields.len(), 6);
-    assert!(all.behavior.proxy_models[0].omitted.is_empty());
+    assert!(models(&all).unwrap()[0].omitted.is_empty());
     let mut ir = schema();
     lower_specs(&mut ir, &[select("Active", "User", ProxySelection::Exclude(names(&["note", "team", "team_id"])))]).unwrap();
     assert!(!has_field(&ir, "Active", "note") && !has_field(&ir, "Active", "team_id") && has_field(&ir, "Active", "name"));
     assert!(ir.models[1].relations.is_empty());
-    assert_eq!(ir.behavior.proxy_models[0].omitted, names(&["note", "team", "team_id"]));
+    assert_eq!(models(&ir).unwrap()[0].omitted, names(&["note", "team", "team_id"]));
     // The physical owner keeps every column.
     assert_eq!(ir.behavior.storage.as_ref().unwrap().models[0].fields.len(), 6);
     let mut ir = schema();
@@ -264,7 +265,7 @@ fn redeclared_fields_keep_inherited_shape_and_defaults() {
     let mut ir = schema();
     redeclare(&mut ir, "Active", "name", |f| f.nullable = false);
     lower_specs(&mut ir, &[select("Named", "Active", ProxySelection::Exclude(names(&["name"]))), spec("Active", "User")]).unwrap();
-    assert!(ir.behavior.proxy_models[1].fields.iter().all(|c| c.field != "name"));
+    assert!(models(&ir).unwrap()[1].fields.iter().all(|c| c.field != "name"));
     // An enum primary key cannot take a subset.
     let mut ir = schema();
     (ir.models[0].fields[0].primary_key, ir.models[0].fields[2].primary_key) = (false, true);
@@ -316,7 +317,7 @@ fn partition_schema() -> SchemaIr {
 }
 fn partition_spec(values: serde_json::Value) -> ProxyModel {
     let mut p = spec("Positive", "Reward");
-    p.partition = Some(orm_contracts::extension::ProxyPartition {
+    p.partition = Some(orm_proxy::ProxyPartition {
         table: String::new(), field: String::new(), values: values.as_array().unwrap().clone(),
     });
     p
@@ -386,7 +387,7 @@ fn partition_ownership_rejects_proxy_sources_but_plain_children_keep_the_bound()
     ir.models.push(serde_json::from_value(json!({"name":"Child","table":"child","fields":[]})).unwrap());
     lower_specs(&mut ir, &[partition_spec(json!(["positive"])), spec("Child", "Positive")]).unwrap();
     assert_eq!(ir.partitions.len(), 1);
-    assert_eq!(ir.behavior.proxy_models[0].partition, ir.behavior.proxy_models[1].partition);
+    assert_eq!(models(&ir).unwrap()[0].partition, models(&ir).unwrap()[1].partition);
     let views = &ir.behavior.model_views;
     assert_eq!(views.len(), 2);
     for view in views {

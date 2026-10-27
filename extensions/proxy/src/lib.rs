@@ -3,7 +3,75 @@
 //! narrowing nor client defaults change physical storage or imply predicates.
 //! Explicit partition ownership projects local objects and a permanent storage bound.
 use std::collections::{BTreeMap, BTreeSet};
-use orm_contracts::{extension::{capture_storage, ModelView, ProxyField, ProxyModel, ProxyPartition, ProxySelection, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
+use orm_contracts::{extension::{capture_storage, ModelView, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
+use serde::{Deserialize, Serialize};
+
+/// The id under which the pass keeps its records in `extension_data`.
+pub const ID: &str = "orm.proxy";
+
+/// The pass's own record of each proxy; no host code reads it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyData {
+    pub models: Vec<ProxyModel>,
+}
+
+/// Intended shape only. Physical encoding, enum representation and constraints
+/// remain on the storage owner. Only explicit partition ownership implies a predicate.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyModel {
+    pub model: String,
+    pub parent: String,
+    /// Resolved root physical model identity, filled by lowering.
+    #[serde(default)]
+    pub storage_owner: String,
+    /// Resolved list-partition ownership; values use the physical enum encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<ProxyPartition>,
+    #[serde(default)]
+    pub fields: Vec<ProxyField>,
+    /// `@@proxy.fields(include:|exclude:)`: which source fields and relations the view keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ProxySelection>,
+    /// Source fields and relations that are not part of the view, filled by lowering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyPartition {
+    pub table: String,
+    pub field: String,
+    pub values: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxySelection {
+    Include(Vec<String>),
+    Exclude(Vec<String>),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyField {
+    pub field: String,
+    #[serde(default)]
+    pub non_null: bool,
+    /// Parent enum member names, not database labels. None means the whole enum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subset: Option<Vec<String>>,
+}
+
+/// The proxy records of `ir`, in the order the pass lowered them.
+pub fn models(ir: &SchemaIr) -> Result<Vec<ProxyModel>, String> {
+    match ir.behavior.extension_data.get(ID) {
+        Some(value) => serde_json::from_value::<ProxyData>(value.clone()).map(|d| d.models).map_err(|e| format!("invalid extension_data of {ID}: {e}")),
+        None => Ok(Vec::new()),
+    }
+}
 
 /// The warning code of a proxy shape check.
 pub const SHAPE_CODE: &str = "orm.proxy.shape";
@@ -48,9 +116,10 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
 /// referenced; only declarations in this batch are transformed.
 pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String> {
     let mut by_model = BTreeMap::new();
+    let mut lowered = models(ir)?;
     for spec in specs {
         if by_model.insert(spec.model.as_str(), spec).is_some()
-            || ir.behavior.proxy_models.iter().any(|p| p.model == spec.model) {
+            || lowered.iter().any(|p| p.model == spec.model) {
             return Err(format!("{}: duplicate proxy source", spec.model));
         }
         if !ir.models.iter().any(|m| m.name == spec.model) {
@@ -91,7 +160,7 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
         if placeholder.protected_write {
             return Err(format!("{}: a proxy cannot declare @@protected_write; protect the root model {}", spec.model, spec.parent));
         }
-        let inherited = ir.behavior.proxy_models.iter().find(|p| p.model == spec.parent);
+        let inherited = lowered.iter().find(|p| p.model == spec.parent);
         let partition = if let Some(declared) = &spec.partition {
             if inherited.is_some() { return Err(format!("{}: @@partition.values cannot own a partition of a proxy", spec.model)); }
             if !ir.dialect.is_postgres() { return Err(format!("{}: @@partition.values requires PostgreSQL", spec.model)); }
@@ -263,7 +332,7 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
         ir.behavior.model_views.push(ModelView { model: spec.model.clone(), source: spec.parent.clone(), root: prepared.storage_owner.clone(), row_filter, insert_table });
         ir.behavior.result_checks.retain(|c| c.model != spec.model);
         ir.behavior.result_checks.extend(prepared.fields.iter().map(|f| ResultCheck { model: spec.model.clone(), field: f.field.clone(), non_null: f.non_null, allowed: f.subset.clone(), code: SHAPE_CODE.into() }));
-        ir.behavior.proxy_models.push(prepared);
+        lowered.push(prepared);
     }
     // Physical relations may name a proxy. Resolve only the physical FK target;
     // logical relation targets preserve their view and policies.
@@ -272,13 +341,14 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
         for relation in &mut model.relations {
             let mut target = relation.target.clone();
             let mut visited = BTreeSet::new();
-            while let Some(proxy) = ir.behavior.proxy_models.iter().find(|p| p.model == target) {
+            while let Some(proxy) = lowered.iter().find(|p| p.model == target) {
                 if !visited.insert(target.clone()) { return Err("cyclic normalized proxy metadata".into()); }
                 target = proxy.parent.clone();
             }
             relation.target = target;
         }
     }
+    ir.behavior.extension_data.insert(ID.into(), serde_json::to_value(ProxyData { models: lowered }).map_err(|e| e.to_string())?);
     Ok(())
 }
 
@@ -323,6 +393,9 @@ mod effects {
         ],"behavior":{"declarations":[
             {"attribute":"proxy.of","model":"Active","field":null,"arguments":{},"positional":["User"],"location":{"file":"schema.prisma","line":1,"column":1}}
         ]}})).unwrap();
-        assert_eq!(pass_effects(&ir, super::lower).unwrap().into_iter().collect::<Vec<_>>(), ["behavior.model_views", "behavior.proxy_models", "behavior.result_checks", "behavior.storage", "models"]);
+        assert_eq!(pass_effects(&ir, super::lower).unwrap().into_iter().collect::<Vec<_>>(), ["behavior.extension_data", "behavior.model_views", "behavior.result_checks", "behavior.storage", "models"]);
     }
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.proxy.lower", lower));

@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, of, Registry, scope, VersionConflict, type Database } from "../src/index.js";
-import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const capabilities = artifactCapabilities();
 const OLD = new Date("2000-01-01T00:00:00Z");
 type SoftDeletable = { hardDelete(): Promise<void>; undelete(): Promise<void> };
 type Models = Record<string, { objects: any; [key: string]: any }>;
@@ -530,7 +529,7 @@ for (const dialect of ["sqlite", "postgres"]) {
   for (const mode of [null, "application", "database"]) {
     for (const operation of ["update", "delete"]) {
       test(`stale proxy instance checks the loaded version (${dialect}, ${operation}, ${mode})`, {
-        skip: !capabilities.includes("proxy-models") || !hasExtension("orm.locking") || (mode !== null && !hasExtension("orm.soft-delete")),
+        skip: !hasExtension("orm.proxy", "orm.locking") || (mode !== null && !hasExtension("orm.soft-delete")),
       }, async () => {
         const [db, models] = await open(dialect, `
 model Doc {

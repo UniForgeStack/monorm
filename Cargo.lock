@@ -811,6 +811,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "orm-composition"
+version = "0.1.0"
+dependencies = [
+ "orm-contracts",
+ "orm-core",
+ "orm-engine",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "orm-contracts"
 version = "0.1.0"
 dependencies = [
@@ -904,14 +915,6 @@ dependencies = [
 
 [[package]]
 name = "orm-locking"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "serde_json",
-]
-
-[[package]]
-name = "orm-model-composition"
 version = "0.1.0"
 dependencies = [
  "orm-contracts",

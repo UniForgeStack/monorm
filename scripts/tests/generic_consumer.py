@@ -12,7 +12,6 @@ async def run():
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
     stamp = locked["behavior"]["packages"]["orm.generic"]
     assert import_runtime("orm.generic").MANIFEST_HASH == stamp["manifest_hash"]
-    assert locked["behavior"]["schema_contract_minor"] >= 1
     assert set(locked["behavior"]["extension_data"]["orm.generic"]) == {"relations", "reverse"}
     db = await orm.connect(os.environ["ORM_DATABASE_URL"])
     await db.drop_tables()

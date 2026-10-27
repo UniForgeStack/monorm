@@ -29,7 +29,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         ir = json.loads(orm._native.compile_schema("model FileReport07 {\n id Int @id\n file Json?\n}", None))
         ir["dialect"] = "sqlite" if self.url.startswith("sqlite:") else "postgres"
         ir["behavior"] = {
-            "schema_contract": 3,
+            "schema_contract": 4,
             "field_adapters": [{"model": "FileReport07", "field": "file", "adapter": "file-storage.reference.v1"}],
             "file_fields": [{"model": "FileReport07", "field": "file", "storage": "reports", "reference_contract": 1}],
         }
@@ -208,7 +208,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         )
         ir["dialect"] = "sqlite"
         ir["behavior"] = {
-            "schema_contract": 3,
+            "schema_contract": 4,
             "field_adapters": [{"model": "FileReport08", "field": "file", "adapter": "file-storage.reference.v1"}],
             "file_fields": [{"model": "FileReport08", "field": "file", "storage": "reports", "reference_contract": 1}],
         }

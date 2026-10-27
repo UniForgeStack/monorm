@@ -265,3 +265,6 @@ fn lower_one(ir: &mut SchemaIr, c: &Composition) -> Result<(), String> {
     });
     Ok(())
 }
+
+// The package entry point; Rust callers keep the rlib API.
+orm_contracts::extension!(("orm.composition.lower", lower));
