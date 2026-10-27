@@ -31,9 +31,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !manifest.is_dynamic() || manifest.library.is_none() {
         return Err("a package needs abi and library".into());
     }
-    if !manifest.exports.is_empty() {
-        return Err("native exports are not supported by this package builder yet".into());
-    }
     let library = manifest.library.as_ref().unwrap();
     if library.is_empty() || library.contains(['/', '\\']) {
         return Err("library must be a file name".into());

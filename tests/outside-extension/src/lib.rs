@@ -1,4 +1,7 @@
-use orm_contracts::{extension::Declaration, ir::{ColType, FieldIr, SchemaIr}};
+// `pass-only` builds no hook, no state and no `init`.
+#![cfg_attr(feature = "pass-only", allow(dead_code, unused_macros))]
+use orm_contracts::{abi::{Arg, Context, Value}, extension::Declaration, ir::{ColType, FieldIr, SchemaIr}};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const ATTRIBUTE: &str = "outside.tag";
 
@@ -20,9 +23,97 @@ fn tag(ir: &mut SchemaIr) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(feature = "abi-major", feature = "abi-newer")))]
-orm_contracts::extension!(("acme.outside.tag", tag));
+/// The count of states that `drop_state` has dropped, which `outside.drops` returns.
+static DROPS: AtomicU64 = AtomicU64::new(0);
+
+struct State { prefix: String }
+
+impl Drop for State {
+    fn drop(&mut self) { DROPS.fetch_add(1, Ordering::SeqCst); }
+}
+
+fn init(data: &serde_json::Value) -> Result<State, String> {
+    let prefix = match data.get("prefix") {
+        Some(serde_json::Value::String(prefix)) => prefix.clone(),
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(other) => return Err(format!("prefix must be a string, got {other}")),
+    };
+    if data.get("fail").is_some() { return Err("init asked to fail".into()); }
+    if data.get("panic").is_some() { panic!("init asked to panic"); }
+    Ok(State { prefix })
+}
+
+fn one<'a>(args: &'a [Arg], name: &str) -> Result<&'a Value, String> {
+    args.iter().find(|a| a.name == name).map(|a| &a.value).ok_or_else(|| format!("missing argument {name}"))
+}
+
+fn text<'a>(args: &'a [Arg], name: &str) -> Result<&'a str, String> {
+    match one(args, name)? { Value::Text(s) => Ok(s), other => Err(format!("{name} must be text, got {other:?}")) }
+}
+
+fn prefix(state: &State, args: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Text(format!("{}{}", state.prefix, text(args, "value")?))) }
+fn audit(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> { text(args, "value").map(|_| Value::Null) }
+fn context(_: &State, _: &[Arg], ctx: &Context) -> Result<Value, String> {
+    let tenant = match ctx.get("tenant") { Some(Value::Text(t)) => serde_json::Value::String(t.clone()), _ => serde_json::Value::Null };
+    Ok(Value::Json(serde_json::json!({"tenant": tenant, "n": ctx.values.len()}).to_string()))
+}
+fn drops(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Int(DROPS.load(Ordering::SeqCst) as i64)) }
+fn fail(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Err("the hook failed".into()) }
+fn explode(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { panic!("the hook panicked") }
+/// One value of each tag goes in and comes back: the round trip of the typed value.
+fn echo(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> { Ok(one(args, "value")?.clone()) }
+fn add(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
+    match (one(args, "a")?, one(args, "b")?) {
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+        (a, b) => Err(format!("cannot add {a:?} and {b:?}")),
+    }
+}
+
+macro_rules! export {
+    ($($abi:tt)*) => {
+        orm_contracts::extension! {
+            $($abi)*
+            init = init;
+            hooks {
+                "outside.prefix" => prefix, "outside.audit" => audit, "outside.context" => context, "outside.drops" => drops,
+                "outside.fail" => fail, "outside.panic" => explode, "outside.echo" => echo, "outside.add" => add,
+            };
+            ("acme.outside.tag", tag)
+        }
+    };
+}
+
+#[cfg(not(any(feature = "abi-major", feature = "abi-newer", feature = "pass-only")))]
+export!();
 #[cfg(feature = "abi-major")]
-orm_contracts::extension!(abi = (1, 0); ("acme.outside.tag", tag));
+export!(abi = (1, 0););
 #[cfg(all(feature = "abi-newer", not(feature = "abi-major")))]
-orm_contracts::extension!(abi = (0, 2); ("acme.outside.tag", tag));
+export!(abi = (0, 3););
+
+/// The three symbols of a library from slice 1, written by hand: `extension!` always writes all six.
+#[cfg(feature = "pass-only")]
+mod slice_one {
+    use orm_contracts::abi::{self, Buffer, PassFn};
+    use orm_contracts::extension::ContractVersion;
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn orm_ext_abi_version() -> u32 { ContractVersion::new(0, 1).to_bits() }
+
+    /// # Safety
+    /// Called by the ORM loader with readable ranges and a writable `out`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
+        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn)];
+        // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
+        unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
+    }
+
+    /// # Safety
+    /// Called by the ORM loader with a buffer of this library.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn orm_ext_free(ptr: *mut u8, len: usize) {
+        // SAFETY: the loader passes a buffer that this library returned, once.
+        unsafe { abi::free(ptr, len) }
+    }
+}

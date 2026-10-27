@@ -7,12 +7,14 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 0);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 1);
 /// The C ABI that `orm_contracts::extension!` writes.
-pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 1);
+pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
 pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
+/// The minor that an IR carries only when it uses a record that a 2.0 engine lacks (`hooks`, `extension_data`).
+pub const SCHEMA_CONTRACT_MINOR: u32 = SCHEMA_CONTRACT_VERSION.minor as u32;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -56,6 +58,15 @@ pub struct Requirements {
     pub read_defaults: Vec<ReadDefault>,
     #[serde(default)]
     pub schema_contract: u32,
+    /// Zero unless the IR has a 2.1 record. An engine of contract 2.0 reads such an IR only when this is zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub schema_contract_minor: u32,
+    /// Typed hook bindings that extension passes wrote; the engine calls them through the library.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookBinding>,
+    /// The data of each extension that has a library, by extension id. Only its `init` reads it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extension_data: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub declarations: Vec<Declaration>,
     #[serde(default)]
@@ -96,6 +107,28 @@ pub struct Requirements {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_overrides: BTreeMap<String, String>,
 }
+fn is_zero(n: &u32) -> bool { *n == 0 }
+
+/// One hook of an extension library, bound to a model and a field.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HookBinding {
+    /// The extension that owns the export.
+    pub source: String,
+    /// The hook point, 1 to 7.
+    pub point: u8,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// The id of the export in the manifest of `source`.
+    pub export: String,
+    /// The fields of the model that the hook reads (point 5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_context: bool,
+}
+
 /// What the IR records about an extension that ran as a library.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -143,10 +176,16 @@ impl Requirements {
             .chain(self.instance_guards.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
     }
 
+    /// Sets the minor of the contract when a 2.1 record is in use, so that an engine of 2.0 reads every other IR.
+    pub fn stamp_minor(&mut self) {
+        if !self.hooks.is_empty() || !self.extension_data.is_empty() { self.schema_contract_minor = SCHEMA_CONTRACT_MINOR; }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.generic_relations.is_empty() && self.generic_reverse.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
+            && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
 }
 
@@ -512,11 +551,34 @@ pub enum ExportKind { StringValidator, StringTransform, StringComputed, StringRe
 #[serde(deny_unknown_fields)]
 pub struct Export {
     pub id: String,
-    pub rust: String,
-    pub kind: ExportKind,
-    pub input: ColType,
+    /// The static form: a Rust path that the build compiles in, with its `kind`. A typed hook has neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ExportKind>,
+    /// The hook point, 1 to 7. A typed hook of a library has one; the static form has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<u8>,
+    /// The type of the value that the hook takes. Points 3, 6 and 7 take none, and then it is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<ColType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<ColType>,
+}
+
+/// The static form of an export, which `orm-extension-build` compiles in.
+#[derive(Clone, Copy, Debug)]
+pub struct StringExport<'a> {
+    pub rust: &'a str,
+    pub kind: ExportKind,
+    pub input: ColType,
+    pub output: Option<ColType>,
+}
+
+impl Export {
+    pub fn string_form(&self) -> Option<StringExport<'_>> {
+        Some(StringExport { rust: self.rust.as_deref()?, kind: self.kind?, input: self.input?, output: self.output })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -655,6 +717,9 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
     if !r.is_empty() && r.schema_contract != artifact.schema_contract {
         return Err(format!("schema contract {} unavailable (artifact {}); rebuild native artifact", r.schema_contract, artifact.schema_contract));
     }
+    if r.schema_contract_minor > SCHEMA_CONTRACT_MINOR {
+        return Err(format!("schema contract {}.{} is newer than this engine ({SCHEMA_CONTRACT_VERSION}); update the ORM or regenerate the models", r.schema_contract, r.schema_contract_minor));
+    }
     if r.storage.is_some() && !artifact.capabilities.iter().any(|c| c == "physical-schema") {
         return Err(format!("physical schema contributions are not compiled into this artifact (capabilities {:?}); rebuild", artifact.capabilities));
     }
@@ -717,6 +782,67 @@ pub fn validate_requirements(ir: &SchemaIr, manifests: &[Manifest], language: Op
         if language.is_some_and(|language| !manifest.languages.iter().any(|l| l == language)) {
             return Err(format!("{id}@{version} does not support this binding; rebuild an appropriate profile"));
         }
+    }
+    for hook in &ir.behavior.hooks { validate_hook(ir, hook, manifests)?; }
+    Ok(())
+}
+
+fn col_name(ty: ColType) -> String {
+    serde_json::to_value(ty).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_else(|| format!("{ty:?}"))
+}
+
+/// The typed values of ABI 0.2 that one column type takes: integers, and strings, travel as one value type each.
+fn same_value_type(a: ColType, b: ColType) -> bool {
+    let family = |t: ColType| match t { ColType::Int | ColType::BigInt => ColType::Int, ColType::String | ColType::Text => ColType::String, t => t };
+    family(a) == family(b)
+}
+
+/// One hook binding. The model, field and dependency checks run always. The export, point and type checks need the
+/// manifest of `source`; `Plan::lower` has it, so they run at `orm generate`. A generated model carries only the stamp of the
+/// package, so there `source` must be in `behavior.packages`.
+fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> Result<(), String> {
+    let at = |field: Option<&str>| match field { Some(f) => format!("{}.{f}", hook.model), None => hook.model.clone() };
+    let who = format!("hook {} of {}", hook.export, hook.source);
+    if !(1..=7).contains(&hook.point) { return Err(format!("{}: {who} has point {}; use 1 to 7", at(hook.field.as_deref()), hook.point)); }
+    let model = ir.models.iter().find(|m| m.name == hook.model)
+        .ok_or_else(|| format!("{who} is bound to unknown model {}", hook.model))?;
+    for name in &hook.dependencies {
+        if !model.fields.iter().any(|f| f.name == *name) { return Err(format!("{}: {who} depends on unknown field {name}", hook.model)); }
+    }
+    let field = match (hook.point, &hook.field) {
+        (3, None) => None,
+        (3, Some(f)) => return Err(format!("{}: {who} is a record validator (point 3); bind it to the model, not to a field", at(Some(f)))),
+        (point, None) => return Err(format!("{}: {who} at point {point} needs a field", hook.model)),
+        (_, Some(name)) => Some(model.fields.iter().find(|f| f.name == *name)
+            .ok_or_else(|| format!("{who} is bound to unknown field {}", at(Some(name))))?),
+    };
+    let Some(manifest) = manifests.iter().find(|m| m.id == hook.source) else {
+        if ir.behavior.packages.contains_key(&hook.source) { return Ok(()); }
+        return Err(format!("{}: {who} names the source {}, but no manifest and no package of the schema has that id; select the extension or fix the source", at(hook.field.as_deref()), hook.source));
+    };
+    let export = manifest.exports.iter().find(|e| e.id == hook.export)
+        .ok_or_else(|| format!("{}: {who} is not in the manifest of {}", at(hook.field.as_deref()), hook.source))?;
+    if export.point != Some(hook.point) {
+        return Err(format!("{}: {who} is bound at point {}, and the manifest says point {}", at(hook.field.as_deref()), hook.point, export.point.map_or("none".into(), |p| p.to_string())));
+    }
+    let Some(field) = field else { return Ok(()) };
+    let mismatch = |role: &str, export_type: ColType, wanted: String| format!(
+        "{}.{}: {who} {role} {} but the field is {wanted}", model.name, field.name, col_name(export_type));
+    if field.array { return Err(format!("{}.{}: {who} cannot bind an array field; ABI 0.2 has no typed array value", model.name, field.name)); }
+    let field_type = format!("{}{}", col_name(field.ty), if field.nullable { "?" } else { "" });
+    // A point-1 transform and a point-4 or 5 hook give back a value of the field type; points 6 and 7 give back query IR as json.
+    if matches!(hook.point, 1 | 2 | 4) {
+        if let Some(input) = export.input {
+            if !same_value_type(input, field.ty) { return Err(mismatch("takes", input, field_type)); }
+        }
+    }
+    match (hook.point, export.output) {
+        (1 | 4 | 5, Some(output)) if !same_value_type(output, field.ty) => return Err(mismatch("returns", output, field_type)),
+        (1 | 4 | 5, None) => return Err(format!("{}.{}: {who} has no output type for a value of {field_type}", model.name, field.name)),
+        (6 | 7, Some(output)) if output != ColType::Json => return Err(mismatch("returns", output, "bound to query IR, which is json".into())),
+        (6 | 7, None) => return Err(format!("{}.{}: {who} must return json (query IR)", model.name, field.name)),
+        (2, Some(output)) => return Err(mismatch("returns", output, "validated, so it returns nothing".into())),
+        _ => {}
     }
     Ok(())
 }
@@ -850,6 +976,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
         return Err("incompatible schema contracts; rebuild dependent schemas together".into());
     }
     c.schema_contract = c.schema_contract.max(n.schema_contract);
+    c.schema_contract_minor = c.schema_contract_minor.max(n.schema_contract_minor);
     if !c.completed_passes.is_empty() && !n.completed_passes.is_empty() && c.completed_passes != n.completed_passes {
         return Err("incompatible lowering passes; rebuild dependent schemas together".into());
     }
@@ -871,6 +998,12 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.write_assignments.extend(n.write_assignments);
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
+    c.hooks.extend(n.hooks);
+    for (id, data) in n.extension_data {
+        if c.extension_data.insert(id.clone(), data).is_some() {
+            return Err(format!("extension_data of {id} is declared twice; keep one entry per extension"));
+        }
+    }
     for t in n.type_models {
         match c.type_models.iter().find(|known| known.name == t.name) {
             Some(known) if serde_json::to_value(known).ok() != serde_json::to_value(&t).ok() => return Err(format!("{} is declared as an abstract type twice with different content; rebuild dependent schemas together", t.name)),
@@ -1129,15 +1262,119 @@ mod tests {
         let next_minor = |v: ContractVersion| format!("{}.{}", v.major, v.minor + 1);
         assert!(check(&|_| {}).is_ok());
         let error = check(&|v| v["schema_contract"] = format!("{}.0", SCHEMA_CONTRACT_VERSION.major + 1).into()).unwrap_err();
-        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.0") && error.contains("major versions differ"), "{error}");
+        assert!(error.contains("schema contract 3.0") && error.contains("schema contract 2.1") && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("schema contract 2.1 is newer than this engine (schema contract 2.0)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains("schema contract 2.2 is newer than this engine (schema contract 2.1)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
         let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
-        assert!(error.contains("ABI 0.2 is newer than this engine (ABI 0.1)") && error.contains("update the ORM"), "{error}");
+        assert!(error.contains("ABI 0.3 is newer than this engine (ABI 0.2)") && error.contains("update the ORM"), "{error}");
         let error = check(&|v| { v.as_object_mut().unwrap().remove("host_contract"); }).unwrap_err();
         assert!(error.contains("app: a manifest with no `abi` needs `host_contract`"), "{error}");
+    }
+
+    fn hook_ir(binding: serde_json::Value) -> SchemaIr {
+        let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+            "models": [{"name": "User", "table": "users", "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": true},
+                {"name": "name", "column": "name", "type": "string"},
+                {"name": "age", "column": "age", "type": "int", "nullable": true},
+                {"name": "tags", "column": "tags", "type": "string", "array": true},
+            ]}],
+            "behavior": {"hooks": [binding]},
+        })).unwrap();
+        ir.behavior.stamp_minor();
+        ir
+    }
+    fn hook_manifest(exports: serde_json::Value) -> Manifest {
+        serde_json::from_value(serde_json::json!({
+            "id": "acme.lib", "version": "1.0.0", "schema_contract": "2.1", "abi": "0.2", "library": "lib",
+            "languages": ["python"], "databases": ["sqlite"], "exports": exports,
+        })).unwrap()
+    }
+    fn binding(point: u8, field: Option<&str>, export: &str) -> serde_json::Value {
+        let mut value = serde_json::json!({"source": "acme.lib", "point": point, "model": "User", "export": export});
+        if let Some(field) = field { value["field"] = field.into(); }
+        value
+    }
+
+    #[test]
+    fn a_hook_binding_of_the_wrong_type_names_the_model_field_export_and_both_types() {
+        let manifest = hook_manifest(serde_json::json!([{"id": "acme.lib.check", "point": 2, "input": "int"}]));
+        let error = validate_requirements(&hook_ir(binding(2, Some("name"), "acme.lib.check")), &[manifest.clone()], None).unwrap_err();
+        for part in ["User.name", "acme.lib.check", "takes int", "string"] {
+            assert!(error.contains(part), "{part} is missing from: {error}");
+        }
+        assert!(validate_requirements(&hook_ir(binding(2, Some("age"), "acme.lib.check")), &[manifest], None).is_ok());
+    }
+
+    #[test]
+    fn a_hook_binding_checks_the_output_the_point_and_the_export() {
+        let exports = hook_manifest(serde_json::json!([
+            {"id": "acme.lib.up", "point": 1, "input": "string", "output": "int"},
+            {"id": "acme.lib.up_ok", "point": 1, "input": "string", "output": "text"},
+            {"id": "acme.lib.expr", "point": 6, "output": "string"},
+            {"id": "acme.lib.rec", "point": 3},
+        ]));
+        let check = |b: serde_json::Value| validate_requirements(&hook_ir(b), &[exports.clone()], None);
+        let error = check(binding(1, Some("name"), "acme.lib.up")).unwrap_err();
+        assert!(error.contains("User.name") && error.contains("acme.lib.up") && error.contains("returns int") && error.contains("string"), "{error}");
+        assert!(check(binding(1, Some("name"), "acme.lib.up_ok")).is_ok());
+        assert!(check(binding(6, Some("name"), "acme.lib.expr")).unwrap_err().contains("returns string"));
+        assert!(check(binding(3, None, "acme.lib.rec")).is_ok());
+        assert!(check(binding(2, Some("name"), "acme.lib.up")).unwrap_err().contains("is bound at point 2, and the manifest says point 1"));
+        assert!(check(binding(2, Some("name"), "acme.lib.missing")).unwrap_err().contains("is not in the manifest of acme.lib"));
+        assert!(check(binding(1, Some("tags"), "acme.lib.up_ok")).unwrap_err().contains("array"));
+    }
+
+    #[test]
+    fn a_hook_binding_on_an_unknown_model_field_or_dependency_fails() {
+        let check = |b: serde_json::Value| validate_requirements(&hook_ir(b), &[], None);
+        assert!(check(binding(2, Some("nope"), "x")).unwrap_err().contains("unknown field User.nope"));
+        let mut other = binding(2, Some("name"), "x");
+        other["model"] = "Ghost".into();
+        assert!(check(other).unwrap_err().contains("unknown model Ghost"));
+        let mut depends = binding(5, Some("name"), "x");
+        depends["dependencies"] = serde_json::json!(["missing"]);
+        assert!(check(depends).unwrap_err().contains("depends on unknown field missing"));
+        assert!(check(binding(2, None, "x")).unwrap_err().contains("needs a field"));
+        assert!(check(binding(3, Some("name"), "x")).unwrap_err().contains("bind it to the model"));
+        assert!(check(binding(9, Some("name"), "x")).unwrap_err().contains("use 1 to 7"));
+    }
+
+    #[test]
+    fn a_hook_needs_the_manifest_or_the_package_stamp_of_its_source() {
+        let statics = [manifest(&["python"], &["sqlite"])];
+        let mut ir = hook_ir(binding(2, Some("name"), "acme.lib.check"));
+        let error = validate_requirements(&ir, &statics, None).unwrap_err();
+        for part in ["User.name", "acme.lib.check", "names the source acme.lib", "no manifest and no package"] {
+            assert!(error.contains(part), "{part} is missing from: {error}");
+        }
+        // A generated model carries the stamp of the package, not its manifest.
+        let stamp = PackageStamp { version: "1.0.0".into(), databases: vec![ir.dialect.name().into()], ..PackageStamp::default() };
+        ir.behavior.packages.insert("acme.lib".into(), stamp);
+        assert!(validate_requirements(&ir, &statics, None).is_ok());
+    }
+
+    #[test]
+    fn contract_2_1_records_set_the_minor_and_merge() {
+        let ir = hook_ir(binding(2, Some("name"), "acme.lib.check"));
+        assert_eq!(ir.behavior.schema_contract_minor, SCHEMA_CONTRACT_MINOR);
+        assert!(!ir.behavior.is_empty());
+        let json = serde_json::to_string(&ir).unwrap();
+        assert!(json.contains("\"schema_contract_minor\":1"), "{json}");
+        assert!(!serde_json::to_string(&SchemaIr::default()).unwrap().contains("schema_contract_minor"));
+        let mut newer = SchemaIr::default();
+        newer.behavior.schema_contract = SCHEMA_CONTRACT;
+        newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_MINOR + 1;
+        let error = check_requirements(&newer, &Artifact::default()).unwrap_err();
+        assert!(error.contains("schema contract 2.2 is newer than this engine (2.1)"), "{error}");
+        let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir.behavior.stamp_minor(); ir };
+        let merged = merge_definition(data("a"), data("b")).unwrap();
+        assert_eq!(merged.behavior.extension_data.len(), 2);
+        assert_eq!(merged.behavior.schema_contract_minor, 1);
+        let error = merge_definition(data("a"), data("a")).unwrap_err();
+        assert!(error.contains("extension_data of a is declared twice"), "{error}");
     }
 
     #[test]

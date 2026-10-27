@@ -1,5 +1,5 @@
 //! One check and one order for the manifests of an artifact: the compiled ones and the ones of libraries.
-use crate::extension::{AttributeTarget, LanguageSection, Manifest, Pass, HOST_CAPABILITIES, LANGUAGE_CONTRACT};
+use crate::extension::{AttributeTarget, Export, LanguageSection, Manifest, Pass, HOST_CAPABILITIES, LANGUAGE_CONTRACT};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The manifests, sorted by id, and their passes in run order: by `phase`, then `after`, then pass id.
@@ -32,9 +32,6 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             (false, Some(_)) => return Err(format!("{}: `library` needs `abi`", m.id)),
             _ => {}
         }
-        if m.is_dynamic() && !m.exports.is_empty() {
-            return Err(format!("{}: exports need hooks, which ABI {} does not have; remove them", m.id, m.abi.unwrap()));
-        }
         let sections: Vec<_> = m.language_sections().collect();
         if !sections.is_empty() && m.language_contract != Some(LANGUAGE_CONTRACT) {
             return Err(format!("{}: incompatible language contract; rebuild", m.id));
@@ -56,7 +53,7 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             }
         }
         for e in &m.exports {
-            rust_path(&e.rust)?;
+            check_export(m, e)?;
             if !exports.insert(&e.id) { return Err(format!("duplicate export {}", e.id)); }
         }
         for p in &m.passes {
@@ -103,13 +100,32 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
     Ok(Resolved { manifests, passes: ordered })
 }
 
+/// A library exports typed hooks (`point`), and a compiled extension exports string functions (`rust`, `kind`).
+fn check_export(m: &Manifest, e: &Export) -> Result<(), String> {
+    let id = &e.id;
+    if m.is_dynamic() {
+        if e.rust.is_some() || e.kind.is_some() {
+            return Err(format!("{}: export {id} of a library has no `rust` or `kind`; it takes a `point`", m.id));
+        }
+        let point = e.point.ok_or_else(|| format!("{}: export {id} needs a `point` from 1 to 7", m.id))?;
+        if !(1..=7).contains(&point) { return Err(format!("{}: export {id} has point {point}; use 1 to 7", m.id)); }
+        if matches!(point, 1 | 2) && e.input.is_none() { return Err(format!("{}: export {id} at point {point} needs an `input` type", m.id)); }
+        return Ok(());
+    }
+    if e.point.is_some() { return Err(format!("{}: export {id} has a `point`, and a compiled extension has no hooks; use `rust` and `kind`", m.id)); }
+    let (Some(rust), Some(_), Some(_)) = (&e.rust, e.kind, e.input) else {
+        return Err(format!("{}: export {id} needs `rust`, `kind` and `input`", m.id));
+    };
+    rust_path(rust)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn library(extra: serde_json::Value) -> Manifest {
         let mut value = serde_json::json!({
-            "id": "acme.lib", "version": "1.0.0", "schema_contract": "2.0", "abi": "0.1", "library": "lib",
+            "id": "acme.lib", "version": "1.0.0", "schema_contract": "2.0", "abi": "0.2", "library": "lib",
             "languages": ["python"], "databases": ["sqlite"],
         });
         value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
@@ -119,13 +135,30 @@ mod tests {
     fn resolve_all(manifests: Vec<Manifest>) -> Result<Resolved, String> { resolve(manifests, &|_, _, _| Ok(())) }
 
     #[test]
-    fn a_library_manifest_checks_language_contract_and_has_no_hook_export() {
+    fn a_library_manifest_checks_language_contract_and_the_form_of_its_exports() {
         assert!(resolve_all(vec![library(serde_json::json!({}))]).is_ok());
         let section = serde_json::json!({"source": "py", "query_set": "QuerySet", "instance": "Instance"});
         assert!(resolve_all(vec![library(serde_json::json!({"python": section}))]).unwrap_err().contains("incompatible language contract"));
         assert!(resolve_all(vec![library(serde_json::json!({"python": section, "language_contract": LANGUAGE_CONTRACT}))]).is_ok());
-        let export = serde_json::json!([{"id": "acme.lib.x", "rust": "crate::x", "kind": "string_validator", "input": "string"}]);
-        let error = resolve_all(vec![library(serde_json::json!({"exports": export}))]).unwrap_err();
-        assert!(error.contains("exports need hooks"), "{error}");
+        let export = |value: serde_json::Value| resolve_all(vec![library(serde_json::json!({"exports": [value]}))]);
+        let error = export(serde_json::json!({"id": "acme.lib.x", "rust": "crate::x", "kind": "string_validator", "input": "string"})).unwrap_err();
+        assert!(error.contains("takes a `point`"), "{error}");
+        assert!(export(serde_json::json!({"id": "acme.lib.x", "input": "string"})).unwrap_err().contains("needs a `point`"));
+        assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 8, "input": "string"})).unwrap_err().contains("use 1 to 7"));
+        assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 2})).unwrap_err().contains("needs an `input` type"));
+        assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 2, "input": "string"})).is_ok());
+        assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 6, "output": "json"})).is_ok());
+    }
+
+    #[test]
+    fn a_compiled_manifest_keeps_the_string_form() {
+        let compiled = |export: serde_json::Value| -> Manifest {
+            serde_json::from_value(serde_json::json!({"id": "acme.c", "version": "1.0.0", "schema_contract": "2.0", "host_contract": "1.0", "languages": [], "databases": [], "exports": [export]})).unwrap()
+        };
+        let valid = serde_json::json!({"id": "acme.c.x", "rust": "crate::x", "kind": "string_validator", "input": "string"});
+        assert!(resolve_all(vec![compiled(valid)]).is_ok());
+        let error = resolve_all(vec![compiled(serde_json::json!({"id": "acme.c.x", "point": 2, "input": "string"}))]).unwrap_err();
+        assert!(error.contains("has no hooks"), "{error}");
+        assert!(resolve_all(vec![compiled(serde_json::json!({"id": "acme.c.x", "kind": "string_validator", "input": "string"}))]).unwrap_err().contains("needs `rust`"));
     }
 }

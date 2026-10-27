@@ -28,6 +28,7 @@ name = "outside-extension"
 version = "0.1.0"
 dependencies = [
  "orm-contracts",
+ "serde_json",
 ]
 
 [[package]]

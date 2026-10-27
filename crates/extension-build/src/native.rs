@@ -69,7 +69,7 @@ pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manife
     specs.extend(merged);
     specs.sort_by(|a, b| a.model.cmp(&b.model));
     for spec in &mut specs { spec.methods.sort_by(|a, b| a.name.cmp(&b.name)); }
-    let exports: BTreeMap<_, _> = manifests.iter().flat_map(|m| m.exports.iter().map(|e| (e.id.as_str(), e))).collect();
+    let exports: BTreeMap<_, _> = manifests.iter().flat_map(|m| m.exports.iter().filter_map(|e| e.string_form().map(|f| (e.id.as_str(), f)))).collect();
     let mut core = String::from("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum NativeModel { None,\n");
     for i in 0..specs.len() { core.push_str(&format!("S{i},\n")); }
     core.push_str("}\nimpl NativeModel { pub fn computed(self) -> &'static [usize] { match self { Self::None => &[],\n");

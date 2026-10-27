@@ -231,6 +231,17 @@ pub struct SchemaIr {
 impl SchemaIr {
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
     pub fn from_json(json: &str) -> Result<Self, String> {
+        // The version comes first: an IR of a newer contract fails with both versions, not with a serde error about a record.
+        #[derive(Deserialize)]
+        struct Head { #[serde(default)] behavior: HeadBehavior }
+        #[derive(Default, Deserialize)]
+        struct HeadBehavior { #[serde(default)] schema_contract: u32, #[serde(default)] schema_contract_minor: u32 }
+        if let Ok(Head { behavior }) = serde_json::from_str(json) {
+            let found = crate::version::ContractVersion::new(behavior.schema_contract.min(u16::MAX.into()) as u16, behavior.schema_contract_minor.min(u16::MAX.into()) as u16);
+            if found > crate::extension::SCHEMA_CONTRACT_VERSION {
+                return Err(format!("schema contract {found} is newer than this engine ({}); update the ORM, or regenerate the models with an older one", crate::extension::SCHEMA_CONTRACT_VERSION));
+            }
+        }
         serde_json::from_str(json).map_err(|e| format!("invalid schema IR: {e}; if another ORM version generated the models, regenerate them and rebuild the native artifact"))
     }
 }
@@ -242,6 +253,16 @@ mod schema_json {
         let old = r#"{"models":[],"behavior":{"schema_contract":1,"query_defaults":[]}}"#;
         let error = super::SchemaIr::from_json(old).unwrap_err();
         assert!(error.contains("query_defaults") && error.contains("regenerate") && error.contains("rebuild"), "{error}");
+    }
+    #[test]
+    fn an_ir_of_a_newer_contract_names_both_versions_before_any_record_error() {
+        let newer = r#"{"models":[],"behavior":{"schema_contract":2,"schema_contract_minor":2,"hooks":[{"from_the_future":1}]}}"#;
+        let error = super::SchemaIr::from_json(newer).unwrap_err();
+        assert!(error.contains("schema contract 2.2 is newer than this engine (2.1)"), "{error}");
+        let major = r#"{"models":[],"behavior":{"schema_contract":3}}"#;
+        assert!(super::SchemaIr::from_json(major).unwrap_err().contains("schema contract 3.0 is newer than this engine (2.1)"));
+        let same = r#"{"models":[],"behavior":{"schema_contract":2,"schema_contract_minor":1,"hooks":[{"source":"a","point":2,"model":"M","export":"e"}]}}"#;
+        assert_eq!(super::SchemaIr::from_json(same).unwrap().behavior.hooks.len(), 1);
     }
     #[test]
     fn an_ir_from_an_older_version_names_the_cure() {

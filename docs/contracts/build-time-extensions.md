@@ -315,10 +315,30 @@ Timing intervals that cross the limit remain inconclusive.
 
 ## Installed libraries
 
-A manifest with `abi` (a `"major.minor"` string, currently `"0.1"`) and `library` (the file name; the loader adds the platform prefix and suffix) is a library.
-It has no `host_contract`. The loader runs its passes; optional `[python]` and `[typescript]` sections name exports in the packaged runtime modules and retain language-contract validation. ABI 0.1 hook exports remain unsupported.
-The crate is a `cdylib` built with `panic = "unwind"` that ends with `orm_contracts::extension!(("<pass id>", pass_fn), ...)`.
-The macro exports `orm_ext_abi_version`, `orm_ext_run_pass` and `orm_ext_free`.
+A manifest with `abi` (a `"major.minor"` string, currently `"0.2"`) and `library` (the file name; the loader adds the platform prefix and suffix) is a library.
+It has no `host_contract`. The loader runs its passes; optional `[python]` and `[typescript]` sections name exports in the packaged runtime modules and retain language-contract validation. The loader resolves the hooks of the manifest with the library.
+The crate is a `cdylib` built with `panic = "unwind"` (the default; the exports catch a panic and return a status) that ends with `orm_contracts::extension!`:
+
+```rust
+orm_contracts::extension! {
+    init = my_init;                          // optional: fn(&serde_json::Value) -> Result<S, String>
+    hooks { "my.hook" => my_hook };          // optional: fn(&S, &[Arg], &Context) -> Result<Value, String>
+    ("my.pass", my_pass)                     // fn(&mut SchemaIr) -> Result<(), String>
+}
+```
+
+The macro exports `orm_ext_abi_version`, `orm_ext_run_pass` and `orm_ext_free` (ABI 0.1), and `orm_ext_init`, `orm_ext_drop_state` and `orm_ext_hooks` (ABI 0.2).
+`init` gets the JSON of the extension's `extension_data` entry and returns the state `S` (`()` without `init`); the engine calls `orm_ext_drop_state` when it drops the state.
+`S` must be `Send + Sync + 'static`, so that a state can cross threads.
+Each hook takes the `&S` of the same `init`; a hook with another state type is a compile error.
+A hook has one signature for all seven points. `orm_contracts::abi::Value` has the tags null, bool, int, float, decimal, text, bytes, datetime (microseconds since the Unix epoch, UTC), uuid, json and date (days since 1970-01-01).
+An `Err` becomes status ERROR with its text, and a panic becomes status PANIC.
+`orm_ext_init(json, len, out_state, error)` writes `error` on every status, with the failure text, or an empty buffer on OK (a null `error` is allowed); the host frees it with `orm_ext_free` every time.
+A manifest of a library lists its hooks as `[[exports]]` with `id`, `point` (1 to 7), `input` and `output` (a value type). A compiled extension keeps `rust`, `kind` and `input`.
+When the manifest has `exports`, the loader needs `orm_ext_hooks` and, when `init` exists, `orm_ext_drop_state`, and the hook table needs a hook of the same name for each export id. A mismatch is an error when the library opens, and it names the export. A manifest without `exports` has no hooks to resolve, so a pass-only library needs none of the three symbols.
+`Plan::library(id)` gives a `Library` of a manifest with `exports`; `Library::init(&json)` gives a `State`, and `State::call(hook, &args, &context)` runs one hook. The `State` calls `orm_ext_drop_state` once when it drops.
+Schema contract 2.1 adds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). The IR sets `schema_contract_minor = 1` only when one of them has content, so an IR without them stays readable by a 2.0 engine. A 2.0 engine that reads an IR with them stops at the unknown field with a parse error; the "newer than this engine" message comes only from an engine of contract 2.1 or later.
+`define()` checks each binding: the model, the field and the dependency. When the manifest of the source is in the build, it also checks the point, and that the `input` and `output` types match the field type. When the build has no manifest of the source, the source must be in `Requirements.packages`; if it is in neither, the binding is an error that names the source.
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.

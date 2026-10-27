@@ -1,6 +1,6 @@
 id = "orm.locking"
 version = "0.1.0"
-abi = "0.1"
+abi = "0.2"
 library = "orm_locking"
 schema_contract = 2
 language_contract = 1
