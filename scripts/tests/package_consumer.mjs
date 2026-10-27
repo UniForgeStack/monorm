@@ -77,6 +77,14 @@ try {
     await notes.insert({ id: 3, text: 'named', start: 1, end: 2, first: 'ada', last: 'lovelace', secret: '' });
     assert.equal((await notes.get(Note.id.eq(3))).initials, 'AL');
     assert.deepEqual((await notes.filter(Note.id.in([1, 3])).orderBy(Note.id).all()).map((n) => n.initials), ['', 'AL']);
+    // The rows that writes return carry the computed field too: insert, update, updateMany and the refreshed instance.
+    const inserted = await notes.insert({ id: 5, text: 'w', start: 1, end: 2, first: 'grace', last: 'hopper', secret: '' });
+    assert.equal(inserted.initials, 'GH');
+    await inserted.update({ first: 'mary', last: 'shelley' });
+    assert.equal(inserted.initials, 'MS');
+    assert.deepEqual((await notes.filter(Note.id.eq(5)).update({ first: 'ada', last: 'byron' }, { returning: true })).map((n) => n.initials), ['AB']);
+    assert.deepEqual((await notes.updateMany([{ id: 5, first: 'emmy', last: 'noether' }], { returning: true })).map((n) => n.initials), ['EN']);
+    await notes.filter(Note.id.eq(5)).delete();
     // The bindings drop a computed field from the update input, so the call can fail before the engine runs.
     await failsWith([QueryError, TypeError], notes.filter(Note.id.eq(3)).update({ initials: 'ZZ' }), 'initials');
     await fails(notes.filter(Note.initials.eq('AL')).count(), 'computed fields');
@@ -106,7 +114,7 @@ try {
     await row.delete();
     assert.deepEqual(await notes.all(), []);
     // The soft-deleted rows 3 and 4 stay visible next to row 1.
-    assert.deepEqual((await notes.allWithDeleted().all()).map((n) => n.id).sort(), [1, 3, 4]);
+    assert.deepEqual((await notes.allWithDeleted().all()).map((n) => n.id).sort(), [1, 3, 4, 5]);
   });
 } finally { await db.dropTables(); await db.close(); }
 console.log('package consumer js ok');

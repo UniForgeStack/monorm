@@ -72,8 +72,8 @@ async function seed(w: World, S: Any): Promise<void> {
 for (const kind of ["postgres", "sqlite"] as const) {
   for (const model of ["JShop", "CShop"]) {
     const name = (what: string): string => `nested ${what} (${kind}, ${model})`;
-    const scenario = (what: string, body: (w: World, S: Any, q: Any) => Promise<void>): void => {
-      test(name(what), async () => {
+    const scenario = (what: string, body: (w: World, S: Any, q: Any) => Promise<void>, timeout?: number): void => {
+      test(name(what), { timeout }, async () => {
         const w = await world(kind);
         try {
           const S = w.classes[model];
@@ -187,7 +187,7 @@ for (const kind of ["postgres", "sqlite"] as const) {
       await assert.rejects(patch({ city: null }), /not nullable/);
       await assert.rejects(patch({ zip: "1" }), /no subfield/);
       await assert.rejects(patch({ floor: "x" }), /expected/);
-    });
+    }, 30_000);
 
     scenario("replace sets the whole value and resets omitted subfields", async (w, S, q) => {
       await seed(w, S);

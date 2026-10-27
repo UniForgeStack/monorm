@@ -5,7 +5,6 @@ import os
 
 import pytest
 import orm
-from artifact_caps import has_extension
 from orm.__main__ import main as cli
 
 
@@ -133,7 +132,7 @@ async def test_retirement_migration_requires_reference_cleanup(tmp_path, url, pr
         await db.close()
 
 
-async def test_generic_relation_schema_follows_the_artifact_capability(tmp_path):
+async def test_generic_relation_schema_loads_and_round_trips(tmp_path):
     from orm import _native
 
     schema = tmp_path / "schema.prisma"
@@ -143,10 +142,6 @@ async def test_generic_relation_schema_follows_the_artifact_capability(tmp_path)
         '@@generic.relation("target", type: "content_type", key: "object_id", targets: ["Post"])\n@@map("generic08_tags")\n}'
     )
     generate(schema)
-    if not has_extension("orm.generic"):
-        with pytest.raises(orm.SchemaError, match="rebuild"):
-            orm.load(schema, registry=orm.Registry())
-        return
     registry = orm.Registry()
     models = orm.load(schema, registry=registry)
     db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
@@ -163,7 +158,7 @@ async def test_generic_relation_schema_follows_the_artifact_capability(tmp_path)
 GENERIC_HEADER = 'datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\ntags Tag[] @generic.reverse\n@@map("generic_field_posts")\n}\nmodel Photo {\nid Int @id\n@@map("generic_field_photos")\n}\n'
 
 
-async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, capfd):
+async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path):
     from orm import _native
 
     schema = tmp_path / "schema.prisma"
@@ -171,11 +166,6 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, cap
         GENERIC_HEADER
         + 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nnote String\n@@map("generic_field_tags")\n}'
     )
-    if not has_extension("orm.generic"):
-        assert cli(["--schema", str(schema), "identities"]) != 0
-        # The first declaration in the file (`@generic.reverse` on Post) reports the missing extension.
-        assert "@generic.reverse: not compiled into this artifact" in capfd.readouterr().err
-        return
     generate(schema)
     registry = orm.Registry()
     models = orm.load(schema, registry=registry)
@@ -214,8 +204,6 @@ def test_moving_to_the_generic_field_form_needs_no_migration(tmp_path):
     from orm import _native
     from orm.migrations import Migrations
 
-    if not has_extension("orm.generic"):
-        pytest.skip("needs the orm.generic extension")
     schema = tmp_path / "schema.prisma"
     explicit = (
         "model Tag {\nid Int @id\ntarget_type ContentType?\ntarget_id Int?\nkind ContentType\nobject_id Int\n"

@@ -7,7 +7,6 @@ import { main as cli } from "../src/cli.js";
 import { connect, IntegrityError, load, Migrations, Registry, SchemaError } from "../src/index.js";
 import { native } from "../src/native.js";
 import { resolveExtensions } from "../src/packages.js";
-import { hasExtension } from "./artifact-caps.js";
 import { scratch as scratchDir } from "./scratch.js";
 
 // Under this package, so the schemas find the installed generic package as a direct dependency.
@@ -67,16 +66,12 @@ test("missing/conflicting manifest fails during schema definition", async () => 
   } finally { rmSync(dir, { recursive: true }); }
 });
 
-test("a generic relation schema follows the artifact capability", async () => {
+test("a generic relation schema loads and round-trips", async () => {
   const dir = mkdtempSync(join(scratch, "generic-"));
   const path = join(dir, "schema.prisma");
   try {
     writeFileSync(path, `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\n@@map("generic08_node_posts")\n}\nmodel Tag {\nid Int @id\ncontent_type ContentType?\nobject_id Int?\n@@generic.relation("target", type: "content_type", key: "object_id", targets: ["Post"])\n@@map("generic08_node_tags")\n}`);
     assert.equal(await cli(["--schema", path, "identities"]), 0);
-    if (!hasExtension("orm.generic")) {
-      assert.throws(() => load(path, { registry: new Registry() }), /rebuild/);
-      return;
-    }
     const registry = new Registry();
     const models = load(path, { registry });
     const types = registry.getEnum("ContentType");
@@ -93,13 +88,11 @@ test("a generic relation schema follows the artifact capability", async () => {
 });
 
 const genericHeader = `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\ntags Tag[] @generic.reverse\n@@map("generic_field_node_posts")\n}\nmodel Photo {\nid Int @id\n@@map("generic_field_node_photos")\n}\n`;
-const hasGeneric = () => hasExtension("orm.generic");
 
 test("a Generic field creates its pair, its index and the reverse field", async () => {
   // A package compiles into a schema only when the schema uses its namespace, so a bare `Generic` type gets the plain error.
   const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null, resolveExtensions());
   assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && !e.message.includes("needs @"));
-  if (!hasGeneric()) return;
   const dir = mkdtempSync(join(scratch, "generic-field-"));
   const path = join(dir, "schema.prisma");
   try {
@@ -116,7 +109,7 @@ test("a Generic field creates its pair, its index and the reverse field", async 
   } finally { rmSync(dir, { recursive: true }); }
 });
 
-test("moving to the Generic field form needs no migration", { skip: !hasGeneric() }, async () => {
+test("moving to the Generic field form needs no migration", async () => {
   const dir = mkdtempSync(join(scratch, "generic-move-"));
   const path = join(dir, "schema.prisma");
   const explicit = `model Tag {\nid Int @id\ntarget_type ContentType?\ntarget_id Int?\nkind ContentType\nobject_id Int\n`
