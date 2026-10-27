@@ -1,7 +1,7 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
 use orm_contracts::abi::{Arg, Context, Value};
-use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_MINOR, SCHEMA_CONTRACT_VERSION};
+use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, FIELD_ADAPTER_OPTIONS_MINOR, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_MINOR, SCHEMA_CONTRACT_VERSION};
 use orm_core::dsl::{compile_file_with, Installed};
 use orm_core::loader::{Library, Plan};
 use orm_core::ir::{ColType, FieldIr, SchemaIr};
@@ -9,8 +9,10 @@ use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, proce
 
 const ID: &str = "acme.outside";
 /// The passes and attributes that the manifest of `tests/outside-extension` stamps on a lowered schema.
-const PASSES: [&str; 3] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard"];
-const ATTRIBUTES: [&str; 4] = ["outside.tag", "outside.money", "outside.note", "outside.guard"];
+/// The passes in the order the manifest declares them; `PASSES` is the order they run in.
+const DECLARED_PASSES: [&str; 4] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.wrapped"];
+const PASSES: [&str; 4] = ["acme.outside.fields", "acme.outside.wrapped", "acme.outside.tag", "acme.outside.guard"];
+const ATTRIBUTES: [&str; 5] = ["outside.tag", "outside.money", "outside.note", "outside.guard", "outside.wrapped"];
 const SCHEMA: &str = "model Post {\n id Int @id\n @@outside.tag(\"blue\")\n}\n";
 
 struct Builds {
@@ -110,7 +112,7 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
     let stamp = &ir.behavior.packages[ID];
-    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", PASSES.map(String::from).as_slice(), ATTRIBUTES.map(String::from).as_slice()));
+    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", DECLARED_PASSES.map(String::from).as_slice(), ATTRIBUTES.map(String::from).as_slice()));
 }
 
 #[test]
@@ -417,7 +419,7 @@ fn lower_with(plan: &Plan, hook: &HookBinding) -> Result<SchemaIr, String> {
 fn a_hook_of_the_library_lowers_with_the_new_minor_and_runs_with_its_extension_data() {
     let plan = bind_plan(&installed("", "0.2"));
     let ir = lower_with(&plan, &binding(1, "tag", "outside.prefix")).unwrap();
-    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, SCHEMA_CONTRACT_MINOR));
+    assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, FIELD_ADAPTER_OPTIONS_MINOR));
     let state = plan.library(ID).unwrap().init(&ir.behavior.extension_data[ID]).unwrap();
     assert_eq!(state.call("outside.prefix", &[arg("value", text("hello"))], &Context::default()), Ok(text("xhello")));
 }
