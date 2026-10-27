@@ -49,6 +49,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["languages/python/tests", "scripts/tests"]
+# The rename fixtures keep old names on purpose; a conftest there would shadow `from conftest import`.
+addopts = "--ignore-glob=scripts/tests/rename/fixtures/*"
 pythonpath = ["examples"]
 
 [tool.mypy]
