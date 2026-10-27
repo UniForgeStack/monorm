@@ -107,7 +107,35 @@ fn an_outside_library_lowers_a_schema_that_uses_its_attribute() {
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").expect("the pass adds the field");
     assert_eq!(tag.default, Some("blue".into()));
     let stamp = &ir.behavior.packages[ID];
-    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.fields".to_owned(), "acme.outside.tag".to_owned()].as_slice(), ["outside.tag".to_owned(), "outside.money".to_owned(), "outside.note".to_owned()].as_slice()));
+    assert_eq!((stamp.version.as_str(), stamp.passes.as_slice(), stamp.attributes.as_slice()), ("0.1.0", ["acme.outside.fields".to_owned(), "acme.outside.tag".to_owned(), "acme.outside.view".to_owned()].as_slice(), ["outside.tag".to_owned(), "outside.money".to_owned(), "outside.note".to_owned(), "outside.view".to_owned()].as_slice()));
+}
+
+const VIEW_SCHEMA: &str = "model Ticket {\n id Int @id\n status String\n note String?\n}\n\
+    model OpenTicket {\n id Int @id\n status String\n note String\n @@outside.view(Ticket, \"open\")\n}\n";
+
+#[test]
+fn an_outside_view_writes_the_general_records_that_the_core_reads() {
+    let manifest = installed("", "0.2");
+    let ir = compile("view", VIEW_SCHEMA, &[(ID, &manifest)]).unwrap();
+    let view = &ir.behavior.model_views[0];
+    assert_eq!((view.model.as_str(), view.source.as_str(), view.root.as_str()), ("OpenTicket", "Ticket", "Ticket"));
+    assert_eq!(view.row_filter.as_ref().map(|f| (f.field.as_str(), f.values.as_slice())), Some(("status", ["open".to_owned()].as_slice())));
+    let check = &ir.behavior.result_checks[0];
+    assert_eq!((check.model.as_str(), check.field.as_str(), check.non_null, check.code.as_str()), ("OpenTicket", "note", true, "acme.outside.shape"));
+    assert!(ir.behavior.proxy_models.is_empty());
+    assert_eq!((ir.behavior.schema_contract_minor, ir.models.iter().find(|m| m.name == "OpenTicket").unwrap().table.as_str()), (3, "ticket"));
+    let schema = orm_core::schema::Schema::from_ir(ir).unwrap();
+    let at = schema.model_idx("OpenTicket").unwrap();
+    let filter = schema.model(at).view.as_ref().and_then(|v| v.filter.as_ref()).expect("the filter is prepared at define()");
+    assert_eq!((filter.column.as_str(), filter.values.as_str()), ("status", "'open'"));
+    assert_eq!(schema.result_checks[at].as_ref().map(|c| c.model.as_str()), Some("OpenTicket"));
+}
+
+#[test]
+fn an_outside_view_of_an_unknown_model_names_the_attribute() {
+    let manifest = installed("", "0.2");
+    let error = compile("view-unknown", &VIEW_SCHEMA.replace("(Ticket,", "(Missing,"), &[(ID, &manifest)]).unwrap_err();
+    assert!(error.contains("outside.view") && error.contains("Missing"), "{error}");
 }
 
 #[test]
@@ -246,7 +274,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     assert_eq!(*seen.borrow(), [("acme.static.prep".to_owned(), false), ("acme.static.late".to_owned(), true)]);
     let behavior = &ir.behavior;
     assert_eq!(behavior.completed_passes, order);
-    assert_eq!(behavior.packages[ID].passes, ["acme.outside.fields", "acme.outside.tag"]);
+    assert_eq!(behavior.packages[ID].passes, ["acme.outside.fields", "acme.outside.tag", "acme.outside.view"]);
     assert_eq!(behavior.extensions.get("acme.static").map(String::as_str), Some("1.0.0"));
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));

@@ -20,7 +20,7 @@ pub struct Sources {
 fn inherited_specs(schema: &SchemaIr, specs: &[NativeSpec]) -> Result<Vec<NativeSpec>, String> {
     let own: BTreeMap<_, _> = specs.iter().map(|s| (s.model.as_str(), s)).collect();
     let mut merged = vec![];
-    for proxy in &schema.behavior.proxy_models {
+    for proxy in &schema.behavior.model_views {
         let source = schema.behavior.ancestors(&proxy.model).unwrap_or_default().into_iter().find_map(|a| own.get(a).copied());
         let own_spec = own.get(proxy.model.as_str()).copied();
         let Some(model) = schema.models.iter().find(|m| m.name == proxy.model) else {
@@ -65,7 +65,7 @@ pub fn generate(schema: &mut SchemaIr, specs: &[NativeSpec], manifests: &[Manife
 
 pub fn generate_with_sources(schema: &mut SchemaIr, specs: &[NativeSpec], manifests: &[Manifest], sources: &BTreeMap<String, String>) -> Result<Sources, String> {
     let merged = inherited_specs(schema, specs)?;
-    let mut specs: Vec<_> = specs.iter().filter(|s| !schema.behavior.proxy_models.iter().any(|p| p.model == s.model)).cloned().collect();
+    let mut specs: Vec<_> = specs.iter().filter(|s| !schema.behavior.model_views.iter().any(|v| v.model == s.model)).cloned().collect();
     specs.extend(merged);
     specs.sort_by(|a, b| a.model.cmp(&b.model));
     for spec in &mut specs { spec.methods.sort_by(|a, b| a.name.cmp(&b.name)); }

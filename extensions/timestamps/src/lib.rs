@@ -71,7 +71,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             }
         }
         // A proxy that shares the table but hides the field would leave the column unset on its writes.
-        let proxies: Vec<String> = ir.behavior.proxy_models.iter().filter(|p| p.storage_owner == d.model).map(|p| p.model.clone()).collect();
+        let proxies: Vec<String> = ir.behavior.model_views.iter().filter(|v| v.root == d.model).map(|v| v.model.clone()).collect();
         let mut targets = vec![d.model.clone()];
         if mode == Mode::Application {
             for proxy in proxies {
@@ -92,7 +92,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let Some(column) = ir.models.iter().find(|m| m.name == root.model).and_then(|m| m.fields.iter().find(|f| f.name == root.field)).map(|f| f.column.clone()) else { continue };
         let trigger = format!("updated_at_{column}");
         if ir.models.iter().find(|m| m.name == root.model).is_some_and(|m| m.triggers.iter().any(|t| t.name == trigger)) { continue; }
-        let proxies: Vec<String> = ir.behavior.proxy_models.iter().filter(|p| p.storage_owner == root.model).map(|p| p.model.clone()).collect();
+        let proxies: Vec<String> = ir.behavior.model_views.iter().filter(|v| v.root == root.model).map(|v| v.model.clone()).collect();
         for proxy in proxies {
             if ir.behavior.write_assignments.iter().any(|a| a.source == SOURCE && a.model == proxy && a.field == root.field) { continue; }
             if !ir.models.iter().find(|m| m.name == proxy).is_some_and(|m| m.fields.iter().any(|f| f.name == root.field)) {
@@ -256,7 +256,7 @@ mod tests {
         view.name = "PostView".into();
         if !keeps_field { view.fields.retain(|f| f.name != "changed"); }
         ir.models.push(view);
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
         ir
     }
 
@@ -292,7 +292,7 @@ mod tests {
             let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
             view.name = "PostView".into();
             ir.models.push(view);
-            ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+            ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
             prepare(&mut ir).unwrap();
             prepare(&mut ir).unwrap();
             let models: Vec<_> = ir.behavior.write_assignments.iter().map(|a| a.model.as_str()).collect();

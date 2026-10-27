@@ -1,6 +1,6 @@
 // `pass-only` builds no hook, no state and no `init`.
 #![cfg_attr(feature = "pass-only", allow(dead_code, unused_macros))]
-use orm_contracts::{abi::{Arg, Context, Value}, extension::Declaration, ir::{ColType, FieldIr, SchemaIr}};
+use orm_contracts::{abi::{Arg, Context, Value}, extension::{capture_storage, Declaration, ModelView, ResultCheck, RowFilter}, ir::{ColType, FieldIr, SchemaIr}};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const ATTRIBUTE: &str = "outside.tag";
@@ -51,6 +51,35 @@ fn fields(ir: &mut SchemaIr) -> Result<(), String> {
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+/// The warning code of the view check.
+const SHAPE_CODE: &str = "acme.outside.shape";
+
+/// `@@outside.view(Source, "open")` makes the model a view of `Source` that sees the rows with `status = 'open'`.
+/// Each field that the view declares non-null and the source stores as nullable gets a result check.
+fn view(ir: &mut SchemaIr) -> Result<(), String> {
+    let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == "outside.view").cloned().collect();
+    if !declarations.is_empty() { capture_storage(ir)?; }
+    for d in declarations {
+        let source = d.positional.first().and_then(|v| v.as_str()).ok_or_else(|| format!("@@outside.view on {}: the source must be a model name", d.model))?;
+        let status = d.positional.get(1).and_then(|v| v.as_str()).ok_or_else(|| format!("@@outside.view on {}: the status must be a string", d.model))?;
+        let stored = ir.models.iter().find(|m| m.name == source).ok_or_else(|| format!("@@outside.view on {}: unknown model {source}", d.model))?;
+        if !stored.fields.iter().any(|f| f.name == "status") { return Err(format!("{source} has no field status")); }
+        let (root, table) = (stored.name.clone(), stored.table.clone());
+        let nullable: Vec<String> = stored.fields.iter().filter(|f| f.nullable).map(|f| f.name.clone()).collect();
+        let model = ir.models.iter_mut().find(|m| m.name == d.model).ok_or_else(|| format!("unknown model {}", d.model))?;
+        model.table = table;
+        let checked: Vec<String> = model.fields.iter().filter(|f| !f.nullable && nullable.contains(&f.name)).map(|f| f.name.clone()).collect();
+        ir.behavior.model_views.push(ModelView {
+            model: d.model.clone(), source: source.into(), root,
+            row_filter: Some(RowFilter { field: "status".into(), values: vec![status.into()] }), insert_table: None,
+        });
+        ir.behavior.result_checks.extend(checked.into_iter().map(|field| ResultCheck { model: d.model.clone(), field, non_null: true, allowed: None, code: SHAPE_CODE.into() }));
+        // The view owns no table.
+        if let Some(storage) = ir.behavior.storage.as_mut() { storage.models.retain(|m| m.name != d.model); }
     }
     Ok(())
 }
@@ -112,7 +141,8 @@ macro_rules! export {
                 "outside.fail" => fail, "outside.panic" => explode, "outside.echo" => echo, "outside.add" => add,
             };
             ("acme.outside.tag", tag),
-            ("acme.outside.fields", fields)
+            ("acme.outside.fields", fields),
+            ("acme.outside.view", view)
         }
     };
 }
@@ -137,7 +167,7 @@ mod slice_one {
     /// Called by the ORM loader with readable ranges and a writable `out`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
-        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn)];
+        let passes: &[(&str, PassFn)] = &[("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.view", super::view as PassFn)];
         // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
         unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
     }

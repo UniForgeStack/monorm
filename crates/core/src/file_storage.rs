@@ -27,9 +27,9 @@ pub fn prepare(ir: &SchemaIr) -> Result<Vec<Vec<PreparedFileField>>, String> {
             position, storage: file.storage.clone(), nullable: field.nullable,
         });
     }
-    // A proxy writes the table of its storage owner, so its rows get the same file checks.
-    for proxy in &ir.behavior.proxy_models {
-        let (Some(model), Some(owner)) = (ir.models.iter().position(|m| m.name == proxy.model), ir.models.iter().position(|m| m.name == proxy.storage_owner)) else { continue };
+    // A view writes the table of its root, so its rows get the same file checks.
+    for view in &ir.behavior.model_views {
+        let (Some(model), Some(owner)) = (ir.models.iter().position(|m| m.name == view.model), ir.models.iter().position(|m| m.name == view.root)) else { continue };
         for file in prepared[owner].clone() {
             let name = &ir.models[owner].fields[file.position].name;
             let Some(position) = ir.models[model].fields.iter().position(|f| f.name == *name) else { continue };

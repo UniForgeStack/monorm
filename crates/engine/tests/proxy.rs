@@ -1,6 +1,6 @@
 #![cfg(feature = "proxy-models")]
-use orm_core::{behavior::{FieldId, ModelId, ResultField, ResultShape}, dialect::{Dialect, Target}, dsl, ir::{ColType, Operation, ValueType}, proxy::{Category, Warnings}};
-use orm_engine::{db::{self, Cell}, exec::{self, Outcome}, params::NoParams, plan, proxy};
+use orm_core::{behavior::{FieldId, ModelId, ResultField, ResultShape}, dialect::{Dialect, Target}, dsl, ir::{ColType, Operation, ValueType}, result_check::{Category, Warnings}};
+use orm_engine::{db::{self, Cell}, exec::{self, Outcome}, params::NoParams, plan, result_check as proxy};
 use serde_json::json;
 
 const SOURCE: &str = r#"
@@ -35,7 +35,7 @@ async fn exercise(url: &str, dialect: Dialect) {
         plan::Planner::plan(&schema, target, &operation, &NoParams).unwrap()
     };
     let selected = exec::run(conn.as_ref(), target, compile("select")).await.unwrap();
-    let warnings = proxy::diagnostics(&schema.proxy_models, &selected).unwrap();
+    let warnings = proxy::diagnostics(&schema.result_checks, &selected).unwrap();
     assert_eq!(warnings.len(), 2);
     assert!(warnings.iter().all(|w| w.occurrence_count == 2));
     let Outcome::Select(rows) = &selected else { panic!() };
@@ -44,7 +44,7 @@ async fn exercise(url: &str, dialect: Dialect) {
     assert_eq!(rows.rows.cell(0,2,ValueType::scalar(ColType::String)).unwrap(), Cell::Text("old"));
     let count = exec::run(conn.as_ref(), target, compile("count")).await.unwrap();
     assert!(matches!(count, Outcome::Count(3)));
-    assert!(proxy::diagnostics(&schema.proxy_models, &count).unwrap().is_empty());
+    assert!(proxy::diagnostics(&schema.result_checks, &count).unwrap().is_empty());
     // Public subset checks must not inspect name, which is not in this output.
     let subset = conn.query("SELECT id,status FROM proxy_05_users ORDER BY id".into(), vec![]).await.unwrap();
     let active = schema.model_idx("Active").unwrap();
@@ -53,7 +53,7 @@ async fn exercise(url: &str, dialect: Dialect) {
         ResultField { field:FieldId {model:ModelId(active),position:2},physical:Some(1),public:true,dependencies:vec![] },
     ]};
     let mut warnings = Warnings::default();
-    proxy::inspect(&schema.proxy_models[active], Some(&shape), 0, None, subset.as_ref(), &mut warnings).unwrap();
+    proxy::inspect(schema.result_checks[active].as_ref().unwrap(), Some(&shape), 0, None, subset.as_ref(), &mut warnings).unwrap();
     let warnings = warnings.finish();
     assert_eq!(warnings.len(), 1); assert_eq!(warnings[0].category, Category::EnumSubset);
     // Omission uses proxy client defaults, explicit values (including NULL) win.
@@ -62,10 +62,10 @@ async fn exercise(url: &str, dialect: Dialect) {
     let Outcome::Rows { rows, .. } = &inserted else { panic!() };
     assert_eq!(rows.cell(0,1,ValueType::scalar(ColType::String)).unwrap(),Cell::Text("client"));
     assert_eq!(rows.cell(0,2,ValueType::scalar(ColType::String)).unwrap(),Cell::Text("active"));
-    assert!(proxy::diagnostics(&schema.proxy_models,&inserted).unwrap().is_empty());
+    assert!(proxy::diagnostics(&schema.result_checks,&inserted).unwrap().is_empty());
     let insert = exec::plan_insert(&schema,target,"Active",&["id".into(),"name".into(),"status".into()],vec![vec![Some(5.into()),Some(sea_query::Value::String(None)),Some("old".into())]],None,&NoParams,&Default::default()).unwrap();
     let inserted = exec::run(conn.as_ref(),target,insert).await.unwrap();
-    assert_eq!(proxy::diagnostics(&schema.proxy_models,&inserted).unwrap().len(),2);
+    assert_eq!(proxy::diagnostics(&schema.result_checks,&inserted).unwrap().len(),2);
     // The root still uses the physical server default and accepts nullable name.
     let insert = exec::plan_insert(&schema,target,"User",&["id".into()],vec![vec![Some(6.into())]],None,&NoParams,&Default::default()).unwrap();
     let inserted = exec::run(conn.as_ref(),target,insert).await.unwrap();

@@ -140,9 +140,9 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     }
     // A proxy follows the shared storage of its root; its logical rows need the same ORM
     // update on delete. Database triggers are generated only for declarations.
-    for proxy in &ir.behavior.proxy_models {
+    for proxy in &ir.behavior.model_views {
         if roles.iter().any(|s| s.model == proxy.model) { continue; }
-        if let Some(source) = roles.iter().find(|s| s.model == proxy.storage_owner) {
+        if let Some(source) = roles.iter().find(|s| s.model == proxy.root) {
             if !ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == source.field)) {
                 return Err(format!("{}: proxy must keep the soft-delete field {}", proxy.model, source.field));
             }
@@ -343,7 +343,7 @@ mod tests {
         let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
         view.name = "AuthorView".into();
         ir.models.push(view);
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default() });
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
         prepared(&mut ir).unwrap();
         assert!(ir.behavior.delete_rewrites.iter().any(|d| d.model == "AuthorView" && d.field == "deleted"));
     }
@@ -365,7 +365,7 @@ mod tests {
         view.name = "AuthorView".into();
         view.fields.retain(|f| f.name != "deleted");
         ir.models.push(view);
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default() });
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
         assert_eq!(prepared(&mut ir).unwrap_err(), "AuthorView: proxy must keep the soft-delete field deleted");
     }
 
@@ -452,9 +452,7 @@ mod tests {
             let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
             view.name = "AuthorView".into();
             ir.models.push(view);
-            ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel {
-                model: "AuthorView".into(), parent: "Author".into(), storage_owner: "Author".into(), ..Default::default()
-            });
+            ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
             prepared(&mut ir).unwrap();
             let rewrite = ir.behavior.delete_rewrites.iter().find(|d| d.model == "AuthorView").expect("proxy inherits root soft delete");
             assert_eq!(rewrite.field, "deleted");

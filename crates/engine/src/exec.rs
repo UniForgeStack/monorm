@@ -572,10 +572,7 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
         .into_iter()
         .map(|mut r| keep.iter().map(|&i| r[i].take().expect("checked above")).collect())
         .collect();
-    #[cfg(feature = "proxy-models")]
-    let table = schema.proxy_models[idx].partition.as_ref().map(|p| p.table.as_str()).unwrap_or_else(|| m.table());
-    #[cfg(not(feature = "proxy-models"))]
-    let table = m.table();
+    let table = schema.models[idx].view.as_ref().and_then(|v| v.insert_table.as_deref()).unwrap_or_else(|| m.table());
     Ok(BulkCopy { table: table.to_owned(), columns, rows })
 }
 
@@ -702,35 +699,4 @@ pub async fn run_schema_script(conn: Arc<dyn Executor>, statements: Vec<String>)
         }
     }
     Ok(tx.commit().await?)
-}
-
-#[cfg(all(test, feature = "proxy-models", feature = "postgres"))]
-mod proxy_partition_copy_tests {
-    use super::*;
-    use orm_core::{dialect::{Dialect, Target}, dsl};
-
-    #[test]
-    fn copy_targets_owned_partition_and_fills_its_key() {
-        let source = r#"model Item {
- id Int
- kind String @map("_kind")
- @@id([id, kind])
- @@partition(list: [kind])
-}
-model Selected {
- @@proxy.of(Item)
- @@partition.values(["a"])
- @@map("copy_selected")
-}
-partition copy_other { of = Item default = true }
-"#;
-        let schema = dsl::check(dsl::compile(source, None).unwrap()).unwrap().1;
-        let target = Target::new(Dialect::Postgres);
-        let copy = plan_copy(&schema, target, "Selected", &["id".into()], vec![vec![Some(1.into())]]).unwrap();
-        assert_eq!(copy.table, "copy_selected");
-        assert_eq!(copy.columns, ["id", "_kind"]);
-        assert_eq!(copy.rows[0][1], Value::String(Some("a".into())));
-        let outside = plan_copy(&schema, target, "Selected", &["id".into(), "kind".into()], vec![vec![Some(2.into()), Some("other".into())]]).unwrap();
-        assert_eq!(outside.table, "copy_selected"); // PostgreSQL enforces the bound on COPY too.
-    }
 }

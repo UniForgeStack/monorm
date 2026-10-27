@@ -49,5 +49,4 @@ pub fn compiled_backends() -> Vec<&'static str> {
 pub mod generic;
 
 pub mod client_default;
-#[cfg(feature = "proxy-models")]
-pub mod proxy;
+pub mod result_check;

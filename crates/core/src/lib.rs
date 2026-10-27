@@ -34,6 +34,6 @@ pub mod writes;
 #[cfg(any(feature = "generic-relations", test))]
 pub mod generic;
 
-#[cfg(feature = "proxy-models")]
-pub use orm_proxy_runtime as proxy;
+pub mod result_check;
+pub mod view;
 pub mod selection;

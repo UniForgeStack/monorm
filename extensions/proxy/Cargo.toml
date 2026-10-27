@@ -17,7 +17,7 @@ orm-core = { path = "../../crates/core" }
 id = "orm.proxy"
 version = "0.1.0"
 host_contract = 1
-schema_contract = 2
+schema_contract = "2.3"
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["proxy-models"]
@@ -31,6 +31,7 @@ effects = ["orm.proxy.logical-models"]
 [[package.metadata.orm-extension.attributes]]
 name = "proxy.of"
 target = "model"
+view_source = true
 # `value`: the source model is a bare name, `@@proxy.of(User)`; the pass checks it is a string.
 [[package.metadata.orm-extension.attributes.positional]]
 kind = "value"

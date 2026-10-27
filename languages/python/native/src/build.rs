@@ -54,8 +54,7 @@ fn decoders(py: Python<'_>, cls: &Bound<'_, PyAny>) -> PyResult<Vec<Decoder>> {
 /// The Python class of each model, by schema model index, and the members of each
 /// enum by stored value.
 pub struct Classes {
-    #[cfg(feature = "proxy-models")]
-    pub proxies: Vec<orm_core::proxy::PreparedProxy>,
+    pub checks: Vec<Option<orm_core::result_check::PreparedChecks>>,
     #[cfg(feature = "composition")]
     pub native: Vec<orm_core::behavior::NativeModel>,
     models: Vec<Option<ModelClass>>,
@@ -65,7 +64,7 @@ pub struct Classes {
 impl Classes {
     pub fn empty() -> Self {
         Classes { models: vec![], enums: vec![],
-            #[cfg(feature = "proxy-models")] proxies: vec![],
+            checks: vec![],
             #[cfg(feature = "composition")] native: vec![] }
     }
 
@@ -98,7 +97,7 @@ impl Classes {
             });
         }
         Ok(Classes { models: out, enums,
-            #[cfg(feature = "proxy-models")] proxies: schema.proxy_models.clone(),
+            checks: schema.result_checks.clone(),
             #[cfg(feature = "composition")] native: schema.models.iter().map(|m| m.native).collect() })
     }
 

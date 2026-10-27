@@ -25,9 +25,9 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             on: vec![WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite], value: AssignValue::Increment, upsert });
     }
     // A proxy that keeps the field takes the records of its root storage owner.
-    for proxy in &ir.behavior.proxy_models {
+    for proxy in &ir.behavior.model_views {
         if versions.iter().chain(&earlier).any(|a| a.model == proxy.model) { continue; }
-        let Some(root) = versions.iter().chain(&earlier).find(|a| a.model == proxy.storage_owner).cloned() else { continue };
+        let Some(root) = versions.iter().chain(&earlier).find(|a| a.model == proxy.root).cloned() else { continue };
         if !ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == root.field)) {
             return Err(format!("{}: proxy must keep the version field {}", proxy.model, root.field));
         }
@@ -156,7 +156,7 @@ mod tests {
         let mut view: orm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
         view.name = "PostView".into();
         ir.models.push(view);
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
         prepare(&mut ir).unwrap();
         let models: Vec<_> = ir.behavior.write_assignments.iter().map(|a| a.model.as_str()).collect();
         assert_eq!(models, ["Post", "PostView"]);
@@ -171,7 +171,7 @@ mod tests {
         let mut view: orm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
         view.name = "PostView".into();
         ir.models.push(view);
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
         prepare(&mut ir).unwrap();
         prepare(&mut ir).unwrap();
         let models: Vec<_> = ir.behavior.write_assignments.iter().map(|a| a.model.as_str()).collect();
@@ -186,7 +186,7 @@ mod tests {
         view.name = "PostView".into();
         view.fields.retain(|f| f.name != "version");
         ir.models.push(view);
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "PostView".into(), parent: "Post".into(), storage_owner: "Post".into(), ..Default::default() });
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
         assert_eq!(prepare(&mut ir).unwrap_err(), "PostView: proxy must keep the version field version");
     }
 

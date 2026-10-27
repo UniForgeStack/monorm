@@ -234,8 +234,7 @@ fn prefetched_js(js: Js, schema: &schema::Schema, fetched: &[Fetched]) -> napi::
 fn outcome_js(env: &Env, schema: &schema::Schema, out: Outcome) -> napi::Result<Raw> {
     #[cfg(feature = "composition")]
     let out = orm_engine::behavior::results(&schema.native_models, out).map_err(db_tagged)?;
-    #[cfg(feature = "proxy-models")]
-    orm_engine::proxy::emit(&orm_engine::proxy::diagnostics(&schema.proxy_models, &out).map_err(db_tagged)?);
+    orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&schema.result_checks, &out).map_err(db_tagged)?);
     let js = Js(env.raw());
     Ok(Raw(match out {
         Outcome::Select(s) => {

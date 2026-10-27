@@ -1241,16 +1241,14 @@ impl<'s> Planner<'s> {
         if let Some(filter) = active_filter(self.model(self.root), without_defaults).filter(|_| !without_root_filter) {
             out.push(self.cond(&filter)?); self.root_filtered = true;
         }
-        #[cfg(feature = "proxy-models")]
-        if let Some(filter) = self.partition_filter(self.root, self.root_alias()) { out.push(filter); }
+        if let Some(filter) = self.view_filter(self.root, self.root_alias()) { out.push(filter); }
         Ok(out)
     }
 
-    #[cfg(feature = "proxy-models")]
-    fn partition_filter(&self, model: usize, alias: &str) -> Option<SExpr> {
-        self.schema.proxy_models.get(model).and_then(|p| p.partition.as_ref()).map(|p| {
-            sea_query::Expr::cust_with_expr(format!("$1 IN ({})", p.values), col(alias, &p.column))
-        })
+    /// The fixed row filter of a view model; `without_defaults()` does not remove it.
+    fn view_filter(&self, model: usize, alias: &str) -> Option<SExpr> {
+        let filter = self.schema.models.get(model)?.view.as_ref()?.filter.as_ref()?;
+        Some(col(alias, &filter.column).is_in([sea_query::Expr::cust(filter.values.clone())]))
     }
 
     /// The relations below the current scope that `e` reads, as (hop, `alias()` tag); whether it
@@ -1362,8 +1360,7 @@ impl<'s> Planner<'s> {
             }
         }
         if let Some(filter) = active_filter(tm, &self.policy_bypass) { stmt.and_where(self.target_default(target, &alias, &filter)?); }
-        #[cfg(feature = "proxy-models")]
-        if let Some(filter) = self.partition_filter(target, &alias) { stmt.and_where(filter); }
+        if let Some(filter) = self.view_filter(target, &alias) { stmt.and_where(filter); }
         Ok(alias)
     }
 
@@ -2735,8 +2732,7 @@ impl<'s> Planner<'s> {
                 Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(target, &new_alias, &filter)?) }
                 None => on,
             };
-            #[cfg(feature = "proxy-models")]
-            let on = match self.partition_filter(target, &new_alias) { Some(filter) => on.and(filter), None => on };
+            let on = match self.view_filter(target, &new_alias) { Some(filter) => on.and(filter), None => on };
             self.joins.push((Scope { path: prefix.to_vec(), model: target, alias: new_alias.clone() }, on));
             (alias, model) = (new_alias, target);
         }
@@ -3810,10 +3806,7 @@ pub fn plan_insert(
     };
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;
     let mut stmt = Query::insert();
-    #[cfg(feature = "proxy-models")]
-    let table = schema.proxy_models[idx].partition.as_ref().map(|p| p.table.as_str()).unwrap_or_else(|| m.table());
-    #[cfg(not(feature = "proxy-models"))]
-    let table = m.table();
+    let table = schema.models[idx].view.as_ref().and_then(|v| v.insert_table.as_deref()).unwrap_or_else(|| m.table());
     stmt.into_table(Alias::new(table));
     if cols.is_empty() {
         if rows.len() != 1 {

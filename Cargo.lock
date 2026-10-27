@@ -828,7 +828,6 @@ dependencies = [
  "chrono",
  "libloading",
  "orm-contracts",
- "orm-proxy-runtime",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -940,15 +939,6 @@ version = "0.1.0"
 dependencies = [
  "orm-contracts",
  "orm-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "orm-proxy-runtime"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
  "serde",
  "serde_json",
 ]

@@ -1,6 +1,6 @@
 id = "acme.outside"
 version = "0.1.0"
-schema_contract = "2.2"
+schema_contract = "2.3"
 abi = "0.2"
 library = "outside_extension"
 language_contract = 1
@@ -43,6 +43,26 @@ required = true
 id = "acme.outside.fields"
 phase = "declaration"
 effects = ["fields.outside", "behavior.extension_data"]
+
+# `@@outside.view(Source, "open")` makes the model a view of `Source` that sees only the rows with `status = 'open'`.
+# The pass writes a model view with a row filter, and a result check with its own code for each field that the view declares non-null and `Source` stores as nullable.
+[[attributes]]
+name = "outside.view"
+target = "model"
+view_source = true
+
+[[attributes.positional]]
+kind = "value"
+required = true
+
+[[attributes.positional]]
+kind = "string"
+required = true
+
+[[passes]]
+id = "acme.outside.view"
+phase = "logical"
+effects = ["models.view", "behavior.model_views", "behavior.result_checks"]
 
 # Hooks of the library. `outside.prefix` reads the `{"prefix": ...}` of its `extension_data` entry.
 [[exports]]
