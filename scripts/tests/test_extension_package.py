@@ -11,6 +11,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def archive_metadata(wheel):
+    with zipfile.ZipFile(wheel) as archive:
+        return archive.read(next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))).decode()
+
+
 class PackageTest(unittest.TestCase):
     def test_outside_package_is_installable_and_carries_the_manifest_hash(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -44,6 +49,26 @@ class PackageTest(unittest.TestCase):
             self.assertEqual((npm / "monorm-extension.toml").read_bytes(), manifest)
             self.assertIn(digest, (npm / "index.js").read_text())
             self.assertTrue((npm / "index.d.ts").is_file())
+            self.assertNotIn("license", package_json)
+            self.assertNotIn("License: MIT", archive_metadata(wheel))
+
+    def test_own_extension_carries_the_publish_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run([
+                "cargo", "run", "-q", "-p", "monorm-extension-package", "--", "package",
+                str(ROOT / "extensions/timestamps"), "--out", tmp,
+                "--tsc", str(ROOT / "languages/js/node_modules/.bin/tsc"),
+            ], cwd=ROOT, check=True)
+            wheel, = Path(tmp).glob("*.whl")
+            metadata = archive_metadata(wheel)
+            for line in ("License: MIT", "Project-URL: Repository, https://github.com/UniForgeStack/monorm", "Description-Content-Type: text/markdown"):
+                self.assertIn(line, metadata)
+            package_json = json.loads((Path(tmp, "npm") / "package.json").read_text())
+            self.assertEqual(package_json["name"], "@ufstack/monorm-timestamps")
+            self.assertEqual(package_json["license"], "MIT")
+            self.assertEqual(package_json["publishConfig"], {"access": "public"})
+            self.assertEqual(package_json["repository"]["directory"], "extensions/timestamps")
+            self.assertIn("README.md", package_json["files"])
 
 
 if __name__ == "__main__":

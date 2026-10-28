@@ -3,6 +3,22 @@
   "version": "0.1.0",
   "description": "Users, roles, permissions and passwords for the monorm package: one schema, no native code",
   "license": "MIT",
+  "author": "mh-alahdadi <mhalah15@gmail.com> (https://github.com/mh-alahdadi)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UniForgeStack/monorm.git",
+    "directory": "apps/auth/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/UniForgeStack/monorm/issues"
+  },
+  "homepage": "https://github.com/UniForgeStack/monorm#readme",
+  "keywords": [
+    "monorm",
+    "auth",
+    "users",
+    "permissions"
+  ],
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -52,5 +68,8 @@
   "files": [
     "dist/src",
     "schema.prisma"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -6,6 +6,8 @@ description = "Contracts between the monorm host and its extensions: manifests, 
 license = "MIT"
 repository = "https://github.com/UniForgeStack/monorm"
 readme = "README.md"
+keywords = ["monorm", "extension", "schema"]
+categories = ["database", "development-tools"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

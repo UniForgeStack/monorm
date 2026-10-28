@@ -2,7 +2,7 @@
 
 ## Python and TypeScript versus Django and Prisma
 
-[`bench/compare`](../bench/compare/README.md): the public Python and TypeScript APIs of `orm` against Django 6.1.2 (sync and async), Prisma 7.10.1 and raw `pg` 8.23.1 (the floor), on one shared schema and seed. The run (`bench/compare/run.sh`, no flags) used release builds at `c9bbf7c`: 20 rounds × 20 timed iterations, 50 untimed warm-up calls per case, one fresh process per contender and round, rotated order.
+[`bench/compare`](../bench/compare/README.md): the public Python and TypeScript APIs of `monorm` against Django 6.1.2 (sync and async), Prisma 7.10.1 and raw `pg` 8.23.1 (the floor), on one shared schema and seed. The run (`bench/compare/run.sh`, no flags) used release builds at `c9bbf7c`: 20 rounds × 20 timed iterations, 50 untimed warm-up calls per case, one fresh process per contender and round, rotated order.
 Results directory: [`bench/compare/results/2026-10-21-c9bbf7c/`](../bench/compare/results/2026-10-21-c9bbf7c/summary.md) (`summary.md`, raw JSON per contender, `environment.json`, logs).
 
 Machine (from `environment.json`, `lscpu` and `/proc/meminfo`): cloud VM `vm`, Intel Xeon Processor @ 2.80GHz, 4 cores (1 thread per core), 16 GB RAM, Ubuntu 24.04.5 LTS (Linux 6.18.44, x86_64), PostgreSQL 16.15 over TCP on localhost. CPython 3.14.6, Node v22.22.0, Bun 1.4.2, rustc 1.97.0.
@@ -11,10 +11,10 @@ All numbers below are **measured** and copied from `summary.md` unchanged. Each 
 
 Summary of the ratios to each side's reference, the `pg` floor on Node (measured; the lowest and highest case of the 20, see the tables for each case):
 
-- Python, reference `django-async` (no `pg`-like floor on Python): `orm / django-async` is 0.23 (`m2m`) to 0.92 (`tx-5`); `django-sync / django-async` is 0.67 to 1.04.
-- TypeScript on Node, floor `pg`: `orm / pg` is 1.00 (`read-1000`) to 2.24 (`projection-1000`); `prisma / pg` is 1.20 (`bulk-update-100`) to 22.01 (`upsert-100`).
-- Bun, reference `prisma`: `orm / prisma` is 0.27 to 0.59 on the three cases.
-- `orm-all / orm` (every extension built in) is 0.98 to 1.15 on Python and 0.91 to 1.07 on Node.
+- Python, reference `django-async` (no `pg`-like floor on Python): `monorm / django-async` is 0.23 (`m2m`) to 0.92 (`tx-5`); `django-sync / django-async` is 0.67 to 1.04.
+- TypeScript on Node, floor `pg`: `monorm / pg` is 1.00 (`read-1000`) to 2.24 (`projection-1000`); `prisma / pg` is 1.20 (`bulk-update-100`) to 22.01 (`upsert-100`).
+- Bun, reference `prisma`: `monorm / prisma` is 0.27 to 0.59 on the three cases.
+- `monorm-all / monorm` (every extension built in) is 0.98 to 1.15 on Python and 0.91 to 1.07 on Node.
 
 CPU split tables and per-contender notes: [`bench/RESULTS.md`](../bench/RESULTS.md#python-and-typescript-versus-django-and-prisma--2026-10-21).
 
@@ -22,23 +22,23 @@ CPU split tables and per-contender notes: [`bench/RESULTS.md`](../bench/RESULTS.
 
 From [`bench/compare/README.md`](../bench/compare/README.md#read-the-numbers-with-care):
 
-- The `orm` wheel must be a release build with the postgres profile. A debug tooling build (the dev venv) runs, but its timings are not valid.
+- The `monorm` wheel must be a release build with the postgres profile. A debug tooling build (the dev venv) runs, but its timings are not valid.
 - Django has no async `atomic()`. The `tx-5` case on `django-async` runs a sync function through `sync_to_async`. Django async calls also serialize on one thread.
 - The sync ORM cannot run in an event loop. The `django-sync` process runs without one; its `concurrent` case uses 50 threads.
-- The CPU split is the time to build the query and to render its SQL (`.sql()` of `orm` inlines values, `str(queryset.query)` of Django does too). The decode time is not reachable in either library and is not measured. Treat the split as approximate.
-- `filter-ne-null` is an extra case: `exclude(category_id=3)` in Django keeps the NULL rows, and `(Post.category_id != 3).or_null()` is the same in `orm`.
-- Prepared statements: `orm` prepares once per connection and caches. psycopg prepares after 5 runs of a statement. `adapter-pg` of Prisma sends unnamed statements.
-- `orm` returns full rows from `bulk-insert-*` (`returning()` has no key-only form); Prisma selects ids only. `summary.md` prints this and the other per-contender notes.
+- The CPU split is the time to build the query and to render its SQL (`.sql()` of `monorm` inlines values, `str(queryset.query)` of Django does too). The decode time is not reachable in either library and is not measured. Treat the split as approximate.
+- `filter-ne-null` is an extra case: `exclude(category_id=3)` in Django keeps the NULL rows, and `(Post.category_id != 3).or_null()` is the same in `monorm`.
+- Prepared statements: `monorm` prepares once per connection and caches. psycopg prepares after 5 runs of a statement. `adapter-pg` of Prisma sends unnamed statements.
+- `monorm` returns full rows from `bulk-insert-*` (`returning()` has no key-only form); Prisma selects ids only. `summary.md` prints this and the other per-contender notes.
 
 ### Python
 
-orm 0.1.0, django 6.1.2, psycopg 3.3.6, psycopg-binary 3.3.6, psycopg-pool 3.3.3, asgiref 3.12.1. orm: release build, revision c9bbf7c; orm-all: release build, revision c9bbf7c.
+monorm 0.1.0, django 6.1.2, psycopg 3.3.6, psycopg-binary 3.3.6, psycopg-pool 3.3.3, asgiref 3.12.1. monorm: release build, revision c9bbf7c; monorm-all: release build, revision c9bbf7c.
 
-Reference: `django-async`. There is no `pg`-like floor contender on Python. `orm-all` is the `orm` build with every extension; the `orm-all / orm` column compares the two.
+Reference: `django-async`. There is no `pg`-like floor contender on Python. `monorm-all` is the `monorm` build with every extension; the `monorm-all / monorm` column compares the two.
 
 #### Time per operation
 
-| case | orm (ms) | orm-all (ms) | django-sync (ms) | django-async (ms) | orm / django-async | orm-all / django-async | django-sync / django-async | orm-all / orm |
+| case | monorm (ms) | monorm-all (ms) | django-sync (ms) | django-async (ms) | monorm / django-async | monorm-all / django-async | django-sync / django-async | monorm-all / monorm |
 |---|---|---|---|---|---|---|---|---|
 | read-pk | 0.542 [0.532, 0.57] | 0.599 [0.575, 0.634] | 0.603 [0.565, 0.667] | 0.856 [0.804, 0.908] | 0.64 [0.57, 0.69] | 0.71 [0.64, 0.78] | 0.73 [0.60, 0.80] | 1.10 [1.04, 1.24] |
 | read-50 | 0.741 [0.697, 0.775] | 0.801 [0.755, 0.914] | 1 [0.907, 1.05] | 1.35 [1.3, 1.41] | 0.53 [0.49, 0.59] | 0.60 [0.57, 0.67] | 0.73 [0.68, 0.81] | 1.15 [1.03, 1.20] |
@@ -65,21 +65,21 @@ Reference: `django-async`. There is no `pg`-like floor contender on Python. `orm
 
 | contender | ops/s | p99 latency (ms) |
 |---|---|---|
-| orm | 2206 | 45.1 |
-| orm-all | 2120 | 45.4 |
+| monorm | 2206 | 45.1 |
+| monorm-all | 2120 | 45.4 |
 | django-sync | 814 | 206 |
 | django-async | 831 | 91 |
 
 
 ### TypeScript on Node
 
-pg 8.23.1, prisma 7.10.1, @prisma/client 7.10.1, @prisma/adapter-pg 7.10.1. orm: release build, revision c9bbf7c; orm-all: release build, revision c9bbf7c.
+pg 8.23.1, prisma 7.10.1, @prisma/client 7.10.1, @prisma/adapter-pg 7.10.1. monorm: release build, revision c9bbf7c; monorm-all: release build, revision c9bbf7c.
 
-Reference: `pg` (prepared statements, no ORM work), the floor. The `orm-all / orm` column compares the two builds.
+Reference: `pg` (prepared statements, no ORM work), the floor. The `monorm-all / monorm` column compares the two builds.
 
 #### Time per operation
 
-| case | orm (ms) | orm-all (ms) | prisma (ms) | pg (ms) | orm / pg | orm-all / pg | prisma / pg | orm-all / orm |
+| case | monorm (ms) | monorm-all (ms) | prisma (ms) | pg (ms) | monorm / pg | monorm-all / pg | prisma / pg | monorm-all / monorm |
 |---|---|---|---|---|---|---|---|---|
 | read-pk | 0.342 [0.316, 0.373] | 0.328 [0.325, 0.354] | 0.667 [0.648, 0.74] | 0.234 [0.223, 0.26] | 1.44 [1.34, 1.55] | 1.44 [1.33, 1.55] | 2.82 [2.59, 3.15] | 1.00 [0.92, 1.06] |
 | read-50 | 0.671 [0.644, 0.698] | 0.671 [0.654, 0.738] | 1.11 [1, 1.15] | 0.611 [0.583, 0.659] | 1.08 [0.97, 1.20] | 1.14 [0.98, 1.23] | 1.81 [1.55, 2.02] | 1.07 [0.98, 1.12] |
@@ -106,8 +106,8 @@ Reference: `pg` (prepared statements, no ORM work), the floor. The `orm-all / or
 
 | contender | ops/s | p99 latency (ms) |
 |---|---|---|
-| orm | 4745 | 19.3 |
-| orm-all | 4721 | 20.4 |
+| monorm | 4745 | 19.3 |
+| monorm-all | 4721 | 20.4 |
 | prisma | 3133 | 31.1 |
 | pg | 6352 | 14.5 |
 
@@ -118,7 +118,7 @@ Three cases only. Reference: `prisma` (there is no `pg` row on Bun).
 
 #### Time per operation
 
-| case | orm (ms) | prisma (ms) | orm / prisma |
+| case | monorm (ms) | prisma (ms) | monorm / prisma |
 |---|---|---|---|
 | read-pk | 0.385 [0.36, 0.421] | 0.709 [0.698, 0.733] | 0.59 [0.51, 0.63] |
 | read-1000 | 3.28 [3.06, 3.63] | 5.53 [5.18, 6.08] | 0.57 [0.54, 0.63] |

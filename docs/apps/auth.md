@@ -14,7 +14,7 @@ See [inherit.md](../extensions/inherit.md).
 
 ```sh
 uv pip install monorm-auth      # Python
-npm install monorm-auth         # TypeScript
+npm install @ufstack/monorm-auth # TypeScript
 ```
 
 Import the schema in your main schema file:

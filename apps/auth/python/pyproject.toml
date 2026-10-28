@@ -5,9 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "monorm-auth"
 version = "0.1.0"
-description = "Users, roles, permissions and passwords for the ORM"
+description = "Users, roles, permissions and passwords for monorm"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "mh-alahdadi", email = "mhalah15@gmail.com" }]
+keywords = ["monorm", "auth", "users", "permissions"]
+classifiers = ["Programming Language :: Python :: 3", "Typing :: Typed"]
 requires-python = ">=3.11"
 dependencies = ["monorm", "argon2-cffi>=23.1"]
+
+[project.urls]
+Repository = "https://github.com/UniForgeStack/monorm"
+Issues = "https://github.com/UniForgeStack/monorm/issues"
+Changelog = "https://github.com/UniForgeStack/monorm/blob/main/CHANGELOG.md"
 
 [project.entry-points."monorm.apps"]
 monorm-auth = "monorm_auth:schema.prisma"

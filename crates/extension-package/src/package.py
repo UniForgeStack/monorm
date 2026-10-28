@@ -28,6 +28,11 @@ npm_name = f"@ufstack/monorm-{name}" if scope == "monorm" else f"@{scope}/{name}
 raw = (root / "monorm-extension.toml").read_bytes()
 digest = hashlib.sha256(raw).hexdigest()
 files = config["files"]
+REPOSITORY = "https://github.com/UniForgeStack/monorm"
+# Only the packages of this project carry its author, license and links; a third-party extension keeps its own.
+OWN = scope == "monorm"
+SUMMARY = f"The {name} extension for monorm"
+README = f"# {dist}\n\n{SUMMARY}, a build-time extension package. Install it next to `monorm`; see {REPOSITORY} for the documentation.\n"
 
 
 def copy_runtime(language, destination):
@@ -57,7 +62,12 @@ with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporar
     info = stage / f"{module}-{version}.dist-info"
     info.mkdir()
     requires = "".join(f"Requires-Dist: {line}\n" for line in (manifest.get("python") or {}).get("dependencies", []))
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\nRequires-Python: >=3.11\n{requires}")
+    own = (
+        f"Summary: {SUMMARY}\nAuthor-email: mh-alahdadi <mhalah15@gmail.com>\nLicense: MIT\nClassifier: License :: OSI Approved :: MIT License\n"
+        f"Project-URL: Repository, {REPOSITORY}\nProject-URL: Issues, {REPOSITORY}/issues\nDescription-Content-Type: text/markdown\n"
+    ) if OWN else ""
+    body = f"\n{README}" if OWN else ""
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\n{own}Requires-Python: >=3.11\n{requires}{body}")
     # `any`: the wheel holds the libraries of all platforms, and the loader picks its own file.
     tag = "py3-none-any" if config["tag"] == "any" else "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_")
     purelib = "true" if config["tag"] == "any" else "false"
@@ -100,6 +110,15 @@ with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporar
         "files": listed,
         "monorm": {"extension": ident},
     }
+    if OWN:
+        package_json.update({
+            "description": SUMMARY, "license": "MIT", "author": "mh-alahdadi <mhalah15@gmail.com>",
+            "repository": {"type": "git", "url": f"git+{REPOSITORY}.git", "directory": f"extensions/{root.name}"},
+            "homepage": f"{REPOSITORY}#readme", "bugs": {"url": f"{REPOSITORY}/issues"},
+            "keywords": ["monorm", "extension", name], "publishConfig": {"access": "public"},
+        })
+        (npm / "README.md").write_text(README)
+        package_json["files"] = sorted([*listed, "README.md"])
     if section.get("dependencies"):
         package_json["dependencies"] = dict(sorted(section["dependencies"].items()))
     (npm / "package.json").write_text(json.dumps(package_json, indent=2) + "\n")

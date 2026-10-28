@@ -16,8 +16,16 @@ mkdirSync(output, { recursive: true });
 const filename = { darwin: "libmonorm_node.dylib", win32: "monorm_node.dll" }[process.platform] ?? "libmonorm_node.so";
 copyFileSync(join(cargoTarget, release ? "release" : "debug", filename), join(output, "monorm.node"));
 writeFileSync(join(output, "index.cjs"), "module.exports = require('./monorm.node');\n");
+const repository = "https://github.com/UniForgeStack/monorm";
+writeFileSync(join(output, "README.md"), `# @ufstack/monorm-native-${profile}-${platform}\n\nThe ${profile} native library of [@ufstack/monorm](${repository}) for ${platform}. Install \`@ufstack/monorm-native-${profile}\` instead: it selects this package.\n`);
 writeFileSync(join(output, "package.json"), JSON.stringify({
-  name: `@ufstack/monorm-native-${profile}-${platform}`, version: "0.1.0", main: "index.cjs",
-  files: ["monorm.node", "index.cjs"], os: [process.platform], cpu: [process.arch], engines: { node: ">=20" },
+  name: `@ufstack/monorm-native-${profile}-${platform}`, version: "0.1.0",
+  description: `The ${profile} native library of monorm for ${platform}`,
+  license: "MIT", author: "mh-alahdadi <mhalah15@gmail.com> (https://github.com/mh-alahdadi)",
+  repository: { type: "git", url: `git+${repository}.git`, directory: `languages/js/packaging/${profile}` },
+  bugs: { url: `${repository}/issues` }, homepage: `${repository}#readme`,
+  keywords: ["monorm", "native", profile],
+  publishConfig: { access: "public" },
+  main: "index.cjs", files: ["monorm.node", "index.cjs"], os: [process.platform], cpu: [process.arch], engines: { node: ">=20" },
 }, null, 2) + "\n");
 console.log(output);

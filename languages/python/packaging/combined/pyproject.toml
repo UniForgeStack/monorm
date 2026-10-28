@@ -6,7 +6,18 @@ build-backend = "maturin"
 name = "monorm-native-combined"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "Statically compiled ORM combined engine"
+description = "Statically compiled monorm combined engine"
+readme = "README.md"
+license = { text = "MIT" }
+license-files = ["LICENSE"]
+authors = [{ name = "mh-alahdadi", email = "mhalah15@gmail.com" }]
+keywords = ["monorm", "rust", "native", "combined"]
+classifiers = ["License :: OSI Approved :: MIT License", "Programming Language :: Rust", "Topic :: Database"]
+
+[project.urls]
+Repository = "https://github.com/UniForgeStack/monorm"
+Issues = "https://github.com/UniForgeStack/monorm/issues"
+Changelog = "https://github.com/UniForgeStack/monorm/blob/main/CHANGELOG.md"
 
 [tool.maturin]
 manifest-path = "../../native/Cargo.toml"

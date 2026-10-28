@@ -1,7 +1,23 @@
 {
   "name": "@ufstack/monorm-native-sqlite",
   "version": "0.1.0",
-  "description": "Static ORM sqlite profile",
+  "description": "Static monorm sqlite profile",
+  "license": "MIT",
+  "author": "mh-alahdadi <mhalah15@gmail.com> (https://github.com/mh-alahdadi)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UniForgeStack/monorm.git",
+    "directory": "languages/js/packaging/sqlite"
+  },
+  "bugs": {
+    "url": "https://github.com/UniForgeStack/monorm/issues"
+  },
+  "homepage": "https://github.com/UniForgeStack/monorm#readme",
+  "keywords": [
+    "monorm",
+    "native",
+    "sqlite"
+  ],
   "main": "index.cjs",
   "files": [
     "index.cjs",
@@ -17,5 +33,8 @@
     "@ufstack/monorm-native-sqlite-darwin-arm64": "0.1.0",
     "@ufstack/monorm-native-sqlite-linux-x64": "0.1.0",
     "@ufstack/monorm-native-sqlite-win32-x64": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

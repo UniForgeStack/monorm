@@ -69,7 +69,14 @@ Thank you to the projects below. We claim only what we took from each.
 
 ## Quickstart
 
-There is no registry install line yet. Build from source:
+Nothing is published to a registry yet. From `v0.1.0` the install commands are:
+
+```bash
+pip install "monorm[postgres]"                                # or [sqlite]; `python -m monorm generate`
+npm i @ufstack/monorm @ufstack/monorm-native-postgres         # `npx @ufstack/monorm generate`
+```
+
+Until then, build from source:
 
 ```bash
 uv venv .venv && . .venv/bin/activate
@@ -113,7 +120,7 @@ See the [extension index](docs/README.md#feature-extensions).
 
 Measured in one run (`c9bbf7c`, 2026-10-21) on a shared cloud VM: Intel Xeon 2.80GHz, 4 cores, 16 GB, PostgreSQL 16.15.
 Contenders: Django 6.1.2 (sync and async), Prisma 7.10.1 and `pg` 8.23.1.
-"N× faster" is the contender median time divided by the `orm` median time.
+"N× faster" is the contender median time divided by the `monorm` median time.
 Every number is end to end: it includes the database round trip.
 
 | Case | Python vs Django async | Node vs Prisma |
@@ -128,8 +135,8 @@ Every number is end to end: it includes the database round trip.
 | Geometric mean of 20 cases | 1.95× faster | 1.77× faster |
 
 - The Python work alone (build the query and make the SQL, no database) is about 4.9× faster than Django async. This number is approximate.
-- `orm` is not always faster.
-  On Node `projection-1000`, Prisma is 1.4× faster than `orm`.
+- `monorm` is not always faster.
+  On Node `projection-1000`, Prisma is 1.4× faster than `monorm`.
   Node `delete-100` (0.91×) and Python `tx-5` (1.1×) are level.
   Against Django sync, Python is level on `tx-5` (0.95×) and `insert-1` (1.01×).
 - Against Django sync, the Python geometric mean is 1.57× faster.

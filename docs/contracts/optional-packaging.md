@@ -1,6 +1,6 @@
 # Native profiles
 
-The `orm` Python wheel and npm package contain language runtime code only. They do
+The `monorm` Python wheel and npm package contain language runtime code only. They do
 not install drivers, TLS, CLI or generators. A native profile supplies one engine
 for the entire process. Profile selection is fixed during initialization; existing
 schemas, objects, pools and transactions cannot switch engines.
@@ -22,7 +22,7 @@ Initialization fails before any query for an unknown or absent selector, an
 ambiguous install, an incompatible ABI or version, or an unexpected backend or adapter
 set. A change to the environment after initialization does not change the engine.
 
-Node installs use `orm` alongside `@ufstack/monorm-native-postgres`, `@ufstack/monorm-native-sqlite`,
+Node installs use `@ufstack/monorm` alongside `@ufstack/monorm-native-postgres`, `@ufstack/monorm-native-sqlite`,
 `@ufstack/monorm-native-combined` or `@ufstack/monorm-native-tooling`. Optional peers do not install every
 profile. Each selected profile's optional dependencies are **platform artifacts**,
 not additional database features. Supported prebuilt targets are darwin-arm64,
