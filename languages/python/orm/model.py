@@ -12,7 +12,8 @@ import uuid
 from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from . import _capabilities, _extensions, _native
+from . import _capabilities as _capabilities  # the import checks the native adapter metadata
+from . import _extensions, _native
 from ._apps import resolve_apps
 from ._packages import package_dirs, resolve_extensions
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
@@ -29,9 +30,7 @@ if TYPE_CHECKING:
     from .query import BoundQuerySet, QuerySet
 
 # The native artifact is fixed for the process; read its capabilities once.
-_ARTIFACT: dict[str, Any] = json.loads(_native.native_artifact())
-_CAPABILITIES: tuple[str, ...] = tuple(_ARTIFACT.get("capabilities", ()))
-_capabilities.check_requires(_ARTIFACT)
+_CAPABILITIES: tuple[str, ...] = tuple(json.loads(_native.native_artifact()).get("capabilities", ()))
 # Only an artifact with schema transformations can change an already prepared schema.
 _REPREPARE: bool = "schema-transformations" in _CAPABILITIES
 
@@ -573,10 +572,11 @@ def define(
     packaged = _extensions.packages(ir, extensions)
     selected = _extensions.package_members(ir, packaged)
     selected.update(members or {})
-    chains = {
-        name: [(ident, packaged[ident] if ident in packaged else _extensions.check(ident, extensions[ident])) for ident in ids]
-        for name, ids in selected.items()
-    }
+    for ids in selected.values():
+        for ident in ids:
+            if ident not in packaged:
+                raise TypeError(f"generated models use extension {ident}, which the schema lock does not have; run `orm generate`")
+    chains = {name: [(ident, packaged[ident]) for ident in ids] for name, ids in selected.items()}
     reg = destination._candidate()
     nested_types: dict[str, NestedType] = {}
     dialect = ir.get("dialect", "postgres")

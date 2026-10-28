@@ -226,16 +226,6 @@ async def test_a_method_that_collides_with_a_model_member_is_rejected():
         await db.close()
 
 
-def test_a_missing_language_capability_fails_the_load_naming_the_extension():
-    artifact = {"requires": {"file-storage": ["async-field-adapter.v1"], "other": ["stream.v9"]}}
-    with pytest.raises(ImportError, match=r"extension other requires the capability stream\.v9"):
-        _capabilities.check_requires(artifact)
-    _capabilities.check_requires({"requires": {"file-storage": ["async-field-adapter.v1"]}})
-    _capabilities.check_requires({})
-    with pytest.raises(ImportError, match="file-storage requires the capability async-field-adapter.v1"):
-        _capabilities.check_requires(artifact, frozenset())
-
-
 async def test_batch_writes_store_checked_values_without_a_prepare_call():
     db, models, body = await setup()
     try:

@@ -287,22 +287,3 @@ export function adaptedUpdateMany(Statement: typeof InspectedStatement, qs: Adap
   }, () => qs.inspectUpdateMany(rows, options));
   return Object.assign(update, { operation });
 }
-
-/** @internal The capability this language adapter provides. */
-export const LANGUAGE_CAPABILITIES: ReadonlySet<string> = new Set(["async-field-adapter.v1"]);
-
-const malformedRequires = "incompatible orm native artifact; its requires list is malformed";
-
-/** @internal Fail when an extension of the artifact requires a capability that this language adapter lacks. */
-export function checkRequires(artifact: { readonly requires?: Readonly<Record<string, readonly string[]>> }, declared: ReadonlySet<string> = LANGUAGE_CAPABILITIES): void {
-  const requires: unknown = artifact.requires ?? {};
-  if (typeof requires !== "object" || requires === null || Array.isArray(requires)) throw new TypeError(malformedRequires);
-  for (const [extension, capabilities] of Object.entries(requires as Record<string, readonly string[]>)) {
-    if (!Array.isArray(capabilities)) throw new TypeError(malformedRequires);
-    for (const capability of capabilities) {
-      if (!declared.has(capability)) {
-        throw new TypeError(`extension ${extension} requires the capability ${capability}, which this orm language adapter does not provide; upgrade orm or rebuild the artifact`);
-      }
-    }
-  }
-}

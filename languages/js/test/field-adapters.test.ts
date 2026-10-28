@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AdapterWriteError, FieldAdapterError, Pending, allowWrites, connect, loads, registerFieldAdapter, Registry, type Row } from "../src/index.js";
-import { checkRequires } from "../src/adapters.js";
 import type { ModelMeta } from "../src/model.js";
 
 interface DocModel { readonly _meta: ModelMeta }
@@ -171,18 +170,6 @@ test("a failed SQL statement retries without a new prepare", async () => {
     assert.deepEqual(body.calls, ["file"]);
     assert.deepEqual(row["body"], ["body", { tag: "body", value: "file" }]);
   } finally { await db.close(); }
-});
-
-test("a missing language capability fails the load, naming the extension", () => {
-  assert.throws(() => checkRequires({ requires: { "file-storage": ["async-field-adapter.v1"], other: ["stream.v9"] } }), /extension other requires the capability stream\.v9/);
-  assert.throws(() => checkRequires({ requires: { "file-storage": ["async-field-adapter.v1"] } }, new Set()), /file-storage requires the capability async-field-adapter\.v1/);
-  checkRequires({ requires: { "file-storage": ["async-field-adapter.v1"] } });
-  checkRequires({});
-});
-
-test("a malformed requires value fails the load with a clear error", () => {
-  assert.throws(() => checkRequires({ requires: { ext: "async-field-adapter.v1" } } as never), /requires list is malformed/);
-  assert.throws(() => checkRequires({ requires: ["async-field-adapter.v1"] } as never), /requires list is malformed/);
 });
 
 test("batch writes store checked values without a prepare call", async () => {
