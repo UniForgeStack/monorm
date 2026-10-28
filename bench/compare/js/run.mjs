@@ -287,7 +287,7 @@ const { values: v } = parseArgs({
   options: {
     cases: { type: "string", default: "" },
     contenders: { type: "string", default: "" },
-    "monorm-artifact": { type: "string" },
+    "orm-artifact": { type: "string" },
     rounds: { type: "string", default: "20" },
     iters: { type: "string", default: cmd === "profile" ? "200" : "20" },
     top: { type: "string", default: "25" },
@@ -298,7 +298,7 @@ const { values: v } = parseArgs({
     mode: { type: "string" },
   },
 });
-const a = { cases: v.cases, contenders: v.contenders, artifact: v["monorm-artifact"], rounds: Number(v.rounds), iters: Number(v.iters), checkAt: v.iters, maxLoad: Number(v["max-load"]), out: v.out, contender: v.contender, mode: v.mode, top: Number(v.top), profileFile: v["profile-file"] };
+const a = { cases: v.cases, contenders: v.contenders, artifact: v["orm-artifact"], rounds: Number(v.rounds), iters: Number(v.iters), checkAt: v.iters, maxLoad: Number(v["max-load"]), out: v.out, contender: v.contender, mode: v.mode, top: Number(v.top), profileFile: v["profile-file"] };
 if (cmd === "worker") await worker(a);
 else if (cmd === "check") await check(pick(a), a.cases ? a.cases.split(",") : defaultCases(), a.artifact, a.iters);
 else if (cmd === "run") await run(a);
