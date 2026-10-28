@@ -6,7 +6,7 @@ The extension has two parts:
 
 - `orm-extension.toml` and `src/`: the Rust crate `orm-file-storage`, a `cdylib` with the ABI macro.
   It validates the schema and contributes the field adapter metadata.
-  It requires `async-field-adapter.v1` and has no host code.
+  It has no host code.
 - `integration/python` and `integration/typescript`: the runtime sources.
   They hold the `Reference` codec v1, `Upload`, `Registry`, and the field adapter that registers with the public async field adapter API.
 

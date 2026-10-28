@@ -4,8 +4,7 @@
  * A write runs `validate` (sync, no I/O) for every adapted value, then `await prepare` for each
  * value that needs it, then the SQL. `decode` runs on read. The ORM never deletes a prepared
  * object. If the SQL fails, the error holds the prepared operation, and `operation.execute()`
- * retries the SQL with no new `prepare` call. This language adapter declares the
- * `async-field-adapter.v1` capability.
+ * retries the SQL with no new `prepare` call.
  */
 import { Expression } from "./expr.js";
 import { RESERVED, type ModelMeta, type Row } from "./model.js";
@@ -286,23 +285,4 @@ export function adaptedUpdateMany(Statement: typeof InspectedStatement, qs: Adap
     return operation.execute(stored => qs.executeUpdateMany(fillRows(rows, stored, pending), options));
   }, () => qs.inspectUpdateMany(rows, options));
   return Object.assign(update, { operation });
-}
-
-/** @internal The capability this language adapter provides. */
-export const LANGUAGE_CAPABILITIES: ReadonlySet<string> = new Set(["async-field-adapter.v1"]);
-
-const malformedRequires = "incompatible orm native artifact; its requires list is malformed";
-
-/** @internal Fail when an extension of the artifact requires a capability that this language adapter lacks. */
-export function checkRequires(artifact: { readonly requires?: Readonly<Record<string, readonly string[]>> }, declared: ReadonlySet<string> = LANGUAGE_CAPABILITIES): void {
-  const requires: unknown = artifact.requires ?? {};
-  if (typeof requires !== "object" || requires === null || Array.isArray(requires)) throw new TypeError(malformedRequires);
-  for (const [extension, capabilities] of Object.entries(requires as Record<string, readonly string[]>)) {
-    if (!Array.isArray(capabilities)) throw new TypeError(malformedRequires);
-    for (const capability of capabilities) {
-      if (!declared.has(capability)) {
-        throw new TypeError(`extension ${extension} requires the capability ${capability}, which this orm language adapter does not provide; upgrade orm or rebuild the artifact`);
-      }
-    }
-  }
 }

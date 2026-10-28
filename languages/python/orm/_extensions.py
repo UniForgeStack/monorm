@@ -1,58 +1,10 @@
-"""Extension runtime contracts: generated packages, static artifacts and member rules."""
+"""Extension runtime contracts: generated packages and member rules."""
 
 from __future__ import annotations
 
-import functools
-import hashlib
-import json
 import warnings
-from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
-
-from . import _native
-
-_HEADER = "# orm-ext "
-_HEADER_LINES = 3
-
-
-@functools.cache
-def records() -> dict[str, dict[str, Any]]:
-    """The artifact's Python ``language_members`` record of each extension, by extension id."""
-    artifact = json.loads(_native.native_artifact())
-    return {r["extension"]: r for r in artifact.get("language_members", ()) if r["language"] == "python"}
-
-
-def _digest(files: list[tuple[str, bytes]]) -> str:
-    sha = hashlib.sha256()
-    for name, content in sorted(files, key=lambda f: f[0].encode()):
-        raw = name.encode()
-        sha.update(len(raw).to_bytes(8, "little") + raw + len(content).to_bytes(8, "little") + content)
-    return sha.hexdigest()
-
-
-def check(extension: str, module: ModuleType) -> dict[str, Any]:
-    """The artifact record of ``extension``, after a check that the generated files of ``module`` match it."""
-    record = records().get(extension)
-    if record is None:
-        raise TypeError(
-            f"generated models use extension {extension}, which the native artifact does not have; run `orm generate`"
-        )
-    root = Path(str(module.__file__)).parent
-    files: list[tuple[str, bytes]] = []
-    for path in sorted(root.rglob("*")):
-        if path.suffix not in (".py", ".pyi") or "__pycache__" in path.parts:
-            continue
-        lines = path.read_bytes().split(b"\n", _HEADER_LINES)
-        second = lines[1].decode(errors="replace") if len(lines) > 1 else ""
-        if len(lines) <= _HEADER_LINES or not second.startswith(_HEADER):
-            raise TypeError(f"{path}: not a generated extension file for {extension}; run `orm generate`")
-        if second != f"{_HEADER}{extension} {record['version']} {record['hash']}":
-            raise TypeError(f"{path}: generated for another build of extension {extension}; run `orm generate`")
-        files.append((path.relative_to(root).as_posix(), lines[_HEADER_LINES]))
-    if _digest(files) != record["hash"]:
-        raise TypeError(f"the generated files of extension {extension} in {root} were edited; run `orm generate`")
-    return record
 
 
 def members(
@@ -129,8 +81,6 @@ def packages(ir: dict[str, Any], extensions: dict[str, ModuleType]) -> dict[str,
         visit(ident)
     for ident in order:
         stamp = stamps[ident]
-        if ident in records():
-            raise TypeError(f"extension {ident} is in both the generated packages and the native artifact")
         module = extensions.get(ident)
         if module is None:
             module = import_runtime(ident)

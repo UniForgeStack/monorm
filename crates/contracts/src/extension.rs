@@ -4,14 +4,11 @@ use serde::{Deserialize, Serialize};
 use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
-/// The static Rust API of an extension crate; a library has the C ABI instead.
-pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
 pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
-pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
@@ -66,23 +63,15 @@ pub struct Requirements {
     pub extension_data: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub declarations: Vec<Declaration>,
-    #[serde(default)]
-    pub extensions: BTreeMap<String, String>,
-    /// The extensions that ran as libraries, by id. `extensions` and `completed_passes` keep only the compiled ones.
+    /// The extensions that ran as libraries, by id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub packages: BTreeMap<String, PackageStamp>,
     #[serde(default)]
-    pub completed_passes: Vec<String>,
-    #[serde(default)]
     pub lowered_models: Vec<String>,
-    #[serde(default)]
-    pub specializations: Vec<Specialization>,
     #[serde(default)]
     pub result_fields: Vec<ResultDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<PhysicalSchema>,
-    #[serde(default)]
-    pub methods: Vec<MethodDeclaration>,
     #[serde(default)]
     pub field_storage: Vec<FieldStorage>,
     #[serde(default)]
@@ -178,8 +167,8 @@ impl Requirements {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
-            && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty()
+        self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.packages.is_empty()
+            && self.lowered_models.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.field_adapters.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
@@ -197,22 +186,15 @@ pub struct FieldAdapter {
     pub options: serde_json::Value,
 }
 
-/// The language capability of the async field adapter pipeline: validate, `await prepare`, SQL, decode.
-pub const ASYNC_FIELD_ADAPTER_V1: &str = "async-field-adapter.v1";
-
 /// Names the host runtimes give meaning to on models and instances.
 pub const RESERVED_MEMBERS: [&str; 14] =
     ["objects", "qs", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then"];
 
 /// Reject an adapter field whose generated operations (`names`) collide with a model member.
-pub fn check_adapter_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, names: &[String]) -> Result<(), String> {
+pub fn check_adapter_methods(model: &crate::ir::ModelIr, names: &[String]) -> Result<(), String> {
     for method in names {
         let taken = |name: &str| name == method || camel(name) == *method;
-        if RESERVED_MEMBERS.contains(&method.as_str())
-            || model.fields.iter().any(|f| taken(&f.name))
-            || model.relations.iter().any(|r| taken(&r.name))
-            || ir.behavior.methods.iter().any(|m| m.model == model.name && taken(&m.name))
-        {
+        if RESERVED_MEMBERS.contains(&method.as_str()) || model.fields.iter().any(|f| taken(&f.name)) || model.relations.iter().any(|r| taken(&r.name)) {
             return Err(format!("{}.{method}: generated adapter method collides with a model member", model.name));
         }
     }
@@ -337,17 +319,6 @@ pub struct PreparedOwnerLink {
     pub parent_key: usize,
 }
 
-/// A generated ordinary model method backed by one compiled native export.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct MethodDeclaration {
-    pub model: String,
-    pub name: String,
-    pub native_function: String,
-    pub input: ColType,
-    pub output: Option<ColType>,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ResultDeclaration {
@@ -358,20 +329,9 @@ pub struct ResultDeclaration {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct Specialization {
-    pub model: String,
-    pub fingerprint: String,
-    pub exports: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub id: String,
     pub version: String,
-    /// The static Rust API. A manifest of a library has none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_contract: Option<ContractVersion>,
     pub schema_contract: ContractVersion,
     /// The C ABI of the library. Only the manifest of a library has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -383,9 +343,6 @@ pub struct Manifest {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
-    /// Language capabilities the extension needs; each language adapter checks them when it loads the artifact.
-    #[serde(default)]
-    pub requires: Vec<String>,
     pub languages: Vec<String>,
     pub databases: Vec<String>,
     #[serde(default)]
@@ -403,16 +360,12 @@ pub struct Manifest {
     pub typescript: Option<LanguageSection>,
 }
 impl Manifest {
-    /// Whether the passes of this manifest run from a native library.
-    pub fn is_dynamic(&self) -> bool { self.abi.is_some() }
-
     /// The contract versions against this engine; the error names both versions.
     pub fn check_contracts(&self) -> Result<(), String> {
         self.schema_contract.check("schema contract", SCHEMA_CONTRACT_VERSION, &self.id)?;
-        match (self.abi, self.host_contract) {
-            (Some(abi), _) => abi.check("ABI", ABI_VERSION, &self.id),
-            (None, Some(host)) => host.check("host contract", HOST_CONTRACT_VERSION, &self.id),
-            (None, None) => Err(format!("{}: a manifest with no `abi` needs `host_contract`", self.id)),
+        match self.abi {
+            Some(abi) => abi.check("ABI", ABI_VERSION, &self.id),
+            None => Err(format!("{}: a manifest needs `abi`", self.id)),
         }
     }
 
@@ -620,28 +573,17 @@ pub enum Phase { Declaration, Logical, Storage, Behavior, Validation, Generation
 pub struct Pass {
     pub id: String,
     pub phase: Phase,
-    /// Compiler entry point: `fn(&mut SchemaIr) -> Result<(), String>`. A pass of a library has none; the loader calls it by id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rust: Option<String>,
     #[serde(default)]
     pub after: Vec<String>,
     /// Exclusive effects, e.g. `model.User.field.name.type`.
     #[serde(default)]
     pub effects: Vec<String>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExportKind { StringValidator, StringTransform, StringComputed, StringRecordValidator }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
     pub id: String,
-    /// The static form: a Rust path that the build compiles in, with its `kind`. A typed hook has neither.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rust: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<ExportKind>,
-    /// The hook point, 1 to 7. A typed hook of a library has one; the static form has none.
+    /// The hook point, 1 to 7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub point: Option<u8>,
     /// The type of the value that the hook takes. Points 3, 6 and 7 take none, and then it is absent.
@@ -651,43 +593,16 @@ pub struct Export {
     pub output: Option<ColType>,
 }
 
-/// The static form of an export.
-#[derive(Clone, Copy, Debug)]
-pub struct StringExport<'a> {
-    pub rust: &'a str,
-    pub kind: ExportKind,
-    pub input: ColType,
-    pub output: Option<ColType>,
-}
-
-impl Export {
-    pub fn string_form(&self) -> Option<StringExport<'_>> {
-        Some(StringExport { rust: self.rust.as_deref()?, kind: self.kind?, input: self.input?, output: self.output })
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
-    pub host_contract: u32,
     pub schema_contract: u32,
     #[serde(default)]
-    pub passes: Vec<String>,
-    #[serde(default)]
     pub capabilities: Vec<String>,
-    pub extensions: BTreeMap<String, String>,
-    /// The `requires` list of each selected extension that has one, by extension id.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub requires: BTreeMap<String, Vec<String>>,
-    pub exports: Vec<String>,
-    pub specializations: Vec<Specialization>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub language_members: Vec<LanguageMembers>,
 }
 impl Default for Artifact {
     fn default() -> Self {
-        Self { host_contract: HOST_CONTRACT, schema_contract: SCHEMA_CONTRACT,
-            passes: vec![], capabilities: vec![], extensions: BTreeMap::new(), requires: BTreeMap::new(), exports: vec![], specializations: vec![], language_members: vec![] }
+        Self { schema_contract: SCHEMA_CONTRACT, capabilities: vec![] }
     }
 }
 
@@ -723,7 +638,7 @@ pub struct QueryContract<'a> {
     pub shape: &'a ResultShape,
 }
 
-/// The part of an attribute name before the dot: `timestamps` for `timestamps.updated_at`.
+/// The part of an attribute name before the dot: `acme` for `acme.stamp`.
 pub fn attribute_namespace(attribute: &str) -> &str {
     attribute.split_once('.').map_or(attribute, |(namespace, _)| namespace)
 }
@@ -805,33 +720,10 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
     if r.storage.is_some() && !artifact.capabilities.iter().any(|c| c == "physical-schema") {
         return Err(format!("physical schema contributions are not compiled into this artifact (capabilities {:?}); rebuild", artifact.capabilities));
     }
-    for pass in &r.completed_passes {
-        if !artifact.passes.contains(pass) { return Err(format!("lowering pass {pass} unavailable (artifact has {:?}); rebuild native artifact", artifact.passes)); }
-    }
-    for (id, version) in &r.extensions {
-        if artifact.extensions.get(id) != Some(version) {
-            return Err(format!("extension {id}@{version} unavailable; artifact has {:?}; rebuild", artifact.extensions.get(id)));
-        }
-    }
-    for method in &r.methods {
-        if !r.specializations.iter().any(|s| s.model == method.model && artifact.specializations.contains(s)) {
-            return Err(format!("{}.{}: native method requires a compiled specialization; rebuild", method.model, method.name));
-        }
-    }
     for result in &r.result_fields {
         let hooked = r.hooks.iter().any(|h| h.point == 5 && h.model == result.model && h.field.as_deref() == Some(result.field.as_str()));
-        if !hooked && !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
-            return Err(format!("{}.{}: native result requires a compiled specialization; rebuild", result.model, result.field));
-        }
-    }
-    for specialization in &r.specializations {
-        for export in &specialization.exports {
-            if !artifact.exports.contains(export) {
-                return Err(format!("{} requires missing export {export} (artifact has {:?}); rebuild native artifact", specialization.model, artifact.exports));
-            }
-        }
-        if !artifact.specializations.contains(specialization) {
-            return Err(format!("{}: stale or missing specialization {}; rebuild native artifact", specialization.model, specialization.fingerprint));
+        if !hooked {
+            return Err(format!("{}.{}: a computed field needs a hook at point 5", result.model, result.field));
         }
     }
     Ok(())
@@ -851,20 +743,7 @@ fn validate_package_support(id: &str, package: &PackageStamp, database: &str, la
 /// source declarations (e.g. generated code or a matching native specialization).
 pub fn validate_requirements(ir: &SchemaIr, manifests: &[Manifest], language: Option<&str>) -> Result<(), String> {
     for (id, package) in &ir.behavior.packages {
-        if manifests.iter().any(|m| m.id == *id && !m.is_dynamic()) {
-            return Err(format!("extension {id} is in both the generated packages and the native artifact"));
-        }
         validate_package_support(id, package, ir.dialect.name(), language)?;
-    }
-    for (id, version) in &ir.behavior.extensions {
-        let manifest = manifests.iter().find(|m| m.id == *id && m.version == *version)
-            .ok_or_else(|| format!("missing extension {id}@{version}; rebuild native artifact"))?;
-        if !manifest.databases.iter().any(|d| d == ir.dialect.name()) {
-            return Err(format!("{id}@{version} does not support {}; rebuild an appropriate profile", ir.dialect.name()));
-        }
-        if language.is_some_and(|language| !manifest.languages.iter().any(|l| l == language)) {
-            return Err(format!("{id}@{version} does not support this binding; rebuild an appropriate profile"));
-        }
     }
     for hook in &ir.behavior.hooks { validate_hook(ir, hook, manifests)?; }
     validate_expression_hooks(ir)
@@ -1025,8 +904,7 @@ pub fn capture_storage(ir: &mut SchemaIr) -> Result<(), String> {
 }
 
 pub const HOST_CAPABILITIES: &[&str] = &[
-    "schema-transformations", "physical-schema", "native-string-values",
-    "native-string-records", "native-string-results",
+    "schema-transformations", "physical-schema",
 ];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
@@ -1092,19 +970,13 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     }
     c.schema_contract = c.schema_contract.max(n.schema_contract);
     c.schema_contract_minor = c.schema_contract_minor.max(n.schema_contract_minor);
-    if !c.completed_passes.is_empty() && !n.completed_passes.is_empty() && c.completed_passes != n.completed_passes {
-        return Err("incompatible lowering passes; rebuild dependent schemas together".into());
-    }
-    if c.completed_passes.is_empty() { c.completed_passes = n.completed_passes; }
     c.lowered_models.extend(n.lowered_models);
     c.lowered_models.sort(); c.lowered_models.dedup();
     c.declarations.extend(n.declarations);
     c.model_views.extend(n.model_views);
     c.result_checks.extend(n.result_checks);
     c.read_defaults.extend(n.read_defaults);
-    c.specializations.extend(n.specializations);
     c.result_fields.extend(n.result_fields);
-    c.methods.extend(n.methods);
     c.field_storage.extend(n.field_storage);
     c.owner_links.extend(n.owner_links);
     c.field_adapters.extend(n.field_adapters);
@@ -1127,10 +999,6 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     for (base, child) in n.model_overrides {
         if c.model_overrides.get(&base).is_some_and(|known| known != &child) { return Err(format!("{base} is overridden by two models; rebuild dependent schemas together")); }
         c.model_overrides.insert(base, child);
-    }
-    for (id, version) in n.extensions {
-        if c.extensions.get(&id).is_some_and(|v| v != &version) { return Err(format!("incompatible extension {id}; rebuild dependent schemas together")); }
-        c.extensions.insert(id, version);
     }
     for (id, stamp) in n.packages {
         if c.packages.get(&id).is_some_and(|known| known != &stamp) { return Err(format!("incompatible extension package {id}; rebuild dependent schemas together")); }
@@ -1192,7 +1060,7 @@ mod tests {
 
     fn manifest(languages: &[&str], databases: &[&str]) -> Manifest {
         serde_json::from_value(serde_json::json!({
-            "id": "app", "version": "1.0.0", "host_contract": HOST_CONTRACT, "schema_contract": SCHEMA_CONTRACT,
+            "id": "app", "version": "1.0.0", "abi": "0.2", "library": "lib", "schema_contract": SCHEMA_CONTRACT,
             "languages": languages, "databases": databases,
             "attributes": [{"name": "app.trim", "target": "field"}],
         })).unwrap()
@@ -1319,28 +1187,19 @@ mod tests {
         let mut value = serde_json::to_value(manifest(&["python"], &["sqlite"])).unwrap();
         value["unknown"] = serde_json::json!(true);
         assert!(serde_json::from_value::<Manifest>(value).unwrap_err().to_string().contains("unknown field"));
-        let mut export = serde_json::json!({"id": "app.x", "rust": "crate::x", "kind": "string_validator", "input": "string"});
+        let mut export = serde_json::json!({"id": "app.x", "point": 2, "input": "string"});
         assert!(serde_json::from_value::<Export>(export.clone()).is_ok());
-        export["kind"] = "integer_validator".into();
-        assert!(serde_json::from_value::<Export>(export).unwrap_err().to_string().contains("unknown variant"));
+        export["kind"] = "string_validator".into();
+        assert!(serde_json::from_value::<Export>(export).unwrap_err().to_string().contains("unknown field `kind`"));
     }
 
     #[test]
-    fn requirement_errors_name_the_model_requirement_and_artifact_contents() {
+    fn a_computed_field_without_a_point_5_hook_names_the_model_and_field() {
         let mut ir = SchemaIr::default();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.completed_passes = vec!["app.lower".into()];
-        let artifact = Artifact { passes: vec!["other.lower".into()], ..Artifact::default() };
-        let error = check_requirements(&ir, &artifact).unwrap_err();
-        assert!(error.contains("app.lower") && error.contains("other.lower") && error.contains("rebuild"), "{error}");
-        ir.behavior.completed_passes.clear();
-        ir.behavior.specializations = vec![Specialization { model: "User".into(), fingerprint: "f".into(), exports: vec!["app.trim".into()] }];
-        let artifact = Artifact { exports: vec!["app.other".into()], ..Artifact::default() };
-        let error = check_requirements(&ir, &artifact).unwrap_err();
-        assert!(error.starts_with("User requires missing export app.trim") && error.contains("app.other") && error.contains("rebuild"), "{error}");
-        let artifact = Artifact { exports: vec!["app.trim".into()], ..Artifact::default() };
-        let error = check_requirements(&ir, &artifact).unwrap_err();
-        assert!(error.starts_with("User: stale or missing specialization f") && error.contains("rebuild"), "{error}");
+        ir.behavior.result_fields = vec![ResultDeclaration { model: "User".into(), field: "full".into(), dependencies: vec!["name".into()] }];
+        let error = check_requirements(&ir, &Artifact::default()).unwrap_err();
+        assert_eq!(error, "User.full: a computed field needs a hook at point 5");
     }
 
     #[test]
@@ -1353,8 +1212,6 @@ mod tests {
         };
         let storage = |ir: &mut SchemaIr| ir.behavior.storage = Some(PhysicalSchema { models: vec![] });
         let artifact = Artifact::default();
-        let error = check_requirements(&state(&|ir| { ir.behavior.extensions.insert("acme.lib".into(), "1.0.0".into()); }), &artifact).unwrap_err();
-        assert!(error.contains("acme.lib@1.0.0") && error.contains("rebuild"), "{error}");
         let mut other = state(&|_| {});
         other.behavior.schema_contract = SCHEMA_CONTRACT + 1;
         let error = check_requirements(&other, &artifact).unwrap_err();
@@ -1378,12 +1235,10 @@ mod tests {
         assert!(error.contains(&format!("schema contract {}.0", SCHEMA_CONTRACT_VERSION.major + 1)) && error.contains(&format!("schema contract {SCHEMA_CONTRACT_VERSION}")) && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains(&format!("schema contract {} is newer than this engine (schema contract {SCHEMA_CONTRACT_VERSION})", next_minor(SCHEMA_CONTRACT_VERSION))) && error.contains("update the ORM"), "{error}");
-        let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
-        let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
+        let error = check(&|v| v["abi"] = next_minor(ABI_VERSION).into()).unwrap_err();
         assert!(error.contains("ABI 0.3 is newer than this engine (ABI 0.2)") && error.contains("update the ORM"), "{error}");
-        let error = check(&|v| { v.as_object_mut().unwrap().remove("host_contract"); }).unwrap_err();
-        assert!(error.contains("app: a manifest with no `abi` needs `host_contract`"), "{error}");
+        let error = check(&|v| { v.as_object_mut().unwrap().remove("abi"); }).unwrap_err();
+        assert_eq!(error, "app: a manifest needs `abi`");
     }
 
     fn adapter_ir() -> SchemaIr {
@@ -1409,13 +1264,13 @@ mod tests {
     fn an_adapter_method_that_collides_names_the_model_and_the_method() {
         let ir = adapter_ir();
         let model = &ir.models[0];
-        let error = check_adapter_methods(&ir, model, &["note_unwrap".into()]).unwrap_err();
+        let error = check_adapter_methods(model, &["note_unwrap".into()]).unwrap_err();
         assert_eq!(error, "Note.note_unwrap: generated adapter method collides with a model member");
-        let error = check_adapter_methods(&ir, model, &["noteUnwrap".into()]).unwrap_err();
+        let error = check_adapter_methods(model, &["noteUnwrap".into()]).unwrap_err();
         assert!(error.contains("Note.noteUnwrap"), "{error}");
-        let error = check_adapter_methods(&ir, model, &["toJSON".into()]).unwrap_err();
+        let error = check_adapter_methods(model, &["toJSON".into()]).unwrap_err();
         assert!(error.contains("Note.toJSON"), "{error}");
-        assert!(check_adapter_methods(&ir, model, &["note_wrap".into(), "noteWrap".into()]).is_ok());
+        assert!(check_adapter_methods(model, &["note_wrap".into(), "noteWrap".into()]).is_ok());
     }
 
     #[test]
@@ -1502,16 +1357,16 @@ mod tests {
 
     #[test]
     fn a_hook_needs_the_manifest_or_the_package_stamp_of_its_source() {
-        let statics = [manifest(&["python"], &["sqlite"])];
+        let manifests = [manifest(&["python"], &["sqlite"])];
         let mut ir = hook_ir(binding(2, Some("name"), "acme.lib.check"));
-        let error = validate_requirements(&ir, &statics, None).unwrap_err();
+        let error = validate_requirements(&ir, &manifests, None).unwrap_err();
         for part in ["User.name", "acme.lib.check", "names the source acme.lib", "no manifest and no package"] {
             assert!(error.contains(part), "{part} is missing from: {error}");
         }
         // A generated model carries the stamp of the package, not its manifest.
         let stamp = PackageStamp { version: "1.0.0".into(), databases: vec![ir.dialect.name().into()], ..PackageStamp::default() };
         ir.behavior.packages.insert("acme.lib".into(), stamp);
-        assert!(validate_requirements(&ir, &statics, None).is_ok());
+        assert!(validate_requirements(&ir, &manifests, None).is_ok());
     }
 
     #[test]
@@ -1592,10 +1447,10 @@ mod tests {
     fn pass_effects_reports_sections_and_rejects_a_second_lowering() {
         let ir = schema(crate::dialect::Dialect::Sqlite);
         let once = |ir: &mut SchemaIr| -> Result<(), String> {
-            if ir.behavior.declarations.iter().any(|d| !d.lowered) { ir.behavior.completed_passes.push("app.lower".into()); }
+            if ir.behavior.declarations.iter().any(|d| !d.lowered) { ir.behavior.extension_data.insert("app".into(), serde_json::json!(true)); }
             Ok(())
         };
-        assert_eq!(pass_effects(&ir, once).unwrap().into_iter().collect::<Vec<_>>(), ["behavior.completed_passes"]);
+        assert_eq!(pass_effects(&ir, once).unwrap().into_iter().collect::<Vec<_>>(), ["behavior.extension_data"]);
         let always = |ir: &mut SchemaIr| -> Result<(), String> { ir.behavior.lowered_models.push("again".into()); Ok(()) };
         assert!(pass_effects(&ir, always).unwrap_err().contains("behavior.lowered_models"));
     }

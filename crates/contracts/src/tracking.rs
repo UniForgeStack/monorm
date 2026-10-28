@@ -30,7 +30,7 @@ pub fn upsert(d: &Declaration) -> Result<UpsertDefault, String> {
     }
 }
 
-/// A tracking model attribute (`timestamps.updated_at`) and the default name of the field it adds (`updated_at`).
+/// A tracking model attribute and the default name of the field it adds.
 #[derive(Clone, Copy, Debug)]
 pub struct Tracked {
     pub attribute: &'static str,

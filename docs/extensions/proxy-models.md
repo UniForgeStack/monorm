@@ -6,7 +6,7 @@ Default filters and default selection come from the `orm-query-defaults` package
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
 **Enable:** install the `orm-proxy` package (`extensions/proxy`).
-See [build-time-extensions.md](../contracts/build-time-extensions.md#installable-packages).
+See [optional-packaging.md](../contracts/optional-packaging.md#installable-packages).
 
 ```prisma
 enum Status {

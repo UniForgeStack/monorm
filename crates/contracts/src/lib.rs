@@ -7,8 +7,6 @@ pub mod ir;
 pub mod extension;
 pub mod features;
 
-pub mod native;
-
 pub mod identity;
 
 

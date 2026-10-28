@@ -2,8 +2,7 @@
 
 A write runs ``validate`` (sync, no I/O) for every adapted value, then ``await prepare`` for each value
 that needs it, then the SQL. ``decode`` runs on read. An extension registers an adapter with
-:func:`register_field_adapter` and relies on the pipeline; this language adapter declares the
-``async-field-adapter.v1`` capability.
+:func:`register_field_adapter` and relies on the pipeline.
 
 The ORM never deletes a prepared object. If the SQL fails, the error holds the prepared operation, and
 ``operation.execute()`` retries the SQL with no new ``prepare`` call.

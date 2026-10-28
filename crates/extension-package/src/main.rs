@@ -64,8 +64,8 @@ fn read_manifest(dir: &Path) -> Result<orm_contracts::extension::Manifest, Error
     let text = std::fs::read_to_string(dir.join("orm-extension.toml"))?;
     let manifest: orm_contracts::extension::Manifest = toml::from_str(&text)?;
     manifest.check_contracts()?;
-    if !manifest.is_dynamic() || manifest.library.is_none() {
-        return Err("a package needs abi and library".into());
+    if manifest.library.is_none() {
+        return Err("a package needs `library`".into());
     }
     for (language, section) in manifest.language_sections() {
         section.check_package_keys(language)?;

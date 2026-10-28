@@ -520,25 +520,18 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             quote(name)
         )
         .unwrap();
-        let methods: Vec<_> = ir.behavior.methods.iter().filter(|method| method.model == *name).collect();
         let indexes = if super::indexes_free(m, camel) { crate::migrate::model::unique_index_names(m) } else { vec![] };
-        if methods.is_empty() && indexes.is_empty() {
+        if indexes.is_empty() {
             writeln!(body, "export interface {name}Model extends ModelClass<{name}Spec>, {name}Fields<{}, [], false> {{}}\n", quote(name)).unwrap();
         } else {
             writeln!(body, "export interface {name}Model extends ModelClass<{name}Spec>, {name}Fields<{}, [], false> {{", quote(name)).unwrap();
-            if !indexes.is_empty() {
-                writeln!(body, "  /** The unique indexes, for `onConflict(columns, {{ index }})`. */\n  readonly indexes: {{").unwrap();
-                for index in &indexes {
-                    let key = if super::is_js_ident(index) { index.clone() } else { quote(index) };
-                    writeln!(body, "    readonly {key}: IndexRef<{}>;", quote(name)).unwrap();
-                }
-                writeln!(body, "  }};").unwrap();
-                used_index = true;
+            writeln!(body, "  /** The unique indexes, for `onConflict(columns, {{ index }})`. */\n  readonly indexes: {{").unwrap();
+            for index in &indexes {
+                let key = if super::is_js_ident(index) { index.clone() } else { quote(index) };
+                writeln!(body, "    readonly {key}: IndexRef<{}>;", quote(name)).unwrap();
             }
-            for method in methods {
-                let output = if method.output.is_some() { "string" } else { "void" };
-                writeln!(body, "  {}(value: string): {output};", camel(&method.name)).unwrap();
-            }
+            writeln!(body, "  }};").unwrap();
+            used_index = true;
             writeln!(body, "}}\n").unwrap();
         }
         writeln!(body, "export const {name} = models[{}] as unknown as {name}Model;\n", quote(name)).unwrap();

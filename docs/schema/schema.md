@@ -676,7 +676,7 @@ Behavior (new attributes, proxies, defaults) comes from build-time extensions, b
 ### Build-time extension attributes
 
 A namespaced attribute belongs to a build-time extension crate.
-The extension package must be installed ([build-time-extensions.md](../contracts/build-time-extensions.md#installable-packages));
+The extension package must be installed ([optional-packaging.md](../contracts/optional-packaging.md#installable-packages));
 otherwise definition fails with `@<name>: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)`.
 
 | Attribute | Extension | Doc |
@@ -692,7 +692,7 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 ### Installed extension libraries
 
 An extension can also ship as a native library that the loader opens at run time, so the ORM needs no rebuild.
-The package has an `orm-extension.toml` with `abi` and `library` and no `host_contract` (fields: [build-time-extensions.md](../contracts/build-time-extensions.md#installed-libraries)).
+The package has an `orm-extension.toml` with `abi` and `library` (fields: [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts)).
 A schema selects a library by the namespace of an attribute it uses, or by `generator client { extensions = ["acme.outside"] }`.
 An extension that the schema does not use is not loaded and adds no stamp.
 
@@ -701,7 +701,7 @@ An extension that the schema does not use is not loaded and adds no stamp.
   The lookup starts at the project of the schema file, or at the working directory when there is no file (`loads(source)`).
   Python reads the interpreter environment.
 * The standalone `orm` binary does not look for packages: `orm generate typescript --extension acme.outside=path/to/orm-extension.toml --extension-module acme.outside=acme-outside`. Both flags can repeat; use the Python import name for Python generation. The Python and Node commands add them automatically.
-* `load(path)` and `loads(source)` resolve extensions the same way and import each selected package's runtime module, as generated models do. Definition loads no package native library or pass; changed or missing runtime manifest hashes emit `OrmStaleModelsWarning` and advise running `orm generate` ([runtime contract](../contracts/build-time-extensions.md#installed-libraries)).
+* `load(path)` and `loads(source)` resolve extensions the same way and import each selected package's runtime module, as generated models do. Definition loads no package native library or pass; changed or missing runtime manifest hashes emit `OrmStaleModelsWarning` and advise running `orm generate` ([runtime contract](../contracts/optional-packaging.md#installed-libraries)).
 * The loader reads the id, versions and attribute names of every installed manifest, and reads the rest of a manifest only when the schema selects its package.
   A manifest that does not parse fails a schema only when that schema can need it: the schema selects it by id, or uses an attribute namespace that no other package owns.
 * The loader opens each library file once for each process and keeps it by its canonical path. A change to the file on disk has no effect until the process restarts.

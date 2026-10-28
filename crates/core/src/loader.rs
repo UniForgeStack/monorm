@@ -67,8 +67,6 @@ pub struct Plan {
     pub manifests: Vec<Manifest>,
     dynamic: Vec<Dynamic>,
     order: Vec<Pass>,
-    /// The pass order of the artifact alone: the lowering state of an IR keeps it.
-    static_order: Vec<String>,
 }
 
 /// The manifest fields that every release reads in one way. A later release can add fields, so
@@ -127,15 +125,15 @@ pub fn read_manifest(id: &str, manifest: &Path) -> Result<Dynamic, String> {
 
 /// What only a selected library must satisfy; an unrelated installed package never fails a compile.
 fn check_library(d: &Dynamic) -> Result<(), String> {
-    if d.manifest.is_dynamic() { return Ok(()); }
+    if d.manifest.abi.is_some() { return Ok(()); }
     Err(format!("extension {}: {} has no `abi`, so it has no library to load; add `abi` and `library`", d.manifest.id, d.path.display()))
 }
 
 /// Chooses the extensions of `available` that the schema uses (an attribute namespace in `used`) or names
-/// in `generator { extensions }`, then checks them with `statics`, the manifests of the artifact, and
-/// `static_order`, their pass order. A named id of `statics` selects nothing: the artifact has it.
+/// in `generator { extensions }`, then checks them with `statics`, the manifests of the artifact.
+/// A named id of `statics` selects nothing: the artifact has it.
 /// `None` when no library is selected: the artifact alone lowers the schema.
-pub fn plan(available: &[(String, PathBuf)], used: &BTreeSet<String>, named: &[String], statics: &[Manifest], static_order: &[String]) -> Result<Option<Plan>, String> {
+pub fn plan(available: &[(String, PathBuf)], used: &BTreeSet<String>, named: &[String], statics: &[Manifest]) -> Result<Option<Plan>, String> {
     let mut seen: BTreeMap<&str, &Path> = BTreeMap::new();
     let mut selected: Vec<Dynamic> = vec![];
     let mut unreadable: Vec<String> = vec![];
@@ -170,7 +168,7 @@ pub fn plan(available: &[(String, PathBuf)], used: &BTreeSet<String>, named: &[S
     if selected.is_empty() { return Ok(None); }
     let all: Vec<Manifest> = statics.iter().cloned().chain(selected.iter().map(|d| d.manifest.clone())).collect();
     let resolved = resolve(all, &|_, _, _| Ok(()))?;
-    Ok(Some(Plan { manifests: resolved.manifests, dynamic: selected, order: resolved.passes, static_order: static_order.to_vec() }))
+    Ok(Some(Plan { manifests: resolved.manifests, dynamic: selected, order: resolved.passes }))
 }
 
 impl Plan {
@@ -186,16 +184,12 @@ impl Plan {
             return Err(format!("schema contract {} unavailable (artifact {}); rebuild native artifact", ir.behavior.schema_contract, SCHEMA_CONTRACT));
         }
         validate_declarations(ir, &self.manifests, language)?;
-        if !ir.behavior.completed_passes.is_empty() && ir.behavior.completed_passes != self.static_order {
-            return Err("incompatible lowering state; rebuild schema and native artifact".into());
-        }
         let natives = self.load()?;
         let owner_of: BTreeMap<&str, &str> = self.dynamic.iter()
             .flat_map(|d| d.manifest.passes.iter().map(move |p| (p.id.as_str(), d.manifest.id.as_str()))).collect();
         capture_storage(ir)?;
         let previous: Vec<_> = ir.behavior.declarations.iter().filter(|d| d.lowered).cloned().collect();
         ir.behavior.declarations.retain(|d| !d.lowered);
-        ir.behavior.completed_passes.clear();
         for d in &self.dynamic {
             let attributes = d.manifest.attributes.iter().map(|a| a.name.clone()).collect();
             ir.behavior.packages.insert(d.manifest.id.clone(), PackageStamp { version: d.manifest.version.clone(), manifest_hash: d.manifest_hash.clone(), passes: vec![], attributes,
@@ -214,12 +208,10 @@ impl Plan {
                 }
             }
         }
-        ir.behavior.completed_passes = self.static_order.clone();
         for declaration in &mut ir.behavior.declarations { declaration.lowered = true; }
         ir.behavior.declarations.extend(previous);
         ir.behavior.lowered_models = ir.models.iter().map(|m| m.name.clone()).collect();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.extensions = self.manifests.iter().filter(|m| !m.is_dynamic()).map(|m| (m.id.clone(), m.version.clone())).collect();
         validate_requirements(ir, &self.manifests, language)?;
         self.evaluate_expression_hooks(ir)?;
         ir.stamp_expression_records();
@@ -524,7 +516,7 @@ mod tests {
     }
 
     fn select(available: &[(String, PathBuf)], used: &BTreeSet<String>, named: &[String]) -> Result<Option<Plan>, String> {
-        plan(available, used, named, &[], &[])
+        plan(available, used, named, &[])
     }
 
     fn used(namespace: &str) -> BTreeSet<String> { [namespace.to_owned()].into() }
@@ -689,8 +681,8 @@ mod tests {
 
     #[test]
     fn the_generator_key_may_name_an_extension_that_the_artifact_has() {
-        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"5.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n").unwrap();
-        assert!(plan(&[], &BTreeSet::new(), &["acme.compiled".into()], &[compiled], &[]).unwrap().is_none());
+        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"5.0\"\nlanguages = []\ndatabases = []\n").unwrap();
+        assert!(plan(&[], &BTreeSet::new(), &["acme.compiled".into()], &[compiled]).unwrap().is_none());
     }
 
     #[test]
@@ -707,7 +699,7 @@ mod tests {
         let dir = scratch("manifest");
         let (_, path) = install(&dir, "acme.audit", TAG);
         assert!(read_manifest("acme.other", &path).err().unwrap().contains("describes acme.audit"));
-        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 5\nhost_contract = 1\nlanguages = []\ndatabases = []\n").unwrap();
+        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 5\nlanguages = []\ndatabases = []\n").unwrap();
         assert!(check_library(&read_manifest("acme.audit", &path).unwrap()).err().unwrap().contains("no `abi`"));
         assert!(read_manifest("acme.audit", &dir.join("gone.toml")).err().unwrap().contains("gone.toml"));
         std::fs::remove_dir_all(&dir).ok();
@@ -738,7 +730,7 @@ mod tests {
     fn an_unrelated_package_that_is_no_library_never_fails_a_compile() {
         let dir = scratch("unrelated");
         let (_, other) = install(&dir.join("b"), "other.kit", KIT);
-        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"5.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
+        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"5.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
         let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), other.clone())];
         assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
         let error = select(&available, &used("kit"), &[]).err().unwrap();
@@ -797,25 +789,6 @@ mod tests {
         let plan = select(&[(id, path)], &BTreeSet::new(), &["acme.audit".into()]).unwrap().unwrap();
         let error = plan.load().err().unwrap();
         assert!(error.contains("acme.audit") && (error.contains("libnone") || error.contains("none.dll")), "{error}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn lowering_state_of_another_artifact_fails_before_a_library_loads() {
-        let dir = scratch("state");
-        let (id, path) = install(&dir, "acme.audit", TAG);
-        let order = ["static.pass".to_owned()];
-        let plan = plan(&[(id, path)], &BTreeSet::new(), &["acme.audit".into()], &[], &order).unwrap().unwrap();
-        let lower = |completed: &[&str]| {
-            let mut ir = SchemaIr::default();
-            ir.behavior.completed_passes = completed.iter().map(|p| (*p).to_owned()).collect();
-            plan.lower(&mut ir, None, &|_, _| Ok(false)).err().unwrap()
-        };
-        assert!(lower(&["other.pass"]).contains("incompatible lowering state"));
-        for completed in [&[][..], &["static.pass"][..]] {
-            let error = lower(completed);
-            assert!(error.contains("libnone") || error.contains("none.dll"), "{error}");
-        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

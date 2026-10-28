@@ -2,7 +2,6 @@
 
 import datetime as dt
 import importlib
-import json
 import pickle
 import shutil
 from pathlib import Path
@@ -346,14 +345,10 @@ def test_a_re_prepared_registry_keeps_its_nested_types(monkeypatch):
     assert [t["name"] for t in registry.ir()["types"]] == ["Geo", "Address"]
 
 
-@pytest.mark.skipif(
-    bool(json.loads(_native.native_artifact())["extensions"]),
-    reason="the checked-in models are the default profile's; an extension artifact embeds its passes",
-)
 def test_example_models_are_current(tmp_path, monkeypatch):
     shutil.copy(EXAMPLE / "schema.prisma", tmp_path / "schema.prisma")
     monkeypatch.chdir(tmp_path)
-    assert orm._native.cli(["generate", "python", "-o", "models.py"]) == 0
+    assert _native.cli(["generate", "python", "-o", "models.py"]) == 0
     for name in ("models.py", "models.pyi"):
         assert (tmp_path / name).read_text() == (EXAMPLE / name).read_text(), f"run `python -m orm generate` in {EXAMPLE}"
 

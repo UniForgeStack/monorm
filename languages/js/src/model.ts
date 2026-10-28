@@ -7,7 +7,6 @@
  * the same at runtime without a generated file (untyped).
  */
 
-import { checkRequires } from "./adapters.js";
 import { isAbsent } from "./reference-absence.js";
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
 import { Column, PATH, RelationPath, and, differs, type Condition, type NullRule, type PathState, type Source } from "./expr.js";
@@ -31,9 +30,7 @@ export const DB: unique symbol = Symbol("orm.db");
 /** Hidden values of a partial instance (identity, relation keys) that adapters read but ordinary property access does not show. */
 export const INTERNAL: unique symbol = Symbol.for("orm.internal");
 // The native artifact is fixed for the process; read its capabilities once.
-const artifact = JSON.parse(native().nativeArtifact()) as { capabilities: string[]; requires?: Record<string, string[]> };
-const capabilities: readonly string[] = artifact.capabilities;
-checkRequires(artifact);
+const capabilities: readonly string[] = (JSON.parse(native().nativeArtifact()) as { capabilities: string[] }).capabilities;
 // Adapter selection happens once. The import is static: a top-level await would stop a synchronous require() of any package that imports `orm`.
 const referenceAdapter = capabilities.includes("reference-loading") ? references : undefined;
 
@@ -1057,16 +1054,6 @@ export function define(
     if (computed.size) {
       meta.inputFieldList = meta.publicList.filter((f) => !computed.has(f.ir));
       meta.inputFields = new Map(meta.inputFieldList.map((f) => [f.name, f]));
-    }
-    for (const method of ((ir.behavior as { methods?: { model: string; name: string; native_function: string }[] } | undefined)?.methods ?? [])) {
-      if (method.model === m.name) {
-        const name = camel(method.name);
-        checkName(m.name, name, meta.fields);
-        if (meta.relations.has(name) || Object.prototype.hasOwnProperty.call(meta.model, name) || Object.prototype.hasOwnProperty.call(meta.Row.prototype, name)) throw new TypeError(`${m.name}.${name}: model method collision`);
-        const fn = (native() as unknown as Record<string, (value: string) => unknown>)[method.native_function];
-        if (typeof fn !== "function") throw new TypeError(`${m.name}.${name}: missing native method; rebuild`);
-        Object.defineProperty(meta.model, name, { value: (value: string) => call(() => fn(value)), enumerable: true });
-      }
     }
     const ids = members[m.name];
     if (ids?.length) applyExtensions(meta, ids, extensions, packaged, hostQuerySetMember);

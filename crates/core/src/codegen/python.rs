@@ -380,10 +380,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         let methods = if model_methods.contains_key(name.as_str()) { format!("_{name}Methods, ") } else { String::new() };
         let bases = type_model_bases(type_models, name);
         writeln!(body, "class {name}({instances}{methods}{}):", if bases == "Model" { bases } else { format!("{bases}, Model") }).unwrap();
-        for method in ir.behavior.methods.iter().filter(|method| method.model == *name) {
-            let output = if method.output.is_some() { "str" } else { "None" };
-            writeln!(body, "    @staticmethod\n    def {}(value: str) -> {output}: ...", method.name).unwrap();
-        }
         for a in &m.field_adapters {
             let Some((_, u)) = adapters.of(&a.adapter) else { continue };
             for member in &u.runtime.members {

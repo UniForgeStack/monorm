@@ -12,14 +12,6 @@ pub struct Resolved {
 /// The DSL type names that no attribute can own: the scalar types and `Unsupported`.
 pub const RESERVED_TYPES: [&str; 9] = ["BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Unsupported"];
 
-/// Reject source injection in metadata before emitting Rust paths.
-pub fn rust_path(path: &str) -> Result<(), String> {
-    if path.split("::").any(|part| {
-        part.is_empty() || !part.bytes().enumerate().all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
-    }) { return Err(format!("invalid Rust export path {path:?}")); }
-    Ok(())
-}
-
 /// `check_language` validates one language section; the build owns its sources.
 pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, &str, &LanguageSection) -> Result<(), String>) -> Result<Resolved, String> {
     manifests.sort_by(|a, b| a.id.cmp(&b.id));
@@ -31,11 +23,7 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
     let mut effects: BTreeMap<&str, &str> = BTreeMap::new();
     for m in &manifests {
         m.check_contracts()?;
-        match (m.is_dynamic(), &m.library) {
-            (true, None) => return Err(format!("{}: a manifest with `abi` needs `library`, the file name of the native library", m.id)),
-            (false, Some(_)) => return Err(format!("{}: `library` needs `abi`", m.id)),
-            _ => {}
-        }
+        if m.library.is_none() { return Err(format!("{}: a manifest needs `library`, the file name of the native library", m.id)); }
         let sections: Vec<_> = m.language_sections().collect();
         if !sections.is_empty() && m.language_contract != Some(LANGUAGE_CONTRACT) {
             return Err(format!("{}: incompatible language contract; rebuild", m.id));
@@ -79,11 +67,6 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             if !exports.insert(&e.id) { return Err(format!("duplicate export {}", e.id)); }
         }
         for p in &m.passes {
-            match (&p.rust, m.is_dynamic()) {
-                (Some(rust), false) => rust_path(rust)?,
-                (None, false) => return Err(format!("{}: pass {} has no `rust` path", m.id, p.id)),
-                (_, true) => {}
-            }
             if passes.insert(p.id.clone(), p.clone()).is_some() { return Err(format!("duplicate pass {}", p.id)); }
             for effect in &p.effects {
                 for (existing, owner) in &effects {
@@ -122,23 +105,13 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
     Ok(Resolved { manifests, passes: ordered })
 }
 
-/// A library exports typed hooks (`point`), and a compiled extension exports string functions (`rust`, `kind`).
+/// A library exports typed hooks, each at a `point` from 1 to 7.
 fn check_export(m: &Manifest, e: &Export) -> Result<(), String> {
     let id = &e.id;
-    if m.is_dynamic() {
-        if e.rust.is_some() || e.kind.is_some() {
-            return Err(format!("{}: export {id} of a library has no `rust` or `kind`; it takes a `point`", m.id));
-        }
-        let point = e.point.ok_or_else(|| format!("{}: export {id} needs a `point` from 1 to 7", m.id))?;
-        if !(1..=7).contains(&point) { return Err(format!("{}: export {id} has point {point}; use 1 to 7", m.id)); }
-        if matches!(point, 1 | 2) && e.input.is_none() { return Err(format!("{}: export {id} at point {point} needs an `input` type", m.id)); }
-        return Ok(());
-    }
-    if e.point.is_some() { return Err(format!("{}: export {id} has a `point`, and a compiled extension has no hooks; use `rust` and `kind`", m.id)); }
-    let (Some(rust), Some(_), Some(_)) = (&e.rust, e.kind, e.input) else {
-        return Err(format!("{}: export {id} needs `rust`, `kind` and `input`", m.id));
-    };
-    rust_path(rust)
+    let point = e.point.ok_or_else(|| format!("{}: export {id} needs a `point` from 1 to 7", m.id))?;
+    if !(1..=7).contains(&point) { return Err(format!("{}: export {id} has point {point}; use 1 to 7", m.id)); }
+    if matches!(point, 1 | 2) && e.input.is_none() { return Err(format!("{}: export {id} at point {point} needs an `input` type", m.id)); }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -163,8 +136,6 @@ mod tests {
         assert!(resolve_all(vec![library(serde_json::json!({"python": section}))]).unwrap_err().contains("incompatible language contract"));
         assert!(resolve_all(vec![library(serde_json::json!({"python": section, "language_contract": LANGUAGE_CONTRACT}))]).is_ok());
         let export = |value: serde_json::Value| resolve_all(vec![library(serde_json::json!({"exports": [value]}))]);
-        let error = export(serde_json::json!({"id": "acme.lib.x", "rust": "crate::x", "kind": "string_validator", "input": "string"})).unwrap_err();
-        assert!(error.contains("takes a `point`"), "{error}");
         assert!(export(serde_json::json!({"id": "acme.lib.x", "input": "string"})).unwrap_err().contains("needs a `point`"));
         assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 8, "input": "string"})).unwrap_err().contains("use 1 to 7"));
         assert!(export(serde_json::json!({"id": "acme.lib.x", "point": 2})).unwrap_err().contains("needs an `input` type"));
@@ -176,7 +147,7 @@ mod tests {
     fn an_attribute_owns_a_field_type_once_and_only_on_a_field() {
         let owner = |id: &str, attribute: serde_json::Value| -> Manifest {
             serde_json::from_value(serde_json::json!({
-                "id": id, "version": "1.0.0", "schema_contract": "5.0", "host_contract": "1.0", "languages": [], "databases": [],
+                "id": id, "version": "1.0.0", "schema_contract": "5.0", "abi": "0.2", "library": "lib", "languages": [], "databases": [],
                 "attributes": [attribute],
             })).unwrap()
         };
@@ -206,14 +177,25 @@ mod tests {
     }
 
     #[test]
-    fn a_compiled_manifest_keeps_the_string_form() {
-        let compiled = |export: serde_json::Value| -> Manifest {
-            serde_json::from_value(serde_json::json!({"id": "acme.c", "version": "1.0.0", "schema_contract": "5.0", "host_contract": "1.0", "languages": [], "databases": [], "exports": [export]})).unwrap()
+    fn a_manifest_of_the_removed_static_path_fails_and_names_the_field() {
+        let parse = |extra: serde_json::Value| -> Result<Manifest, String> {
+            let mut value = serde_json::json!({"id": "acme.old", "version": "1.0.0", "schema_contract": "5.0", "languages": [], "databases": []});
+            value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(value).map_err(|e| e.to_string())
         };
-        let valid = serde_json::json!({"id": "acme.c.x", "rust": "crate::x", "kind": "string_validator", "input": "string"});
-        assert!(resolve_all(vec![compiled(valid)]).is_ok());
-        let error = resolve_all(vec![compiled(serde_json::json!({"id": "acme.c.x", "point": 2, "input": "string"}))]).unwrap_err();
-        assert!(error.contains("has no hooks"), "{error}");
-        assert!(resolve_all(vec![compiled(serde_json::json!({"id": "acme.c.x", "kind": "string_validator", "input": "string"}))]).unwrap_err().contains("needs `rust`"));
+        for field in ["host_contract", "requires"] {
+            let error = parse(serde_json::json!({field: "x"})).unwrap_err();
+            assert!(error.contains(&format!("unknown field `{field}`")), "{error}");
+        }
+        for field in ["rust", "kind"] {
+            let export = serde_json::json!({"id": "acme.old.x", "point": 2, "input": "string", field: "x"});
+            let error = parse(serde_json::json!({"abi": "0.2", "library": "lib", "exports": [export]})).unwrap_err();
+            assert!(error.contains(&format!("unknown field `{field}`")), "{error}");
+        }
+        let pass = serde_json::json!({"id": "acme.old.p", "phase": "declaration", "rust": "x"});
+        let error = parse(serde_json::json!({"abi": "0.2", "library": "lib", "passes": [pass]})).unwrap_err();
+        assert!(error.contains("unknown field `rust`"), "{error}");
+        let error = resolve_all(vec![parse(serde_json::json!({})).unwrap()]).unwrap_err();
+        assert!(error.contains("acme.old: a manifest needs `abi`"), "{error}");
     }
 }

@@ -61,4 +61,4 @@ await Manager.objects.filter(Manager.salary.eq(20)).update({ level: 4 });
 - `update_many` on a composed model is rejected.
 - Relation links, `outer()` and `distinct(on=...)` on inherited columns are not supported.
 - Ordinary (not composed) model writes reject inherited storage.
-- The executor is `orm_engine::multi_table`; [build-time-extensions.md](../contracts/build-time-extensions.md#logical-fields-and-physical-storage) describes the storage contract.
+- The executor is `orm_engine::multi_table`; [optional-packaging.md](../contracts/optional-packaging.md#logical-fields-and-physical-storage) describes the storage contract.

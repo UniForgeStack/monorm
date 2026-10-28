@@ -1,4 +1,4 @@
-"""The native artifact's capabilities and extension ids."""
+"""The native artifact's capabilities and the installed extension ids."""
 
 import json
 
@@ -11,11 +11,11 @@ def artifact_capabilities() -> list[str]:
 
 
 def has_extension(*ids: str) -> bool:
-    """True when the native artifact or an installed package contains every named extension, such as `orm.file-storage`.
+    """True when an installed package contains every named extension, such as `orm.file-storage`.
 
     A missing `orm.timestamps`, `orm.soft-delete`, `orm.locking`, `orm.inherit`, `orm.query-defaults`, `orm.generic`, `orm.proxy`, `orm.composition` or `orm.file-storage` package fails with an assert.
     """
-    extensions = {**json.loads(_native.native_artifact())["extensions"], **resolve_extensions()}
+    extensions = resolve_extensions()
     for ident in ids:
         if ident in {"orm.timestamps", "orm.soft-delete", "orm.locking", "orm.inherit", "orm.query-defaults", "orm.generic", "orm.proxy", "orm.composition", "orm.file-storage"}:
             assert ident in extensions, f"install the {ident} package with scripts/install-extension-packages.sh"

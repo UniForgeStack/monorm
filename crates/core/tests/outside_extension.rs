@@ -1,7 +1,7 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
 use orm_contracts::abi::{Arg, Context, Value};
-use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, HOST_CONTRACT_VERSION, SCHEMA_CONTRACT_VERSION};
+use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, SCHEMA_CONTRACT_VERSION};
 use orm_core::dsl::{compile_file_with, Installed};
 use orm_core::loader::{Library, Plan};
 use orm_core::ir::{ClientDefaultIr, ColType, FieldIr, SchemaIr};
@@ -99,10 +99,9 @@ fn compile(name: &str, schema: &str, extensions: &[(&str, &Path)]) -> Result<Sch
     compile_file_with(&path, &installed)
 }
 
-/// The plan of the package at `manifest` with the passes of the artifact.
+/// The plan of the package at `manifest` with the manifests of the artifact.
 fn plan(manifest: &Path) -> Plan {
-    let artifact = orm_core::behavior::artifact();
-    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests(), &artifact.passes).unwrap().unwrap()
+    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests()).unwrap().unwrap()
 }
 
 #[test]
@@ -258,13 +257,12 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     let ordered = manifest.with_file_name("ordered.toml");
     fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replacen("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n", 1)).unwrap();
     let compiled: Manifest = toml::from_str(&format!(
-        "id = \"acme.static\"\nversion = \"1.0.0\"\nhost_contract = \"{HOST_CONTRACT_VERSION}\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
+        "id = \"acme.static\"\nversion = \"1.0.0\"\nabi = \"0.2\"\nlibrary = \"acme_static\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
          languages = [\"python\"]\ndatabases = [\"postgres\"]\n\
-         [[passes]]\nid = \"acme.static.prep\"\nphase = \"declaration\"\nrust = \"acme_static::prep\"\neffects = [\"models.static_prep\"]\n\
-         [[passes]]\nid = \"acme.static.late\"\nphase = \"declaration\"\nrust = \"acme_static::late\"\nafter = [\"acme.outside.tag\"]\neffects = [\"models.static_late\"]\n"
+         [[passes]]\nid = \"acme.static.prep\"\nphase = \"declaration\"\neffects = [\"models.static_prep\"]\n\
+         [[passes]]\nid = \"acme.static.late\"\nphase = \"declaration\"\nafter = [\"acme.outside.tag\"]\neffects = [\"models.static_late\"]\n"
     )).unwrap();
-    let order = ["acme.static.prep".to_owned(), "acme.static.late".to_owned()];
-    let plan = orm_core::loader::plan(&[(ID.to_owned(), ordered)], &["outside".to_owned()].into(), &[], &[compiled], &order).unwrap().unwrap();
+    let plan = orm_core::loader::plan(&[(ID.to_owned(), ordered)], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap();
 
     // Each compiled pass records whether the library pass has run before it.
     let seen = RefCell::new(vec![]);
@@ -277,9 +275,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
 
     assert_eq!(*seen.borrow(), [("acme.static.prep".to_owned(), false), ("acme.static.late".to_owned(), true)]);
     let behavior = &ir.behavior;
-    assert_eq!(behavior.completed_passes, order);
     assert_eq!(behavior.packages[ID].passes, PASSES);
-    assert_eq!(behavior.extensions.get("acme.static").map(String::as_str), Some("1.0.0"));
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));
 }
@@ -420,11 +416,11 @@ fn a_manifest_that_declares_exports_for_a_library_of_slice_one_names_the_missing
 
 fn bind_plan(manifest: &Path) -> Plan {
     let compiled: Manifest = toml::from_str(&format!(
-        "id = \"acme.static\"\nversion = \"1.0.0\"\nhost_contract = \"{HOST_CONTRACT_VERSION}\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
+        "id = \"acme.static\"\nversion = \"1.0.0\"\nabi = \"0.2\"\nlibrary = \"acme_static\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
          languages = [\"python\"]\ndatabases = [\"postgres\"]\n\
-         [[passes]]\nid = \"acme.static.bind\"\nphase = \"declaration\"\nrust = \"acme_static::bind\"\neffects = [\"models.static_bind\"]\n"
+         [[passes]]\nid = \"acme.static.bind\"\nphase = \"declaration\"\neffects = [\"models.static_bind\"]\n"
     )).unwrap();
-    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], &[compiled], &["acme.static.bind".to_owned()]).unwrap().unwrap()
+    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap()
 }
 
 /// A hook of the library at `point` on the field `field` of `Post`.
@@ -754,9 +750,6 @@ fn lower_expressions(seed: SchemaIr) -> Result<SchemaIr, String> {
     };
     let mut ir = unlowered();
     plan.lower(&mut ir, None, &run)?;
-    // The test binary has no compiled `acme.static` extension for `define()` to find.
-    ir.behavior.extensions.clear();
-    ir.behavior.completed_passes.clear();
     Ok(ir)
 }
 

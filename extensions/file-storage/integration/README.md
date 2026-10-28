@@ -6,14 +6,12 @@ codec v1, `Upload`, the `Registry` (storage name to OpenDAL operator), `max_size
 streaming and the upload error with the candidate reference. They do not import ORM
 internals or install a runtime native callback registry. They use only the
 public async field adapter API: Python `orm.adapters.register_field_adapter`
-and TypeScript `registerFieldAdapter` from `orm`. The extension requires the
-`async-field-adapter.v1` capability.
+and TypeScript `registerFieldAdapter` from `orm`.
 
 `install_model` / `installModel` register one `FileAdapter` per file field: its
 `validate` checks an `Upload` or a `Reference` without I/O, `prepare` uploads, and
 `decode` turns a loaded field into a `Reference`. Annotated file fields need the
-installed package: it holds the extension library and these helpers (the manifest requires
-`async-field-adapter.v1`).
+installed package: it holds the extension library and these helpers.
 
 Declare a file field (see also [docs/extensions/file-storage.md](../../../docs/extensions/file-storage.md)):
 

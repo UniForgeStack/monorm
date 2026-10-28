@@ -23,29 +23,6 @@ fn build_artifact() -> Artifact {
 /// The manifests compiled into this artifact; none.
 pub fn manifests() -> &'static [Manifest] { &[] }
 
-/// The language code of each extension of this artifact for `language`: dependencies first,
-/// so a later extension's overrides wrap the earlier ones.
-pub fn extension_code(language: &str) -> Vec<crate::codegen::ExtensionCode> {
-    let manifests = manifests();
-    let mut order: Vec<&Manifest> = Vec::new();
-    fn visit<'a>(all: &'a [Manifest], m: &'a Manifest, order: &mut Vec<&'a Manifest>) {
-        if order.iter().any(|o| o.id == m.id) { return; }
-        for dep in m.dependencies.keys() {
-            if let Some(d) = all.iter().find(|o| &o.id == dep) { visit(all, d, order); }
-        }
-        order.push(m);
-    }
-    let mut sorted: Vec<&Manifest> = manifests.iter().collect();
-    sorted.sort_by(|a, b| a.id.cmp(&b.id));
-    for m in sorted { visit(manifests, m, &mut order); }
-    let sources: &[(&str, &str, &str, &str)] = &[];
-    order.into_iter().filter_map(|m| {
-        let members = artifact().language_members.iter().find(|r| r.extension == m.id && r.language == language)?.clone();
-        let files = sources.iter().filter(|(e, l, _, _)| *e == m.id && *l == language).map(|(_, _, f, c)| (f.to_string(), c.to_string())).collect();
-        Some(crate::codegen::ExtensionCode { runtime_module: None, members, attributes: m.attributes.iter().map(|a| a.name.clone()).collect(), files })
-    }).collect()
-}
-
 pub fn prepare(ir: &mut crate::ir::SchemaIr, language: Option<&str>) -> Result<(), String> {
     prepare_with(ir, language, None)
 }
