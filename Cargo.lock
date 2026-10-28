@@ -839,6 +839,7 @@ dependencies = [
  "chrono",
  "libloading",
  "orm-contracts",
+ "orm-core",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -868,18 +869,6 @@ dependencies = [
  "tokio-postgres-rustls",
  "uuid",
  "webpki-roots",
-]
-
-[[package]]
-name = "orm-extension-build"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "toml",
 ]
 
 [[package]]

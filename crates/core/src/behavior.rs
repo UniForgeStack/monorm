@@ -1,9 +1,6 @@
 //! Behavioral extension setup. Database catalogs remain in `ext`.
 pub use orm_contracts::extension::*;
 
-#[cfg(feature = "composition")]
-mod composition { include!(env!("ORM_CORE_COMPOSITION")); }
-
 /// Every schema preparation checks the artifact; build it once per process.
 pub fn artifact() -> &'static Artifact {
     static ARTIFACT: std::sync::OnceLock<Artifact> = std::sync::OnceLock::new();
@@ -11,9 +8,6 @@ pub fn artifact() -> &'static Artifact {
 }
 
 fn build_artifact() -> Artifact {
-    #[cfg(feature = "composition")]
-    let mut artifact = composition::artifact();
-    #[cfg(not(feature = "composition"))]
     let mut artifact = Artifact::default();
     let compiled = [
         (cfg!(feature = "reference-loading"), "reference-loading"),
@@ -26,13 +20,8 @@ fn build_artifact() -> Artifact {
     artifact
 }
 
-/// The manifests compiled into this artifact; none without composition.
-pub fn manifests() -> &'static [Manifest] {
-    #[cfg(feature = "composition")]
-    { composition::manifests() }
-    #[cfg(not(feature = "composition"))]
-    { &[] }
-}
+/// The manifests compiled into this artifact; none.
+pub fn manifests() -> &'static [Manifest] { &[] }
 
 /// The language code of each extension of this artifact for `language`: dependencies first,
 /// so a later extension's overrides wrap the earlier ones.
@@ -49,9 +38,6 @@ pub fn extension_code(language: &str) -> Vec<crate::codegen::ExtensionCode> {
     let mut sorted: Vec<&Manifest> = manifests.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
     for m in sorted { visit(manifests, m, &mut order); }
-    #[cfg(feature = "composition")]
-    let sources = composition::language_sources();
-    #[cfg(not(feature = "composition"))]
     let sources: &[(&str, &str, &str, &str)] = &[];
     order.into_iter().filter_map(|m| {
         let members = artifact().language_members.iter().find(|r| r.extension == m.id && r.language == language)?.clone();
@@ -70,13 +56,8 @@ pub fn prepare_with(ir: &mut crate::ir::SchemaIr, language: Option<&str>, plan: 
     if ir.behavior.storage.is_none() && (!ir.behavior.field_storage.is_empty() || !ir.behavior.owner_links.is_empty()) { return Err("storage ownership contributions require an explicit physical schema".into()); }
     if let Some(plan) = plan {
         plan.lower(ir, language, &run_static_pass)?;
-        #[cfg(feature = "composition")]
-        { composition::bind(ir)?; }
     } else {
-        #[cfg(feature = "composition")]
-        { composition::prepare(ir, language)?; }
-        #[cfg(not(feature = "composition"))]
-        { validate_declarations(ir, &[], language)?; }
+        validate_declarations(ir, &[], language)?;
     }
     validate_requirements(ir, manifests(), language)?;
     check_requirements(ir, artifact())
@@ -84,11 +65,6 @@ pub fn prepare_with(ir: &mut crate::ir::SchemaIr, language: Option<&str>, plan: 
 
 /// Runs the compiled pass `id`; false when this artifact has no such pass.
 fn run_static_pass(ir: &mut crate::ir::SchemaIr, id: &str) -> Result<bool, String> {
-    #[cfg(feature = "composition")]
-    { composition::run_pass(ir, id) }
-    #[cfg(not(feature = "composition"))]
-    { let _ = (ir, id); Ok(false) }
+    let _ = (ir, id);
+    Ok(false)
 }
-
-#[cfg(feature = "composition")]
-pub use composition::{bind, NativeModel};

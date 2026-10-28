@@ -340,7 +340,7 @@ EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "nested"
 
 
 def test_a_re_prepared_registry_keeps_its_nested_types(monkeypatch):
-    monkeypatch.setattr("orm.model._REPREPARE", True)  # what a composition artifact does
+    monkeypatch.setattr("orm.model._REPREPARE", True)  # what a schema-transformations artifact does
     registry = orm.Registry()
     orm.loads(SCHEMA, registry=registry)
     assert [t["name"] for t in registry.ir()["types"]] == ["Geo", "Address"]

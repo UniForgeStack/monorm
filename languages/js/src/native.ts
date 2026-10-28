@@ -232,7 +232,7 @@ function validate(addon: Addon, profile?: string): void {
   }
   if (profile) {
     const tooling = profile === "tooling";
-    const capabilities = { cli: tooling, "generate-python": tooling, "generate-typescript": tooling, composition: false };
+    const capabilities = { cli: tooling, "generate-python": tooling, "generate-typescript": tooling };
     if (meta.profile !== profile || meta.adapters.length !== 0 || JSON.stringify(meta.backends) !== JSON.stringify(profiles[profile]) ||
         Object.keys(capabilities).some(key => meta.capabilities[key] !== capabilities[key as keyof typeof capabilities]) ||
         Object.keys(meta.capabilities).length !== Object.keys(capabilities).length) {

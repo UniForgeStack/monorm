@@ -4,13 +4,9 @@
     python examples/blog/demo.py postgres://postgres:postgres@localhost/orm_test
 
 The core section runs on every build. Each extension section runs when the native
-library has that extension, and prints how to get it otherwise. Build the library with
-all extensions (see docs/contracts/build-time-extensions.md, "Select feature extensions"):
-
-    scripts/feature-check.sh all     # or the steps in that doc; then:
-    PYTHONPATH=target/feature-check/all/py ORM_PROFILE=custom python examples/blog/demo.py sqlite://:memory:
-
-The file-storage section also needs the `orm-file-storage` package (`scripts/install-extension-packages.sh`).
+library has that extension, and prints how to get it otherwise. Install the extension packages
+with `scripts/install-extension-packages.sh`.
+The file-storage section also needs the `orm-file-storage` package.
 Each section creates its demo_* tables and drops them at the end.
 """
 

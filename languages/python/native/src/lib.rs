@@ -7,8 +7,6 @@
 mod build;
 mod convert;
 mod errors;
-#[cfg(feature = "composition")]
-mod methods { include!(env!("ORM_PYTHON_METHODS")); }
 
 #[cfg(any(
     all(feature = "profile-postgres", feature = "profile-sqlite"),
@@ -951,8 +949,6 @@ fn outcome_to_py(
     db: Option<Py<PyAny>>,
     row_cls: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "composition")]
-    let out = orm_engine::behavior::results(&classes.native, out).map_err(db_err)?;
     orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
     let db = db.map(|d| d.into_bound(py));
     let b = Builder::new(py, classes, db.as_ref());
@@ -992,8 +988,6 @@ fn key_rows(
 
 /// Attaches the rows of a [`Outcome::Prefetched`] to `parents`.
 fn prefetched_to_py(py: Python<'_>, out: Outcome, classes: &Classes, db: Option<Py<PyAny>>, parents: Vec<Py<PyAny>>) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "composition")]
-    let out = orm_engine::behavior::results(&classes.native, out).map_err(db_err)?;
     orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
     let Outcome::Prefetched { parents: rows, prefetched } = out else {
         return Err(query_err("prefetch gave no prefetched rows".into()));
@@ -1153,8 +1147,6 @@ fn connect<'py>(
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
-    #[cfg(feature = "composition")]
-    methods::register(m)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_schema, m)?)?;
     m.add_function(wrap_pyfunction!(native_artifact, m)?)?;
@@ -1205,7 +1197,6 @@ fn profile_metadata() -> PyResult<String> {
         "build": serde_json::from_str::<serde_json::Value>(env!("ORM_BUILD_RECORD")).map_err(|e| schema_err(e.to_string()))?,
         "capabilities": { "cli": cfg!(feature = "cli"),
             "generate-python": cfg!(feature = "generate-python"),
-            "generate-typescript": cfg!(feature = "generate-typescript"),
-            "composition": cfg!(feature = "composition") }
+            "generate-typescript": cfg!(feature = "generate-typescript") }
     })).map_err(|e| schema_err(e.to_string()))
 }

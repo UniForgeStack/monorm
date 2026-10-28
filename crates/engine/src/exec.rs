@@ -536,13 +536,6 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
     }
     let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);
-    #[cfg(feature = "composition")]
-    {
-        crate::ownership::require_local_write(m)?;
-        if !matches!(m.native, orm_core::behavior::NativeModel::None) {
-            return Err(Error::query(format!("insert_many(copy=True): {} has native write behavior; use insert_many()", m.ir.name)));
-        }
-    }
     if m.hooks.as_deref().is_some_and(orm_core::hooks::HookPlan::changes_set) {
         return Err(Error::query(format!("insert_many(copy=True): {} has change-set hooks; use insert_many()", m.ir.name)));
     }

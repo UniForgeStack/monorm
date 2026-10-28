@@ -33,11 +33,10 @@ blake2 = "0.10"
 
 [dev-dependencies]
 # The tests generate models through the default code generators.
-orm-core = { path = "../core" }
+orm-core = { path = "../core", features = ["testing"] }
 tokio = { version = "1", features = ["time"] }
 
 [features]
 default = ["postgres", "sqlite"]
 postgres = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:tokio-postgres-rustls", "dep:rustls", "dep:webpki-roots", "dep:bytes", "sea-query/backend-postgres"]
 sqlite = ["dep:rusqlite", "sea-query/backend-sqlite"]
-composition = ["orm-core/composition"]

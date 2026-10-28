@@ -77,10 +77,9 @@ export async function f(): Promise<string> {
 }
 ";
 
-// A feature-check artifact builds under the repo's `target/` with a partial copy, so find the real root by a file that only it has.
 fn host() -> PathBuf {
     let start = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
-    start.ancestors().find(|d| d.join("crates/extension-build/tests/fixtures").is_dir()).expect("repo root").to_path_buf()
+    start.ancestors().find(|d| d.join("Cargo.lock").is_file()).expect("repo root").to_path_buf()
 }
 
 fn project(language: &str, queries: &str) -> (PathBuf, orm_core::ir::SchemaIr, orm_core::schema::Schema, Options) {

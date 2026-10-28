@@ -55,8 +55,6 @@ fn decoders(py: Python<'_>, cls: &Bound<'_, PyAny>) -> PyResult<Vec<Decoder>> {
 /// enum by stored value.
 pub struct Classes {
     pub checks: Vec<Option<orm_core::result_check::PreparedChecks>>,
-    #[cfg(feature = "composition")]
-    pub native: Vec<orm_core::behavior::NativeModel>,
     models: Vec<Option<ModelClass>>,
     enums: Vec<Option<Py<PyDict>>>,
 }
@@ -64,8 +62,7 @@ pub struct Classes {
 impl Classes {
     pub fn empty() -> Self {
         Classes { models: vec![], enums: vec![],
-            checks: vec![],
-            #[cfg(feature = "composition")] native: vec![] }
+            checks: vec![] }
     }
 
     /// `classes` maps model names to their classes, and enum names to their enum
@@ -97,8 +94,7 @@ impl Classes {
             });
         }
         Ok(Classes { models: out, enums,
-            checks: schema.result_checks.clone(),
-            #[cfg(feature = "composition")] native: schema.models.iter().map(|m| m.native).collect() })
+            checks: schema.result_checks.clone() })
     }
 
     fn get(&self, model: usize) -> PyResult<&ModelClass> {

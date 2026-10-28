@@ -7,7 +7,7 @@
 # (check, then timing), Bun, report. Each runner does the equality check before it times anything, waits for
 # a quiet machine before every round, and rotates the contender order every round.
 # The Rust slot runs only when bench/compare/rust exists, and no runner for it exists yet, so it is skipped.
-# Builds go to bench/compare/build/ (git-ignored): a venv, a Node addon and the `all` extension artifact.
+# Builds go to bench/compare/build/ (git-ignored): a venv, a Node addon and the `all` extension artifact (the tooling profile plus the extension packages).
 # The default `.venv` and languages/js/orm.node are never touched.
 #
 #   --ignore-load   run although the 1-minute load is above 2 (no wait, no per-round wait). Pipeline smoke only: the numbers are not valid.
@@ -104,24 +104,17 @@ build_node() {
   (cd "$HERE/js" && npm install --no-audit --no-fund -s && node make-prisma-schema.mjs && npx prisma generate >/dev/null)
 }
 
-# The `all` artifact, as scripts/feature-check.sh builds it, in release mode.
+# The `all` artifact: the tooling profile and the installed first-party extension packages, in release mode.
 build_all() {
-  local deps='"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}'
-  deps+=',"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}'
-  rm -rf "$ALL" && mkdir -p "$ALL/py/orm_native_custom"
-  printf '{"host":"%s","output":"%s/build","prepare_only":true,"bindings":["python","node"],"dependencies":{%s}}\n' \
-    "$ROOT" "$ALL" "$deps" >"$ALL/config.json"
-  # The extension build type-checks its generated Python with mypy from the PATH.
-  (export PATH=$VENV/bin:$PATH; cd "$ROOT" && cargo run -q --release -p orm-extension-build -- "$ALL/config.json")
-  (
-    export ORM_CORE_COMPOSITION=$ALL/build/composition.rs ORM_ENGINE_COMPOSITION=$ALL/build/engine-composition.rs
-    export ORM_PYTHON_METHODS=$ALL/build/python-methods.rs ORM_NODE_METHODS=$ALL/build/node-methods.rs
-    cd "$ALL/build" && cargo build -q --release -p orm-python -p orm-node
-  )
-  local ext
-  ext=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
-  cp "$ROOT/languages/python/packaging/custom/orm_native_custom/__init__.py" "$ALL/py/orm_native_custom/"
-  cp "$CARGO_TARGET_DIR/release/lib_native.$DYLIB" "$ALL/py/orm_native_custom/_native$ext"
+  local venv=$ALL/venv
+  rm -rf "$ALL" && mkdir -p "$ALL"
+  uv venv -q -p "$PYTHON" "$venv"
+  uv pip install -q --python "$venv/bin/python" maturin==1.15.0 "psycopg[binary]==3.3.6" psycopg-pool==3.3.3 asgiref==3.12.1
+  rm -rf "$ALL/wheels" && mkdir -p "$ALL/wheels"
+  (cd "$ROOT/languages/python/packaging/tooling" && "$venv/bin/maturin" build --release -q -i "$venv/bin/python" -o "$ALL/wheels")
+  uv pip install -q --python "$venv/bin/python" --no-deps "$ALL"/wheels/orm_native_tooling-*.whl "$ROOT"
+  ORM_PACKAGE_PYTHON=$venv/bin/python "$ROOT/scripts/install-extension-packages.sh"
+  (cd "$ROOT" && cargo build -q --release -p orm-node --no-default-features --features profile-tooling)
   cp "$CARGO_TARGET_DIR/release/liborm_node.$DYLIB" "$ALL/orm.node"
 }
 

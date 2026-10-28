@@ -67,7 +67,6 @@ fn neutral_rules_reject_bad_records() {
     assert!(err(json!({"delete_rewrites": [rewrite("ext-a", "nope")]})).contains("nope"));
 }
 
-#[cfg(feature = "composition")]
 #[test]
 fn a_composed_chain_rejects_every_write_record() {
     let physical = json!([
@@ -100,7 +99,6 @@ fn a_composed_chain_rejects_every_write_record() {
     assert!(err.contains("write record from ext-a on Child.changed is not supported in a multi-table model's ownership chain"), "{err}");
 }
 
-#[cfg(feature = "composition")]
 #[test]
 fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
     let model = |name: &str, table: &str, parent: Option<(&str, &str)>| {
@@ -113,12 +111,17 @@ fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
         m
     };
     // The leaf comes first, so the walk needs two links to reach the root.
-    let models = json!([model("Child", "children", Some(("Parent", "parent"))), model("Parent", "parents", Some(("Grand", "grand"))), model("Grand", "grands", None)]);
+    let physical = json!([model("Child", "children", Some(("Parent", "parent"))), model("Parent", "parents", Some(("Grand", "grand"))), model("Grand", "grands", None)]);
+    let mut logical = physical.clone();
+    for i in [0, 1] {
+        logical[i]["fields"].as_array_mut().unwrap().push(json!({"name": "changed", "column": "changed_at", "type": "date_time"}));
+    }
     let build = |records: Value| {
-        let mut behavior = json!({"schema_contract": SCHEMA_CONTRACT, "storage": {"models": models},
+        let mut behavior = json!({"schema_contract": SCHEMA_CONTRACT, "storage": {"models": physical},
+            "field_storage": [{"model": "Parent", "field": "changed", "owner": "Grand", "column": "changed_at"}, {"model": "Child", "field": "changed", "owner": "Grand", "column": "changed_at"}],
             "owner_links": [{"child": "Parent", "parent": "Grand", "child_key": "id", "parent_key": "id"}, {"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
         behavior.as_object_mut().unwrap().extend(records.as_object().unwrap().clone());
-        Schema::from_ir(serde_json::from_value(json!({"models": models, "behavior": behavior})).unwrap())
+        Schema::from_ir(serde_json::from_value(json!({"models": logical, "behavior": behavior})).unwrap())
     };
     assert!(build(json!({})).is_ok());
     let mut root = assign("changed", "now", json!(["update"]));

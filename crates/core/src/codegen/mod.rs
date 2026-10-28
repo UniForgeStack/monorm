@@ -381,7 +381,7 @@ mod reference_tests {
     #[cfg(feature = "reference-loading")]
     #[test]
     fn legacy_loader_names_are_available_to_fields() {
-        // Declared in the source, so a composition build also captures its physical column.
+        // Declared in the source, so the schema captures its physical column.
         let ir = crate::dsl::compile("model User {\n id Int @id\n posts Post[]\n}\nmodel Post {\n id Int @id\n load_author Int\n author_id Int?\n author User? @relation(fields: [author_id], references: [id])\n}", None).unwrap();
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         assert!(python::generate(&ir, &schema, "schema.prisma").unwrap().stub.contains("load_author: f.Integer"));

@@ -180,4 +180,4 @@ In TypeScript, annotate `this`: `domain(this: AbstractUserData): string`.
 ## Checks
 
 `crates/core/tests/abstract_typing.rs` runs mypy --strict, pyright and `tsc --strict` on the generated types with the classes above.
-`scripts/feature-check.sh` runs `extensions/inherit/tests/public/python.py` and `node.mjs` on every artifact, because it installs the package in each environment.
+`scripts/check-extension-packages.sh` runs `extensions/inherit/tests/public/python.py` and `node.mjs` in fresh consumers that install the package.

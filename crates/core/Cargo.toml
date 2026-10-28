@@ -24,5 +24,9 @@ default = ["generate-python", "generate-typescript"]
 generate-rust = []
 generate-python = []
 generate-typescript = []
-composition = []
 reference-loading = []
+# `HookRef::in_process`: a hook of the test binary, for tests of the planner and the executor.
+testing = []
+
+[dev-dependencies]
+orm-core = { path = ".", features = ["testing"] }
