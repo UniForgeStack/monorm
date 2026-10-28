@@ -41,6 +41,8 @@ python extensions/query-defaults/tests/public/python.py
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
 cargo package -p monorm-contracts      # the crate that extension authors get from crates.io
+python3 scripts/rename/rename.py --check   # no old project name in the tree
+python3 -m unittest scripts/tests/test_package_metadata.py   # publish metadata of every package
 ```
 
 The commands install the thin `monorm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.
