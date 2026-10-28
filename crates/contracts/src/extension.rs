@@ -651,7 +651,7 @@ pub struct Export {
     pub output: Option<ColType>,
 }
 
-/// The static form of an export, which `orm-extension-build` compiles in.
+/// The static form of an export.
 #[derive(Clone, Copy, Debug)]
 pub struct StringExport<'a> {
     pub rust: &'a str,

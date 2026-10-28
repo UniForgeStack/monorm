@@ -1,5 +1,7 @@
 # Extension refactor performance comparison
 
+The static build that this study measures is removed; the study stays as a record.
+
 This compares the original checkout at `3a710cab6169752b07834021cacc384aa803a368`
 with the interim contracts extraction and eager, atomic definition refactor.
 The complete extension framework is still being implemented. These measurements

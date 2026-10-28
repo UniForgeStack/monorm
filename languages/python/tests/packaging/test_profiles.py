@@ -101,62 +101,6 @@ def test_tooling_profile_is_not_another_profile():
     assert "full" not in profiles.PROFILES
 
 
-def test_custom_profile_validates_actual_capabilities():
-    module = artifact(
-        "sqlite",
-        profile="custom",
-        capabilities={"cli": False, "reference-loading": True},
-        adapters=["reference-loading"],
-    )
-    profiles.validate(module, "custom")
-    module.profile_metadata = lambda: json.dumps(
-        {
-            "abi": 1,
-            "version": "0.1.0",
-            "language": "python",
-            "profile": "custom",
-            "build": BUILD,
-            "backends": ["sqlite"],
-            "capabilities": {"reference-loading": False},
-            "adapters": ["reference-loading"],
-        }
-    )
-    with pytest.raises(ImportError, match="incompatible custom"):
-        profiles.validate(module, "custom")
-
-
-@pytest.mark.parametrize(
-    "metadata",
-    [
-        None,
-        [],
-        {
-            "abi": 1,
-            "version": "0.1.0",
-            "language": "python",
-            "profile": "custom",
-            "backends": [["sqlite"]],
-            "capabilities": {},
-            "adapters": [],
-        },
-        {
-            "abi": 1,
-            "version": "0.1.0",
-            "language": "python",
-            "profile": "custom",
-            "backends": ["sqlite"],
-            "capabilities": {"reference-loading": True},
-            "adapters": ["reference-loading", "reference-loading"],
-        },
-    ],
-)
-def test_malformed_custom_metadata_has_compatibility_diagnostic(metadata):
-    module = ModuleType("fake_engine")
-    module.profile_metadata = lambda: json.dumps(metadata)
-    with pytest.raises(ImportError, match="incompatible"):
-        profiles.validate(module, "custom")
-
-
 def test_installed_artifact_embeds_its_build_record():
     import orm  # noqa: F401  (selects and validates the installed profile)
     from orm import _native

@@ -1,0 +1,68 @@
+name: Checks
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+      ORM_RUST_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost/orm_test_rs
+      PYTHON: python3.14
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create isolated Rust test database
+        run: docker exec ${{ job.services.postgres.id }} createdb -U postgres orm_test_rs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: checks-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python -e '.[dev]' pytest mypy pyright maturin
+      - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: scripts/install-extension-packages.sh
+      - run: maturin develop
+        working-directory: languages/python/packaging/tooling
+      - run: python -m pytest -q
+      - run: cargo test -q
+      - run: cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-package
+      - run: mypy --strict languages/python/orm && pyright languages/python/orm
+      - run: npm install && npm run build:native && npm test && npm run test:bun && npm run typecheck
+        working-directory: languages/js
+      - run: uv pip install --python .venv/bin/python -e apps/auth/python
+      - run: python -m pytest -q apps/auth/python/tests
+      - run: python extensions/inherit/tests/public/python.py
+      - run: python extensions/query-defaults/tests/public/python.py
+      - run: node ../../extensions/inherit/tests/public/node.mjs
+        working-directory: languages/js
+      - run: node ../../extensions/query-defaults/tests/public/node.mjs
+        working-directory: languages/js
+      - run: npm test && npm run test:bun
+        working-directory: apps/auth/typescript

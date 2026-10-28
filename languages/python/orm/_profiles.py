@@ -13,7 +13,6 @@ PROFILES = {
     "sqlite": ("sqlite",),
     "combined": ("postgres", "sqlite"),
     "tooling": ("postgres", "sqlite"),
-    "custom": (),
 }
 
 
@@ -35,27 +34,6 @@ def validate(module: ModuleType, profile: str) -> None:
         raise ImportError("incompatible orm native artifact; expected profile metadata object")
     if not _build_record(metadata.get("build")):
         raise ImportError("incompatible orm native artifact; rebuild it to embed its build record")
-    if profile == "custom":
-        backends = metadata.get("backends")
-        capabilities = metadata.get("capabilities")
-        adapters = metadata.get("adapters")
-        if (
-            metadata.get("abi") != 1
-            or metadata.get("version") != "0.1.0"
-            or metadata.get("language") != "python"
-            or metadata.get("profile") != "custom"
-            or not isinstance(backends, list)
-            or not backends
-            or any(not isinstance(b, str) or b not in ("postgres", "sqlite") for b in backends)
-            or len(set(backends)) != len(backends)
-            or not isinstance(capabilities, dict)
-            or any(type(v) is not bool for v in capabilities.values())
-            or not isinstance(adapters, list)
-            or any(not isinstance(a, str) or capabilities.get(a) is not True for a in adapters)
-            or len(set(adapters)) != len(adapters)
-        ):
-            raise ImportError("incompatible custom orm native artifact; rebuild for orm 0.1.0 ABI 1")
-        return
     tooling = profile == "tooling"
     expected_capabilities = {
         "cli": tooling,

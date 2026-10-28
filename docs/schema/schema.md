@@ -676,7 +676,7 @@ Behavior (new attributes, proxies, defaults) comes from build-time extensions, b
 ### Build-time extension attributes
 
 A namespaced attribute belongs to a build-time extension crate.
-The artifact must be built with that crate ([build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions));
+The extension package must be installed ([build-time-extensions.md](../contracts/build-time-extensions.md#installable-packages));
 otherwise definition fails with `@<name>: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace @@<prefix>.*, see docs/README.md)`.
 
 | Attribute | Extension | Doc |

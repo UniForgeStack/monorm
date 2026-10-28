@@ -23,7 +23,7 @@ service postgresql start          # the test database (postgres:postgres@localho
 scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
 (cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
-cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-build -p orm-extension-package
+cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-package
 mypy --strict languages/python/orm && pyright languages/python/orm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
@@ -37,26 +37,6 @@ python extensions/query-defaults/tests/public/python.py
 (cd apps/auth/typescript && npm test && npm run test:bun)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 ```
-
-## Feature artifacts
-
-The checks above build no optional feature. `scripts/feature-check.sh` builds one
-artifact (`all`) through `orm-extension-build`;
-the build config names extension crates, never a hand-set `--features`.
-On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
-and inherit public scripts.
-The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy, composition and file-storage packages are installed on every artifact.
-Each artifact also runs the `apps/auth` Python, `npm test` and bun tests.
-CI runs it (`.github/workflows/feature-check.yml`). Run it before you commit a change
-to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code:
-
-```bash
-PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/orm_test \
-  scripts/feature-check.sh            # or name the artifact: scripts/feature-check.sh all
-```
-
-It needs `uv`, `node`, `npm` and `bun`, and writes `target/feature-check/matrix.txt` and `logs/`.
-It does not touch the default `.venv` profile or `languages/js/orm.node`.
 
 Regenerate the example models after changing code generation:
 `cd examples/blog && python -m orm generate`, and for TypeScript

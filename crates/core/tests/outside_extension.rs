@@ -251,7 +251,7 @@ fn unlowered() -> SchemaIr {
 }
 
 // The artifact has one pass before and one pass after the pass of the library, and `after` sets both sides.
-// A compiled pass is a recording closure here: the artifact with the real feature passes is a `feature-check` build.
+// A compiled pass is a recording closure here.
 #[test]
 fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     let manifest = installed("", "0.2");

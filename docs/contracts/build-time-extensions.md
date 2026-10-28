@@ -9,7 +9,6 @@ Catalogs of database types, functions, and indexes stay separate:
 
 `orm-contracts` contains schema IR, dialects and versioned extension contracts.
 It depends on neither bindings nor extension implementations.
-Compiler machinery lives in `orm-extension-build`.
 Native profile types live in `orm_contracts::native`.
 Host contract 1 supports schema transformations, physical schema contributions, scalar string validation/transformation, borrowed string record validation, native string results, and static model methods.
 
@@ -27,107 +26,15 @@ model renames/additions and removal of inherited descriptors require a fresh `de
 Callable Python client field defaults run before native transformations and validation;
 they are not SQL defaults and do not affect other database writers.
 
-## Build configuration
+## Extension selection
 
-Run `cargo run -p orm-extension-build -- path/to/build.json`.
-Paths are relative to the configuration file.
-`output` must be a new directory.
-For example:
-
-```json
-{
-  "host": "../orm",
-  "output": "../compiled-orm",
-  "dependencies": {
-    "rules": {"package": "my-rules", "path": "../my-rules"}
-  },
-  "bindings": ["python", "node"],
-  "specialization": {
-    "schema": "schema.json",
-    "models": [{
-      "model": "User",
-      "fields": [{"field": "username", "transforms": ["app.trim"], "validators": ["app.username"]}],
-      "records": [{"dependencies": ["username"], "export": "app.user"}],
-      "computed": [{"field": "display", "dependency": "username", "export": "app.display"}],
-      "methods": [{"name": "validate_username", "export": "app.username"}]
-    }]
-  }
-}
-```
-
-`offline: true` uses installed Cargo dependencies.
-`prepare_only: true` emits the workspace and composition without building the bindings.
-`inputs` lists extra configuration/resource files that must participate in rebuild detection.
-Declare all selected behavioral extension crates in `dependencies`, including extensions required by another manifest.
-Cargo resolves Rust package versions;
-the frontend checks extension dependency constraints against that resolved selection.
-
-No manifest capability turns on a host Cargo feature.
-The model-composition extension (`orm.composition`, `extensions/model-composition`) has none either.
-The file-storage extension (`orm.file-storage`) has none either: it has no host code and only requires `async-field-adapter.v1`.
-The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
-The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
-The query-defaults extension (`orm.query-defaults`) has none either: its pass writes only the neutral `read_defaults` record.
-These nine are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
-`scripts/feature-check.sh` builds one artifact (`all`), installs the nine packages in every environment, and runs every suite on each.
-
-Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
-For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
-Each supplied entry replaces that binding's defaults with the listed features plus required static composition;
-an omitted entry preserves its original defaults.
-Unknown features, `default`, and entries for unselected bindings fail before the native build.
-Use a host with the optional-packaging contracts for backend/generator exclusion;
-Cargo dependency feature unification remains authoritative.
-Selection is recorded in the build configuration and emitted binding manifests, and participates in rebuild guards.
-
-## Select feature extensions
-
-The repository ships no static feature extension: every first-party extension is an installable package.
-A feature extension is a crate that you put in `dependencies`; the example uses a crate of your own.
-
-Paths are relative to the repository root; write them relative to your configuration file.
-This configuration selects one crate and emits the workspace only (`prepare_only`):
-
-```json
-{
-  "host": "/path/to/orm",
-  "output": "/path/to/build-all/build",
-  "prepare_only": true,
-  "bindings": ["python", "node"],
-  "dependencies": {
-    "acme": {"package": "acme-feature", "path": "/path/to/acme-feature"}
-  }
-}
-```
-
-Build and package it (from the repository root; `DIR` is the parent of `output`):
-
-```bash
-cargo run -q -p orm-extension-build -- "$DIR/config.json"
-export ORM_CORE_COMPOSITION=$DIR/build/composition.rs ORM_ENGINE_COMPOSITION=$DIR/build/engine-composition.rs
-export ORM_PYTHON_METHODS=$DIR/build/python-methods.rs ORM_NODE_METHODS=$DIR/build/node-methods.rs
-(cd "$DIR/build" && cargo build -p orm-python -p orm-node)    # add --release for production
-mkdir -p "$DIR/py/orm_native_custom"
-cp languages/python/packaging/custom/orm_native_custom/__init__.py "$DIR/py/orm_native_custom/"
-cp "$DIR/build/target/debug/lib_native.dylib" "$DIR/py/orm_native_custom/_native$(python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
-cp "$DIR/build/target/debug/liborm_node.dylib" "$DIR/orm.node"     # .so on Linux
-```
-
-Use the artifact with `PYTHONPATH=$DIR/py ORM_PROFILE=custom` in Python and `ORM_NATIVE=$DIR/orm.node` (an absolute path) in Node.
-Without `prepare_only`, the frontend builds the release libraries itself.
-`scripts/feature-check.sh all` does the same steps and runs every suite on the result.
-A schema that uses an extension attribute on an artifact without that extension fails during definition:
-`@proxy.of: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace @@proxy.*, see docs/README.md)`.
-The message names the namespace of the attribute.
+Every first-party extension is an installable package ([Installable packages](#installable-packages)).
+The static build (`orm-extension-build`, the host Cargo features and the `custom` native profile) is removed.
 
 Protected writes (`@@protected_write`), client defaults, cursor pagination, the N+1 finder and reference loaders are in the core.
 They need no extension.
 
-The frontend type-checks the embedded TypeScript with `tsc` from `languages/js/node_modules`.
-Run `npm install` in `languages/js` before the first build, or the frontend fails with `TS2688: Cannot find type definition file for 'node'`.
-Python extensions also need `mypy` and `pyright` on `PATH`.
-
-### The `ext` modules
+## The `ext` modules
 
 `orm.ext` (Python) and `orm/ext` (TypeScript) are the host surface for extension code.
 `database_of(instance)` and `databaseOf(instance)` give the database that loaded an instance, or none.
@@ -144,27 +51,6 @@ A bound query set mixin reads the objects of a bound write with these helpers (t
   When the block fails, the write rolls back and the objects get the state that they had before.
 * `loadedValue(object, field)` (TypeScript only) gives the loaded value of a field and throws `NotLoaded` when it is not loaded.
 * `key_condition(model, key)` (Python only) gives the condition of the row with the primary key `key`.
-
-## Application source modules
-
-Instead of a dependency, `modules` accepts an application source module:
-`{"alias":"rules","source":"rules.rs","manifest":{...},"dependencies":{...}}`.
-The frontend wraps the source in a Cargo crate and supplies `orm-contracts`.
-Its metadata and export contracts are identical to those of a packaged crate.
-
-The frontend copies host sources into the output workspace, resolves dependencies and reads Cargo metadata before generating direct calls.
-It emits `artifact.json`, `manifests.json`, `source-identities.json`, `normalized.schema.json` for selected profiles, and fixed Rust composition sources.
-It builds ordinary `orm-python` and `orm-node` release libraries.
-Package the resulting library with the matching Python/TypeScript package, replacing its native library.
-Do not mix libraries from different profiles.
-Existing package build/install tools handle the platform library suffix and Python extension suffix.
-
-Rebuilding an emitted workspace requires its composition environment paths:
-`ORM_CORE_COMPOSITION`, and for native behaviors `ORM_ENGINE_COMPOSITION`, `ORM_PYTHON_METHODS`, `ORM_NODE_METHODS`.
-A generated build guard rejects changed recorded configuration/source inputs and asks for a fresh frontend output.
-The guard reads `crates/core/composition-inputs.json` from its current workspace,
-so revisiting an older profile through a shared Cargo cache retains the correct composition and stale-input checks.
-Use the frontend for a changed selection rather than editing generated files.
 
 ## Extension metadata and source syntax
 

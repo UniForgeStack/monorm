@@ -17,7 +17,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | [typescript-api.md](api/typescript-api.md) | The TypeScript API, with the same sections |
 | [query-set-kinds.md](api/query-set-kinds.md) | The kinds of query set, and the methods each kind leaves out |
 | [async-reference-loading.md](api/async-reference-loading.md) | Explicit to-one loaders `load_<relation>()` / `load<Relation>()` (on by default in the bindings) |
-| [optional-packaging.md](contracts/optional-packaging.md) | Native profiles (`postgres`, `sqlite`, `combined`, `tooling`, `custom`) and exact source builds |
+| [optional-packaging.md](contracts/optional-packaging.md) | Native profiles (`postgres`, `sqlite`, `combined`, `tooling`) and exact source builds |
 
 ## Feature extensions
 
@@ -33,7 +33,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | inherit | `extensions/inherit` (`orm-inherit`) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
 | query-defaults | `extensions/query-defaults/` (`orm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 
-[build-time-extensions.md](contracts/build-time-extensions.md#select-feature-extensions) shows how to select them, build, and package the result.
+[build-time-extensions.md](contracts/build-time-extensions.md#installable-packages) shows how to install them.
 The same doc describes the extension contract: manifests, passes, native behavior profiles.
 Protected writes, client defaults, cursor pagination and the N+1 finder are core features, not extensions.
 

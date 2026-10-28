@@ -39,7 +39,7 @@ Each contender runs in its own process, once per round. The contender order rota
 The equality check compares the result and the database state at iterations 0, 1 and the last one.
 The output has one JSON file per contender (median, samples, batch medians, CPU split) and `environment.json` (versions, Postgres, load).
 
-`--orm-artifact PATH` adds a row `orm-all`: it starts the `orm` runner with `PYTHONPATH=PATH/py` and `ORM_PROFILE=custom`, the `all` extension artifact of `scripts/feature-check.sh`.
+`--orm-artifact PATH` adds a row `orm-all`: it starts the `orm` runner with the Python of `PATH/venv` and, on Node, `ORM_NATIVE=PATH/orm.node`. `run.sh` builds `PATH` (`build/all`) as the tooling profile plus the extension packages of `scripts/install-extension-packages.sh`.
 
 ## Profile one case
 

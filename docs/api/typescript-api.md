@@ -46,8 +46,7 @@ npm run test:bun            # the same suites under Bun
 npm run typecheck           # tsc over the package, the typing checks and the example
 ```
 
-`ORM_NATIVE=/path/orm.node` loads another addon, for example an extension build
-([`build-time-extensions.md`](../contracts/build-time-extensions.md#select-feature-extensions)).
+`ORM_NATIVE=/path/orm.node` loads another addon, for example a dev build.
 
 ## Models: the generated module
 

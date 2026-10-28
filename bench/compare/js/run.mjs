@@ -9,7 +9,7 @@
 // `run` does `check` first and stops when it fails; the check compares result and database state at iterations
 // 0, 1 and the last one. Before each round the runner waits until the 1-minute load is at most `--max-load`.
 // Each case runs WARMUP_CALLS untimed calls first, then `--iters` timed calls. `--orm-artifact DIR` adds `orm-all`: the `orm` runner with
-// ORM_NATIVE=DIR/orm.node, the `all` extension artifact of scripts/feature-check.sh.
+// ORM_NATIVE=DIR/orm.node, the `all` artifact of run.sh (tooling profile).
 // `profile` runs one case per contender with the V8 CPU profiler on its timed calls and their setup (Node only); it writes
 // `<contender>-<case>.cpuprofile` (open it in Chrome DevTools) and `<contender>-<case>.top.txt`, the self-time top list.
 import { spawnSync } from "node:child_process";

@@ -35,7 +35,7 @@ python bench/engine_bench.py --url postgres://postgres:postgres@localhost/orm_be
 ```
 
 It drops and creates the blog tables in that database.
-With an extension build: `PYTHONPATH=<build>/py ORM_PROFILE=custom python bench/engine_bench.py ...`.
+With the extension packages: install them with `scripts/install-extension-packages.sh`, then run the same command.
 
 ## aggregates_pagination.py
 

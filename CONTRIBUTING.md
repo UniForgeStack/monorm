@@ -26,7 +26,7 @@ uv venv .venv && . .venv/bin/activate && uv pip install -e '.[dev]' maturin   # 
 scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
 (cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
-cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-build -p orm-extension-package
+cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-package
 mypy --strict languages/python/orm && pyright languages/python/orm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
@@ -41,18 +41,6 @@ scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Py
 
 The commands install the thin `orm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.
 If a command needs a different PostgreSQL than the default, set `ORM_TEST_DATABASE_URL` (and `ORM_RUST_TEST_POSTGRES_URL` for `cargo test`).
-
-### Feature artifacts
-
-Optional features are build-time extensions.
-`scripts/feature-check.sh` builds one native artifact with all extensions and runs the tests on it.
-Run it when you change an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code.
-It needs `uv`, `node`, `npm` and `bun`, and takes a long time. CI runs it on every pull request.
-
-```bash
-PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/orm_test \
-  scripts/feature-check.sh            # or name the artifact: scripts/feature-check.sh all
-```
 
 ### Generated example models
 

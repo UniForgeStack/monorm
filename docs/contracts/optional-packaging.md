@@ -89,36 +89,13 @@ extension system. It is distinct from model composition.
 
 Baseline native profiles do not claim optional reference-loading support.
 The tooling profile and the default binding builds add `reference-loading`.
-A feature extension comes only from an extension crate selected in
-`orm-extension-build`; do not pass its host feature by hand. A marker package cannot add code to an
-already compiled engine. [Build-time extensions](build-time-extensions.md#select-feature-extensions)
-has the configuration, the build commands and the packaging step: the Python library
-goes into an `orm_native_custom` package (`ORM_PROFILE=custom`), and the Node library
-is selected with `ORM_NATIVE`.
-
-Build a custom Python artifact using the `custom` template. Every artifact embeds
-its build record in `profile_metadata()["build"]`: the exact Cargo features, the
+An extension is an installed package ([Build-time extensions](build-time-extensions.md#installable-packages));
+a marker package cannot add code to an already compiled engine.
+Every artifact embeds its build record in `profile_metadata()["build"]`: the exact Cargo features, the
 `rustc -V` toolchain, target triple, Cargo profile and git revision (`git rev-parse
 HEAD` of the host source, or `ORM_BUILD_REVISION` when set; `unknown` outside git).
-Keep the Python version and the extension build configuration (`build-input.json`
-of `orm-extension-build`) with the artifact; the record does not hold them. This template has no
-backend by default; at least one backend must be explicitly selected. The
-features on the command line replace the `features` list of the template pyproject.
 
-```bash
-cd languages/python/packaging/custom
-maturin build --features postgres,generate-python --out ../../../target/custom-wheels
-cd ../../..
-python -m pip install .
-python -m pip install --no-index --find-links target/custom-wheels orm-native-custom
-export ORM_PROFILE=custom
-```
-
-The custom loader validates the ABI, version and language, unique supported backend
-names, boolean capability metadata, and adapter and capability consistency. It does
-not know the exact feature set of a custom artifact. The application build record
-must specify it. Install one custom wheel per environment. For Node, an explicit
-source-built path is selected once with `ORM_NATIVE`:
+A Node source build is selected once with `ORM_NATIVE`:
 
 ```bash
 cd languages/js

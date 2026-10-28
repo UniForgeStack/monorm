@@ -5,8 +5,8 @@ A proxy is a different logical view of one physical model.
 Default filters and default selection come from the `orm-query-defaults` package
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
-**Enable:** select the `orm-proxy` crate (`extensions/proxy`) in your build.
-See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
+**Enable:** install the `orm-proxy` package (`extensions/proxy`).
+See [build-time-extensions.md](../contracts/build-time-extensions.md#installable-packages).
 
 ```prisma
 enum Status {
@@ -50,7 +50,7 @@ A field the proxy drops gives the usual "has no field" error.
 
 A proxy also inherits the native model spec of its nearest ancestor that has one (`methods`, computed `result_fields`, field rules, record rules, and the specialization).
 A proxy with a spec of its own adds its entries to the inherited ones; an own method, field rule or computed field replaces the inherited one of the same name.
-`orm-extension-build` leaves out a field rule or computed field when the proxy does not keep the field that it names.
+The package build leaves out a field rule or computed field when the proxy does not keep the field that it names.
 An inherited record rule that needs a field the proxy drops fails the build.
 The error names the rule and the field. Keep the field in the proxy, or declare an own record rule of the same export in the proxy.
 The own rule replaces the inherited rule of that export only; any other inherited rule that needs a dropped field still fails the build.

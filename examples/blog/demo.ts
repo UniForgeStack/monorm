@@ -8,10 +8,7 @@
  *     node demo.ts postgres://postgres:postgres@localhost/orm_test
  *
  * The core section runs on every build. Each extension section runs when the native addon
- * has that extension, and prints how to get it otherwise. With the addon of an extension
- * build (docs/contracts/build-time-extensions.md, "Select feature extensions"):
- *
- *     ORM_NATIVE=$PWD/../../target/feature-check/all/orm.node node demo.ts sqlite://:memory:    (an absolute path)
+ * has that extension, and prints how to get it otherwise. `scripts/install-extension-packages.sh` installs the extension packages into languages/js.
  *
  * The file-storage section also needs the `@orm/file-storage` package (`scripts/install-extension-packages.sh` installs it into languages/js). Each section creates its demo_* tables and drops them.
  *

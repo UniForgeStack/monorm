@@ -135,12 +135,11 @@ def spawn(name: str, cases: list[str], mode: str, iters: int, artifact: str | No
     env = os.environ | {"BENCH_DATABASE_URL": database_url()}
     if name == "orm-all":
         assert artifact, "orm-all needs --orm-artifact"
-        env |= {"PYTHONPATH": f"{artifact}/py:{HERE}", "ORM_PROFILE": "custom"}
-    else:
-        env["PYTHONPATH"] = str(HERE)
+    env["PYTHONPATH"] = str(HERE)
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         out = f.name
-    cmd = [sys.executable, str(HERE / "run.py"), "worker", "--contender", name, "--cases", ",".join(cases),
+    python = f"{artifact}/venv/bin/python" if name == "orm-all" else sys.executable
+    cmd = [python, str(HERE / "run.py"), "worker", "--contender", name, "--cases", ",".join(cases),
            "--mode", mode, "--iters", str(iters), "--out", out]
     p = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if p.returncode:
