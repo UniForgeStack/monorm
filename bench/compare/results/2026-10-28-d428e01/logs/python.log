@@ -1,0 +1,141 @@
+check read-pk: ok
+check read-50: ok
+check read-1000: ok
+check projection-1000: ok
+check filter: ok
+check filter-ne-null: ok
+check count: ok
+check aggregate: ok
+check join-to-one: ok
+check prefetch-to-many: ok
+check m2m: ok
+check insert-1: ok
+check bulk-insert-100: ok
+check bulk-insert-1000: ok
+check update-1: ok
+check bulk-update-100: ok
+check upsert-100: ok
+check delete-100: ok
+check tx-5: ok
+check concurrent: ok
+round 1 orm done
+round 1 django-sync done
+round 1 django-async done
+round 1 sqlalchemy-sync done
+round 1 sqlalchemy-async done
+round 1 orm-all done
+round 2 django-sync done
+round 2 django-async done
+round 2 sqlalchemy-sync done
+round 2 sqlalchemy-async done
+round 2 orm-all done
+round 2 orm done
+round 3 django-async done
+round 3 sqlalchemy-sync done
+round 3 sqlalchemy-async done
+round 3 orm-all done
+round 3 orm done
+round 3 django-sync done
+round 4 sqlalchemy-sync done
+round 4 sqlalchemy-async done
+round 4 orm-all done
+round 4 orm done
+round 4 django-sync done
+round 4 django-async done
+round 5 sqlalchemy-async done
+round 5 orm-all done
+round 5 orm done
+round 5 django-sync done
+round 5 django-async done
+round 5 sqlalchemy-sync done
+round 6 orm-all done
+round 6 orm done
+round 6 django-sync done
+round 6 django-async done
+round 6 sqlalchemy-sync done
+round 6 sqlalchemy-async done
+round 7 orm done
+round 7 django-sync done
+round 7 django-async done
+round 7 sqlalchemy-sync done
+round 7 sqlalchemy-async done
+round 7 orm-all done
+round 8 django-sync done
+round 8 django-async done
+round 8 sqlalchemy-sync done
+round 8 sqlalchemy-async done
+round 8 orm-all done
+round 8 orm done
+round 9 django-async done
+round 9 sqlalchemy-sync done
+round 9 sqlalchemy-async done
+round 9 orm-all done
+round 9 orm done
+round 9 django-sync done
+round 10 sqlalchemy-sync done
+round 10 sqlalchemy-async done
+round 10 orm-all done
+round 10 orm done
+round 10 django-sync done
+round 10 django-async done
+round 11 sqlalchemy-async done
+round 11 orm-all done
+round 11 orm done
+round 11 django-sync done
+round 11 django-async done
+round 11 sqlalchemy-sync done
+round 12 orm-all done
+round 12 orm done
+round 12 django-sync done
+round 12 django-async done
+round 12 sqlalchemy-sync done
+round 12 sqlalchemy-async done
+round 13 orm done
+round 13 django-sync done
+round 13 django-async done
+round 13 sqlalchemy-sync done
+round 13 sqlalchemy-async done
+round 13 orm-all done
+round 14 django-sync done
+round 14 django-async done
+round 14 sqlalchemy-sync done
+round 14 sqlalchemy-async done
+round 14 orm-all done
+round 14 orm done
+round 15 django-async done
+round 15 sqlalchemy-sync done
+round 15 sqlalchemy-async done
+round 15 orm-all done
+round 15 orm done
+round 15 django-sync done
+round 16 sqlalchemy-sync done
+round 16 sqlalchemy-async done
+round 16 orm-all done
+round 16 orm done
+round 16 django-sync done
+round 16 django-async done
+round 17 sqlalchemy-async done
+round 17 orm-all done
+round 17 orm done
+round 17 django-sync done
+round 17 django-async done
+round 17 sqlalchemy-sync done
+round 18 orm-all done
+round 18 orm done
+round 18 django-sync done
+round 18 django-async done
+round 18 sqlalchemy-sync done
+round 18 sqlalchemy-async done
+round 19 orm done
+round 19 django-sync done
+round 19 django-async done
+round 19 sqlalchemy-sync done
+round 19 sqlalchemy-async done
+round 19 orm-all done
+round 20 django-sync done
+round 20 django-async done
+round 20 sqlalchemy-sync done
+round 20 sqlalchemy-async done
+round 20 orm-all done
+round 20 orm done
+wrote /home/user/monorm/bench/compare/results/2026-10-28-d428e01/python

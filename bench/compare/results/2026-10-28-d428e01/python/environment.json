@@ -1,0 +1,141 @@
+{
+  "date": "2026-10-28T22:06:31.004117+00:00",
+  "git_sha": "d428e01abf359f3ff61e7303bbea3b19ffa920eb",
+  "python": "3.14.6",
+  "machine": "Linux-6.18.44-fc-v180-x86_64-with-glibc2.39",
+  "packages": {
+    "monorm": "0.1.0",
+    "django": "6.1.2",
+    "psycopg": "3.3.6",
+    "psycopg-binary": "3.3.6",
+    "psycopg-pool": "3.3.3",
+    "asgiref": "3.12.1",
+    "sqlalchemy": "2.1.6",
+    "asyncpg": "0.32.0",
+    "greenlet": "3.5.6"
+  },
+  "postgres": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+  "database": "bench",
+  "pool_size": 10,
+  "uptime_before": "21:10:02 up 58 min,  0 user,  load average: 1.00, 1.00, 0.96",
+  "uptime_after": "22:06:31 up  1:54,  0 user,  load average: 1.83, 1.53, 1.47",
+  "monorm_artifact": "/home/user/monorm/bench/compare/build/all",
+  "warmup_calls": 50,
+  "contenders": {
+    "orm": {
+      "profile": "postgres",
+      "build": {
+        "features": [
+          "postgres",
+          "profile-postgres"
+        ],
+        "profile": "release",
+        "revision": "d428e01abf359f3ff61e7303bbea3b19ffa920eb",
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "capabilities": {
+        "cli": false,
+        "generate-python": false,
+        "generate-typescript": false
+      },
+      "prepared_statements": "engine default: prepared once per connection and cached",
+      "pool": 10,
+      "insert_note": "monorm returns full rows: insert_many(...).returning() has no key-only form",
+      "upsert_note": "on_conflict returns a row count, no RETURNING"
+    },
+    "django-sync": {
+      "django": "6.1.2",
+      "prepared_statements": "psycopg default: server-side prepare after 5 executions of one statement; Django inlines LIMIT/OFFSET, so the read-N statements differ per page and are not prepared",
+      "pool": "psycopg_pool min=max=10, one pool per process; each concurrent task returns its connection with close()",
+      "async_note": "Django async ORM runs each call through sync_to_async (thread-sensitive): calls serialize on one thread",
+      "delete_note": "QuerySet.delete() runs BEGIN, DELETE, COMMIT: 3 statements",
+      "upsert_note": "bulk_create(update_conflicts=True) adds RETURNING id",
+      "vendor": "postgresql"
+    },
+    "django-async": {
+      "django": "6.1.2",
+      "prepared_statements": "psycopg default: server-side prepare after 5 executions of one statement; Django inlines LIMIT/OFFSET, so the read-N statements differ per page and are not prepared",
+      "pool": "psycopg_pool min=max=10, one pool per process; each concurrent task returns its connection with close()",
+      "async_note": "Django async ORM runs each call through sync_to_async (thread-sensitive): calls serialize on one thread",
+      "delete_note": "QuerySet.delete() runs BEGIN, DELETE, COMMIT: 3 statements",
+      "upsert_note": "bulk_create(update_conflicts=True) adds RETURNING id",
+      "vendor": "postgresql"
+    },
+    "sqlalchemy-sync": {
+      "sqlalchemy": "2.1.6",
+      "driver": "psycopg",
+      "prepared_statements": "psycopg default: server-side prepare after 5 executions of one statement",
+      "pool": "QueuePool pool_size=10 max_overflow=0, one engine per process",
+      "session_note": "one session per operation; the session begins a transaction on first use, so a read runs BEGIN, SELECT, ROLLBACK and a write runs BEGIN, the statement, COMMIT",
+      "insert_note": "bulk-insert-* is insert(Comment).returning(Comment): full instances, as monorm returns",
+      "upsert_note": "on_conflict_do_update adds RETURNING id: SQLAlchemy has no rowcount for a multi-row VALUES",
+      "update_note": "update()/delete() run with synchronize_session='auto' (the default): bulk-update-100 falls back to 'fetch' and adds RETURNING id",
+      "tx_note": "tx-5 flushes its two inserts as one INSERT statement (insertmanyvalues): 4 statements, not 5"
+    },
+    "sqlalchemy-async": {
+      "sqlalchemy": "2.1.6",
+      "driver": "asyncpg",
+      "prepared_statements": "asyncpg dialect default: a prepared-statement cache per connection (100 statements)",
+      "pool": "QueuePool pool_size=10 max_overflow=0, one engine per process",
+      "session_note": "one session per operation; the session begins a transaction on first use, so a read runs BEGIN, SELECT, ROLLBACK and a write runs BEGIN, the statement, COMMIT",
+      "insert_note": "bulk-insert-* is insert(Comment).returning(Comment): full instances, as monorm returns",
+      "upsert_note": "on_conflict_do_update adds RETURNING id: SQLAlchemy has no rowcount for a multi-row VALUES",
+      "update_note": "update()/delete() run with synchronize_session='auto' (the default): bulk-update-100 falls back to 'fetch' and adds RETURNING id",
+      "tx_note": "tx-5 flushes its two inserts as one INSERT statement (insertmanyvalues): 4 statements, not 5",
+      "async_note": "AsyncSession runs the sync ORM in a greenlet per call"
+    },
+    "orm-all": {
+      "profile": "tooling",
+      "build": {
+        "features": [
+          "cli",
+          "generate-python",
+          "generate-typescript",
+          "postgres",
+          "profile-tooling",
+          "reference-loading",
+          "sqlite"
+        ],
+        "profile": "release",
+        "revision": "d428e01abf359f3ff61e7303bbea3b19ffa920eb",
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "capabilities": {
+        "cli": true,
+        "generate-python": true,
+        "generate-typescript": true
+      },
+      "prepared_statements": "engine default: prepared once per connection and cached",
+      "pool": 10,
+      "insert_note": "monorm returns full rows: insert_many(...).returning() has no key-only form",
+      "upsert_note": "on_conflict returns a row count, no RETURNING"
+    }
+  },
+  "rounds": 20,
+  "iters": 20,
+  "round_loads": [
+    1.24609375,
+    1.45263671875,
+    1.6689453125,
+    1.96875,
+    1.53857421875,
+    1.47705078125,
+    1.29541015625,
+    1.619140625,
+    1.15966796875,
+    1.517578125,
+    1.62255859375,
+    1.58935546875,
+    1.40771484375,
+    1.94091796875,
+    1.4931640625,
+    1.6796875,
+    1.783203125,
+    1.69482421875,
+    1.44140625,
+    1.43359375
+  ],
+  "max_load": 2.0
+}
