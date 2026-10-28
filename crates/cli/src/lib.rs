@@ -477,7 +477,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
     print_warnings(&project);
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, extensions: orm_core::behavior::extension_code(language), ..codegen::Options::default() };
+    let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, extensions: vec![], ..codegen::Options::default() };
     if language != "rust" {
         let mut modules = std::collections::BTreeMap::new();
         for (key, value) in &args.options {

@@ -4,14 +4,11 @@ use serde::{Deserialize, Serialize};
 use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
-/// The static Rust API of an extension crate; a library has the C ABI instead.
-pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
 pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
-pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
@@ -75,8 +72,6 @@ pub struct Requirements {
     pub completed_passes: Vec<String>,
     #[serde(default)]
     pub lowered_models: Vec<String>,
-    #[serde(default)]
-    pub specializations: Vec<Specialization>,
     #[serde(default)]
     pub result_fields: Vec<ResultDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,7 +173,7 @@ impl Requirements {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
+        self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
@@ -358,20 +353,9 @@ pub struct ResultDeclaration {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct Specialization {
-    pub model: String,
-    pub fingerprint: String,
-    pub exports: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub id: String,
     pub version: String,
-    /// The static Rust API. A manifest of a library has none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_contract: Option<ContractVersion>,
     pub schema_contract: ContractVersion,
     /// The C ABI of the library. Only the manifest of a library has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -409,10 +393,9 @@ impl Manifest {
     /// The contract versions against this engine; the error names both versions.
     pub fn check_contracts(&self) -> Result<(), String> {
         self.schema_contract.check("schema contract", SCHEMA_CONTRACT_VERSION, &self.id)?;
-        match (self.abi, self.host_contract) {
-            (Some(abi), _) => abi.check("ABI", ABI_VERSION, &self.id),
-            (None, Some(host)) => host.check("host contract", HOST_CONTRACT_VERSION, &self.id),
-            (None, None) => Err(format!("{}: a manifest with no `abi` needs `host_contract`", self.id)),
+        match self.abi {
+            Some(abi) => abi.check("ABI", ABI_VERSION, &self.id),
+            None => Err(format!("{}: a manifest needs `abi`", self.id)),
         }
     }
 
@@ -629,19 +612,11 @@ pub struct Pass {
     #[serde(default)]
     pub effects: Vec<String>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExportKind { StringValidator, StringTransform, StringComputed, StringRecordValidator }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
     pub id: String,
-    /// The static form: a Rust path that the build compiles in, with its `kind`. A typed hook has neither.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rust: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<ExportKind>,
-    /// The hook point, 1 to 7. A typed hook of a library has one; the static form has none.
+    /// The hook point, 1 to 7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub point: Option<u8>,
     /// The type of the value that the hook takes. Points 3, 6 and 7 take none, and then it is absent.
@@ -651,43 +626,19 @@ pub struct Export {
     pub output: Option<ColType>,
 }
 
-/// The static form of an export.
-#[derive(Clone, Copy, Debug)]
-pub struct StringExport<'a> {
-    pub rust: &'a str,
-    pub kind: ExportKind,
-    pub input: ColType,
-    pub output: Option<ColType>,
-}
-
-impl Export {
-    pub fn string_form(&self) -> Option<StringExport<'_>> {
-        Some(StringExport { rust: self.rust.as_deref()?, kind: self.kind?, input: self.input?, output: self.output })
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
-    pub host_contract: u32,
     pub schema_contract: u32,
     #[serde(default)]
     pub passes: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
     pub extensions: BTreeMap<String, String>,
-    /// The `requires` list of each selected extension that has one, by extension id.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub requires: BTreeMap<String, Vec<String>>,
-    pub exports: Vec<String>,
-    pub specializations: Vec<Specialization>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub language_members: Vec<LanguageMembers>,
 }
 impl Default for Artifact {
     fn default() -> Self {
-        Self { host_contract: HOST_CONTRACT, schema_contract: SCHEMA_CONTRACT,
-            passes: vec![], capabilities: vec![], extensions: BTreeMap::new(), requires: BTreeMap::new(), exports: vec![], specializations: vec![], language_members: vec![] }
+        Self { schema_contract: SCHEMA_CONTRACT, passes: vec![], capabilities: vec![], extensions: BTreeMap::new() }
     }
 }
 
@@ -723,7 +674,7 @@ pub struct QueryContract<'a> {
     pub shape: &'a ResultShape,
 }
 
-/// The part of an attribute name before the dot: `timestamps` for `timestamps.updated_at`.
+/// The part of an attribute name before the dot: `acme` for `acme.stamp`.
 pub fn attribute_namespace(attribute: &str) -> &str {
     attribute.split_once('.').map_or(attribute, |(namespace, _)| namespace)
 }
@@ -813,25 +764,13 @@ pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), Stri
             return Err(format!("extension {id}@{version} unavailable; artifact has {:?}; rebuild", artifact.extensions.get(id)));
         }
     }
-    for method in &r.methods {
-        if !r.specializations.iter().any(|s| s.model == method.model && artifact.specializations.contains(s)) {
-            return Err(format!("{}.{}: native method requires a compiled specialization; rebuild", method.model, method.name));
-        }
+    if let Some(method) = r.methods.first() {
+        return Err(format!("{}.{}: native methods are not available; remove the method declaration", method.model, method.name));
     }
     for result in &r.result_fields {
         let hooked = r.hooks.iter().any(|h| h.point == 5 && h.model == result.model && h.field.as_deref() == Some(result.field.as_str()));
-        if !hooked && !r.specializations.iter().any(|s| s.model == result.model && artifact.specializations.contains(s)) {
-            return Err(format!("{}.{}: native result requires a compiled specialization; rebuild", result.model, result.field));
-        }
-    }
-    for specialization in &r.specializations {
-        for export in &specialization.exports {
-            if !artifact.exports.contains(export) {
-                return Err(format!("{} requires missing export {export} (artifact has {:?}); rebuild native artifact", specialization.model, artifact.exports));
-            }
-        }
-        if !artifact.specializations.contains(specialization) {
-            return Err(format!("{}: stale or missing specialization {}; rebuild native artifact", specialization.model, specialization.fingerprint));
+        if !hooked {
+            return Err(format!("{}.{}: a computed field needs a hook at point 5", result.model, result.field));
         }
     }
     Ok(())
@@ -1025,8 +964,7 @@ pub fn capture_storage(ir: &mut SchemaIr) -> Result<(), String> {
 }
 
 pub const HOST_CAPABILITIES: &[&str] = &[
-    "schema-transformations", "physical-schema", "native-string-values",
-    "native-string-records", "native-string-results",
+    "schema-transformations", "physical-schema",
 ];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
@@ -1102,7 +1040,6 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.model_views.extend(n.model_views);
     c.result_checks.extend(n.result_checks);
     c.read_defaults.extend(n.read_defaults);
-    c.specializations.extend(n.specializations);
     c.result_fields.extend(n.result_fields);
     c.methods.extend(n.methods);
     c.field_storage.extend(n.field_storage);
@@ -1192,7 +1129,7 @@ mod tests {
 
     fn manifest(languages: &[&str], databases: &[&str]) -> Manifest {
         serde_json::from_value(serde_json::json!({
-            "id": "app", "version": "1.0.0", "host_contract": HOST_CONTRACT, "schema_contract": SCHEMA_CONTRACT,
+            "id": "app", "version": "1.0.0", "abi": "0.2", "library": "lib", "schema_contract": SCHEMA_CONTRACT,
             "languages": languages, "databases": databases,
             "attributes": [{"name": "app.trim", "target": "field"}],
         })).unwrap()
@@ -1319,10 +1256,10 @@ mod tests {
         let mut value = serde_json::to_value(manifest(&["python"], &["sqlite"])).unwrap();
         value["unknown"] = serde_json::json!(true);
         assert!(serde_json::from_value::<Manifest>(value).unwrap_err().to_string().contains("unknown field"));
-        let mut export = serde_json::json!({"id": "app.x", "rust": "crate::x", "kind": "string_validator", "input": "string"});
+        let mut export = serde_json::json!({"id": "app.x", "point": 2, "input": "string"});
         assert!(serde_json::from_value::<Export>(export.clone()).is_ok());
-        export["kind"] = "integer_validator".into();
-        assert!(serde_json::from_value::<Export>(export).unwrap_err().to_string().contains("unknown variant"));
+        export["kind"] = "string_validator".into();
+        assert!(serde_json::from_value::<Export>(export).unwrap_err().to_string().contains("unknown field `kind`"));
     }
 
     #[test]
@@ -1334,13 +1271,13 @@ mod tests {
         let error = check_requirements(&ir, &artifact).unwrap_err();
         assert!(error.contains("app.lower") && error.contains("other.lower") && error.contains("rebuild"), "{error}");
         ir.behavior.completed_passes.clear();
-        ir.behavior.specializations = vec![Specialization { model: "User".into(), fingerprint: "f".into(), exports: vec!["app.trim".into()] }];
-        let artifact = Artifact { exports: vec!["app.other".into()], ..Artifact::default() };
-        let error = check_requirements(&ir, &artifact).unwrap_err();
-        assert!(error.starts_with("User requires missing export app.trim") && error.contains("app.other") && error.contains("rebuild"), "{error}");
-        let artifact = Artifact { exports: vec!["app.trim".into()], ..Artifact::default() };
-        let error = check_requirements(&ir, &artifact).unwrap_err();
-        assert!(error.starts_with("User: stale or missing specialization f") && error.contains("rebuild"), "{error}");
+        ir.behavior.result_fields = vec![ResultDeclaration { model: "User".into(), field: "full".into(), dependencies: vec!["name".into()] }];
+        let error = check_requirements(&ir, &Artifact::default()).unwrap_err();
+        assert_eq!(error, "User.full: a computed field needs a hook at point 5");
+        ir.behavior.result_fields.clear();
+        ir.behavior.methods = vec![MethodDeclaration { model: "User".into(), name: "slug".into(), native_function: "app.slug".into(), input: ColType::String, output: None }];
+        let error = check_requirements(&ir, &Artifact::default()).unwrap_err();
+        assert_eq!(error, "User.slug: native methods are not available; remove the method declaration");
     }
 
     #[test]
@@ -1378,12 +1315,10 @@ mod tests {
         assert!(error.contains(&format!("schema contract {}.0", SCHEMA_CONTRACT_VERSION.major + 1)) && error.contains(&format!("schema contract {SCHEMA_CONTRACT_VERSION}")) && error.contains("major versions differ"), "{error}");
         let error = check(&|v| v["schema_contract"] = next_minor(SCHEMA_CONTRACT_VERSION).into()).unwrap_err();
         assert!(error.contains(&format!("schema contract {} is newer than this engine (schema contract {SCHEMA_CONTRACT_VERSION})", next_minor(SCHEMA_CONTRACT_VERSION))) && error.contains("update the ORM"), "{error}");
-        let error = check(&|v| v["host_contract"] = next_minor(HOST_CONTRACT_VERSION).into()).unwrap_err();
-        assert!(error.contains("host contract 1.1 is newer than this engine (host contract 1.0)"), "{error}");
-        let error = check(&|v| { v["abi"] = next_minor(ABI_VERSION).into(); v["library"] = "lib".into(); }).unwrap_err();
+        let error = check(&|v| v["abi"] = next_minor(ABI_VERSION).into()).unwrap_err();
         assert!(error.contains("ABI 0.3 is newer than this engine (ABI 0.2)") && error.contains("update the ORM"), "{error}");
-        let error = check(&|v| { v.as_object_mut().unwrap().remove("host_contract"); }).unwrap_err();
-        assert!(error.contains("app: a manifest with no `abi` needs `host_contract`"), "{error}");
+        let error = check(&|v| { v.as_object_mut().unwrap().remove("abi"); }).unwrap_err();
+        assert_eq!(error, "app: a manifest needs `abi`");
     }
 
     fn adapter_ir() -> SchemaIr {

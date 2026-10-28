@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn the_generator_key_may_name_an_extension_that_the_artifact_has() {
-        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"5.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n").unwrap();
+        let compiled: Manifest = toml::from_str("id = \"acme.compiled\"\nversion = \"1.0.0\"\nschema_contract = \"5.0\"\nlanguages = []\ndatabases = []\n").unwrap();
         assert!(plan(&[], &BTreeSet::new(), &["acme.compiled".into()], &[compiled], &[]).unwrap().is_none());
     }
 
@@ -707,7 +707,7 @@ mod tests {
         let dir = scratch("manifest");
         let (_, path) = install(&dir, "acme.audit", TAG);
         assert!(read_manifest("acme.other", &path).err().unwrap().contains("describes acme.audit"));
-        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 5\nhost_contract = 1\nlanguages = []\ndatabases = []\n").unwrap();
+        std::fs::write(&path, "id = \"acme.audit\"\nversion = \"1\"\nschema_contract = 5\nlanguages = []\ndatabases = []\n").unwrap();
         assert!(check_library(&read_manifest("acme.audit", &path).unwrap()).err().unwrap().contains("no `abi`"));
         assert!(read_manifest("acme.audit", &dir.join("gone.toml")).err().unwrap().contains("gone.toml"));
         std::fs::remove_dir_all(&dir).ok();
@@ -738,7 +738,7 @@ mod tests {
     fn an_unrelated_package_that_is_no_library_never_fails_a_compile() {
         let dir = scratch("unrelated");
         let (_, other) = install(&dir.join("b"), "other.kit", KIT);
-        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"5.0\"\nhost_contract = \"1.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
+        std::fs::write(&other, format!("id = \"other.kit\"\nversion = \"1\"\nschema_contract = \"5.0\"\nlanguages = []\ndatabases = []\n{KIT}")).unwrap();
         let available = [install(&dir.join("a"), "acme.audit", TAG), ("other.kit".to_owned(), other.clone())];
         assert!(select(&available, &used("acme"), &[]).unwrap().is_some());
         let error = select(&available, &used("kit"), &[]).err().unwrap();
