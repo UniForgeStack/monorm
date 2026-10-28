@@ -101,11 +101,6 @@ glob = "bench/compare/**"
 pattern = '''["'`]orm(?:-all)?["'`]|\borm-all\b|\bORM_BUILDS\b|startswith\("orm"\)|(?:contenders|run|runner) orm\b|`orm`(?: and| runner)'''
 reason = "The contender keys `orm` and `orm-all` name the recorded results; renaming them breaks the report on old data."
 
-[[allow]]
-glob = "bench/README.md"
-pattern = '\borm-all\b'
-reason = "The contender key `orm-all` names the recorded results."
-
 # --- text that names the old project on purpose ---------------------------------
 
 [[allow]]
