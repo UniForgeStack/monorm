@@ -45,14 +45,14 @@ pub fn resolve(models: &mut [Model], physical: Option<&Schema>, mappings: &[Fiel
         let mut fields = vec![];
         let mut writable = BTreeSet::new();
         for (position, field) in model.fields().iter().enumerate() {
-            let source = model.native_dependency(position).map(|p| &model.fields()[p]).unwrap_or(field);
+            let source = field;
             let (owner, column) = match by_field.get(&(model.ir.name.as_str(), source.name.as_str())) {
                 Some(mapping) => (named_owner(&mapping.owner)?, mapping.column.as_str()),
                 None => (local, source.column.as_str()),
             };
             if owner == local && source.column != column { return Err("local storage mappings must agree with the logical column encoding".into()); }
             let column_pos = owners[owner].fields().iter().position(|f| f.column == column).ok_or_else(|| format!("{}.{}: no physical column {column}; contribute storage explicitly", model.ir.name, field.name))?;
-            if !model.native_computed().contains(&position) && !writable.insert((owner, column_pos)) {
+            if !writable.insert((owner, column_pos)) {
                 return Err(format!("{}: duplicate writable ownership of a physical column", model.ir.name));
             }
             let stored = &owners[owner].fields()[column_pos];

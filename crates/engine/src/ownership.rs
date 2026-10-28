@@ -12,15 +12,14 @@ pub fn column(schema: &Schema, model: &Model, alias: &str, field: &FieldIr) -> R
 /// `column` for the field at `position` of `model`.
 pub fn column_at(schema: &Schema, model: &Model, alias: &str, position: usize) -> Result<SimpleExpr> {
     if !model.has_foreign_storage {
-        let source = model.native_dependency(position).unwrap_or(position);
-        return Ok(Expr::col((Alias::new(alias), Alias::new(&model.fields()[source].column))).into());
+        return Ok(Expr::col((Alias::new(alias), Alias::new(&model.fields()[position].column))));
     }
     debug_assert!(position < model.resolved_fields.len(), "column_at takes a position of model.fields()");
     let resolved = &model.resolved_fields[position];
     let owners = &schema.physical().models;
     if resolved.storage.owner == model.owner {
         let column = &owners[resolved.storage.owner.0].fields()[resolved.storage.column].column;
-        return Ok(Expr::col((Alias::new(alias), Alias::new(column))).into());
+        return Ok(Expr::col((Alias::new(alias), Alias::new(column))));
     }
     let mut current = model.owner;
     let mut current_alias = alias.to_owned();

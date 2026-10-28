@@ -136,28 +136,15 @@ test("migrations from a schema file", () => {
 test("the generated models are current", async () => {
   const { native } = await import("../src/native.js");
   const schema = join(ROOT, "examples/blog/schema.prisma");
-  // A composition artifact records its lowering passes in the embedded schema;
-  // the blog schema uses no extension, so the rest must equal the default output.
-  const composition = (JSON.parse(native().profileMetadata()) as { capabilities: Record<string, boolean> }).capabilities.composition;
-  const comparable = (module: string): unknown[] => {
-    if (!composition) return [module];
-    const lines: unknown[] = module.split("\n");
-    const at = lines.findIndex((line) => typeof line === "string" && line.startsWith("const SCHEMA: SchemaIR = "));
-    const schema = JSON.parse((lines[at] as string).slice("const SCHEMA: SchemaIR = ".length).replace(/;$/, "")) as { behavior?: { declarations?: unknown[] } };
-    assert.equal(schema.behavior?.declarations?.length ?? 0, 0);
-    delete schema.behavior;
-    lines[at] = schema;
-    return lines;
-  };
-  assert.deepEqual(comparable(readFileSync(join(ROOT, "examples/blog/models.ts"), "utf8")), comparable(native().generateTypescript(schema, "orm")), "run `orm generate typescript`");
-  assert.deepEqual(comparable(readFileSync(join(ROOT, "languages/js/test/blog/models.ts"), "utf8")), comparable(native().generateTypescript(schema, "../../src/index.js")));
+  assert.deepEqual(readFileSync(join(ROOT, "examples/blog/models.ts"), "utf8"), native().generateTypescript(schema, "orm"), "run `orm generate typescript`");
+  assert.deepEqual(readFileSync(join(ROOT, "languages/js/test/blog/models.ts"), "utf8"), native().generateTypescript(schema, "../../src/index.js"));
   const nestedSchema = join(ROOT, "examples/nested/schema.prisma");
-  assert.deepEqual(comparable(readFileSync(join(ROOT, "examples/nested/models.ts"), "utf8")), comparable(native().generateTypescript(nestedSchema, "orm")), "run `orm generate typescript` in examples/nested");
-  assert.deepEqual(comparable(readFileSync(join(ROOT, "languages/js/test/nested/models.ts"), "utf8")), comparable(native().generateTypescript(nestedSchema, "../../src/index.js")));
+  assert.deepEqual(readFileSync(join(ROOT, "examples/nested/models.ts"), "utf8"), native().generateTypescript(nestedSchema, "orm"), "run `orm generate typescript` in examples/nested");
+  assert.deepEqual(readFileSync(join(ROOT, "languages/js/test/nested/models.ts"), "utf8"), native().generateTypescript(nestedSchema, "../../src/index.js"));
   const out = join(tmp(), "models.ts");
   const sets = ["--query-set", "Post=./queries.js#PostQueries", "--query-set", "Tag=./queries.js#TagQueries"];
   assert.equal(cli(["--schema", schema, "generate", "typescript", "-o", out, "--import", "../../../src/index.js", ...sets]).code, 0);
-  assert.deepEqual(comparable(readFileSync(join(ROOT, "languages/js/test/typing/queries/models.ts"), "utf8")), comparable(readFileSync(out, "utf8")), "regenerate languages/js/test/typing/queries/models.ts");
+  assert.deepEqual(readFileSync(join(ROOT, "languages/js/test/typing/queries/models.ts"), "utf8"), readFileSync(out, "utf8"), "regenerate languages/js/test/typing/queries/models.ts");
 });
 
 test("the CLI", () => {

@@ -359,11 +359,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         // key or the related row, exactly one of them
         writeln!(body, "export type {name}Insert = {{").unwrap();
         let mut one_of = vec![];
-        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
-            #[cfg(feature = "composition")]
-            if m.native.computed().contains(&position) { continue; }
-            #[cfg(not(feature = "composition"))]
-            let _ = position;
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             let optional = f.nullable || has_server_value_in(schema, m, f) || f.client_default.is_some();
             match belongs_to(m, &f.name) {
                 Some(r) if !optional && r.from.len() == 1 => one_of.push((f, r)),
@@ -402,8 +398,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         // update: plain values or expressions over the model
         writeln!(body, "export interface {name}Update {{").unwrap();
         for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
-            #[cfg(feature = "composition")]
-            if m.native.computed().contains(&position) { continue; }
             let t = field_type(m, f);
             let expression = !m.hooks.as_ref().is_some_and(|h| h.required.contains(&position));
             if expression {
@@ -421,11 +415,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
 
         // updateMany rows: the primary key plus plain values
         writeln!(body, "export interface {name}UpdateRow {{").unwrap();
-        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
-            #[cfg(feature = "composition")]
-            if m.native.computed().contains(&position) { continue; }
-            #[cfg(not(feature = "composition"))]
-            let _ = position;
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             let q = if f.primary_key { "" } else { "?" };
             writeln!(body, "  {}{q}: {};", camel(&f.name), field_input(m, f)).unwrap();
             if let Some(r) = belongs_to(m, &f.name).filter(|r| last_key(r, &f.name)) {

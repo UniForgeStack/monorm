@@ -380,6 +380,24 @@ impl Hook {
     pub fn name(&self) -> &str { &self.name }
 }
 
+/// A hook that is a function of this process, with no library on disk, for tests of the planner and the executor.
+#[cfg(feature = "testing")]
+pub fn in_process_hook(name: &str, call: HookFn) -> (State, Hook) {
+    unsafe extern "C" fn no_run(_: *const u8, _: usize, _: *const u8, _: usize, _: *mut Buffer) -> i32 { STATUS_OK }
+    unsafe extern "C" fn free(ptr: *mut u8, len: usize) {
+        // SAFETY: the hooks of the tests leak their buffers with `Value::leak`.
+        unsafe { orm_contracts::abi::free(ptr, len) }
+    }
+    #[cfg(unix)]
+    let library: libloading::Library = libloading::os::unix::Library::this().into();
+    #[cfg(windows)]
+    let library: libloading::Library = libloading::os::windows::Library::this().expect("the process has a module handle").into();
+    let hooks = vec![(name.to_owned(), call)];
+    let native = Arc::new(Native { library, run: no_run, free, abi: ABI_VERSION, symbols: OnceLock::from(HookSymbols { init: None, drop_state: None, hooks }) });
+    let hook = Hook { native: native.clone(), call, name: name.to_owned() };
+    (State { native, id: "in-process".to_owned(), raw: std::ptr::null_mut() }, hook)
+}
+
 // SAFETY: a state is `Send + Sync` by the ABI (see `orm_contracts::abi`): the host may call the hooks of one state
 // from several threads at once and drop it on another thread. `raw` is the only field that is not `Send + Sync` by itself.
 unsafe impl Send for State {}

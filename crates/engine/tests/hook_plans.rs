@@ -1,8 +1,8 @@
 //! Hook plans at the write seams: a hook 4 on a value that the caller sets, copy loads and the request context.
-use orm_contracts::abi::Value as Abi;
+use orm_contracts::abi::{Arg, OrmArg, OrmContext, OrmValue, Value as Abi, STATUS_OK};
 use orm_core::{
     dialect::{Dialect, Target},
-    hooks::{HookPlan, HookRef, StaticHook},
+    hooks::{HookPlan, HookRef},
     ir::{Operation, ValueType},
     schema::Schema,
     writes::{AssignValue, PreparedAssignment, UpsertDefault, WriteKind},
@@ -10,7 +10,7 @@ use orm_core::{
 use orm_engine::{exec, plan::Planner, Params, Result};
 use sea_query::Value;
 use serde_json::json;
-use std::cell::Cell;
+use std::{cell::Cell, ffi::c_void};
 
 const TEXT: usize = 1;
 const UPDATED_BY: usize = 2;
@@ -32,14 +32,19 @@ impl Params for Args {
     fn scope_values(&self) -> Vec<(String, usize)> { self.context_builds.set(self.context_builds.get() + 1); vec![] }
 }
 
-fn stamp(value: &mut Abi) -> std::result::Result<(), String> {
-    *value = Abi::Text(HOOK_VALUE.to_owned());
-    Ok(())
+unsafe extern "C" fn stamp(_: *const c_void, _: *const OrmArg, _: usize, _: *const OrmContext, out: *mut OrmValue) -> i32 {
+    // SAFETY: the host passes a writable `out`.
+    unsafe { *out = Abi::Text(HOOK_VALUE.to_owned()).leak() };
+    STATUS_OK
 }
 
-fn trim(value: &mut Abi) -> std::result::Result<(), String> {
-    if let Abi::Text(text) = value { *text = text.trim().to_owned(); }
-    Ok(())
+unsafe extern "C" fn trim(_: *const c_void, args: *const OrmArg, n: usize, _: *const OrmContext, out: *mut OrmValue) -> i32 {
+    // SAFETY: the host passes `n` readable arguments and a writable `out`.
+    let first = unsafe { Arg::from_raw(&std::slice::from_raw_parts(args, n)[0]) }.expect("an argument");
+    let Abi::Text(text) = first.value else { panic!("a text value") };
+    // SAFETY: see above.
+    unsafe { *out = Abi::Text(text.trim().to_owned()).leak() };
+    STATUS_OK
 }
 
 fn note() -> Schema {
@@ -53,7 +58,7 @@ fn note() -> Schema {
 /// `Note.updated_by` takes its value from a hook 4 on update; the hook replaces any value.
 fn with_hook_4() -> Schema {
     let mut schema = note();
-    let plan = HookPlan { assign: vec![(UPDATED_BY, HookRef::Static(StaticHook::Field(stamp)))], ..Default::default() };
+    let plan = HookPlan { assign: vec![(UPDATED_BY, HookRef::in_process("test.stamp", stamp, false))], ..Default::default() };
     schema.models[0].hooks = plan.finish();
     schema.models[0].assignments.push(PreparedAssignment {
         source: "test.a".into(),
@@ -70,7 +75,7 @@ fn with_hook_4() -> Schema {
 fn with_change_set() -> Schema {
     let mut schema = with_hook_4();
     let mut plan = *schema.models[0].hooks.take().unwrap();
-    plan.transforms.push((TEXT, HookRef::Static(StaticHook::Field(trim))));
+    plan.transforms.push((TEXT, HookRef::in_process("test.trim", trim, false)));
     schema.models[0].hooks = plan.finish();
     schema
 }
@@ -147,7 +152,7 @@ fn copy_is_allowed_for_a_model_with_only_a_hook_4() {
 }
 
 #[test]
-fn a_plan_of_static_functions_does_not_build_the_request_context() {
+fn a_plan_of_hooks_that_read_no_context_does_not_build_it() {
     let schema = with_change_set();
     let args = Args::of(vec![string("  padded  "), string("caller"), Value::Int(Some(7))]);
     let op = update(&[("text", param(0)), ("updated_by", param(1))], 2);

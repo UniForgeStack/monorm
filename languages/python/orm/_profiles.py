@@ -39,7 +39,6 @@ def validate(module: ModuleType, profile: str) -> None:
         "cli": tooling,
         "generate-python": tooling,
         "generate-typescript": tooling,
-        "composition": False,
     }
     if (
         metadata.get("abi") != 1

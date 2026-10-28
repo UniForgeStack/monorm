@@ -13,7 +13,7 @@ test("native profiles reject invalid selections and compatibility before use", (
   const path = join(directory, "mock.cjs");
   const build = { features: ["sqlite"], rustc: "rustc 1.0.0", target: "t", profile: "release", revision: "r" };
   const metadata = { abi: 1, version: "0.1.0", language: "node", profile: "sqlite", backends: ["sqlite"], adapters: [], build,
-    capabilities: { cli: false, "generate-python": false, "generate-typescript": false, composition: false } };
+    capabilities: { cli: false, "generate-python": false, "generate-typescript": false } };
   const run = (profile: string) => execFileSync(process.execPath,
     ["--input-type=module", "-e", `const { native } = await import(${JSON.stringify(nativeUrl)}); native();`],
     { env: { ...process.env, ORM_NATIVE: path, ORM_PROFILE: profile }, stdio: "pipe" });

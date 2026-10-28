@@ -1,14 +1,13 @@
 //! `HookPlan::finish` fills the lookup data of a plan and drops a plan that has no hook.
-use orm_contracts::abi::{Arg, Value};
-use orm_core::hooks::{HookPlan, HookRef, RecordHook, StaticHook};
+use orm_contracts::abi::{OrmArg, OrmContext, OrmValue, STATUS_OK};
+use orm_core::hooks::{HookPlan, HookRef, RecordHook};
+use std::ffi::c_void;
 
-fn field(_: &mut Value) -> Result<(), String> { Ok(()) }
+unsafe extern "C" fn nothing(_: *const c_void, _: *const OrmArg, _: usize, _: *const OrmContext, _: *mut OrmValue) -> i32 { STATUS_OK }
 
-fn record(_: &[Arg]) -> Result<(), String> { Ok(()) }
+fn hook() -> HookRef { HookRef::in_process("test.field", nothing, false) }
 
-fn hook() -> HookRef { HookRef::Static(StaticHook::Field(field)) }
-
-fn rule(positions: &[usize]) -> RecordHook { RecordHook { positions: positions.to_vec(), hook: HookRef::Static(StaticHook::Record(record)) } }
+fn rule(positions: &[usize]) -> RecordHook { RecordHook { positions: positions.to_vec(), hook: HookRef::in_process("test.record", nothing, false) } }
 
 #[test]
 fn a_plan_without_a_hook_is_none() {
@@ -50,7 +49,7 @@ fn a_plan_of_only_a_hook_4_is_kept_and_allows_an_upsert() {
 }
 
 #[test]
-fn a_plan_of_static_functions_does_not_read_the_request_context() {
+fn a_plan_of_hooks_that_read_no_context_does_not_read_it() {
     let plan = HookPlan { transforms: vec![(1, hook())], assign: vec![(2, hook())], records: vec![rule(&[1, 2])], ..Default::default() }.finish().expect("a plan");
     assert!(!plan.reads_context());
 }

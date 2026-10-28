@@ -1,7 +1,7 @@
 //! Expression records (`AssignValue::Expr`, `ClientDefaultIr::Expr`) in the planner.
-use std::collections::BTreeMap;
-use orm_contracts::abi::Value as Abi;
-use orm_core::{client_default::ClientDefault, dialect::{Dialect, Target}, hooks::{HookPlan, HookRef, StaticHook}, ir::{Operation, ValueType}, schema::Schema};
+use std::{collections::BTreeMap, ffi::c_void};
+use orm_contracts::abi::{OrmArg, OrmContext, OrmValue, Value as Abi, STATUS_ERROR};
+use orm_core::{client_default::ClientDefault, dialect::{Dialect, Target}, hooks::{HookPlan, HookRef}, ir::{Operation, ValueType}, schema::Schema};
 use orm_engine::{db, exec, params::Scoped, plan::{Plan, Planner}, Params, Result};
 use sea_query::Value;
 use serde_json::{json, Value as Json};
@@ -56,20 +56,24 @@ fn text(value: &str) -> Option<Value> { Some(Value::String(Some(value.to_owned()
 
 fn int(value: i32) -> Option<Value> { Some(Value::Int(Some(value))) }
 
-fn stand_in(_: &mut Abi) -> std::result::Result<(), String> { Ok(()) }
+unsafe extern "C" fn stand_in(_: *const c_void, _: *const OrmArg, _: usize, _: *const OrmContext, out: *mut OrmValue) -> i32 {
+    // SAFETY: the host passes a writable `out`.
+    unsafe { *out = Abi::Text("the test hook cannot give an expression".to_owned()).leak() };
+    STATUS_ERROR
+}
 
-/// `Post.shop` takes its default from a point-7 hook. A static function cannot give an expression, so a call fails the statement.
+/// `Post.shop` takes its default from a point-7 hook. The test hook fails when it is called, so a call fails the statement.
 fn with_hook_default() -> Schema {
     let mut schema = schema(Json::Null, json!({})).unwrap();
-    schema.models[0].hooks = HookPlan { expr_default: vec![(SHOP, HookRef::Static(StaticHook::Field(stand_in)))], ..Default::default() }.finish();
+    schema.models[0].hooks = HookPlan { expr_default: vec![(SHOP, HookRef::in_process("test.stand_in", stand_in, false))], ..Default::default() }.finish();
     schema.models[0].client_defaults.push((SHOP, ClientDefault::Hook("x.y".into())));
     schema
 }
 
-/// `Post.slug` is a computed field (point 5) of `name`. A static function cannot compute a field, so a computation fails the read.
+/// `Post.slug` is a computed field (point 5) of `name`. The test hook is never called by these tests.
 fn with_computed_field() -> Schema {
     let mut schema = schema(Json::Null, json!({})).unwrap();
-    schema.models[0].hooks = HookPlan { computed: vec![(SLUG, HookRef::Static(StaticHook::Field(stand_in)), vec![NAME])], ..Default::default() }.finish();
+    schema.models[0].hooks = HookPlan { computed: vec![(SLUG, HookRef::in_process("test.stand_in", stand_in, false), vec![NAME])], ..Default::default() }.finish();
     schema
 }
 
@@ -122,7 +126,7 @@ fn an_expression_default_is_planned_only_for_a_row_that_omits_the_value() {
 fn a_hook_default_runs_only_for_a_row_that_omits_the_value() {
     let schema = with_hook_default();
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
-        // The static stand-in fails when it is called: every row sets `shop`, so no call happens.
+        // The test hook fails when it is called: every row sets `shop`, so no call happens.
         let (statement, values) = insert(&schema, dialect, &["name", "shop"], vec![vec![text("a"), int(7)], vec![text("b"), int(8)]], &Ints(vec![]));
         assert!(statement.contains("\"shop_id\""), "{statement}");
         assert!(values.contains(&Value::Int(Some(7))) && values.contains(&Value::Int(Some(8))), "{values:?}");

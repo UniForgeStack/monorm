@@ -228,8 +228,6 @@ fn prefetched_js(js: Js, schema: &schema::Schema, fetched: &[Fetched]) -> napi::
 /// for a count or a write without `RETURNING`, a boolean for exists, `{model, rows}` for
 /// rows a write returned.
 fn outcome_js(env: &Env, schema: &schema::Schema, out: Outcome) -> napi::Result<Raw> {
-    #[cfg(feature = "composition")]
-    let out = orm_engine::behavior::results(&schema.native_models, out).map_err(db_tagged)?;
     orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&schema.result_checks, &out).map_err(db_tagged)?);
     let js = Js(env.raw());
     Ok(Raw(match out {
@@ -1301,9 +1299,6 @@ pub fn generate_typescript(
     orm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("orm"), &options).map_err(schema_err)
 }
 
-#[cfg(feature = "composition")]
-mod methods { include!(env!("ORM_NODE_METHODS")); }
-
 /// Static packaging compatibility metadata (separate from extension manifests).
 #[napi]
 pub fn profile_metadata() -> napi::Result<String> {
@@ -1319,8 +1314,7 @@ pub fn profile_metadata() -> napi::Result<String> {
         "build": serde_json::from_str::<serde_json::Value>(env!("ORM_BUILD_RECORD")).map_err(|e| schema_err(e.to_string()))?,
         "capabilities": { "cli": cfg!(feature = "cli"),
             "generate-python": cfg!(feature = "generate-python"),
-            "generate-typescript": cfg!(feature = "generate-typescript"),
-            "composition": cfg!(feature = "composition") }
+            "generate-typescript": cfg!(feature = "generate-typescript") }
     })).map_err(|e| schema_err(e.to_string()))
 }
 

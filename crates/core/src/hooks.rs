@@ -1,6 +1,5 @@
 //! The change-set hooks of a model: what runs on a value before it goes into a write.
-//! Two producers fill a `HookPlan`: a library that `define()` opens (`HookRef::Abi`) and the functions
-//! that the artifact compiles in (`HookRef::Static`). The engine runs both through one dispatch.
+//! A library that `define()` opens (`HookRef::Abi`) fills a `HookPlan`.
 use crate::loader::{Hook, Library, State};
 use crate::schema::Model;
 use orm_contracts::abi::{Arg, Context, Value};
@@ -9,37 +8,29 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// A function that the artifact compiles in.
-#[derive(Clone, Copy)]
-pub enum StaticHook {
-    /// Checks and rewrites the value of one field.
-    Field(fn(&mut Value) -> Result<(), String>),
-    /// Checks the supplied values of a record; one argument for each dependency, in order.
-    Record(fn(&[Arg]) -> Result<(), String>),
-    /// Turns the string of the dependency into the computed string.
-    Computed(fn(&str) -> Result<String, String>),
-}
-
 /// The name of the argument of a transform or a validator: one hook serves any field.
 const VALUE: &str = "value";
 
-/// A hook of a model, from a loaded library or from the artifact. Each method below runs one hook shape;
-/// a hook of the wrong kind for the method is an error, not a silent skip.
+/// A hook of a model, from a loaded library. Each method below runs one hook shape.
 #[derive(Clone)]
 pub enum HookRef {
     /// An export of a loaded library, resolved once by name, with the state of its `init`.
     Abi { state: Arc<State>, hook: Hook, reads_context: bool },
-    Static(StaticHook),
 }
 
 impl HookRef {
+    /// A hook that is a function of this process, for tests that need a plan and no library on disk.
+    #[cfg(feature = "testing")]
+    pub fn in_process(name: &str, call: orm_contracts::abi::HookFn, reads_context: bool) -> Self {
+        let (state, hook) = crate::loader::in_process_hook(name, call);
+        Self::Abi { state: Arc::new(state), hook, reads_context }
+    }
+
     pub fn reads_context(&self) -> bool { matches!(self, Self::Abi { reads_context: true, .. }) }
 
     /// Rewrites `value` in place. A library hook gets it as the one argument `value`.
     pub fn rewrite(&self, value: &mut Value, context: &Context) -> Result<(), String> {
         match self {
-            Self::Static(StaticHook::Field(f)) => f(value),
-            Self::Static(_) => Err("a record or computed function cannot rewrite a field".into()),
             Self::Abi { state, hook, .. } => {
                 let arg = Arg { name: VALUE.to_owned(), value: std::mem::replace(value, Value::Null) };
                 *value = state.call_hook(hook, std::slice::from_ref(&arg), context)?;
@@ -51,8 +42,6 @@ impl HookRef {
     /// Checks `value` and leaves it as it is.
     pub fn check(&self, value: &Value, context: &Context) -> Result<(), String> {
         match self {
-            Self::Static(StaticHook::Field(f)) => f(&mut value.clone()),
-            Self::Static(_) => Err("a record or computed function cannot check a field".into()),
             Self::Abi { state, hook, .. } => {
                 let arg = Arg { name: VALUE.to_owned(), value: value.clone() };
                 state.call_hook(hook, std::slice::from_ref(&arg), context).map(drop)
@@ -63,7 +52,6 @@ impl HookRef {
     /// The value of a write assignment (point 4); the hook takes no argument.
     pub fn produce(&self, context: &Context) -> Result<Value, String> {
         match self {
-            Self::Static(_) => Err("a static function cannot assign a value".into()),
             Self::Abi { state, hook, .. } => state.call_hook(hook, &[], context),
         }
     }
@@ -71,7 +59,6 @@ impl HookRef {
     /// The value of a computed field (point 5): one argument for each dependency, in order.
     pub fn compute(&self, args: &[Arg], context: &Context) -> Result<Value, String> {
         match self {
-            Self::Static(_) => Err("a static function cannot compute a field here".into()),
             Self::Abi { state, hook, .. } => state.call_hook(hook, args, context),
         }
     }
@@ -79,7 +66,6 @@ impl HookRef {
     /// The query IR JSON of an expression hook (point 6 or 7); the hook takes no argument.
     pub fn expression(&self, context: &Context) -> Result<serde_json::Value, String> {
         match self {
-            Self::Static(_) => Err("a static function cannot give an expression".into()),
             Self::Abi { state, hook, .. } => match state.call_hook(hook, &[], context)? {
                 Value::Json(text) => serde_json::from_str(&text).map_err(|e| format!("hook {} returned json that does not parse: {e}", hook.name())),
                 other => Err(format!("hook {} must return json (query IR), not {other:?}", hook.name())),
@@ -90,8 +76,6 @@ impl HookRef {
     /// Checks a record: one argument for each dependency.
     pub fn check_record(&self, args: &[Arg], context: &Context) -> Result<(), String> {
         match self {
-            Self::Static(StaticHook::Record(f)) => f(args),
-            Self::Static(_) => Err("a field or computed function cannot check a record".into()),
             Self::Abi { state, hook, .. } => state.call_hook(hook, args, context).map(drop),
         }
     }

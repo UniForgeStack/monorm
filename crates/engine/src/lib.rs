@@ -28,8 +28,6 @@ pub fn parse_op(op_json: &str) -> Result<Operation> {
     serde_json::from_str(op_json).map_err(|e| Error::query(format!("invalid query IR: {e}")))
 }
 
-#[cfg(feature = "composition")]
-pub mod behavior;
 pub mod hooks;
 
 pub mod ownership;

@@ -30,7 +30,6 @@ def artifact(name, **overrides):
             "cli": tooling,
             "generate-python": tooling,
             "generate-typescript": tooling,
-            "composition": False,
         },
     }
     metadata.update(overrides)

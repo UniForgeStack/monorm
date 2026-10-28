@@ -104,8 +104,6 @@ pub struct PrefetchPlan {
     slice: Option<(u64, Option<u64>)>,
     pub types: Vec<ValueType>,
     pub output: Output,
-    #[cfg(feature = "composition")]
-    pub computations: Vec<crate::behavior::Computation>,
     /// Computed fields of hook point 5, filled after the statement returns.
     pub computed: Vec<crate::hooks::Computed>,
     pub children: Vec<PrefetchPlan>,
@@ -141,8 +139,6 @@ pub struct SelectPlan {
     pub output: Output,
     /// A default filter was ANDed into the root WHERE and no bypass removed it.
     pub filtered: bool,
-    #[cfg(feature = "composition")]
-    pub computations: Vec<crate::behavior::Computation>,
     /// Computed fields of hook point 5, filled after the statement returns.
     pub computed: Vec<crate::hooks::Computed>,
     pub prefetch: Vec<PrefetchPlan>,
@@ -2464,8 +2460,6 @@ impl<'s> Planner<'s> {
         let mut stmt = Query::select();
         let mut types = vec![];
         let mut shape = vec![];
-        #[cfg(feature = "composition")]
-        let mut computations = vec![];
         let mut computed = vec![];
         let mut aggregated = !q.group_by.is_empty() || !q.having.is_empty();
         let mut windowed = false;
@@ -2477,8 +2471,6 @@ impl<'s> Planner<'s> {
                         return Err(Error::query("a CTE without a model has no model to select"));
                     }
                     if cte && (0..root.fields().len()).any(|p| root.computed(p)) { return Err(Error::query("computed model outputs cannot be used in a CTE")); }
-                    #[cfg(feature = "composition")]
-                    computations.extend(crate::behavior::model_computations(root.native, types.len()));
                     let all: Vec<usize> = (0..root.fields().len()).collect();
                     computed.extend(crate::hooks::computations(root, types.len(), &all, self.params)?);
                     for (position, f) in root.fields().iter().enumerate() {
@@ -2501,25 +2493,6 @@ impl<'s> Planner<'s> {
                     self.allow_window = true;
                     self.allow_unnest = true;
                     self.lateral_open = true;
-                    #[cfg(feature = "composition")]
-                    let computed = match expr {
-                        Expr::Col { path, name, .. } => {
-                            let m = self.model(self.walk(self.root, path)?);
-                            // A whole columns group has no plain field position: it is never computed.
-                            match m.field_pos(name) {
-                                Ok(position) if m.native.computed().contains(&position) => {
-                                    if cte { return Err(Error::query("native computed fields cannot be used in a CTE")); }
-                                    computations.push(crate::behavior::Computation { kind: m.native, field: position, column: types.len() - 1, dependency: types.len() - 1 });
-                                    true
-                                }
-                                _ => false,
-                            }
-                        }
-                        _ => false,
-                    };
-                    #[cfg(feature = "composition")]
-                    let e = if computed { match expr { Expr::Col { path, name, .. } => self.resolve(path, name), _ => unreachable!() } } else { self.value(expr, Hint::default()) };
-                    #[cfg(not(feature = "composition"))]
                     let e = self.value(expr, Hint::default());
                     self.allow_window = false;
                     self.allow_unnest = false;
@@ -2567,8 +2540,6 @@ impl<'s> Planner<'s> {
                     return Err(Error::query("distinct(on=...) takes columns, not a subfield; use distinct() on a select of the subfield"));
                 }
                 self.join_paths(e, "distinct(on=...)")?;
-                #[cfg(feature = "composition")]
-                self.reject_computed(self.model(self.walk(self.root, path)?), name)?;
                 {
                     let model = self.model(self.walk(self.root, path)?);
                     if model.has_foreign_storage && model.resolved_fields[model.field_pos(name).map_err(query_err)?].storage.owner != model.owner { return Err(Error::query("distinct(on=...) on inherited storage requires an explicit owner projection")); }
@@ -2579,10 +2550,6 @@ impl<'s> Planner<'s> {
             stmt.distinct_on(cols);
         } else if q.distinct {
             stmt.distinct();
-        }
-        #[cfg(feature = "composition")]
-        if !computations.is_empty() && (aggregated || q.distinct || !q.distinct_on.is_empty()) {
-            return Err(Error::query("native computed outputs cannot use SQL grouping or distinct; select stored dependencies instead"));
         }
         if !computed.is_empty() && (aggregated || q.distinct || !q.distinct_on.is_empty()) {
             return Err(Error::query("computed outputs cannot use SQL grouping or distinct; select stored dependencies instead"));
@@ -2604,8 +2571,7 @@ impl<'s> Planner<'s> {
             }
             self.apply_lock(&mut stmt, lock)?;
         }
-        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, filtered: self.root_filtered, prefetch: vec![],
-            #[cfg(feature = "composition")] computations, computed })
+        Ok(SelectPlan { stmt, types, output: Output::Rows { model: self.root, items: shape }, filtered: self.root_filtered, prefetch: vec![], computed })
     }
 
     /// LEFT JOINs for the to-one paths `e` reads outside aggregates.
@@ -2970,14 +2936,7 @@ impl<'s> Planner<'s> {
             plan.key_pos = plan.key_pos.iter().map(|&k| positions.iter().position(|f| f == k).expect("selected relation helper")).collect();
             prefetch.push(plan);
         }
-        #[cfg(feature = "composition")]
-        let computations = {
-            let mut out = crate::behavior::shape_computations(root.native, 0, &positions.to_vec());
-            for j in &joins { out.extend(crate::behavior::shape_computations(self.model(j.model).native, j.start, &shape_positions(self.model(j.model), j.shape.as_ref()).to_vec())); }
-            out
-        };
-        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins, annotations }, filtered: self.root_filtered, prefetch,
-            #[cfg(feature = "composition")] computations, computed })
+        Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins, annotations }, filtered: self.root_filtered, prefetch, computed })
     }
 
     /// One select-list column per annotation, after the joined models' columns: a
@@ -3596,7 +3555,6 @@ fn plan_prefetch(
         slice,
         types: plan.types,
         output: plan.output,
-        #[cfg(feature = "composition")] computations: plan.computations,
         computed: plan.computed,
         children: plan.prefetch,
     })

@@ -83,9 +83,7 @@ Cargo features are additive. Reproducible minimal builds always pass
 Engine backend features are `postgres` and `sqlite`. Bindings forward selected
 backends without enabling dependency defaults. `cli` selects the CLI crate.
 `generate-python` and `generate-typescript` select generator modules independently,
-including through an optional CLI dependency. `composition` selects the build-time
-static extension host; extension contract/compiler logic belongs to the build-time
-extension system. It is distinct from model composition.
+including through an optional CLI dependency.
 
 Baseline native profiles do not claim optional reference-loading support.
 The tooling profile and the default binding builds add `reference-loading`.

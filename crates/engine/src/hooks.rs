@@ -123,11 +123,10 @@ fn convert(label: &str, nullable: bool, original: &Value, out: Abi) -> Result<Va
     })
 }
 
-fn failure(model: &Model, position: Option<usize>, hook: &HookRef, message: String) -> Error {
-    match (hook, position) {
-        (HookRef::Static(_), _) => Error::query(message),
-        (_, Some(p)) => Error::query(format!("{}.{}: {message}", model.ir.name, model.fields()[p].name)),
-        (_, None) => Error::query(format!("{}: {message}", model.ir.name)),
+fn failure(model: &Model, position: Option<usize>, message: String) -> Error {
+    match position {
+        Some(p) => Error::query(format!("{}.{}: {message}", model.ir.name, model.fields()[p].name)),
+        None => Error::query(format!("{}: {message}", model.ir.name)),
     }
 }
 
@@ -136,11 +135,11 @@ fn field(model: &Model, plan: &HookPlan, position: usize, value: &mut Value, con
     let mut abi = to_abi(model, position, value)?;
     let mut rewritten = false;
     for (_, hook) in plan.transforms.iter().filter(|(p, _)| *p == position) {
-        hook.rewrite(&mut abi, contexts.of(hook)?).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.rewrite(&mut abi, contexts.of(hook)?).map_err(|m| failure(model, Some(position), m))?;
         rewritten = true;
     }
     for (_, hook) in plan.validators.iter().filter(|(p, _)| *p == position) {
-        hook.check(&abi, contexts.of(hook)?).map_err(|m| failure(model, Some(position), hook, m))?;
+        hook.check(&abi, contexts.of(hook)?).map_err(|m| failure(model, Some(position), m))?;
     }
     if rewritten { *value = from_abi(model, position, value, abi)?; }
     Ok(())
@@ -164,7 +163,7 @@ fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>],
             let value = slot(p).and_then(|s| row.slot(s)).ok_or_else(|| Error::query(PARTIAL))?;
             args.push(Arg { name: model.fields()[p].name.clone(), value: to_abi(model, p, value)? });
         }
-        record.hook.check_record(&args, contexts.of(&record.hook)?).map_err(|m| failure(model, None, &record.hook, m))?;
+        record.hook.check_record(&args, contexts.of(&record.hook)?).map_err(|m| failure(model, None, m))?;
     }
     Ok(())
 }
@@ -180,7 +179,7 @@ fn assign_row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<u
             return Err(Error::query(format!("{}.{}: a hook assigns this field; supply a value, not a database expression", model.ir.name, model.fields()[*p].name)));
         };
         let mut abi = to_abi(model, *p, value)?;
-        hook.rewrite(&mut abi, contexts.of(hook)?).map_err(|m| failure(model, Some(*p), hook, m))?;
+        hook.rewrite(&mut abi, contexts.of(hook)?).map_err(|m| failure(model, Some(*p), m))?;
         *value = from_abi(model, *p, value, abi)?;
     }
     Ok(())
@@ -233,7 +232,7 @@ pub fn update_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Value>]
 pub fn assigned(model: &Model, position: usize, contexts: &Contexts) -> Result<Option<Value>> {
     let Some(hook) = model.hooks.as_deref().and_then(|plan| plan.assigner(position)) else { return Ok(None) };
     let field = &model.fields()[position];
-    let out = hook.produce(contexts.of(hook)?).map_err(|m| failure(model, Some(position), hook, m))?;
+    let out = hook.produce(contexts.of(hook)?).map_err(|m| failure(model, Some(position), m))?;
     let seed = crate::params::null_of(Some(field.value_type()));
     from_abi(model, position, &seed, out).map(Some)
 }
@@ -243,7 +242,7 @@ pub fn assigned(model: &Model, position: usize, contexts: &Contexts) -> Result<O
 pub fn expression(model: &Model, position: usize, insert: bool, contexts: &Contexts) -> Result<Option<orm_core::ir::Expr>> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(None) };
     let Some(hook) = (if insert { plan.expr_defaulter(position) } else { plan.expr_assigner(position) }) else { return Ok(None) };
-    let json = hook.expression(contexts.of(hook)?).map_err(|m| failure(model, Some(position), hook, m))?;
+    let json = hook.expression(contexts.of(hook)?).map_err(|m| failure(model, Some(position), m))?;
     let label = format!("{}.{}", model.ir.name, model.fields()[position].name);
     orm_core::writes::parse_expr(&json, !insert).map(Some).map_err(|e| Error::query(format!("{label}: the expression hook returned an expression that a statement cannot use: {e}")))
 }

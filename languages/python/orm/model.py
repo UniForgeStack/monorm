@@ -32,11 +32,8 @@ if TYPE_CHECKING:
 _ARTIFACT: dict[str, Any] = json.loads(_native.native_artifact())
 _CAPABILITIES: tuple[str, ...] = tuple(_ARTIFACT.get("capabilities", ()))
 _capabilities.check_requires(_ARTIFACT)
-# Only a composition artifact (schema transformations) can change an already prepared schema.
-_REPREPARE: bool = (
-    "schema-transformations" in _CAPABILITIES
-    or json.loads(_native.profile_metadata())["capabilities"].get("composition") is True
-)
+# Only an artifact with schema transformations can change an already prepared schema.
+_REPREPARE: bool = "schema-transformations" in _CAPABILITIES
 
 _reference_adapter: types.ModuleType | None = None
 if "reference-loading" in _CAPABILITIES:

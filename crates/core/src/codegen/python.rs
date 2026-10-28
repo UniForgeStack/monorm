@@ -467,11 +467,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         // a relation of several key fields is listed once, after its last one
         let last = |r: &RelationIr, field: &str| r.from.last().is_some_and(|f| f == field);
         writeln!(body, "class {name}Insert(TypedDict):").unwrap();
-        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
-            #[cfg(feature = "composition")]
-            if m.native.computed().contains(&position) { continue; }
-            #[cfg(not(feature = "composition"))]
-            let _ = position;
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             let t = input_type(m, f);
             match belongs(&f.name) {
                 Some(r) => {
@@ -502,8 +498,6 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         writeln!(body, "\nclass {name}Update(TypedDict, total=False):").unwrap();
         for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
-            #[cfg(feature = "composition")]
-            if m.native.computed().contains(&position) { continue; }
             let t = input_type(m, f);
             let expression = !m.hooks.as_ref().is_some_and(|h| h.required.contains(&position));
             let expression = expression && m.adapter_for(&f.name).is_none();
@@ -519,11 +513,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         // update_many rows: the primary key plus plain values (no expressions)
         writeln!(body, "\nclass {name}UpdateRow(TypedDict, total=False):").unwrap();
-        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
-            #[cfg(feature = "composition")]
-            if m.native.computed().contains(&position) { continue; }
-            #[cfg(not(feature = "composition"))]
-            let _ = position;
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             let t = field_type(m, f);
             if f.primary_key {
                 writeln!(body, "    {}: Required[{t}]", f.name).unwrap();
@@ -540,11 +530,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         // get_or_insert lookup and defaults: plain values, none required
         writeln!(body, "\nclass {name}Lookup(TypedDict, total=False):").unwrap();
-        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
-            #[cfg(feature = "composition")]
-            if m.native.computed().contains(&position) { continue; }
-            #[cfg(not(feature = "composition"))]
-            let _ = position;
+        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
             writeln!(body, "    {}: {}", f.name, field_type(m, f)).unwrap();
             if let Some(r) = belongs(&f.name).filter(|r| last(r, &f.name)) {
                 writeln!(body, "    {}: {}", r.name, r.target).unwrap();

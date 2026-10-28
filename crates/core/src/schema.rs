@@ -40,8 +40,6 @@ pub struct Model {
     pub view: Option<crate::view::PreparedView>,
     /// The change-set hooks of this model; `None` when it has no binding.
     pub hooks: Option<Box<crate::hooks::HookPlan>>,
-    #[cfg(feature = "composition")]
-    pub native: crate::behavior::NativeModel,
     pub resolved_fields: Vec<crate::behavior::ResolvedField>,
     pub owner: crate::behavior::OwnerId,
     /// Some field lives in another table than the model's own, or the model's table joins a parent table.
@@ -86,28 +84,11 @@ impl Model {
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
             assignments: vec![], delete_rewrite: None, guards: vec![], view: None, hooks: None,
-            #[cfg(feature = "composition")] native: crate::behavior::NativeModel::None,
             owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false })
     }
 
     pub fn table(&self) -> &str {
         &self.ir.table
-    }
-
-    /// The field position a native field reads its stored value from.
-    pub fn native_dependency(&self, position: usize) -> Option<usize> {
-        #[cfg(feature = "composition")]
-        { self.native.dependency(position) }
-        #[cfg(not(feature = "composition"))]
-        { let _ = position; None }
-    }
-
-    /// Positions of the fields a native extension computes on read.
-    pub fn native_computed(&self) -> &[usize] {
-        #[cfg(feature = "composition")]
-        { self.native.computed() }
-        #[cfg(not(feature = "composition"))]
-        { &[] }
     }
 
     pub fn fields(&self) -> &[FieldIr] {
@@ -133,19 +114,14 @@ impl Model {
             .ok_or_else(|| format!("model {} has no field {name:?}", self.ir.name))
     }
 
-    /// True when the value of the field at `position` is computed on read, not stored: a hook of point 5 or a compiled computation.
+    /// True when the value of the field at `position` is computed on read, not stored: a hook of point 5.
     pub fn computed(&self, position: usize) -> bool {
-        if self.hooks.as_ref().is_some_and(|h| h.computed_at(position).is_some()) { return true; }
-        #[cfg(feature = "composition")]
-        if self.native.computed().contains(&position) { return true; }
-        false
+        self.hooks.as_ref().is_some_and(|h| h.computed_at(position).is_some())
     }
 
     /// The positions of the fields that a read must select to compute the field at `position`; empty for a stored field.
     pub fn dependencies(&self, position: usize) -> Vec<usize> {
         if let Some((_, deps)) = self.hooks.as_ref().and_then(|h| h.computed_at(position)) { return deps.to_vec(); }
-        #[cfg(feature = "composition")]
-        if let Some(d) = self.native.dependency(position) { return vec![d]; }
         vec![]
     }
 
@@ -182,8 +158,6 @@ pub struct Schema {
     pub partitions: Vec<crate::ir::PartitionIr>,
     pub catalog: Vec<ExtensionIr>,
     model_index: HashMap<String, usize>,
-    #[cfg(feature = "composition")]
-    pub native_models: Vec<crate::behavior::NativeModel>,
     storage: Option<Box<Schema>>,
     pub owner_links: Vec<crate::behavior::PreparedOwnerLink>,
 }
@@ -229,8 +203,6 @@ impl Schema {
         crate::identity::validate(&ir, crate::behavior::manifests())?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
-        #[cfg(feature = "composition")]
-        let native_models = if behavioral { crate::behavior::bind(&mut ir)? } else { vec![crate::behavior::NativeModel::None; ir.models.len()] };
         let storage = match ir.behavior.storage.take() {
             Some(storage) => {
                 let physical = serde_json::from_value(serde_json::json!({
@@ -243,8 +215,6 @@ impl Schema {
             None => None,
         };
         crate::features::validate(&ir)?;
-        #[cfg(feature = "composition")]
-        let mut native = native_models.iter().copied();
         let model_index: HashMap<String, usize> = ir
             .models
             .iter()
@@ -307,17 +277,13 @@ impl Schema {
                 return Err(format!("{}.{}: an enum subset is only allowed on a field of a view model", m.name, f.name));
             }
             let client_defaults = crate::client_default::prepare(&m.name, &m.fields, &enums)?;
-            #[cfg(feature = "composition")]
-            let kind = native.next().expect("prepared model");
             models.push(Model {
                 field_adapters: field_adapters.next().expect("prepared adapter model"),
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
                 assignments: vec![], delete_rewrite: None, guards: vec![], view: None,
-                #[cfg(feature = "composition")] hooks: kind.static_hooks(),
-                #[cfg(not(feature = "composition"))] hooks: None,
-                #[cfg(feature = "composition")] native: kind,
+                hooks: None,
                 owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false });
         }
         // Validate relation targets now that every model is indexed.
@@ -367,7 +333,6 @@ impl Schema {
             partitions: ir.partitions,
             catalog: ir.catalog,
             model_index,
-            #[cfg(feature = "composition")] native_models,
             storage,
             owner_links,
         })
