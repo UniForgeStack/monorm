@@ -87,10 +87,9 @@ including through an optional CLI dependency. `composition` selects the build-ti
 static extension host; extension contract/compiler logic belongs to the build-time
 extension system. It is distinct from model composition.
 
-Baseline native profiles do not claim optional reference-loading
-or file-storage support.
+Baseline native profiles do not claim optional reference-loading support.
 The tooling profile and the default binding builds add `reference-loading`.
-The feature extension comes only from an extension crate selected in
+A feature extension comes only from an extension crate selected in
 `orm-extension-build`; do not pass its host feature by hand. A marker package cannot add code to an
 already compiled engine. [Build-time extensions](build-time-extensions.md#select-feature-extensions)
 has the configuration, the build commands and the packaging step: the Python library

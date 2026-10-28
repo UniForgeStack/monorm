@@ -1,7 +1,7 @@
 // The package build exposes this module; the fixture tests compile it to CommonJS.
 import { registerFieldAdapter, type FieldAdapter, type ModelMeta } from "orm";
 
-export const manifestHash = "f64633107faaef36344c6d4847832c644650e70218e95f1e0995d7c241b8a73d";
+export const manifestHash = "feb1941ebdbd1c55d4a3233c741b85b89b714f1f8eb907fc24a43e0bab78afce";
 
 export const OutsideQuerySet = <T extends new (...args: any[]) => any>(Base: T) => class extends Base {
   tagged() { return this.limit(7); }

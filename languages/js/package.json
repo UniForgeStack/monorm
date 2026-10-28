@@ -68,7 +68,9 @@
     "@orm/query-defaults": "file:../../target/extension-packages/query-defaults/npm",
     "@orm/generic": "file:../../target/extension-packages/generic/npm",
     "@orm/proxy": "file:../../target/extension-packages/proxy/npm",
-    "@orm/composition": "file:../../target/extension-packages/model-composition/npm"
+    "@orm/composition": "file:../../target/extension-packages/model-composition/npm",
+    "@orm/file-storage": "file:../../target/extension-packages/file-storage/npm",
+    "opendal": "^0.49.0"
   },
   "files": [
     "dist/src",

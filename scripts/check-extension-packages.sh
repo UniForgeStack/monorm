@@ -25,6 +25,11 @@ for dir in "$ROOT/languages/js" "$WORK/native" "$ROOT/target/extension-packages"
 done
 printf '{"private":true,"type":"module"}\n' > "$WORK/js/package.json"
 (cd "$WORK/js" && npm install --ignore-scripts --no-audit --no-fund "$WORK/tarballs"/*.tgz)
+# The file-storage package: unit tests once, then the native tests on each database below.
+"$WORK/venv/bin/python" -m unittest discover -s "$ROOT/extensions/file-storage/integration/python/tests"
+"$ROOT/languages/js/node_modules/.bin/tsc" "$ROOT"/extensions/file-storage/integration/typescript/test/*.ts --rootDir "$ROOT/extensions/file-storage" --outDir "$WORK/js/file-storage" --module ESNext --target ES2022 --moduleResolution Bundler --skipLibCheck --noCheck
+cp -R "$ROOT/extensions/file-storage/fixtures" "$WORK/js/file-storage/fixtures"
+(cd "$WORK/js" && node --test file-storage/integration/typescript/test/*.test.js)
 for dialect in postgres sqlite; do
   consumer=$WORK/js/$dialect
   mkdir -p "$consumer"
@@ -83,6 +88,10 @@ SCHEMA
   (cd "$generic" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
   (cd "$generic" && ORM_DATABASE_URL="$url" node use.mjs)
   (cd "$generic" && ORM_DATABASE_URL="$url" bun use.mjs)
+  cp "$ROOT/extensions/file-storage/integration/tests/native_node.mjs" "$consumer/file-storage.test.mjs"
+  (cd "$consumer" && FILE_STORAGE_DATABASE_URL="$url" "$WORK/venv/bin/python" "$ROOT/extensions/file-storage/integration/tests/native_python.py")
+  (cd "$consumer" && FILE_STORAGE_DATABASE_URL="$url" node --test file-storage.test.mjs)
+  (cd "$consumer" && FILE_STORAGE_DATABASE_URL="$url" bun test file-storage.test.mjs)
   # The proxy package: a proxy read through the installed package.
   proxy=$consumer/proxy
   mkdir -p "$proxy"
@@ -108,17 +117,18 @@ SCHEMA
   (cd "$composition" && ORM_DATABASE_URL="$url" node use.mjs)
   (cd "$composition" && ORM_DATABASE_URL="$url" bun use.mjs)
 done
-# Without its package, `@@query.*` fails and neutral read defaults still work.
+# Without their packages, `@@query.*` and `@storage.file` fail and neutral read defaults still work.
 uv venv --python "$PYTHON" "$WORK/bare-venv"
 uv pip install --python "$WORK/bare-venv/bin/python" "$WORK/wheels"/*.whl
 "$WORK/bare-venv/bin/python" "$ROOT/extensions/query-defaults/tests/public/disabled.py"
+"$WORK/bare-venv/bin/python" "$ROOT/extensions/file-storage/tests/public/disabled.py"
 mkdir -p "$WORK/bare-js"
 printf '{"private":true,"type":"module"}\n' > "$WORK/bare-js/package.json"
 bare_tarballs=()
 for tarball in "$WORK/tarballs"/*.tgz; do
-  case "$tarball" in *query-defaults*) ;; *) bare_tarballs+=("$tarball") ;; esac
+  case "$tarball" in *query-defaults*|*file-storage*) ;; *) bare_tarballs+=("$tarball") ;; esac
 done
-(cd "$WORK/bare-js" && npm install --ignore-scripts --no-audit --no-fund "${bare_tarballs[@]}" && node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs")
+(cd "$WORK/bare-js" && npm install --ignore-scripts --no-audit --no-fund "${bare_tarballs[@]}" && node "$ROOT/extensions/query-defaults/tests/public/disabled.mjs" && node "$ROOT/extensions/file-storage/tests/public/disabled.mjs")
 # A library of a newer ABI minor fails `define()` with both versions in the message.
 cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-package -- package "$ROOT/tests/outside-extension" --out "$WORK/outside-newer" --tsc "$ROOT/languages/js/node_modules/.bin/tsc" --features abi-newer
 uv venv --python "$PYTHON" "$WORK/venv-newer"

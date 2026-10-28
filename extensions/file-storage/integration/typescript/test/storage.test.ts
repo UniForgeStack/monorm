@@ -4,7 +4,7 @@ import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Operator } from "opendal";
-import { CHUNK_SIZE, CapabilityError, Reference, Registry, SizeLimitError, StorageError, UploadError } from "../src/index.js";
+import { CHUNK_SIZE, CapabilityError, Reference, Registry, SizeLimitError, StorageError, UploadError } from "@orm/file-storage";
 
 async function collect(source: AsyncIterable<Uint8Array>): Promise<Buffer> {
   const parts: Uint8Array[] = []; for await (const part of source) parts.push(part); return Buffer.concat(parts);
@@ -29,7 +29,7 @@ async function withFs(run: (operator: Operator, root: string) => Promise<void>) 
 async function* big(count = 200) { for (let i = 0; i < count; i++) yield Buffer.alloc(CHUNK_SIZE, 120); }
 
 test("shared wire vectors and invalid values", async () => {
-  const vectors = JSON.parse(await readFile(new URL("../../../../fixtures/references.json", import.meta.url), "utf8"));
+  const vectors = JSON.parse(await readFile(new URL("../../../fixtures/references.json", import.meta.url), "utf8"));
   for (const data of vectors) assert.deepEqual(Reference.fromJSON(data).toJSON(), data);
   for (const extra of [{ v: 2 }, { size: -1 }, { size: true }, { size: 2 ** 53 }, { version: null }, { storage: "" }, { secret: "no" }, { key: "\ud800" }]) {
     assert.throws(() => Reference.fromJSON({ v: 1, storage: "local", key: "key", ...extra }));

@@ -638,7 +638,7 @@ fn behavioral_arguments_preserve_names_null_and_nested_json() {
 #[test]
 fn behavioral_literal_forms_need_an_argument_of_kind_value() {
     let manifest: crate::behavior::Manifest = serde_json::from_value(serde_json::json!({
-        "id": "test", "version": "1", "host_contract": 1, "schema_contract": 4, "languages": [], "databases": [],
+        "id": "test", "version": "1", "host_contract": 1, "schema_contract": 5, "languages": [], "databases": [],
         "attributes": [{"name": "test.mark", "target": "model",
             "arguments": {"name": {"kind": "string"}, "tags": {"kind": "list"}, "payload": {"kind": "value"}},
             "positional": [{"kind": "string"}, {"kind": "value"}]}]
@@ -749,7 +749,7 @@ fn minus_field_is_a_descending_index_key() {
 /// A manifest with the keys of the generic extension, written out: the core reads the keys, not the names.
 fn owning_manifest() -> crate::behavior::Manifest {
     serde_json::from_value(serde_json::json!({
-        "id": "orm.generic", "version": "1", "host_contract": 1, "schema_contract": "4.0", "languages": [], "databases": [],
+        "id": "orm.generic", "version": "1", "host_contract": 1, "schema_contract": "5.0", "languages": [], "databases": [],
         "attributes": [{"name": "generic.relation", "target": "field", "field_type": "Generic", "identities": true, "arguments": {"targets": {"kind": "list", "required": true}}},
                        {"name": "generic.reverse", "target": "field", "member": false, "identities": true},
                        {"name": "generic.relation", "target": "model", "identities": true}]

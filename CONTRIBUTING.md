@@ -45,13 +45,13 @@ If a command needs a different PostgreSQL than the default, set `ORM_TEST_DATABA
 ### Feature artifacts
 
 Optional features are build-time extensions.
-`scripts/feature-check.sh` builds one native artifact per extension, and one with all of them, and runs the tests on each artifact.
+`scripts/feature-check.sh` builds one native artifact with all extensions and runs the tests on it.
 Run it when you change an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code.
 It needs `uv`, `node`, `npm` and `bun`, and takes a long time. CI runs it on every pull request.
 
 ```bash
 PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/orm_test \
-  scripts/feature-check.sh            # or name artifacts: scripts/feature-check.sh file-storage all
+  scripts/feature-check.sh            # or name the artifact: scripts/feature-check.sh all
 ```
 
 ### Generated example models

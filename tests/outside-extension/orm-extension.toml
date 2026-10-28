@@ -1,6 +1,6 @@
 id = "acme.outside"
 version = "0.1.0"
-schema_contract = "4.0"
+schema_contract = "5.0"
 abi = "0.2"
 library = "outside_extension"
 language_contract = 1
@@ -188,6 +188,7 @@ output = "json"
 source = "python"
 query_set = "OutsideQuerySet"
 instance = "OutsideInstance"
+dependencies = ["typing-extensions>=4.0"]
 
 [[python.field_adapters]]
 adapter = "acme.outside.wrapped.v1"
@@ -203,6 +204,8 @@ module_functions = [{ name = "configure_outside", method = "configure", stub = "
 source = "typescript"
 query_set = "OutsideQuerySet"
 instance = "OutsideInstance"
+exports = { "./model" = "model.js" }
+dependencies = { "decimal.js" = "^10.4.3" }
 
 [[typescript.field_adapters]]
 adapter = "acme.outside.wrapped.v1"

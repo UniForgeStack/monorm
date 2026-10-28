@@ -1,4 +1,4 @@
-// Needs the file-storage extension (orm-file-storage-extension) and the storage packages.
+// Needs the `orm-file-storage` (Python) or `@orm/file-storage` (Node) package.
 
 model Report {
   id   Int   @id

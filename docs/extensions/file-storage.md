@@ -4,11 +4,11 @@ A file field is a nullable `Json` column that holds a storage reference.
 The ORM uploads `Upload` values before the SQL statement and reads the column back as a `Reference`.
 The files live in an [OpenDAL](https://opendal.apache.org/) service (local directory, S3 and others) that the application configures.
 
-**Enable:** select the `orm-file-storage-extension` crate (`extensions/file-storage`) in your build.
-See [build-time-extensions.md](../contracts/build-time-extensions.md#select-feature-extensions).
-Install the binding package too: Python `orm-file-storage` (`extensions/file-storage/integration/python`, needs `opendal`);
-TypeScript `@orm/file-storage` (`extensions/file-storage/integration/typescript`, needs `opendal`).
-The extension needs the `async-field-adapter.v1` capability; the host has no file-specific code.
+**Enable:** install the package `orm-file-storage` (Python) or `@orm/file-storage` (Node).
+It has the `orm.file-storage` extension and the runtime module, and it installs `opendal`.
+Without the package, `orm generate` rejects `@storage.file` with a namespace error.
+See [Installable packages](../contracts/build-time-extensions.md#installable-packages).
+The extension requires the `async-field-adapter.v1` capability; the host has no file-specific code.
 
 ## Schema
 

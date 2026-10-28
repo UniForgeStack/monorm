@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Reference } from "../src/index.js";
-import { FileField } from "../src/index.js";
-import { prepareDecoder } from "../src/decoder.js";
+import { Reference } from "@orm/file-storage";
+import { FileField } from "@orm/file-storage";
+import { prepareDecoder } from "@orm/file-storage/decoder";
 
 test("public slots only, null loaded, omitted absent", () => {
   const fields = new Map([["file", new FileField("file", "reports", true)], ["hidden", new FileField("hidden", "reports")]]);

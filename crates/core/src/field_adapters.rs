@@ -13,7 +13,6 @@ pub struct PreparedAdapter {
 /// The adapters of each model, in model order.
 pub fn prepare(ir: &SchemaIr) -> Result<Vec<Vec<PreparedAdapter>>, String> {
     crate::behavior::validate_field_adapters(ir)?;
-    crate::file_storage::check(ir)?;
     let mut prepared = vec![vec![]; ir.models.len()];
     for record in &ir.behavior.field_adapters {
         let model = ir.models.iter().position(|m| m.name == record.model)
@@ -25,4 +24,21 @@ pub fn prepare(ir: &SchemaIr) -> Result<Vec<Vec<PreparedAdapter>>, String> {
         });
     }
     Ok(prepared)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::behavior::{FieldAdapter, SCHEMA_CONTRACT};
+
+    #[test]
+    fn definition_resolves_positions_and_options() {
+        let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}", None).unwrap();
+        ir.behavior.schema_contract = SCHEMA_CONTRACT;
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: "acme.reference.v1".into(), options: serde_json::json!({"storage": "reports"}) });
+        let schema = crate::schema::Schema::from_ir(ir).unwrap();
+        let adapter = schema.models[0].adapter_for("file").unwrap();
+        assert_eq!(adapter.position, 1);
+        assert_eq!(adapter.options, serde_json::json!({"storage": "reports"}));
+        assert!(schema.models[0].adapter_for("id").is_none());
+    }
 }

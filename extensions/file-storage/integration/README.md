@@ -1,6 +1,6 @@
 # File-field binding preparation
 
-`python/` and `typescript/` contain separately packaged selected binding helpers.
+`python/` and `typescript/` are the runtime sources of the `orm-file-storage` and `@orm/file-storage` packages.
 They depend on `opendal`, not on the project's storage library. They keep the Reference
 codec v1, `Upload`, the `Registry` (storage name to OpenDAL operator), `max_size` while
 streaming and the upload error with the candidate reference. They do not import ORM
@@ -11,9 +11,9 @@ and TypeScript `registerFieldAdapter` from `orm`. The extension requires the
 
 `install_model` / `installModel` register one `FileAdapter` per file field: its
 `validate` checks an `Upload` or a `Reference` without I/O, `prepare` uploads, and
-`decode` turns a loaded field into a `Reference`. Annotated file fields need a native
-artifact that selects this extension in `orm-extension-build` (the manifest requires
-`async-field-adapter.v1`). Installing these helpers alone does not.
+`decode` turns a loaded field into a `Reference`. Annotated file fields need the
+installed package: it holds the extension library and these helpers (the manifest requires
+`async-field-adapter.v1`).
 
 Declare a file field (see also [docs/extensions/file-storage.md](../../../docs/extensions/file-storage.md)):
 
@@ -63,11 +63,10 @@ the selected ORM's public missing/unloaded error classes in final integration.
 
 ## Selected native model integration
 
-The native `file-storage` Cargo feature includes the durable reference validator,
-resolves logical JSON field positions at definition, and validates ordinary
-insert/update/bulk-update references without provider calls. Both bindings expose
-selected insert preflight that converts and plans all inputs without executing
-SQL. No storage dependency or prepared file layout exists in disabled native core.
+The host has no file-specific code. The package's field adapter validates ordinary
+insert/update/bulk-update references without provider calls, and both bindings
+prepare each `Upload` outside native SQL execution. No storage dependency or
+prepared file layout exists in the native core.
 
 Code generation reads the `file-storage.reference.v1` runtime entry of the
 extension manifest (`[[python.field_adapters]]`, `[[typescript.field_adapters]]`).
@@ -96,6 +95,5 @@ Selected descriptor maps use Python field names / TypeScript camelCase names.
 
 Models with `install_model` / `installModel` read file fields as `Reference`
 (`extensions/file-storage/integration/tests/native_python.py`, `native_node.mjs`).
-Limitation: the native artifact's `adapters` list is empty, so packaging does not
-select these modules by itself; the application (or its generated module) calls
-`install_model` / `installModel` once at initialization.
+The application (or its generated module) calls `install_model` / `installModel`
+once at initialization.

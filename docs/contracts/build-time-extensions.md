@@ -63,13 +63,13 @@ Cargo resolves Rust package versions;
 the frontend checks extension dependency constraints against that resolved selection.
 
 No manifest capability turns on a host Cargo feature.
-`file-storage` has no host code and only requires `async-field-adapter.v1`.
 The model-composition extension (`orm.composition`, `extensions/model-composition`) has none either.
+The file-storage extension (`orm.file-storage`) has none either: it has no host code and only requires `async-field-adapter.v1`.
 The column-role extensions (`orm.timestamps`, `orm.soft-delete`, `orm.locking`) have no capability and no host feature; see `schema-extensions.md`.
 The inheritance extension (`orm.inherit`, `extensions/inherit`) also has none; see [inherit.md](../extensions/inherit.md).
 The query-defaults extension (`orm.query-defaults`) has none either: its pass writes only the neutral `read_defaults` record.
-These eight are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
-`scripts/feature-check.sh` builds one artifact per feature extension and one with all of them, installs the eight packages in every environment, and runs every suite on each.
+These nine are installable packages, not selected crates: `orm-extension-build` rejects a library manifest (see [Installable packages](#installable-packages)).
+`scripts/feature-check.sh` builds one artifact (`all`), installs the nine packages in every environment, and runs every suite on each.
 
 Binding backend and generator defaults (including `reference-loading`) are preserved when composition is added, so an extension artifact is never minimal.
 For a minimal artifact, select the host features explicitly with `binding_features`, for example `{"python": ["sqlite"], "node": ["postgres"]}`.
@@ -82,14 +82,11 @@ Selection is recorded in the build configuration and emitted binding manifests, 
 
 ## Select feature extensions
 
-The repository ships static feature extensions as crates that you put in `dependencies`.
-
-| Feature | Dependency entry (`"alias": {...}`) | Doc |
-|---|---|---|
-| file-storage | `"file_storage": {"package": "orm-file-storage-extension", "path": "extensions/file-storage"}` | [file-storage.md](../extensions/file-storage.md) |
+The repository ships no static feature extension: every first-party extension is an installable package.
+A feature extension is a crate that you put in `dependencies`; the example uses a crate of your own.
 
 Paths are relative to the repository root; write them relative to your configuration file.
-This configuration selects them and emits the workspace only (`prepare_only`):
+This configuration selects one crate and emits the workspace only (`prepare_only`):
 
 ```json
 {
@@ -98,8 +95,7 @@ This configuration selects them and emits the workspace only (`prepare_only`):
   "prepare_only": true,
   "bindings": ["python", "node"],
   "dependencies": {
-    "proxy": {"package": "orm-proxy", "path": "/path/to/orm/extensions/proxy"},
-    "file_storage": {"package": "orm-file-storage-extension", "path": "/path/to/orm/extensions/file-storage"}
+    "acme": {"package": "acme-feature", "path": "/path/to/acme-feature"}
   }
 }
 ```
@@ -325,6 +321,8 @@ When the manifest has `exports`, the loader needs `orm_ext_hooks` and, when `ini
 `Plan::library(id)` gives a `Library` of a manifest with `exports`; `Library::init(&json)` gives a `State`, and `State::call(hook, &args, &context)` runs one hook. The `State` calls `orm_ext_drop_state` once when it drops.
 Schema contract 4.0 holds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). A major bump resets the minor. The IR sets `schema_contract_minor` only for a feature that a later minor adds; an engine of an older minor stops at the unknown field with a parse error, and the "newer than this engine" message comes only from an engine that knows the minor.
 Schema contract 4.0 holds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute.
+Schema contract 5.0 removes `Requirements.file_fields` and the `file-storage` host capability: the `orm.file-storage` package uses `field_adapters`.
+Models of contract 4 fail `define` with a "schema contract 4 is older" error; regenerate them.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.
@@ -388,4 +386,4 @@ The `library` and `assemble` commands build one package for 3 platforms; see [Ex
 The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `orm-extension.toml` with `abi` and `library`.
 The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
 Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.
-`scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking, inherit, query-defaults and generic packages and installs them into `.venv` and `languages/js`.
+`scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy, composition and file-storage packages and installs them into `.venv` and `languages/js`.

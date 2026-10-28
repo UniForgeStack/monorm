@@ -56,7 +56,8 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
     (package / "py.typed").touch()
     info = stage / f"{module}-{version}.dist-info"
     info.mkdir()
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\nRequires-Python: >=3.11\n")
+    requires = "".join(f"Requires-Dist: {line}\n" for line in (manifest.get("python") or {}).get("dependencies", []))
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\nRequires-Python: >=3.11\n{requires}")
     # `any`: the wheel holds the libraries of all platforms, and the loader picks its own file.
     tag = "py3-none-any" if config["tag"] == "any" else "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_")
     purelib = "true" if config["tag"] == "any" else "false"
@@ -85,13 +86,23 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
     subprocess.run([config["tsc"], *sources, "--outDir", str(npm), "--module", "ESNext", "--moduleResolution", "Bundler", "--target", "ES2022", "--declaration", "--noCheck"], check=True)
     # No `os` or `cpu` field: the package holds the libraries of all platforms.
     listed = sorted(p.relative_to(npm).as_posix() for p in npm.rglob("*") if p.is_file())
-    (npm / "package.json").write_text(json.dumps({
+    section = manifest.get("typescript") or {}
+    exports = {".": {"types": "./index.d.ts", "default": "./index.js"}}
+    for subpath, file in sorted(section.get("exports", {}).items()):
+        stem = file[:-3]
+        if not (npm / f"{stem}.ts").is_file():
+            raise ValueError(f"typescript.exports {subpath}: no source {stem}.ts in the package")
+        exports[subpath] = {"types": f"./{stem}.d.ts", "default": f"./{file}"}
+    package_json = {
         "name": npm_name, "version": version, "type": "module",
         "main": "./index.js", "types": "./index.d.ts",
-        "exports": {".": {"types": "./index.d.ts", "default": "./index.js"}},
+        "exports": exports,
         "files": listed,
         "orm": {"extension": ident},
-    }, indent=2) + "\n")
+    }
+    if section.get("dependencies"):
+        package_json["dependencies"] = dict(sorted(section["dependencies"].items()))
+    (npm / "package.json").write_text(json.dumps(package_json, indent=2) + "\n")
     if (out / "npm").exists():
         shutil.rmtree(out / "npm")
     shutil.copytree(npm, out / "npm")

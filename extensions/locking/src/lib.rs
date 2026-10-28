@@ -51,7 +51,7 @@ mod tests {
             "models": [{"name": "Post", "table": "posts", "fields": [
                 {"name": "id", "column": "id", "type": "int", "primary_key": true}
             ]}],
-            "behavior": {"schema_contract": 4, "declarations": [
+            "behavior": {"schema_contract": 5, "declarations": [
                 {"attribute": "locking.version", "model": "Post", "field": field, "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 3, "column": 3}}
             ]}
         })).unwrap()

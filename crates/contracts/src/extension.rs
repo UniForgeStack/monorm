@@ -7,7 +7,7 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(4, 0);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -89,8 +89,6 @@ pub struct Requirements {
     pub owner_links: Vec<OwnerLink>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_adapters: Vec<FieldAdapter>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub file_fields: Vec<FileField>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_assignments: Vec<crate::writes::WriteAssignment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -181,7 +179,7 @@ impl Requirements {
 
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
-            && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty() && self.file_fields.is_empty()
+            && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
@@ -199,29 +197,12 @@ pub struct FieldAdapter {
     pub options: serde_json::Value,
 }
 
-/// File-field configuration has durable identity only; clients remain application configuration.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct FileField {
-    pub model: String,
-    pub field: String,
-    pub storage: String,
-    pub reference_contract: u32,
-}
-
 /// The language capability of the async field adapter pipeline: validate, `await prepare`, SQL, decode.
 pub const ASYNC_FIELD_ADAPTER_V1: &str = "async-field-adapter.v1";
-
-pub const FILE_REFERENCE_ADAPTER: &str = "file-storage.reference.v1";
 
 /// Names the host runtimes give meaning to on models and instances.
 pub const RESERVED_MEMBERS: [&str; 14] =
     ["objects", "qs", "_meta", "DoesNotExist", "MultipleObjectsReturned", "pk", "update", "delete", "refresh", "load", "toJSON", "constructor", "toString", "then"];
-
-/// The method names that the file-storage runtime adds for `field`, in the Python and TypeScript forms.
-pub fn file_method_names(field: &str) -> Vec<String> {
-    vec![format!("{field}_signed_url"), format!("{field}_open"), format!("{}SignedUrl", camel(field)), format!("{}Open", camel(field))]
-}
 
 /// Reject an adapter field whose generated operations (`names`) collide with a model member.
 pub fn check_adapter_methods(ir: &SchemaIr, model: &crate::ir::ModelIr, names: &[String]) -> Result<(), String> {
@@ -285,21 +266,6 @@ pub fn validate_field_adapters(ir: &SchemaIr) -> Result<(), String> {
         }
         if !seen.insert((&adapter.model, &adapter.field)) || adapter.adapter.is_empty() {
             return Err(format!("{}.{}: duplicate/empty field adapter", adapter.model, adapter.field));
-        }
-    }
-    let mut files = std::collections::BTreeSet::new();
-    for file in &ir.behavior.file_fields {
-        if !files.insert((&file.model, &file.field)) || file.reference_contract != 1
-            || file.storage.is_empty() || file.storage.contains('\0') {
-            return Err(format!("{}.{}: invalid file-field contract", file.model, file.field));
-        }
-        if !ir.behavior.field_adapters.iter().any(|a| a.model == file.model && a.field == file.field && a.adapter == FILE_REFERENCE_ADAPTER) {
-            return Err(format!("{}.{}: missing file reference adapter", file.model, file.field));
-        }
-    }
-    for adapter in ir.behavior.field_adapters.iter().filter(|a| a.adapter == FILE_REFERENCE_ADAPTER) {
-        if !files.contains(&(&adapter.model, &adapter.field)) {
-            return Err(format!("{}.{}: missing file-field configuration", adapter.model, adapter.field));
         }
     }
     Ok(())
@@ -482,6 +448,51 @@ pub struct LanguageSection {
     /// The language runtimes of the field adapters that this extension binds.
     #[serde(default)]
     pub field_adapters: Vec<AdapterRuntime>,
+    /// Runtime dependencies of the built package: a list of requirements in Python, a map of names to ranges in TypeScript.
+    #[serde(default, skip_serializing_if = "Dependencies::is_empty")]
+    pub dependencies: Dependencies,
+    /// npm subpath exports of the built package (TypeScript only): a subpath such as `./model` to the compiled file, such as `model.js`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exports: BTreeMap<String, String>,
+}
+
+/// The `dependencies` of a language section; the package builder checks the shape that its language needs.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Dependencies {
+    List(Vec<String>),
+    Map(BTreeMap<String, String>),
+}
+
+impl Default for Dependencies {
+    fn default() -> Self { Dependencies::List(Vec::new()) }
+}
+
+impl Dependencies {
+    pub fn is_empty(&self) -> bool {
+        match self { Dependencies::List(l) => l.is_empty(), Dependencies::Map(m) => m.is_empty() }
+    }
+}
+
+impl LanguageSection {
+    /// The keys that only the package builder reads, against the shape of `language`.
+    pub fn check_package_keys(&self, language: &str) -> Result<(), String> {
+        match (language, &self.dependencies) {
+            ("python", Dependencies::Map(m)) if !m.is_empty() => return Err("python.dependencies must be a list of requirements".into()),
+            ("typescript", Dependencies::List(l)) if !l.is_empty() => return Err("typescript.dependencies must be a table of package names to ranges".into()),
+            _ => {}
+        }
+        if language != "typescript" && !self.exports.is_empty() {
+            return Err(format!("{language}.exports is not allowed; only typescript has subpath exports"));
+        }
+        for (subpath, file) in &self.exports {
+            let relative = file.strip_suffix(".js").filter(|f| !f.is_empty() && !f.starts_with('/') && !f.split('/').any(|p| p.is_empty() || p == ".."));
+            if !subpath.starts_with("./") || subpath.len() < 3 || relative.is_none() {
+                return Err(format!("typescript.exports entry {subpath:?} = {file:?}: use a subpath like \"./model\" and a compiled file like \"model.js\" inside the package"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The language runtime of one field adapter: what the generated code imports, calls, types and re-exports.
@@ -1015,7 +1026,7 @@ pub fn capture_storage(ir: &mut SchemaIr) -> Result<(), String> {
 
 pub const HOST_CAPABILITIES: &[&str] = &[
     "schema-transformations", "physical-schema", "native-string-values",
-    "native-string-records", "native-string-results", "file-storage",
+    "native-string-records", "native-string-results",
 ];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
@@ -1097,7 +1108,6 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.field_storage.extend(n.field_storage);
     c.owner_links.extend(n.owner_links);
     c.field_adapters.extend(n.field_adapters);
-    c.file_fields.extend(n.file_fields);
     c.write_assignments.extend(n.write_assignments);
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
@@ -1436,7 +1446,7 @@ mod tests {
     }
     fn hook_manifest(exports: serde_json::Value) -> Manifest {
         serde_json::from_value(serde_json::json!({
-            "id": "acme.lib", "version": "1.0.0", "schema_contract": "4.0", "abi": "0.2", "library": "lib",
+            "id": "acme.lib", "version": "1.0.0", "schema_contract": "5.0", "abi": "0.2", "library": "lib",
             "languages": ["python"], "databases": ["sqlite"], "exports": exports,
         })).unwrap()
     }

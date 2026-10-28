@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { QueryError, connect, scope } from 'orm';
 import { Wrapped } from '@acme/outside';
+import { sum } from '@acme/outside/model';
 import { Note, configureOutside } from './models.js';
+// The subpath export resolves, and its dependency was installed with the package.
+assert.equal(sum(['0.1', '0.2']), '0.3');
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
 assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'orm.inherit', 'orm.locking', 'orm.query-defaults', 'orm.soft-delete', 'orm.timestamps']);
 for (const [id, stamp] of Object.entries(locked.behavior.packages)) {

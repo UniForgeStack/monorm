@@ -83,7 +83,7 @@ async def check():
             {
                 "dialect": SCHEMA["dialect"],
                 "models": [handwritten],
-                "behavior": {"schema_contract": 4, "storage": {"models": [physical]}},
+                "behavior": {"schema_contract": 5, "storage": {"models": [physical]}},
             },
             registry=direct_registry,
         )["LoweredUser"]

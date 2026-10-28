@@ -67,6 +67,9 @@ fn read_manifest(dir: &Path) -> Result<orm_contracts::extension::Manifest, Error
     if !manifest.is_dynamic() || manifest.library.is_none() {
         return Err("a package needs abi and library".into());
     }
+    for (language, section) in manifest.language_sections() {
+        section.check_package_keys(language)?;
+    }
     let library = manifest.library.as_ref().unwrap();
     if library.is_empty() || library.contains(['/', '\\']) {
         return Err("library must be a file name".into());

@@ -781,12 +781,13 @@ mod reference_tests {
         assert!(!ts.contains("A `Address`"), "{ts}");
     }
 
+    const TEST_ADAPTER: &str = "acme.reference.v1";
+
     fn adapter_ir() -> (crate::ir::SchemaIr, crate::schema::Schema) {
-        use crate::behavior::{FieldAdapter, FILE_REFERENCE_ADAPTER, SCHEMA_CONTRACT};
+        use crate::behavior::{FieldAdapter, SCHEMA_CONTRACT};
         let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}\nmodel Plain {\n id Int @id\n}", None).unwrap();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
-        ir.behavior.file_fields.push(crate::behavior::FileField { model: "Report".into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         (ir, schema)
     }
@@ -795,7 +796,7 @@ mod reference_tests {
         use orm_contracts::extension::{AdapterRuntime, ModuleFunction};
         let python = language == "python";
         let runtime = AdapterRuntime {
-            adapter: crate::behavior::FILE_REFERENCE_ADAPTER.into(),
+            adapter: TEST_ADAPTER.into(),
             install: "install".into(),
             module: "acme_runtime".into(),
             imports: vec![if python { "from acme_runtime import Ref, Reg, Up".into() } else { "import type { Ref, Reg, Up } from \"acme-runtime\";".into() }],
@@ -834,12 +835,11 @@ mod reference_tests {
 
     #[test]
     fn a_proxy_with_a_copied_adapter_record_gets_the_members_and_the_install() {
-        use crate::behavior::{FieldAdapter, FileField, FILE_REFERENCE_ADAPTER, SCHEMA_CONTRACT};
+        use crate::behavior::{FieldAdapter, SCHEMA_CONTRACT};
         let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}\nmodel ReportView {\n id Int @id\n file Json?\n}", None).unwrap();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
         for model in ["Report", "ReportView"] {
-            ir.behavior.field_adapters.push(FieldAdapter { model: model.into(), field: "file".into(), adapter: FILE_REFERENCE_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
-            ir.behavior.file_fields.push(FileField { model: model.into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
+            ir.behavior.field_adapters.push(FieldAdapter { model: model.into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
         }
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         let options = Options { extensions: vec![adapter_extension("python")], ..Options::default() };
@@ -869,7 +869,7 @@ mod reference_tests {
         let python = python::generate_with(&ir, &schema, "report.prisma", &Options::default()).err().unwrap();
         let typescript = typescript::generate_with(&ir, &schema, "report.prisma", "orm", &Options::default()).err().unwrap();
         for (language, error) in [("python", python), ("typescript", typescript)] {
-            assert!(error.contains("Report.file") && error.contains(crate::behavior::FILE_REFERENCE_ADAPTER) && error.contains(language), "{error}");
+            assert!(error.contains("Report.file") && error.contains(TEST_ADAPTER) && error.contains(language), "{error}");
         }
     }
 
@@ -878,8 +878,7 @@ mod reference_tests {
         for (language, field) in [("python", "file_url"), ("typescript", "fileUrl")] {
             let mut ir = crate::dsl::compile(&format!("model Report {{\n id Int @id\n file Json?\n {field} Int?\n}}"), None).unwrap();
             ir.behavior.schema_contract = crate::behavior::SCHEMA_CONTRACT;
-            ir.behavior.field_adapters.push(orm_contracts::extension::FieldAdapter { model: "Report".into(), field: "file".into(), adapter: crate::behavior::FILE_REFERENCE_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
-            ir.behavior.file_fields.push(crate::behavior::FileField { model: "Report".into(), field: "file".into(), storage: "reports".into(), reference_contract: 1 });
+            ir.behavior.field_adapters.push(orm_contracts::extension::FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
             let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
             let options = Options { extensions: vec![adapter_extension(language)], ..Options::default() };
             let error = if language == "python" {

@@ -3,10 +3,9 @@
 #
 #   ORM_TEST_DATABASE_URL=postgres://... scripts/feature-check.sh [artifact...]
 #
-# Artifacts: file-storage
-# all (default: every one). Each artifact selects only extension crates,
-# so no cargo command here passes --features.
-# The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy and composition packages are installed in every environment,
+# Artifacts: all (default). Each artifact selects only extension crates,
+# so no cargo command here passes --features. No extension crate is left, so `all` builds the bare host.
+# The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy, composition and file-storage packages are installed in every environment,
 # so the auth app (apps/auth) and the inherit and query-defaults public scripts run on every artifact.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
 set -uo pipefail
@@ -19,7 +18,7 @@ export ORM_TEST_DATABASE_URL
 # Not CARGO_TARGET_DIR: sccache hashes every CARGO_* variable, and a per-checkout path would block cache hits.
 TARGET=$WORK/target
 mkdir -p "$WORK/.cargo" && printf '[build]\ntarget-dir = "%s"\n' "$TARGET" >"$WORK/.cargo/config.toml"
-ARTIFACTS=${*:-file-storage all}
+ARTIFACTS=${*:-all}
 LOGS=$WORK/logs
 MATRIX=$WORK/matrix.txt
 case "$(uname -s)" in
@@ -30,15 +29,11 @@ esac
 # The dependency entry and expected capability of each extension crate.
 dependency() {
   case $1 in
-    file-storage) echo '"file_storage":{"package":"orm-file-storage-extension","path":"'"$ROOT"'/extensions/file-storage"}' ;;
     *) echo "unknown feature $1" >&2; return 1 ;;
   esac
 }
-FEATURES="file-storage"
-# file-storage has no host capability, so no artifact has a host feature to check.
-HOST_FEATURES=""
+FEATURES=""
 features_of() { if [ "$1" = all ]; then echo "$FEATURES"; else echo "$1"; fi; }
-has() { case " $(features_of "$1") " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
 # step ARTIFACT SUITE COMMAND...: run one suite, log it, and record PASS or FAIL.
 step() {
@@ -51,21 +46,18 @@ step() {
 rm -rf "$LOGS" "$MATRIX"
 mkdir -p "$LOGS"
 
-# One Python environment for every artifact: orm, its dev tools, the storage packages and the auth app.
+# One Python environment for every artifact: orm, its dev tools and the auth app.
 VENV=$WORK/venv
 if [ ! -x "$VENV/bin/python" ]; then uv venv -q --python "${PYTHON:-python3}" "$VENV" || exit 1; fi
 PY=$VENV/bin/python
-uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/extensions/file-storage/integration/python" -e "$ROOT/apps/auth/python" || exit 1
+uv pip install -q --python "$PY" -e "$ROOT[dev]" -e "$ROOT/apps/auth/python" || exit 1
 # Rust typing tests and extension validation invoke mypy/pyright by name.
 export PATH="$VENV/bin:$PATH"
 export PYO3_PYTHON=$PY
 EXT_SUFFIX=$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 ORM_PACKAGE_PYTHON="$PY" "$ROOT/scripts/install-extension-packages.sh" >"$LOGS/extension-packages.log" 2>&1 || { echo "extension package install failed"; exit 1; }
-# Storage imports orm through its package exports, which point at dist/.
+# The package and app tests import orm through its package exports, which point at dist/.
 (cd "$ROOT/languages/js" && npm run -s build) >"$LOGS/npm-build.log" 2>&1 || { echo "npm build failed"; exit 1; }
-
-# Rust storage tests do not depend on a host artifact.
-step storage rust-extension sh -c "cd '$WORK' && cargo test -q --manifest-path '$ROOT/extensions/file-storage/Cargo.toml'"
 
 build() {
   local artifact=$1 dir=$WORK/$1 deps="" feature
@@ -84,12 +76,12 @@ build() {
 # The loaded artifacts report exactly the selected host features.
 capabilities() {
   local artifact=$1 dir=$WORK/$1 expected actual_py actual_node
-  expected=$(for f in $(features_of "$artifact"); do [ "$f" = file-storage ] || echo "$f"; done | sort | tr '\n' ' ' | sed 's/ $//')
-  actual_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.native_artifact())['capabilities']) & set('$HOST_FEATURES'.split()))))")
-  actual_node=$(node -e "const a = JSON.parse(require(process.argv[1]).nativeArtifact()); console.log(a.capabilities.filter(c => '$HOST_FEATURES'.split(' ').includes(c)).sort().join(' '))" "$dir/orm.node")
+  expected=$(features_of "$artifact" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')
+  actual_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.native_artifact())['capabilities']) & set('$FEATURES'.split()))))")
+  actual_node=$(node -e "const a = JSON.parse(require(process.argv[1]).nativeArtifact()); console.log(a.capabilities.filter(c => '$FEATURES'.split(' ').includes(c)).sort().join(' '))" "$dir/orm.node")
   # The embedded build record names the same Cargo features.
-  built_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.profile_metadata())['build']['features']) & set('$HOST_FEATURES'.split()))))")
-  built_node=$(node -e "const b = JSON.parse(require(process.argv[1]).profileMetadata()).build; console.log(b.features.filter(f => '$HOST_FEATURES'.split(' ').includes(f)).sort().join(' '))" "$dir/orm.node")
+  built_py=$(PYTHONPATH=$dir/py ORM_PROFILE=custom "$PY" -c "import json; from orm import _native; print(' '.join(sorted(set(json.loads(_native.profile_metadata())['build']['features']) & set('$FEATURES'.split()))))")
+  built_node=$(node -e "const b = JSON.parse(require(process.argv[1]).profileMetadata()).build; console.log(b.features.filter(f => '$FEATURES'.split(' ').includes(f)).sort().join(' '))" "$dir/orm.node")
   echo "expected: $expected"; echo "python:   $actual_py (build: $built_py)"; echo "node:     $actual_node (build: $built_node)"
   [ "$actual_py" = "$expected" ] && [ "$actual_node" = "$expected" ] && [ "$built_py" = "$expected" ] && [ "$built_node" = "$expected" ]
 }
@@ -100,10 +92,6 @@ for artifact in $ARTIFACTS; do
   export ORM_PYTHON_METHODS=$dir/build/python-methods.rs ORM_NODE_METHODS=$dir/build/node-methods.rs
   step "$artifact" build build "$artifact"
   grep -q "^$artifact build PASS" "$MATRIX" || continue
-  # The storage adapter imports orm at runtime, so use the first built addon.
-  if ! grep -q '^storage typescript-integration ' "$MATRIX"; then
-    step storage typescript-integration env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/extensions/file-storage/integration/typescript' && npm install --no-audit --no-fund -s && npm test"
-  fi
   step "$artifact" capabilities capabilities "$artifact"
   step "$artifact" cargo sh -c "cd '$dir/build' && cargo test -q --workspace"
   step "$artifact" pytest env PYTHONPATH="$dir/py" ORM_PROFILE=custom sh -c "cd '$ROOT' && '$PY' -m pytest -q -p no:cacheprovider"
@@ -117,15 +105,6 @@ for artifact in $ARTIFACTS; do
   step "$artifact" auth-python env PYTHONPATH="$dir/py" ORM_PROFILE=custom sh -c "cd '$ROOT' && '$PY' -m pytest -q -p no:cacheprovider apps/auth/python/tests"
   step "$artifact" auth-npm env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm install --no-audit --no-fund -s && npm test"
   step "$artifact" auth-bun env ORM_NATIVE="$dir/orm.node" sh -c "cd '$ROOT/apps/auth/typescript' && npm run -s test:bun"
-  if has "$artifact" file-storage; then
-    # These tests import `orm.adapters`, which needs a native profile.
-    step "$artifact" storage-python-unit env PYTHONPATH="$dir/py" ORM_PROFILE=custom "$PY" -m pytest -q -p no:cacheprovider "$ROOT/extensions/file-storage/integration/python/tests"
-    for url in "sqlite://:memory:" "$ORM_TEST_DATABASE_URL"; do
-      db=${url%%:*}
-      step "$artifact" "storage-python-$db" env PYTHONPATH="$dir/py" ORM_PROFILE=custom FILE_STORAGE_DATABASE_URL="$url" "$PY" "$ROOT/extensions/file-storage/integration/tests/native_python.py"
-      step "$artifact" "storage-node-$db" env ORM_NATIVE="$dir/orm.node" FILE_STORAGE_DATABASE_URL="$url" sh -c "cd '$ROOT/extensions/file-storage/integration/typescript' && npm install --no-audit --no-fund -s && npm run -s build && node --test '$ROOT/extensions/file-storage/integration/tests/native_node.mjs'"
-    done
-  fi
 done
 
 echo

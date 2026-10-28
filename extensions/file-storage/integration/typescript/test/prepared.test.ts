@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pending } from "orm";
 import { Operator } from "opendal";
-import { Registry, Reference, Upload, FileField, FileFieldError, FileNotLoaded, MissingFile } from "../src/index.js";
-import { FileAdapter } from "../src/model.js";
+import { Registry, Reference, Upload, FileField, FileFieldError, FileNotLoaded, MissingFile } from "@orm/file-storage";
+import { FileAdapter } from "@orm/file-storage/model";
 
 async function environment(run: (registry: Registry, field: FileField, root: string) => Promise<void>) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "file-write-")));
