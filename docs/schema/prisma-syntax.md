@@ -28,8 +28,8 @@ records why the syntax looks the way it does and how the `.orm` syntax maps onto
   migrator diffs and applies it, our code generators emit the models. Nothing calls the
   Prisma CLI, engines or generators. We use what Prisma publishes for free: the
   syntax, the editor extension, and the Apache-2.0 engine source as a reference.
-* **No `generator orm { }` block.** Prisma accepts generator blocks without error, but
-  `provider = "monorm"` makes `prisma generate` look for an `orm` generator program and
+* **No `generator monorm { }` block.** Prisma accepts generator blocks without error, but
+  `provider = "monorm"` makes `prisma generate` look for a `monorm` generator program and
   fail. We don't need a marker: the `monorm` CLI is given the schema path (flag or
   `[tool.monorm] schema` in `pyproject.toml`), and settings stay where they are today.
 

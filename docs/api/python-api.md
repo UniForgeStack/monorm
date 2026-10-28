@@ -39,13 +39,13 @@ Python 3.11 or newer (`select()` rows are typed with `TypeVarTuple`).
 ```bash
 uv venv .venv && . .venv/bin/activate
 uv pip install maturin pytest pytest-asyncio mypy pyright
-uv pip install -e .        # the thin orm package
+uv pip install -e .        # the thin monorm package
 (cd languages/python/packaging/tooling && maturin develop)   # native tooling profile; --release for benchmarks
 python -m pytest           # needs Postgres; ORM_TEST_DATABASE_URL overrides the default URL
 python examples/blog/demo.py sqlite://:memory:
 ```
 
-`orm` needs exactly one native profile: install `monorm[postgres]`, `monorm[sqlite]`,
+`monorm` needs exactly one native profile: install `monorm[postgres]`, `monorm[sqlite]`,
 `monorm[combined]` or `monorm[tooling]`. Set `MONORM_PROFILE` when more than one is installed.
 
 ## Models: the generated module

@@ -1,6 +1,6 @@
 # TypeScript API
 
-The `orm` package in `languages/js/` is the TypeScript counterpart of the Python package. It uses the
+The `@ufstack/monorm` package in `languages/js/` is the TypeScript counterpart of the Python package. It uses the
 same schema file, the same Rust engine (`crates/engine/`, via the N-API addon in `languages/js/native`),
 the same SQL and the same migrations. Its types are meant to catch as much as possible at
 compile time: a column of the wrong model, a value of the wrong type, a relation that
@@ -75,7 +75,7 @@ Scalar types follow Prisma's choices:
 |---|---|
 | `Int`, `Float` | `number` |
 | `BigInt` | `bigint` (filters also take a `number`) |
-| `Decimal` | `Decimal` from decimal.js, re-exported by `orm` (filters also take a `number` or a string) |
+| `Decimal` | `Decimal` from decimal.js, re-exported by `@ufstack/monorm` (filters also take a `number` or a string) |
 | `DateTime` | `Date`, with millisecond precision; the microseconds below it stay in a hidden property (see below) |
 | `Date` | `Date` at 00:00 UTC |
 | `Json` | `JsonValue` |

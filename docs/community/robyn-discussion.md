@@ -37,8 +37,8 @@ Safe wording: "carries Prisma's schema-first idea forward for Python", "the same
 
 ## Checklist before posting
 
-- [ ] The MonOrm repository is public, and its README uses the name MonOrm. Today the repo and the package are still called `orm`.
-- [ ] The install command works from PyPI. The name `orm` on PyPI belongs to another project, so publish under the final name (for example `monorm`) first.
+- [ ] The MonOrm repository is public, and its README uses the name MonOrm. The repo and the packages are named `monorm`.
+- [ ] The install command `pip install monorm` works from PyPI. The name `orm` on PyPI belongs to another project, so the package is published as `monorm`.
 - [ ] Replace each `<...>` placeholder below.
 - [ ] Run the Robyn example below against the released package, on SQLite and PostgreSQL. (It runs today against a local build with `monorm.loads`: `POST /users` and `GET /users` return the expected JSON.)
 - [ ] Write a short migration note for Prisma Client Python users (schema changes such as `cuid()`, the query API side by side) and link it from the post.

@@ -106,16 +106,6 @@ glob = "bench/README.md"
 pattern = '\borm-all\b'
 reason = "The contender key `orm-all` names the recorded results."
 
-[[allow]]
-glob = "bench/RESULTS.md"
-pattern = '(?<![A-Za-z0-9_@/.-])orm(?![A-Za-z0-9_-])|\borm-all\b'
-reason = "Recorded results keep the contender keys `orm` and `orm-all`."
-
-[[allow]]
-glob = "docs/performance.md"
-pattern = '(?<![A-Za-z0-9_@/.-])orm(?![A-Za-z0-9_-])|\borm-all\b|\borm \d'
-reason = "Recorded results keep the contender keys `orm` and `orm-all`, and the version line names the measured build."
-
 # --- text that names the old project on purpose ---------------------------------
 
 [[allow]]

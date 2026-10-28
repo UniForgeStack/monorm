@@ -6,7 +6,7 @@ codec v1, `Upload`, the `Registry` (storage name to OpenDAL operator), `max_size
 streaming and the upload error with the candidate reference. They do not import ORM
 internals or install a runtime native callback registry. They use only the
 public async field adapter API: Python `monorm.adapters.register_field_adapter`
-and TypeScript `registerFieldAdapter` from `orm`.
+and TypeScript `registerFieldAdapter` from `monorm`.
 
 `install_model` / `installModel` register one `FileAdapter` per file field: its
 `validate` checks an `Upload` or a `Reference` without I/O, `prepare` uploads, and
