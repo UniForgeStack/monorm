@@ -60,8 +60,7 @@ fn check_name(ir: &SchemaIr, data: &GenericData, model: &str, name: &str) -> Res
     if ["pk", "objects", "update", "delete", "refresh", "then"].contains(&name)
         || m.fields.iter().any(|f| f.name == name) || m.relations.iter().any(|r| r.name == name)
         || data.relations.iter().any(|r| r.model == model && r.name == name)
-        || data.reverse.iter().any(|r| r.model == model && r.name == name)
-        || ir.behavior.methods.iter().any(|r| r.model == model && r.name == name) {
+        || data.reverse.iter().any(|r| r.model == model && r.name == name) {
         return Err(format!("{model}.{name}: generic relation member collision"));
     }
     Ok(())

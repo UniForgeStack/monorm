@@ -1055,16 +1055,6 @@ export function define(
       meta.inputFieldList = meta.publicList.filter((f) => !computed.has(f.ir));
       meta.inputFields = new Map(meta.inputFieldList.map((f) => [f.name, f]));
     }
-    for (const method of ((ir.behavior as { methods?: { model: string; name: string; native_function: string }[] } | undefined)?.methods ?? [])) {
-      if (method.model === m.name) {
-        const name = camel(method.name);
-        checkName(m.name, name, meta.fields);
-        if (meta.relations.has(name) || Object.prototype.hasOwnProperty.call(meta.model, name) || Object.prototype.hasOwnProperty.call(meta.Row.prototype, name)) throw new TypeError(`${m.name}.${name}: model method collision`);
-        const fn = (native() as unknown as Record<string, (value: string) => unknown>)[method.native_function];
-        if (typeof fn !== "function") throw new TypeError(`${m.name}.${name}: missing native method; rebuild`);
-        Object.defineProperty(meta.model, name, { value: (value: string) => call(() => fn(value)), enumerable: true });
-      }
-    }
     const ids = members[m.name];
     if (ids?.length) applyExtensions(meta, ids, extensions, packaged, hostQuerySetMember);
     Object.defineProperty(meta.Row, "meta", { value: meta });

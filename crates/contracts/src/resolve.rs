@@ -12,14 +12,6 @@ pub struct Resolved {
 /// The DSL type names that no attribute can own: the scalar types and `Unsupported`.
 pub const RESERVED_TYPES: [&str; 9] = ["BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Unsupported"];
 
-/// Reject source injection in metadata before emitting Rust paths.
-pub fn rust_path(path: &str) -> Result<(), String> {
-    if path.split("::").any(|part| {
-        part.is_empty() || !part.bytes().enumerate().all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
-    }) { return Err(format!("invalid Rust export path {path:?}")); }
-    Ok(())
-}
-
 /// `check_language` validates one language section; the build owns its sources.
 pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, &str, &LanguageSection) -> Result<(), String>) -> Result<Resolved, String> {
     manifests.sort_by(|a, b| a.id.cmp(&b.id));
@@ -31,11 +23,7 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
     let mut effects: BTreeMap<&str, &str> = BTreeMap::new();
     for m in &manifests {
         m.check_contracts()?;
-        match (m.is_dynamic(), &m.library) {
-            (true, None) => return Err(format!("{}: a manifest with `abi` needs `library`, the file name of the native library", m.id)),
-            (false, Some(_)) => return Err(format!("{}: `library` needs `abi`", m.id)),
-            _ => {}
-        }
+        if m.library.is_none() { return Err(format!("{}: a manifest needs `library`, the file name of the native library", m.id)); }
         let sections: Vec<_> = m.language_sections().collect();
         if !sections.is_empty() && m.language_contract != Some(LANGUAGE_CONTRACT) {
             return Err(format!("{}: incompatible language contract; rebuild", m.id));
@@ -79,11 +67,6 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             if !exports.insert(&e.id) { return Err(format!("duplicate export {}", e.id)); }
         }
         for p in &m.passes {
-            match (&p.rust, m.is_dynamic()) {
-                (Some(rust), false) => rust_path(rust)?,
-                (None, false) => return Err(format!("{}: pass {} has no `rust` path", m.id, p.id)),
-                (_, true) => {}
-            }
             if passes.insert(p.id.clone(), p.clone()).is_some() { return Err(format!("duplicate pass {}", p.id)); }
             for effect in &p.effects {
                 for (existing, owner) in &effects {
@@ -200,13 +183,18 @@ mod tests {
             value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
             serde_json::from_value(value).map_err(|e| e.to_string())
         };
-        let error = parse(serde_json::json!({"host_contract": "1.0"})).unwrap_err();
-        assert!(error.contains("unknown field `host_contract`"), "{error}");
+        for field in ["host_contract", "requires"] {
+            let error = parse(serde_json::json!({field: "x"})).unwrap_err();
+            assert!(error.contains(&format!("unknown field `{field}`")), "{error}");
+        }
         for field in ["rust", "kind"] {
             let export = serde_json::json!({"id": "acme.old.x", "point": 2, "input": "string", field: "x"});
             let error = parse(serde_json::json!({"abi": "0.2", "library": "lib", "exports": [export]})).unwrap_err();
             assert!(error.contains(&format!("unknown field `{field}`")), "{error}");
         }
+        let pass = serde_json::json!({"id": "acme.old.p", "phase": "declaration", "rust": "x"});
+        let error = parse(serde_json::json!({"abi": "0.2", "library": "lib", "passes": [pass]})).unwrap_err();
+        assert!(error.contains("unknown field `rust`"), "{error}");
         let error = resolve_all(vec![parse(serde_json::json!({})).unwrap()]).unwrap_err();
         assert!(error.contains("acme.old: a manifest needs `abi`"), "{error}");
     }

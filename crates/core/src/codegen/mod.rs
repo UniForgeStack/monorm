@@ -319,7 +319,7 @@ impl<'a> Adapters<'a> {
                 return Err(format!("field adapter {} has a runtime entry in both {} and {}", record.adapter, extension.members.extension, other.members.extension));
             }
             if let Some(model) = ir.models.iter().find(|m| m.name == record.model) {
-                orm_contracts::extension::check_adapter_methods(ir, model, &runtime.method_names(language, &record.field))?;
+                orm_contracts::extension::check_adapter_methods(model, &runtime.method_names(language, &record.field))?;
             }
             if !uses.iter().any(|u| u.id == record.adapter) {
                 uses.push(AdapterUse { id: &record.adapter, extension, runtime });

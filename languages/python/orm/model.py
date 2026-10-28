@@ -322,15 +322,6 @@ class Registry:
                         "class preparation cannot remove inherited members; use define() for this logical view"
                     )
             associations.append((model, ir, fields, relations))
-        methods_by_model: dict[str, dict[str, Any]] = {}
-        for method in prepared.get("behavior", {}).get("methods", ()):
-            model = snapshot._models[method["model"]]
-            if model._meta.registry is not self:
-                continue
-            name = method["name"]
-            if name in _RESERVED or hasattr(model, name):
-                raise TypeError(f"{method['model']}.{name}: generated method collides with an existing model member")
-            methods_by_model.setdefault(method["model"], {})[name] = getattr(_native, method["native_function"])
         native = _native.Schema(prepared_json, classes, package_dirs() if prepared.get("behavior", {}).get("hooks") else None)
         snapshot._native = native
         read_flags: dict[str, dict[str, Any]] = json.loads(native.read_flags())
@@ -378,8 +369,6 @@ class Registry:
             )
             computed = {f["field"] for f in snapshot._behavior.get("result_fields", ()) if f["model"] == meta.name}
             meta.input_fields = {k: v for k, v in fields.items() if k not in computed} if computed else fields
-            for name, function in methods_by_model.get(meta.name, {}).items():
-                setattr(model, name, staticmethod(function))
             meta.registry = snapshot
             if _reference_adapter is not None:
                 _reference_adapter.install(model)
@@ -644,10 +633,6 @@ def define(
                 if r["bound_query_set"]
             )
             use_extensions(cls, tuple(c[0] for c in reversed(classes)), bound)
-        for method in ir.get("behavior", {}).get("methods", ()):
-            if method["model"] == m["name"]:
-                if method["name"] in ns or method["name"] in _RESERVED:
-                    raise TypeError(f"{m['name']}.{method['name']}: model method collision")
         cls._meta.schema_ir = m
         cls._meta.key = tuple(cls._meta.fields[f.name] for f in cls._meta.key)
         computed = {f["field"] for f in ir.get("behavior", {}).get("result_fields", ()) if f["model"] == m["name"]}

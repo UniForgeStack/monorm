@@ -4,7 +4,6 @@ import asyncio
 
 import pytest
 import orm
-from orm import _capabilities
 from orm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError, Pending, register_field_adapter
 
 SCHEMA = """datasource db { provider = "sqlite" }

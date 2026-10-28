@@ -23,7 +23,6 @@ interface LanguageRecord {
   readonly instance_members: readonly string[];
   readonly bound_query_set_members?: readonly string[];
   readonly overrides: readonly string[];
-  readonly hash: string;
 }
 
 export type Mixin = (base: new (...args: any[]) => QuerySet<never>) => new (...args: any[]) => QuerySet<never>;
@@ -117,7 +116,7 @@ interface PackageStamp {
   readonly manifest_hash: string;
   readonly version: string;
   readonly attributes: readonly string[];
-  readonly language_members: Readonly<Record<string, Omit<LanguageRecord, "extension" | "version" | "language" | "hash" | "query_set_members" | "instance_members" | "bound_query_set_members">>>;
+  readonly language_members: Readonly<Record<string, Omit<LanguageRecord, "extension" | "version" | "language" | "query_set_members" | "instance_members" | "bound_query_set_members">>>;
 }
 
 export function packageContracts(ir: { behavior?: unknown; [key: string]: unknown }, extensions: Record<string, ExtensionCode>, schema?: string): Map<string, LanguageRecord> {
@@ -157,7 +156,7 @@ export function packageContracts(ir: { behavior?: unknown; [key: string]: unknow
       }
       return [...members];
     };
-    found.set(id, { ...section, extension: id, version: stamp.version, language: "typescript", hash: stamp.manifest_hash,
+    found.set(id, { ...section, extension: id, version: stamp.version, language: "typescript",
       query_set_members: names(section.query_set, true), instance_members: names(section.instance, false),
       bound_query_set_members: names(section.bound_query_set, true),
     });

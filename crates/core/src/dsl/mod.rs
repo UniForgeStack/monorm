@@ -240,7 +240,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     }
     let label = origin.display().to_string();
     let named = lower::generator_extensions(&items).map_err(|e| loader.located(e))?;
-    let plan = crate::loader::plan(&installed.extensions, &lower::used_namespaces(&items), &named, crate::behavior::manifests(), &crate::behavior::artifact().passes)?;
+    let plan = crate::loader::plan(&installed.extensions, &lower::used_namespaces(&items), &named, crate::behavior::manifests())?;
     let manifests = plan.as_ref().map_or(crate::behavior::manifests(), |p| &p.manifests);
     let mut declarations = lower::behavior_declarations(&mut items, &label, manifests).map_err(|e| loader.located(e))?;
     for declaration in &mut declarations {

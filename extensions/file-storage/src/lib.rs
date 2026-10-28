@@ -24,7 +24,7 @@ fn copy_to_views(ir: &mut SchemaIr) -> Result<(), String> {
         for owner in ir.behavior.field_adapters.iter().filter(|a| a.adapter == ADAPTER && a.model == view.root) {
             if !model.fields.iter().any(|f| f.name == owner.field) { continue; }
             if ir.behavior.field_adapters.iter().any(|a| a.model == view.model && a.field == owner.field) { continue; }
-            check_adapter_methods(ir, model, &method_names(&owner.field))?;
+            check_adapter_methods(model, &method_names(&owner.field))?;
             copies.push(FieldAdapter { model: view.model.clone(), ..owner.clone() });
         }
     }
@@ -90,7 +90,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         {
             return Err(fail("duplicate file-field adapter"));
         }
-        check_adapter_methods(ir, model, &method_names(name)).map_err(|e| fail(&e))?;
+        check_adapter_methods(model, &method_names(name)).map_err(|e| fail(&e))?;
         contributions.push(FieldAdapter {
             model: model.name.clone(),
             field: name.clone(),

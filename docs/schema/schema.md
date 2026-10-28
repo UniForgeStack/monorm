@@ -692,7 +692,7 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 ### Installed extension libraries
 
 An extension can also ship as a native library that the loader opens at run time, so the ORM needs no rebuild.
-The package has an `orm-extension.toml` with `abi` and `library` and no `host_contract` (fields: [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts)).
+The package has an `orm-extension.toml` with `abi` and `library` (fields: [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts)).
 A schema selects a library by the namespace of an attribute it uses, or by `generator client { extensions = ["acme.outside"] }`.
 An extension that the schema does not use is not loaded and adds no stamp.
 

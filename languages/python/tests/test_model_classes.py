@@ -187,7 +187,7 @@ def test_a_method_named_like_an_extension_member_is_an_error(monkeypatch):
         "query_set_members": [], "instance_members": ["restore"], "bound_query_set_members": [],
     }
     extension = types.SimpleNamespace(Set=Bound, Instance=Instance)
-    monkeypatch.setattr(orm._extensions, "check", lambda extension_id, module: record)
+    monkeypatch.setattr(orm._extensions, "packages", lambda ir, extensions: {"fake": record})
     for name, ok in (("restore", False), ("other", True)):
         methods = type("UserMethods", (), {name: lambda self: None})
         define = lambda: orm.model.define(  # noqa: E731

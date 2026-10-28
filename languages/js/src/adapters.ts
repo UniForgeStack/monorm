@@ -4,8 +4,7 @@
  * A write runs `validate` (sync, no I/O) for every adapted value, then `await prepare` for each
  * value that needs it, then the SQL. `decode` runs on read. The ORM never deletes a prepared
  * object. If the SQL fails, the error holds the prepared operation, and `operation.execute()`
- * retries the SQL with no new `prepare` call. This language adapter declares the
- * `async-field-adapter.v1` capability.
+ * retries the SQL with no new `prepare` call.
  */
 import { Expression } from "./expr.js";
 import { RESERVED, type ModelMeta, type Row } from "./model.js";

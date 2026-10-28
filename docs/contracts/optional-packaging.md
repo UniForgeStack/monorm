@@ -1,4 +1,4 @@
-# Static native profiles
+# Native profiles
 
 The `orm` Python wheel and npm package contain language runtime code only. They do
 not install drivers, TLS, CLI or generators. A native profile supplies one engine
@@ -87,7 +87,7 @@ including through an optional CLI dependency.
 
 Baseline native profiles do not claim optional reference-loading support.
 The tooling profile and the default binding builds add `reference-loading`.
-An extension is an installed package ([Build-time extensions](#installable-packages));
+An extension is an installed package ([Installable packages](#installable-packages));
 a marker package cannot add code to an already compiled engine.
 Every artifact embeds its build record in `profile_metadata()["build"]`: the exact Cargo features, the
 `rustc -V` toolchain, target triple, Cargo profile and git revision (`git rev-parse
@@ -180,11 +180,11 @@ The manifest `orm-extension.toml` sits at the root of the package.
 | `languages` | `python`, `typescript`. |
 | `databases` | `postgres`, `sqlite`. |
 | `dependencies` | Semver ranges of other extensions, by id. |
-| `capabilities`, `requires` | Host capabilities that the extension adds or needs. |
+| `capabilities` | Host capabilities that the extension adds. |
 | `attributes`, `passes`, `exports` | Source attributes, schema passes and hooks (below). |
 | `[python]`, `[typescript]` | Exports of the packaged runtime modules (`language_contract`). |
 
-`host_contract`, `kind` and the other fields of the removed static path are unknown fields and fail.
+`host_contract`, `requires`, `kind` and the other fields of the removed static path are unknown fields and fail.
 Unknown manifest fields are errors.
 
 ### Contracts and preparation
@@ -314,6 +314,7 @@ When the manifest has `exports`, the loader needs `orm_ext_hooks` and, when `ini
 Schema contract 4.0 holds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). A major bump resets the minor. The IR sets `schema_contract_minor` only for a feature that a later minor adds; an engine of an older minor stops at the unknown field with a parse error, and the "newer than this engine" message comes only from an engine that knows the minor.
 Schema contract 4.0 holds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute.
 Schema contract 5.0 removes `Requirements.file_fields` and the `file-storage` host capability: the `orm.file-storage` package uses `field_adapters`.
+Contract 5.0 also has no `Requirements.extensions`, `Requirements.completed_passes` or `Requirements.methods`. The IR crosses the ABI as JSON, so an extension library that was built before this removal fails to parse the IR with an unknown-field error: rebuild it. After the first publish of `orm-contracts`, such a removal needs a major bump.
 Models of contract 4 fail `define` with a "schema contract 4 is older" error; regenerate them.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.

@@ -8,7 +8,7 @@ The files live in an [OpenDAL](https://opendal.apache.org/) service (local direc
 It has the `orm.file-storage` extension and the runtime module, and it installs `opendal`.
 Without the package, `orm generate` rejects `@storage.file` with a namespace error.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
-The extension requires the `async-field-adapter.v1` capability; the host has no file-specific code.
+The host has no file-specific code.
 
 ## Schema
 

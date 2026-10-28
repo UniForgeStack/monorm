@@ -6,7 +6,6 @@ schema_contract = "5.0"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
-requires = ["async-field-adapter.v1"]
 
 [[attributes]]
 name = "storage.file"
