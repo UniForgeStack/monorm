@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
 from blog.models import User  # noqa: E402
 
-import orm  # noqa: E402
+import monorm  # noqa: E402
 
 
 async def main() -> None:
@@ -36,7 +36,7 @@ async def main() -> None:
     if min(args.parents, args.posts_per_parent, args.rounds) < 1:
         parser.error("parents, posts-per-parent and rounds must be positive")
 
-    db = await orm.connect(args.url)
+    db = await monorm.connect(args.url)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -50,7 +50,7 @@ async def main() -> None:
         )
         await db.execute("ANALYZE users")
         await db.execute("ANALYZE posts")
-        query = User.objects.select(User.id, orm.func.count(User.posts), orm.func.max(User.posts.views)).order_by(
+        query = User.objects.select(User.id, monorm.func.count(User.posts), monorm.func.max(User.posts.views)).order_by(
             User.name
         )
         sql = {

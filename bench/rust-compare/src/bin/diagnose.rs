@@ -3,12 +3,12 @@
 mod environment;
 
 use futures_util::TryStreamExt;
-use orm_core::{
+use monorm_core::{
     dialect::Target,
     ir::{ColType, Operation, ValueType},
     schema::Schema,
 };
-use orm_engine::{
+use monorm_engine::{
     db::{Cell, Driver, RowSet},
     exec::Outcome,
     plan::Planner,
@@ -16,7 +16,7 @@ use orm_engine::{
 };
 use std::{hint::black_box, time::Instant};
 
-const SQL: &str = "SELECT id, title, body, views FROM orm_rust_diagnose_post ORDER BY id LIMIT $1";
+const SQL: &str = "SELECT id, title, body, views FROM monorm_rust_diagnose_post ORDER BY id LIMIT $1";
 const ROUNDS: usize = 18;
 const LABELS: [&str; 9] = [
     "our_planner",
@@ -31,7 +31,7 @@ const LABELS: [&str; 9] = [
 ];
 
 diesel::table! {
-    orm_rust_diagnose_post (id) {
+    monorm_rust_diagnose_post (id) {
         id -> Integer,
         title -> Text,
         body -> Text,
@@ -42,7 +42,7 @@ diesel::table! {
 mod sea_post {
     use sea_orm::entity::prelude::*;
     #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, diesel::Queryable)]
-    #[sea_orm(table_name = "orm_rust_diagnose_post")]
+    #[sea_orm(table_name = "monorm_rust_diagnose_post")]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: i32,
@@ -127,7 +127,7 @@ impl Harness {
                 let op = Operation::Select(q.clone());
                 let target = Target::new(self.ours.dialect());
                 let plan = Planner::plan(&self.schema, target, &op, &NoParams).unwrap();
-                let Outcome::Select(s) = orm_engine::exec::run(self.ours.as_ref(), target, plan)
+                let Outcome::Select(s) = monorm_engine::exec::run(self.ours.as_ref(), target, plan)
                     .await
                     .unwrap()
                 else {
@@ -176,8 +176,8 @@ impl Harness {
                 use diesel::{ExpressionMethods, QueryDsl};
                 use diesel_async::RunQueryDsl;
                 let mut connection = self.diesel.get().await.unwrap();
-                orm_rust_diagnose_post::table
-                    .order(orm_rust_diagnose_post::id.asc())
+                monorm_rust_diagnose_post::table
+                    .order(monorm_rust_diagnose_post::id.asc())
                     .limit(n)
                     .load::<Post>(&mut connection)
                     .await
@@ -226,7 +226,7 @@ fn stats(mut values: Vec<f64>) -> serde_json::Value {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let url = std::env::var("ORM_BENCH_URL").expect("use a disposable PostgreSQL database");
-    let ours = orm_engine::db::connect(&url, 1).await.unwrap();
+    let ours = monorm_engine::db::connect(&url, 1).await.unwrap();
     let environment = environment::collect(ours.as_ref()).await;
     let config = url.parse::<tokio_postgres::Config>().unwrap();
     let manager = deadpool_postgres::Manager::from_config(
@@ -267,8 +267,8 @@ async fn main() {
     let sea_default = sea_orm::Database::connect(options.clone()).await.unwrap();
     options.test_before_acquire(false);
     let sea_fast = sea_orm::Database::connect(options).await.unwrap();
-    ours.batch("CREATE TABLE orm_rust_diagnose_post (id integer PRIMARY KEY, title text NOT NULL, body text NOT NULL, views integer NOT NULL); INSERT INTO orm_rust_diagnose_post SELECT i, 'post ' || i, repeat('x', 200), i FROM generate_series(1, 1000) i; ANALYZE orm_rust_diagnose_post;".into()).await.unwrap();
-    let ir = orm_core::dsl::compile("model Post {\n id Int @id\n title String\n body String @db.Text\n views Int\n @@map(\"orm_rust_diagnose_post\")\n}", None).unwrap();
+    ours.batch("CREATE TABLE monorm_rust_diagnose_post (id integer PRIMARY KEY, title text NOT NULL, body text NOT NULL, views integer NOT NULL); INSERT INTO monorm_rust_diagnose_post SELECT i, 'post ' || i, repeat('x', 200), i FROM generate_series(1, 1000) i; ANALYZE monorm_rust_diagnose_post;".into()).await.unwrap();
+    let ir = monorm_core::dsl::compile("model Post {\n id Int @id\n title String\n body String @db.Text\n views Int\n @@map(\"monorm_rust_diagnose_post\")\n}", None).unwrap();
     let harness = Harness {
         ours,
         schema: Schema::from_ir(ir).unwrap(),
@@ -281,7 +281,7 @@ async fn main() {
     };
     let mut results = vec![];
     for (n, inner) in [(1_i64, 200), (50, 100), (1000, 30)] {
-        let op = orm_engine::parse_op(&serde_json::json!({"op":"select","model":"Post","order":[{"expr":{"t":"col","path":[],"name":"id"}}],"limit":n}).to_string()).unwrap();
+        let op = monorm_engine::parse_op(&serde_json::json!({"op":"select","model":"Post","order":[{"expr":{"t":"col","path":[],"name":"id"}}],"limit":n}).to_string()).unwrap();
         let expected: Vec<Post> = (1..=n as i32)
             .map(|id| Post {
                 id,
@@ -366,7 +366,7 @@ async fn main() {
     );
     harness
         .ours
-        .batch("DROP TABLE orm_rust_diagnose_post".into())
+        .batch("DROP TABLE monorm_rust_diagnose_post".into())
         .await
         .unwrap();
     let output = std::env::var("ORM_BENCH_OUT").unwrap_or_else(|_| "results-diagnose.json".into());

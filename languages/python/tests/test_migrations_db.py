@@ -11,9 +11,9 @@ import pytest
 from conftest import DATABASE_URL
 from test_migrations import V1, V2, models
 
-import orm
-from orm import Registry
-from orm.migrations import MigrationError, Migrations, Migrator
+import monorm
+from monorm import Registry
+from monorm.migrations import MigrationError, Migrations, Migrator
 
 
 def v1() -> Registry:
@@ -33,8 +33,8 @@ MIGRATIONS_URL = urlunsplit(_url._replace(path="/" + MIGRATIONS_DB))
 async def migrations_database():
     """Creates the database these tests use, once."""
     try:
-        admin = await orm.connect(DATABASE_URL, max_connections=1, default=False, registry=Registry())
-    except orm.DatabaseError as e:
+        admin = await monorm.connect(DATABASE_URL, max_connections=1, default=False, registry=Registry())
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {DATABASE_URL}: {e}")
     try:
         if not await admin._fetch_text(f"SELECT 1 FROM pg_database WHERE datname = '{MIGRATIONS_DB}'"):
@@ -43,20 +43,20 @@ async def migrations_database():
         await admin.close()
 
 
-async def connect(reg: Registry) -> orm.Database:
+async def connect(reg: Registry) -> monorm.Database:
     try:
-        return await orm.connect(MIGRATIONS_URL, max_connections=2, default=False, registry=reg)
-    except orm.DatabaseError as e:
+        return await monorm.connect(MIGRATIONS_URL, max_connections=2, default=False, registry=reg)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {MIGRATIONS_URL}: {e}")
 
 
-async def reset(db: orm.Database) -> None:
+async def reset(db: monorm.Database) -> None:
     await db.execute(
-        "DROP TABLE IF EXISTS books, authors, orm_migrations CASCADE;DROP FUNCTION IF EXISTS books_touch() CASCADE"
+        "DROP TABLE IF EXISTS books, authors, monorm_migrations CASCADE;DROP FUNCTION IF EXISTS books_touch() CASCADE"
     )
 
 
-async def scalar(db: orm.Database, sql: str) -> str | None:
+async def scalar(db: monorm.Database, sql: str) -> str | None:
     rows = await db._fetch_text(sql)
     return rows[0][0] if rows else None
 
@@ -87,11 +87,11 @@ async def test_upgrade_downgrade_round_trip(tmp_path):
         await book.update(pages=10)
         assert book.updated_at > before
         # constraints raise IntegrityError
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await book.update(pages=-1)
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Author.objects.using(db).insert(email="ANN@example.com")
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Book.objects.using(db).insert(author_id=1, name="Dune")
 
         # back to zero and up again: the down migrations are valid DDL too
@@ -137,7 +137,7 @@ async def test_failed_migration_rolls_back(tmp_path):
         migs = Migrations(tmp_path, v1())
         m = migs.make()
         (m.path / "up.sql").write_text(m.up_sql + "\nSELECT no_such_function();\n")
-        with pytest.raises(orm.DatabaseError):
+        with pytest.raises(monorm.DatabaseError):
             await Migrator(db, migs).upgrade()
         assert await scalar(db, "SELECT to_regclass('authors')::text") is None
         assert [s.applied for s in await Migrator(db, migs).status()] == [False]
@@ -164,7 +164,7 @@ async def test_extension_types_at_runtime():
         await db.execute("DROP TABLE IF EXISTS ext_docs")
         try:
             await db.create_tables()
-        except orm.DatabaseError as e:
+        except monorm.DatabaseError as e:
             pytest.skip(f"extension not installed: {e}")
         await db.create_tables()  # idempotent
         d = await Doc.objects.using(db).insert(
@@ -211,7 +211,7 @@ async def test_enum_migrations(tmp_path):
     db = await connect(regs[2])
 
     async def drop():
-        await db.execute("DROP TABLE IF EXISTS docs, orm_migrations CASCADE; DROP TYPE IF EXISTS status, status_old")
+        await db.execute("DROP TABLE IF EXISTS docs, monorm_migrations CASCADE; DROP TYPE IF EXISTS status, status_old")
 
     await drop()
     try:
@@ -236,7 +236,7 @@ async def test_enum_migrations(tmp_path):
         # a row still using a value that a migration removes makes it fail (and roll back)
         await migrator.downgrade()  # back to v2: recreated with review again
         await db.execute("UPDATE docs SET status = 'review' WHERE id = 1")
-        with pytest.raises(orm.DatabaseError, match="invalid input value for enum"):
+        with pytest.raises(monorm.DatabaseError, match="invalid input value for enum"):
             await migrator.upgrade()
         assert await scalar(db, labels) == "draft,review,published,archived"
         await db.execute("UPDATE docs SET status = 'draft'")

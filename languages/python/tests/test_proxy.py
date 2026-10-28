@@ -6,11 +6,11 @@ import re
 from pathlib import Path
 
 import pytest
-import orm
+import monorm
 from artifact_caps import has_extension
 
 SOURCE = Path(__file__).parents[3].joinpath("fixtures/proxy.prisma").read_text()
-pytestmark = pytest.mark.skipif(not has_extension("orm.proxy"), reason="requires the orm-proxy package")
+pytestmark = pytest.mark.skipif(not has_extension("monorm.proxy"), reason="requires the monorm-proxy package")
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
@@ -18,12 +18,12 @@ async def test_proxy_warning_rows_defaults_writes_and_relation_targets(dialect, 
     source = SOURCE.replace("proxy_05_", "proxy_05_python_")
     if dialect == "sqlite":
         source = 'datasource db { provider = "sqlite" }\n' + source
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     with pytest.raises(
-        orm.SchemaError, match=r":\d+:\d+: relation \w+\.\w+: \w+ has no field missing after extension lowering"
+        monorm.SchemaError, match=r":\d+:\d+: relation \w+\.\w+: \w+ has no field missing after extension lowering"
     ):
-        orm.loads(source.replace("references: [id]", "references: [missing]"), registry=orm.Registry())
+        monorm.loads(source.replace("references: [id]", "references: [missing]"), registry=monorm.Registry())
     User, Active, Post, Status = (models[k] for k in ("User", "Active", "Post", "Status"))
     assert not Active._meta.fields["name"].has_server_value
     assert Active._meta.fields["name"].has_insert_default
@@ -32,7 +32,7 @@ async def test_proxy_warning_rows_defaults_writes_and_relation_targets(dialect, 
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.create_tables()
     try:
         await User.objects.using(db).insert_many(
@@ -48,7 +48,7 @@ async def test_proxy_warning_rows_defaults_writes_and_relation_targets(dialect, 
         warnings = [
             json.loads(line)
             for line in capfd.readouterr().err.splitlines()
-            if line.startswith('{"code":"orm.proxy.shape"')
+            if line.startswith('{"code":"monorm.proxy.shape"')
         ]
         assert len(warnings) == 2 and all(w["occurrence_count"] == 2 for w in warnings)
         assert all(w["model"] == "Active" for w in warnings)
@@ -66,7 +66,7 @@ async def test_proxy_warning_rows_defaults_writes_and_relation_targets(dialect, 
         capfd.readouterr()
         posts = await Post.objects.using(db).load(Post.user)
         assert type(posts[0].user) is Active and posts[0].user.status is Status.OLD
-        assert len([line for line in capfd.readouterr().err.splitlines() if '"code":"orm.proxy.shape"' in line]) == 2
+        assert len([line for line in capfd.readouterr().err.splitlines() if '"code":"monorm.proxy.shape"' in line]) == 2
         await Active.objects.using(db).filter(Active.id == 4).delete()
         assert await User.objects.using(db).filter(User.id == 4).count() == 0
     finally:
@@ -91,21 +91,21 @@ model ActiveMember {
 
 
 @pytest.mark.skipif(
-    not has_extension("orm.query-defaults"),
-    reason="requires proxy and the orm.query-defaults package",
+    not has_extension("monorm.query-defaults"),
+    reason="requires proxy and the monorm.query-defaults package",
 )
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_proxy_with_query_defaults_is_a_filtered_view(dialect):
     source = DEFAULTS_SOURCE if dialect == "postgres" else 'datasource db { provider = "sqlite" }\n' + DEFAULTS_SOURCE
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Member, Active = models["Member"], models["ActiveMember"]
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.create_tables()
     try:
         await Member.objects.using(db).insert_many(
@@ -117,7 +117,7 @@ async def test_proxy_with_query_defaults_is_a_filtered_view(dialect):
         # the proxy policy filters and narrows; the parent model is unchanged
         rows = await Active.objects.using(db).order_by(Active.id)
         assert [type(r) for r in rows] == [Active] and rows[0].to_dict() == {"id": 1, "name": "ann"}
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             rows[0].bio
         assert await Active.objects.using(db).count() == 1
         assert await Member.objects.using(db).count() == 2
@@ -159,8 +159,8 @@ model Named {
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_omitted_proxy_fields_are_not_part_of_the_model(dialect):
     source = FIELDS_SOURCE if dialect == "postgres" else 'datasource db { provider = "sqlite" }\n' + FIELDS_SOURCE
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Member, Current, Named = models["Member"], models["Current"], models["Named"]
     assert list(Current._meta.fields) == ["id", "name"] and list(Named._meta.fields) == ["id", "name"]
     assert not hasattr(Current, "legacy") and hasattr(Member, "legacy")
@@ -169,7 +169,7 @@ async def test_omitted_proxy_fields_are_not_part_of_the_model(dialect):
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.create_tables()
     try:
         await Member.objects.using(db).insert(id=1, name="ann", status="old", legacy="x")
@@ -197,14 +197,14 @@ def test_proxy_field_rules_fail_at_definition():
     ]
     for attribute, message in cases:
         source = FIELDS_SOURCE.replace('@@proxy.fields(exclude: ["legacy", "status"])', attribute)
-        with pytest.raises(orm.SchemaError, match=re.escape(message)):
-            orm.loads(source, registry=orm.Registry())
+        with pytest.raises(monorm.SchemaError, match=re.escape(message)):
+            monorm.loads(source, registry=monorm.Registry())
     with pytest.raises(
-        orm.SchemaError, match=re.escape("an enum subset Status(...) is only allowed on a field of a view model")
+        monorm.SchemaError, match=re.escape("an enum subset Status(...) is only allowed on a field of a view model")
     ):
-        orm.loads(
+        monorm.loads(
             "enum Status {\n  A\n  @@storage(text)\n}\nmodel M {\n  id Int @id\n  s Status(A)\n}",
-            registry=orm.Registry(),
+            registry=monorm.Registry(),
         )
 
 
@@ -223,21 +223,21 @@ model Draft {
 
 
 @pytest.mark.skipif(
-    not has_extension("orm.proxy", "orm.soft-delete", "orm.locking"),
+    not has_extension("monorm.proxy", "monorm.soft-delete", "monorm.locking"),
     reason="requires proxy, soft-delete and locking",
 )
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_a_proxy_takes_the_roles_of_its_root(dialect):
     source = ROLES_SOURCE if dialect == "postgres" else 'datasource db { provider = "sqlite" }\n' + ROLES_SOURCE
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Doc, Draft = models["Doc"], models["Draft"]
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
@@ -252,8 +252,8 @@ async def test_a_proxy_takes_the_roles_of_its_root(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not has_extension("orm.proxy", "orm.soft-delete"), reason="requires proxy and soft-delete")
+@pytest.mark.skipif(not has_extension("monorm.proxy", "monorm.soft-delete"), reason="requires proxy and soft-delete")
 def test_a_proxy_must_keep_the_soft_delete_field():
     source = ROLES_SOURCE.replace("@@proxy.of(Doc)", '@@proxy.of(Doc)\n  @@proxy.fields(exclude: ["deleted"])')
     with pytest.raises(Exception, match="proxy must keep the soft-delete field deleted"):
-        orm.loads(source, registry=orm.Registry())
+        monorm.loads(source, registry=monorm.Registry())

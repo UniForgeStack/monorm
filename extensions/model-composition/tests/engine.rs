@@ -1,11 +1,11 @@
 //! Shared-primary-key writes of the composition package on SQLite, and on PostgreSQL when `ORM_TEST_DATABASE_URL` is set.
-use orm_contracts::ir::SchemaIr;
-use orm_core::{
+use monorm_contracts::ir::SchemaIr;
+use monorm_core::{
     dialect::{Dialect, Target},
     migrate,
     schema::Schema,
 };
-use orm_engine::{
+use monorm_engine::{
     multi_table,
     db::{self, Cell},
     exec::{self, Outcome},
@@ -34,11 +34,11 @@ fn composed(dialect: Dialect) -> SchemaIr {
             declare("Employee", "Person", "person", "employee"),
             declare("Manager", "Employee", "employee", "manager"),
             declare("Customer", "Person", "person", "customer")]}})).unwrap();
-    orm_composition::lower(&mut ir).unwrap();
+    monorm_composition::lower(&mut ir).unwrap();
     // The loader marks the declarations of a package pass lowered; the host then needs no manifest for them.
     for declaration in &mut ir.behavior.declarations { declaration.lowered = true; }
-    ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
-    ir.behavior.packages.insert("orm.composition".into(), orm_contracts::extension::PackageStamp { version: "0.1.0".into(), attributes: vec!["composition.model".into()], languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
+    ir.behavior.schema_contract = monorm_contracts::extension::SCHEMA_CONTRACT;
+    ir.behavior.packages.insert("monorm.composition".into(), monorm_contracts::extension::PackageStamp { version: "0.1.0".into(), attributes: vec!["composition.model".into()], languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
     ir
 }
 async fn check(url: &str) {
@@ -60,8 +60,8 @@ async fn check(url: &str) {
     ]);
     assert!(schema.models.iter().all(|m| m.fields().iter().all(|f| !f.hints.keys().any(|k| k.starts_with("composition.")))));
     let ir=serde_json::from_str(&encoded).unwrap();
-    let py=orm_core::codegen::python::generate(&ir,&schema,"composition.prisma").unwrap();
-    let ts=orm_core::codegen::typescript::generate(&ir,&schema,"composition.prisma","orm").unwrap();
+    let py=monorm_core::codegen::python::generate(&ir,&schema,"composition.prisma").unwrap();
+    let ts=monorm_core::codegen::typescript::generate(&ir,&schema,"composition.prisma","@ufstack/monorm").unwrap();
     assert!(py.stub.contains("class ManagerAttach(TypedDict):\n    level: int"));
     assert!(py.stub.contains("async def attach(self, parent_id: int, values: ManagerAttach) -> Manager"));
     assert!(ts.contains("export interface ManagerAttach {\n  level: In<number>;\n}"));
@@ -93,8 +93,8 @@ async fn check(url: &str) {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows.cell(0, 0, types[0]).unwrap(), Cell::Int(1));
     assert_eq!(rows.cell(0, 3, types[3]).unwrap(), Cell::Text("Alice"));
-    let update = orm_engine::parse_op(r#"{"op":"update","model":"Manager","filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"salary"},"r":{"t":"int","value":20}}],"set":[{"field":"name","value":{"t":"func","name":"upper","args":[{"t":"col","path":[],"name":"name"}]}},{"field":"salary","value":{"t":"arith","op":"add","l":{"t":"col","path":[],"name":"salary"},"r":{"t":"int","value":1}}}],"returning":true}"#).unwrap();
-    let plan = orm_engine::plan::Planner::plan(&schema, target, &update, &NoParams).unwrap();
+    let update = monorm_engine::parse_op(r#"{"op":"update","model":"Manager","filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"salary"},"r":{"t":"int","value":20}}],"set":[{"field":"name","value":{"t":"func","name":"upper","args":[{"t":"col","path":[],"name":"name"}]}},{"field":"salary","value":{"t":"arith","op":"add","l":{"t":"col","path":[],"name":"salary"},"r":{"t":"int","value":1}}}],"returning":true}"#).unwrap();
+    let plan = monorm_engine::plan::Planner::plan(&schema, target, &update, &NoParams).unwrap();
     let Outcome::Rows { rows, types, .. } = exec::run(db.as_ref(), target, plan).await.unwrap()
     else {
         panic!()
@@ -117,11 +117,11 @@ async fn check(url: &str) {
         panic!()
     };
     assert_eq!(rows.cell(0, 2, types[2]).unwrap(), Cell::Text("ALICE"));
-    let related = orm_engine::parse_op(
+    let related = monorm_engine::parse_op(
         r#"{"op":"select","model":"Person","select_related":[["employee"],["customer"]]}"#,
     )
     .unwrap();
-    let plan = orm_engine::plan::Planner::plan(&schema, target, &related, &NoParams).unwrap();
+    let plan = monorm_engine::plan::Planner::plan(&schema, target, &related, &NoParams).unwrap();
     let Outcome::Select(result) = exec::run(db.as_ref(), target, plan).await.unwrap() else {
         panic!()
     };
@@ -216,8 +216,8 @@ async fn check(url: &str) {
         1
     );
     outer.rollback().await.unwrap();
-    let bad=orm_engine::parse_op(r#"{"op":"update","model":"Manager","set":[{"field":"salary","value":{"t":"int","value":30}},{"field":"level","value":{"t":"int","value":0}}]}"#).unwrap();
-    let plan = orm_engine::plan::Planner::plan(&schema, target, &bad, &NoParams).unwrap();
+    let bad=monorm_engine::parse_op(r#"{"op":"update","model":"Manager","set":[{"field":"salary","value":{"t":"int","value":30}},{"field":"level","value":{"t":"int","value":0}}]}"#).unwrap();
+    let plan = monorm_engine::plan::Planner::plan(&schema, target, &bad, &NoParams).unwrap();
     assert!(exec::run(db.as_ref(), target, plan).await.is_err());
     assert_eq!(
         db.query("SELECT CAST(level AS BIGINT) FROM manager".into(), vec![])
@@ -236,8 +236,8 @@ async fn check(url: &str) {
         21
     );
     // A filter on an inherited field reports the count of logical rows.
-    let update = orm_engine::parse_op(r#"{"op":"update","model":"Manager","filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"salary"},"r":{"t":"int","value":21}}],"set":[{"field":"level","value":{"t":"int","value":4}}]}"#).unwrap();
-    let plan = orm_engine::plan::Planner::plan(&schema, target, &update, &NoParams).unwrap();
+    let update = monorm_engine::parse_op(r#"{"op":"update","model":"Manager","filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"salary"},"r":{"t":"int","value":21}}],"set":[{"field":"level","value":{"t":"int","value":4}}]}"#).unwrap();
+    let plan = monorm_engine::plan::Planner::plan(&schema, target, &update, &NoParams).unwrap();
     let Outcome::Affected(count) = exec::run(db.as_ref(), target, plan).await.unwrap() else {
         panic!()
     };
@@ -264,8 +264,8 @@ async fn check(url: &str) {
     };
     assert_eq!(rows.cell(0, 0, types[0]).unwrap(), Cell::Int(42));
     let delete =
-        orm_engine::parse_op(r#"{"op":"delete","model":"Employee","returning":true}"#).unwrap();
-    let plan = orm_engine::plan::Planner::plan(&schema, target, &delete, &NoParams).unwrap();
+        monorm_engine::parse_op(r#"{"op":"delete","model":"Employee","returning":true}"#).unwrap();
+    let plan = monorm_engine::plan::Planner::plan(&schema, target, &delete, &NoParams).unwrap();
     let Outcome::Rows { rows, .. } = exec::run(db.as_ref(), target, plan).await.unwrap() else {
         panic!()
     };
@@ -294,8 +294,8 @@ async fn check(url: &str) {
             .unwrap(),
         1
     );
-    let parent_delete = orm_engine::parse_op(r#"{"op":"delete","model":"Person"}"#).unwrap();
-    let plan = orm_engine::plan::Planner::plan(&schema, target, &parent_delete, &NoParams).unwrap();
+    let parent_delete = monorm_engine::parse_op(r#"{"op":"delete","model":"Person"}"#).unwrap();
+    let plan = monorm_engine::plan::Planner::plan(&schema, target, &parent_delete, &NoParams).unwrap();
     let Outcome::Affected(count) = exec::run(db.as_ref(), target, plan).await.unwrap() else {
         panic!()
     };

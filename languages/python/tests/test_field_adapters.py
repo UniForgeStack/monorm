@@ -1,10 +1,10 @@
-"""The async field adapter pipeline (`orm.adapters`): validate, ``await prepare``, SQL, decode."""
+"""The async field adapter pipeline (`monorm.adapters`): validate, ``await prepare``, SQL, decode."""
 
 import asyncio
 
 import pytest
-import orm
-from orm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError, Pending, register_field_adapter
+import monorm
+from monorm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError, Pending, register_field_adapter
 
 SCHEMA = """datasource db { provider = "sqlite" }
 model Doc {
@@ -45,9 +45,9 @@ class Counting:
 
 
 async def setup(body=None, extra=None):
-    registry = orm.Registry()
-    models = orm.loads(SCHEMA, registry=registry)
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    models = monorm.loads(SCHEMA, registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     body = body or Counting("body")
     register_field_adapter(models["Doc"], "body", body)
@@ -99,10 +99,10 @@ async def test_write_protection_is_checked_before_prepare():
     db, models, _ = await setup()
     try:
         pending = models["Locked"].objects.using(db).insert(id=1, body="file")
-        with pytest.raises(orm.WriteProtected):
+        with pytest.raises(monorm.WriteProtected):
             await pending
         assert pending.operation.stored == {}
-        with orm.allow_writes(models["Locked"]):
+        with monorm.allow_writes(models["Locked"]):
             await models["Locked"].objects.using(db).insert(id=1, body="file")
         assert (await models["Locked"].objects.using(db).get(models["Locked"].id == 1)).body is not None
     finally:
@@ -404,15 +404,15 @@ async def test_batch_validation_and_protection_run_before_any_prepare():
         with pytest.raises(ValueError, match="title is required"):
             objects.insert_many([{"id": 1, "body": "ok"}])
         insert = Locked.objects.using(db).insert_many([{"id": 1, "body": "file"}])
-        with pytest.raises(orm.WriteProtected):
+        with pytest.raises(monorm.WriteProtected):
             await insert
         assert insert.operation.stored == {}
         update = Locked.objects.using(db).update_many([{"id": 1, "body": "file"}])
-        with pytest.raises(orm.WriteProtected):
+        with pytest.raises(monorm.WriteProtected):
             await update
         assert update.operation.stored == {}
         assert body.calls == []
-        with orm.allow_writes(Locked):
+        with monorm.allow_writes(Locked):
             assert await Locked.objects.using(db).insert_many([{"id": 1, "body": "file"}]) == 1
     finally:
         await db.close()
@@ -521,9 +521,9 @@ class InTransaction(Counting):
 
 
 async def test_a_related_insert_on_a_many_to_many_prepares_before_the_transaction():
-    registry = orm.Registry()
-    models = orm.loads(M2M_SCHEMA, registry=registry)
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    models = monorm.loads(M2M_SCHEMA, registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         Post, Tag = models["Post"], models["Tag"]
@@ -554,9 +554,9 @@ class StreamsInTransaction(Streams):
 
 
 async def test_through_defaults_prepare_once_before_the_transaction():
-    registry = orm.Registry()
-    models = orm.loads(M2M_SCHEMA.replace("  tag_id  Int\n", "  tag_id  Int\n  file    Json?\n"), registry=registry)
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    models = monorm.loads(M2M_SCHEMA.replace("  tag_id  Int\n", "  tag_id  Int\n  file    Json?\n"), registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         Post, Tag, PostTag = models["Post"], models["Tag"], models["PostTag"]
@@ -615,8 +615,8 @@ async def test_prepare_system_exit_is_not_wrapped():
 
 
 async def test_a_method_named_like_a_reserved_member_is_rejected():
-    registry = orm.Registry()
-    models = orm.loads(SCHEMA, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(SCHEMA, registry=registry)
     for name in ("refresh", "_orm_internal"):
         with pytest.raises(FieldAdapterError, match="collides"):
             register_field_adapter(models["Doc"], "body", Counting("body"), {name: lambda self: None})

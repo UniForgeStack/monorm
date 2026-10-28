@@ -40,7 +40,7 @@ Safe wording: "carries Prisma's schema-first idea forward for Python", "the same
 - [ ] The MonOrm repository is public, and its README uses the name MonOrm. Today the repo and the package are still called `orm`.
 - [ ] The install command works from PyPI. The name `orm` on PyPI belongs to another project, so publish under the final name (for example `monorm`) first.
 - [ ] Replace each `<...>` placeholder below.
-- [ ] Run the Robyn example below against the released package, on SQLite and PostgreSQL. (It runs today against a local build with `orm.loads`: `POST /users` and `GET /users` return the expected JSON.)
+- [ ] Run the Robyn example below against the released package, on SQLite and PostgreSQL. (It runs today against a local build with `monorm.loads`: `POST /users` and `GET /users` return the expected JSON.)
 - [ ] Write a short migration note for Prisma Client Python users (schema changes such as `cuid()`, the query API side by side) and link it from the post.
 - [ ] Make no speed claim against SQLAlchemy or Prisma. `bench/RESULTS.md` says that no current benchmark compares the Python API with Django, SQLAlchemy, Prisma or Drizzle. Add a claim only after such a benchmark is measured and recorded.
 - [ ] Check the OpenDAL and ArdiQ descriptions against their current READMEs. Do not repeat ArdiQ's benchmark numbers, which are its own measurements.
@@ -89,10 +89,10 @@ A minimal Robyn app with MonOrm:
 
 ```python
 # app.py
-import orm
+import monorm
 from robyn import Robyn
 
-from models import Post, User  # generated from schema.prisma with `python -m orm generate`
+from models import Post, User  # generated from schema.prisma with `python -m monorm generate`
 
 app = Robyn(__file__)
 db = None
@@ -101,7 +101,7 @@ db = None
 @app.startup_handler
 async def startup() -> None:
     global db
-    db = await orm.connect("sqlite://app.db")  # or postgres://...
+    db = await monorm.connect("sqlite://app.db")  # or postgres://...
 
 
 @app.shutdown_handler

@@ -19,7 +19,7 @@ export interface Tracer {
 }
 
 export interface InstrumentOptions {
-  /** The tracer of the spans (default: `trace.getTracer("orm")` of `@opentelemetry/api`). */
+  /** The tracer of the spans (default: `trace.getTracer("monorm")` of `@opentelemetry/api`). */
   readonly tracer?: Tracer;
   /** Keep `db.query.text` for `db.execute(sql)`. Its SQL takes no parameters, so it can hold
    * literal values: the spans omit the text unless this is `true`. */
@@ -68,7 +68,7 @@ async function defaultTracer(): Promise<Tracer> {
   try {
     api = (await import(name)) as typeof api;
   } catch (e) {
-    throw new Error("orm/otel needs @opentelemetry/api: npm install @opentelemetry/api", { cause: e });
+    throw new Error("@ufstack/monorm/otel needs @opentelemetry/api: npm install @opentelemetry/api", { cause: e });
   }
-  return api.trace.getTracer("orm");
+  return api.trace.getTracer("monorm");
 }

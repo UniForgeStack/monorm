@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Database, Registry, connect, load, useModelMethods, useQuerySet } from "orm";
+import { Database, Registry, connect, load, useModelMethods, useQuerySet } from "@ufstack/monorm";
 
 import { UserMethods, UserQueries } from "../src/index.js";
 import type { AnyModel } from "../src/permissions.js";
@@ -22,7 +22,7 @@ export const VECTORS = JSON.parse(readFileSync(join(PACKAGE, "../fixtures/hashes
 };
 
 const POSTGRES_URL = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
-const HEADER = (provider: string): string => `datasource db {\n  provider = "${provider}"\n}\nimport "app:orm-auth" (prefix: "auth_")\n`;
+const HEADER = (provider: string): string => `datasource db {\n  provider = "${provider}"\n}\nimport "app:@ufstack/monorm-auth" (prefix: "auth_")\n`;
 
 export const PROVIDERS = ["sqlite", "postgres"] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -115,15 +115,15 @@ export class Auth {
 
 /** A connected `Auth` on empty tables, or `undefined` when the default Postgres is not reachable. */
 export async function makeAuth(provider: Provider, variant: Variant): Promise<Auth | undefined> {
-  const dir = mkdtempSync(join(tmpdir(), "orm-auth-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-auth-"));
   mkdirSync(join(dir, "node_modules"));
-  symlinkSync(PACKAGE, join(dir, "node_modules", "orm-auth"));
+  symlinkSync(PACKAGE, join(dir, "node_modules", "@ufstack/monorm-auth"));
   // A fresh consumer declares pass packages directly, as package discovery requires.
-  mkdirSync(join(dir, "node_modules", "@orm"));
-  const dependencies: Record<string, string> = { "orm-auth": "0.1.0" };
+  mkdirSync(join(dir, "node_modules", "@ufstack"));
+  const dependencies: Record<string, string> = { "@ufstack/monorm-auth": "0.1.0" };
   for (const name of ["timestamps", "soft-delete", "locking", "inherit"]) {
-    symlinkSync(join(PACKAGE, "node_modules", "@orm", name), join(dir, "node_modules", "@orm", name));
-    dependencies[`@orm/${name}`] = "0.1.0";
+    symlinkSync(join(PACKAGE, "node_modules", "@ufstack", `monorm-${name}`), join(dir, "node_modules", "@ufstack", `monorm-${name}`));
+    dependencies[`@ufstack/monorm-${name}`] = "0.1.0";
   }
   writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies }));
   const schema = join(dir, "schema.prisma");

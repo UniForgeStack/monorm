@@ -38,7 +38,7 @@ def metadata(workspace, target, seconds):
     binaries = {}
     for name, path, library in [
         ("python", workspace / "languages/python/orm/_native.so", "lib_native"),
-        ("node", workspace / "languages/js/orm.node", "liborm_node"),
+        ("node", workspace / "languages/js/monorm.node", "libmonorm_node"),
     ]:
         shutil.copy2(target / f"release/{library}.{suffix}", path)
         binaries[name] = {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
@@ -81,9 +81,9 @@ for group in [args.only] if args.only else ["disabled", "controls"]:
                 "--manifest-path",
                 str(workspace / "Cargo.toml"),
                 "-p",
-                "orm-python",
+                "monorm-python",
                 "-p",
-                "orm-node",
+                "monorm-node",
             ],
             env=env,
             check=True,
@@ -106,7 +106,7 @@ for group in [args.only] if args.only else ["disabled", "controls"]:
                         "--manifest-path",
                         str(workspace / "Cargo.toml"),
                         "-p",
-                        "orm-engine",
+                        "monorm-engine",
                         "--features",
                         "composition,allocation-probe" if instrumented else "composition",
                         "--example",

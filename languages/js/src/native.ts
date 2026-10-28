@@ -1,8 +1,8 @@
 /**
  * The Rust engine (`languages/js/native`), loaded once. Internal: use the package API.
  *
- * The addon is `orm.node` next to `package.json` (`npm run build:native`), or the file
- * `ORM_NATIVE` names.
+ * The addon is `monorm.node` next to `package.json` (`npm run build:native`), or the file
+ * `MONORM_NATIVE` names.
  */
 
 import { existsSync } from "node:fs";
@@ -215,7 +215,7 @@ function buildRecord(build: unknown): boolean {
 }
 
 function validate(addon: Addon, profile?: string): void {
-  if (typeof addon.profileMetadata !== "function") throw new Error("incompatible orm native artifact; rebuild for metadata ABI 1");
+  if (typeof addon.profileMetadata !== "function") throw new Error("incompatible monorm native artifact; rebuild for metadata ABI 1");
   const meta = JSON.parse(addon.profileMetadata()) as {
     abi: number; version: string; language: string; profile: string; backends: string[];
     capabilities: Record<string, boolean>; adapters: string[]; build: Record<string, unknown>;
@@ -228,7 +228,7 @@ function validate(addon: Addon, profile?: string): void {
       Array.isArray(meta.capabilities) || Object.values(meta.capabilities).some(v => typeof v !== "boolean") ||
       !Array.isArray(meta.adapters) || meta.adapters.some(a => typeof a !== "string" || meta.capabilities[a] !== true) ||
       new Set(meta.adapters).size !== meta.adapters.length) {
-    throw new Error("incompatible orm native artifact; rebuild or install matching orm 0.1.0 packages");
+    throw new Error("incompatible monorm native artifact; rebuild or install matching monorm 0.1.0 packages");
   }
   if (profile) {
     const tooling = profile === "tooling";
@@ -236,18 +236,18 @@ function validate(addon: Addon, profile?: string): void {
     if (meta.profile !== profile || meta.adapters.length !== 0 || JSON.stringify(meta.backends) !== JSON.stringify(profiles[profile]) ||
         Object.keys(capabilities).some(key => meta.capabilities[key] !== capabilities[key as keyof typeof capabilities]) ||
         Object.keys(meta.capabilities).length !== Object.keys(capabilities).length) {
-      throw new Error(`incompatible orm native profile ${profile}; reinstall matching packages`);
+      throw new Error(`incompatible monorm native profile ${profile}; reinstall matching packages`);
     }
   }
 }
 
 function load(): Addon {
   const require = createRequire(import.meta.url);
-  const selected = process.env["ORM_PROFILE"];
+  const selected = process.env["MONORM_PROFILE"];
   if (selected !== undefined && !Object.hasOwn(profiles, selected)) {
-    throw new Error(`unknown ORM_PROFILE ${selected}; choose ${Object.keys(profiles).join(", ")}`);
+    throw new Error(`unknown MONORM_PROFILE ${selected}; choose ${Object.keys(profiles).join(", ")}`);
   }
-  const explicit = process.env["ORM_NATIVE"];
+  const explicit = process.env["MONORM_NATIVE"];
   if (explicit) {
     const addon = require(explicit) as Addon;
     validate(addon, selected);
@@ -255,7 +255,7 @@ function load(): Addon {
     return addon;
   }
   const available = Object.keys(profiles).filter(profile => {
-    try { require.resolve(`@orm/native-${profile}`); return true; }
+    try { require.resolve(`@ufstack/monorm-native-${profile}`); return true; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
       return false;
@@ -264,16 +264,16 @@ function load(): Addon {
   if (selected || available.length) {
     const profile = selected ?? (available.length === 1 ? available[0] : undefined);
     if (!profile || !available.includes(profile)) {
-      throw new Error(`select one installed native profile with ORM_PROFILE; installed: ${available.join(", ") || "none"}`);
+      throw new Error(`select one installed native profile with MONORM_PROFILE; installed: ${available.join(", ") || "none"}`);
     }
-    const addon = require(`@orm/native-${profile}`) as Addon;
+    const addon = require(`@ufstack/monorm-native-${profile}`) as Addon;
     validate(addon, profile);
     addon.setDecimalClass(Decimal);
     return addon;
   }
   // Source checkout: the addon that `npm run build:native` writes.
-  for (const path of [fileURLToPath(new URL("../orm.node", import.meta.url)),
-                      fileURLToPath(new URL("../../orm.node", import.meta.url))]) {
+  for (const path of [fileURLToPath(new URL("../monorm.node", import.meta.url)),
+                      fileURLToPath(new URL("../../monorm.node", import.meta.url))]) {
     if (existsSync(path)) {
       const addon = require(path) as Addon;
       validate(addon);
@@ -281,7 +281,7 @@ function load(): Addon {
       return addon;
     }
   }
-  throw new Error("install @orm/native-postgres, @orm/native-sqlite, @orm/native-combined or @orm/native-tooling alongside orm");
+  throw new Error("install @ufstack/monorm-native-postgres, @ufstack/monorm-native-sqlite, @ufstack/monorm-native-combined or @ufstack/monorm-native-tooling alongside @ufstack/monorm");
 }
 
 let addon: Addon | undefined;

@@ -1,12 +1,12 @@
 //! Run only against a disposable database: this creates and drops its own table.
 mod environment;
 
-use orm_core::{
+use monorm_core::{
     dialect::Target,
     ir::{Operation, ValueType},
     schema::Schema,
 };
-use orm_engine::{
+use monorm_engine::{
     db::{Cell, Driver},
     exec::{self, Outcome},
     plan::Planner,
@@ -23,7 +23,7 @@ const ROUNDS: usize = 16;
 
 mod diesel_schema {
     diesel::table! {
-        orm_rust_compare_post (id) {
+        monorm_rust_compare_post (id) {
             id -> Integer,
             title -> Text,
             body -> Text,
@@ -35,7 +35,7 @@ mod diesel_schema {
 mod post {
     use sea_orm::entity::prelude::*;
     #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, diesel::Queryable)]
-    #[sea_orm(table_name = "orm_rust_compare_post")]
+    #[sea_orm(table_name = "monorm_rust_compare_post")]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: i32,
@@ -54,13 +54,13 @@ impl Params for IntParams {
     fn len(&self) -> usize {
         self.0.len()
     }
-    fn value(&self, i: usize, _: Option<ValueType>) -> orm_engine::Result<sea_query::Value> {
+    fn value(&self, i: usize, _: Option<ValueType>) -> monorm_engine::Result<sea_query::Value> {
         Ok(self.0[i].into())
     }
-    fn text(&self, _: usize) -> orm_engine::Result<String> {
+    fn text(&self, _: usize) -> monorm_engine::Result<String> {
         unreachable!()
     }
-    fn count(&self, i: usize) -> orm_engine::Result<u64> {
+    fn count(&self, i: usize) -> monorm_engine::Result<u64> {
         Ok(self.0[i] as u64)
     }
 }
@@ -85,12 +85,12 @@ enum ResultValue {
 async fn ours(db: &dyn Driver, schema: &Schema, c: &Case, json: bool) -> ResultValue {
     // Direct Rust constructs owned operations; cloning the template models those allocations.
     let op = if json {
-        orm_engine::parse_op(&c.json).unwrap()
+        monorm_engine::parse_op(&c.json).unwrap()
     } else {
         match &c.op {
             Operation::Select(q) => Operation::Select(q.clone()),
             Operation::Count(q) => Operation::Count(q.clone()),
-            Operation::Update(q) => Operation::Update(orm_core::ir::Update {
+            Operation::Update(q) => Operation::Update(monorm_core::ir::Update {
                 scope: q.scope.clone(),
                 model_fields: q.model_fields.clone(),
                 without_defaults: q.without_defaults.clone(),
@@ -100,7 +100,7 @@ async fn ours(db: &dyn Driver, schema: &Schema, c: &Case, json: bool) -> ResultV
                 set: q
                     .set
                     .iter()
-                    .map(|a| orm_core::ir::Assignment {
+                    .map(|a| monorm_core::ir::Assignment {
                         field: a.field.clone(),
                         value: a.value.clone(),
                     })
@@ -185,19 +185,19 @@ type DieselPool = diesel_async::pooled_connection::deadpool::Pool<diesel_async::
 async fn diesel_run(pool: &DieselPool, c: &Case) -> ResultValue {
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;
-    use diesel_schema::orm_rust_compare_post::dsl::*;
+    use diesel_schema::monorm_rust_compare_post::dsl::*;
 
     let mut conn = pool.get().await.unwrap();
     match c.kind {
         0 => ResultValue::Rows(
-            orm_rust_compare_post
+            monorm_rust_compare_post
                 .filter(id.eq(500))
                 .load::<post::Model>(&mut conn)
                 .await
                 .unwrap(),
         ),
         1 => ResultValue::Rows(
-            orm_rust_compare_post
+            monorm_rust_compare_post
                 .order(id.asc())
                 .limit(c.limit as i64)
                 .load::<post::Model>(&mut conn)
@@ -205,7 +205,7 @@ async fn diesel_run(pool: &DieselPool, c: &Case) -> ResultValue {
                 .unwrap(),
         ),
         2 => ResultValue::Count(
-            orm_rust_compare_post
+            monorm_rust_compare_post
                 .filter(views.gt(990))
                 .count()
                 .get_result::<i64>(&mut conn)
@@ -213,7 +213,7 @@ async fn diesel_run(pool: &DieselPool, c: &Case) -> ResultValue {
                 .unwrap() as u64,
         ),
         3 => ResultValue::Affected(
-            diesel::update(orm_rust_compare_post.filter(id.le(100)))
+            diesel::update(monorm_rust_compare_post.filter(id.le(100)))
                 .set(views.eq(0))
                 .execute(&mut conn)
                 .await
@@ -227,7 +227,7 @@ async fn diesel_run(pool: &DieselPool, c: &Case) -> ResultValue {
 async fn main() {
     let url = std::env::var("ORM_BENCH_URL")
         .expect("set ORM_BENCH_URL to a disposable PostgreSQL database");
-    let db = orm_engine::db::connect(&url, 1).await.unwrap();
+    let db = monorm_engine::db::connect(&url, 1).await.unwrap();
     let environment = environment::collect(db.as_ref()).await;
     let mut config = diesel_async::pooled_connection::ManagerConfig::default();
     config.recycling_method = diesel_async::pooled_connection::RecyclingMethod::Fast;
@@ -242,8 +242,8 @@ async fn main() {
     let sea_fast = std::env::var("ORM_BENCH_SEA_FAST").is_ok_and(|value| value == "1");
     opts.test_before_acquire(!sea_fast);
     let sea_db = Database::connect(opts).await.unwrap();
-    db.batch("CREATE TABLE orm_rust_compare_post (id integer PRIMARY KEY, title text NOT NULL, body text NOT NULL, views integer NOT NULL); INSERT INTO orm_rust_compare_post SELECT i, 'post ' || i, repeat('x', 200), i FROM generate_series(1, 1000) i; ANALYZE orm_rust_compare_post;".into()).await.unwrap();
-    let ir = orm_core::dsl::compile("model Post {\n id Int @id\n title String\n body String @db.Text\n views Int\n @@map(\"orm_rust_compare_post\")\n}", None).unwrap();
+    db.batch("CREATE TABLE monorm_rust_compare_post (id integer PRIMARY KEY, title text NOT NULL, body text NOT NULL, views integer NOT NULL); INSERT INTO monorm_rust_compare_post SELECT i, 'post ' || i, repeat('x', 200), i FROM generate_series(1, 1000) i; ANALYZE monorm_rust_compare_post;".into()).await.unwrap();
+    let ir = monorm_core::dsl::compile("model Post {\n id Int @id\n title String\n body String @db.Text\n views Int\n @@map(\"monorm_rust_compare_post\")\n}", None).unwrap();
     let schema = Schema::from_ir(ir).unwrap();
     let col = |name: &str| serde_json::json!({"t":"col", "path":[], "name":name});
     let cmp = |name: &str, op: &str, i: usize| serde_json::json!({"t":"cmp", "op":op, "l":col(name), "r":{"t":"param", "i":i}});
@@ -294,7 +294,7 @@ async fn main() {
         let json = doc.to_string();
         let c = Case {
             name,
-            op: orm_engine::parse_op(&json).unwrap(),
+            op: monorm_engine::parse_op(&json).unwrap(),
             json,
             params: IntParams(params),
             inner,
@@ -323,7 +323,7 @@ async fn main() {
             // Check each implementation's database changes from the original state.
             // These resets and assertions are outside every timed batch.
             for contender in 0..CONTENDERS {
-                db.batch("UPDATE orm_rust_compare_post SET views = id".into())
+                db.batch("UPDATE monorm_rust_compare_post SET views = id".into())
                     .await
                     .unwrap();
                 let affected = match contender {
@@ -333,7 +333,7 @@ async fn main() {
                     _ => diesel_run(&diesel_pool, &c).await,
                 };
                 assert_eq!(affected, ResultValue::Affected(100));
-                let wrong = db.query_text("SELECT count(*) FROM orm_rust_compare_post WHERE (id <= 100 AND views <> 0) OR (id > 100 AND views <> id)".into()).await.unwrap();
+                let wrong = db.query_text("SELECT count(*) FROM monorm_rust_compare_post WHERE (id <= 100 AND views <> 0) OR (id > 100 AND views <> id)".into()).await.unwrap();
                 assert_eq!(wrong, vec![vec![Some("0".to_owned())]]);
             }
         }
@@ -343,7 +343,7 @@ async fn main() {
             black_box(ours(db.as_ref(), &schema, &c, true).await);
             black_box(diesel_run(&diesel_pool, &c).await);
         }
-        db.batch("VACUUM ANALYZE orm_rust_compare_post".into())
+        db.batch("VACUUM ANALYZE monorm_rust_compare_post".into())
             .await
             .unwrap();
         let mut samples: [Vec<f64>; CONTENDERS] = std::array::from_fn(|_| vec![]);
@@ -380,7 +380,7 @@ async fn main() {
         );
         results.push(serde_json::json!({"case":c.name,"iterations_per_batch":c.inner,"seaorm":stats[0],"direct_ir":stats[1],"json_ir":stats[2],"diesel_async":stats[3]}));
     }
-    db.batch("DROP TABLE orm_rust_compare_post".into())
+    db.batch("DROP TABLE monorm_rust_compare_post".into())
         .await
         .unwrap();
     let output = std::env::var("ORM_BENCH_OUT").unwrap_or_else(|_| "results-diesel.json".into());

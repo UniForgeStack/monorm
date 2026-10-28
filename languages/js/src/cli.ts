@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * `npx orm`: the `orm` command line, the same Rust code as the standalone `orm` binary
- * and `python -m orm` (`crates/cli/`). See `npx orm --help`.
+ * `npx @ufstack/monorm`: the `monorm` command line, the same Rust code as the standalone `monorm` binary
+ * and `python -m monorm` (`crates/cli/`). See `npx @ufstack/monorm --help`.
  *
  * The schema file and migrations directory come from `--schema` / `--dir`, or from the
- * `"orm"` key of `package.json` (`{"schema": "schema.prisma", "migrations":
- * "migrations"}`). The database URL comes from `--url` or `ORM_DATABASE_URL`.
+ * `"@ufstack/monorm"` key of `package.json` (`{"schema": "schema.prisma", "migrations":
+ * "migrations"}`). The database URL comes from `--url` or `MONORM_DATABASE_URL`.
  */
 
 import { realpathSync } from "node:fs";
@@ -20,7 +20,7 @@ import { native } from "./native.js";
 /** Runs the command line; gives the exit code. Output goes to stdout / stderr. */
 export async function main(rawArgv: readonly string[]): Promise<number> {
   const addon = native();
-  if (typeof addon.cli !== "function") throw new Error("CLI unavailable; install @orm/native-tooling and set ORM_PROFILE");
+  if (typeof addon.cli !== "function") throw new Error("CLI unavailable; install @ufstack/monorm-native-tooling and set MONORM_PROFILE");
   const argv = [...rawArgv];
   try {
     const schema = addon.cliSchema(argv);

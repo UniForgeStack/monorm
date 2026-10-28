@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-import orm
-from orm import Registry, SchemaError
-from orm.__main__ import main as cli
-from orm.migrations import Migrations
+import monorm
+from monorm import Registry, SchemaError
+from monorm.__main__ import main as cli
+from monorm.migrations import Migrations
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -64,7 +64,7 @@ model Book {
 
 def models(source: str) -> Registry:
     reg = Registry()
-    orm.loads(source, registry=reg)
+    monorm.loads(source, registry=reg)
     return reg
 
 
@@ -86,9 +86,9 @@ def test_loads_builds_models_from_schema_text():
 
 def test_schema_errors_name_the_line():
     with pytest.raises(SchemaError, match=r"<schema>:3:9: Book.title: unknown type Strin"):
-        orm.loads("model Book {\n  id    BigInt @id\n  title Strin\n}")
+        monorm.loads("model Book {\n  id    BigInt @id\n  title Strin\n}")
     with pytest.raises(SchemaError, match="unknown argument `wher`"):
-        orm.loads('model Book {\n  id BigInt @id\n  @@index([id], wher: "x")\n}')
+        monorm.loads('model Book {\n  id BigInt @id\n  @@index([id], wher: "x")\n}')
 
 
 def test_first_migration(tmp_path):
@@ -167,10 +167,10 @@ def test_migrations_from_a_schema_file(tmp_path):
 
 
 def test_generated_blog_module_is_current():
-    module, stub = orm._native.generate_python(str(ROOT / "examples/blog/schema.prisma"))
+    module, stub = monorm._native.generate_python(str(ROOT / "examples/blog/schema.prisma"))
     committed = (ROOT / "examples/blog/models.py").read_text()
-    assert committed == module, "run `python -m orm generate`"
-    assert (ROOT / "examples/blog/models.pyi").read_text() == stub, "run `python -m orm generate`"
+    assert committed == module, "run `python -m monorm generate`"
+    assert (ROOT / "examples/blog/models.pyi").read_text() == stub, "run `python -m monorm generate`"
 
 
 def test_cli(tmp_path, capfd, monkeypatch):

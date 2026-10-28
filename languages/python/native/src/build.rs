@@ -13,11 +13,11 @@ use pyo3::types::{PyDict, PyList, PyString, PyTuple, PyType};
 
 use crate::convert::cell_to_py;
 use crate::errors::db_err;
-use orm_core::ir::ValueType;
-use orm_core::schema::Schema;
-use orm_engine::db::{Cell, RowSet};
-use orm_engine::exec::Fetched;
-use orm_engine::plan::{AnnotationColumn, JoinShape, Output};
+use monorm_core::ir::ValueType;
+use monorm_core::schema::Schema;
+use monorm_engine::db::{Cell, RowSet};
+use monorm_engine::exec::Fetched;
+use monorm_engine::plan::{AnnotationColumn, JoinShape, Output};
 
 struct ModelClass {
     cls: Py<PyType>,
@@ -54,7 +54,7 @@ fn decoders(py: Python<'_>, cls: &Bound<'_, PyAny>) -> PyResult<Vec<Decoder>> {
 /// The Python class of each model, by schema model index, and the members of each
 /// enum by stored value.
 pub struct Classes {
-    pub checks: Vec<Option<orm_core::result_check::PreparedChecks>>,
+    pub checks: Vec<Option<monorm_core::result_check::PreparedChecks>>,
     models: Vec<Option<ModelClass>>,
     enums: Vec<Option<Py<PyDict>>>,
 }
@@ -164,7 +164,7 @@ impl<'a, 'py> Builder<'a, 'py> {
     }
 
     /// An instance of `model` from row `r`, its fields in columns `start..`.
-    fn instance(&self, model: usize, shape: Option<&orm_core::behavior::ResultShape>, rows: &dyn RowSet, r: usize, start: usize, types: &[ValueType]) -> PyResult<Instance<'py>> {
+    fn instance(&self, model: usize, shape: Option<&monorm_core::behavior::ResultShape>, rows: &dyn RowSet, r: usize, start: usize, types: &[ValueType]) -> PyResult<Instance<'py>> {
         let mc = self.classes.get(model)?;
         let inst = self.blank(mc)?;
         if let Some(shape) = shape {
@@ -243,7 +243,7 @@ impl<'a, 'py> Builder<'a, 'py> {
     }
 
     /// One instance per row, `select_related` objects attached.
-    fn instances(&self, model: usize, shape: Option<&orm_core::behavior::ResultShape>, joins: &[JoinShape], annotations: &[AnnotationColumn], rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Vec<Instance<'py>>> {
+    fn instances(&self, model: usize, shape: Option<&monorm_core::behavior::ResultShape>, joins: &[JoinShape], annotations: &[AnnotationColumn], rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Vec<Instance<'py>>> {
         let mut out = Vec::with_capacity(rows.len());
         let mut related: Vec<Option<Instance<'py>>> = Vec::with_capacity(joins.len());
         for r in 0..rows.len() {
@@ -324,7 +324,7 @@ impl<'a, 'py> Builder<'a, 'py> {
     }
 
     /// Instances of `model` for rows returned by a write (`RETURNING`).
-    pub fn model_rows(&self, model: usize, shape: Option<&orm_core::behavior::ResultShape>, rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Bound<'py, PyList>> {
+    pub fn model_rows(&self, model: usize, shape: Option<&monorm_core::behavior::ResultShape>, rows: &dyn RowSet, types: &[ValueType]) -> PyResult<Bound<'py, PyList>> {
         PyList::new(self.py, self.instances(model, shape, &[], &[], rows, types)?.into_iter().map(|i| i.obj))
     }
 

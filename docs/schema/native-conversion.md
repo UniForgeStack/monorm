@@ -1,6 +1,6 @@
 # Adopt native schema expressions
 
-`orm fmt --native` converts supported SQL checks, index and exclusion predicates,
+`monorm fmt --native` converts supported SQL checks, index and exclusion predicates,
 and expression index keys without options to checked schema expressions.
 It accepts the usual schema, migrations-directory and project configuration options.
 It works offline and does not create migrations or edit migration history.

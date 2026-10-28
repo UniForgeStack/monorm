@@ -1,9 +1,9 @@
-"""`@@protected_write` and `orm.allow_writes`: an application-level write check."""
+"""`@@protected_write` and `monorm.allow_writes`: an application-level write check."""
 
 import asyncio
 
 import pytest
-import orm
+import monorm
 from artifact_caps import has_extension
 
 
@@ -37,9 +37,9 @@ model PostTag {
 
 @pytest.fixture
 async def blog():
-    registry = orm.Registry()
-    models = orm.loads(SOURCE, registry=registry)
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    models = monorm.loads(SOURCE, registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     yield models, db
     await db.close()
@@ -58,17 +58,17 @@ async def test_every_write_method_fails_outside_the_scope_and_works_inside(blog)
         lambda: posts.filter(Post.id == 3).delete(),
     ]
     for write in writes:
-        with pytest.raises(orm.WriteProtected, match=r"Post is write-protected .*orm.allow_writes\(Post\)"):
+        with pytest.raises(monorm.WriteProtected, match=r"Post is write-protected .*monorm.allow_writes\(Post\)"):
             await write()
-        with orm.allow_writes(Post):
+        with monorm.allow_writes(Post):
             await write()
     assert [(p.id, p.title) for p in await posts.order_by(Post.id)] == [(1, "x"), (2, "y")]
     post = await posts.get(Post.id == 1)
-    with pytest.raises(orm.WriteProtected):
+    with pytest.raises(monorm.WriteProtected):
         await post.update(title="z")
-    with pytest.raises(orm.WriteProtected):
+    with pytest.raises(monorm.WriteProtected):
         await post.delete()
-    with orm.allow_writes(Post):
+    with monorm.allow_writes(Post):
         await post.update(title="z")
         await post.delete()
     assert await posts.count() == 1
@@ -77,37 +77,37 @@ async def test_every_write_method_fails_outside_the_scope_and_works_inside(blog)
 async def test_the_check_is_on_the_model_the_sql_writes(blog):
     models, db = blog
     Post, Tag, PostTag = models["Post"], models["Tag"], models["PostTag"]
-    with orm.allow_writes(Post):
+    with monorm.allow_writes(Post):
         post = await Post.objects.using(db).insert(id=1, title="a")
     tag = await Tag.objects.using(db).insert(id=1, name="t")  # not protected
     # post.tags.add() writes PostTag rows, so the protection of PostTag decides.
-    with orm.allow_writes(Post), pytest.raises(orm.WriteProtected, match="PostTag"):
+    with monorm.allow_writes(Post), pytest.raises(monorm.WriteProtected, match="PostTag"):
         await post.tags.add(tag)
-    with orm.allow_writes(PostTag):
+    with monorm.allow_writes(PostTag):
         await post.tags.add(tag)
     assert await PostTag.objects.using(db).count() == 1
     # Scopes nest: an inner scope adds to the models of the outer one.
-    with orm.allow_writes(Post), orm.allow_writes(Tag):
+    with monorm.allow_writes(Post), monorm.allow_writes(Tag):
         await Post.objects.using(db).filter(Post.id == 1).update(title="b")
     with pytest.raises(TypeError, match="model class"):
-        with orm.allow_writes("Post"):  # type: ignore[arg-type]
+        with monorm.allow_writes("Post"):  # type: ignore[arg-type]
             pass
     with pytest.raises(TypeError, match="model class"):
-        with orm.allow_writes(post):
+        with monorm.allow_writes(post):
             pass
 
 
 async def test_a_package_check_before_its_own_io_also_checks_protection(blog):
-    from orm.hooks import prepare_insert, prepare_update
+    from monorm.hooks import prepare_insert, prepare_update
 
     models, db = blog
     Post = models["Post"]
     # A file field uploads after these checks, so a rejected write uploads nothing.
-    with pytest.raises(orm.WriteProtected, match="Post"):
+    with pytest.raises(monorm.WriteProtected, match="Post"):
         prepare_insert(Post.objects.using(db), {"id": 1, "title": "a"})
-    with pytest.raises(orm.WriteProtected, match="Post"):
+    with pytest.raises(monorm.WriteProtected, match="Post"):
         prepare_update(Post.objects.using(db).filter(Post.id == 1), {"title": "b"})
-    with orm.allow_writes(Post):
+    with monorm.allow_writes(Post):
         prepare_insert(Post.objects.using(db), {"id": 1, "title": "a"})
         assert prepare_update(Post.objects.using(db).filter(Post.id == 1), {"title": "b"}).unique
 
@@ -119,11 +119,11 @@ async def test_tasks_started_in_the_scope_get_it_and_reads_and_raw_sql_are_uncha
     async def insert(id):
         return await Post.objects.using(db).insert(id=id, title="a")
 
-    with orm.allow_writes(Post):
+    with monorm.allow_writes(Post):
         task = asyncio.create_task(insert(1))
     await task
     later = asyncio.create_task(insert(2))
-    with pytest.raises(orm.WriteProtected):
+    with pytest.raises(monorm.WriteProtected):
         await later
     assert await Post.objects.using(db).count() == 1
     assert await db.execute("UPDATE post SET title = 'raw'") == 1
@@ -132,45 +132,45 @@ async def test_tasks_started_in_the_scope_get_it_and_reads_and_raw_sql_are_uncha
 
 def test_protected_write_creates_no_ddl_and_no_snapshot_change():
     def ddl(source):
-        registry = orm.Registry()
-        orm.loads(source, registry=registry)
+        registry = monorm.Registry()
+        monorm.loads(source, registry=registry)
         schema = registry.prepare()
         return schema.ddl(), schema.snapshot()
 
     assert ddl(SOURCE) == ddl(SOURCE.replace("@@protected_write", ""))
-    with pytest.raises(orm.SchemaError, match="@@protected_write takes no arguments"):
-        orm.loads(SOURCE.replace("@@protected_write", "@@protected_write(true)", 1), registry=orm.Registry())
+    with pytest.raises(monorm.SchemaError, match="@@protected_write takes no arguments"):
+        monorm.loads(SOURCE.replace("@@protected_write", "@@protected_write(true)", 1), registry=monorm.Registry())
 
 
-@pytest.mark.skipif(not has_extension("orm.proxy"), reason="requires the orm-proxy package")
+@pytest.mark.skipif(not has_extension("monorm.proxy"), reason="requires the monorm-proxy package")
 async def test_a_proxy_writes_the_table_of_its_protected_root():
     source = SOURCE + "model Draft {\n  @@proxy.of(Post)\n}\n"
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Post, Draft = models["Post"], models["Draft"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
-        with pytest.raises(orm.WriteProtected, match="Post"):
+        with pytest.raises(monorm.WriteProtected, match="Post"):
             await Draft.objects.using(db).insert(id=1, title="a")
-        with orm.allow_writes(Post):
+        with monorm.allow_writes(Post):
             await Draft.objects.using(db).insert(id=1, title="a")
-        with orm.allow_writes(Draft):
+        with monorm.allow_writes(Draft):
             await Draft.objects.using(db).filter(Draft.id == 1).delete()
     finally:
         await db.close()
     # The proxy shares the protection of its root, so it cannot declare its own.
     with pytest.raises(
-        orm.SchemaError, match="Draft: a proxy cannot declare @@protected_write; protect the root model Post"
+        monorm.SchemaError, match="Draft: a proxy cannot declare @@protected_write; protect the root model Post"
     ):
-        orm.loads(
+        monorm.loads(
             SOURCE.replace("  @@protected_write\n", "", 1)
             + "model Draft {\n  @@proxy.of(Post)\n  @@protected_write\n}\n",
-            registry=orm.Registry(),
+            registry=monorm.Registry(),
         )
 
 
-@pytest.mark.skipif(not has_extension("orm.composition"), reason="requires the orm.composition package")
+@pytest.mark.skipif(not has_extension("monorm.composition"), reason="requires the monorm.composition package")
 async def test_a_composed_write_also_writes_its_protected_parent():
     source = """datasource db {
   provider = "sqlite"
@@ -185,23 +185,23 @@ model Employee {
   @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
 }
 """
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Person, Employee = models["Person"], models["Employee"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
-        with pytest.raises(orm.WriteProtected, match="Person"):
+        with pytest.raises(monorm.WriteProtected, match="Person"):
             await Employee.objects.using(db).insert(name="a", salary=1)
-        with orm.allow_writes(Employee, Person):
+        with monorm.allow_writes(Employee, Person):
             alice = await Employee.objects.using(db).insert(name="a", salary=1)
-        with pytest.raises(orm.WriteProtected, match="Person"):
+        with pytest.raises(monorm.WriteProtected, match="Person"):
             await Employee.objects.using(db).filter(Employee.id == alice.id).update(name="b")
-        with orm.allow_writes(Person):
+        with monorm.allow_writes(Person):
             bob = await Person.objects.using(db).insert(name="b")
-        with pytest.raises(orm.WriteProtected):
+        with pytest.raises(monorm.WriteProtected):
             await Employee.objects.using(db).attach(bob.id, {"salary": 2})
-        with orm.allow_writes(Employee, Person):
+        with monorm.allow_writes(Employee, Person):
             await Employee.objects.using(db).attach(bob.id, {"salary": 2})
     finally:
         await db.close()

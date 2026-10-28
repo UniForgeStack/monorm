@@ -25,7 +25,7 @@ module = ident.replace(".", "_").replace("-", "_")
 dist = ident.replace(".", "-").replace("_", "-")
 scope, name = ident.split(".", 1)
 npm_name = f"@{scope}/{name}"
-raw = (root / "orm-extension.toml").read_bytes()
+raw = (root / "monorm-extension.toml").read_bytes()
 digest = hashlib.sha256(raw).hexdigest()
 files = config["files"]
 
@@ -44,12 +44,12 @@ def copy_runtime(language, destination):
     constant = "MANIFEST_HASH" if language == "python" else "manifestHash"
     text = re.sub(rf'^(?:export const )?{constant}\s*=.*\n?', "", text, flags=re.M)
     entry.write_text(text + f'\n{constant} = "{digest}"\n' if language == "python" else text + f'\nexport const {constant} = "{digest}";\n')
-    (destination / "orm-extension.toml").write_bytes(raw)
+    (destination / "monorm-extension.toml").write_bytes(raw)
     for file in files:
         shutil.copy2(file["source"], destination / file["name"])
 
 
-with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
+with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporary:
     stage = Path(temporary)
     package = stage / module
     copy_runtime("python", package)
@@ -61,8 +61,8 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
     # `any`: the wheel holds the libraries of all platforms, and the loader picks its own file.
     tag = "py3-none-any" if config["tag"] == "any" else "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_")
     purelib = "true" if config["tag"] == "any" else "false"
-    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: orm-extension-package\nRoot-Is-Purelib: {purelib}\nTag: {tag}\n")
-    (info / "entry_points.txt").write_text(f"[orm.extensions]\n{ident} = {module}\n")
+    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: monorm-extension-package\nRoot-Is-Purelib: {purelib}\nTag: {tag}\n")
+    (info / "entry_points.txt").write_text(f"[monorm.extensions]\n{ident} = {module}\n")
     records = []
     wheel = out / f"{module}-{version}-{tag}.whl"
     with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -98,7 +98,7 @@ with tempfile.TemporaryDirectory(prefix="orm-extension-package-") as temporary:
         "main": "./index.js", "types": "./index.d.ts",
         "exports": exports,
         "files": listed,
-        "orm": {"extension": ident},
+        "monorm": {"extension": ident},
     }
     if section.get("dependencies"):
         package_json["dependencies"] = dict(sorted(section["dependencies"].items()))

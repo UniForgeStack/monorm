@@ -1,12 +1,12 @@
 # Current Rust engine versus SeaORM
 
-This standalone Cargo workspace compares `orm-engine` with unmodified SeaORM
+This standalone Cargo workspace compares `monorm-engine` with unmodified SeaORM
 2.0.4 / SQLx 0.9. Both use PostgreSQL over the same connection URL and a pool
 limited to one connection, on one current-thread Tokio runtime.
 
 The executable requires `ORM_BENCH_URL` pointing to a disposable PostgreSQL
 database. Run its release binary with this directory as the working directory;
-it writes `results-diesel.json` (or `ORM_BENCH_OUT`). The table `orm_rust_compare_post` must not already
+it writes `results-diesel.json` (or `ORM_BENCH_OUT`). The table `monorm_rust_compare_post` must not already
 exist. The executable creates it, seeds 1,000 rows, and drops it on success.
 After a failed run, use a fresh disposable database.
 
@@ -66,7 +66,7 @@ SeaORM with both settings, prebuilt SQL through our driver, buffered and streame
 tokio-postgres typed reads, and Diesel async. It measures 1/50/1,000-row reads
 and a separate CPU-only decode test. All result structs and fields are identical.
 It requires the same disposable `ORM_BENCH_URL`; its table
-`orm_rust_diagnose_post` must not exist, and it is dropped on success.
+`monorm_rust_diagnose_post` must not exist, and it is dropped on success.
 The default output is `results-diagnose.json`, overridable with `ORM_BENCH_OUT`.
 
 Do not run benchmarks while compilation or another benchmark is running.

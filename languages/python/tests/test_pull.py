@@ -1,4 +1,4 @@
-"""`orm pull`, baseline and drift against a live database.
+"""`monorm pull`, baseline and drift against a live database.
 
 The Postgres tests run in a database of their own (``<test database>_pull``): they drop
 and recreate its ``public`` schema.
@@ -13,9 +13,9 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest
 from conftest import DATABASE_URL
 
-import orm
-from orm import Registry
-from orm.migrations import Migrations, Migrator, pull
+import monorm
+from monorm import Registry
+from monorm.migrations import Migrations, Migrator, pull
 
 FIXTURE = Path(__file__).resolve().parents[3] / "fixtures" / "pull_live.sql"
 BLOG = Path(__file__).resolve().parents[3] / "examples" / "blog" / "schema.prisma"
@@ -33,8 +33,8 @@ EXPECTED_DIFFERENCES = [
 @pytest.fixture(scope="module", autouse=True)
 async def pull_database():
     try:
-        admin = await orm.connect(DATABASE_URL, max_connections=1, default=False, registry=Registry())
-    except orm.DatabaseError as e:
+        admin = await monorm.connect(DATABASE_URL, max_connections=1, default=False, registry=Registry())
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {DATABASE_URL}: {e}")
     try:
         if not await admin._fetch_text(f"SELECT 1 FROM pg_database WHERE datname = '{PULL_DB}'"):
@@ -43,8 +43,8 @@ async def pull_database():
         await admin.close()
 
 
-async def fresh(sql: str = "") -> orm.Database:
-    db = await orm.connect(PULL_URL, max_connections=2, default=False, registry=Registry())
+async def fresh(sql: str = "") -> monorm.Database:
+    db = await monorm.connect(PULL_URL, max_connections=2, default=False, registry=Registry())
     await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;" + sql)
     return db
 
@@ -94,7 +94,7 @@ async def test_pull_baseline_and_drift_of_a_django_style_database(tmp_path):
         assert "drop column account_shop.extra" in [s.summary for s in drift.steps]
         assert "create index account_shop_live_idx on account_shop" in [s.summary for s in drift.steps]
 
-        with pytest.raises(orm.migrations.MigrationError, match="already has applied migrations"):
+        with pytest.raises(monorm.migrations.MigrationError, match="already has applied migrations"):
             await migrator.baseline()
     finally:
         await db.close()
@@ -163,7 +163,7 @@ async def test_add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_t
         await migrator.baseline()
         add = next(s for s in (await migrator.drift()).steps if s.summary == "make t_owns.id an identity column")
         with pytest.raises(
-            orm.DatabaseError, match="cannot make t_owns.id an identity column: it still owns the sequence"
+            monorm.DatabaseError, match="cannot make t_owns.id an identity column: it still owns the sequence"
         ):
             await db.execute(add.sql)
         assert await db._fetch_text(
@@ -180,8 +180,8 @@ async def test_rollback_refuses_a_baselined_migration_unless_forced(tmp_path):
         (await pull(db)).write(schema)
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
-        assert await db._fetch_text("SELECT baseline FROM orm_migrations") == [("t",)]
-        with pytest.raises(orm.migrations.MigrationError, match="0001_initial was baselined"):
+        assert await db._fetch_text("SELECT baseline FROM monorm_migrations") == [("t",)]
+        with pytest.raises(monorm.migrations.MigrationError, match="0001_initial was baselined"):
             await migrator.downgrade()
         assert await db._fetch_text("SELECT count(*) FROM keep") == [("1",)]
         assert [m.name for m in await migrator.downgrade(force=True)] == ["0001_initial"]
@@ -192,7 +192,7 @@ async def test_rollback_refuses_a_baselined_migration_unless_forced(tmp_path):
 
 async def test_an_older_migrations_table_gets_the_baseline_column(tmp_path):
     db = await fresh(
-        "CREATE TABLE orm_migrations (name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());"
+        "CREATE TABLE monorm_migrations (name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());"
         "CREATE TABLE keep (id bigint PRIMARY KEY)"
     )
     try:
@@ -200,13 +200,13 @@ async def test_an_older_migrations_table_gets_the_baseline_column(tmp_path):
         (await pull(db)).write(schema)
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
-        assert await db._fetch_text("SELECT baseline FROM orm_migrations") == [("t",)]
+        assert await db._fetch_text("SELECT baseline FROM monorm_migrations") == [("t",)]
     finally:
         await db.close()
 
 
 async def test_a_database_made_by_the_orm_pulls_back_without_differences(tmp_path):
-    blog = orm.load(BLOG, registry=Registry())
+    blog = monorm.load(BLOG, registry=Registry())
     db = await fresh()
     try:
         migrations = Migrations(tmp_path / "blog", BLOG)
@@ -260,8 +260,8 @@ async def test_sqlite_pull_baseline_and_drift(tmp_path):
     source.write_text(SQLITE)
     url = f"sqlite://{tmp_path / 'live.db'}"
     registry = Registry()
-    orm.load(source, registry=registry)
-    db = await orm.connect(url, default=False, registry=registry)
+    monorm.load(source, registry=registry)
+    db = await monorm.connect(url, default=False, registry=registry)
     try:
         made = Migrations(tmp_path / "made", source)
         made.make()
@@ -274,11 +274,11 @@ async def test_sqlite_pull_baseline_and_drift(tmp_path):
 
         schema = tmp_path / "pulled.prisma"
         pulled.write(schema)
-        await db.execute("DROP TABLE orm_migrations")
+        await db.execute("DROP TABLE monorm_migrations")
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
         assert not await migrator.drift()
-        with pytest.raises(orm.migrations.MigrationError, match="was baselined"):
+        with pytest.raises(monorm.migrations.MigrationError, match="was baselined"):
             await migrator.downgrade()
 
         await db.execute("CREATE INDEX extra_idx ON pet (name)")
@@ -348,13 +348,13 @@ async def test_comments_cannot_escape_the_shadow(tmp_path):
         await db.execute(
             "SET standard_conforming_strings = on; COMMENT ON TABLE t IS 'x\\''; COMMIT; DROP TABLE victim; --'"
         )
-        legacy = await orm.connect(PULL_URL, max_connections=1, default=False, registry=Registry())
+        legacy = await monorm.connect(PULL_URL, max_connections=1, default=False, registry=Registry())
         try:
             pulled = await pull(legacy)
         finally:
             await legacy.close()
         assert await db._fetch_text("SELECT to_regclass('victim') IS NOT NULL") == [("t",)]
-        assert await db._fetch_text("SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'orm_shadow%'") == [("0",)]
+        assert await db._fetch_text("SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'monorm_shadow%'") == [("0",)]
         assert pulled.differences == []
     finally:
         await db.execute(f'ALTER DATABASE "{PULL_DB}" RESET standard_conforming_strings')
@@ -380,7 +380,7 @@ async def test_drift_after_an_enum_value_recreates_the_columns(tmp_path):
 async def test_pull_without_create_writes_the_schema(tmp_path):
     db = await fresh("CREATE TABLE t (id bigint PRIMARY KEY);")
     # roles are global to the server: one per test database
-    role = f"orm_pull_reader_{PULL_DB}"
+    role = f"monorm_pull_reader_{PULL_DB}"
     try:
         await db.execute(
             f"DROP ROLE IF EXISTS {role}; CREATE ROLE {role} LOGIN PASSWORD 'r';"
@@ -388,7 +388,7 @@ async def test_pull_without_create_writes_the_schema(tmp_path):
             f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role}"
         )
         url = urlunsplit(_url._replace(path="/" + PULL_DB, netloc=f"{role}:r@{_url.netloc.rsplit('@', 1)[-1]}"))
-        reader = await orm.connect(url, max_connections=1, default=False, registry=Registry())
+        reader = await monorm.connect(url, max_connections=1, default=False, registry=Registry())
         try:
             pulled = await pull(reader)
         finally:
@@ -399,9 +399,9 @@ async def test_pull_without_create_writes_the_schema(tmp_path):
         # baseline marks the migration; a drift check it cannot run is a warning
         await db.execute(f"GRANT CREATE ON SCHEMA public TO {role}")
         pulled.write(tmp_path / "schema.prisma")
-        env = {**os.environ, "ORM_DATABASE_URL": url}
+        env = {**os.environ, "MONORM_DATABASE_URL": url}
         done = subprocess.run(
-            [sys.executable, "-m", "orm", "--schema", "schema.prisma", "--dir", "migrations", "baseline"],
+            [sys.executable, "-m", "monorm", "--schema", "schema.prisma", "--dir", "migrations", "baseline"],
             cwd=tmp_path,
             env=env,
             capture_output=True,
@@ -411,7 +411,7 @@ async def test_pull_without_create_writes_the_schema(tmp_path):
         assert "warning: the database was not compared with 0001_initial" in done.stdout, done.stdout
     finally:
         await db.execute(
-            f'GRANT CREATE ON DATABASE "{PULL_DB}" TO PUBLIC; DROP TABLE IF EXISTS orm_migrations;'
+            f'GRANT CREATE ON DATABASE "{PULL_DB}" TO PUBLIC; DROP TABLE IF EXISTS monorm_migrations;'
             f"DROP OWNED BY {role}; DROP ROLE {role}"
         )
         await db.close()
@@ -430,7 +430,7 @@ INSERT INTO auth_user (is_staff, joined, age, price) VALUES (1, '2024-01-02 03:0
 
 async def test_sqlite_pull_reads_column_clauses(tmp_path):
     url = f"sqlite://{tmp_path / 'django.db'}"
-    db = await orm.connect(url, default=False, registry=Registry(dialect="sqlite"))
+    db = await monorm.connect(url, default=False, registry=Registry(dialect="sqlite"))
     try:
         await db.execute(DJANGO_SQLITE)
         pulled = await pull(db)
@@ -445,8 +445,8 @@ async def test_sqlite_pull_reads_column_clauses(tmp_path):
 
     # the pulled models read the rows another tool wrote
     registry = Registry()
-    User = orm.loads(text, registry=registry)["AuthUser"]
-    db = await orm.connect(url, default=False, registry=registry)
+    User = monorm.loads(text, registry=registry)["AuthUser"]
+    db = await monorm.connect(url, default=False, registry=registry)
     try:
         user = await User.objects.using(db).get()
         assert user.is_staff is True and user.price == 1.5

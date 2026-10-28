@@ -2,7 +2,7 @@
 
 import pytest
 
-from orm import _native
+from monorm import _native
 
 
 def test_generate_python_query_sets(tmp_path):

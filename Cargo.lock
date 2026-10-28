@@ -785,24 +785,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-cli"
+name = "monorm-cli"
 version = "0.1.0"
 dependencies = [
- "orm-core",
- "orm-engine",
+ "monorm-core",
+ "monorm-engine",
  "serde_json",
  "tokio",
  "toml",
 ]
 
 [[package]]
-name = "orm-client"
+name = "monorm-client"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "chrono",
- "orm-core",
- "orm-engine",
+ "monorm-core",
+ "monorm-engine",
  "sea-query",
  "serde",
  "serde_json",
@@ -811,18 +811,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-composition"
+name = "monorm-composition"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
- "orm-core",
- "orm-engine",
+ "monorm-contracts",
+ "monorm-core",
+ "monorm-engine",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "orm-contracts"
+name = "monorm-contracts"
 version = "0.1.0"
 dependencies = [
  "semver",
@@ -832,14 +832,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-core"
+name = "monorm-core"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "chrono",
  "libloading",
- "orm-contracts",
- "orm-core",
+ "monorm-contracts",
+ "monorm-core",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -848,7 +848,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-engine"
+name = "monorm-engine"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
@@ -856,8 +856,8 @@ dependencies = [
  "bytes",
  "chrono",
  "deadpool-postgres",
- "orm-contracts",
- "orm-core",
+ "monorm-contracts",
+ "monorm-core",
  "rusqlite",
  "rustls",
  "sea-query",
@@ -872,38 +872,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-extension-package"
+name = "monorm-extension-package"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
+ "monorm-contracts",
  "serde_json",
  "toml",
 ]
 
 [[package]]
-name = "orm-file-storage"
+name = "monorm-file-storage"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
+ "monorm-contracts",
  "serde_json",
 ]
 
 [[package]]
-name = "orm-generic"
+name = "monorm-generic"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
+ "monorm-contracts",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "orm-inherit"
+name = "monorm-inherit"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
- "orm-core",
- "orm-engine",
+ "monorm-contracts",
+ "monorm-core",
+ "monorm-engine",
  "rusqlite",
  "serde",
  "serde_json",
@@ -911,15 +911,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-locking"
+name = "monorm-locking"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
+ "monorm-contracts",
  "serde_json",
 ]
 
 [[package]]
-name = "orm-node"
+name = "monorm-node"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
@@ -927,33 +927,33 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
- "orm-cli",
- "orm-core",
- "orm-engine",
+ "monorm-cli",
+ "monorm-core",
+ "monorm-engine",
  "sea-query",
  "serde_json",
  "uuid",
 ]
 
 [[package]]
-name = "orm-proxy"
+name = "monorm-proxy"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
- "orm-core",
+ "monorm-contracts",
+ "monorm-core",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "orm-python"
+name = "monorm-python"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "chrono",
- "orm-cli",
- "orm-core",
- "orm-engine",
+ "monorm-cli",
+ "monorm-core",
+ "monorm-engine",
  "pyo3",
  "pyo3-async-runtimes",
  "sea-query",
@@ -962,29 +962,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-query-defaults"
+name = "monorm-query-defaults"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
+ "monorm-contracts",
  "serde_json",
 ]
 
 [[package]]
-name = "orm-soft-delete"
+name = "monorm-soft-delete"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
- "orm-core",
+ "monorm-contracts",
+ "monorm-core",
  "rusqlite",
  "serde_json",
 ]
 
 [[package]]
-name = "orm-timestamps"
+name = "monorm-timestamps"
 version = "0.1.0"
 dependencies = [
- "orm-contracts",
- "orm-core",
+ "monorm-contracts",
+ "monorm-core",
  "rusqlite",
  "serde_json",
 ]

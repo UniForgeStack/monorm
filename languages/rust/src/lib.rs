@@ -21,9 +21,9 @@ pub use selection::*;
 pub use subquery::*;
 pub use unify::*;
 pub mod value;
-pub use orm_core::dialect::Dialect;
-use orm_core::{ir::SchemaIr, schema::Schema};
-pub use orm_engine::db::Cell;
+pub use monorm_core::dialect::Dialect;
+use monorm_core::{ir::SchemaIr, schema::Schema};
+pub use monorm_engine::db::Cell;
 pub use prepared::*;
 pub use projection::*;
 pub use query::*;
@@ -36,20 +36,20 @@ pub use {bigdecimal, chrono, serde, serde_json, uuid};
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub enum Error {
-    Engine(orm_engine::Error),
+    Engine(monorm_engine::Error),
     Decode(String),
     NotFound,
     MultipleRows,
     Compatibility(String),
     Unloaded(String),
 }
-impl From<orm_engine::Error> for Error {
-    fn from(e: orm_engine::Error) -> Self {
+impl From<monorm_engine::Error> for Error {
+    fn from(e: monorm_engine::Error) -> Self {
         Self::Engine(e)
     }
 }
-impl From<orm_engine::db::DbError> for Error {
-    fn from(e: orm_engine::db::DbError) -> Self {
+impl From<monorm_engine::db::DbError> for Error {
+    fn from(e: monorm_engine::db::DbError) -> Self {
         Self::Engine(e.into())
     }
 }
@@ -117,7 +117,7 @@ impl DatabaseDialect for Sqlite {
 
 /// A live driver checked against the generated schema and selected dialect.
 pub struct Database<S: SchemaSpec> {
-    pub(crate) driver: Arc<dyn orm_engine::db::Driver>,
+    pub(crate) driver: Arc<dyn monorm_engine::db::Driver>,
     pub(crate) schema: Arc<Schema>,
     _schema: PhantomData<S>,
 }
@@ -139,7 +139,7 @@ impl<S: SchemaSpec> Database<S> {
             ));
         }
         let schema = Schema::from_ir(ir).map_err(Error::Compatibility)?;
-        let driver = orm_engine::db::connect(url, pool_size).await?;
+        let driver = monorm_engine::db::connect(url, pool_size).await?;
         if driver.dialect() != S::Dialect::DIALECT {
             driver.close().await;
             return Err(Error::Compatibility(
@@ -197,7 +197,7 @@ pub trait Model: Sized + Send + Sync + 'static {
     type Normal: Model<Schema = Self::Schema, Source = Self::Source>;
     const NAME: &'static str;
     fn fields() -> Vec<String>;
-    fn configure(_: &mut orm_core::ir::Select) {}
+    fn configure(_: &mut monorm_core::ir::Select) {}
     #[doc(hidden)]
     fn selection(q: &mut SelectionPlan) {
         q.model_fields = Some(Self::fields());
@@ -221,4 +221,4 @@ pub struct ModelMetadata {
 }
 
 #[doc(hidden)]
-pub type SelectionPlan = orm_core::ir::Select;
+pub type SelectionPlan = monorm_core::ir::Select;

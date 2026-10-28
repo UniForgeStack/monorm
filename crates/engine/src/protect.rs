@@ -5,7 +5,7 @@
 //! multi-table write also writes the tables of its storage ancestors.
 
 use crate::error::{Error, Result};
-use orm_core::schema::Schema;
+use monorm_core::schema::Schema;
 
 /// Fails with [`Error::WriteProtected`] when a write of model `model` writes a protected
 /// table that no model in `allowed` (model names) writes.

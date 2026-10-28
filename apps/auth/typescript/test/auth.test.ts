@@ -3,7 +3,7 @@ import { pbkdf2Sync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { boundMeta } from "orm/ext";
+import { boundMeta } from "@ufstack/monorm/ext";
 
 import { UserMethods, UserQueries, authenticate, checkPassword, makePassword, needsUpdate, syncPermissions } from "../src/index.js";
 import { Auth, PACKAGE, PROVIDERS, VARIANTS, makeAuth, type Provider, type Rows } from "./support.js";

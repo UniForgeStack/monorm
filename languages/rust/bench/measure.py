@@ -22,18 +22,18 @@ def run(*args, cwd=ROOT):
 
 
 def measure():
-    run("cargo", "build", "-q", "-p", "orm-cli")
+    run("cargo", "build", "-q", "-p", "monorm-cli")
     records = []
-    with tempfile.TemporaryDirectory(prefix="orm-rust-measure-") as temp:
+    with tempfile.TemporaryDirectory(prefix="monorm-rust-measure-") as temp:
         project = Path(temp)
         (project / "src").mkdir()
         (project / "Cargo.toml").write_text(f"""[package]
-name="orm-measured-consumer"
+name="monorm-measured-consumer"
 version="0.0.0"
 edition="2021"
 [workspace]
 [dependencies]
-orm-client={{path={json.dumps(str(ROOT / "languages/rust"))}}}
+monorm-client={{path={json.dumps(str(ROOT / "languages/rust"))}}}
 tokio={{version="1",features=["rt-multi-thread","macros"]}}
 """)
         (project / "src/main.rs").write_text("fn main() {}\n")
@@ -49,9 +49,9 @@ tokio={{version="1",features=["rt-multi-thread","macros"]}}
                     relations = f"\n next_id Int\n next M{(i + 1) % count} @relation(fields: [next_id], references: [id])\n previous M{(i - 1) % count}[]"
                 models.append(f"model M{i} {{\n id Int @id\n{fields}{relations}\n}}")
                 states = (
-                    ["orm_client::Unloaded"]
-                    + ["orm_client::Loaded" if j % 2 else "orm_client::Unloaded" for j in range(width)]
-                    + (["orm_client::Unloaded"] if cyclic else [])
+                    ["monorm_client::Unloaded"]
+                    + ["monorm_client::Loaded" if j % 2 else "monorm_client::Unloaded" for j in range(width)]
+                    + (["monorm_client::Unloaded"] if cyclic else [])
                 )
                 reads.append(
                     f"let rows=models::M{i}::objects.using(&db).all().await?; std::hint::black_box(rows);\nlet rows=models::M{i}::<{','.join(states)}>::query().using(&db).all().await?;std::hint::black_box(rows);"
@@ -77,8 +77,8 @@ tokio={{version="1",features=["rt-multi-thread","macros"]}}
                 """#[allow(dead_code)]
 mod models;
 #[tokio::main]
-async fn main()->orm_client::Result<()> {
-if let Ok(url)=std::env::var("ORM_DATABASE_URL") {
+async fn main()->monorm_client::Result<()> {
+if let Ok(url)=std::env::var("MONORM_DATABASE_URL") {
 let db=models::Database::connect(&url,1).await?;
 """
                 + "\n".join(reads)

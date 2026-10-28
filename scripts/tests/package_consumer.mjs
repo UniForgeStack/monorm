@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { QueryError, connect, scope } from 'orm';
+import { QueryError, connect, scope } from '@ufstack/monorm';
 import { Wrapped } from '@acme/outside';
 import { sum } from '@acme/outside/model';
 import { Note, configureOutside } from './models.js';
 // The subpath export resolves, and its dependency was installed with the package.
 assert.equal(sum(['0.1', '0.2']), '0.3');
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
-assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'orm.inherit', 'orm.locking', 'orm.query-defaults', 'orm.soft-delete', 'orm.timestamps']);
+assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'monorm.inherit', 'monorm.locking', 'monorm.query-defaults', 'monorm.soft-delete', 'monorm.timestamps']);
 for (const [id, stamp] of Object.entries(locked.behavior.packages)) {
   const [scope, name] = id.split('.');
   assert.equal((await import(`@${scope}/${name}`)).manifestHash, stamp.manifest_hash);
@@ -17,7 +17,7 @@ const defaults = Object.fromEntries(locked.models.find((m) => m.name === 'Note')
 assert.deepEqual(defaults.shop_id, { expr: { t: 'scope', name: 'shop' } });
 assert.deepEqual(defaults.region, { expr: { t: 'text', value: 'eu' } });
 assert.deepEqual(defaults.owner, { hook: { export: 'acme.outside.owner' } });
-const db = await connect(process.env.ORM_DATABASE_URL);
+const db = await connect(process.env.MONORM_DATABASE_URL);
 await db.dropTables();
 await db.createTables();
 try {

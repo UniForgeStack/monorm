@@ -5,12 +5,12 @@ from typing import Any
 
 import pytest
 
-import orm
+import monorm
 from auth_support import VARIANTS, Auth
-from orm_auth import UserMethods, UserQueries
+from monorm_auth import UserMethods, UserQueries
 
 POSTGRES_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
-HEADER = 'datasource db {\n  provider = "%s"\n}\nimport "app:orm-auth" (prefix: "auth_")\n'
+HEADER = 'datasource db {\n  provider = "%s"\n}\nimport "app:monorm-auth" (prefix: "auth_")\n'
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -25,19 +25,19 @@ def variant(request: pytest.FixtureRequest) -> str:
 
 @pytest.fixture
 async def make_auth(tmp_path: Path, provider: str, variant: str) -> AsyncIterator[Callable[[], Any]]:
-    opened: list[orm.Database] = []
+    opened: list[monorm.Database] = []
 
     async def make() -> Auth:
-        registry = orm.Registry()
+        registry = monorm.Registry()
         schema = tmp_path / "schema.prisma"
         kind = VARIANTS[variant]
         schema.write_text(HEADER % provider + kind.schema)
-        models = orm.load(schema, registry=registry, model_methods={kind.model: UserMethods})
-        orm.use_query_set(models[kind.model], UserQueries)
+        models = monorm.load(schema, registry=registry, model_methods={kind.model: UserMethods})
+        monorm.use_query_set(models[kind.model], UserQueries)
         url = POSTGRES_URL if provider == "postgres" else "sqlite://:memory:"
         try:
-            db = await orm.connect(url, registry=registry, default=False)
-        except orm.DatabaseError as e:
+            db = await monorm.connect(url, registry=registry, default=False)
+        except monorm.DatabaseError as e:
             if "ORM_TEST_DATABASE_URL" in os.environ:
                 raise
             pytest.skip(f"Postgres not reachable at {url}: {e}")

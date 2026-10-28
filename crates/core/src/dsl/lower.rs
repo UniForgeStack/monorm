@@ -546,7 +546,7 @@ fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
 
         None => return err(pos, "datasource: provider = \"postgresql\" is missing"),
     }
-    // The connection comes from ORM_DATABASE_URL / --url; Prisma's keys are accepted.
+    // The connection comes from MONORM_DATABASE_URL / --url; Prisma's keys are accepted.
     for key in ["url", "directUrl", "shadowDatabaseUrl"] {
         n.get(key);
     }

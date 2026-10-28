@@ -1568,7 +1568,7 @@ export function noAlias(item: unknown): void {
  */
 /** Where a relation path keeps its state (a symbol: path objects' string keys are the
  * related model's columns and relations). */
-export const PATH: unique symbol = Symbol("orm.path");
+export const PATH: unique symbol = Symbol("monorm.path");
 
 /** The null rule of a relation path: `Post.author.orNull()` / `andNotNull()`. */
 export type NullRule = "orNull" | "andNotNull";

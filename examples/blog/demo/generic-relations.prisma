@@ -1,4 +1,4 @@
-// Needs the orm-generic package (npm: @orm/generic). `orm identities` freezes the
+// Needs the monorm-generic package (npm: @ufstack/monorm-generic). `monorm identities` freezes the
 // ContentType values into generic-relations.identities.json first.
 
 model Photo {

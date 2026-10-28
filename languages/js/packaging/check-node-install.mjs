@@ -18,7 +18,7 @@ writeFileSync(join(install, "package.json"), JSON.stringify({ private: true, typ
 execFileSync(npm, ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", ...artifacts], { cwd: install, env, stdio: "inherit" });
 const lock = JSON.parse(readFileSync(join(install, "package-lock.json"), "utf8"));
 for (const name of Object.keys(lock.packages)) {
-  if (name.includes("node_modules/@orm/native-") && !name.startsWith(`node_modules/@orm/native-${profile}`)) throw new Error(`unselected native dependency ${name}`);
+  if (name.includes("node_modules/@ufstack/monorm-native-") && !name.startsWith(`node_modules/@ufstack/monorm-native-${profile}`)) throw new Error(`unselected native dependency ${name}`);
 }
 copyFileSync(join(root, "languages", "js", "packaging", "smoke-node.mjs"), join(install, "smoke.mjs"));
-execFileSync(process.execPath, [join(install, "smoke.mjs")], { cwd: install, env: { ...env, ORM_PROFILE: profile }, stdio: "inherit" });
+execFileSync(process.execPath, [join(install, "smoke.mjs")], { cwd: install, env: { ...env, MONORM_PROFILE: profile }, stdio: "inherit" });

@@ -18,7 +18,7 @@ mod errors;
 ))]
 compile_error!("select exactly one named native profile; use a custom feature build for exact combinations");
 
-use orm_core::{ir, migrate, schema};
+use monorm_core::{ir, migrate, schema};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,49 +30,49 @@ use pyo3::IntoPyObjectExt;
 use crate::build::{Builder, Classes};
 use crate::convert::{cell_to_py, py_to_value, PyParams};
 use crate::errors::{db_err, engine_err, query_err, schema_err};
-use orm_core::dialect::Target;
-use orm_engine::db::{self, Driver, Executor};
-use orm_engine::exec::{self, Conflict, Outcome};
-use orm_engine::plan::{self, Planner};
-use orm_engine::migrate as engine_migrate;
-use orm_engine::{parse_op, protect};
-use orm_core::ir::Operation;
+use monorm_core::dialect::Target;
+use monorm_engine::db::{self, Driver, Executor};
+use monorm_engine::exec::{self, Conflict, Outcome};
+use monorm_engine::plan::{self, Planner};
+use monorm_engine::migrate as engine_migrate;
+use monorm_engine::{parse_op, protect};
+use monorm_core::ir::Operation;
 
 fn inspect_operation(schema: &schema::Schema, target: Target, op_json: &str, params: &[Bound<'_, PyAny>]) -> PyResult<String> {
     let op = parse_op(op_json).map_err(engine_err)?;
     let plan = Planner::plan(schema, target, &op, &PyParams(params)).map_err(engine_err)?;
-    inspection_json(orm_engine::inspect::Inspection::plans(&[plan], false))
+    inspection_json(monorm_engine::inspect::Inspection::plans(&[plan], false))
 }
-fn inspection_json(result: orm_engine::inspect::Inspection) -> PyResult<String> {
+fn inspection_json(result: monorm_engine::inspect::Inspection) -> PyResult<String> {
     serde_json::to_string(&result).map_err(|e| query_err(e.to_string()))
 }
 #[allow(clippy::too_many_arguments)]
 fn inspect_insert(schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: &Bound<'_, PyList>,
     options: &str, params: &[Bound<'_, PyAny>], batch_size: Option<usize>, returning: bool) -> PyResult<String> {
-    let opts: orm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(|e| query_err(e.to_string()))?;
+    let opts: monorm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(|e| query_err(e.to_string()))?;
     let conflict = opts.conflict.map(|target| match opts.update {
-        Some(update) => Conflict::Update { target, index: orm_engine::exec::index_target(opts.indexes), update, set: opts.set },
-        None => Conflict::Nothing { target, index: orm_engine::exec::index_target(opts.indexes) },
+        Some(update) => Conflict::Update { target, index: monorm_engine::exec::index_target(opts.indexes), update, set: opts.set },
+        None => Conflict::Nothing { target, index: monorm_engine::exec::index_target(opts.indexes) },
     });
     let values = convert_rows(schema, model, fields, rows, true)?;
-    let params = orm_engine::params::Scoped { params: &PyParams(params), scope: &opts.scope };
+    let params = monorm_engine::params::Scoped { params: &PyParams(params), scope: &opts.scope };
     let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params, batch_size, returning, &opts.without_defaults).map_err(engine_err)?;
     let batching = plans.len() > 1;
-    inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
+    inspection_json(monorm_engine::inspect::Inspection::plans(&plans, batching))
 }
 #[allow(clippy::too_many_arguments)]
 fn inspect_updates(schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: &Bound<'_, PyList>,
     filters_json: &str, params: &[Bound<'_, PyAny>], batch_size: Option<usize>, returning: bool, without_defaults: &str) -> PyResult<String> {
     let (stmts, _) = update_many_plan(schema, target, model, fields, rows, filters_json, params, returning, batch_size, without_defaults)?;
     let batching = stmts.len() > 1;
-    inspection_json(orm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
+    inspection_json(monorm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
         use sea_query::QueryStatementBuilder;
-        orm_engine::inspect::statement(&s.into_sub_query_statement(), batching)
+        monorm_engine::inspect::statement(&s.into_sub_query_statement(), batching)
     }).collect()))
 }
 
 /// Marker for "use the column's server default" in insert rows.
-#[pyclass(frozen, module = "orm._native", name = "_Default")]
+#[pyclass(frozen, module = "monorm._native", name = "_Default")]
 struct DefaultMarker;
 
 #[pymethods]
@@ -112,7 +112,7 @@ fn convert_rows(
     Ok(out)
 }
 
-/// `update_many`'s statements (see `orm_engine::exec::plan_update_many`).
+/// `update_many`'s statements (see `monorm_engine::exec::plan_update_many`).
 #[allow(clippy::too_many_arguments)]
 fn update_many_plan<'py>(
     schema: &schema::Schema,
@@ -130,14 +130,14 @@ fn update_many_plan<'py>(
         .into_iter()
         .map(|r| r.into_iter().map(|v| v.expect("no DEFAULT in update_many")).collect())
         .collect();
-    let (filters, scope) = orm_engine::params::scoped_filters(filters_json).map_err(engine_err)?;
-    let params = orm_engine::params::Scoped { params: &PyParams(params), scope: &scope };
+    let (filters, scope) = monorm_engine::params::scoped_filters(filters_json).map_err(engine_err)?;
+    let params = monorm_engine::params::Scoped { params: &PyParams(params), scope: &scope };
     exec::plan_update_many(schema, target, model, fields, values, &filters, &params, returning, batch_size, &serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?)
         .map_err(engine_err)
 }
 
 /// The compiled schema. Usable without a connection, e.g. to render SQL.
-#[pyclass(frozen, module = "orm._native", name = "Schema")]
+#[pyclass(frozen, module = "monorm._native", name = "Schema")]
 struct PySchema {
     inner: Arc<schema::Schema>,
     classes: Arc<Classes>,
@@ -153,7 +153,7 @@ impl PySchema {
     fn new(py: Python<'_>, schema_json: &str, classes: Option<&Bound<'_, PyDict>>, packages: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<Self> {
         let mut ir: ir::SchemaIr =
             ir::SchemaIr::from_json(schema_json).map_err(schema_err)?;
-        orm_core::behavior::prepare(&mut ir, Some("python")).map_err(schema_err)?;
+        monorm_core::behavior::prepare(&mut ir, Some("python")).map_err(schema_err)?;
         let inner = match &packages {
             Some(packages) => schema::Schema::from_ir_with_packages(ir, packages),
             None => schema::Schema::from_ir_unbound(ir),
@@ -167,17 +167,17 @@ impl PySchema {
         Ok(PySchema { inner: Arc::new(inner), classes: Arc::new(classes) })
     }
 
-    /// Converts and plans a single-row insert without SQL or I/O (`orm.hooks.prepare_insert`).
+    /// Converts and plans a single-row insert without SQL or I/O (`monorm.hooks.prepare_insert`).
     /// `allowed`: the write protection check runs here too, before a caller's own I/O.
     fn validate_insert(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, allowed: Vec<String>) -> PyResult<()> {
         protect::ensure_writable(&self.inner, model, &allowed).map_err(engine_err)?;
         let values = convert_rows(&self.inner, model, &fields, rows, true)?;
-        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), model, &fields, values, None, &orm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
+        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), model, &fields, values, None, &monorm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
         Ok(())
     }
 
     /// Plans an update without SQL or I/O; true when its filters pin one row by a
-    /// non-null primary key or unique field (`orm.hooks.prepare_update`).
+    /// non-null primary key or unique field (`monorm.hooks.prepare_update`).
     fn unique_row_update(&self, op_json: &str, params: Vec<Bound<'_, PyAny>>, allowed: Vec<String>) -> PyResult<bool> {
         let op = parse_op(op_json).map_err(engine_err)?;
         if let Operation::Update(ir::Update { model, .. }) = &op {
@@ -248,17 +248,17 @@ impl PySchema {
 
     /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
     fn read_flags(&self) -> String {
-        orm_engine::plan::read_flags_json(&self.inner).to_string()
+        monorm_engine::plan::read_flags_json(&self.inner).to_string()
     }
 
     /// The order the engine uses for a select IR document (JSON `[{field, desc, nulls}]`).
     fn effective_order(&self, select_json: &str) -> PyResult<String> {
-        orm_engine::plan::effective_order_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
+        monorm_engine::plan::effective_order_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
     }
 
     /// The filter defaults of a select IR document (JSON `[{source, name, expr, active}]`).
     fn current_filter(&self, select_json: &str) -> PyResult<String> {
-        orm_engine::plan::current_filter_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
+        monorm_engine::plan::current_filter_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
     }
 
     /// The database schema as a snapshot (JSON), the format migrations store.
@@ -297,7 +297,7 @@ impl PySchema {
 }
 
 /// A database transaction (or savepoint, when nested).
-#[pyclass(frozen, module = "orm._native")]
+#[pyclass(frozen, module = "monorm._native")]
 struct Transaction {
     inner: Arc<dyn db::Transaction>,
     failure: std::sync::Mutex<Option<(String, Py<PyAny>)>>,
@@ -359,14 +359,14 @@ impl Transaction {
 }
 
 /// The statements of the engine calls it is passed to, drained by `take()`.
-#[pyclass(frozen, module = "orm._native")]
-struct Trace(orm_engine::trace::Trace);
+#[pyclass(frozen, module = "monorm._native")]
+struct Trace(monorm_engine::trace::Trace);
 
 #[pymethods]
 impl Trace {
     #[new]
     fn new() -> Self {
-        Trace(orm_engine::trace::Trace::new())
+        Trace(monorm_engine::trace::Trace::new())
     }
 
     /// `(sql, start, duration, rows, error)` per statement, oldest first: `start` in Unix
@@ -385,7 +385,7 @@ impl Trace {
 }
 
 /// A held session advisory lock (`db.lock(..., session=True)`).
-#[pyclass(frozen, module = "orm._native")]
+#[pyclass(frozen, module = "monorm._native")]
 struct SessionLock {
     inner: Arc<dyn db::SessionLock>,
     unlock: String,
@@ -398,12 +398,12 @@ impl SessionLock {
         let lock = self.inner.clone();
         let (sql, trace) = (self.unlock.clone(), trace.map(|t| t.get().0.clone()));
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            orm_engine::trace::timed(trace.as_ref(), sql, lock.release(), |_| 1).await.map_err(db_err)
+            monorm_engine::trace::timed(trace.as_ref(), sql, lock.release(), |_| 1).await.map_err(db_err)
         })
     }
 }
 
-#[pyclass(frozen, module = "orm._native")]
+#[pyclass(frozen, module = "monorm._native")]
 struct Engine {
     driver: Arc<dyn Driver>,
     target: Target,
@@ -421,7 +421,7 @@ impl Engine {
 
     /// `conn(tx)`, recording each statement into `trace` when given.
     fn traced(&self, tx: Option<&Bound<'_, Transaction>>, trace: Option<&Bound<'_, Trace>>) -> Arc<dyn Executor> {
-        orm_engine::trace::wrap(self.conn(tx), trace.map(|t| &t.get().0))
+        monorm_engine::trace::wrap(self.conn(tx), trace.map(|t| &t.get().0))
     }
 
     /// Runs `statements` in order, in one transaction (Postgres DDL is transactional),
@@ -569,14 +569,14 @@ impl Engine {
             Some(json) => serde_json::from_str(json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
             None => vec![],
         };
-        let index = orm_engine::exec::index_target(conflict_indexes);
+        let index = monorm_engine::exec::index_target(conflict_indexes);
         let conflict = conflict.map(|target| match update {
             Some(update) => Conflict::Update { target, index, update, set },
             None => Conflict::Nothing { target, index },
         });
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
         let scope = serde_json::from_str(scope.unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
-        let params = orm_engine::params::Scoped { params: &PyParams(&params), scope: &scope };
+        let params = monorm_engine::params::Scoped { params: &PyParams(&params), scope: &scope };
         let plans =
             exec::plan_inserts(&self.schema, self.target, model, &fields, values, conflict, &params, batch_size, returning, &without_defaults)
                 .map_err(engine_err)?;
@@ -620,14 +620,14 @@ impl Engine {
         let model_idx = self.schema.model_idx(model).map_err(schema_err)?;
         let identity = py_to_value(parent_id, Some(self.schema.model(model_idx).pk_field().value_type()))?;
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
-        let plan = orm_engine::multi_table::prepare_attach(&self.schema, self.target, model, identity, &fields, values).map_err(engine_err)?;
+        let plan = monorm_engine::multi_table::prepare_attach(&self.schema, self.target, model, identity, &fields, values).map_err(engine_err)?;
         let target = self.target;
         let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let classes = self.classes.clone();
         let db = db.map(Bound::unbind);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let out = orm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err)?;
+            let out = monorm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err)?;
             Python::attach(|py| outcome_to_py(py, out, &classes, db, None))
         })
     }
@@ -687,7 +687,7 @@ impl Engine {
         &self, py: Python<'py>, key: i64, name: Option<&[u8]>,
         exclusive: bool, nowait: bool, tx: &Bound<'py, Transaction>, trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let key = name.map(orm_engine::advisory::key).unwrap_or(key);
+        let key = name.map(monorm_engine::advisory::key).unwrap_or(key);
         let conn = self.traced(Some(tx), trace);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             conn.advisory_lock(key, exclusive, nowait).await.map_err(db_err)
@@ -708,14 +708,14 @@ impl Engine {
         &self, py: Python<'py>, key: i64, name: Option<&[u8]>,
         exclusive: bool, nowait: bool, timeout_ms: Option<u64>, trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let key = name.map(orm_engine::advisory::key).unwrap_or(key);
+        let key = name.map(monorm_engine::advisory::key).unwrap_or(key);
         let driver = self.driver.clone();
         let trace = trace.map(|t| t.get().0.clone());
-        let sql = orm_engine::advisory::session_sql(key, exclusive, nowait);
-        let unlock = orm_engine::advisory::unlock_sql(key, exclusive);
+        let sql = monorm_engine::advisory::session_sql(key, exclusive, nowait);
+        let unlock = monorm_engine::advisory::unlock_sql(key, exclusive);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let taken = driver.session_lock(key, exclusive, nowait, timeout_ms);
-            let lock = orm_engine::trace::timed(trace.as_ref(), sql, taken, |l| l.is_some() as u64).await.map_err(db_err)?;
+            let lock = monorm_engine::trace::timed(trace.as_ref(), sql, taken, |l| l.is_some() as u64).await.map_err(db_err)?;
             Ok(lock.map(|inner| SessionLock { inner, unlock }))
         })
     }
@@ -833,7 +833,7 @@ impl Engine {
         self.run_script(py, statements, tx)
     }
 
-    /// `[(name, applied, applied_at)]` for the migrations of `dir` (see `orm_engine::migrate`).
+    /// `[(name, applied, applied_at)]` for the migrations of `dir` (see `monorm_engine::migrate`).
     fn migration_status<'py>(&self, py: Python<'py>, dir: PathBuf) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -853,11 +853,11 @@ impl Engine {
     }
 
     /// The live database as a schema file: `(schema, gaps, [(summary, sql, warning)])`, the steps
-    /// being what a migration from the schema would still change (see `orm_engine::introspect`).
+    /// being what a migration from the schema would still change (see `monorm_engine::introspect`).
     fn pull_schema<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let p = orm_engine::introspect::pull(&*driver).await.map_err(engine_err)?;
+            let p = monorm_engine::introspect::pull(&*driver).await.map_err(engine_err)?;
             Ok((p.schema, p.gaps, p.steps.into_iter().map(|s| (s.summary, s.sql, s.warning)).collect::<Vec<_>>()))
         })
     }
@@ -867,7 +867,7 @@ impl Engine {
     fn migration_drift<'py>(&self, py: Python<'py>, dir: PathBuf) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let d = orm_engine::introspect::drift(&*driver, &dir).await.map_err(engine_err)?;
+            let d = monorm_engine::introspect::drift(&*driver, &dir).await.map_err(engine_err)?;
             Ok((d.migration, d.steps.into_iter().map(|s| (s.summary, s.sql, s.warning)).collect::<Vec<_>>(), d.gaps))
         })
     }
@@ -949,7 +949,7 @@ fn outcome_to_py(
     db: Option<Py<PyAny>>,
     row_cls: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
+    monorm_engine::result_check::emit(&monorm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
     let db = db.map(|d| d.into_bound(py));
     let b = Builder::new(py, classes, db.as_ref());
     match out {
@@ -973,7 +973,7 @@ fn key_rows(
     model: &str,
     keys: &[String],
     n: usize,
-    value: impl Fn(usize, usize, orm_core::ir::ValueType) -> PyResult<sea_query::Value>,
+    value: impl Fn(usize, usize, monorm_core::ir::ValueType) -> PyResult<sea_query::Value>,
 ) -> PyResult<Vec<Vec<Option<sea_query::Value>>>> {
     let m = schema.model(schema.model_idx(model).map_err(query_err)?);
     let positions = keys.iter().map(|k| m.field_pos(k).map_err(query_err)).collect::<PyResult<Vec<_>>>()?;
@@ -988,7 +988,7 @@ fn key_rows(
 
 /// Attaches the rows of a [`Outcome::Prefetched`] to `parents`.
 fn prefetched_to_py(py: Python<'_>, out: Outcome, classes: &Classes, db: Option<Py<PyAny>>, parents: Vec<Py<PyAny>>) -> PyResult<Py<PyAny>> {
-    orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
+    monorm_engine::result_check::emit(&monorm_engine::result_check::diagnostics(&classes.checks, &out).map_err(db_err)?);
     let Outcome::Prefetched { parents: rows, prefetched } = out else {
         return Err(query_err("prefetch gave no prefetched rows".into()));
     };
@@ -1005,15 +1005,15 @@ fn prepare_schema(schema_json: &str, context_json: Option<&str>) -> PyResult<Str
     let mut ir = ir::SchemaIr::from_json(schema_json).map_err(schema_err)?;
     if let Some(context) = context_json {
         let context = serde_json::from_str(context).map_err(|e| schema_err(format!("invalid definition context: {e}")))?;
-        ir = orm_core::behavior::merge_definition(context, ir).map_err(schema_err)?;
+        ir = monorm_core::behavior::merge_definition(context, ir).map_err(schema_err)?;
     }
-    orm_core::behavior::prepare(&mut ir, Some("python")).map_err(schema_err)?;
+    monorm_core::behavior::prepare(&mut ir, Some("python")).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(|e| schema_err(e.to_string()))
 }
 
 #[pyfunction]
 fn native_artifact() -> PyResult<String> {
-    serde_json::to_string(&orm_core::behavior::artifact()).map_err(|e| schema_err(e.to_string()))
+    serde_json::to_string(&monorm_core::behavior::artifact()).map_err(|e| schema_err(e.to_string()))
 }
 
 /// Compiles schema-language source to the schema IR (JSON). `path` is where it came
@@ -1022,12 +1022,12 @@ fn native_artifact() -> PyResult<String> {
 #[pyo3(signature = (source, path = None, extensions = None))]
 fn compile_schema(py: Python<'_>, source: &str, path: Option<&str>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
     let apps = installed(None, extensions);
-    let project = orm_core::dsl::compile_project_with(source, path.map(std::path::Path::new), &apps).map_err(schema_err)?;
+    let project = monorm_core::dsl::compile_project_with(source, path.map(std::path::Path::new), &apps).map_err(schema_err)?;
     compiled(py, project)
 }
 
 /// Schema expression warnings go through `warnings.warn` as `SchemaWarning`.
-fn emit_warnings(py: Python<'_>, project: &orm_core::dsl::CompiledProject) -> PyResult<()> {
+fn emit_warnings(py: Python<'_>, project: &monorm_core::dsl::CompiledProject) -> PyResult<()> {
     let category = py.get_type::<errors::SchemaWarning>();
     for warning in &project.warnings {
         let message = std::ffi::CString::new(warning.to_string().replace('\0', "")).unwrap_or_default();
@@ -1036,15 +1036,15 @@ fn emit_warnings(py: Python<'_>, project: &orm_core::dsl::CompiledProject) -> Py
     Ok(())
 }
 
-fn compiled(py: Python<'_>, project: orm_core::dsl::CompiledProject) -> PyResult<String> {
+fn compiled(py: Python<'_>, project: monorm_core::dsl::CompiledProject) -> PyResult<String> {
     emit_warnings(py, &project)?;
-    let (ir, _) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
+    let (ir, _) = monorm_core::dsl::check(project.ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(|e| schema_err(e.to_string()))
 }
 
 /// The installed apps and extension manifests that Python found, as the loader reads them.
-fn installed(apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> orm_core::dsl::Installed {
-    let mut installed = orm_core::dsl::Installed::from(apps.unwrap_or_default());
+fn installed(apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> monorm_core::dsl::Installed {
+    let mut installed = monorm_core::dsl::Installed::from(apps.unwrap_or_default());
     installed.extensions = extensions.unwrap_or_default().into_iter().collect();
     installed
 }
@@ -1053,7 +1053,7 @@ fn installed(apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>
 #[pyo3(signature = (path, apps = None, extensions = None))]
 fn compile_schema_file(py: Python<'_>, path: &str, apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
     let apps = installed(apps, extensions);
-    let project = orm_core::dsl::compile_project_file_with(std::path::Path::new(path), &apps).map_err(schema_err)?;
+    let project = monorm_core::dsl::compile_project_file_with(std::path::Path::new(path), &apps).map_err(schema_err)?;
     compiled(py, project)
 }
 
@@ -1070,38 +1070,38 @@ fn generate_python(
     extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>,
 ) -> PyResult<(String, String)> {
     let p = std::path::Path::new(path);
-    let project = orm_core::dsl::compile_project_file_with(p, &installed(apps, extensions)).map_err(schema_err)?;
+    let project = monorm_core::dsl::compile_project_file_with(p, &installed(apps, extensions)).map_err(schema_err)?;
     emit_warnings(py, &project)?;
-    let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
+    let (ir, schema) = monorm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut options = orm_core::codegen::Options { query_sets: query_sets.unwrap_or_default(), model_methods: model_methods.unwrap_or_default(), ..Default::default() };
+    let mut options = monorm_core::codegen::Options { query_sets: query_sets.unwrap_or_default(), model_methods: model_methods.unwrap_or_default(), ..Default::default() };
     let out_dir = p.parent().unwrap_or(std::path::Path::new("."));
-    options.with_schema_classes(&ir, &project.units, orm_core::codegen::lookup::Language::Python, out_dir).map_err(schema_err)?;
-    let g = orm_core::codegen::python::generate_with(&ir, &schema, &source, &options).map_err(schema_err)?;
+    options.with_schema_classes(&ir, &project.units, monorm_core::codegen::lookup::Language::Python, out_dir).map_err(schema_err)?;
+    let g = monorm_core::codegen::python::generate_with(&ir, &schema, &source, &options).map_err(schema_err)?;
     Ok((g.module, g.stub))
 }
 
-/// `python -m orm`: the `orm` command line (`orm_cli`), on its own runtime with the GIL
+/// `python -m monorm`: the `monorm` command line (`monorm_cli`), on its own runtime with the GIL
 /// released. Gives the exit code; output goes to the process's stdout / stderr.
 #[cfg(feature = "cli")]
 #[pyfunction]
 fn cli(py: Python<'_>, argv: Vec<String>) -> i32 {
-    py.detach(|| orm_cli::run_blocking(&argv, orm_cli::Host::Python))
+    py.detach(|| monorm_cli::run_blocking(&argv, monorm_cli::Host::Python))
 }
 
 /// The schema file of a command line, as the CLI resolves it.
 #[cfg(feature = "cli")]
 #[pyfunction]
 fn cli_schema(argv: Vec<String>) -> PathBuf {
-    orm_cli::schema_path(&argv, orm_cli::Host::Python)
+    monorm_cli::schema_path(&argv, monorm_cli::Host::Python)
 }
 
-/// For `python -m orm migrate`: `(schema, dir, url, target)` as the CLI resolves them,
+/// For `python -m monorm migrate`: `(schema, dir, url, target)` as the CLI resolves them,
 /// or None for any other command line.
 #[cfg(feature = "cli")]
 #[pyfunction]
 fn cli_migrate_args(argv: Vec<String>) -> Option<(PathBuf, PathBuf, Option<String>, Option<String>)> {
-    orm_cli::migrate_args(&argv, orm_cli::Host::Python)
+    monorm_cli::migrate_args(&argv, monorm_cli::Host::Python)
 }
 
 /// Migration folders of `dir` in order: `[(name, path)]`.
@@ -1192,9 +1192,9 @@ fn profile_metadata() -> PyResult<String> {
         else { "custom" };
     serde_json::to_string(&serde_json::json!({
         "abi": 1, "version": env!("CARGO_PKG_VERSION"), "language": "python", "profile": profile,
-        "backends": orm_engine::compiled_backends(),
+        "backends": monorm_engine::compiled_backends(),
         "adapters": [],
-        "build": serde_json::from_str::<serde_json::Value>(env!("ORM_BUILD_RECORD")).map_err(|e| schema_err(e.to_string()))?,
+        "build": serde_json::from_str::<serde_json::Value>(env!("MONORM_BUILD_RECORD")).map_err(|e| schema_err(e.to_string()))?,
         "capabilities": { "cli": cfg!(feature = "cli"),
             "generate-python": cfg!(feature = "generate-python"),
             "generate-typescript": cfg!(feature = "generate-typescript") }

@@ -48,7 +48,7 @@ REPO = HERE.parents[2]
 
 def make(name: str) -> Any:
     if name.startswith("orm"):
-        from orm_contender import OrmContender
+        from monorm_contender import OrmContender
 
         return OrmContender(name)
     if name.startswith("sqlalchemy"):
@@ -188,7 +188,7 @@ def environment(infos: dict[str, dict[str, Any]], artifact: str | None, before: 
         "pool_size": POOL_SIZE,
         "uptime_before": before,
         "uptime_after": uptime(),
-        "orm_artifact": artifact,
+        "monorm_artifact": artifact,
         "warmup_calls": WARMUP_CALLS,
         "contenders": infos,
     } | extra

@@ -1,5 +1,5 @@
 //! Neutral write records resolve to field positions on the prepared model.
-use orm_core::{behavior::SCHEMA_CONTRACT, ir::Expr, schema::Schema, writes::WriteKind};
+use monorm_core::{behavior::SCHEMA_CONTRACT, ir::Expr, schema::Schema, writes::WriteKind};
 use serde_json::{json, Value};
 
 fn prepare(records: Value) -> Result<Schema, String> {

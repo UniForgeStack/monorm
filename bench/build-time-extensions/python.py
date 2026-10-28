@@ -48,7 +48,7 @@ async def main():
     def write_label(side):
         return f"write{separator}{side}"
 
-    modules = [package(args.before, "orm_before"), package(args.after, "orm_after")]
+    modules = [package(args.before, "monorm_before"), package(args.after, "monorm_after")]
     source = SCHEMA.replace("BACKEND", "sqlite" if args.url.startswith("sqlite:") else "postgresql")
     dbs, models, registries = [], [], []
     for module in modules:

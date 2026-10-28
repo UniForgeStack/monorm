@@ -1,4 +1,4 @@
-use orm_core::{codegen::rust, dsl};
+use monorm_core::{codegen::rust, dsl};
 fn generate(source: &str) -> Result<String, String> {
     let (ir, schema) = dsl::check(dsl::compile(source, None)?)?;
     rust::generate(&ir, &schema)
@@ -66,8 +66,8 @@ fn extension_type_without_rust_support_is_rejected() {
     ir.models[0].fields[1]
         .hints
         .insert("python".into(), "Custom".into());
-    let schema = orm_core::schema::Schema::from_ir(
-        orm_core::ir::SchemaIr::from_json(&orm_core::codegen::embedded_schema_json(&ir).unwrap())
+    let schema = monorm_core::schema::Schema::from_ir(
+        monorm_core::ir::SchemaIr::from_json(&monorm_core::codegen::embedded_schema_json(&ir).unwrap())
             .unwrap(),
     )
     .unwrap();

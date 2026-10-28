@@ -1,6 +1,6 @@
 //! The types generated for an abstract model (`behavior.type_models`), checked by mypy --strict, pyright and tsc:
 //! a query-set class and a methods class written against the abstract type work on the model that extends it.
-use orm_core::codegen::{python, typescript, Options};
+use monorm_core::codegen::{python, typescript, Options};
 use std::{fs, path::{Path, PathBuf}, process::Command};
 
 const SCHEMA: &str = "model User {\n id Int @id\n email String\n}\nmodel Post {\n id Int @id\n}";
@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
-from orm import QuerySet
+from monorm import QuerySet
 
 if TYPE_CHECKING:
     from models import AbstractUserFields
@@ -47,7 +47,7 @@ async def f() -> str:
     return user.domain() + fields.email + str(Post.objects.count)
 ";
 
-const QUERIES_TS: &str = "import { QuerySet } from \"orm\";
+const QUERIES_TS: &str = "import { QuerySet } from \"@ufstack/monorm\";
 import type { AbstractUserSpec } from \"./models.js\";
 
 export class UserQueries<S extends AbstractUserSpec> extends QuerySet<S> {
@@ -82,20 +82,20 @@ fn host() -> PathBuf {
     start.ancestors().find(|d| d.join("Cargo.lock").is_file()).expect("repo root").to_path_buf()
 }
 
-fn project(language: &str, queries: &str) -> (PathBuf, orm_core::ir::SchemaIr, orm_core::schema::Schema, Options) {
+fn project(language: &str, queries: &str) -> (PathBuf, monorm_core::ir::SchemaIr, monorm_core::schema::Schema, Options) {
     let dir = host().join("target/abstract-typing").join(format!("{language}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    let mut ir = orm_core::dsl::compile(SCHEMA, None).unwrap();
+    let mut ir = monorm_core::dsl::compile(SCHEMA, None).unwrap();
     ir.behavior.type_models = serde_json::from_value(serde_json::json!([{
         "name": "AbstractUser",
         "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "email", "column": "email", "type": "string"}],
         "extended_by": ["User"]
     }]))
     .unwrap();
-    ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
+    ir.behavior.schema_contract = monorm_contracts::extension::SCHEMA_CONTRACT;
     ir.models[0].classes_from = Some("AbstractUser".into());
-    let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
     let options = Options {
         query_sets: [("User".into(), queries.into())].into(),
         model_methods: [("User".into(), queries.replace("queries", "methods").replace("UserQueries", "UserMethods"))].into(),
@@ -146,7 +146,7 @@ fn python_query_set_and_methods_class_accept_the_abstract_type() {
 #[test]
 fn typescript_query_set_and_methods_class_accept_the_abstract_type() {
     let (dir, ir, schema, options) = project("typescript", "./queries.js#UserQueries");
-    let generated = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+    let generated = typescript::generate_with(&ir, &schema, "schema.prisma", "@ufstack/monorm", &options).unwrap();
     let js = host().join("languages/js");
     write(&dir, "models.ts", &generated);
     write(&dir, "queries.ts", QUERIES_TS);
@@ -154,7 +154,7 @@ fn typescript_query_set_and_methods_class_accept_the_abstract_type() {
     write(&dir, "tsconfig.json", &format!("{{\"compilerOptions\": {{\"target\": \"ES2022\", \"lib\": [\"ES2022\"], \"module\": \"ESNext\", \"moduleResolution\": \"Bundler\",
         \"types\": [\"node\"], \"typeRoots\": [{:?}], \"strict\": true, \"noUncheckedIndexedAccess\": true, \"exactOptionalPropertyTypes\": true,
         \"noImplicitOverride\": true, \"verbatimModuleSyntax\": true, \"noEmit\": true, \"skipLibCheck\": true,
-        \"paths\": {{\"orm\": [{:?}], \"orm/ext\": [{:?}]}}}}, \"include\": [\"accepted.ts\", \"models.ts\", \"queries.ts\", \"methods.ts\"]}}",
+        \"paths\": {{\"@ufstack/monorm\": [{:?}], \"@ufstack/monorm/ext\": [{:?}]}}}}, \"include\": [\"accepted.ts\", \"models.ts\", \"queries.ts\", \"methods.ts\"]}}",
         js.join("node_modules/@types"), js.join("src/index.ts"), js.join("src/ext.ts")));
     write(&dir, "accepted.ts", ACCEPTED_TS);
     let local = js.join("node_modules/.bin/tsc");

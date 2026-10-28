@@ -8,20 +8,20 @@ from pathlib import Path
 import pytest
 from blog.models import User
 
-import orm
+import monorm
 
 SOURCE = Path(__file__).resolve().parents[3].joinpath("examples/sqlite/schema.prisma").read_text()
 
 
 def models(source=SOURCE):
-    registry = orm.Registry()
-    return registry, orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    return registry, monorm.loads(source, registry=registry)
 
 
 @pytest.fixture
 async def sqlite():
     registry, classes = models()
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     yield db, classes, registry
     await db.drop_tables()
@@ -64,13 +64,13 @@ async def test_crud_relations_defaults_and_upserts(sqlite):
     assert same.id == a.id and same.name == "Updated"
     rows = await Book.objects.using(db).filter(Book.pages > 0).update(pages=Book.pages + 1).returning()
     assert rows[0].pages == 8
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await Book.objects.using(db).insert(author_id=999, title="orphan")
     assert (e.value.sqlstate, e.value.constraint) == ("23503", None)
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await Author.objects.using(db).insert(email=a.email, name="dup")
     assert e.value.sqlstate == "23505"
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         await Book.objects.using(db).insert(author_id=a.id, title="bad", status="invalid")
     assert await Book.objects.using(db).filter(Book.id == books[0].id).delete() == 1
     assert registry.ir()["dialect"] == "sqlite"
@@ -79,8 +79,8 @@ async def test_crud_relations_defaults_and_upserts(sqlite):
 async def test_array_agg_is_postgres_only(sqlite):
     db, m, _ = sqlite
     Author, Book = m["Author"], m["Book"]
-    with pytest.raises(orm.QueryError, match="sqlite does not support array_agg"):
-        await Author.objects.using(db).select(orm.func.array_agg(Author.name)).scalar()
+    with pytest.raises(monorm.QueryError, match="sqlite does not support array_agg"):
+        await Author.objects.using(db).select(monorm.func.array_agg(Author.name)).scalar()
     # Relation aggregates keep the scalar subqueries: no LATERAL join.
     a, b, c = (
         await Author.objects.using(db)
@@ -98,23 +98,23 @@ async def test_array_agg_is_postgres_only(sqlite):
     )
     result = (
         Author.objects.using(db)
-        .select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages))
+        .select(Author.id, monorm.func.count(Author.books), monorm.func.max(Author.books.pages))
         .inspect()
     )
-    assert result == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=2),))
+    assert result == monorm.QueryInspection(1, False, (monorm.StatementInspection(scalar_correlated=2),))
     page = (
         Author.objects.using(db)
-        .select(Author.id, orm.func.count(Author.books), orm.func.max(Author.books.pages))
+        .select(Author.id, monorm.func.count(Author.books), monorm.func.max(Author.books.pages))
         .order_by(Author.name)
         .limit(10)
         .offset(1)
     )
-    assert page.inspect().statements[0] == orm.StatementInspection(scalar_correlated=2)
+    assert page.inspect().statements[0] == monorm.StatementInspection(scalar_correlated=2)
     assert "LATERAL" not in page.sql()
     assert [tuple(r) for r in await page] == [(b.id, 1, 3), (c.id, 0, None)]
     rows = (
         await Author.objects.using(db)
-        .select(Author.name, orm.func.count(Author.books), orm.func.max(Author.books.pages))
+        .select(Author.name, monorm.func.count(Author.books), monorm.func.max(Author.books.pages))
         .order_by(Author.name)
     )
     assert [tuple(r) for r in rows] == [("A", 2, 7), ("B", 1, 3), ("C", 0, None)]
@@ -123,7 +123,7 @@ async def test_array_agg_is_postgres_only(sqlite):
 async def test_bulk_writes(sqlite, observe_queries):
     db, m, _ = sqlite
     Author = m["Author"]
-    with pytest.raises(orm.QueryError, match="needs Postgres"):
+    with pytest.raises(monorm.QueryError, match="needs Postgres"):
         await Author.objects.using(db).insert_many([{"email": "a@x.io", "name": "A"}], copy=True)
     # 32 766 parameters at most: 20 000 rows of two fields go to two statements.
     rows = [{"email": f"u{i}@x.io", "name": f"U{i}"} for i in range(20_000)]
@@ -137,7 +137,7 @@ async def test_bulk_writes(sqlite, observe_queries):
     first, created = await Author.objects.using(db).get_or_insert(email="u0@x.io", defaults={"name": "x"})
     assert not created and first.name == "U0"
     # A failed later batch rolls back the earlier ones.
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         await Author.objects.using(db).insert_many(
             [{"email": "n1@x.io", "name": "N"}, {"email": "u1@x.io", "name": "N"}], batch_size=1
         )
@@ -160,7 +160,7 @@ PEOPLE = """
 async def test_on_conflict_index_matches_a_boolean_predicate_and_takes_one_index(observe_queries):
     registry, m = models(PEOPLE)
     Person = m["Person"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         people = Person.objects.using(db)
@@ -170,9 +170,9 @@ async def test_on_conflict_index_matches_a_boolean_predicate_and_takes_one_index
                 await people.insert(name="U0").on_conflict(Person.name, index=Person.indexes.person_name_active, update=False)
         assert 'ON CONFLICT ("name") WHERE active DO NOTHING' in events[0].sql
         assert await people.count() == 1
-        with pytest.raises(orm.QueryError, match="matches 2 unique indexes of Person"):
+        with pytest.raises(monorm.QueryError, match="matches 2 unique indexes of Person"):
             await people.insert(name="U1").on_conflict(Person.name, update=False)
-        with pytest.raises(orm.QueryError, match="SQLite takes one index"):
+        with pytest.raises(monorm.QueryError, match="SQLite takes one index"):
             await people.insert(name="U1").on_conflict(
                 Person.name, index=[Person.indexes.person_name_active, Person.indexes.person_name_shown], update=False
             )
@@ -189,7 +189,7 @@ async def test_outer_through_a_relation_path(sqlite):
     await Book.objects.using(db).insert_many(
         [{"author_id": alice.id, "title": "one"}, {"author_id": bob.id, "title": "two"}]
     )
-    name = Author.objects.filter(Author.email == orm.outer(Book.author.email)).select(Author.name).as_scalar()
+    name = Author.objects.filter(Author.email == monorm.outer(Book.author.email)).select(Author.name).as_scalar()
     rows = await Book.objects.using(db).order_by(Book.id).select(Book.title, name.label("name"))
     assert [tuple(r) for r in rows] == [("one", "Alice"), ("two", "Bob")]
 
@@ -217,12 +217,12 @@ async def test_transactions_concurrency_and_abandonment(sqlite):
     assert counts == [1] * 20
     tx = await db._engine.begin()
     await tx.commit()
-    with pytest.raises(orm.DatabaseError, match="closed"):
+    with pytest.raises(monorm.DatabaseError, match="closed"):
         await db._engine.execute("SELECT 1", tx)
 
 
 async def test_migrations_rebuild_preserve_rows_and_sequences(tmp_path):
-    from orm.migrations import Migrations, Migrator
+    from monorm.migrations import Migrations, Migrator
 
     reg1, _ = models()
     reg2, _ = models(
@@ -233,7 +233,7 @@ async def test_migrations_rebuild_preserve_rows_and_sequences(tmp_path):
     directory = str(tmp_path / "migrations")
     Migrations(directory, reg1).make("initial")
     Migrations(directory, reg2).make("rename")
-    db = await orm.connect("sqlite://:memory:", registry=reg1, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=reg1, default=False)
     runner = Migrator(db, Migrations(directory, reg1))
     try:
         await runner.upgrade("1")
@@ -255,7 +255,7 @@ async def test_migrations_rebuild_preserve_rows_and_sequences(tmp_path):
 
 
 async def test_kept_rename_hints_do_not_redirect_later_rebuilds(tmp_path):
-    from orm.migrations import Migrations, Migrator
+    from monorm.migrations import Migrations, Migrator
 
     renamed = (
         SOURCE.replace("  books      Book[]", '  books      Book[]\n  @@map("writer")\n  @@renamed_from("author")')
@@ -273,7 +273,7 @@ async def test_kept_rename_hints_do_not_redirect_later_rebuilds(tmp_path):
     directory = str(tmp_path / "migrations")
     for reg, name in zip(regs, ("initial", "rename", "later")):
         Migrations(directory, reg).make(name)
-    db = await orm.connect("sqlite://:memory:", registry=regs[0], default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=regs[0], default=False)
     runner = Migrator(db, Migrations(directory, regs[0]))
     try:
         await runner.upgrade("1")
@@ -298,13 +298,13 @@ async def test_kept_rename_hints_do_not_redirect_later_rebuilds(tmp_path):
 
 
 async def test_string_functions_and_concatenation():
-    from orm import func
+    from monorm import func
 
     registry, m = models(
         'datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  title String\n  tag String?\n}'
     )
     Note = m["Note"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await Note.objects.using(db).insert_many([{"title": "  a-b  ", "tag": "x"}, {"title": "c", "tag": None}])
@@ -332,13 +332,13 @@ async def test_string_functions_and_concatenation():
 
 
 async def test_case_expression():
-    from orm import func
+    from monorm import func
 
     registry, m = models(
         'datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  n Int\n}'
     )
     Note = m["Note"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await Note.objects.using(db).insert_many([{"n": 1}, {"n": 5}, {"n": 10}])
@@ -352,13 +352,13 @@ async def test_case_expression():
 
 
 async def test_aggregate_filter():
-    from orm import func
+    from monorm import func
 
     registry, m = models(
         'datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  n Int\n}'
     )
     Note = m["Note"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await Note.objects.using(db).insert_many([{"n": 1}, {"n": 5}, {"n": 10}])
@@ -370,9 +370,9 @@ async def test_aggregate_filter():
         assert tuple(row) == (2, 6)
         selected = Note.objects.using(db).select(Note.n)
         assert await selected.get(Note.n == 5) == (5,)
-        with pytest.raises(orm.DoesNotExist):
+        with pytest.raises(monorm.DoesNotExist):
             await selected.require().get(Note.n == -1)
-        with pytest.raises(orm.MultipleObjectsReturned):
+        with pytest.raises(monorm.MultipleObjectsReturned):
             await selected.get()
     finally:
         await db.close()
@@ -381,31 +381,31 @@ async def test_aggregate_filter():
 async def test_file_database_and_target_mismatch(tmp_path):
     reg, _ = models()
     url = f"sqlite://{tmp_path / 'database.db'}"
-    db = await orm.connect(url, registry=reg, default=False)
+    db = await monorm.connect(url, registry=reg, default=False)
     await db.create_tables()
     await db.execute("INSERT INTO author (email, name) VALUES ('persisted', 'persisted')")
     await db.close()
-    db = await orm.connect(url, registry=reg, default=False)
+    db = await monorm.connect(url, registry=reg, default=False)
     assert (await db._fetch_text("SELECT name FROM author"))[0][0] == "persisted"
     await db.close()
-    with pytest.raises(orm.SchemaError, match="schema targets postgres, connection uses sqlite"):
-        await orm.connect("sqlite://:memory:", registry=orm.Registry(), default=False)
+    with pytest.raises(monorm.SchemaError, match="schema targets postgres, connection uses sqlite"):
+        await monorm.connect("sqlite://:memory:", registry=monorm.Registry(), default=False)
 
 
 async def test_unsupported_queries(sqlite):
     db, m, _ = sqlite
     Author = m["Author"]
-    with pytest.raises(orm.QueryError, match="does not support"):
+    with pytest.raises(monorm.QueryError, match="does not support"):
         await Author.objects.using(db).select(Author.name).distinct(Author.name)
     async with db.transaction():
-        with pytest.raises(orm.QueryError, match="does not support"):
+        with pytest.raises(monorm.QueryError, match="does not support"):
             await Author.objects.using(db).lock().all()
-        with pytest.raises(orm.QueryError, match="advisory locks"):
+        with pytest.raises(monorm.QueryError, match="advisory locks"):
             await db.lock("example")
 
 
 async def test_aggregates_windows_ctes_sliced_prefetch_and_bulk_updates(sqlite):
-    from orm import func
+    from monorm import func
 
     db, m, _ = sqlite
     Author, Book = m["Author"], m["Book"]
@@ -448,7 +448,7 @@ async def test_aggregates_windows_ctes_sliced_prefetch_and_bulk_updates(sqlite):
     assert [[b.title for b in a.books.cached] for a in rows] == [["A7"], ["B7"]]
     rows = await Book.objects.using(db).update_many([{"id": b.id, "pages": b.pages + 1} for b in books]).returning()
     assert sorted(b.pages for b in rows) == [4, 4, 8, 8, 12, 12]
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         await Book.objects.using(db).update_many(
             [{"id": b.id, "pages": -1 if i == 1 else 99} for i, b in enumerate(books)], batch_size=1
         )
@@ -470,7 +470,7 @@ async def test_uuid_date_timestamp_and_inline_trigger():
     }
     """
     reg, m = models(source)
-    db = await orm.connect("sqlite://:memory:", registry=reg, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=reg, default=False)
     try:
         await db.create_tables()
         ident = UUID("c689c080-a6d0-4d3e-9305-7fe896158ac9")
@@ -518,20 +518,20 @@ async def test_finished_nested_transaction_and_cancellation_release_connection(s
     ],
 )
 async def test_migration_refuses_unmanaged_objects(tmp_path, object_sql):
-    from orm.migrations import Migrations, Migrator
+    from monorm.migrations import Migrations, Migrator
 
     first, _ = models()
     second, _ = models(SOURCE.replace("  name       String", "  name       String\n  extra      Int @default(1)"))
     directory = str(tmp_path / "migrations")
     Migrations(directory, first).make("initial")
     Migrations(directory, second).make("extra")
-    db = await orm.connect("sqlite://:memory:", registry=first, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=first, default=False)
     runner = Migrator(db, Migrations(directory, first))
     try:
         await runner.upgrade("1")
         await db.execute("INSERT INTO author (email, name) VALUES ('a', 'A')")
         await db.execute(object_sql)
-        with pytest.raises(orm.DatabaseError, match="orm_unmanaged_index_or_trigger"):
+        with pytest.raises(monorm.DatabaseError, match="monorm_unmanaged_index_or_trigger"):
             await runner.upgrade()
         assert (await db._fetch_text("SELECT name FROM author"))[0][0] == "A"
         assert [s.applied for s in await runner.status()] == [True, False]
@@ -544,7 +544,7 @@ async def test_migration_refuses_unmanaged_objects(tmp_path, object_sql):
 
 
 async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
-    from orm.migrations import Migrations, Migrator
+    from monorm.migrations import Migrations, Migrator
 
     first, _ = models()
     second, _ = models(
@@ -556,14 +556,14 @@ async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
     directory = str(tmp_path / "migrations")
     Migrations(directory, first).make("initial")
     Migrations(directory, second).make("strict")
-    db = await orm.connect("sqlite://:memory:", registry=first, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=first, default=False)
     runner = Migrator(db, Migrations(directory, first))
     try:
         await runner.upgrade("1")
         await db.execute(
             "INSERT INTO author (email, name) VALUES ('a', 'A'); INSERT INTO book (author_id, title) VALUES (1, 'kept')"
         )
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await runner.upgrade()
         assert (await db._fetch_text("SELECT title, pages FROM book"))[0] == ("kept", "0")
         assert [s.applied for s in await runner.status()] == [True, False]
@@ -577,7 +577,7 @@ async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
 
 
 async def test_cyclic_fks_table_rename_and_empty_sequence(tmp_path):
-    from orm.migrations import Migrations, Migrator
+    from monorm.migrations import Migrations, Migrator
 
     source = """
     datasource db { provider = "sqlite" }
@@ -607,7 +607,7 @@ async def test_cyclic_fks_table_rename_and_empty_sequence(tmp_path):
     directory = str(tmp_path / "migrations")
     Migrations(directory, first).make("initial")
     Migrations(directory, second).make("rename")
-    db = await orm.connect("sqlite://:memory:", registry=first, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=first, default=False)
     runner = Migrator(db, Migrations(directory, first))
     try:
         await runner.upgrade("1")
@@ -629,18 +629,18 @@ async def test_cyclic_fks_table_rename_and_empty_sequence(tmp_path):
 
 
 async def test_cross_dialect_snapshots_are_rejected(tmp_path):
-    from orm.migrations import Migrations, Migrator
+    from monorm.migrations import Migrations, Migrator
 
     postgres, _ = models(SOURCE.replace('provider = "sqlite"', 'provider = "postgresql"'))
     sqlite, _ = models()
     directory = str(tmp_path / "migrations")
     initial = Migrations(directory, postgres).make("initial")
     assert '"version": 1' in Path(initial.path, "snapshot.json").read_text()
-    with pytest.raises(orm.SchemaError, match="snapshot targets postgres"):
+    with pytest.raises(monorm.SchemaError, match="snapshot targets postgres"):
         Migrations(directory, sqlite).make("wrong")
-    db = await orm.connect("sqlite://:memory:", registry=sqlite, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=sqlite, default=False)
     try:
-        with pytest.raises(orm.migrations.MigrationError, match="targets postgres"):
+        with pytest.raises(monorm.migrations.MigrationError, match="targets postgres"):
             await Migrator(db, Migrations(directory, sqlite)).upgrade()
     finally:
         await db.close()
@@ -673,7 +673,7 @@ model Follow {
 async def test_self_many_to_many_has_both_sides():
     registry, m = models(FOLLOW)
     Person, Follow = m["Person"], m["Follow"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     try:
         people = Person.objects.using(db)
@@ -689,7 +689,7 @@ async def test_self_many_to_many_has_both_sides():
         await cat.followers.using(db).remove(ann)
         assert [p.name for p in await ann.following.using(db)] == ["bob"]
         assert [p.name for p in await people.filter(Person.followers.name == "bob")] == ["cat"]
-        rows = await people.select(Person.name, orm.func.count(Person.followers)).order_by(Person.id)
+        rows = await people.select(Person.name, monorm.func.count(Person.followers)).order_by(Person.id)
         assert [tuple(r) for r in rows] == [("ann", 0), ("bob", 1), ("cat", 1)]
         loaded = await people.load(Person.following, Person.followers).order_by(Person.id)
         assert [([f.name for f in p.following.cached], [f.name for f in p.followers.cached]) for p in loaded] == [
@@ -705,7 +705,7 @@ async def test_self_many_to_many_has_both_sides():
 async def test_related_sets_use_the_database_of_their_instance():
     registry, m = models()
     Author, Book = m["Author"], m["Book"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     try:
         alice = await Author.objects.using(db).insert(email="a@example.com", name="Alice")
@@ -714,7 +714,7 @@ async def test_related_sets_use_the_database_of_their_instance():
         assert await alice.books.filter(Book.pages == 0).count() == 1
         registry, m = models(FOLLOW)
         Person = m["Person"]
-        follow_db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+        follow_db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
         await follow_db.create_tables()
         ann, bob = await Person.objects.using(follow_db).insert_many([{"name": "ann"}, {"name": "bob"}]).returning()
         await ann.following.add(bob)
@@ -726,7 +726,7 @@ async def test_related_sets_use_the_database_of_their_instance():
 
 
 async def test_aggregate_filter_through_relations(sqlite):
-    from orm import func
+    from monorm import func
 
     db, m, _ = sqlite
     Author, Book = m["Author"], m["Book"]
@@ -770,7 +770,7 @@ model Twice {
 async def test_on_conflict_infers_the_partial_unique_index():
     registry, m = models(PARTIAL)
     Account, Twice = m["Account"], m["Twice"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         accounts = Account.objects.using(db)
@@ -782,7 +782,7 @@ async def test_on_conflict_infers_the_partial_unique_index():
         again, created_again = await accounts.get_or_insert(email="c@x.io")
         assert (created, created_again, again.id) == (True, False, row.id)
         # Two indexes with the same columns: no guess; the error names the candidates.
-        with pytest.raises(orm.QueryError, match="twice_email_idx, twice_other"):
+        with pytest.raises(monorm.QueryError, match="twice_email_idx, twice_other"):
             await Twice.objects.using(db).insert(email="a@x.io").on_conflict(Twice.email, update=False)
         await Twice.objects.using(db).insert(email="a@x.io").on_conflict(
             Twice.email, index=Twice.indexes.twice_other, update=False
@@ -826,7 +826,7 @@ async def test_bound_load_guards_and_without_related(sqlite):
     assert [len(a.books.cached) for a in authors] == [2, 1]
     books = await Book.objects.using(db).load(Book.title, Book.author).without_related()
     assert sorted(b.title for b in books) == ["one", "three", "two"]
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = books[0].author
 
 
@@ -873,7 +873,7 @@ async def test_indexed_relation_labels(sqlite):
     assert all(a.outside is None for a in empty)
     with pytest.raises(TypeError):
         Author.objects.using(db).load(Author.books.objects[0])
-    with pytest.raises(orm.QueryError, match="to-many"):
+    with pytest.raises(monorm.QueryError, match="to-many"):
         await Book.objects.using(db).load(Book.author.objects[0].label("person"))
 
 

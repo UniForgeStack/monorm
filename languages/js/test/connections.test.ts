@@ -42,7 +42,7 @@ test('onCommit runs after the outer commit, and a rolled-back savepoint drops it
 async function twoSqliteFiles() {
   const registry = new Registry();
   const { Item } = loads(SQLITE, { registry }) as any;
-  const dir = mkdtempSync(join(tmpdir(), 'orm-s6-'));
+  const dir = mkdtempSync(join(tmpdir(), 'monorm-s6-'));
   const dbs = [await connect(`sqlite://${join(dir, 'a.db')}`, { registry, default: false }), await connect(`sqlite://${join(dir, 'b.db')}`, { registry, default: false })];
   for (const db of dbs) await db.createTables();
   return { Item, a: dbs[0]!, b: dbs[1]! };
@@ -363,12 +363,12 @@ model Note {
 
 const RLS = `
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'orm_s6_app') THEN
-    CREATE ROLE orm_s6_app LOGIN PASSWORD 'app';
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'monorm_s6_app') THEN
+    CREATE ROLE monorm_s6_app LOGIN PASSWORD 'app';
   END IF;
 END $$;
-GRANT SELECT, INSERT, UPDATE, DELETE ON s6_js_notes TO orm_s6_app;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO orm_s6_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON s6_js_notes TO monorm_s6_app;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO monorm_s6_app;
 ALTER TABLE s6_js_notes ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON s6_js_notes
   USING (tenant = current_setting('app.tenant', true))
@@ -412,7 +412,7 @@ test('db.tenant sets app.tenant in each transaction for row-level security', asy
   }
 });
 
-const queryDefaults = hasExtension("orm.query-defaults");
+const queryDefaults = hasExtension("monorm.query-defaults");
 
 function scopedSchema(dialect: string) {
   const field = (name: string, type = 'int', flags = {}) => ({ name, column: name, type, ...flags });
@@ -421,7 +421,7 @@ function scopedSchema(dialect: string) {
       relations: [{ name: 'orders', kind: 'many', target: 'Order', from: 'id', to: 'shop_id' }] },
     { name: 'Order', table: 's6_js_orders', fields: [field('id', 'int', { primary_key: true, auto_increment: true }), field('shop_id'), field('total')],
       relations: [{ name: 'shop', kind: 'one', target: 'Shop', from: 'shop_id', to: 'id', foreign_key: true, on_delete: 'cascade' }] },
-  ], behavior: { schema_contract: 5, read_defaults: [{ source: "orm.query-defaults", name: "query", model: 'Order', filter: {
+  ], behavior: { schema_contract: 5, read_defaults: [{ source: "monorm.query-defaults", name: "query", model: 'Order', filter: {
     t: 'cmp', op: 'eq', l: { t: 'col', path: [], name: 'shop_id' }, r: { t: 'scope', name: 'shop' } } }] } };
 }
 
@@ -438,13 +438,13 @@ for (const dialect of ['postgres', 'sqlite']) {
       const orders = Order.objects.using(sdb);
       const [o1, , o3] = await orders.insertMany([{ shopId: s1.id, total: 10 }, { shopId: s1.id, total: 20 }, { shopId: s2.id, total: 30 }]).returning();
       for (const read of [() => orders.all(), () => orders.count(), () => Shop.objects.using(sdb).filter(Shop.orders.total.gt(25)).count()]) {
-        await assert.rejects(read(), /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
+        await assert.rejects(read(), /Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       }
       assert.equal(await orders.withoutDefaults().count(), 3);
       // A lazy mutation and its inspection use the scope of execution, not construction.
       let deferred!: ReturnType<typeof orders.update>;
       await scope({ shop: s1.id }, async () => { deferred = orders.update({ total: 31 }); });
-      assert.throws(() => deferred.inspect(), /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
+      assert.throws(() => deferred.inspect(), /Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       await scope({ shop: s2.id }, async () => {
         deferred.inspect();
         assert.equal(await deferred, 1);
@@ -490,7 +490,7 @@ for (const dialect of ['postgres', 'sqlite']) {
       const shops = await Shop.objects.using(sdb).orderBy('id');
       const totals = () => shops.map((s: any) => s.orders.cached.map((o: any) => o.total).sort());
       // Outside a scope the default filter is closed, as for load().
-      await assert.rejects(async () => { await of(shops).using(sdb).load(Shop.orders); }, /Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
+      await assert.rejects(async () => { await of(shops).using(sdb).load(Shop.orders); }, /Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       await scope({ shop: s1.id }, async () => {
         await of(shops).using(sdb).load(Shop.orders);
         assert.deepEqual(totals(), [[10, 20], []]);

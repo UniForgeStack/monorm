@@ -3,9 +3,9 @@
 import asyncio
 
 import pytest
-import orm
+import monorm
 from conftest import DATABASE_URL
-from orm.query import QuerySet
+from monorm.query import QuerySet
 
 SOURCE = """
 model Owner {
@@ -51,10 +51,10 @@ async def load_relation(row, name, *, reload=False):
 @pytest.fixture(params=["sqlite", "postgres"])
 async def references(request):
     dialect = request.param
-    registry = orm.Registry()
-    models = orm.loads(f'datasource db {{\n provider = "{dialect}"\n}}\n' + SOURCE, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{dialect}"\n}}\n' + SOURCE, registry=registry)
     url = "sqlite://:memory:" if dialect == "sqlite" else DATABASE_URL
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
@@ -82,7 +82,7 @@ async def test_identity_reload_fk_invalidation_and_counts(references, monkeypatc
         return await original(qs)
 
     monkeypatch.setattr(QuerySet, "first", first)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = row.owner
     results = await asyncio.gather(*(load_relation(row, "owner") for _ in range(12)))
     assert calls == 1
@@ -95,13 +95,13 @@ async def test_identity_reload_fk_invalidation_and_counts(references, monkeypatc
     assert fresh is row.owner and fresh is not results[0] and fresh.name == "changed"
     assert calls == 2
     await row.update(owner_id=2)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = row.owner
     assert (await load_relation(row, "owner")).id == 2
     assert calls == 3
     await m["Required"].objects.using(db).update(owner_id=1)
     await row.load(reload=True)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = row.owner
     assert (await load_relation(row, "owner")).id == 1
     eager = await m["Required"].objects.using(db).load(m["Required"].owner).get()
@@ -128,7 +128,7 @@ async def test_cached_absence_refresh_reverse_and_null(references, monkeypatch):
     await m["Detail"].objects.using(db).insert(id=1, owner_id=1)
     assert await load_relation(owner, "detail") is None
     await owner.load(reload=True)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = owner.detail
     assert (await load_relation(owner, "detail")).id == 1 and calls == 2
     nullable = await m["Optional"].objects.using(db).insert(id=1, owner_id=None)
@@ -143,7 +143,7 @@ async def test_required_integrity_optional_missing_and_retry(references):
     # Emulate physically corrupt legacy data without changing server constraints.
     row.__dict__["owner_id"] = 999
     nullable.__dict__["owner_id"] = 999
-    with pytest.raises(orm.IntegrityError, match="required target"):
+    with pytest.raises(monorm.IntegrityError, match="required target"):
         await load_relation(row, "owner")
     assert not row.__dict__["_reference_pending"]
     assert await load_relation(nullable, "owner") is None
@@ -156,13 +156,13 @@ async def test_required_integrity_optional_missing_and_retry(references):
 async def test_dangling_key_message_says_why(references):
     db, m = references
     row = await seed(db, m)
-    with pytest.raises(orm.NotLoaded) as plain:
+    with pytest.raises(monorm.NotLoaded) as plain:
         _ = row.owner
     assert "no row of the target" not in str(plain.value)
     # Emulate corrupt data: the join found no target for a required key.
     row.__dict__["owner"] = None
     with pytest.raises(
-        orm.NotLoaded,
+        monorm.NotLoaded,
         match=r"is not loaded: the key is set and no row of the target has it; use await obj\.load\(Required\.owner\)",
     ):
         _ = row.owner
@@ -207,7 +207,7 @@ async def test_cancelled_waiter_failure_and_inflight_refresh(references, monkeyp
     await row.update(owner_id=2)
     gate.set()
     assert await two is row
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = row.owner
     assert (await load_relation(row, "owner")).id == 2
     assert calls == 2
@@ -223,10 +223,10 @@ async def test_cancelled_waiter_failure_and_inflight_refresh(references, monkeyp
 
 
 def test_collision_rejected_atomically():
-    registry = orm.Registry()
+    registry = monorm.Registry()
     before = registry.ir()
     with pytest.raises(TypeError, match="reserved"):
-        orm.loads(SOURCE.replace("owner_id Int\n", "owner_id Int\n  load String\n", 1), registry=registry)
+        monorm.loads(SOURCE.replace("owner_id Int\n", "owner_id Int\n  load String\n", 1), registry=registry)
     assert registry.ir() == before
 
 
@@ -246,7 +246,7 @@ async def test_hidden_dependency_keys_and_missing_key_fail_before_io(references,
         raise AssertionError("must fail before I/O")
 
     monkeypatch.setattr(QuerySet, "first", forbidden)
-    with pytest.raises(orm.NotLoaded, match="owner_id"):
+    with pytest.raises(monorm.NotLoaded, match="owner_id"):
         await load_relation(row, "owner", reload=True)
 
 
@@ -306,7 +306,7 @@ async def test_instance_load_is_additive_and_skips_loaded_fields(references, obs
     await seed(db, m)
     Owner = m["Owner"]
     owner = await Owner.objects.using(db).filter(Owner.id == 1).load(Owner.id).get()
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = owner.name
     with observe_queries(db) as queries:
         assert await owner.load(Owner.name) is owner
@@ -329,7 +329,7 @@ async def test_instance_load_nested_partial_and_collection_queries(references, o
     await row.load(Required.owner.name)
     owner = row.owner
     assert owner.name == "one"
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = owner.id
     await row.load(Required.owner)
     assert row.owner is owner and owner.id == 1
@@ -341,7 +341,7 @@ async def test_instance_load_nested_partial_and_collection_queries(references, o
     filtered = Owner.required.objects.filter(Required.id == 1).load(Required.id).label("selected")
     await owner.load(filtered)
     assert [r.id for r in owner.selected] == [1]
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = owner.selected[0].owner_id
     await owner.load(Owner.optional)
     assert owner.optional.cached == []
@@ -361,7 +361,7 @@ async def test_instance_load_validates_before_io_and_reload_invalidates_referenc
     await row.load(Required.owner)
     await Required.objects.using(db).update(owner_id=2)
     await row.load(Required.owner_id, reload=True)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = row.owner
     await row.load(Required.owner)
     assert row.owner.id == 2
@@ -412,7 +412,7 @@ async def test_nested_relation_queryset_labels_are_cached(references, observe_qu
 
 
 def test_the_host_does_not_reserve_the_soft_delete_member_names():
-    models = orm.loads(
-        "model Plain {\n  id Int @id\n  hard_delete String\n  undelete String\n}\n", registry=orm.Registry()
+    models = monorm.loads(
+        "model Plain {\n  id Int @id\n  hard_delete String\n  undelete String\n}\n", registry=monorm.Registry()
     )
     assert {"hard_delete", "undelete"} <= set(dir(models["Plain"]))

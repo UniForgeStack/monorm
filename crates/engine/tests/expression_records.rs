@@ -1,8 +1,8 @@
 //! Expression records (`AssignValue::Expr`, `ClientDefaultIr::Expr`) in the planner.
 use std::{collections::BTreeMap, ffi::c_void};
-use orm_contracts::abi::{OrmArg, OrmContext, OrmValue, Value as Abi, STATUS_ERROR};
-use orm_core::{client_default::ClientDefault, dialect::{Dialect, Target}, hooks::{HookPlan, HookRef}, ir::{Operation, ValueType}, schema::Schema};
-use orm_engine::{db, exec, params::Scoped, plan::{Plan, Planner}, Params, Result};
+use monorm_contracts::abi::{OrmArg, OrmContext, OrmValue, Value as Abi, STATUS_ERROR};
+use monorm_core::{client_default::ClientDefault, dialect::{Dialect, Target}, hooks::{HookPlan, HookRef}, ir::{Operation, ValueType}, schema::Schema};
+use monorm_engine::{db, exec, params::Scoped, plan::{Plan, Planner}, Params, Result};
 use sea_query::Value;
 use serde_json::{json, Value as Json};
 
@@ -20,7 +20,7 @@ const SHOP: usize = 3;
 
 fn schema(client_default: Json, behavior: Json) -> std::result::Result<Schema, String> {
     let mut behavior = behavior;
-    behavior["schema_contract"] = json!(orm_core::behavior::SCHEMA_CONTRACT);
+    behavior["schema_contract"] = json!(monorm_core::behavior::SCHEMA_CONTRACT);
     let mut shop = json!({"name":"shop","column":"shop_id","type":"int"});
     if !client_default.is_null() { shop["client_default"] = client_default; }
     Schema::from_ir(serde_json::from_value(json!({"models":[{"name":"Post","table":"posts","fields":[

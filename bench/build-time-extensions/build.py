@@ -59,9 +59,9 @@ for side in ["before", "after"]:
             "--manifest-path",
             str(dest / "Cargo.toml"),
             "-p",
-            "orm-python",
+            "monorm-python",
             "-p",
-            "orm-node",
+            "monorm-node",
         ],
         env=env,
         check=True,
@@ -69,9 +69,9 @@ for side in ["before", "after"]:
     elapsed = time.perf_counter() - start
     suffix = ".dylib" if os.uname().sysname == "Darwin" else ".so"
     py = dest / "languages/python/orm/_native.so"
-    node = dest / "languages/js/orm.node"
+    node = dest / "languages/js/monorm.node"
     shutil.copy2(root / f"target/release/lib_native{suffix}", py)
-    shutil.copy2(root / f"target/release/liborm_node{suffix}", node)
+    shutil.copy2(root / f"target/release/libmonorm_node{suffix}", node)
     subprocess.run(
         [str(root / "languages/js/node_modules/.bin/tsc"), "-p", str(dest / "languages/js/tsconfig.json")], check=True
     )

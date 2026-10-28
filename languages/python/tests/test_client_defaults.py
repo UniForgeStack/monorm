@@ -6,8 +6,8 @@ import uuid
 
 import pytest
 
-import orm
-from orm.fields import Integer, String
+import monorm
+from monorm.fields import Integer, String
 
 SOURCE = """
 enum Status {
@@ -31,7 +31,7 @@ URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@loca
 
 
 def test_client_defaults_make_fields_optional_but_stay_out_of_the_database_default():
-    Item = orm.loads(SOURCE, registry=orm.Registry())["Item"]
+    Item = monorm.loads(SOURCE, registry=monorm.Registry())["Item"]
     for name in ("id", "token", "status", "at", "meta", "n", "note", "prisma"):
         assert Item._meta.fields[name].has_insert_default
     assert Item._meta.fields["status"].has_server_value
@@ -42,10 +42,10 @@ def test_client_defaults_make_fields_optional_but_stay_out_of_the_database_defau
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_client_defaults_fill_insert_bulk_insert_and_upsert(dialect):
     source = SOURCE if dialect == "postgres" else 'datasource db { provider = "sqlite" }\n' + SOURCE
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Item, Status = models["Item"], models["Status"]
-    db = await orm.connect("sqlite://:memory:" if dialect == "sqlite" else URL, registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:" if dialect == "sqlite" else URL, registry=registry, default=False)
     await db.create_tables()
     try:
         item = await Item.objects.using(db).insert()
@@ -80,17 +80,17 @@ async def test_client_defaults_fill_insert_bulk_insert_and_upsert(dialect):
 
 
 async def test_python_callable_defaults_fill_the_same_omitted_values():
-    registry = orm.Registry()
+    registry = monorm.Registry()
     made = iter(range(100))
 
-    class Counter(orm.Model, registry=registry, table="client_default_counters"):
+    class Counter(monorm.Model, registry=registry, table="client_default_counters"):
         id = Integer(primary_key=True)
         label = String(default=lambda: f"made-{next(made)}", nullable=True)
         token = String(client_default={"call": "uuid"}, nullable=True)
 
     registry.prepare()
     assert Counter._meta.fields["token"].has_insert_default and not Counter._meta.fields["token"].has_server_value
-    db = await orm.connect(URL, registry=registry, default=False)
+    db = await monorm.connect(URL, registry=registry, default=False)
     await db.create_tables()
     try:
         rows = (
@@ -110,9 +110,9 @@ async def test_a_json_null_client_default_writes_json_null(dialect):
     source = 'model Doc {\n  id Int @id\n  a Json @client_default("null")\n  @@map("client_default_docs")\n}'
     if dialect == "sqlite":
         source = 'datasource db { provider = "sqlite" }\n' + source
-    registry = orm.Registry()
-    Doc = orm.loads(source, registry=registry)["Doc"]
-    db = await orm.connect("sqlite://:memory:" if dialect == "sqlite" else URL, registry=registry, default=False)
+    registry = monorm.Registry()
+    Doc = monorm.loads(source, registry=registry)["Doc"]
+    db = await monorm.connect("sqlite://:memory:" if dialect == "sqlite" else URL, registry=registry, default=False)
     await db.create_tables()
     try:
         # The column is NOT NULL, so an SQL NULL fails the insert.

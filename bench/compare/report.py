@@ -99,10 +99,10 @@ def contenders_of(results: Result) -> list[str]:
 def case_speedups(results: Result, contender: str) -> dict[str, float]:
     """Per case, the median paired speed-up of `orm` over `contender` (contender time / orm time)."""
     out: dict[str, float] = {}
-    for case, orm_item in results.get("orm", {}).items():
+    for case, monorm_item in results.get("orm", {}).items():
         other = results.get(contender, {}).get(case)
         if other:
-            m = paired(other, orm_item)[0]
+            m = paired(other, monorm_item)[0]
             if not math.isnan(m):
                 out[case] = m
     return out
@@ -154,12 +154,12 @@ def cpu_total(cpu: dict[str, Any]) -> float:
 def cpu_speedups(results: Result, contender: str) -> dict[str, float]:
     """Per case, (build query + make SQL) time of `contender` / of `orm`, where both ran the CPU split."""
     out: dict[str, float] = {}
-    for case, orm_item in results.get("orm", {}).items():
+    for case, monorm_item in results.get("orm", {}).items():
         other = results.get(contender, {}).get(case)
-        if not (other and orm_item.get("cpu") and other.get("cpu")):
+        if not (other and monorm_item.get("cpu") and other.get("cpu")):
             continue
-        if cpu_total(orm_item["cpu"]) > 0 and cpu_total(other["cpu"]) > 0:
-            out[case] = cpu_total(other["cpu"]) / cpu_total(orm_item["cpu"])
+        if cpu_total(monorm_item["cpu"]) > 0 and cpu_total(other["cpu"]) > 0:
+            out[case] = cpu_total(other["cpu"]) / cpu_total(monorm_item["cpu"])
     return out
 
 

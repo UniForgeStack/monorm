@@ -1,6 +1,6 @@
 //! `HookPlan::finish` fills the lookup data of a plan and drops a plan that has no hook.
-use orm_contracts::abi::{OrmArg, OrmContext, OrmValue, STATUS_OK};
-use orm_core::hooks::{HookPlan, HookRef, RecordHook};
+use monorm_contracts::abi::{OrmArg, OrmContext, OrmValue, STATUS_OK};
+use monorm_core::hooks::{HookPlan, HookRef, RecordHook};
 use std::ffi::c_void;
 
 unsafe extern "C" fn nothing(_: *const c_void, _: *const OrmArg, _: usize, _: *const OrmContext, _: *mut OrmValue) -> i32 { STATUS_OK }

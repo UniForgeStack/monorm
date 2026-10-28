@@ -1,12 +1,12 @@
 /** `authenticate()`. */
 
-import type { Database, Registry } from "orm";
+import type { Database, Registry } from "@ufstack/monorm";
 
 import { checkPassword, makePassword } from "./hashers.js";
 import { activeModel, type AnyModel } from "./permissions.js";
 
 // Checked when the user does not exist, so the time does not show whether a username exists.
-const dummy = makePassword("orm-auth dummy password");
+const dummy = makePassword("@ufstack/monorm-auth dummy password");
 
 /**
  * The active user with this username and password, else `null`. An old hash is replaced by an argon2id hash.

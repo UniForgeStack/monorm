@@ -1,4 +1,4 @@
-"""Prepared queries (``qs.prepare()`` with ``orm.param``) and LIMIT / OFFSET as IR
+"""Prepared queries (``qs.prepare()`` with ``monorm.param``) and LIMIT / OFFSET as IR
 parameters."""
 
 import json
@@ -6,8 +6,8 @@ import json
 import pytest
 from blog.models import Comment, Post, Profile, User
 
-import orm
-from orm import QueryError, param
+import monorm
+from monorm import QueryError, param
 
 
 async def seed():
@@ -123,8 +123,8 @@ async def test_prepared_has_and_prefetch(clean, observe_queries):
         .prepare()
     )
     result = top.inspect(min=10, k=1)
-    assert result == orm.QueryInspection(
-        2, True, (orm.StatementInspection(), orm.StatementInspection(has_batching=True, derived_uncorrelated=1))
+    assert result == monorm.QueryInspection(
+        2, True, (monorm.StatementInspection(), monorm.StatementInspection(has_batching=True, derived_uncorrelated=1))
     )
     with observe_queries(clean) as events:
         users = await top(min=10, k=1)
@@ -140,9 +140,9 @@ async def test_prepared_has_and_prefetch(clean, observe_queries):
 async def test_prepared_runs_in_the_current_transaction(clean):
     await seed()
     q = Post.objects.filter(Post.views > param("v")).lock().prepare()
-    with pytest.raises(orm.TransactionRequired):
+    with pytest.raises(monorm.TransactionRequired):
         await q(v=0)
-    async with orm.get_database().transaction():
+    async with monorm.get_database().transaction():
         assert len(await q(v=10)) == 3
 
 

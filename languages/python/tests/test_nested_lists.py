@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-import orm
+import monorm
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -33,11 +33,11 @@ BIG = 2**60 + 1
 
 @pytest.fixture
 async def world():
-    registry = orm.Registry()
-    classes = orm.loads(SCHEMA, registry=registry)
+    registry = monorm.Registry()
+    classes = monorm.loads(SCHEMA, registry=registry)
     try:
-        db = await orm.connect(PG_URL, registry=registry, default=False, max_connections=2)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(PG_URL, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
     await db.drop_tables()
     await db.create_tables()

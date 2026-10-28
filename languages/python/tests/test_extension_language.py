@@ -9,9 +9,9 @@ import sys
 
 import pytest
 
-import orm
-from orm import _extensions, _native
-from orm.model import define
+import monorm
+from monorm import _extensions, _native
+from monorm.model import define
 
 SOURCE = """
 model Post {
@@ -24,8 +24,8 @@ model Tag {
 """
 
 BASE = """\
-from orm import QuerySet
-from orm.ext import ModelT
+from monorm import QuerySet
+from monorm.ext import ModelT
 
 
 class AQuerySet(QuerySet[ModelT]):
@@ -42,8 +42,8 @@ class AInstance:
 """
 
 SECOND = """\
-from orm import QuerySet
-from orm.ext import ModelT
+from monorm import QuerySet
+from monorm.ext import ModelT
 
 
 class BQuerySet(QuerySet[ModelT]):
@@ -82,11 +82,11 @@ def write(root, package, files):
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    (tmp_path / "orm_ext").mkdir()
-    (tmp_path / "orm_ext" / "__init__.py").write_text("")
+    (tmp_path / "monorm_ext").mkdir()
+    (tmp_path / "monorm_ext" / "__init__.py").write_text("")
     monkeypatch.syspath_prepend(str(tmp_path))
-    # An artifact session can hold the real generated `orm_ext` package; this test needs its own.
-    saved = {n: m for n, m in sys.modules.items() if n == "orm_ext" or n.startswith("orm_ext.")}
+    # An artifact session can hold the real generated `monorm_ext` package; this test needs its own.
+    saved = {n: m for n, m in sys.modules.items() if n == "monorm_ext" or n.startswith("monorm_ext.")}
     for name in saved:
         del sys.modules[name]
     before = set(sys.modules)
@@ -101,15 +101,15 @@ def install(project, monkeypatch, *specs):
     records = {}
     modules = {}
     for extension, package, files, changes in specs:
-        write(project / "orm_ext", package, files)
+        write(project / "monorm_ext", package, files)
         records[extension] = record(**changes)
-        modules[extension] = importlib.import_module(f"orm_ext.{package}")
+        modules[extension] = importlib.import_module(f"monorm_ext.{package}")
     monkeypatch.setattr(_extensions, "packages", lambda ir, extensions: records)
     return modules, records
 
 
 def build(modules, members, source=SOURCE):
-    return define(_native.compile_schema(source), registry=orm.Registry(), extensions=modules, members=members)
+    return define(_native.compile_schema(source), registry=monorm.Registry(), extensions=modules, members=members)
 
 
 def test_members_reach_only_the_models_that_use_the_extension(project, monkeypatch):
@@ -148,8 +148,8 @@ def test_two_mixins_chain_through_super_in_dependency_order(project, monkeypatch
 
 def test_declared_instance_overrides_call_super_to_the_host(project, monkeypatch):
     def instance_source(tag):
-        return f'''from orm import QuerySet
-from orm.ext import ModelT
+        return f'''from monorm import QuerySet
+from monorm.ext import ModelT
 class AQuerySet(QuerySet[ModelT]):
     pass
 class AInstance:
@@ -177,12 +177,12 @@ class AInstance:
 def test_user_query_set_comes_first(project, monkeypatch):
     modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": BASE}, {}))
 
-    class Mine(orm.QuerySet):
+    class Mine(monorm.QuerySet):
         def chain(self):
             return ["mine", *super().chain()]
 
     Post = build(modules, {"Post": ("ext.a",)})["Post"]
-    orm.use_query_set(Post, Mine)
+    monorm.use_query_set(Post, Mine)
     assert Post.objects.chain() == ["mine", "a"]
 
 
@@ -210,7 +210,7 @@ def test_undeclared_collision_fails_at_define(project, monkeypatch):
 BOUND = (
     BASE
     + """
-from orm import BoundQuerySet
+from monorm import BoundQuerySet
 
 
 class ABound(BoundQuerySet[ModelT]):
@@ -247,7 +247,7 @@ def test_a_bound_class_is_composed_from_the_extensions(project, monkeypatch):
     assert type(bound.everything()) is type(bound) and type(bound.filter()) is type(bound)
     tag = object.__new__(out["Tag"])
     tag.__dict__.update(id=2)
-    assert type(out["Tag"].objects.of(tag)) is orm.BoundQuerySet
+    assert type(out["Tag"].objects.of(tag)) is monorm.BoundQuerySet
     assert not hasattr(out["Tag"].objects.of(tag), "everything")
 
 
@@ -275,5 +275,5 @@ def test_two_extensions_with_one_name_collide_unless_overridden(project, monkeyp
 
 
 def test_no_extension_changes_nothing():
-    out = define(_native.compile_schema(SOURCE), registry=orm.Registry())
-    assert type(out["Post"].objects) is orm.QuerySet
+    out = define(_native.compile_schema(SOURCE), registry=monorm.Registry())
+    assert type(out["Post"].objects) is monorm.QuerySet

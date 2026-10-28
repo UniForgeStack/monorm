@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { native } from "../src/native.js";
 
 test("native generation accepts query-set maps and matches the CLI", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-native-codegen-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-native-codegen-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const schema = join(dir, "schema.prisma");
   const output = join(dir, "models.ts");
@@ -33,7 +33,7 @@ test("native generation accepts query-set maps and matches the CLI", async (t) =
 });
 
 test("native generation accepts subpath imports and dollar export names", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-native-codegen-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-native-codegen-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const schema = join(dir, "schema.prisma");
   writeFileSync(schema, "model Post {\n id Int @id\n}\n");

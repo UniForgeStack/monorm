@@ -1,5 +1,5 @@
-import type { BoundQuerySet, ModelSpec, QuerySet } from "orm";
-import type { BoundQuerySetCtor, QuerySetCtor } from "orm/ext";
+import type { BoundQuerySet, ModelSpec, QuerySet } from "@ufstack/monorm";
+import type { BoundQuerySetCtor, QuerySetCtor } from "@ufstack/monorm/ext";
 
 type AnyQuerySet = QuerySet<ModelSpec>;
 

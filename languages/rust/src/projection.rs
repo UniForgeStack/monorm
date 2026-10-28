@@ -4,7 +4,7 @@ use crate::{
     value::Values,
     *,
 };
-use orm_core::ir::{self, Operation};
+use monorm_core::ir::{self, Operation};
 use std::{
     future::{Future, IntoFuture},
     marker::PhantomData,
@@ -19,8 +19,8 @@ pub trait ProjectionItem<S>: Send + Sync + 'static {
     #[doc(hidden)]
     fn read(
         &self,
-        schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
         col: usize,
     ) -> Result<Self::Value>;
@@ -37,8 +37,8 @@ impl<S: Send + Sync + 'static, T: Codec + Send + Sync + 'static, C: ProjectionCa
     }
     fn read(
         &self,
-        _schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        _schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
         col: usize,
     ) -> Result<C::Value> {
@@ -54,8 +54,8 @@ pub trait Projection<S>: Send + Sync + 'static {
     #[doc(hidden)]
     fn read(
         &self,
-        schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
     ) -> Result<Self::Row>;
 }
@@ -68,8 +68,8 @@ impl<S: Send + Sync + 'static, T: Codec + Send + Sync + 'static, C: ProjectionCa
     }
     fn read(
         &self,
-        schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
     ) -> Result<Self::Row> {
         Ok((ProjectionItem::read(self, schema, rows, row, 0)?,))
@@ -80,7 +80,7 @@ macro_rules! tuples {
         impl<S, $($t:ProjectionItem<S>),+> Projection<S> for ($($t,)+) {
             type Row=($($t::Value,)+);
             fn items(&self,erase:&mut Erase)->Vec<ir::SelectItem> { vec![$(self.$i.item(erase)),+] }
-            fn read(&self,schema:&orm_core::schema::Schema,rows:&orm_engine::exec::Selected,row:usize)->Result<Self::Row> { Ok(($(self.$i.read(schema,rows,row,$i)?,)+)) }
+            fn read(&self,schema:&monorm_core::schema::Schema,rows:&monorm_engine::exec::Selected,row:usize)->Result<Self::Row> { Ok(($(self.$i.read(schema,rows,row,$i)?,)+)) }
         }
     };
 }
@@ -123,8 +123,8 @@ where
     }
     fn read(
         &self,
-        schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
     ) -> Result<T> {
         Ok((self.map)(self.projection.read(schema, rows, row)?))
@@ -224,9 +224,9 @@ pub struct BoundProjection<'a, M: Model, P, R = Optional, L = Unsliced, D = Defa
     db: &'a Database<M::Schema>,
 }
 fn decode<S, P: Projection<S>>(
-    schema: &orm_core::schema::Schema,
+    schema: &monorm_core::schema::Schema,
     projection: &P,
-    rows: &orm_engine::exec::Selected,
+    rows: &monorm_engine::exec::Selected,
 ) -> Result<Vec<P::Row>> {
     (0..rows.rows.len())
         .map(|row| projection.read(schema, rows, row))
@@ -301,7 +301,7 @@ impl<'a, M: Model, P: Projection<M::Source>, R: Presence, L: Send + 'a, D: Send 
     }
 }
 pub struct ProjectionStatement<'a, M: Model, P, R = Optional> {
-    plan: orm_engine::plan::Plan,
+    plan: monorm_engine::plan::Plan,
     db: &'a Database<M::Schema>,
     projection: P,
     _type: PhantomData<R>,
@@ -309,23 +309,23 @@ pub struct ProjectionStatement<'a, M: Model, P, R = Optional> {
 impl<M: Model, P: Projection<M::Source>, R: Presence> ProjectionStatement<'_, M, P, R> {
     /// Debug SQL follows the existing engine's literal-rendering semantics.
     pub fn sql(&self) -> String {
-        orm_engine::exec::sql(
-            orm_core::dialect::Target::new(self.db.driver.dialect()),
+        monorm_engine::exec::sql(
+            monorm_core::dialect::Target::new(self.db.driver.dialect()),
             &self.plan,
         )
     }
-    pub fn inspect(&self) -> orm_engine::inspect::Inspection {
-        orm_engine::inspect::Inspection::plans(std::slice::from_ref(&self.plan), false)
+    pub fn inspect(&self) -> monorm_engine::inspect::Inspection {
+        monorm_engine::inspect::Inspection::plans(std::slice::from_ref(&self.plan), false)
     }
     pub async fn execute(self) -> Result<Vec<P::Row>> {
-        match orm_engine::exec::run(
+        match monorm_engine::exec::run(
             self.db.driver.as_ref(),
-            orm_core::dialect::Target::new(self.db.driver.dialect()),
+            monorm_core::dialect::Target::new(self.db.driver.dialect()),
             self.plan,
         )
         .await?
         {
-            orm_engine::exec::Outcome::Select(rows) => {
+            monorm_engine::exec::Outcome::Select(rows) => {
                 R::collection(decode(&self.db.schema, &self.projection, &rows)?)
             }
             _ => Err(Error::Decode("unexpected projection result".into())),
@@ -395,9 +395,9 @@ impl<M> Clone for ModelProjection<M> {
 pub fn model<M: Model>() -> ModelProjection<M> {
     ModelProjection(PhantomData)
 }
-pub(crate) fn column_offset(rows: &orm_engine::exec::Selected, item: usize) -> usize {
+pub(crate) fn column_offset(rows: &monorm_engine::exec::Selected, item: usize) -> usize {
     match &rows.plan.output {
-        orm_engine::plan::Output::Rows { items, .. } => {
+        monorm_engine::plan::Output::Rows { items, .. } => {
             items[..item].iter().map(|width| width.unwrap_or(1)).sum()
         }
         _ => item,
@@ -410,12 +410,12 @@ impl<M: Model> ProjectionItem<M::Source> for ModelProjection<M> {
     }
     fn read(
         &self,
-        schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
         col: usize,
     ) -> Result<M> {
-        let orm_engine::plan::Output::Rows { model, .. } = &rows.plan.output else {
+        let monorm_engine::plan::Output::Rows { model, .. } = &rows.plan.output else {
             return Err(Error::Decode("expected projected model".into()));
         };
         let data = crate::row::instance(
@@ -481,9 +481,9 @@ macro_rules! impl_projection_column {
     };
 }
 #[doc(hidden)]
-pub use orm_core::{ir::SelectItem as ProjectionSelectItem, schema::Schema as ProjectionSchema};
+pub use monorm_core::{ir::SelectItem as ProjectionSelectItem, schema::Schema as ProjectionSchema};
 #[doc(hidden)]
-pub use orm_engine::exec::Selected as ProjectionRows;
+pub use monorm_engine::exec::Selected as ProjectionRows;
 
 /// A SQL text function with root identity and nullable result type retained.
 pub struct TextExpression<S, T> {
@@ -555,8 +555,8 @@ impl<S: 'static, T: Codec + Send + 'static> ProjectionItem<S> for TextExpression
     }
     fn read(
         &self,
-        _schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        _schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
         col: usize,
     ) -> Result<T> {
@@ -571,8 +571,8 @@ impl<S: 'static, T: Codec + Send + 'static> Projection<S> for TextExpression<S, 
     }
     fn read(
         &self,
-        schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
     ) -> Result<Self::Row> {
         Ok((ProjectionItem::read(self, schema, rows, row, 0)?,))

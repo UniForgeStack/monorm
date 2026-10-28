@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-import orm
+import monorm
 
 URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 SOURCE = 'model Padded {\n  id Int @id\n  k String @db.Char(6)\n  @@map("char_like_padded")\n}'
@@ -12,11 +12,11 @@ SOURCE = 'model Padded {\n  id Int @id\n  k String @db.Char(6)\n  @@map("char_li
 
 @pytest.fixture
 async def padded():
-    registry = orm.Registry()
-    Padded = orm.loads(SOURCE, registry=registry)["Padded"]
+    registry = monorm.Registry()
+    Padded = monorm.loads(SOURCE, registry=registry)["Padded"]
     try:
-        db = await orm.connect(URL, registry=registry, default=False)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(URL, registry=registry, default=False)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     await db.drop_tables()
     await db.create_tables()

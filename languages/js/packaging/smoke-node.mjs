@@ -2,26 +2,26 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { connect, loads, Registry } from "orm";
+import { connect, loads, Registry } from "@ufstack/monorm";
 const require = createRequire(import.meta.url);
-const { native, nativeAdapters } = await import(new URL("./native.js", pathToFileURL(require.resolve("orm"))));
+const { native, nativeAdapters } = await import(new URL("./native.js", pathToFileURL(require.resolve("@ufstack/monorm"))));
 const addon = native();
 const metadata = JSON.parse(addon.profileMetadata());
-assert.equal(metadata.profile, process.env.ORM_PROFILE);
+assert.equal(metadata.profile, process.env.MONORM_PROFILE);
 assert.deepEqual(nativeAdapters(), []);
-const selector = process.env.ORM_PROFILE;
-process.env.ORM_PROFILE = "invalid-after-initialization";
+const selector = process.env.MONORM_PROFILE;
+process.env.MONORM_PROFILE = "invalid-after-initialization";
 assert.equal(native(), addon);
-process.env.ORM_PROFILE = selector;
+process.env.MONORM_PROFILE = selector;
 assert.equal(typeof addon.cli === "function", metadata.capabilities.cli);
 assert.equal(typeof addon.generateTypescript === "function", metadata.capabilities["generate-typescript"]);
-const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./cli.js", pathToFileURL(require.resolve("orm")))), "--help"], { encoding: "utf8" });
+const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./cli.js", pathToFileURL(require.resolve("@ufstack/monorm")))), "--help"], { encoding: "utf8" });
 if (metadata.capabilities.cli) {
   assert.equal(cli.status, 0, cli.stdout + cli.stderr);
   assert.match(cli.stdout, /generate/);
 } else {
   assert.notEqual(cli.status, 0);
-  assert.match(cli.stderr, /install @orm\/native-tooling/);
+  assert.match(cli.stderr, /install @ufstack\/monorm-native-tooling/);
 }
 const source = backend => `datasource db { provider = "${backend}" }
 model Probe {

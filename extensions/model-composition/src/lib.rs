@@ -1,5 +1,5 @@
 //! Optional shared-primary-key schema lowering. The engine `composed` module executes writes.
-use orm_contracts::{
+use monorm_contracts::{
     extension::{capture_storage, FieldStorage, OwnerLink},
     ir::*,
 };
@@ -267,4 +267,4 @@ fn lower_one(ir: &mut SchemaIr, c: &Composition) -> Result<(), String> {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-orm_contracts::extension!(("orm.composition.lower", lower));
+monorm_contracts::extension!(("monorm.composition.lower", lower));

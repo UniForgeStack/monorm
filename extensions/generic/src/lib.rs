@@ -1,10 +1,10 @@
 //! Compiler contribution for type/key references. The relation records go to
-//! `extension_data["orm.generic"]`; no host code reads them at query time.
-use orm_contracts::{extension::Declaration, ir::{ColType, ConstraintIr, FieldIr, IndexIr, SchemaIr}};
+//! `extension_data["monorm.generic"]`; no host code reads them at query time.
+use monorm_contracts::{extension::Declaration, ir::{ColType, ConstraintIr, FieldIr, IndexIr, SchemaIr}};
 use serde::{Deserialize, Serialize};
 
 /// The id under which the pass keeps its records in `extension_data`.
-pub const ID: &str = "orm.generic";
+pub const ID: &str = "monorm.generic";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -24,7 +24,7 @@ pub struct GenericReverse {
     pub source: String,
     pub relation: String,
 }
-/// The data of `orm.generic`: the relations and their reverse members.
+/// The data of `monorm.generic`: the relations and their reverse members.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct GenericData {
@@ -155,7 +155,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         Some(value) => serde_json::from_value::<GenericData>(value.clone()).map_err(|e| format!("invalid extension_data of {ID}: {e}"))?,
         None => GenericData::default(),
     };
-    let identities = ir.identities.as_ref().ok_or("generic relations require frozen identity metadata; run orm identities")?;
+    let identities = ir.identities.as_ref().ok_or("generic relations require frozen identity metadata; run monorm identities")?;
     identities.validate()?;
     let active: std::collections::BTreeMap<_, _> = identities.active().map(|e| (e.model.clone(), e.id)).collect();
     for d in declarations.iter().filter(|d| d.attribute == "generic.relation") {
@@ -234,7 +234,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-orm_contracts::extension!(("orm.generic.prepare", prepare));
+monorm_contracts::extension!(("monorm.generic.prepare", prepare));
 
 #[cfg(test)]
 mod tests {
@@ -259,13 +259,13 @@ mod tests {
     /// (the pair check constraint, logical and physical).
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
-        let effects = orm_contracts::extension::pass_effects(&schema(), prepare).unwrap();
+        let effects = monorm_contracts::extension::pass_effects(&schema(), prepare).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.extension_data", "behavior.storage", "models"]);
     }
     #[test]
     fn preparation_contributes_pairs_and_reverse_without_foreign_keys() {
         let mut ir = schema();
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         prepare(&mut ir).unwrap();
         assert_eq!(data(&ir).relations[0].targets, ["Photo", "Post"]);
         assert_eq!(data(&ir).reverse[0].model, "Post");
@@ -308,10 +308,10 @@ mod tests {
         ir.behavior.declarations[0] = serde_json::from_value(serde_json::json!({"attribute":"generic.relation","model":"Tag","field":"target","field_type":"Generic?","positional":[],
             "arguments":arguments,"location":{"file":"schema.prisma","line":10,"column":3}})).unwrap();
         ir.behavior.declarations[1].arguments = serde_json::from_value(reverse).unwrap();
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         ir
     }
-    fn columns(model: &orm_contracts::ir::ModelIr) -> Vec<(String, bool, Option<String>)> {
+    fn columns(model: &monorm_contracts::ir::ModelIr) -> Vec<(String, bool, Option<String>)> {
         model.fields.iter().map(|f| (f.name.clone(), f.nullable, f.enum_name.clone())).collect()
     }
     #[test]
@@ -341,13 +341,13 @@ mod tests {
     fn type_and_key_name_existing_fields_like_the_explicit_form() {
         let mut explicit = schema();
         explicit.models[2].indexes = serde_json::from_value(serde_json::json!([{"columns":[{"field":"content_type"},{"field":"object_id"}]}])).unwrap();
-        orm_contracts::extension::capture_storage(&mut explicit).unwrap();
+        monorm_contracts::extension::capture_storage(&mut explicit).unwrap();
         prepare(&mut explicit).unwrap();
         let mut ir = field_schema(serde_json::json!({"type": "content_type", "key": "object_id"}), serde_json::json!({}));
         ir.models[2].fields.splice(1..1, schema().models[2].fields.drain(1..));
         ir.behavior.storage = None;
         ir.models[2].fields.retain(|f| f.name != "note");
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         prepare(&mut ir).unwrap();
         assert_eq!(data(&ir), data(&explicit));
         assert_eq!(serde_json::to_value(&ir.models).unwrap(), serde_json::to_value(&explicit.models).unwrap());
@@ -395,7 +395,7 @@ mod tests {
         let mut ir = field_schema(serde_json::json!({"type": "content_type", "key": "object_id"}), serde_json::json!({}));
         ir.models[2].fields.splice(1..1, schema().models[2].fields.drain(1..));
         ir.behavior.storage = None;
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         ir.behavior.declarations[0].field_type = Some("Generic".into());
         let error = prepare(&mut ir).unwrap_err();
         assert!(error.contains("type field content_type must match the nullability of Generic"), "{error}");
@@ -407,7 +407,7 @@ mod tests {
             let pk = &mut model.fields[0];
             pk.auto_increment = true;
             pk.default_sql = Some("1".into());
-            pk.client_default = Some(orm_contracts::ir::ClientDefaultIr::Call(orm_contracts::ir::ClientCall::Uuid7));
+            pk.client_default = Some(monorm_contracts::ir::ClientDefaultIr::Call(monorm_contracts::ir::ClientCall::Uuid7));
             pk.hints.insert("python".into(), "int".into());
             pk.max_length = Some(9);
             (pk.db_type, pk.write_sql, pk.requires) = (Some("citext".into()), Some("lower(?)".into()), vec!["citext".into()]);
@@ -424,15 +424,15 @@ mod tests {
         // `copy` is the model that the proxy or composition pass made from Tag; `keep` says whether it kept `target`.
         let with = |copy: &str, keep: bool, link: fn(&mut SchemaIr, &str)| {
             let mut ir = field_schema(serde_json::json!({}), serde_json::json!({}));
-            let mut model: orm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[2]).unwrap()).unwrap();
+            let mut model: monorm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[2]).unwrap()).unwrap();
             model.name = copy.into();
             model.fields.retain(|f| keep || f.name != "target");
             ir.models.push(model);
             link(&mut ir, copy);
             prepare(&mut ir)
         };
-        let proxy: fn(&mut SchemaIr, &str) = |ir, m| ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: m.into(), source: "Tag".into(), root: "Tag".into(), row_filter: None, insert_table: None });
-        let child: fn(&mut SchemaIr, &str) = |ir, m| ir.behavior.owner_links.push(orm_contracts::extension::OwnerLink { child: m.into(), parent: "Tag".into(), child_key: "id".into(), parent_key: "id".into() });
+        let proxy: fn(&mut SchemaIr, &str) = |ir, m| ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: m.into(), source: "Tag".into(), root: "Tag".into(), row_filter: None, insert_table: None });
+        let child: fn(&mut SchemaIr, &str) = |ir, m| ir.behavior.owner_links.push(monorm_contracts::extension::OwnerLink { child: m.into(), parent: "Tag".into(), child_key: "id".into(), parent_key: "id".into() });
         for (copy, link) in [("NotedTag", proxy), ("Child", child)] {
             let error = with(copy, true, link).unwrap_err();
             assert!(error.contains(&format!("Tag.target: {copy} keeps the Generic field; exclude it there or use @@generic.relation")), "{error}");

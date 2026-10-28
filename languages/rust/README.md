@@ -1,20 +1,20 @@
 # Rust generated models, selection, and loading
 
-`orm-client` executes generated, typed queries directly through `orm-engine`. It has no Python or Node dependency. Generation consumes the prepared schema offline; compilation does not verify deployed constraints or prove that rows exist.
+`monorm-client` executes generated, typed queries directly through `monorm-engine`. It has no Python or Node dependency. Generation consumes the prepared schema offline; compilation does not verify deployed constraints or prove that rows exist.
 
 Generate a consumer module with the CLI (the default CLI profile includes `generate-rust`):
 
 ```nu
-cargo run -p orm-cli -- --schema languages/rust/examples/schema.prisma generate rust -o models.rs
+cargo run -p monorm-cli -- --schema languages/rust/examples/schema.prisma generate rust -o models.rs
 ```
 
-Applications in this repository can depend on `orm-client` by path. The core, engine, and client packages remain unpublished. Backend features are `postgres` and `sqlite`; both are enabled by default. A generated schema has one dialect and brands its database handle, model sources, and field tokens. A URL with a different dialect is rejected at connection time. Driver availability and selected extension requirements remain runtime artifact checks.
+Applications in this repository can depend on `monorm-client` by path. The core, engine, and client packages remain unpublished. Backend features are `postgres` and `sqlite`; both are enabled by default. A generated schema has one dialect and brands its database handle, model sources, and field tokens. A URL with a different dialect is rejected at connection time. Driver availability and selected extension requirements remain runtime artifact checks.
 
 ```rust
 mod models;
 use models::{Database, User};
 
-async fn readers(url: &str) -> orm_client::Result<()> {
+async fn readers(url: &str) -> monorm_client::Result<()> {
     let db = Database::connect(url, 4).await?;
     let query = User::objects
         .filter(User::r#type.eq("reader".into()))
@@ -49,7 +49,7 @@ Builders are lazy, owned transformations. Clone before reusing one. `using` bind
 A generated model has one generic definition with a state per scalar field and relation in schema order. The normal shape follows the prepared schema’s default scalar and reference selection; schemas without selection policies load all scalars and leave relation caches unloaded. For the example schema, an explicit email-only query is:
 
 ```rust
-use orm_client::{Loaded, Unloaded};
+use monorm_client::{Loaded, Unloaded};
 type EmailOnly = User<Unloaded, Loaded, Unloaded, Unloaded>;
 let row = EmailOnly::query().using(&db).get(User::ID_KEY, 1).await?;
 if let Some(row) = row {
@@ -65,7 +65,7 @@ Partial reads ask the shared planner for public fields and private helpers separ
 
 ```rust
 use models::{Post, User};
-use orm_client::{BatchLoad, Instance, LoadedMany};
+use monorm_client::{BatchLoad, Instance, LoadedMany};
 
 // db.set_default() enables execution without an explicit using(&db).
 db.set_default();
@@ -102,7 +102,7 @@ No additional HasEmail/HasTitle traits are needed. A queryable relation without 
 Literal named relation views use reusable macro machinery and keep named views separate from canonical caches:
 
 ```rust
-let views = orm_client::relation_views!(user, &db;
+let views = monorm_client::relation_views!(user, &db;
     recent => User::posts.as_prefetch(Post::objects.load(Post::title)
         .order_by(Post::id.desc()).limit(2)),
     first_post => User::posts.label("first_post")
@@ -153,13 +153,13 @@ The terminal `get` takes a generated key and a matching typed value, e.g. a tupl
 
 Enums use PascalCase Rust variants and preserve physical labels or integer mappings. Fields use snake_case and raw identifiers such as `r#type`. Generation rejects collisions with normalized fields, tokens, enum variants, and private helpers. Selected behavioral extensions must declare Rust support; custom language codecs require their compiled contributions rather than accepting arbitrary hint strings.
 
-Failures use `orm_client::Error`. Database failures remain `Error::Engine(orm_engine::Error::Db(details))` with inspectable SQLSTATE, constraint, and detail. Empty required queries and multiple-row gets have distinct variants. Shape decoding stays synchronous after execution. Typed query and row states disappear at the operation IR/Params/planning seam; the client reuses the existing executor and drivers.
+Failures use `monorm_client::Error`. Database failures remain `Error::Engine(monorm_engine::Error::Db(details))` with inspectable SQLSTATE, constraint, and detail. Empty required queries and multiple-row gets have distinct variants. Shape decoding stays synchronous after execution. Typed query and row states disappear at the operation IR/Params/planning seam; the client reuses the existing executor and drivers.
 
 Consumer tests cover compiler guarantees and SQLite/PostgreSQL behavior. Tests use a disposable PostgreSQL database; an unavailable PostgreSQL connection is a failure rather than silently passing. Example reads expect tables to have already been created through the shared migration tooling. No new migration or raw SQL API is introduced in this ticket.
 
 ```nu
 $env.ORM_RUST_TEST_POSTGRES_URL = "postgres://postgres:postgres@localhost/orm_test"
-cargo test -p orm-client
+cargo test -p monorm-client
 python3 languages/rust/bench/measure.py
 ```
 
@@ -172,14 +172,14 @@ let rows: Vec<(String, Option<String>)> = User::objects
     .select((User::email, User::nickname))
     .using(&db)
     .await?;
-let contact = orm_client::select_named!(User::objects;
+let contact = monorm_client::select_named!(User::objects;
     email => User::email,
     nickname => User::nickname,
 ).require().using(&db).first().await?;
 
 // Export the result definition when a function or module needs to name it.
-orm_client::named_result! { pub struct Contact { email, nickname } }
-let contact: Contact<String, Option<String>> = orm_client::select_named!(
+monorm_client::named_result! { pub struct Contact { email, nickname } }
+let contact: Contact<String, Option<String>> = monorm_client::select_named!(
     User::objects => Contact; email => User::email, nickname => User::nickname,
 ).require().using(&db).first().await?;
 
@@ -198,7 +198,7 @@ bound and configured-default execution are available. Builders are owned and
 lazy; clone explicitly for fresh executions. Planned projection statements are
 consumed by execution, and support the existing planner's debug SQL and inspection.
 
-`orm_client::model::<User>()` is a tuple item producing an ordinary model that
+`monorm_client::model::<User>()` is a tuple item producing an ordinary model that
 satisfies its generated `UserShape` bounds. A scalar item after a model item
 still refers to its correct SQL column. Projection result definitions infer the
 model's generic shape and accept ordinary direct associated-type bounds.

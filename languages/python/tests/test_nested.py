@@ -11,8 +11,8 @@ from decimal import Decimal
 
 import pytest
 
-import orm
-from orm import DecodeError, _native
+import monorm
+from monorm import DecodeError, _native
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -51,15 +51,15 @@ LATER = dt.datetime(2025, 6, 7, 8, 9, 10, tzinfo=dt.UTC)
 
 @pytest.fixture(params=["postgres", "sqlite"])
 async def world(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     if request.param == "sqlite":
-        classes = orm.loads(SQLITE + SCHEMA, registry=registry)
-        db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+        classes = monorm.loads(SQLITE + SCHEMA, registry=registry)
+        db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     else:
-        classes = orm.loads(SCHEMA, registry=registry)
+        classes = monorm.loads(SCHEMA, registry=registry)
         try:
-            db = await orm.connect(PG_URL, registry=registry, default=False, max_connections=2)
-        except orm.DatabaseError as e:
+            db = await monorm.connect(PG_URL, registry=registry, default=False, max_connections=2)
+        except monorm.DatabaseError as e:
             pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
     await db.drop_tables()
     await db.create_tables()
@@ -258,7 +258,7 @@ async def test_load_and_defer_keep_a_group_whole(shop):
     await seed(shop)
     only = await q.load(S.address.city).order_by(S.id)
     assert only[0].address == address(classes)  # a group loads whole
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         only[0].id  # noqa: B018
     only = await q.load(S.address).order_by(S.id)
     assert only[0].address == address(classes)
@@ -308,8 +308,8 @@ async def test_a_json_cell_that_breaks_the_type_raises_decode_error_with_the_pat
 
 async def test_json_values_keep_decimal_bigint_and_datetime_exact():
     """Value conversion needs no database: BigInt above 2**53 and Decimal go as text, DateTime as UTC text."""
-    registry = orm.Registry()
-    classes = orm.loads(
+    registry = monorm.Registry()
+    classes = monorm.loads(
         SQLITE
         + """
 type Money {
@@ -339,9 +339,9 @@ EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "nested"
 
 
 def test_a_re_prepared_registry_keeps_its_nested_types(monkeypatch):
-    monkeypatch.setattr("orm.model._REPREPARE", True)  # what a schema-transformations artifact does
-    registry = orm.Registry()
-    orm.loads(SCHEMA, registry=registry)
+    monkeypatch.setattr("monorm.model._REPREPARE", True)  # what a schema-transformations artifact does
+    registry = monorm.Registry()
+    monorm.loads(SCHEMA, registry=registry)
     assert [t["name"] for t in registry.ir()["types"]] == ["Geo", "Address"]
 
 
@@ -350,7 +350,7 @@ def test_example_models_are_current(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert _native.cli(["generate", "python", "-o", "models.py"]) == 0
     for name in ("models.py", "models.pyi"):
-        assert (tmp_path / name).read_text() == (EXAMPLE / name).read_text(), f"run `python -m orm generate` in {EXAMPLE}"
+        assert (tmp_path / name).read_text() == (EXAMPLE / name).read_text(), f"run `python -m monorm generate` in {EXAMPLE}"
 
 
 def test_generated_value_classes(monkeypatch):
@@ -365,7 +365,7 @@ def test_generated_value_classes(monkeypatch):
 
 
 def test_nested_types_in_a_non_empty_registry():
-    registry = orm.Registry()
-    orm.loads(SQLITE + "model Plain { id Int @id }", registry=registry)
-    classes = orm.loads(SQLITE + SCHEMA, registry=registry)
+    registry = monorm.Registry()
+    monorm.loads(SQLITE + "model Plain { id Int @id }", registry=registry)
+    classes = monorm.loads(SQLITE + SCHEMA, registry=registry)
     assert classes["CShop"].address.city._select_name() == "address_city"

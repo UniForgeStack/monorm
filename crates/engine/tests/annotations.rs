@@ -1,5 +1,5 @@
-use orm_core::{dialect::{Dialect, Target}, ir::Operation, schema::Schema};
-use orm_engine::{db, params::NoParams, plan::{Output, Plan, Planner, plan_prefetch_only}};
+use monorm_core::{dialect::{Dialect, Target}, ir::Operation, schema::Schema};
+use monorm_engine::{db, params::NoParams, plan::{Output, Plan, Planner, plan_prefetch_only}};
 use serde_json::{json, Value};
 
 fn schema() -> Schema {
@@ -21,7 +21,7 @@ fn count(rel: &str, label: &str) -> Value {
     json!({"name":label,"expr":{"t":"func","name":"count","rel":[rel]}})
 }
 
-fn plan(op: Value, dialect: Dialect) -> Result<orm_engine::plan::SelectPlan, String> {
+fn plan(op: Value, dialect: Dialect) -> Result<monorm_engine::plan::SelectPlan, String> {
     let operation: Operation = serde_json::from_value(op).unwrap();
     match Planner::plan(&schema(), Target::new(dialect), &operation, &NoParams).map_err(|e| e.to_string())? {
         Plan::Select(p) => Ok(p),
@@ -29,11 +29,11 @@ fn plan(op: Value, dialect: Dialect) -> Result<orm_engine::plan::SelectPlan, Str
     }
 }
 
-fn sql(p: &orm_engine::plan::SelectPlan, dialect: Dialect) -> String {
+fn sql(p: &monorm_engine::plan::SelectPlan, dialect: Dialect) -> String {
     db::build(dialect, &p.stmt).0
 }
 
-fn annotations(p: &orm_engine::plan::SelectPlan) -> Vec<(String, usize)> {
+fn annotations(p: &monorm_engine::plan::SelectPlan) -> Vec<(String, usize)> {
     let Output::Instances { annotations, .. } = &p.output else { panic!("instances") };
     annotations.iter().map(|a| (a.name.clone(), a.pos)).collect()
 }
@@ -89,7 +89,7 @@ fn a_slice_keeps_the_annotations_out_of_the_lateral_join() {
 
 #[test]
 fn a_prefetch_annotation_is_inside_the_row_number_query() {
-    let q: orm_core::ir::Select = {
+    let q: monorm_core::ir::Select = {
         let Operation::Select(q) = serde_json::from_value(json!({"op":"select","model":"Author","prefetch":[{
             "relation":"posts","model":"Post","limit":2,"annotations":[count("comments", "n")]}]})).unwrap() else { panic!("select") };
         q

@@ -1,4 +1,4 @@
-//! `orm pull`: a [`DbSchema`] read from a live database, written as a schema file.
+//! `monorm pull`: a [`DbSchema`] read from a live database, written as a schema file.
 //!
 //! This is the reverse of [`super::model::build`]. Types, defaults and expressions are
 //! the database's own text; the SQL-to-schema type map lives only here. What the schema
@@ -591,7 +591,7 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     }
 
     // -- output ----------------------------------------------------------------------------
-    let mut out = String::from("// Pulled from a live database by `orm pull`. Review it before the first migration.\n\n");
+    let mut out = String::from("// Pulled from a live database by `monorm pull`. Review it before the first migration.\n\n");
     out.push_str("datasource db {\n");
     out.push_str(&format!("  provider = {}\n", if dialect == Dialect::Sqlite { "\"sqlite\"" } else { "\"postgresql\"" }));
     if !db.extensions.is_empty() {

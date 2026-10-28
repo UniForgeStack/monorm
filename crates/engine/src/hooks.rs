@@ -3,8 +3,8 @@
 use crate::db::{Cell, DbError, DbResult, RowSet};
 use crate::error::{Error, Result};
 use crate::params::Params;
-use orm_contracts::abi::{Arg, Context, Value as Abi};
-use orm_core::{hooks::{HookPlan, HookRef}, ir::ValueType, schema::Model, writes::{AssignValue, WriteKind}};
+use monorm_contracts::abi::{Arg, Context, Value as Abi};
+use monorm_core::{hooks::{HookPlan, HookRef}, ir::ValueType, schema::Model, writes::{AssignValue, WriteKind}};
 use sea_query::Value;
 use std::cell::OnceCell;
 
@@ -239,12 +239,12 @@ pub fn assigned(model: &Model, position: usize, contexts: &Contexts) -> Result<O
 
 /// The expression that the hook of field `position` gives to one statement: point 7 for an insert default, point 6 for an update
 /// assignment. The hook runs once for the statement. `None` when the model has no such hook.
-pub fn expression(model: &Model, position: usize, insert: bool, contexts: &Contexts) -> Result<Option<orm_core::ir::Expr>> {
+pub fn expression(model: &Model, position: usize, insert: bool, contexts: &Contexts) -> Result<Option<monorm_core::ir::Expr>> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(None) };
     let Some(hook) = (if insert { plan.expr_defaulter(position) } else { plan.expr_assigner(position) }) else { return Ok(None) };
     let json = hook.expression(contexts.of(hook)?).map_err(|m| failure(model, Some(position), m))?;
     let label = format!("{}.{}", model.ir.name, model.fields()[position].name);
-    orm_core::writes::parse_expr(&json, !insert).map(Some).map_err(|e| Error::query(format!("{label}: the expression hook returned an expression that a statement cannot use: {e}")))
+    monorm_core::writes::parse_expr(&json, !insert).map(Some).map_err(|e| Error::query(format!("{label}: the expression hook returned an expression that a statement cannot use: {e}")))
 }
 
 /// A computed field (point 5) of a read: the hook runs on each returned row, on the dependency columns of the same statement.

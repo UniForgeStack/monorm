@@ -1,5 +1,5 @@
 use crate::*;
-use orm_core::{ir, schema::Schema};
+use monorm_core::{ir, schema::Schema};
 
 fn schema<M: Model>() -> Result<Schema> {
     Schema::from_ir(ir::SchemaIr::from_json(M::Schema::JSON).map_err(Error::Compatibility)?)

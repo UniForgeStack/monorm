@@ -1,5 +1,5 @@
-use orm_core::{dialect::{Dialect, Target}, dsl};
-use orm_engine::{exec, params::NoParams, plan::Plan};
+use monorm_core::{dialect::{Dialect, Target}, dsl};
+use monorm_engine::{exec, params::NoParams, plan::Plan};
 use sea_query::Value;
 
 const SOURCE: &str = r#"
@@ -17,7 +17,7 @@ fn batches(target: Target, rows: usize, batch_size: Option<usize>) -> Vec<usize>
     plans
         .iter()
         .map(|p| match p {
-            Plan::Insert(s, _) => orm_engine::db::build(target.dialect, s).1.len() / 2,
+            Plan::Insert(s, _) => monorm_engine::db::build(target.dialect, s).1.len() / 2,
             _ => panic!("an insert plan"),
         })
         .collect()
@@ -139,27 +139,27 @@ fn a_count_insert_has_no_returning_clause() {
 /// One parameter that the statement does not use: it still counts toward the limit.
 struct OneParam;
 
-impl orm_engine::params::Params for OneParam {
+impl monorm_engine::params::Params for OneParam {
     fn len(&self) -> usize {
         1
     }
-    fn value(&self, _: usize, _: Option<orm_core::ir::ValueType>) -> orm_engine::error::Result<Value> {
+    fn value(&self, _: usize, _: Option<monorm_core::ir::ValueType>) -> monorm_engine::error::Result<Value> {
         Ok(Value::String(Some("p".into())))
     }
-    fn text(&self, _: usize) -> orm_engine::error::Result<String> {
+    fn text(&self, _: usize) -> monorm_engine::error::Result<String> {
         Ok("p".into())
     }
-    fn count(&self, _: usize) -> orm_engine::error::Result<u64> {
+    fn count(&self, _: usize) -> monorm_engine::error::Result<u64> {
         Ok(1)
     }
 }
 
-fn statements(schema: &orm_core::schema::Schema, target: Target, model: &str, fields: &[String], rows: Vec<Vec<Option<Value>>>, params: &dyn orm_engine::params::Params) -> Vec<usize> {
+fn statements(schema: &monorm_core::schema::Schema, target: Target, model: &str, fields: &[String], rows: Vec<Vec<Option<Value>>>, params: &dyn monorm_engine::params::Params) -> Vec<usize> {
     exec::plan_inserts(schema, target, model, fields, rows, None, params, None, true, &Default::default())
         .unwrap()
         .iter()
         .map(|p| match p {
-            Plan::Insert(s, _) => orm_engine::db::build(target.dialect, s).1.len(),
+            Plan::Insert(s, _) => monorm_engine::db::build(target.dialect, s).1.len(),
             _ => panic!("an insert plan"),
         })
         .collect()

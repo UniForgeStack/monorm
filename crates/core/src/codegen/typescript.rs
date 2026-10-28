@@ -199,7 +199,7 @@ fn related_ref(schema: &Schema, r: &RelationIr) -> Result<String, String> {
 
 /// Generates `models.ts` for `ir` (already validated as `schema`). `source` names the
 /// schema file in the header comment; `runtime` is the module the runtime is imported
-/// from (`"orm"`).
+/// from (`"@ufstack/monorm"`).
 pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str) -> Result<String, String> {
     generate_with(ir, schema, source, runtime, &super::Options::default())
 }
@@ -326,7 +326,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         for a in &m.field_adapters {
             let Some((_, u)) = adapters.of(&a.adapter) else { continue };
             for member in &u.runtime.members {
-                writeln!(body, "  {}", orm_contracts::extension::expand_adapter_template(member, "typescript", &m.fields()[a.position].name)).unwrap();
+                writeln!(body, "  {}", monorm_contracts::extension::expand_adapter_template(member, "typescript", &m.fields()[a.position].name)).unwrap();
             }
         }
         for r in &m.ir.relations {
@@ -548,7 +548,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     }
 
     let mut out = String::new();
-    writeln!(out, "// Generated from {source} by `orm generate typescript`. Do not edit.").unwrap();
+    writeln!(out, "// Generated from {source} by `monorm generate typescript`. Do not edit.").unwrap();
     out.push_str(
         "//\n\
          // The models are built at runtime from the compiled schema below; the declarations\n\

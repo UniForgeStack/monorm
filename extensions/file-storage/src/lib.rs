@@ -1,5 +1,5 @@
 //! Compile namespaced file declarations into provider-independent binding metadata.
-use orm_contracts::{
+use monorm_contracts::{
     extension::{check_adapter_methods, expand_adapter_template, validate_field_adapters, FieldAdapter},
     ir::{ColType, SchemaIr},
 };
@@ -104,7 +104,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-orm_contracts::extension!(("orm.file-storage.fields", lower));
+monorm_contracts::extension!(("monorm.file-storage.fields", lower));
 
 #[cfg(test)]
 mod tests {
@@ -115,7 +115,7 @@ mod tests {
     /// Declared effect `behavior.field_adapters`.
     #[test]
     fn lowering_changes_only_its_declared_effects_once() {
-        let effects = orm_contracts::extension::pass_effects(&schema("json"), lower).unwrap();
+        let effects = monorm_contracts::extension::pass_effects(&schema("json"), lower).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.field_adapters"]);
     }
     #[test]
@@ -131,10 +131,10 @@ mod tests {
     #[test]
     fn a_view_gets_the_records_of_its_root_once() {
         let mut ir = schema("json");
-        let mut view: orm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: monorm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
         view.name = "Draft".into();
         ir.models.push(view);
-        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "Draft".into(), source: "Report".into(), root: "Report".into(), row_filter: None, insert_table: None });
+        ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: "Draft".into(), source: "Report".into(), root: "Report".into(), row_filter: None, insert_table: None });
         lower(&mut ir).unwrap();
         ir.behavior.declarations[0].lowered = true;
         lower(&mut ir).unwrap();

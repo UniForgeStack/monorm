@@ -1,0 +1,49 @@
+id = "monorm.locking"
+version = "0.1.0"
+abi = "0.2"
+library = "monorm_locking"
+schema_contract = "5.0"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+capabilities = []
+
+# Adds the field before the logical passes, so a proxy of the model copies it.
+[[passes]]
+id = "monorm.locking.fields"
+phase = "declaration"
+after = ["monorm.inherit.expand"]
+effects = ["models.locking", "storage.locking"]
+
+[[passes]]
+id = "monorm.locking.prepare"
+phase = "behavior"
+effects = ["behavior.write_assignments.locking", "behavior.instance_guards"]
+
+# `@@locking.version("version", map: "_version", upsert: "pick")`: adds the field.
+[[attributes]]
+name = "locking.version"
+target = "model"
+[[attributes.positional]]
+kind = "string"
+[attributes.arguments.upsert]
+kind = "string"
+[attributes.arguments.map]
+kind = "string"
+
+# The field form; the pass rejects it with the model attribute to write instead.
+[[attributes]]
+name = "locking.version"
+target = "field"
+
+[python]
+source = "python/orm_locking"
+query_set = "LockingQuerySet"
+instance = "LockingInstance"
+bound_query_set = "LockingBoundQuerySet"
+
+[typescript]
+source = "typescript/src"
+query_set = "lockingQuerySet"
+bound_query_set = "lockingBoundQuerySet"
+instance = "LockingInstance"

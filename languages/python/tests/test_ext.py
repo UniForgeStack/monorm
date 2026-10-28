@@ -2,7 +2,7 @@
 
 from blog.models import Post, User
 
-from orm import Delete, ext
+from monorm import Delete, ext
 
 
 def test_the_hard_delete_statement_is_a_hard_delete_of_the_query_set():

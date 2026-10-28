@@ -8,9 +8,9 @@ import sys
 
 import pytest
 
-from orm import Registry
-import orm
-import orm.model
+from monorm import Registry
+import monorm
+import monorm.model
 
 
 @pytest.mark.parametrize("first", ["main", "child"])
@@ -42,11 +42,11 @@ model User {
 """)
     if external:
         root.write_text(root.read_text().replace("billing/schema.prisma", "../library/schema.prisma"))
-    loaded = orm.load(root, registry=Registry())
+    loaded = monorm.load(root, registry=Registry())
     assert loaded["Invoice"]._meta.ir()["table"] == "billing_invoice"
     repo = Path(__file__).resolve().parents[3]
     result = subprocess.run(
-        ["cargo", "run", "-q", "-p", "orm-cli", "--", "--schema", str(root), "generate", "python"],
+        ["cargo", "run", "-q", "-p", "monorm-cli", "--", "--schema", str(root), "generate", "python"],
         cwd=repo,
         text=True,
         capture_output=True,
@@ -54,7 +54,7 @@ model User {
     assert result.returncode == 0, result.stderr
     monkeypatch.syspath_prepend(str(tmp_path))
     reg = Registry()
-    monkeypatch.setattr(orm.model, "registry", reg)
+    monkeypatch.setattr(monorm.model, "registry", reg)
     child_name = "library.models" if external else "composed.billing.models"
     try:
         importlib.import_module("composed.models" if first == "main" else child_name)
@@ -67,7 +67,7 @@ model User {
         assert child.Invoice._meta.ir()["table"] == "billing_invoice"
         assert reg.ir()["dialect"] == "sqlite"
         reg.native()
-        db = await orm.connect("sqlite://:memory:", registry=reg, default=False)
+        db = await monorm.connect("sqlite://:memory:", registry=reg, default=False)
         try:
             await db.create_tables()
             await main.User.objects.using(db).insert(id=1)
@@ -83,7 +83,7 @@ model User {
         if first == "main" and external:
             consumer = tmp_path / "check.py"
             consumer.write_text(
-                "from typing import assert_type\nfrom orm import ColumnRef\nfrom composed.models import User\nfrom library.models import Invoice\nassert_type(User.invoices.id, ColumnRef[int])\nassert_type(Invoice.user.id, ColumnRef[int])\n"
+                "from typing import assert_type\nfrom monorm import ColumnRef\nfrom composed.models import User\nfrom library.models import Invoice\nassert_type(User.invoices.id, ColumnRef[int])\nassert_type(Invoice.user.id, ColumnRef[int])\n"
             )
             checked = subprocess.run(
                 [sys.executable, "-m", "mypy", "--strict", str(consumer)],

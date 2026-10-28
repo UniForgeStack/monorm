@@ -7,10 +7,10 @@ from decimal import Decimal
 import pytest
 from blog.models import Comment, Post, Profile, Role, User
 
-import orm
+import monorm
 from conftest import DATABASE_URL
-from orm import QueryError, exists, func, outer, window
-from orm.expr import Func
+from monorm import QueryError, exists, func, outer, window
+from monorm.expr import Func
 
 NOW = datetime.now(timezone.utc)
 
@@ -62,7 +62,7 @@ async def test_in_bulk(clean):
 
 async def test_in_bulk_chunks(clean, monkeypatch, observe_queries):
     (alice, bob, carol), _ = await seed()
-    monkeypatch.setattr(orm.query, "IN_BULK_CHUNK", 2)
+    monkeypatch.setattr(monorm.query, "IN_BULK_CHUNK", 2)
     with observe_queries(clean) as events:
         assert set(await User.objects.in_bulk([alice.id, bob.id, carol.id])) == {alice.id, bob.id, carol.id}
     assert len(events) == 2
@@ -75,7 +75,7 @@ async def test_exists_expression(clean):
     (alice, bob, carol), _ = await seed()
     popular = exists(Post.objects.filter(Post.author_id == outer(User.id), Post.views >= 50))
     query = User.objects.filter(popular)
-    assert query.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
+    assert query.inspect().statements[0] == monorm.StatementInspection(set_correlated=1)
     assert {u.name for u in await query} == {"Alice", "Bob"}
     assert {u.name for u in await User.objects.filter(~popular)} == {"Carol"}
     # In select(): a boolean per row.
@@ -83,7 +83,7 @@ async def test_exists_expression(clean):
     assert [tuple(r) for r in rows] == [("Alice", True), ("Bob", True), ("Carol", False)]
     # Uncorrelated.
     query = User.objects.filter(exists(Post.objects.filter(Post.views > 1000)))
-    assert query.inspect().statements[0] == orm.StatementInspection(set_uncorrelated=1)
+    assert query.inspect().statements[0] == monorm.StatementInspection(set_uncorrelated=1)
     assert len(await query) == 0
     # A select() with group_by / having.
     many = exists(
@@ -104,7 +104,7 @@ async def test_scalar_subquery(clean):
         .as_scalar()
     )
     query = User.objects.select(User, latest.label("latest")).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=1),))
+    assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(scalar_correlated=1),))
     rows = await query
     assert [(u.name, t) for u, t in rows] == [("Alice", "a3"), ("Bob", "b1"), ("Carol", None)]
     assert rows[0].latest == "a3" and rows[0].user == alice
@@ -121,7 +121,7 @@ async def test_scalar_subquery_in_update(clean):
     (alice, bob, carol), _ = await seed()
     n_comments = Comment.objects.filter(Comment.post_id == outer(Post.id)).select(func.count()).as_scalar()
     statement = Post.objects.update(views=n_comments)
-    assert statement.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=1),))
+    assert statement.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(scalar_correlated=1),))
     await statement
     views = {p.title: p.views for p in await Post.objects.all()}
     assert views == {"a1": 0, "a2": 2, "a3": 0, "b1": 1}
@@ -480,7 +480,7 @@ async def test_array_agg_rejects_invalid_order_keys(clean):
     # Valid shapes stay valid.
     views = await Post.objects.select(func.array_agg(Post.views + 1, distinct=True, order_by=Post.views + 1)).scalar()
     assert views == [6, 21, 51, 101]
-    titles = await Post.objects.select(func.array_agg(Post.title, order_by=orm.expr.Literal(1))).scalar()
+    titles = await Post.objects.select(func.array_agg(Post.title, order_by=monorm.expr.Literal(1))).scalar()
     assert sorted(titles) == ["a1", "a2", "a3", "b1"]
     cased = await Post.objects.select(
         func.array_agg(Post.title, order_by=func.case((Post.views > 30, 0), default=1)),
@@ -719,7 +719,7 @@ async def test_recursive_cte_with_join(clean):
 
 
 async def _db():
-    return orm.get_database()
+    return monorm.get_database()
 
 
 # -- CTEs --------------------------------------------------------------------------------------
@@ -755,7 +755,7 @@ async def test_cte_select_and_subqueries(clean):
     assert [tuple(r) for r in await totals.select(func.max(totals.c.views).label("best"))] == [(100,)]
     # A CTE read from a subquery: declared on the statement, once.
     heavy = User.objects.filter(User.id.in_(totals.select(totals.c.author_id).filter(totals.c.views > 80)))
-    assert heavy.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(set_uncorrelated=1, cte_count=1),))
+    assert heavy.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(set_uncorrelated=1, cte_count=1),))
     assert [u.name for u in await heavy] == ["Bob"]
     assert heavy.sql().count("WITH") == 1
     big = exists(totals.select(totals.c.n).filter(totals.c.author_id == outer(User.id), totals.c.views > 50))
@@ -815,9 +815,9 @@ async def test_cte_errors(clean):
 async def test_nested_prefetch(clean, observe_queries):
     (alice, bob, carol), _ = await seed()
     query = User.objects.load(User.posts.comments, User.comments).order_by(User.id)
-    batched = orm.StatementInspection(has_batching=True)
+    batched = monorm.StatementInspection(has_batching=True)
     # root, posts, posts' comments, users' comments
-    assert query.inspect() == orm.QueryInspection(4, True, (orm.StatementInspection(), batched, batched, batched))
+    assert query.inspect() == monorm.QueryInspection(4, True, (monorm.StatementInspection(), batched, batched, batched))
     with observe_queries(clean) as events:
         users = await query
         assert len(events) == 4  # independent of the number of parents
@@ -833,8 +833,8 @@ async def test_to_one_prefetch(clean, observe_queries):
     await seed()
     to_one = Comment.post.objects.as_prefetch().load(Post.author.objects.as_prefetch())
     query = Comment.objects.load(to_one, Comment.author.objects.as_prefetch()).order_by(Comment.id)
-    batched = orm.StatementInspection(has_batching=True)
-    assert query.inspect() == orm.QueryInspection(4, True, (orm.StatementInspection(), batched, batched, batched))
+    batched = monorm.StatementInspection(has_batching=True)
+    assert query.inspect() == monorm.QueryInspection(4, True, (monorm.StatementInspection(), batched, batched, batched))
     with observe_queries(clean) as events:
         comments = await query
         assert len(events) == 4
@@ -846,12 +846,12 @@ async def test_to_one_prefetch(clean, observe_queries):
 async def test_filtered_prefetch(clean, observe_queries):
     (alice, bob, carol), _ = await seed()
     query = User.objects.load(User.posts.objects.filter(Post.views >= 20).order_by(Post.views.desc())).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(
+    assert query.inspect() == monorm.QueryInspection(
         2,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True),
         ),
     )
     with observe_queries(clean) as events:
@@ -865,7 +865,7 @@ async def test_filtered_prefetch(clean, observe_queries):
         User.posts.objects.filter(Post.views >= 20).label("popular"),
     ).order_by(User.id)
     assert [p.title for p in users[0].popular] == ["a2", "a3"] and users[2].popular == []
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         users[0].posts.cached
 
 
@@ -874,13 +874,13 @@ async def test_sliced_prefetch_is_per_parent(clean, observe_queries):
     top = User.posts.objects.order_by(Post.views.desc()).load(Post.comments)[:2]
     query = User.objects.load(top.label("top")).order_by(User.id)
     # Per-parent slicing uses one windowed subquery, not a query for each user.
-    assert query.inspect() == orm.QueryInspection(
+    assert query.inspect() == monorm.QueryInspection(
         3,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
-            orm.StatementInspection(has_batching=True),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            monorm.StatementInspection(has_batching=True),
         ),
     )
     with observe_queries(clean) as events:
@@ -899,13 +899,13 @@ async def test_relation_query_set_with_joins_and_nested_query_set(clean, observe
         User.comments.objects.load(Comment.post.author),
         User.posts.objects.load(Post.comments.objects.filter(Comment.author_id.is_null())),
     ).order_by(User.id)
-    batched = orm.StatementInspection(has_batching=True)
-    assert query.inspect() == orm.QueryInspection(
+    batched = monorm.StatementInspection(has_batching=True)
+    assert query.inspect() == monorm.QueryInspection(
         4,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True, joins_count=2),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True, joins_count=2),
             batched,
             batched,
         ),
@@ -933,7 +933,7 @@ async def test_prefetch_errors(clean):
 
 async def test_instances_get_their_database(clean):
     await seed()
-    db = orm.get_database()
+    db = monorm.get_database()
     users = await User.objects.using(db).load(User.posts).load()
     assert all(u.__dict__["_db"] is db for u in users)
     assert all(p.__dict__["_db"] is db for u in users for p in u.posts.cached)
@@ -950,12 +950,12 @@ async def test_prefetch_query_reading_a_cte(clean, observe_queries):
     query = User.objects.load(User.posts.objects.filter(Post.id.in_(best.select(best.c.id))).label("best")).order_by(
         User.id
     )
-    assert query.inspect() == orm.QueryInspection(
+    assert query.inspect() == monorm.QueryInspection(
         2,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True, set_uncorrelated=1, cte_count=1),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True, set_uncorrelated=1, cte_count=1),
         ),
     )
     with observe_queries(clean) as events:
@@ -968,7 +968,7 @@ async def test_correlated_in_subquery(clean):
     await seed()
     commented = Comment.objects.filter(Comment.author_id == outer(User.id)).select(Comment.post_id)
     query = User.objects.filter(exists(Post.objects.filter(Post.id.in_(commented)))).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(set_correlated=2),))
+    assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(set_correlated=2),))
     rows = await query
     assert [u.name for u in rows] == ["Alice", "Bob"]
 
@@ -980,14 +980,14 @@ async def test_correlated_in_subquery(clean):
 async def small_params(clean):
     """A second connection whose statements take at most 5 parameters, so prefetches
     split their keys after a few parents."""
-    db = await orm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("max_params=5",))
+    db = await monorm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("max_params=5",))
     yield db
     await db.close()
 
 
 async def test_max_params_option_is_checked(clean):
-    with pytest.raises(orm.QueryError, match="invalid"):
-        await orm.connect(DATABASE_URL, default=False, _disable=("max_params=abc",))
+    with pytest.raises(monorm.QueryError, match="invalid"):
+        await monorm.connect(DATABASE_URL, default=False, _disable=("max_params=abc",))
 
 
 async def test_prefetch_splits_keys(small_params, observe_queries):
@@ -1003,8 +1003,8 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
 
     qs = User.objects.load(User.posts.comments).order_by(User.id)
     query = qs.using(db)
-    batched = orm.StatementInspection(has_batching=True)
-    assert query.inspect() == orm.QueryInspection(3, True, (orm.StatementInspection(), batched, batched))
+    batched = monorm.StatementInspection(has_batching=True)
+    assert query.inspect() == monorm.QueryInspection(3, True, (monorm.StatementInspection(), batched, batched))
     with observe_queries(db) as events:
         got = await query
     # 12 user keys in batches of 5, then 36 post keys in batches of 5.
@@ -1015,12 +1015,12 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
     # A slice per parent still holds: each parent's rows stay in one query.
     top = User.posts.objects.filter(Post.views >= 0).order_by(Post.views.desc())[:2].label("top")
     query = User.objects.load(top).order_by(User.id).using(db)
-    assert query.inspect() == orm.QueryInspection(
+    assert query.inspect() == monorm.QueryInspection(
         2,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True, derived_uncorrelated=1),
         ),
     )
     with observe_queries(db) as events:
@@ -1032,7 +1032,7 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
     # To-one, with repeated keys.
     to_one = Comment.post.objects.as_prefetch().load(Post.author.objects.as_prefetch())
     query = Comment.objects.load(to_one).order_by(Comment.id).using(db)
-    assert query.inspect() == orm.QueryInspection(3, True, (orm.StatementInspection(), batched, batched))
+    assert query.inspect() == monorm.QueryInspection(3, True, (monorm.StatementInspection(), batched, batched))
     with observe_queries(db) as events:
         cs = await query
     assert len(events) == 1 + 4 + 3  # 18 distinct post keys, then 12 author keys
@@ -1042,12 +1042,12 @@ async def test_prefetch_splits_keys(small_params, observe_queries):
 
 async def test_prefetch_beyond_the_parameter_limit(clean, observe_queries):
     # 70 000 parents: more keys than Postgres takes parameters in one statement.
-    db = orm.get_database()
+    db = monorm.get_database()
     await db.execute("INSERT INTO users (email, name) SELECT 'u' || g || '@x.io', 'u' FROM generate_series(1, 70000) g")
     await db.execute("INSERT INTO posts (author_id, title, body) SELECT id, 't', '' FROM users WHERE id % 10000 = 0")
     query = User.objects.load(User.posts)
-    assert query.inspect() == orm.QueryInspection(
-        2, True, (orm.StatementInspection(), orm.StatementInspection(has_batching=True))
+    assert query.inspect() == monorm.QueryInspection(
+        2, True, (monorm.StatementInspection(), monorm.StatementInspection(has_batching=True))
     )
     with observe_queries(db) as events:
         users = await query
@@ -1151,7 +1151,7 @@ async def test_load_set_with_columns_keeps_sibling_columns(clean, reverse):
         users = await User.objects.load(*items).order_by(User.id)
         post = users[0].posts.cached[0]
         assert (post.title, post.views) == ("a1", 5)
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             _ = post.body
     items = (Post.author.email, Post.author.objects.load(User.name))
     posts = await Post.objects.load(*(items if reverse else items[::-1])).order_by(Post.id)
@@ -1232,16 +1232,16 @@ async def test_load_plain_path_and_query_and_without_related(clean):
     posts = await query
     assert [p.title for p in posts] == ["a1", "a2", "a3", "b1"]
     assert [len(p.comments.cached) for p in posts] == [0, 2, 0, 1]
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = posts[0].author
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = posts[0].body
     # Both uses of the same bound set still work after a rejected standalone run.
     bound = User.posts.objects.load(Post.comments)
     with pytest.raises(TypeError):
         await bound
     users = await User.objects.order_by(User.id)
-    await orm.of(users).load(User.posts, bound)
+    await monorm.of(users).load(User.posts, bound)
     assert [len(u.posts.cached) for u in users] == [3, 1, 0]
 
 
@@ -1251,7 +1251,7 @@ async def test_load_without_items_resets_the_columns(clean):
     assert posts[0].body == ""
     posts = await Post.objects.load(Post.title).load(Post.views).order_by(Post.id)
     assert (posts[0].title, posts[0].views) == ("a1", 5)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = posts[0].body
     posts = await Post.objects.load(Post.author, Post.title).load().order_by(Post.id)
     assert posts[0].author.name == "Alice"
@@ -1267,7 +1267,7 @@ async def test_load_to_one_query_sets(clean, observe_queries):
     assert comments[2].post.title == "b1"
     partial = await Comment.objects.load(Comment.post.objects.load(Post.title)).order_by(Comment.id)
     assert partial[0].post.title == "a2"
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         _ = partial[0].post.body
     joined = Comment.objects.load(Comment.post.objects).order_by(Comment.id)
     assert joined.inspect().statement_count == 1
@@ -1286,7 +1286,7 @@ async def test_load_set_of_another_model_raises(clean):
 
 async def test_lateral_disabled_connection_uses_scalar_subqueries(clean, observe_queries):
     await seed()
-    db = await orm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("lateral_join",))
+    db = await monorm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("lateral_join",))
     try:
         query = (
             User.objects.using(db)

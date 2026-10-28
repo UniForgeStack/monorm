@@ -1,11 +1,11 @@
-"""Bound query sets (Model.objects.of, orm.of, obj.qs()): reads that fill the given objects in place."""
+"""Bound query sets (Model.objects.of, monorm.of, obj.qs()): reads that fill the given objects in place."""
 
 import asyncio
 import os
 
 import pytest
 
-import orm
+import monorm
 from blog.models import Comment, Post, User
 from artifact_caps import has_extension
 
@@ -39,7 +39,7 @@ async def test_a_bound_read_fills_the_objects_in_place_in_input_order(clean):
 async def test_one_object_and_the_instance_shortcut(clean):
     _, posts = await seed()
     held = await stale(posts)
-    assert await orm.of(held[0]) == [held[0]]
+    assert await monorm.of(held[0]) == [held[0]]
     assert held[0].title == "changed"
     assert await held[1].qs() == [held[1]]
     assert held[1].views == 100
@@ -79,7 +79,7 @@ async def test_the_merge_rule_keeps_other_loaded_fields(clean):
     await Post.objects.filter(Post.id == posts[0].id).update(title="changed", views=100, body="new body")
     await Post.objects.of(partial).load(Post.title)
     assert partial.title == "changed" and partial.views == 0
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         partial.body
     await Post.objects.of(partial)
     assert partial.body == "new body" and partial.views == 100
@@ -92,7 +92,7 @@ async def test_a_cached_relation_whose_key_changed_is_dropped(clean):
     assert post.author.name == "Alice"
     await Post.objects.filter(Post.id == post.id).update(author=bob)
     await Post.objects.of(post)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         post.author
 
 
@@ -102,7 +102,7 @@ async def test_load_selects_only_what_it_names_plus_the_hidden_keys(clean):
     bare = [await Post.objects.load(Post.id).get(Post.id == p.id) for p in posts[:2]]
     await Post.objects.of(bare).load(Post.title)
     assert [p.title for p in bare] == ["changed", "changed"]
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         bare[0].views
     assert held[0].title == "p0"
 
@@ -143,7 +143,7 @@ async def test_a_relation_only_load_with_a_filter_reads_the_keys_first(clean):
     result = await Post.objects.of(held).filter(Post.id == held[1].id).load(Post.comments)
     assert result == [held[1]]
     assert [c.body for c in held[1].comments.cached] == ["b"]
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         held[0].comments.cached
 
 
@@ -168,7 +168,7 @@ async def test_a_default_query_set_filter_stays_on_the_bound_set(clean):
 async def test_lock_needs_a_transaction_and_locks_the_rows(clean, db):
     _, posts = await seed()
     held = await Post.objects.filter(Post.id.in_([p.id for p in posts]))
-    with pytest.raises(orm.TransactionRequired):
+    with pytest.raises(monorm.TransactionRequired):
         await Post.objects.of(held).lock()
     async with db.transaction():
         query = Post.objects.of(held).lock(False, skip_locked=True)
@@ -183,28 +183,28 @@ async def test_a_relation_only_read_with_a_lock_reads_the_keys_with_for_update(c
         pytest.skip("FOR UPDATE needs Postgres")
     _, posts = await seed()
     held = await Post.objects.filter(Post.id.in_([p.id for p in posts]))
-    events: list[orm.QueryEvent] = []
+    events: list[monorm.QueryEvent] = []
     db.on_query(events.append)
     async with db.transaction():
-        await orm.of(held).lock().load(Post.comments)
+        await monorm.of(held).lock().load(Post.comments)
     assert any("FOR UPDATE" in e.sql for e in events)
 
 
 async def test_a_relation_only_read_gives_its_statements_to_on_query(clean, db):
     _, posts = await seed()
     held = await stale(posts)
-    events: list[orm.QueryEvent] = []
+    events: list[monorm.QueryEvent] = []
     db.on_query(events.append)
-    await orm.of(held).load(Post.comments)
+    await monorm.of(held).load(Post.comments)
     assert any("comment" in e.sql.lower() for e in events)
 
 
 async def test_using_names_the_database_to_read(clean, db):
     _, posts = await seed()
     held = await stale(posts)
-    other = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], default=False)
+    other = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], default=False)
     try:
-        events: list[orm.QueryEvent] = []
+        events: list[monorm.QueryEvent] = []
         other.on_query(events.append)
         await Post.objects.of(held).using(other)
         assert len(events) == 1 and held[0].title == "changed"
@@ -218,10 +218,10 @@ async def test_using_names_the_database_to_read(clean, db):
 async def test_objects_from_two_databases_need_using(clean, db):
     _, posts = await seed()
     first = await Post.objects.get(Post.id == posts[0].id)
-    other = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], default=False)
+    other = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], default=False)
     try:
         second = await Post.objects.using(other).get(Post.id == posts[1].id)
-        with pytest.raises(orm.QueryError):
+        with pytest.raises(monorm.QueryError):
             await Post.objects.of([first, second])
         assert await Post.objects.of([first, second]).using(db) == [first, second]
     finally:
@@ -237,7 +237,7 @@ async def test_input_errors(clean):
     with pytest.raises(TypeError):
         Post.objects.of([posts[0], alice])
     with pytest.raises(TypeError):
-        orm.of([posts[0], alice])
+        monorm.of([posts[0], alice])
     with pytest.raises(TypeError):
         User.objects.of(posts[0])
     partial = await Post.objects.load(Post.title).get(Post.id == posts[0].id)
@@ -271,21 +271,21 @@ def test_a_bound_query_set_has_no_shape_methods():
         "distinct", "join", "cte", "union", "insert", "insert_many", "get_or_insert", "in_bulk", "prepare",
         "batches", "require", "label", "as_prefetch", "__getitem__", "__aiter__",
     ):  # fmt: skip
-        assert not hasattr(orm.BoundQuerySet, name), name
-    assert "qs" in orm.model._RESERVED
+        assert not hasattr(monorm.BoundQuerySet, name), name
+    assert "qs" in monorm.model._RESERVED
 
 
 async def test_a_column_named_qs_is_reserved():
     with pytest.raises(TypeError):
-        orm.loads("model Q {\n  id Int @id\n  qs Int\n}\n", registry=orm.Registry())
+        monorm.loads("model Q {\n  id Int @id\n  qs Int\n}\n", registry=monorm.Registry())
 
 
-@pytest.mark.skipif(not has_extension("orm.soft-delete"), reason="requires a selected soft-delete native artifact")
+@pytest.mark.skipif(not has_extension("monorm.soft-delete"), reason="requires a selected soft-delete native artifact")
 async def test_a_soft_deleted_object_is_refreshed_because_of_applies_no_default():
     source = 'model Doc {\n  id Int @id\n  title String\n  @@soft_delete.deleted_at("deleted", mode: "application")\n}\n'
-    registry = orm.Registry()
-    Doc = orm.loads(source, registry=registry)["Doc"]
-    db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    registry = monorm.Registry()
+    Doc = monorm.loads(source, registry=registry)["Doc"]
+    db = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -327,9 +327,9 @@ async def test_a_large_bound_read_runs_in_chunks_of_500_keys(clean, db, observe_
 
 async def test_a_large_composite_key_bound_read_does_not_hang(db, observe_queries):
     source = "model Cell {\n  a Int\n  b Int\n  v Int @default(0)\n  @@id([a, b])\n}\n"
-    registry = orm.Registry()
-    Cell = orm.loads(source, registry=registry)["Cell"]
-    other = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    registry = monorm.Registry()
+    Cell = monorm.loads(source, registry=registry)["Cell"]
+    other = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
     try:
         await other.drop_tables()
         await other.create_tables()

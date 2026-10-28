@@ -5,12 +5,12 @@ mod sqlite {
 mod postgres {
     include!(concat!(env!("OUT_DIR"), "/postgres.rs"));
 }
-use orm_client::{BatchLoad, Error, Instance, Loaded, Unloaded};
+use monorm_client::{BatchLoad, Error, Instance, Loaded, Unloaded};
 const FIXTURE:&str="DROP TABLE IF EXISTS rust_load_books; DROP TABLE IF EXISTS rust_load_authors; CREATE TABLE rust_load_authors(id INTEGER PRIMARY KEY,name TEXT NOT NULL,bio TEXT NOT NULL,note TEXT,visible BOOLEAN NOT NULL); CREATE TABLE rust_load_books(id INTEGER PRIMARY KEY,author_id INTEGER NOT NULL,editor_id INTEGER,title TEXT NOT NULL); INSERT INTO rust_load_authors VALUES(1,'ann','large',NULL,TRUE),(2,'hidden','secret','x',FALSE),(3,'empty','none','y',TRUE); INSERT INTO rust_load_books VALUES(1,1,NULL,'one'),(2,1,2,'two'),(3,2,1,'hidden-author');DROP TABLE IF EXISTS rust_load_ordered_authors;CREATE TABLE rust_load_ordered_authors(id INTEGER PRIMARY KEY,name TEXT NOT NULL,visible BOOLEAN NOT NULL);INSERT INTO rust_load_ordered_authors VALUES(1,'ann',TRUE),(2,'hidden',FALSE),(3,'empty',TRUE);";
 
 macro_rules! exercise {($module:ident,$url:expr)=>{{
     use $module::{Database, PolicyAuthor as Author, PolicyBook as Book};
-    let fixture = orm_engine::db::connect($url, 1).await.unwrap();
+    let fixture = monorm_engine::db::connect($url, 1).await.unwrap();
     fixture.batch(FIXTURE.into()).await.unwrap();
     fixture.close().await;
     let db = Database::connect($url, 1).await.unwrap();
@@ -60,8 +60,8 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
     trait AuthorQueries: Sized {
         fn named_ann(self) -> Self;
     }
-    impl<M, R, L, D> AuthorQueries for orm_client::Query<M, R, L, D>
-    where M: orm_client::Model<Source = $module::PolicyAuthorSource> {
+    impl<M, R, L, D> AuthorQueries for monorm_client::Query<M, R, L, D>
+    where M: monorm_client::Model<Source = $module::PolicyAuthorSource> {
         fn named_ann(self) -> Self {
             self.filter(Author::name.eq("ann".to_owned()))
         }
@@ -78,8 +78,8 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
     assert_eq!(extended.public_json().unwrap(), extended_after.public_json().unwrap());
     let normal = Author::objects.require().using(&db).first().await.unwrap();
     assert_eq!(
-        orm_client::serde_json::to_value(&normal).unwrap(),
-        orm_client::serde_json::json!({"name":"ann","note":null})
+        monorm_client::serde_json::to_value(&normal).unwrap(),
+        monorm_client::serde_json::json!({"name":"ann","note":null})
     );
     let _: &Unloaded = &normal.id;
     let _: &Unloaded = &normal.bio;
@@ -153,7 +153,7 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
     let _: &Unloaded=&bypass_selected.author.cached().unwrap().bio;assert_eq!(bypass_selected.author.cached().unwrap().name,"hidden");
     let bypass_nested=Author::objects.without_defaults().load(Author::books).require().using(&db).get(Author::ID_KEY,2).await.unwrap();
     assert_eq!(bypass_nested.books.cached()[0].author_id,2);
-    let _: &orm_client::RelatedSet<Author>=&bypass_nested.books.cached()[0].author;
+    let _: &monorm_client::RelatedSet<Author>=&bypass_nested.books.cached()[0].author;
     let books = Book::objects
         .order_by(Book::ID.asc())
         .using(&db)
@@ -338,7 +338,7 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
         .get(Author::ID_KEY, 1)
         .await
         .unwrap();
-    let fixture = orm_engine::db::connect($url, 1).await.unwrap();
+    let fixture = monorm_engine::db::connect($url, 1).await.unwrap();
     fixture.batch("UPDATE rust_load_authors SET note='new' WHERE id=1; UPDATE rust_load_books SET editor_id=1 WHERE id=2; INSERT INTO rust_load_books VALUES(4,1,NULL,'new-book');".into()).await.unwrap();
     fixture.close().await;
     let loaded_editor = old_editor.load(Book::editor_id, &db).await.unwrap();
@@ -367,18 +367,18 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
         .unwrap();
     assert_eq!(refreshed.books.cached().len(), 3);
 
-    let named=orm_client::relation_views!(refreshed,&db;
+    let named=monorm_client::relation_views!(refreshed,&db;
         newest => Author::books.as_prefetch(Book::objects.load(Book::title).order_by(Book::ID.desc()).limit(1)),
         author_view => Author::books.as_prefetch(Book::objects.load(Book::author))
     ).await.unwrap();
     assert_eq!(named.newest.cached().len(), 1);
     assert_eq!(named.newest.cached()[0].title, "new-book");
     assert_eq!(named.row.books.cached().len(), 3);
-    let singles=orm_client::relation_views!(Author::objects.require().using(&db).get(Author::ID_KEY,1).await.unwrap(),&db;
+    let singles=monorm_client::relation_views!(Author::objects.require().using(&db).get(Author::ID_KEY,1).await.unwrap(),&db;
         first_book => Author::books.label("first_book").as_prefetch(Book::objects.load(Book::title).order_by(Book::ID.desc())).one()
     ).await.unwrap();
     assert_eq!(singles.first_book.cached().unwrap().title, "new-book");
-    let single_author=orm_client::relation_views!(Book::objects.require().using(&db).first().await.unwrap(),&db; person => Book::author).await.unwrap();
+    let single_author=monorm_client::relation_views!(Book::objects.require().using(&db).first().await.unwrap(),&db; person => Book::author).await.unwrap();
     assert_eq!(single_author.person.cached().unwrap().name, "ann");
     let collision = Author::objects
         .load(Author::books.label("name"))
@@ -456,7 +456,7 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
         .get(Author::ID_KEY, 3)
         .await
         .unwrap();
-    let fixture = orm_engine::db::connect($url, 1).await.unwrap();
+    let fixture = monorm_engine::db::connect($url, 1).await.unwrap();
     fixture
         .batch("DELETE FROM rust_load_authors WHERE id=3".into())
         .await
@@ -482,7 +482,7 @@ macro_rules! exercise {($module:ident,$url:expr)=>{{
 
 #[tokio::test]
 async fn sqlite_selection_loading_runtime() {
-    let path = std::env::temp_dir().join(format!("orm-rust-loading-{}.db", std::process::id()));
+    let path = std::env::temp_dir().join(format!("monorm-rust-loading-{}.db", std::process::id()));
     let url = format!("sqlite://{}", path.display());
     exercise!(sqlite, &url);
     std::fs::remove_file(path).unwrap();

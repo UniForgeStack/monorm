@@ -23,15 +23,15 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 
 | Feature | Crate | Attributes | Doc |
 |---|---|---|---|
-| proxy-models | `extensions/proxy` (`orm-proxy`, `@orm/proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
-| model-composition | `extensions/model-composition/` (`orm-composition`, `@orm/composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
-| file-storage | `extensions/file-storage` (`orm-file-storage`, `@orm/file-storage`) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
-| generic | `extensions/generic` (`orm-generic`, `@orm/generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
-| timestamps | `extensions/timestamps` (`orm-timestamps`) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| soft-delete | `extensions/soft-delete` (`orm-soft-delete`) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| locking | `extensions/locking` (`orm-locking`) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| inherit | `extensions/inherit` (`orm-inherit`) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
-| query-defaults | `extensions/query-defaults/` (`orm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
+| proxy-models | `extensions/proxy` (`monorm-proxy`, `@ufstack/monorm-proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
+| model-composition | `extensions/model-composition/` (`monorm-composition`, `@ufstack/monorm-composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
+| file-storage | `extensions/file-storage` (`monorm-file-storage`, `@ufstack/monorm-file-storage`) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
+| generic | `extensions/generic` (`monorm-generic`, `@ufstack/monorm-generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
+| timestamps | `extensions/timestamps` (`monorm-timestamps`) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| soft-delete | `extensions/soft-delete` (`monorm-soft-delete`) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| locking | `extensions/locking` (`monorm-locking`) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| inherit | `extensions/inherit` (`monorm-inherit`) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
+| query-defaults | `extensions/query-defaults/` (`monorm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 
 [optional-packaging.md](contracts/optional-packaging.md#installable-packages) shows how to install them.
 The same doc describes the extension contract: manifests, passes, hooks.
@@ -43,7 +43,7 @@ An app is a schema that you import with `import "app:<name>"`, and a package for
 
 | App | What |
 |---|---|
-| [auth.md](apps/auth.md) | `orm-auth`: users, roles, permissions and passwords |
+| [auth.md](apps/auth.md) | `monorm-auth`: users, roles, permissions and passwords |
 
 ## Performance
 

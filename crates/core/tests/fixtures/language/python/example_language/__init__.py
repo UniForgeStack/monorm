@@ -4,8 +4,8 @@ from typing import TypeVar
 
 from typing_extensions import Self
 
-from orm import QuerySet
-from orm.ext import ModelLike, ModelT
+from monorm import QuerySet
+from monorm.ext import ModelLike, ModelT
 
 R = TypeVar("R", bound=ModelLike)
 

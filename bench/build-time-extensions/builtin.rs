@@ -1,6 +1,6 @@
 // Handwritten built-in control for BenchItem. Same functions, host primitives,
 // field positions, validation policy and result SQL as the generated extension.
-use orm_core::behavior::NativeModel;
+use monorm_core::behavior::NativeModel;
 use sea_query::Value;
 use crate::error::{Error, Result};
 
@@ -59,7 +59,7 @@ pub fn update_values(kind: NativeModel,map:&[Option<usize>],rows:&mut [Vec<Value
     }
     Ok(())
 }
-pub fn compute(kind: NativeModel, position: usize, rows: &dyn crate::db::RowSet, column: usize, ty: orm_core::ir::ValueType) -> crate::db::DbResult<Vec<Option<String>>> {
+pub fn compute(kind: NativeModel, position: usize, rows: &dyn crate::db::RowSet, column: usize, ty: monorm_core::ir::ValueType) -> crate::db::DbResult<Vec<Option<String>>> {
     if kind != NativeModel::S0 || position != 4 { return Err(crate::db::DbError::other("unknown native computed field")); }
     let mut values = Vec::with_capacity(rows.len());
     for row in 0..rows.len() {

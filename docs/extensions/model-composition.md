@@ -4,8 +4,8 @@ A composed model stores its own fields in its own table and gets the fields of i
 The child primary key is also a foreign key to the parent.
 One parent row can have more than one child: a person can be an employee and a customer at the same time.
 
-**Enable:** install the `orm-composition` package (`@orm/composition` for Node; source in `extensions/model-composition/`).
-Its id is `orm.composition`. Run `orm generate` again for models that a build with the old id `composition` generated.
+**Enable:** install the `monorm-composition` package (`@ufstack/monorm-composition` for Node; source in `extensions/model-composition/`).
+Its id is `monorm.composition`. Run `monorm generate` again for models that a build with the old id `composition` generated.
 
 ## Schema
 
@@ -61,4 +61,4 @@ await Manager.objects.filter(Manager.salary.eq(20)).update({ level: 4 });
 - `update_many` on a composed model is rejected.
 - Relation links, `outer()` and `distinct(on=...)` on inherited columns are not supported.
 - Ordinary (not composed) model writes reject inherited storage.
-- The executor is `orm_engine::multi_table`; [optional-packaging.md](../contracts/optional-packaging.md#logical-fields-and-physical-storage) describes the storage contract.
+- The executor is `monorm_engine::multi_table`; [optional-packaging.md](../contracts/optional-packaging.md#logical-fields-and-physical-storage) describes the storage contract.

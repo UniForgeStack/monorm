@@ -4,9 +4,9 @@ A file field is a nullable `Json` column that holds a storage reference.
 The ORM uploads `Upload` values before the SQL statement and reads the column back as a `Reference`.
 The files live in an [OpenDAL](https://opendal.apache.org/) service (local directory, S3 and others) that the application configures.
 
-**Enable:** install the package `orm-file-storage` (Python) or `@orm/file-storage` (Node).
-It has the `orm.file-storage` extension and the runtime module, and it installs `opendal`.
-Without the package, `orm generate` rejects `@storage.file` with a namespace error.
+**Enable:** install the package `monorm-file-storage` (Python) or `@ufstack/monorm-file-storage` (Node).
+It has the `monorm.file-storage` extension and the runtime module, and it installs `opendal`.
+Without the package, `monorm generate` rejects `@storage.file` with a namespace error.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
 The host has no file-specific code.
 
@@ -28,18 +28,18 @@ A generated module installs the file adapter and exports `configure_file_storage
 
 ```python
 import opendal
-from orm_file_storage import Registry, Upload
+from monorm_file_storage import Registry, Upload
 from app.models import Report, configure_file_storage
 
 configure_file_storage(Registry({"reports": opendal.AsyncOperator("fs", root="/srv/reports")}))
 report = await Report.objects.insert(file=Upload(data, filename="report.xlsx"))
-report.file                                     # orm_file_storage.Reference
+report.file                                     # monorm_file_storage.Reference
 async for chunk in report.file_open(): ...      # streams the stored file
 await Report.objects.filter(Report.id == report.id).update(file=Upload(new_data))
 ```
 
-With `orm.loads` (no generated module), install the adapter yourself:
-`orm_file_storage.model.install_model(Report, {"file": FileField("file", "reports", True)}, registry)`.
+With `monorm.loads` (no generated module), install the adapter yourself:
+`monorm_file_storage.model.install_model(Report, {"file": FileField("file", "reports", True)}, registry)`.
 
 - `insert`, `insert_many`, `update_many` and `update` accept `Upload`.
   `insert_many` and `update_many` run up to 16 uploads at the same time.

@@ -1,12 +1,12 @@
 {
-  "name": "orm-blog-example",
+  "name": "monorm-blog-example",
   "private": true,
   "type": "module",
   "scripts": {
     "demo": "tsx demo.ts"
   },
   "dependencies": {
-    "orm": "file:../../languages/js"
+    "@ufstack/monorm": "file:../../languages/js"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

@@ -36,8 +36,8 @@ const T0 = Date.UTC(2026, 9, 1);
 function at(us: number): Date {
   const d = new Date(T0 + Math.floor(us / 1000));
   if (us % 1000) {
-    Object.defineProperty(d, "orm:micros", { value: us % 1000 });
-    Object.defineProperty(d, "orm:micros-ms", { value: d.getTime() });
+    Object.defineProperty(d, "monorm:micros", { value: us % 1000 });
+    Object.defineProperty(d, "monorm:micros-ms", { value: d.getTime() });
   }
   return d;
 }
@@ -207,11 +207,11 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       await qs.filter(Item.id.eq(22n)).update({ at: moved });
       const stored = (await qs.get(Item.id.eq(22n))).at as Date;
       assert.equal(stored.getTime(), T0 + 5);
-      assert.equal((stored as any)["orm:micros"], undefined);
+      assert.equal((stored as any)["monorm:micros"], undefined);
       const bad = new Date(T0);
-      Object.defineProperty(bad, "orm:micros", { value: 1500 });
-      Object.defineProperty(bad, "orm:micros-ms", { value: T0 });
-      await assert.rejects(qs.filter(Item.at.eq(bad)).fetch(), /invalid orm:micros 1500/);
+      Object.defineProperty(bad, "monorm:micros", { value: 1500 });
+      Object.defineProperty(bad, "monorm:micros-ms", { value: T0 });
+      await assert.rejects(qs.filter(Item.at.eq(bad)).fetch(), /invalid monorm:micros 1500/);
     } finally {
       await db.dropTables(); await db.close();
     }
@@ -299,11 +299,11 @@ test("a date order column past year 9999: postgres", async () => {
   }
 });
 
-const proxies = hasExtension("orm.proxy");
+const proxies = hasExtension("monorm.proxy");
 
 test("a proxy narrowed order column: postgres", async (t) => {
   if (!proxies) {
-    t.skip("needs the orm-proxy package");
+    t.skip("needs the monorm-proxy package");
     return;
   }
   const { db, models } = await postgres(`

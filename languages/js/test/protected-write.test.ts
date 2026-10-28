@@ -107,7 +107,7 @@ test("@@protected_write creates no DDL and no snapshot change", () => {
     (e: Error) => e instanceof SchemaError && /@@protected_write takes no arguments/.test(e.message));
 });
 
-test("a proxy writes the table of its protected root", { skip: !hasExtension("orm.proxy") }, async () => {
+test("a proxy writes the table of its protected root", { skip: !hasExtension("monorm.proxy") }, async () => {
   const { models, db } = await blog(source + "model Draft {\n  @@proxy.of(Post)\n}\n");
   const { Post, Draft } = models;
   try {
@@ -117,7 +117,7 @@ test("a proxy writes the table of its protected root", { skip: !hasExtension("or
   } finally { await db.close(); }
 });
 
-test("a composed write also writes its protected parent", { skip: !hasExtension("orm.composition") }, async () => {
+test("a composed write also writes its protected parent", { skip: !hasExtension("monorm.composition") }, async () => {
   const { models, db } = await blog(`datasource db {
   provider = "sqlite"
 }

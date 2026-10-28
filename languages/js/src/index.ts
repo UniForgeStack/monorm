@@ -3,10 +3,10 @@
  * Python package.
  *
  * Models come from a schema file (`schema.prisma`) through a generated module
- * (`orm generate typescript`), which types everything:
+ * (`monorm generate typescript`), which types everything:
  *
  * ```ts
- * import { connect } from "orm";
+ * import { connect } from "@ufstack/monorm";
  * import { User } from "./models.js";
  *
  * await connect("postgres://...");

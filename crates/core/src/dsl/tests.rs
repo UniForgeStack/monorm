@@ -214,7 +214,7 @@ model Message {
 
 #[test]
 fn imported_extension_files_add_types() {
-    let dir = std::env::temp_dir().join(format!("orm-dsl-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("monorm-dsl-test-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("ext")).unwrap();
     std::fs::write(
         dir.join("ext/acme.toml"),
@@ -544,7 +544,7 @@ model Follow {
 
 #[test]
 fn schema_imports_share_root_settings_and_preserve_ownership() {
-    let dir = std::env::temp_dir().join(format!("orm-imports-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("monorm-imports-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("billing/nested")).unwrap();
     let root = dir.join("schema.prisma");
     let child = dir.join("billing/schema.prisma");
@@ -588,7 +588,7 @@ fn schema_imports_share_root_settings_and_preserve_ownership() {
 
 #[test]
 fn a_warning_in_an_imported_file_names_that_file_and_its_own_line() {
-    let dir = std::env::temp_dir().join(format!("orm-import-warning-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("monorm-import-warning-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("billing")).unwrap();
     let root = dir.join("schema.prisma");
     std::fs::write(&root, "datasource db {\n provider = \"postgresql\"\n}\nimport \"billing/schema.prisma\"\nmodel User {\n id Int @id\n age Int @check(\"age > 0\")\n}\n").unwrap();
@@ -605,7 +605,7 @@ fn a_warning_in_an_imported_file_names_that_file_and_its_own_line() {
 
 #[test]
 fn imported_models_use_main_extension_definitions() {
-    let dir = std::env::temp_dir().join(format!("orm-import-types-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("monorm-import-types-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("library")).unwrap();
     std::fs::write(dir.join("acme.toml"), "name = \"acme\"\n[types.money]\nsql = \"numeric(12, 2)\"\nvalue = \"text\"\n").unwrap();
     std::fs::write(dir.join("schema.prisma"), "import \"library/schema.prisma\"\nimport \"acme.toml\"\ndatasource db {\n provider = \"postgresql\"\n extensions = [acme(version: \"1.0\")]\n}\n").unwrap();
@@ -749,7 +749,7 @@ fn minus_field_is_a_descending_index_key() {
 /// A manifest with the keys of the generic extension, written out: the core reads the keys, not the names.
 fn owning_manifest() -> crate::behavior::Manifest {
     serde_json::from_value(serde_json::json!({
-        "id": "orm.generic", "version": "1", "schema_contract": "5.0", "languages": [], "databases": [],
+        "id": "monorm.generic", "version": "1", "schema_contract": "5.0", "languages": [], "databases": [],
         "attributes": [{"name": "generic.relation", "target": "field", "field_type": "Generic", "identities": true, "arguments": {"targets": {"kind": "list", "required": true}}},
                        {"name": "generic.reverse", "target": "field", "member": false, "identities": true},
                        {"name": "generic.relation", "target": "model", "identities": true}]
@@ -1206,7 +1206,7 @@ fn a_rename_hint_on_a_json_subfield_is_refused() {
 #[test]
 fn app_imports_read_the_schema_an_installed_app_declares() {
     use crate::codegen::lookup::{target, ClassKind, Language};
-    let dir = std::env::temp_dir().join(format!("orm-app-imports-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("monorm-app-imports-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     // a Python app (a package with __init__.py) that imports an npm-style app, as a project would see them
     let auth = dir.join("site-packages/orm_auth");
@@ -1214,12 +1214,12 @@ fn app_imports_read_the_schema_an_installed_app_declares() {
     std::fs::create_dir_all(&auth).unwrap();
     std::fs::create_dir_all(&billing).unwrap();
     std::fs::write(auth.join("__init__.py"), "").unwrap();
-    std::fs::write(auth.join("schema.prisma"), "import \"app:orm-billing\" (prefix: \"b_\")\nmodel User {\n id Int @id\n invoices Invoice[]\n @@query_set(\"UserQueries\")\n}\n").unwrap();
-    std::fs::write(billing.join("package.json"), "{\"name\": \"orm-billing\"}").unwrap();
+    std::fs::write(auth.join("schema.prisma"), "import \"app:monorm-billing\" (prefix: \"b_\")\nmodel User {\n id Int @id\n invoices Invoice[]\n @@query_set(\"UserQueries\")\n}\n").unwrap();
+    std::fs::write(billing.join("package.json"), "{\"name\": \"monorm-billing\"}").unwrap();
     std::fs::write(billing.join("schema.prisma"), "model Invoice {\n id Int @id\n user_id Int\n user User @relation(fields: [user_id], references: [id])\n @@query_set(\"InvoiceQueries\")\n}\n").unwrap();
     let root = dir.join("project/schema.prisma");
-    std::fs::write(&root, "datasource db {\n provider = \"sqlite\"\n}\nimport \"app:orm-auth\" (prefix: \"auth_\")\nmodel Post {\n id Int @id\n}\n").unwrap();
-    let installed: Installed = [("orm-auth".to_owned(), auth.join("schema.prisma")), ("orm-billing".to_owned(), billing.join("schema.prisma"))].into();
+    std::fs::write(&root, "datasource db {\n provider = \"sqlite\"\n}\nimport \"app:monorm-auth\" (prefix: \"auth_\")\nmodel Post {\n id Int @id\n}\n").unwrap();
+    let installed: Installed = [("monorm-auth".to_owned(), auth.join("schema.prisma")), ("monorm-billing".to_owned(), billing.join("schema.prisma"))].into();
     let project = compile_project_file_with(&root, &installed).unwrap();
     let tables: Vec<_> = project.ir.models.iter().map(|m| (m.name.as_str(), m.table.as_str())).collect();
     assert_eq!(tables, [("Invoice", "auth_b_invoice"), ("User", "auth_user"), ("Post", "post")]);
@@ -1228,27 +1228,27 @@ fn app_imports_read_the_schema_an_installed_app_declares() {
     let units = &project.units;
     assert_eq!(units[1].path, auth.join("schema.prisma").canonicalize().unwrap());
     let out = dir.join("project");
-    assert_eq!(target(Language::Python, &units[1].path, &out, ClassKind::QuerySet, "UserQueries").unwrap(), "orm_auth.queries:UserQueries");
-    assert_eq!(target(Language::TypeScript, &units[2].path, &out, ClassKind::QuerySet, "InvoiceQueries").unwrap(), "orm-billing/queries.js#InvoiceQueries");
+    assert_eq!(target(Language::Python, &units[1].path, &out, ClassKind::QuerySet, "UserQueries").unwrap(), "monorm_auth.queries:UserQueries");
+    assert_eq!(target(Language::TypeScript, &units[2].path, &out, ClassKind::QuerySet, "InvoiceQueries").unwrap(), "monorm-billing/queries.js#InvoiceQueries");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn an_app_import_without_an_installed_app_names_the_package() {
-    let dir = std::env::temp_dir().join(format!("orm-app-missing-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("monorm-app-missing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.join("schema.prisma");
-    std::fs::write(&root, "model A {\n id Int @id\n}\nimport \"app:orm-auth\"\n").unwrap();
+    std::fs::write(&root, "model A {\n id Int @id\n}\nimport \"app:monorm-auth\"\n").unwrap();
     let error = compile_file(&root).unwrap_err();
-    assert!(error.contains("schema.prisma:4:") && error.contains("app:orm-auth") && error.contains("install the `orm-auth` package"), "{error}");
-    let installed: Installed = [("orm-auth".to_owned(), dir.join("gone.prisma"))].into();
+    assert!(error.contains("schema.prisma:4:") && error.contains("app:monorm-auth") && error.contains("install the `monorm-auth` package"), "{error}");
+    let installed: Installed = [("monorm-auth".to_owned(), dir.join("gone.prisma"))].into();
     assert!(compile_file_with(&root, &installed).unwrap_err().contains("gone.prisma"));
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn a_generator_block_lists_extension_ids_and_ignores_other_keys() {
-    let mut items = super::syntax::parse("generator client {\n provider = \"orm\"\n extensions = [\"acme.audit\", \"acme.tag\"]\n}\nmodel A {\n id Int @id\n @@acme.tag(\"x\")\n}\n").unwrap();
+    let mut items = super::syntax::parse("generator client {\n provider = \"monorm\"\n extensions = [\"acme.audit\", \"acme.tag\"]\n}\nmodel A {\n id Int @id\n @@acme.tag(\"x\")\n}\n").unwrap();
     assert_eq!(super::lower::generator_extensions(&items).unwrap(), ["acme.audit", "acme.tag"]);
     assert_eq!(super::lower::used_namespaces(&items).into_iter().collect::<Vec<_>>(), ["acme"]);
     items = super::syntax::parse("generator client {\n extensions = \"acme.audit\"\n}\n").unwrap();
@@ -1259,7 +1259,7 @@ fn a_generator_block_lists_extension_ids_and_ignores_other_keys() {
 
 #[test]
 fn a_generator_block_compiles_when_it_names_no_extension() {
-    assert!(compile("generator client {\n provider = \"orm\"\n}\nmodel A {\n id Int @id\n}\n", None).is_ok());
+    assert!(compile("generator client {\n provider = \"monorm\"\n}\nmodel A {\n id Int @id\n}\n", None).is_ok());
 }
 
 #[test]
@@ -1268,7 +1268,7 @@ fn model_mapping_records_explicitness_even_when_it_matches_the_default() {
     assert!(ir.models[0].mapped);
     assert!(!ir.models[1].mapped);
     let encoded = serde_json::to_string(&ir).unwrap();
-    let decoded: orm_contracts::ir::SchemaIr = serde_json::from_str(&encoded).unwrap();
+    let decoded: monorm_contracts::ir::SchemaIr = serde_json::from_str(&encoded).unwrap();
     assert!(decoded.models[0].mapped);
 }
 

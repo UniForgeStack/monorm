@@ -8,8 +8,8 @@ from decimal import Decimal
 import pytest
 from blog.models import Comment, Post, PostTag, Profile, Tag, User
 
-import orm
-from orm import QuerySet, use_query_set
+import monorm
+from monorm import QuerySet, use_query_set
 
 
 @pytest.fixture
@@ -68,11 +68,11 @@ async def test_relation_sets_have_the_custom_methods(clean, custom):
     alice, _, posts = await seed()
     assert [p.title for p in await alice.posts.published().order_by(Post.views)] == ["quiet", "hit"]
     assert [p.title for p in await alice.posts.filter(Post.views > 5).published()] == ["hit"]
-    assert isinstance(alice.posts, orm.RelatedSet)
+    assert isinstance(alice.posts, monorm.RelatedSet)
     tags = await Tag.objects.insert_many([{"name": "python"}, {"name": "rust"}]).returning()
     await posts[1].tags.add(*tags)
     assert [t.name for t in await posts[1].tags.named("py")] == ["python"]
-    assert isinstance(posts[1].tags, orm.ManyRelatedSet)
+    assert isinstance(posts[1].tags, monorm.ManyRelatedSet)
 
 
 async def test_bound_load_query_set_uses_custom_methods(clean, custom):
@@ -82,7 +82,7 @@ async def test_bound_load_query_set_uses_custom_methods(clean, custom):
 
 
 def test_query_set_class_is_checked():
-    with pytest.raises(TypeError, match="subclass of orm.QuerySet"):
+    with pytest.raises(TypeError, match="subclass of monorm.QuerySet"):
         use_query_set(Post, dict)  # type: ignore[arg-type]
 
     class Slotted(QuerySet[Post]):
@@ -125,7 +125,7 @@ def _query_set_project(tmp_path):
         "from typing_extensions import Self\n\nfrom app.models import Post, PostQuerySet\n\n\n"
         "class PostQueries(PostQuerySet):\n    def published(self) -> Self:\n        return self.filter(Post.published)\n"
     )
-    code = orm._native.cli(
+    code = monorm._native.cli(
         [
             "--schema",
             str(app / "schema.prisma"),
@@ -178,12 +178,12 @@ def test_generated_query_set_types(tmp_path):
 
 def test_cli_reads_query_sets_from_pyproject(tmp_path, monkeypatch, capfd):
     (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
-    (tmp_path / "pyproject.toml").write_text('[tool.orm.query_sets]\nBook = "app.queries:BookQueries"\n')
+    (tmp_path / "pyproject.toml").write_text('[tool.monorm.query_sets]\nBook = "app.queries:BookQueries"\n')
     monkeypatch.chdir(tmp_path)
-    assert orm._native.cli(["generate", "python", "-o", "models.py"]) == 0
+    assert monorm._native.cli(["generate", "python", "-o", "models.py"]) == 0
     assert 'use_query_set(Book, "app.queries:BookQueries")' in (tmp_path / "models.py").read_text()
     assert "objects: ClassVar[_BookObjects]" in (tmp_path / "models.pyi").read_text()
-    assert orm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=nomodule"]) == 1
+    assert monorm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=nomodule"]) == 1
     assert "expected module:Class" in capfd.readouterr().err
 
 
@@ -191,7 +191,7 @@ def test_cli_rejects_duplicate_query_set_flags(tmp_path, monkeypatch, capfd):
     (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
     monkeypatch.chdir(tmp_path)
     assert (
-        orm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=a:B", "--query-set", "Book=c:D"])
+        monorm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=a:B", "--query-set", "Book=c:D"])
         == 2
     )
     assert "duplicate --query-set for model Book" in capfd.readouterr().err
@@ -200,9 +200,9 @@ def test_cli_rejects_duplicate_query_set_flags(tmp_path, monkeypatch, capfd):
 
 def test_cli_query_set_flag_overrides_config(tmp_path, monkeypatch):
     (tmp_path / "schema.prisma").write_text("model Book {\n id Int @id\n}\n")
-    (tmp_path / "pyproject.toml").write_text('[tool.orm.query_sets]\nBook = "app.queries:BookQueries"\n')
+    (tmp_path / "pyproject.toml").write_text('[tool.monorm.query_sets]\nBook = "app.queries:BookQueries"\n')
     monkeypatch.chdir(tmp_path)
-    assert orm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=other:Queries"]) == 0
+    assert monorm._native.cli(["generate", "python", "-o", "models.py", "--query-set", "Book=other:Queries"]) == 0
     assert 'use_query_set(Book, "other:Queries")' in (tmp_path / "models.py").read_text()
     assert "from other import Queries as _BookObjects" in (tmp_path / "models.pyi").read_text()
 
@@ -216,17 +216,17 @@ async def test_bound_load_onto_loaded_instances(clean):
     users = await User.objects.order_by(User.id)
     top = User.posts.objects.filter(Post.published)[:1].label("top")
     result = User.objects.load(User.posts.comments, top).inspect()
-    assert result == orm.QueryInspection(  # root plus three prefetch templates
+    assert result == monorm.QueryInspection(  # root plus three prefetch templates
         4,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
-            orm.StatementInspection(has_batching=True),
-            orm.StatementInspection(has_batching=True),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            monorm.StatementInspection(has_batching=True),
+            monorm.StatementInspection(has_batching=True),
         ),
     )
-    await orm.of(users).load(User.posts.comments, top)
+    await monorm.of(users).load(User.posts.comments, top)
     assert [p.title for p in users[0].posts.cached] == ["draft", "hit", "quiet"]
     assert [c.body for c in users[0].posts.cached[1].comments.cached] == ["a", "b"]
     assert users[0].posts.cached[0].author is users[0]
@@ -239,15 +239,15 @@ async def test_bound_load_to_one_and_many_to_many(clean):
     await posts[0].tags.add(*tags)
     loaded = await Post.objects.order_by(Post.id)
     # The equivalent load describes the batched many-to-many statement too.
-    assert Post.objects.load(Post.author, Post.tags).inspect() == orm.QueryInspection(
+    assert Post.objects.load(Post.author, Post.tags).inspect() == monorm.QueryInspection(
         2,
         True,
         (
-            orm.StatementInspection(joins_count=1),
-            orm.StatementInspection(has_batching=True, joins_count=1),
+            monorm.StatementInspection(joins_count=1),
+            monorm.StatementInspection(has_batching=True, joins_count=1),
         ),
     )
-    await orm.of(loaded).load(Post.author, Post.tags)
+    await monorm.of(loaded).load(Post.author, Post.tags)
     assert [p.author.name for p in loaded] == ["Alice", "Alice", "Alice", "Bob"]
     assert [t.name for t in loaded[0].tags.cached] == ["a", "b"] and loaded[1].tags.cached == []
 
@@ -257,22 +257,22 @@ async def test_bound_load_reads_keys_from_the_instances(clean):
     await Comment.objects.insert_many([{"post": posts[0], "body": "a"}, {"post": posts[3], "body": "b"}])
     comments = await Comment.objects.order_by(Comment.id)
     await Comment.objects.delete()  # the instances' own rows are not read again
-    await orm.of(comments).load(Comment.post.author)
+    await monorm.of(comments).load(Comment.post.author)
     assert [(c.post.title, c.post.author.name) for c in comments] == [("draft", "Alice"), ("bob", "Bob")]
 
 
 def test_orm_prefetch_is_removed():
-    assert not hasattr(orm, "prefetch") and "prefetch" not in orm.__all__
+    assert not hasattr(monorm, "prefetch") and "prefetch" not in monorm.__all__
 
 
 async def test_bound_load_checks_its_input(clean):
     alice, _, posts = await seed()
     with pytest.raises(TypeError, match="at least one object"):
-        orm.of([]).load(User.posts)
+        monorm.of([]).load(User.posts)
     with pytest.raises(TypeError, match="one model"):
-        await orm.of([alice, posts[0]]).load(User.posts)
+        await monorm.of([alice, posts[0]]).load(User.posts)
     with pytest.raises(ValueError, match="does not start at User"):
-        await orm.of([alice]).load(Post.author)
+        await monorm.of([alice]).load(Post.author)
 
 
 DECIMAL_KEYS = """datasource db { provider = "postgres" }
@@ -294,9 +294,9 @@ model DecKid {
 async def decimal_keys():
     from conftest import DATABASE_URL
 
-    registry = orm.Registry()
-    models = orm.loads(DECIMAL_KEYS, registry=registry)
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    registry = monorm.Registry()
+    models = monorm.loads(DECIMAL_KEYS, registry=registry)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
@@ -312,21 +312,21 @@ async def decimal_keys():
 async def test_bound_load_decimal_key_to_many(decimal_keys):
     parent, _, db = decimal_keys
     decs = await parent.objects.using(db).order_by(parent.id)
-    await orm.of(decs).using(db).load(parent.kids)
+    await monorm.of(decs).using(db).load(parent.kids)
     assert [len(d.kids.cached) for d in decs] == [2, 0]  # the child column has scale 4
 
 
 async def test_bound_load_decimal_key_to_one(decimal_keys):
     _, kid, db = decimal_keys
     kids = await kid.objects.using(db).order_by(kid.id)
-    await orm.of(kids).using(db).load(kid.dec)
+    await monorm.of(kids).using(db).load(kid.dec)
     assert [k.dec.id for k in kids] == [Decimal("1.50")] * 2
 
 
 @pytest.fixture
 async def prefetch_databases():
-    registry = orm.Registry()
-    models = orm.loads(
+    registry = monorm.Registry()
+    models = monorm.loads(
         """datasource db { provider = "sqlite" }
 model Author {
   id Int @id @default(autoincrement())
@@ -343,8 +343,8 @@ model Book {
         registry=registry,
     )
     Author, Book = models["Author"], models["Book"]
-    d1 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
-    d2 = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    d1 = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    d2 = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         for db, name in ((d1, "d1"), (d2, "d2")):
             await db.create_tables()
@@ -360,30 +360,30 @@ model Book {
 
 async def test_bound_load_refuses_instances_from_two_databases(prefetch_databases):
     Author, _, objs = prefetch_databases
-    with pytest.raises(orm.QueryError, match=r"of\(\) takes objects from one database; call using\(\) to read another"):
-        await orm.of(objs).load(Author.books)
+    with pytest.raises(monorm.QueryError, match=r"of\(\) takes objects from one database; call using\(\) to read another"):
+        await monorm.of(objs).load(Author.books)
     # Rejection must leave every relation unloaded.
     for obj in objs:
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             obj.books.cached
 
 
 async def test_bound_load_with_using_reads_that_database(prefetch_databases):
     Author, d2, objs = prefetch_databases
-    await orm.of(objs).using(d2).load(Author.books)
+    await monorm.of(objs).using(d2).load(Author.books)
     assert [[b.title for b in obj.books.cached] for obj in objs] == [["B-d2"], [], ["B-d2"]]
 
 
 async def test_bound_load_accepts_instances_from_one_database(clean, prefetch_databases):
     Author, _, objs = prefetch_databases
-    await orm.of(objs[1:]).load(Author.books)
+    await monorm.of(objs[1:]).load(Author.books)
     assert [[b.title for b in obj.books.cached] for obj in objs[1:]] == [[], ["B-d2"]]
     alice, bob, _ = await seed()
-    await orm.of([alice, bob]).load(User.posts)
+    await monorm.of([alice, bob]).load(User.posts)
     assert [p.title for p in alice.posts.cached] == ["draft", "hit", "quiet"]
     # Implicit default and explicit default resolve to the same database.
     explicit = await User.objects.using(clean).require().get(User.id == alice.id)
-    await orm.of([bob, explicit]).load(User.posts)
+    await monorm.of([bob, explicit]).load(User.posts)
     assert [p.title for p in explicit.posts.cached] == ["draft", "hit", "quiet"]
 
 
@@ -395,7 +395,7 @@ def test_describe_gives_fields_relations_and_unique_keys():
 
     from blog.models import Role
 
-    post = orm.describe(Post)
+    post = monorm.describe(Post)
     assert post["name"] == "Post" and post["table"] == "posts" and post["primary_key"] == ["id"]
     fields = {f["name"]: f for f in post["fields"]}
     assert fields["id"]["default"] == "database" and fields["id"]["primary_key"]
@@ -418,20 +418,20 @@ def test_describe_gives_fields_relations_and_unique_keys():
     assert relations["author"]["kind"] == "belongs_to" and relations["author"]["target"] is User
     assert relations["author"]["from"] == ["author_id"] and not relations["author"]["nullable"]
     assert relations["tags"]["kind"] == "many_to_many" and relations["tags"]["through"] is PostTag
-    assert orm.describe(PostTag)["unique"] == [("id",), ("post_id", "tag_id")]
-    assert orm.describe(User)["unique"] == [("id",), ("email",)]
-    profile = {f["name"]: f for f in orm.describe(Profile)["fields"]}
+    assert monorm.describe(PostTag)["unique"] == [("id",), ("post_id", "tag_id")]
+    assert monorm.describe(User)["unique"] == [("id",), ("email",)]
+    profile = {f["name"]: f for f in monorm.describe(Profile)["fields"]}
     assert profile["role"]["enum"] is Role and profile["role"]["python_type"] is Role
     assert profile["balance"]["python_type"] is Decimal
     assert profile["links"]["array"] and profile["links"]["element_type"] is str
-    comment = {f["name"]: f for f in orm.describe(Comment)["fields"]}
+    comment = {f["name"]: f for f in monorm.describe(Comment)["fields"]}
     assert comment["author_id"]["nullable"]
 
 
 async def make(model, n=[0], **values):
     """A factory built only on describe() and objects.insert(): required fields get
     generated values, a required to-one relation gets a new related row."""
-    info = orm.describe(model)
+    info = monorm.describe(model)
     n[0] += 1
     for rel in info["relations"]:
         if (
@@ -468,15 +468,15 @@ async def test_a_factory_needs_only_describe_and_insert(clean):
 async def test_only_through_a_to_one_path(clean):
     await seed()
     qs = Comment.objects.load(Comment.body, Comment.post.title)
-    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=1),))
+    assert qs.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(joins_count=1),))
     sql = qs.sql()
     assert '"title"' in sql and '"views"' not in sql and '"published"' not in sql
     comment = await Comment.objects.insert(post=(await Post.objects.get(Post.title == "hit")), body="x")
     (c,) = await qs.filter(Comment.id == comment.id)
     assert c.body == "x" and c.post.title == "hit" and c.post.pk is not None
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         c.post.views
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         c.created_at
 
 
@@ -485,13 +485,13 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
     _, _, posts = await seed()
     await Comment.objects.insert(post=posts[0], body="x")
     query = Comment.objects.load(Comment.post.author.name)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=2),))
+    assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(joins_count=2),))
     (c,) = await query
     assert c.post.author.name == "Alice" and c.body == "x" and c.post.title == posts[0].title
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         c.post.author.email
     (c,) = await Comment.objects.load(Comment.id, Comment.post.author.name)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         c.body
     # a bare path to the same model asks for all its fields
     (c,) = await Comment.objects.load(Comment.post.author.name, Comment.post.author)
@@ -501,24 +501,24 @@ async def test_load_a_path_column_keeps_the_root_whole(clean):
 async def test_load_a_column_through_a_to_many_path(clean, observe_queries):
     await seed()
     query = User.objects.load(User.posts.title).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(
+    assert query.inspect() == monorm.QueryInspection(
         2,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True),
         ),
     )
     with observe_queries(clean) as events:
         users = await query
     assert len(events) == 2
     assert sorted(p.title for p in users[0].posts.cached) == ["draft", "hit", "quiet"]
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         users[0].posts.cached[0].views
     assert users[0].name == "Alice"
 
 
-# -- qs1 | qs2, indexed labels, orm.column ----------------------------------------------
+# -- qs1 | qs2, indexed labels, monorm.column ----------------------------------------------
 
 
 async def test_or_of_query_sets(clean):
@@ -527,11 +527,11 @@ async def test_or_of_query_sets(clean):
     drafts = Post.objects.filter(~Post.published)
     assert [p.title for p in await (popular | drafts)] == ["draft", "hit"]
     assert len(await (popular | Post.objects)) == 4
-    with pytest.raises(orm.QueryError, match="one filter"):
+    with pytest.raises(monorm.QueryError, match="one filter"):
         popular.filter(Post.views < 100) | drafts
-    with pytest.raises(orm.QueryError, match="sets order"):
+    with pytest.raises(monorm.QueryError, match="sets order"):
         drafts | popular
-    with pytest.raises(orm.QueryError, match="sliced"):
+    with pytest.raises(monorm.QueryError, match="sliced"):
         popular[:1] | drafts
 
 
@@ -572,13 +572,13 @@ async def test_or_with_a_relation_set_on_the_right_reads_the_database(clean):
 async def test_or_of_two_via_query_sets_raises_query_error(clean):
     a = User.posts.objects.filter(Post.views > 1)
     b = User.posts.objects.filter(Post.views < 100)
-    with pytest.raises(orm.QueryError, match="via"):
+    with pytest.raises(monorm.QueryError, match="via"):
         a | b
 
 
 async def test_or_of_two_filtered_relation_sets_names_the_relation(clean):
     alice, _, _ = await seed()
-    with pytest.raises(orm.QueryError, match=r"posts.*filter\(a \| b\)"):
+    with pytest.raises(monorm.QueryError, match=r"posts.*filter\(a \| b\)"):
         alice.posts.filter(Post.views > 1) | alice.posts.filter(Post.views < 100)
 
 
@@ -597,14 +597,14 @@ async def test_bound_load_one_stores_a_row_or_none(clean, observe_queries):
         User.posts.objects.order_by(-Post.views)[1].label("second"),
         User.posts.objects.order_by(-Post.views)[-1].label("last_post"),
     )
-    assert query.inspect() == orm.QueryInspection(
+    assert query.inspect() == monorm.QueryInspection(
         4,
         True,
         (
-            orm.StatementInspection(),
-            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
-            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
-            orm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            monorm.StatementInspection(),
+            monorm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            monorm.StatementInspection(has_batching=True, derived_uncorrelated=1),
+            monorm.StatementInspection(has_batching=True, derived_uncorrelated=1),
         ),
     )
     with observe_queries(clean) as events:
@@ -615,7 +615,7 @@ async def test_bound_load_one_stores_a_row_or_none(clean, observe_queries):
     assert [u.best.title if u.best else None for u in users] == ["hit", "bob", None]
     with pytest.raises(TypeError):
         User.objects.load(User.posts.objects[0])
-    with pytest.raises(orm.QueryError, match="to-many") as one_error:
+    with pytest.raises(monorm.QueryError, match="to-many") as one_error:
         await Post.objects.load(Post.author.objects[0].label("writer"))
     assert "to_attr" not in str(one_error.value)
     with pytest.raises(ValueError, match="field, relation or member"):
@@ -630,14 +630,14 @@ async def test_bound_load_one_stores_a_row_or_none(clean, observe_queries):
 
 async def test_column_from_a_dotted_path(clean):
     await seed()
-    assert repr(orm.column(Comment, "post.author.name")) == repr(Comment.post.author.name)
-    names = await User.objects.filter(orm.column(User, "posts.title").startswith("hi")).select(User.name).scalars()
+    assert repr(monorm.column(Comment, "post.author.name")) == repr(Comment.post.author.name)
+    names = await User.objects.filter(monorm.column(User, "posts.title").startswith("hi")).select(User.name).scalars()
     assert names == ["Alice"]
     assert [p.title for p in await Post.objects.order_by(-orm.column(Post, "views"))][:1] == ["hit"]
     with pytest.raises(LookupError, match="Post has no relation 'nope'"):
-        orm.column(Post, "nope.title")
+        monorm.column(Post, "nope.title")
     with pytest.raises(LookupError, match="User has no field 'nope'"):
-        orm.column(Post, "author.nope")
+        monorm.column(Post, "author.nope")
 
 
 # -- mutation regressions (G10) -------------------------------------------------------------
@@ -652,7 +652,7 @@ def test_or_rejects_right_side_state(slot):
         right = Post.objects._clone(_loads=(Post.author,))
     else:
         right = Post.objects.without_defaults()
-    with pytest.raises(orm.QueryError, match=f"sets {slot}"):
+    with pytest.raises(monorm.QueryError, match=f"sets {slot}"):
         Post.objects | right
 
 
@@ -660,7 +660,7 @@ def test_or_rejects_right_side_state(slot):
 def test_or_rejects_offset_without_limit(side):
     plain = Post.objects.filter(Post.published)
     sliced = Post.objects[1:]
-    with pytest.raises(orm.QueryError, match="sliced"):
+    with pytest.raises(monorm.QueryError, match="sliced"):
         (sliced | plain) if side == "left" else (plain | sliced)
 
 
@@ -690,50 +690,50 @@ async def test_changing_query_set_class_discards_cached_relation_class(clean, mo
         use_query_set(model, QuerySet)
 
 
-@pytest.mark.parametrize("base", [orm.RelatedSet, orm.ManyRelatedSet])
+@pytest.mark.parametrize("base", [monorm.RelatedSet, monorm.ManyRelatedSet])
 def test_query_set_class_rejects_relation_subclasses(base):
     class RelationQueries(base):
         __slots__ = ()
 
-    with pytest.raises(TypeError, match="subclass of orm.QuerySet"):
+    with pytest.raises(TypeError, match="subclass of monorm.QuerySet"):
         use_query_set(Post, RelationQueries)
 
 
 async def test_bound_load_rejects_a_model_subclass(clean):
     alice, _, _ = await seed()
 
-    class SpecialUser(User, registry=orm.Registry()):
+    class SpecialUser(User, registry=monorm.Registry()):
         pass
 
     special = object.__new__(SpecialUser)
     special.__dict__.update(alice.__dict__)
     with pytest.raises(TypeError, match="one model"):
-        await orm.of([alice, special]).load(User.posts)
+        await monorm.of([alice, special]).load(User.posts)
 
 
 def test_column_rejects_unknown_own_field():
     with pytest.raises(LookupError, match="Post has no field 'nope'"):
-        orm.column(Post, "nope")
+        monorm.column(Post, "nope")
 
 
 def test_describe_primary_key_is_unique():
-    fields = {f["name"]: f for f in orm.describe(Post)["fields"]}
+    fields = {f["name"]: f for f in monorm.describe(Post)["fields"]}
     assert fields["id"]["unique"] is True
 
 
 def test_describe_reports_client_default():
-    models = orm.loads("model ClientItem {\n id Int @id\n n Int @client_default(3)\n}", registry=orm.Registry())
-    fields = {f["name"]: f for f in orm.describe(models["ClientItem"])["fields"]}
+    models = monorm.loads("model ClientItem {\n id Int @id\n n Int @client_default(3)\n}", registry=monorm.Registry())
+    fields = {f["name"]: f for f in monorm.describe(models["ClientItem"])["fields"]}
     assert fields["n"]["default"] == "client"
 
 
 def test_describe_autoincrement_remains_insertable():
-    fields = {f["name"]: f for f in orm.describe(Post)["fields"]}
+    fields = {f["name"]: f for f in monorm.describe(Post)["fields"]}
     assert fields["id"]["insert"] is True
 
 
 def test_describe_array_python_type_is_list():
-    fields = {f["name"]: f for f in orm.describe(Profile)["fields"]}
+    fields = {f["name"]: f for f in monorm.describe(Profile)["fields"]}
     assert fields["links"]["python_type"] is list
 
 
@@ -744,7 +744,7 @@ async def test_or_with_unfiltered_left_returns_all_rows(clean):
 
 
 def test_describe_optional_belongs_to_is_nullable():
-    relations = {r["name"]: r for r in orm.describe(Comment)["relations"]}
+    relations = {r["name"]: r for r in monorm.describe(Comment)["relations"]}
     assert relations["author"]["nullable"] is True
 
 

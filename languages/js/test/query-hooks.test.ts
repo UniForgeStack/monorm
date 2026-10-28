@@ -1,4 +1,4 @@
-/** `db.onQuery` hooks, `orm/otel` spans, and the N+1 finder on the same events. */
+/** `db.onQuery` hooks, `@ufstack/monorm/otel` spans, and the N+1 finder on the same events. */
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { test } from "node:test";

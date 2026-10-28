@@ -12,18 +12,18 @@ schemas, objects, pools and transactions cannot switch engines.
 | combined | PostgreSQL + SQLite | no | no | none | none |
 | tooling | PostgreSQL + SQLite | yes | Python + TypeScript | none | none |
 
-Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]` or `orm[tooling]`.
+Python installs use `monorm[postgres]`, `monorm[sqlite]`, `monorm[combined]` or `monorm[tooling]`.
 These extras select complete distributions, not changes to an installed binary.
-Each native wheel owns a unique `orm_native_<profile>._native` namespace.
-Installing `orm[postgres,sqlite]` installs two engines, not a combined engine. Use
-`orm[combined]` for both databases. With exactly one installed profile, initialization
-selects it automatically. With multiple profiles, set `ORM_PROFILE` to one profile.
+Each native wheel owns a unique `monorm_native_<profile>._native` namespace.
+Installing `monorm[postgres,sqlite]` installs two engines, not a combined engine. Use
+`monorm[combined]` for both databases. With exactly one installed profile, initialization
+selects it automatically. With multiple profiles, set `MONORM_PROFILE` to one profile.
 Initialization fails before any query for an unknown or absent selector, an
 ambiguous install, an incompatible ABI or version, or an unexpected backend or adapter
 set. A change to the environment after initialization does not change the engine.
 
-Node installs use `orm` alongside `@orm/native-postgres`, `@orm/native-sqlite`,
-`@orm/native-combined` or `@orm/native-tooling`. Optional peers do not install every
+Node installs use `orm` alongside `@ufstack/monorm-native-postgres`, `@ufstack/monorm-native-sqlite`,
+`@ufstack/monorm-native-combined` or `@ufstack/monorm-native-tooling`. Optional peers do not install every
 profile. Each selected profile's optional dependencies are **platform artifacts**,
 not additional database features. Supported prebuilt targets are darwin-arm64,
 linux-x64 (glibc) and win32-x64. Unsupported targets require a source build. The
@@ -33,46 +33,46 @@ the artifacts. No job publishes them.
 After the distributions are published:
 
 ```bash
-python -m pip install 'orm[sqlite]'
-export ORM_PROFILE=sqlite
-npm install orm @orm/native-sqlite
+python -m pip install 'monorm[sqlite]'
+export MONORM_PROFILE=sqlite
+npm install @ufstack/monorm @ufstack/monorm-native-sqlite
 ```
 
-`python -m orm` and `npx orm` require the tooling profile.
-The standalone `orm` binary does not use a profile.
+`python -m monorm` and `npx @ufstack/monorm` require the tooling profile.
+The standalone `monorm` binary does not use a profile.
 All runtime profiles contain the migration and schema APIs.
 Each binding exposes a generator only when the build selects it.
 The tooling profile contains both generators, so each language CLI generates both languages.
 
 ```bash
-python -m pip install 'orm[tooling]'
-export ORM_PROFILE=tooling
-python -m orm generate
-npm install orm @orm/native-tooling
-npx orm generate typescript
+python -m pip install 'monorm[tooling]'
+export MONORM_PROFILE=tooling
+python -m monorm generate
+npm install @ufstack/monorm @ufstack/monorm-native-tooling
+npx @ufstack/monorm generate typescript
 ```
 
-## `orm[full]`
+## `monorm[full]`
 
-`orm[full]` has no code of its own.
+`monorm[full]` has no code of its own.
 It installs the `tooling` native profile and the Python package of each first-party extension except file storage, each pinned to its manifest version.
 Each package is an installable package; see [Installable packages](#installable-packages).
 A library loads only when the schema uses its extension.
 
 ```bash
-python -m pip install 'orm[full]'
+python -m pip install 'monorm[full]'
 ```
 
 For Node there is no meta-package: discovery reads only the direct dependencies of the project `package.json`.
 Install the packages by name:
 
 ```bash
-npm install orm @orm/native-tooling @orm/generic @orm/inherit @orm/locking @orm/composition \
-  @orm/proxy @orm/query-defaults @orm/soft-delete @orm/timestamps
+npm install @ufstack/monorm @ufstack/monorm-native-tooling @ufstack/monorm-generic @ufstack/monorm-inherit @ufstack/monorm-locking @ufstack/monorm-composition \
+  @ufstack/monorm-proxy @ufstack/monorm-query-defaults @ufstack/monorm-soft-delete @ufstack/monorm-timestamps
 ```
 
 `python languages/python/packaging/check-full-extra.py` keeps the extra equal to the manifests in `extensions/` minus the excluded list (file storage).
-Add `orm-file-storage` (Python) or `@orm/file-storage` (Node) for file fields.
+Add `monorm-file-storage` (Python) or `@ufstack/monorm-file-storage` (Node) for file fields.
 CI records the size of every native wheel and package in the job summary.
 There is no size limit.
 
@@ -91,14 +91,14 @@ An extension is an installed package ([Installable packages](#installable-packag
 a marker package cannot add code to an already compiled engine.
 Every artifact embeds its build record in `profile_metadata()["build"]`: the exact Cargo features, the
 `rustc -V` toolchain, target triple, Cargo profile and git revision (`git rev-parse
-HEAD` of the host source, or `ORM_BUILD_REVISION` when set; `unknown` outside git).
+HEAD` of the host source, or `MONORM_BUILD_REVISION` when set; `unknown` outside git).
 
-A Node source build is selected once with `ORM_NATIVE`:
+A Node source build is selected once with `MONORM_NATIVE`:
 
 ```bash
 cd languages/js
 node scripts/build-native.mjs --features postgres,generate-typescript
-export ORM_NATIVE="$PWD/orm.node"
+export MONORM_NATIVE="$PWD/monorm.node"
 ```
 
 For named Node release profiles, `node languages/js/packaging/build-node-profile.mjs sqlite
@@ -115,7 +115,7 @@ the `build` record (`features`, `rustc`, `target`, `profile`, `revision`). The l
 reject an artifact without a well-formed build record.
 This metadata is separate from schema/extension manifests. An adapter name must
 have a true capability with the same canonical name. Python
-`orm._capabilities.ADAPTERS` is a frozen set initialized at module import;
+`monorm._capabilities.ADAPTERS` is a frozen set initialized at module import;
 TypeScript `nativeAdapters()` returns a cached frozen array. Selected adapter modules
 and specialized model methods are bound at module/definition initialization.
 Disabled paths retain ordinary decoding/writes; they do not import providers,
@@ -128,7 +128,7 @@ exactly their selected adapters and dependencies. No query-time plugin discovery
 including backend SQL-builder unification and absence of CLI/TLS/unused drivers.
 `languages/python/packaging/check-wheel.py` checks thin/native wheel payload separation.
 `smoke-python.py` and `smoke-node.mjs` check that no extension is compiled in.
-The `orm[full]` job installs the extra from local wheels and runs a smoke over one attribute of each member.
+The `monorm[full]` job installs the extra from local wheels and runs a smoke over one attribute of each member.
 `languages/js/packaging/check-node-install.mjs` packs and installs one native profile offline,
 checks the dependency lock and runs installed-package smoke tests. Python
 `languages/python/packaging/smoke-python.py` runs against fresh installed wheels. Set
@@ -145,9 +145,9 @@ Two commands build them:
 
 ```bash
 # on each platform
-orm-extension-package library <crate-dir> --out <libraries>/<extension>
+monorm-extension-package library <crate-dir> --out <libraries>/<extension>
 # once, with the three results in <libraries>/<extension>/<platform>/
-orm-extension-package assemble <crate-dir> --libraries <libraries>/<extension> --out <dir> [--tsc <exe>]
+monorm-extension-package assemble <crate-dir> --libraries <libraries>/<extension> --out <dir> [--tsc <exe>]
 ```
 
 `library` builds the cdylib and copies it to `<out>/<platform>/`.
@@ -158,7 +158,7 @@ The npm `package.json` lists the 3 libraries in `files` and has no `os` or `cpu`
 `package` stays for local work: it builds the host library only and writes a wheel with a host platform tag.
 Do not publish that wheel.
 
-The manifest `library` is a name without a file extension, for example `library = "orm_inherit"`.
+The manifest `library` is a name without a file extension, for example `library = "monorm_inherit"`.
 The file name is `lib<name>.dylib`, `lib<name>.so` or `<name>.dll`.
 `assemble` rejects a name with an extension, because three platforms cannot share it.
 
@@ -170,7 +170,7 @@ It publishes nothing.
 ## Extension contracts
 
 An extension is an installed package ([Installable packages](#installable-packages)).
-The manifest `orm-extension.toml` sits at the root of the package.
+The manifest `monorm-extension.toml` sits at the root of the package.
 
 | Field | Meaning |
 |---|---|
@@ -189,7 +189,7 @@ Unknown manifest fields are errors.
 
 ### Contracts and preparation
 
-`orm-contracts` contains schema IR, dialects and versioned extension contracts.
+`monorm-contracts` contains schema IR, dialects and versioned extension contracts.
 It depends on neither bindings nor extension implementations.
 
 Python `define(schema, registry=...)` and TypeScript `define(schema, registry)` prepare a complete candidate before publishing models.
@@ -208,7 +208,7 @@ they are not SQL defaults and do not affect other database writers.
 
 ### The `ext` modules
 
-`orm.ext` (Python) and `orm/ext` (TypeScript) are the host surface for extension code.
+`monorm.ext` (Python) and `@ufstack/monorm/ext` (TypeScript) are the host surface for extension code.
 `database_of(instance)` and `databaseOf(instance)` give the database that loaded an instance, or none.
 
 A bound query set mixin reads the objects of a bound write with these helpers (the Python name, then the TypeScript name):
@@ -237,7 +237,7 @@ A pass declares `id`, `phase`, `after`, and owned `effects` paths.
 Phases run declaration, logical, storage, behavior, validation, generation.
 Ordering is stable;
 cycles, missing pass dependencies, duplicate IDs and overlapping effect ownership fail.
-The library function of a pass takes `&mut orm_contracts::ir::SchemaIr` and returns `Result<(), String>`.
+The library function of a pass takes `&mut monorm_contracts::ir::SchemaIr` and returns `Result<(), String>`.
 Namespaced model declarations may derive their primary key during selected passes.
 Ordinary models require `@id` before lowering; annotated models must have one after preparation.
 Feature-derived relations should be contributed by the pass.
@@ -262,7 +262,7 @@ A field owner must be the local owner or an ancestor.
 Inherited scalar reads, projections and filters use ordinary SQL through those prepared owners.
 Inherited relation links, `outer()` and `distinct(on=...)` on inherited columns need an expanded host primitive.
 
-Writes across owner tables belong to `orm_engine::multi_table`.
+Writes across owner tables belong to `monorm_engine::multi_table`.
 Any extension can write a two-table model with these records; `tests/outside-extension` does so.
 It plans creates, attaches, filtered updates and deletes, and each runs in one transaction or savepoint.
 `update_many` on a multi-table model is rejected.
@@ -291,30 +291,30 @@ Core uses them without knowledge of the extension that sets them.
 
 A manifest with `abi` (a `"major.minor"` string, currently `"0.2"`) and `library` (the file name; the loader adds the platform prefix and suffix) is a library.
 A manifest with `host_contract` fails and names the field. The loader runs its passes; optional `[python]` and `[typescript]` sections name exports in the packaged runtime modules and retain language-contract validation. The loader resolves the hooks of the manifest with the library.
-The crate is a `cdylib` built with `panic = "unwind"` (the default; the exports catch a panic and return a status) that ends with `orm_contracts::extension!`:
+The crate is a `cdylib` built with `panic = "unwind"` (the default; the exports catch a panic and return a status) that ends with `monorm_contracts::extension!`:
 
 ```rust
-orm_contracts::extension! {
+monorm_contracts::extension! {
     init = my_init;                          // optional: fn(&serde_json::Value) -> Result<S, String>
     hooks { "my.hook" => my_hook };          // optional: fn(&S, &[Arg], &Context) -> Result<Value, String>
     ("my.pass", my_pass)                     // fn(&mut SchemaIr) -> Result<(), String>
 }
 ```
 
-The macro exports `orm_ext_abi_version`, `orm_ext_run_pass` and `orm_ext_free` (ABI 0.1), and `orm_ext_init`, `orm_ext_drop_state` and `orm_ext_hooks` (ABI 0.2).
-`init` gets the JSON of the extension's `extension_data` entry and returns the state `S` (`()` without `init`); the engine calls `orm_ext_drop_state` when it drops the state.
+The macro exports `monorm_ext_abi_version`, `monorm_ext_run_pass` and `monorm_ext_free` (ABI 0.1), and `monorm_ext_init`, `monorm_ext_drop_state` and `monorm_ext_hooks` (ABI 0.2).
+`init` gets the JSON of the extension's `extension_data` entry and returns the state `S` (`()` without `init`); the engine calls `monorm_ext_drop_state` when it drops the state.
 `S` must be `Send + Sync + 'static`, so that a state can cross threads.
 Each hook takes the `&S` of the same `init`; a hook with another state type is a compile error.
-A hook has one signature for all seven points. `orm_contracts::abi::Value` has the tags null, bool, int, float, decimal, text, bytes, datetime (microseconds since the Unix epoch, UTC), uuid, json and date (days since 1970-01-01).
+A hook has one signature for all seven points. `monorm_contracts::abi::Value` has the tags null, bool, int, float, decimal, text, bytes, datetime (microseconds since the Unix epoch, UTC), uuid, json and date (days since 1970-01-01).
 An `Err` becomes status ERROR with its text, and a panic becomes status PANIC.
-`orm_ext_init(json, len, out_state, error)` writes `error` on every status, with the failure text, or an empty buffer on OK (a null `error` is allowed); the host frees it with `orm_ext_free` every time.
+`monorm_ext_init(json, len, out_state, error)` writes `error` on every status, with the failure text, or an empty buffer on OK (a null `error` is allowed); the host frees it with `monorm_ext_free` every time.
 A manifest of a library lists its hooks as `[[exports]]` with `id`, `point` (1 to 7), `input` and `output` (a value type).
-When the manifest has `exports`, the loader needs `orm_ext_hooks` and, when `init` exists, `orm_ext_drop_state`, and the hook table needs a hook of the same name for each export id. A mismatch is an error when the library opens, and it names the export. A manifest without `exports` has no hooks to resolve, so a pass-only library needs none of the three symbols.
-`Plan::library(id)` gives a `Library` of a manifest with `exports`; `Library::init(&json)` gives a `State`, and `State::call(hook, &args, &context)` runs one hook. The `State` calls `orm_ext_drop_state` once when it drops.
+When the manifest has `exports`, the loader needs `monorm_ext_hooks` and, when `init` exists, `monorm_ext_drop_state`, and the hook table needs a hook of the same name for each export id. A mismatch is an error when the library opens, and it names the export. A manifest without `exports` has no hooks to resolve, so a pass-only library needs none of the three symbols.
+`Plan::library(id)` gives a `Library` of a manifest with `exports`; `Library::init(&json)` gives a `State`, and `State::call(hook, &args, &context)` runs one hook. The `State` calls `monorm_ext_drop_state` once when it drops.
 Schema contract 4.0 holds `Requirements.hooks` (a `HookBinding` per model, field, point and export) and `Requirements.extension_data` (JSON by extension id). A major bump resets the minor. The IR sets `schema_contract_minor` only for a feature that a later minor adds; an engine of an older minor stops at the unknown field with a parse error, and the "newer than this engine" message comes only from an engine that knows the minor.
 Schema contract 4.0 holds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute.
-Schema contract 5.0 removes `Requirements.file_fields` and the `file-storage` host capability: the `orm.file-storage` package uses `field_adapters`.
-Contract 5.0 also has no `Requirements.extensions`, `Requirements.completed_passes` or `Requirements.methods`. The IR crosses the ABI as JSON, so an extension library that was built before this removal fails to parse the IR with an unknown-field error: rebuild it. After the first publish of `orm-contracts`, such a removal needs a major bump.
+Schema contract 5.0 removes `Requirements.file_fields` and the `file-storage` host capability: the `monorm.file-storage` package uses `field_adapters`.
+Contract 5.0 also has no `Requirements.extensions`, `Requirements.completed_passes` or `Requirements.methods`. The IR crosses the ABI as JSON, so an extension library that was built before this removal fails to parse the IR with an unknown-field error: rebuild it. After the first publish of `monorm-contracts`, such a removal needs a major bump.
 Models of contract 4 fail `define` with a "schema contract 4 is older" error; regenerate them.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
@@ -324,12 +324,12 @@ A version fits when its major equals the engine major and its minor is at most t
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.
 The loader runs the passes of all libraries in one pass order.
-The IR records each library that ran in `Requirements.packages`: its version, its passes, its attribute names, supported `languages` and `databases`, `language_members`, `dependencies`, and `manifest_hash` (the lowercase hexadecimal SHA-256 of the raw `orm-extension.toml` bytes).
+The IR records each library that ran in `Requirements.packages`: its version, its passes, its attribute names, supported `languages` and `databases`, `language_members`, `dependencies`, and `manifest_hash` (the lowercase hexadecimal SHA-256 of the raw `monorm-extension.toml` bytes).
 The generated models embed this lock in their compiled schema.
 The hash excludes native library bytes, so the same models work across platforms.
 
-Run `orm check` in CI to compare the lock against installed extension packages.
-A changed version or manifest, or a missing package, fails with the locked and installed identities and a run `orm generate` hint.
+Run `monorm check` in CI to compare the lock against installed extension packages.
+A changed version or manifest, or a missing package, fails with the locked and installed identities and a run `monorm generate` hint.
 Unused installed packages add no lock requirement.
 Python and npm commands discover packages as they do for generation. The standalone binary takes repeated `--extension ID=MANIFEST` options and, for generation, `--extension-module ID=MODULE` for each selected package (a Python import name or npm package name). The binding commands supply both automatically.
 Use `check -o FILE` (or `--out FILE`) for a custom models path; a missing explicit path fails with a regeneration hint.
@@ -339,14 +339,14 @@ Python schema facades are checked through their shared `_orm_models.py`.
 With no generated models file, the command compiles the schema as usual.
 Generated models import every selected package's runtime module, including packages without runtime classes; `load()` and `loads()` discover and import the same modules. Definition reads their runtime members from the package lock. Definition runs no pass. It opens the native library of a package only to resolve the hooks that the schema binds to it; code generation and migrations open no library.
 
-Each runtime module exports `MANIFEST_HASH` (Python) or `manifestHash` (TypeScript), the lowercase SHA-256 of the raw manifest bytes. `define()` compares it with the embedded stamp once per extension per definition. A changed or missing constant warns with the id, both hashes and a run `orm generate` hint, then continues. Python uses `orm.OrmStaleModelsWarning`, a `UserWarning` subclass (subject to Python warning filters); Node and Bun emit `OrmStaleModelsWarning`. This warning does not replace the CI lock check above.
+Each runtime module exports `MANIFEST_HASH` (Python) or `manifestHash` (TypeScript), the lowercase SHA-256 of the raw manifest bytes. `define()` compares it with the embedded stamp once per extension per definition. A changed or missing constant warns with the id, both hashes and a run `monorm generate` hint, then continues. Python uses `monorm.OrmStaleModelsWarning`, a `UserWarning` subclass (subject to Python warning filters); Node and Bun emit `OrmStaleModelsWarning`. This warning does not replace the CI lock check above.
 
 TypeScript runtime packages and their dependencies must be synchronously loadable, without top-level await. Node requires 20.19+ on the 20.x line or 22.12+ on later lines; Bun is also supported. Prefer one runtime format. Synchronous loading resolves the package's import entry before loading it, so a dual package uses the same module and class identities as generated ESM imports.
 `tests/outside-extension/` is a library in its own workspace.
-It also shows the three optional keys of a field attribute in `orm-extension.toml` (schema contract 2.2).
+It also shows the three optional keys of a field attribute in `monorm-extension.toml` (schema contract 2.2).
 `field_type = "Money"` makes the attribute own that DSL type: a field of that type lowers to an `Int` placeholder, and the pass replaces it.
 `member = false` makes the field no model member: lowering drops the field and keeps its declaration for the pass.
-`identities = true` makes a schema that uses the attribute need model identities (`orm identities`).
+`identities = true` makes a schema that uses the attribute need model identities (`monorm identities`).
 
 #### Read and expression hooks (points 5 to 7)
 
@@ -374,9 +374,9 @@ Schema contract 4.0 holds these records. An engine of an older major refuses an 
 
 ### Installable packages
 
-`orm-extension-package package <crate dir> --out <dir>` builds one extension crate for the host platform.
+`monorm-extension-package package <crate dir> --out <dir>` builds one extension crate for the host platform.
 The `library` and `assemble` commands build one package for 3 platforms; see [Extension packages for 3 platforms](optional-packaging.md#extension-packages-for-3-platforms).
-The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `orm-extension.toml` with `abi` and `library`.
+The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `monorm-extension.toml` with `abi` and `library`.
 The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
 Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.
 `scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy and file-storage packages and installs them into `.venv` and `languages/js`.

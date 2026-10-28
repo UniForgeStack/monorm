@@ -2,9 +2,9 @@
 
 import pytest
 
-import orm
+import monorm
 from conftest import DATABASE_URL
-from orm.__main__ import main as cli
+from monorm.__main__ import main as cli
 
 SCHEMA = """
 model Item {
@@ -28,9 +28,9 @@ model Line {
 
 
 def test_describe_lists_single_and_composite_keys():
-    models = orm.loads(SCHEMA, registry=orm.Registry())
-    item = orm.describe(models["Item"])
-    line = orm.describe(models["Line"])
+    models = monorm.loads(SCHEMA, registry=monorm.Registry())
+    item = monorm.describe(models["Item"])
+    line = monorm.describe(models["Line"])
     assert line["primary_key"] == ["id"]
     assert item["primary_key"] == ["shop", "id"]
     forward = next(r for r in line["relations"] if r["name"] == "item")
@@ -41,20 +41,20 @@ def test_describe_lists_single_and_composite_keys():
     assert reverse["to"] == ["shop", "item_id"]
     from blog.models import Post
 
-    author = next(r for r in orm.describe(Post)["relations"] if r["name"] == "author")
+    author = next(r for r in monorm.describe(Post)["relations"] if r["name"] == "author")
     assert author["from"] == ["author_id"]
     assert author["to"] == ["id"]
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def models(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     source = SCHEMA if request.param == "postgres" else 'datasource db {\n  provider = "sqlite"\n}\n' + SCHEMA
-    m = orm.loads(source, registry=registry)
+    m = monorm.loads(source, registry=registry)
     url = "sqlite://:memory:" if request.param == "sqlite" else DATABASE_URL
     try:
-        db = await orm.connect(url, registry=registry, default=False)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(url, registry=registry, default=False)
+    except monorm.DatabaseError as e:
         pytest.skip(f"database not reachable: {e}")
     await db.drop_tables()
     await db.create_tables()

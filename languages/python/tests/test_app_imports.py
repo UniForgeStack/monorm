@@ -1,6 +1,6 @@
-"""`import "app:<name>"`: the Python resolution through the `orm.apps` entry point.
+"""`import "app:<name>"`: the Python resolution through the `monorm.apps` entry point.
 
-The fake apps have names that no real app uses, so the tests also pass in a venv that has `orm-auth` installed.
+The fake apps have names that no real app uses, so the tests also pass in a venv that has `monorm-auth` installed.
 """
 
 import json
@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-import orm
-from orm import Registry, _native
-from orm._apps import resolve_apps
-from orm._native import SchemaError
+import monorm
+from monorm import Registry, _native
+from monorm._apps import resolve_apps
+from monorm._native import SchemaError
 
-PROJECT = 'datasource db {\n  provider = "sqlite"\n}\nimport "app:orm-fixture-auth" (prefix: "auth_")\nmodel Post {\n  id Int @id\n}\n'
-AUTH = 'import "app:orm-billing" (prefix: "b_")\nmodel User {\n  id Int @id\n  @@query_set("UserQueries")\n}\n'
+PROJECT = 'datasource db {\n  provider = "sqlite"\n}\nimport "app:monorm-fixture-auth" (prefix: "auth_")\nmodel Post {\n  id Int @id\n}\n'
+AUTH = 'import "app:monorm-billing" (prefix: "b_")\nmodel User {\n  id Int @id\n  @@query_set("UserQueries")\n}\n'
 BILLING = "model Invoice {\n  id Int @id\n}\n"
 
 
@@ -29,7 +29,7 @@ def install(site: Path, dist: str, schema: str | None, entry: str | None, *, pac
     info.mkdir()
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: 0.1\n")
     if entry is not None:
-        (info / "entry_points.txt").write_text(f"[orm.apps]\n{dist} = {entry}\n")
+        (info / "entry_points.txt").write_text(f"[monorm.apps]\n{dist} = {entry}\n")
     return site / package / "schema.prisma"
 
 
@@ -48,11 +48,11 @@ def project(tmp_path: Path, text: str = PROJECT) -> Path:
 
 
 def test_a_python_package_and_the_app_it_imports_resolve_without_importing_them(site: Path, tmp_path: Path) -> None:
-    auth = install(site, "orm-fixture-auth", AUTH, "orm_fixture_auth:schema.prisma")
-    billing = install(site, "orm-billing", BILLING, "orm_billing:schema.prisma")
+    auth = install(site, "monorm-fixture-auth", AUTH, "monorm_fixture_auth:schema.prisma")
+    billing = install(site, "monorm-billing", BILLING, "monorm_billing:schema.prisma")
     schema = project(tmp_path)
     apps = resolve_apps(schema)
-    assert apps == {"orm-fixture-auth": str(auth), "orm-billing": str(billing)}
+    assert apps == {"monorm-fixture-auth": str(auth), "monorm-billing": str(billing)}
     ir = json.loads(_native.compile_schema_file(str(schema), apps))
     assert [m["table"] for m in ir["models"]] == ["auth_b_invoice", "auth_user", "post"]
 
@@ -60,33 +60,33 @@ def test_a_python_package_and_the_app_it_imports_resolve_without_importing_them(
 def test_an_app_that_is_not_installed_is_left_for_the_loader_to_report(tmp_path: Path, site: Path) -> None:
     schema = project(tmp_path)
     assert resolve_apps(schema) == {}
-    with pytest.raises(SchemaError, match="app:orm-fixture-auth.*not installed.*install the `orm-fixture-auth` package"):
+    with pytest.raises(SchemaError, match="app:monorm-fixture-auth.*not installed.*install the `monorm-fixture-auth` package"):
         _native.compile_schema_file(str(schema), {})
 
 
 def test_an_app_without_schema_metadata_names_the_missing_entry_point(site: Path, tmp_path: Path) -> None:
-    install(site, "orm-fixture-auth", AUTH, None)
-    with pytest.raises(SchemaError, match="`orm-fixture-auth` package declares no schema.*orm.apps"):
+    install(site, "monorm-fixture-auth", AUTH, None)
+    with pytest.raises(SchemaError, match="`monorm-fixture-auth` package declares no schema.*monorm.apps"):
         resolve_apps(project(tmp_path))
 
 
 def test_an_entry_point_that_names_no_file_is_an_error(site: Path, tmp_path: Path) -> None:
-    install(site, "orm-fixture-auth", None, "orm_fixture_auth:schema.prisma")
-    with pytest.raises(SchemaError, match="orm_fixture_auth:schema.prisma.*not a schema file"):
+    install(site, "monorm-fixture-auth", None, "monorm_fixture_auth:schema.prisma")
+    with pytest.raises(SchemaError, match="monorm_fixture_auth:schema.prisma.*not a schema file"):
         resolve_apps(project(tmp_path))
 
 
 def test_the_command_line_resolves_apps_before_it_runs_a_command(site: Path, tmp_path: Path, capfd: pytest.CaptureFixture[str]) -> None:
-    from orm.__main__ import main
+    from monorm.__main__ import main
 
     schema = project(tmp_path)
     assert main(["--schema", str(schema), "check"]) == 1
     assert "not installed" in capfd.readouterr().err
-    install(site, "orm-fixture-auth", AUTH, "orm_fixture_auth:schema.prisma")
-    install(site, "orm-billing", BILLING, None)
+    install(site, "monorm-fixture-auth", AUTH, "monorm_fixture_auth:schema.prisma")
+    install(site, "monorm-billing", BILLING, None)
     assert main(["--schema", str(schema), "check"]) == 1
-    assert "`orm-billing` package declares no schema" in capfd.readouterr().err
-    (site / "orm_billing-0.1.dist-info" / "entry_points.txt").write_text("[orm.apps]\norm-billing = orm_billing:schema.prisma\n")
+    assert "`monorm-billing` package declares no schema" in capfd.readouterr().err
+    (site / "monorm_billing-0.1.dist-info" / "entry_points.txt").write_text("[monorm.apps]\norm-billing = monorm_billing:schema.prisma\n")
     assert main(["--schema", str(schema), "check"]) == 0
     assert "(3 models)" in capfd.readouterr().out
 
@@ -109,10 +109,10 @@ def test_an_import_cycle_across_directories_is_scanned_once(tmp_path: Path, monk
 
 
 def test_load_resolves_an_installed_app_and_loads_names_the_way_out(site: Path, tmp_path: Path) -> None:
-    install(site, "orm-fixture-auth", AUTH, "orm_fixture_auth:schema.prisma")
-    install(site, "orm-billing", BILLING, "orm_billing:schema.prisma")
+    install(site, "monorm-fixture-auth", AUTH, "monorm_fixture_auth:schema.prisma")
+    install(site, "monorm-billing", BILLING, "monorm_billing:schema.prisma")
     schema = project(tmp_path)
-    models = orm.load(schema, registry=Registry())
+    models = monorm.load(schema, registry=Registry())
     assert sorted(models) == ["Invoice", "Post", "User"]
-    with pytest.raises(SchemaError, match=r'app:orm-fixture-auth.*use `load\(path\)` or generate'):
-        orm.loads(PROJECT, registry=Registry())
+    with pytest.raises(SchemaError, match=r'app:monorm-fixture-auth.*use `load\(path\)` or generate'):
+        monorm.loads(PROJECT, registry=Registry())

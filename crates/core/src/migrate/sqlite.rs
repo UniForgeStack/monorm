@@ -100,7 +100,7 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
     // Rebuilding drops objects attached to a table. Refuse objects absent from the
     // previous snapshot rather than silently destroying user-created indexes/triggers.
     if !from.tables.is_empty() {
-        sql.push("CREATE TEMP TABLE __orm_object_guard (name TEXT CONSTRAINT orm_unmanaged_index_or_trigger CHECK (name IS NULL))".into());
+        sql.push("CREATE TEMP TABLE __orm_object_guard (name TEXT CONSTRAINT monorm_unmanaged_index_or_trigger CHECK (name IS NULL))".into());
         for t in &from.tables {
             let mut names = t.indexes.iter().map(|ix| super::model::quote_literal(&ix.name)).collect::<Vec<_>>();
             names.extend(t.triggers.iter().map(|tr| super::model::quote_literal(&super::model::object_name(&[&t.name, &tr.name, "trigger"]))));

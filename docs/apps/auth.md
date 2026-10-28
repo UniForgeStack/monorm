@@ -1,32 +1,32 @@
 # The auth app
 
-`orm-auth` gives your project users, roles, permissions and passwords.
+`monorm-auth` gives your project users, roles, permissions and passwords.
 It is one schema and one small package for each language.
 It has no native code.
-The Python package is `orm-auth` (import `orm_auth`).
-The npm package is `orm-auth`.
+The Python package is `monorm-auth` (import `monorm_auth`).
+The npm package is `monorm-auth`.
 
-The app needs the `orm.inherit` extension.
-Use a build that has it, for example `orm[full]`.
+The app needs the `monorm.inherit` extension.
+Use a build that has it, for example `monorm[full]`.
 See [inherit.md](../extensions/inherit.md).
 
 ## Install and import
 
 ```sh
-uv pip install orm-auth      # Python
-npm install orm-auth         # TypeScript
+uv pip install monorm-auth      # Python
+npm install monorm-auth         # TypeScript
 ```
 
 Import the schema in your main schema file:
 
 ```prisma
-import "app:orm-auth" (prefix: "auth_")
+import "app:monorm-auth" (prefix: "auth_")
 ```
 
 The tables are `auth_user`, `auth_role`, `auth_permission`, `auth_rolepermission`, `auth_user_roles` and `auth_user_permissions`.
 The prefix is optional.
 See [Installed app import](../schema/schema.md#installed-app-import) for how the import resolves.
-Run `orm generate` and `orm makemigrations` as usual.
+Run `monorm generate` and `monorm makemigrations` as usual.
 
 ## Models
 
@@ -50,7 +50,7 @@ The methods, `with_perm` and the permission rules are the same in both ways.
 Add the fields that you need in a model that overrides `User`:
 
 ```prisma
-import "app:orm-auth" (prefix: "auth_")
+import "app:monorm-auth" (prefix: "auth_")
 
 model MyUser {
   bio String?
@@ -136,13 +136,13 @@ A name without a label is an error: `ValueError` in Python and `TypeError` in Ty
 Call `sync_permissions` once for each set of models, for example after a migration:
 
 ```python
-from orm_auth import sync_permissions
+from monorm_auth import sync_permissions
 
 await sync_permissions([Post, Comment], "blog")
 ```
 
 ```ts
-import { syncPermissions } from "orm-auth";
+import { syncPermissions } from "monorm-auth";
 
 await syncPermissions([Post, Comment], "blog");
 ```

@@ -27,7 +27,7 @@ async function schemaWarnings(run: () => void): Promise<Error[]> {
 }
 
 test("a plain string check warns with file, line and column, and names raw()", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-warning-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-warning-"));
   try {
     const file = join(dir, "schema.prisma");
     writeFileSync(file, schema('"qty > 0"'));
@@ -40,7 +40,7 @@ test("a plain string check warns with file, line and column, and names raw()", a
 });
 
 test("generateTypescript emits the schema warnings", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-warning-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-warning-"));
   try {
     const file = join(dir, "schema.prisma");
     writeFileSync(file, schema('"qty > 0"'));
@@ -62,7 +62,7 @@ test("a native or raw() check does not warn", async () => {
 
 test("native adoption survives registry IR and unrelated migration snapshots", async () => {
   const { Migrations } = await import("../src/index.js");
-  const dir = mkdtempSync(join(tmpdir(), "orm-native-adoption-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-native-adoption-"));
   const registry = (check: string, extra = "") => {
     const reg = new Registry();
     loads(schema(check).replace("  qty Int", `${extra}  qty Int`), { registry: reg });

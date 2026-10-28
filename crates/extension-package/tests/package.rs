@@ -9,12 +9,12 @@ use std::{
 const KEYS: [(&str, &str); 3] = [
     ("darwin-arm64", "liborm_demo.dylib"),
     ("linux-x64", "liborm_demo.so"),
-    ("win32-x64", "orm_demo.dll"),
+    ("win32-x64", "monorm_demo.dll"),
 ];
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "orm-extension-package-{name}-{}",
+        "monorm-extension-package-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);
@@ -27,12 +27,12 @@ fn crate_dir(root: &Path, library: &str) -> PathBuf {
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(
         dir.join("Cargo.toml"),
-        "[package]\nname = \"orm_demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\ncrate-type = [\"cdylib\"]\n[workspace]\n",
+        "[package]\nname = \"monorm_demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\ncrate-type = [\"cdylib\"]\n[workspace]\n",
     )
     .unwrap();
     fs::write(dir.join("src/lib.rs"), "").unwrap();
     fs::write(
-        dir.join("orm-extension.toml"),
+        dir.join("monorm-extension.toml"),
         format!(
             "id = \"acme.demo\"\nversion = \"0.1.0\"\nabi = \"0.2\"\nlibrary = \"{library}\"\nschema_contract = 5\nlanguage_contract = 1\nlanguages = [\"python\"]\ndatabases = [\"postgres\"]\n"
         ),
@@ -137,7 +137,7 @@ fn manifest_hash(npm: &Path) -> String {
 #[test]
 fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
     let root = scratch("assemble");
-    let dir = crate_dir(&root, "orm_demo");
+    let dir = crate_dir(&root, "monorm_demo");
     let output = assemble(&root, &dir, &libraries(&root, None));
     assert!(
         output.status.success(),
@@ -174,12 +174,12 @@ fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
 #[test]
 fn assemble_names_the_missing_platform() {
     let root = scratch("missing");
-    let dir = crate_dir(&root, "orm_demo");
+    let dir = crate_dir(&root, "monorm_demo");
     let output = assemble(&root, &dir, &libraries(&root, Some("win32-x64")));
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("win32-x64") && error.contains("orm_demo.dll"),
+        error.contains("win32-x64") && error.contains("monorm_demo.dll"),
         "{error}"
     );
     fs::remove_dir_all(root).unwrap();
@@ -198,7 +198,7 @@ fn a_library_with_an_extension_cannot_be_assembled() {
 #[test]
 fn package_and_assemble_stamp_the_same_manifest_hash() {
     let root = scratch("hash");
-    let dir = crate_dir(&root, "orm_demo");
+    let dir = crate_dir(&root, "monorm_demo");
     let output = assemble(&root, &dir, &libraries(&root, None));
     assert!(
         output.status.success(),
@@ -220,7 +220,7 @@ fn package_and_assemble_stamp_the_same_manifest_hash() {
 #[test]
 fn library_copies_the_host_library_under_its_platform_key() {
     let root = scratch("library");
-    let dir = crate_dir(&root, "orm_demo");
+    let dir = crate_dir(&root, "monorm_demo");
     let out = root.join("built");
     let output = builder(&[&"library", &dir, &"--out", &out]);
     assert!(
@@ -245,8 +245,8 @@ const RUNTIMES: &str = "[python]\nsource = \"python\"\ndependencies = [\"opendal
 
 /// A crate with runtime sources and `RUNTIMES` (or another tail) after the header keys.
 fn crate_with_runtimes(root: &Path, tail: &str) -> PathBuf {
-    let dir = crate_dir(root, "orm_demo");
-    let manifest = dir.join("orm-extension.toml");
+    let dir = crate_dir(root, "monorm_demo");
+    let manifest = dir.join("monorm-extension.toml");
     let header = fs::read_to_string(&manifest).unwrap();
     fs::write(&manifest, format!("{header}languages = [\"python\", \"typescript\"]\n{tail}").replace("languages = [\"python\"]\ndatabases", "databases")).unwrap();
     fs::create_dir_all(dir.join("python")).unwrap();

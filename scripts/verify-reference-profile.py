@@ -4,15 +4,15 @@ import asyncio
 import json
 import sys
 
-import orm
-from orm import _native
+import monorm
+from monorm import _native
 
 expected = sys.argv[1] == "enabled"
 available = "reference-loading" in json.loads(_native.native_artifact())["capabilities"]
 assert available is expected
-assert ("orm._references" in sys.modules) is expected
-registry = orm.Registry()
-m = orm.loads(
+assert ("monorm._references" in sys.modules) is expected
+registry = monorm.Registry()
+m = monorm.loads(
     """datasource db {\n provider = "sqlite"\n}
 model Parent {\n id Int @id\n children Child[]\n}
 model Child {\n id Int @id\n parent_id Int\n parent Parent @relation(fields: [parent_id], references: [id])\n}""",
@@ -24,7 +24,7 @@ assert (type(m["Child"]._meta.relations["parent"]).__name__ == "ReferenceBelongs
 if not expected:
     before = registry.ir()
     try:
-        orm.define({"models": []}, registry=registry, required_capabilities=("reference-loading",))
+        monorm.define({"models": []}, registry=registry, required_capabilities=("reference-loading",))
     except TypeError as error:
         assert "rebuild" in str(error)
     else:
@@ -33,7 +33,7 @@ if not expected:
 
 
 async def verify():
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await m["Parent"].objects.using(db).insert(id=1)

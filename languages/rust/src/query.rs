@@ -4,7 +4,7 @@ use crate::{
     value::Values,
     *,
 };
-use orm_core::ir::{self, Expr, Operation};
+use monorm_core::ir::{self, Expr, Operation};
 use std::{
     future::{Future, IntoFuture},
     pin::Pin,
@@ -618,7 +618,7 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
         };
         let offset = offset
             .checked_add(start)
-            .ok_or_else(|| Error::Engine(orm_engine::Error::value("slice offset overflow")))?;
+            .ok_or_else(|| Error::Engine(monorm_engine::Error::value("slice offset overflow")))?;
         let requested = end.saturating_sub(start);
         let limit = match self.select.limit {
             Some(ir::Count::Value(n)) => n.saturating_sub(start).min(requested),
@@ -723,7 +723,7 @@ impl<M: Model, R, D> Query<M, R, Unsliced, D> {
                 .checked_sub(base.0.len())
                 .filter(|n| *n > 0)
                 .ok_or_else(|| {
-                    Error::Engine(orm_engine::Error::query(
+                    Error::Engine(monorm_engine::Error::query(
                         "in_bulk base filter exhausts the parameter budget",
                     ))
                 })?;
@@ -782,7 +782,7 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
                 .iter()
                 .find(|m| m.ir.name == M::NAME)
                 .ok_or_else(|| Error::Compatibility("unknown model".into()))?;
-            q.order = orm_engine::plan::effective_order(&self.db.schema, &q)?;
+            q.order = monorm_engine::plan::effective_order(&self.db.schema, &q)?;
             if q.order.is_empty() {
                 for &pos in &m.key {
                     q.order.push(ir::Order {
@@ -826,14 +826,14 @@ impl<'a, M: Model, R: Presence, L> Bound<'a, M, R, L> {
     pub async fn count(self) -> Result<i64> {
         let (q, p) = self.query.erase()?;
         match execute(self.db, Operation::Count(q), p).await? {
-            orm_engine::exec::Outcome::Count(n) => Ok(n),
+            monorm_engine::exec::Outcome::Count(n) => Ok(n),
             _ => Err(Error::Decode("unexpected count result".into())),
         }
     }
     pub async fn exists(self) -> Result<bool> {
         let (q, p) = self.query.erase()?;
         match execute(self.db, Operation::Exists(q), p).await? {
-            orm_engine::exec::Outcome::Exists(v) => Ok(v),
+            monorm_engine::exec::Outcome::Exists(v) => Ok(v),
             _ => Err(Error::Decode("unexpected exists result".into())),
         }
     }
@@ -856,24 +856,24 @@ impl<'a, M: Model, R: Presence, L: Send + 'a> IntoFuture for Bound<'a, M, R, L> 
 }
 /// A planned statement executes once by consuming itself.
 pub struct Statement<'a, M: Model, R = Optional> {
-    plan: orm_engine::plan::Plan,
+    plan: monorm_engine::plan::Plan,
     db: &'a Database<M::Schema>,
     _type: PhantomData<(M, R)>,
 }
 impl<M: Model, R: Presence> Statement<'_, M, R> {
     pub fn sql(&self) -> String {
-        orm_engine::exec::sql(
-            orm_core::dialect::Target::new(self.db.driver.dialect()),
+        monorm_engine::exec::sql(
+            monorm_core::dialect::Target::new(self.db.driver.dialect()),
             &self.plan,
         )
     }
-    pub fn inspect(&self) -> orm_engine::inspect::Inspection {
-        orm_engine::inspect::Inspection::plans(std::slice::from_ref(&self.plan), false)
+    pub fn inspect(&self) -> monorm_engine::inspect::Inspection {
+        monorm_engine::inspect::Inspection::plans(std::slice::from_ref(&self.plan), false)
     }
     pub async fn execute(self) -> Result<Vec<M>> {
-        let target = orm_core::dialect::Target::new(self.db.driver.dialect());
-        match orm_engine::exec::run(self.db.driver.as_ref(), target, self.plan).await? {
-            orm_engine::exec::Outcome::Select(rows) => R::collection(decode(self.db, &rows)?),
+        let target = monorm_core::dialect::Target::new(self.db.driver.dialect());
+        match monorm_engine::exec::run(self.db.driver.as_ref(), target, self.plan).await? {
+            monorm_engine::exec::Outcome::Select(rows) => R::collection(decode(self.db, &rows)?),
             _ => Err(Error::Decode("unexpected read result".into())),
         }
     }
@@ -882,22 +882,22 @@ pub(crate) fn plan<S: SchemaSpec>(
     db: &Database<S>,
     op: Operation,
     p: &Values,
-) -> Result<orm_engine::plan::Plan> {
+) -> Result<monorm_engine::plan::Plan> {
     if let Operation::Select(q) | Operation::Count(q) | Operation::Exists(q) = &op {
         validate_views(&db.schema, q)?;
         for count in [q.limit, q.offset].into_iter().flatten() {
             if let ir::Count::Value(n) = count {
                 if n > i64::MAX as u64 {
-                    return Err(Error::Engine(orm_engine::Error::value(
+                    return Err(Error::Engine(monorm_engine::Error::value(
                         "row count exceeds signed 64-bit range",
                     )));
                 }
             }
         }
     }
-    Ok(orm_engine::plan::Planner::plan(
+    Ok(monorm_engine::plan::Planner::plan(
         &db.schema,
-        orm_core::dialect::Target::new(db.driver.dialect()),
+        monorm_core::dialect::Target::new(db.driver.dialect()),
         &op,
         p,
     )?)
@@ -907,11 +907,11 @@ async fn execute<S: SchemaSpec>(
     db: &Database<S>,
     op: Operation,
     p: Values,
-) -> Result<orm_engine::exec::Outcome> {
+) -> Result<monorm_engine::exec::Outcome> {
     let plan = plan(db, op, &p)?;
-    Ok(orm_engine::exec::run(
+    Ok(monorm_engine::exec::run(
         db.driver.as_ref(),
-        orm_core::dialect::Target::new(db.driver.dialect()),
+        monorm_core::dialect::Target::new(db.driver.dialect()),
         plan,
     )
     .await?)
@@ -920,13 +920,13 @@ pub(crate) async fn run_select<S: SchemaSpec>(
     db: &Database<S>,
     q: ir::Select,
     p: Values,
-) -> Result<Box<orm_engine::exec::Selected>> {
+) -> Result<Box<monorm_engine::exec::Selected>> {
     match execute(db, Operation::Select(q), p).await? {
-        orm_engine::exec::Outcome::Select(s) => Ok(s),
+        monorm_engine::exec::Outcome::Select(s) => Ok(s),
         _ => Err(Error::Decode("unexpected read result".into())),
     }
 }
-fn decode<M: Model>(db: &Database<M::Schema>, s: &orm_engine::exec::Selected) -> Result<Vec<M>> {
+fn decode<M: Model>(db: &Database<M::Schema>, s: &monorm_engine::exec::Selected) -> Result<Vec<M>> {
     crate::row::snapshot(&db.schema, s)?
         .iter()
         .map(|data| M::decode(&DecodedRow { data }))

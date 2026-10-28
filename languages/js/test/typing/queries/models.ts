@@ -1,4 +1,4 @@
-// Generated from schema.prisma by `orm generate typescript`. Do not edit.
+// Generated from schema.prisma by `monorm generate typescript`. Do not edit.
 //
 // The models are built at runtime from the compiled schema below; the declarations
 // give them their static types. Per model: the row type (`User`), the shapes insert /

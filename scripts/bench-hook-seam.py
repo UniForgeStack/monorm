@@ -10,7 +10,7 @@ import statistics
 import sys
 import time
 
-import orm
+import monorm
 
 SCHEMA = """datasource db { provider = "sqlite" }
 model Item {
@@ -24,9 +24,9 @@ WRITE, READ = 10_000, 1_000
 
 
 async def main(label: str, rounds: int, out: str) -> None:
-    registry = orm.Registry()
-    item = orm.loads(SCHEMA, registry=registry)["Item"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    item = monorm.loads(SCHEMA, registry=registry)["Item"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     rows = [{"name": f"item {i}", "qty": i, "note": None} for i in range(WRITE)]
     write: list[float] = []

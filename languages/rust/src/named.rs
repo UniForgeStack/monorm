@@ -105,7 +105,7 @@ where
         row: &M,
     ) -> Result<<Cached<P> as RelationState<P, C>>::Value> {
         let ir =
-            orm_core::ir::SchemaIr::from_json(M::Schema::JSON).map_err(Error::Compatibility)?;
+            monorm_core::ir::SchemaIr::from_json(M::Schema::JSON).map_err(Error::Compatibility)?;
         let root = ir
             .models
             .iter()

@@ -1,7 +1,7 @@
 /** Permission names (`"blog.add_post"`) and `syncPermissions()`. */
 
-import { registry as defaultRegistry, type Database, type ModelClass, type ModelSpec, type Registry } from "orm";
-import { behaviorValue } from "orm/ext";
+import { registry as defaultRegistry, type Database, type ModelClass, type ModelSpec, type Registry } from "@ufstack/monorm";
+import { behaviorValue } from "@ufstack/monorm/ext";
 
 export const ACTIONS = ["add", "change", "delete", "view"] as const;
 
@@ -16,7 +16,7 @@ export function splitPerm(perm: string): [label: string, codename: string] {
 
 /**
  * The model class for `name`: the model that overrides it (`@@inherit.override`), else `name` itself.
- * The app does not depend on the `@orm/inherit` package, so it reads `model_overrides` itself.
+ * The app does not depend on the `@ufstack/monorm-inherit` package, so it reads `model_overrides` itself.
  *
  * @internal
  */

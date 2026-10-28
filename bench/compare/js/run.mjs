@@ -9,7 +9,7 @@
 // `run` does `check` first and stops when it fails; the check compares result and database state at iterations
 // 0, 1 and the last one. Before each round the runner waits until the 1-minute load is at most `--max-load`.
 // Each case runs WARMUP_CALLS untimed calls first, then `--iters` timed calls. `--orm-artifact DIR` adds `orm-all`: the `orm` runner with
-// ORM_NATIVE=DIR/orm.node, the `all` artifact of run.sh (tooling profile).
+// MONORM_NATIVE=DIR/monorm.node, the `all` artifact of run.sh (tooling profile).
 // `profile` runs one case per contender with the V8 CPU profiler on its timed calls and their setup (Node only); it writes
 // `<contender>-<case>.cpuprofile` (open it in Chrome DevTools) and `<contender>-<case>.top.txt`, the self-time top list.
 import { spawnSync } from "node:child_process";
@@ -139,7 +139,7 @@ function spawn(name, cases, mode, iters, artifact, extra = []) { // `iters`: a c
   const env = { ...process.env, BENCH_DATABASE_URL: databaseUrl() };
   if (name === "orm-all") {
     if (!artifact) throw new Error("orm-all needs --orm-artifact");
-    env.ORM_NATIVE = join(artifact, "orm.node");
+    env.MONORM_NATIVE = join(artifact, "monorm.node");
   }
   const out = join(tmpdir(), `bench-js-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
   const cmd = [join(HERE, "run.mjs"), "worker", "--contender", name, "--cases", cases.join(","), "--mode", mode, "--iters", String(iters), "--out", out, ...extra];
@@ -196,7 +196,7 @@ async function environment(infos, artifact, before, extra) {
     pool_size: POOL_SIZE,
     uptime_before: before,
     uptime_after: uptime(),
-    orm_artifact: artifact ?? null,
+    monorm_artifact: artifact ?? null,
     warmup_calls: WARMUP_CALLS,
     contenders: infos,
     ...extra,
@@ -287,7 +287,7 @@ const { values: v } = parseArgs({
   options: {
     cases: { type: "string", default: "" },
     contenders: { type: "string", default: "" },
-    "orm-artifact": { type: "string" },
+    "monorm-artifact": { type: "string" },
     rounds: { type: "string", default: "20" },
     iters: { type: "string", default: cmd === "profile" ? "200" : "20" },
     top: { type: "string", default: "25" },
@@ -298,7 +298,7 @@ const { values: v } = parseArgs({
     mode: { type: "string" },
   },
 });
-const a = { cases: v.cases, contenders: v.contenders, artifact: v["orm-artifact"], rounds: Number(v.rounds), iters: Number(v.iters), checkAt: v.iters, maxLoad: Number(v["max-load"]), out: v.out, contender: v.contender, mode: v.mode, top: Number(v.top), profileFile: v["profile-file"] };
+const a = { cases: v.cases, contenders: v.contenders, artifact: v["monorm-artifact"], rounds: Number(v.rounds), iters: Number(v.iters), checkAt: v.iters, maxLoad: Number(v["max-load"]), out: v.out, contender: v.contender, mode: v.mode, top: Number(v.top), profileFile: v["profile-file"] };
 if (cmd === "worker") await worker(a);
 else if (cmd === "check") await check(pick(a), a.cases ? a.cases.split(",") : defaultCases(), a.artifact, a.iters);
 else if (cmd === "run") await run(a);

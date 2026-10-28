@@ -1,6 +1,6 @@
 //! Selection descriptors carry finite output types; execution still uses shared IR.
 use crate::*;
-use orm_core::ir;
+use monorm_core::ir;
 use std::marker::PhantomData;
 
 pub enum DefaultSelection {}

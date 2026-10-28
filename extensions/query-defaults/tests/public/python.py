@@ -1,22 +1,22 @@
-"""`@@query.defaults` from the schema language to a query; needs the `orm-query-defaults` package."""
+"""`@@query.defaults` from the schema language to a query; needs the `monorm-query-defaults` package."""
 
 import asyncio
 import os
 from pathlib import Path
 
-import orm
-from orm._packages import resolve_extensions
+import monorm
+from monorm._packages import resolve_extensions
 
 FIXTURE = Path(__file__).parent.parent.joinpath("fixtures/schema.prisma").read_text()
-assert "orm.query-defaults" in resolve_extensions(), "install the orm-query-defaults package"
+assert "monorm.query-defaults" in resolve_extensions(), "install the monorm-query-defaults package"
 
 
 async def run(provider: str, url: str) -> None:
-    registry = orm.Registry()
-    models = orm.loads(FIXTURE.replace('"sqlite"', f'"{provider}"'), registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(FIXTURE.replace('"sqlite"', f'"{provider}"'), registry=registry)
     Policy, Scoped = models["Policy"], models["Scoped"]
     Notice, Draft, Archive = models["Notice"], models["Draft"], models["Archive"]
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
@@ -29,7 +29,7 @@ async def run(provider: str, url: str) -> None:
         assert row.to_dict() == {"id": row.pk, "name": "Alice"}, row.to_dict()
         try:
             row.bio
-        except orm.NotLoaded:
+        except monorm.NotLoaded:
             pass
         else:
             raise AssertionError("a selected-out field was loaded")
@@ -42,18 +42,18 @@ async def run(provider: str, url: str) -> None:
         await scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=False)
         try:
             await scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=True)
-        except orm.QueryError as e:
+        except monorm.QueryError as e:
             for text in (
                 "Scoped",
                 'default "tenant"',
-                "orm.query-defaults",
+                "monorm.query-defaults",
                 "scope.shop",
                 'without_defaults("tenant")',
             ):
                 assert text in str(e), e
         else:
             raise AssertionError("an upsert with no scope ran")
-        with orm.scope(shop=2):
+        with monorm.scope(shop=2):
             blocked = scoped.insert(id=first.pk, shop_id=9).on_conflict(Scoped.id, update=True)
             blocked.inspect()
             assert await blocked == 0
@@ -65,7 +65,7 @@ async def run(provider: str, url: str) -> None:
             )
         assert (await scoped.without_defaults().get(Scoped.id == first.pk)).shop_id == 1
         assert (await scoped.without_defaults().get(Scoped.id == second.pk)).shop_id == 3
-        with orm.scope(shop=3):
+        with monorm.scope(shop=3):
             await scoped.insert(id=second.pk, shop_id=2).on_conflict(Scoped.id, update=True)
         # Non-scoped defaults also guard the existing row, not EXCLUDED.
         hidden = await Policy.objects.using(db).without_defaults().get(Policy.name == "hidden")
@@ -78,31 +78,31 @@ async def run(provider: str, url: str) -> None:
         assert (await Policy.objects.using(db).without_defaults().get(Policy.id == hidden.pk)).name == "hidden"
         try:
             await Scoped.objects.using(db).count()
-        except orm.QueryError as e:
+        except monorm.QueryError as e:
             for text in (
                 "Scoped",
                 'default "tenant"',
-                "orm.query-defaults",
+                "monorm.query-defaults",
                 "scope.shop",
                 'without_defaults("tenant")',
             ):
                 assert text in str(e), e
         else:
             raise AssertionError("a read with no scope ran")
-        with orm.scope(shop=2):
+        with monorm.scope(shop=2):
             assert [r.shop_id for r in await Scoped.objects.using(db)] == [2]
-        with orm.scope(shop=None):
+        with monorm.scope(shop=None):
             try:
                 await Scoped.objects.using(db).count()
-            except orm.QueryError as e:
+            except monorm.QueryError as e:
                 assert "scope.shop is None" in str(e), e
             else:
                 raise AssertionError("a read with a None scope ran")
             assert await Scoped.objects.using(db).without_defaults().count() == 2
-        with orm.scope(shop=0):
+        with monorm.scope(shop=0):
             assert await Scoped.objects.using(db).count() == 0
         for falsy in ("", False):
-            with orm.scope(shop=falsy):
+            with monorm.scope(shop=falsy):
                 try:
                     await Scoped.objects.using(db).count()
                 except Exception as e:
@@ -130,7 +130,7 @@ async def run(provider: str, url: str) -> None:
         ]
         try:
             await notices.without_defaults("nope").count()
-        except orm.QueryError as e:
+        except monorm.QueryError as e:
             assert 'unknown default "nope"; available defaults: ["mine", "published", "query"]' in str(e), e
         else:
             raise AssertionError("an unknown default name ran")
@@ -146,7 +146,7 @@ async def run(provider: str, url: str) -> None:
             ('@@query.filter("a", "owner == 1")\n @@query.filter("a", "owner == 2")', "is given twice"),
         ):
             try:
-                orm.loads(f"model Bad {{\n id Int @id\n owner Int\n {source}\n}}", registry=orm.Registry())
+                monorm.loads(f"model Bad {{\n id Int @id\n owner Int\n {source}\n}}", registry=monorm.Registry())
             except Exception as e:
                 assert text in str(e), e
             else:

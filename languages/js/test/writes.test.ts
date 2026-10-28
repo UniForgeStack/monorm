@@ -167,7 +167,7 @@ test("getOrInsert checks the lookup", async () => {
 
 test("getOrInsert reads the primary", async () => {
   // The replica lags: it has none of the primary's rows.
-  const replica = await replicaUrl("orm_s3_replica_js");
+  const replica = await replicaUrl("monorm_s3_replica_js");
   assert.equal(new URL(replica).pathname, `${new URL(DATABASE_URL).pathname}_orm_s3_replica_js`);
   const routed = await connect(DATABASE_URL, { replicas: [replica], default: false, maxConnections: 2 });
   try {

@@ -629,7 +629,7 @@ table above uses alternating runs.
 
 ## Current Rust engine versus SeaORM — 2026-10-03
 
-Direct Rust comparison of the current `orm-engine` against unmodified SeaORM
+Direct Rust comparison of the current `monorm-engine` against unmodified SeaORM
 2.0.4 / SQLx 0.9.0. This measures the current planner and database driver,
 separately from the older SeaORM-based `ormcore` prototype above.
 

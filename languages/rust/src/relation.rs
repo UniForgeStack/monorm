@@ -1,6 +1,6 @@
 use crate::row::CacheData;
 use crate::*;
-use orm_core::ir;
+use monorm_core::ir;
 use std::marker::PhantomData;
 
 /// Queryable does not imply a cache. No cached() method exists on this state.

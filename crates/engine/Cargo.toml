@@ -1,16 +1,16 @@
 [package]
-name = "orm-engine"
+name = "monorm-engine"
 version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Query planner and database drivers shared by the language bindings. No binding code."
 
 [lib]
-name = "orm_engine"
+name = "monorm_engine"
 
 [dependencies]
-orm-core = { path = "../core", default-features = false }
-orm-contracts = { path = "../contracts" }
+monorm-core = { path = "../core", default-features = false }
+monorm-contracts = { path = "../contracts" }
 # SQL building: one builder per dialect (multi-database support lives here).
 sea-query = { version = "1.0", default-features = false, features = ["with-chrono", "with-json", "with-uuid", "with-bigdecimal", "postgres-array", "thread-safe", "hashable-value"] }
 # Postgres driver (see src/db/postgres.rs).
@@ -33,7 +33,7 @@ blake2 = "0.10"
 
 [dev-dependencies]
 # The tests generate models through the default code generators.
-orm-core = { path = "../core", features = ["testing"] }
+monorm-core = { path = "../core", features = ["testing"] }
 tokio = { version = "1", features = ["time"] }
 
 [features]

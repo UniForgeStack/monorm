@@ -3,15 +3,15 @@
 import datetime
 
 import pytest
-import orm
+import monorm
 from conftest import DATABASE_URL
 
 
 @pytest.fixture
 async def lite():
-    registry = orm.Registry()
-    orm.loads('datasource db {\n  provider = "sqlite"\n}\nmodel Person {\n  id Int @id\n}\n', registry=registry)
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    monorm.loads('datasource db {\n  provider = "sqlite"\n}\nmodel Person {\n  id Int @id\n}\n', registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     yield db
     await db.close()
 
@@ -20,8 +20,8 @@ async def lite():
 async def single():
     """A Postgres pool with one connection, so every call shares one statement cache."""
     try:
-        db = await orm.connect(DATABASE_URL, registry=orm.Registry(), default=False, max_connections=1)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(DATABASE_URL, registry=monorm.Registry(), default=False, max_connections=1)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable: {e}")
     await db.execute("DROP TABLE IF EXISTS fx_stale")
     yield db
@@ -36,7 +36,7 @@ async def test_postgres_a_fetch_after_a_schema_change_prepares_again(single):
     sql = "SELECT * FROM fx_stale WHERE id = $1"
     assert await db.fetch(sql, 1) == [{"id": 1}]
     await db.execute("ALTER TABLE fx_stale ADD COLUMN extra int DEFAULT 5")
-    with pytest.raises(orm.DatabaseError) as e:
+    with pytest.raises(monorm.DatabaseError) as e:
         await db.fetch(sql, 1)
     assert e.value.sqlstate == "0A000"
     assert await db.fetch(sql, 1) == [{"id": 1, "extra": 5}]
@@ -66,14 +66,14 @@ async def test_sqlite_not_null_check_and_unique_have_a_sqlstate(lite):
     await lite.execute(
         "CREATE TABLE fx (id integer PRIMARY KEY, n text NOT NULL, c integer CHECK (c > 0), u text UNIQUE)"
     )
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await lite.execute("INSERT INTO fx (id, n) VALUES (1, NULL)")
     assert e.value.sqlstate == "23502"
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await lite.execute("INSERT INTO fx (id, n, c) VALUES (1, 'a', 0)")
     assert e.value.sqlstate == "23514"
     await lite.execute("INSERT INTO fx (id, n, u) VALUES (1, 'a', 'x')")
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await lite.execute("INSERT INTO fx (id, n, u) VALUES (2, 'a', 'x')")
     assert (e.value.sqlstate, e.value.constraint) == ("23505", None)
 
@@ -81,9 +81,9 @@ async def test_sqlite_not_null_check_and_unique_have_a_sqlstate(lite):
 async def test_postgres_not_null_and_check_have_a_sqlstate(single):
     await single.execute("DROP TABLE IF EXISTS fx_stale")
     await single.execute("CREATE TABLE fx_stale (id int NOT NULL, c int CONSTRAINT fx_c CHECK (c > 0))")
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await single.execute("INSERT INTO fx_stale (id) VALUES (NULL)")
     assert e.value.sqlstate == "23502"
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await single.execute("INSERT INTO fx_stale (id, c) VALUES (1, 0)")
     assert (e.value.sqlstate, e.value.constraint) == ("23514", "fx_c")

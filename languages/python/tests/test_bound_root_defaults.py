@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-import orm
-from orm import func
+import monorm
+from monorm import func
 from artifact_caps import has_extension
 
 SOURCE = """
@@ -28,16 +28,16 @@ model BqKid {
 """
 
 query_defaults = pytest.mark.skipif(
-    not has_extension("orm.query-defaults"), reason="requires the orm.query-defaults package"
+    not has_extension("monorm.query-defaults"), reason="requires the monorm.query-defaults package"
 )
 
 
 @pytest.fixture
 async def owners():
-    registry = orm.Registry()
-    models = orm.loads(SOURCE, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(SOURCE, registry=registry)
     Owner, Kid = models["BqOwner"], models["BqKid"]
-    db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    db = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -66,7 +66,7 @@ async def test_a_bound_read_ignores_the_root_default_and_a_filter_still_narrows(
     assert await Owner.objects.of(held).using(db).count() == 2
     assert await Owner.objects.of(held).using(db).filter(Owner.id == 2) == [held[1]]
     assert await held[1].qs().using(db) == [held[1]]
-    assert await orm.of(held[1]).using(db) == [held[1]]
+    assert await monorm.of(held[1]).using(db) == [held[1]]
 
 
 @query_defaults

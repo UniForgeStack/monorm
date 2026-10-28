@@ -1,4 +1,4 @@
-// `@@query.defaults` from the schema language to a query; needs the `@orm/query-defaults` package.
+// `@@query.defaults` from the schema language to a query; needs the `@ufstack/monorm-query-defaults` package.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { connect, loads, NotLoaded, Registry, scope } from '../../../../languages/js/dist/src/index.js';
@@ -7,7 +7,7 @@ import { resolveExtensions } from '../../../../languages/js/dist/src/packages.js
 const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.url), 'utf8');
 // Packages are discovered from the consumer's working directory.
 process.chdir(new URL('../../../../languages/js/', import.meta.url).pathname);
-assert.ok('orm.query-defaults' in resolveExtensions(), 'install the @orm/query-defaults package');
+assert.ok('monorm.query-defaults' in resolveExtensions(), 'install the @ufstack/monorm-query-defaults package');
 
 async function run(provider, url) {
   const registry = new Registry();
@@ -28,7 +28,7 @@ async function run(provider, url) {
     const scoped = Scoped.objects.using(db);
     const [first, second] = await scoped.insertMany([{ shopId: 1 }, { shopId: 2 }]).returning();
     await scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: false });
-    await assert.rejects(scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: true }), /Scoped default "tenant" from orm\.query-defaults \(without_defaults\("tenant"\)\) reads scope\.shop/);
+    await assert.rejects(scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: true }), /Scoped default "tenant" from monorm\.query-defaults \(without_defaults\("tenant"\)\) reads scope\.shop/);
     await scope({ shop: 2 }, async () => {
       scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: true }).inspect();
       assert.equal(await scoped.insert({ id: first.pk, shopId: 9 }).onConflict(Scoped.id, { update: true }), 0);
@@ -42,7 +42,7 @@ async function run(provider, url) {
     const hidden = await Policy.objects.using(db).withoutDefaults().get(Policy.name.eq('hidden'));
     assert.equal(await Policy.objects.using(db).insert({ id: hidden.pk, name: 'changed', bio: 'new' }).onConflict(Policy.id, { update: true }), 0);
     assert.equal((await Policy.objects.using(db).withoutDefaults().get(Policy.id.eq(hidden.pk))).name, 'hidden');
-    await assert.rejects(Scoped.objects.using(db).count(), /Scoped default "tenant" from orm\.query-defaults \(without_defaults\("tenant"\)\) reads scope\.shop/);
+    await assert.rejects(Scoped.objects.using(db).count(), /Scoped default "tenant" from monorm\.query-defaults \(without_defaults\("tenant"\)\) reads scope\.shop/);
     await scope({ shop: 2 }, async () => assert.deepEqual((await Scoped.objects.using(db)).map((r) => r.shopId), [2]));
     await scope({ shop: null }, async () => {
       await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop is None\/null/);

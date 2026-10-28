@@ -5,15 +5,15 @@ mod sqlite {
 mod postgres {
     include!(concat!(env!("OUT_DIR"), "/postgres.rs"));
 }
-orm_client::params! {mod range {lo: i32, hi: i32}}
-orm_client::params! {mod pick {who: String}}
+monorm_client::params! {mod range {lo: i32, hi: i32}}
+monorm_client::params! {mod pick {who: String}}
 
 /// Hand-written packs reach the runtime guards that `params!` packs satisfy statically.
-struct Raw(Vec<(&'static str, std::any::TypeId, orm_client::BindValue)>);
-impl orm_client::Has<range::lo> for Raw {}
-impl orm_client::Has<range::hi> for Raw {}
-impl orm_client::Pack for Raw {
-    fn values(&self) -> Vec<(&'static str, std::any::TypeId, orm_client::BindValue)> {
+struct Raw(Vec<(&'static str, std::any::TypeId, monorm_client::BindValue)>);
+impl monorm_client::Has<range::lo> for Raw {}
+impl monorm_client::Has<range::hi> for Raw {}
+impl monorm_client::Pack for Raw {
+    fn values(&self) -> Vec<(&'static str, std::any::TypeId, monorm_client::BindValue)> {
         self.0.clone()
     }
 }
@@ -21,9 +21,9 @@ impl orm_client::Pack for Raw {
 macro_rules! exercise {
     ($module:ident,$url:expr) => {{
         use $module::{Database,ScopedNote,User};
-        use orm_client::Error;
+        use monorm_client::Error;
         use std::any::TypeId;
-        let raw=orm_engine::db::connect($url,1).await.unwrap();
+        let raw=monorm_engine::db::connect($url,1).await.unwrap();
         raw.batch("DROP TABLE IF EXISTS rust_read_posts; DROP TABLE IF EXISTS rust_read_users; DROP TABLE IF EXISTS rust_scoped_notes; CREATE TABLE rust_read_users(id INTEGER PRIMARY KEY,email TEXT NOT NULL,nickname TEXT,kind TEXT NOT NULL); INSERT INTO rust_read_users VALUES(1,'a',NULL,'r'),(2,'b','B','w'),(3,'c',NULL,'r'),(4,'d','D','w'); CREATE TABLE rust_scoped_notes(id INTEGER PRIMARY KEY,shop INTEGER NOT NULL,title TEXT NOT NULL); INSERT INTO rust_scoped_notes VALUES(1,1,'a'),(2,1,'b'),(3,2,'c');".into()).await.unwrap();
         raw.close().await;
         let db=Database::connect($url,1).await.unwrap();
@@ -42,14 +42,14 @@ macro_rules! exercise {
         let statement=by_name.bind(&pick::Args{who:"x' OR 1=1".into()}).unwrap().using(&db).statement().unwrap();
         assert_eq!(statement.execute().await.unwrap().len(),0);
         // Runtime guards: conflicting types, missing and NULL values.
-        let lo=orm_client::BindValue::Int(Some(1));
+        let lo=monorm_client::BindValue::Int(Some(1));
         let conflict=Raw(vec![("lo",TypeId::of::<String>(),lo.clone()),("hi",TypeId::of::<i32>(),lo.clone())]);
         assert!(matches!(template.bind(&conflict),Err(Error::Compatibility(m)) if m.contains("conflicting types for parameter lo")));
         let twice=Raw(vec![("lo",TypeId::of::<i32>(),lo.clone()),("lo",TypeId::of::<i32>(),lo.clone()),("hi",TypeId::of::<i32>(),lo.clone())]);
         assert!(matches!(template.bind(&twice),Err(Error::Compatibility(_))));
         let missing=Raw(vec![("lo",TypeId::of::<i32>(),lo.clone())]);
         assert!(matches!(template.bind(&missing),Err(Error::Compatibility(m)) if m.contains("missing value for parameter hi")));
-        let null=Raw(vec![("lo",TypeId::of::<i32>(),orm_client::BindValue::Int(None)),("hi",TypeId::of::<i32>(),lo.clone())]);
+        let null=Raw(vec![("lo",TypeId::of::<i32>(),monorm_client::BindValue::Int(None)),("hi",TypeId::of::<i32>(),lo.clone())]);
         assert!(matches!(template.bind(&null),Err(Error::Engine(e)) if e.to_string().contains("can't be None")));
         // A scope value lives in the template; `bind(..)?.scope(..)` replaces it for one execution.
         let notes=ScopedNote::objects.order_by(ScopedNote::id.asc()).prepare();
@@ -76,7 +76,7 @@ macro_rules! exercise {
         let both=scoped().or(ScopedNote::objects.filter(ScopedNote::title.eq("b".to_string())).scope("shop",2));
         assert!(matches!(&both,Err(Error::Compatibility(m)) if m.contains("both sides")));
         // A scope on a subquery is an error, not a dropped value.
-        let inner=orm_client::scalar(|_:orm_client::Parent<User>|orm_client::Subquery::new(ScopedNote::objects.scope("shop",1)).limit_one().select(ScopedNote::title));
+        let inner=monorm_client::scalar(|_:monorm_client::Parent<User>|monorm_client::Subquery::new(ScopedNote::objects.scope("shop",1)).limit_one().select(ScopedNote::title));
         let err=User::objects.select((User::id,inner)).using(&db).all().await;
         assert!(matches!(&err,Err(Error::Compatibility(m)) if m.contains("scope shop on a subquery")),"{err:?}");
         db.close().await;
@@ -84,7 +84,7 @@ macro_rules! exercise {
 }
 #[tokio::test]
 async fn sqlite_prepared_parameters() {
-    let path = std::env::temp_dir().join(format!("orm-rust-prepared-{}.db", std::process::id()));
+    let path = std::env::temp_dir().join(format!("monorm-rust-prepared-{}.db", std::process::id()));
     let url = format!("sqlite://{}", path.display());
     exercise!(sqlite, &url);
     std::fs::remove_file(path).unwrap();

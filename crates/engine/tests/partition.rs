@@ -1,6 +1,6 @@
 #![cfg(feature = "postgres")]
-use orm_core::{dsl, migrate};
-use orm_engine::{db, introspect};
+use monorm_core::{dsl, migrate};
+use monorm_engine::{db, introspect};
 
 const SOURCE: &str = r#"
 enum Kind {
@@ -32,7 +32,7 @@ of = Reward
 default = true
 }
 "#;
-fn schema(source: &str) -> orm_core::schema::Schema {
+fn schema(source: &str) -> monorm_core::schema::Schema {
     dsl::check(dsl::compile(source, None).unwrap()).unwrap().1
 }
 

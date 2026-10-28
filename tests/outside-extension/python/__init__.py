@@ -2,9 +2,9 @@
 from collections.abc import Mapping
 from typing import Any, Self
 
-from orm import QuerySet
-from orm.adapters import Pending, register_field_adapter
-from orm.ext import ModelT
+from monorm import QuerySet
+from monorm.adapters import Pending, register_field_adapter
+from monorm.ext import ModelT
 
 MANIFEST_HASH = "feb1941ebdbd1c55d4a3233c741b85b89b714f1f8eb907fc24a43e0bab78afce"
 

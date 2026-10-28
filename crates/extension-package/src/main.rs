@@ -12,9 +12,9 @@ use std::{
 type Error = Box<dyn std::error::Error>;
 
 const USAGE: &str = "usage:
-  orm-extension-package package <crate-dir> --out <dir> [--tsc <executable>] [--features <list>]
-  orm-extension-package library <crate-dir> --out <dir> [--features <list>]
-  orm-extension-package assemble <crate-dir> --libraries <dir> --out <dir> [--tsc <executable>]";
+  monorm-extension-package package <crate-dir> --out <dir> [--tsc <executable>] [--features <list>]
+  monorm-extension-package library <crate-dir> --out <dir> [--features <list>]
+  monorm-extension-package assemble <crate-dir> --libraries <dir> --out <dir> [--tsc <executable>]";
 
 /// Platform key, library file prefix and suffix. The keys are the keys of the native profiles.
 const PLATFORMS: [(&str, &str, &str); 3] = [
@@ -60,9 +60,9 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, Error> {
     Ok(parsed)
 }
 
-fn read_manifest(dir: &Path) -> Result<orm_contracts::extension::Manifest, Error> {
-    let text = std::fs::read_to_string(dir.join("orm-extension.toml"))?;
-    let manifest: orm_contracts::extension::Manifest = toml::from_str(&text)?;
+fn read_manifest(dir: &Path) -> Result<monorm_contracts::extension::Manifest, Error> {
+    let text = std::fs::read_to_string(dir.join("monorm-extension.toml"))?;
+    let manifest: monorm_contracts::extension::Manifest = toml::from_str(&text)?;
     manifest.check_contracts()?;
     if manifest.library.is_none() {
         return Err("a package needs `library`".into());
@@ -138,7 +138,7 @@ fn build_library(dir: &Path, features: Option<&str>) -> Result<PathBuf, Error> {
 fn write_packages(
     dir: &Path,
     out: &Path,
-    manifest: &orm_contracts::extension::Manifest,
+    manifest: &monorm_contracts::extension::Manifest,
     files: &[(PathBuf, String)],
     tag: &str,
     tsc: &str,

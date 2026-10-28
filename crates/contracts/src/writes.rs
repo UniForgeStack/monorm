@@ -30,7 +30,7 @@ pub enum AssignValue {
     /// the update, as in SQL.
     Expr(serde_json::Value),
     /// A query IR expression that a library hook (point 6) returns. The hook reads the request context, and the
-    /// engine calls it once for each update statement. `orm generate` evaluates a hook that reads no context once
+    /// engine calls it once for each update statement. `monorm generate` evaluates a hook that reads no context once
     /// and stores the result as `Expr`.
     ExprHook { export: String },
 }

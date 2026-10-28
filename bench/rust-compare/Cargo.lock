@@ -1598,7 +1598,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-contracts"
+name = "monorm-contracts"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1606,12 +1606,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-core"
+name = "monorm-core"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "chrono",
- "orm-contracts",
+ "monorm-contracts",
  "serde",
  "serde_json",
  "toml",
@@ -1619,7 +1619,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-engine"
+name = "monorm-engine"
 version = "0.1.0"
 dependencies = [
  "bigdecimal",
@@ -1627,7 +1627,7 @@ dependencies = [
  "bytes",
  "chrono",
  "deadpool-postgres",
- "orm-core",
+ "monorm-core",
  "rusqlite",
  "rustls",
  "sea-query",
@@ -1642,15 +1642,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "orm-rust-compare"
+name = "monorm-rust-compare"
 version = "0.1.0"
 dependencies = [
  "deadpool-postgres",
  "diesel",
  "diesel-async",
  "futures-util",
- "orm-core",
- "orm-engine",
+ "monorm-core",
+ "monorm-engine",
  "sea-orm",
  "sea-query",
  "serde_json",

@@ -1,14 +1,14 @@
-import type { ModelSpec, QuerySet } from "orm";
-import { and, or, VersionConflict } from "orm";
-import { behaviorField, behaviorRecords, boundAtomic, boundFresh, boundGroups, boundGuarded, boundMeta, loadedValue } from "orm/ext";
-import type { BoundQuerySetCtor, QuerySetCtor } from "orm/ext";
+import type { ModelSpec, QuerySet } from "@ufstack/monorm";
+import { and, or, VersionConflict } from "@ufstack/monorm";
+import { behaviorField, behaviorRecords, boundAtomic, boundFresh, boundGroups, boundGuarded, boundMeta, loadedValue } from "@ufstack/monorm/ext";
+import type { BoundQuerySetCtor, QuerySetCtor } from "@ufstack/monorm/ext";
 
 type Row = Record<string, unknown>;
 type Version = ReturnType<typeof behaviorField>;
 type Op = (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>;
 type Meta = ReturnType<typeof boundMeta>;
 
-const SOURCE = "orm.locking";
+const SOURCE = "monorm.locking";
 
 // One lookup for each model class, not one for each call.
 const versions = new WeakMap<object, Version>();

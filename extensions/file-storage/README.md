@@ -1,16 +1,16 @@
 # File-storage package
 
-The `orm.file-storage` package adds `@storage.file(storage: "name")` to a `Json` field.
+The `monorm.file-storage` package adds `@storage.file(storage: "name")` to a `Json` field.
 The ORM stores a reference (JSON) in the column and the application keeps the bytes in an [OpenDAL](https://opendal.apache.org/) service.
 The extension has two parts:
 
-- `orm-extension.toml` and `src/`: the Rust crate `orm-file-storage`, a `cdylib` with the ABI macro.
+- `monorm-extension.toml` and `src/`: the Rust crate `monorm-file-storage`, a `cdylib` with the ABI macro.
   It validates the schema and contributes the field adapter metadata.
   It has no host code.
 - `integration/python` and `integration/typescript`: the runtime sources.
   They hold the `Reference` codec v1, `Upload`, `Registry`, and the field adapter that registers with the public async field adapter API.
 
-`orm-extension-package` builds them into one wheel `orm-file-storage` and one npm package `@orm/file-storage`; both use `opendal`.
+`monorm-extension-package` builds them into one wheel `monorm-file-storage` and one npm package `@ufstack/monorm-file-storage`; both use `opendal`.
 Install the package; there is no crate to select.
 
 See [docs/extensions/file-storage.md](../../docs/extensions/file-storage.md) for use, and [integration/README.md](integration/README.md) for write failures and recovery.
@@ -22,7 +22,7 @@ The application owns the operator, its credentials and its lifetime.
 
 ```python
 import opendal
-from orm_file_storage import Registry
+from monorm_file_storage import Registry
 
 registry = Registry({"reports": opendal.AsyncOperator("fs", root="/srv/reports")})
 stored = await registry.upload("reports", report_bytes, filename="report.xlsx")
@@ -32,7 +32,7 @@ url = await registry.signed_url(stored, expires_in=300)  # CapabilityError witho
 ```
 
 ```typescript
-import { Registry } from "@orm/file-storage";
+import { Registry } from "@ufstack/monorm-file-storage";
 import { Operator } from "opendal";
 
 const registry = new Registry(new Map([["reports", new Operator("fs", { root: "/srv/reports" })]]));
@@ -81,7 +81,7 @@ We use OpenDAL in both languages. We will consider `object_store` when it has a 
 
 ## Tests
 
-- `cargo test -p orm-file-storage` tests the extension crate.
+- `cargo test -p monorm-file-storage` tests the extension crate.
 - `scripts/install-extension-packages.sh` builds and installs the package.
   Then run the Python unit tests with `python -m unittest discover -s extensions/file-storage/integration/python/tests`.
 - End to end: `integration/tests/native_python.py` and `native_node.mjs` (Node and Bun) run on the installed package, on SQLite and PostgreSQL.

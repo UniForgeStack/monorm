@@ -7,7 +7,7 @@ instances with an explicit public scalar-field selection:
 row = await User.objects.load(User.name, User.note).get(User.id == 1)
 row.name                     # loaded value
 row.note                     # None is a loaded SQL NULL
-row.bio                      # raises orm.NotLoaded
+row.bio                      # raises monorm.NotLoaded
 row.pk                       # identity remains available internally
 row.to_dict()                # public loaded scalar fields only
 await row.load(reload=True)  # reads all scalar fields: the partial row becomes full
@@ -26,12 +26,12 @@ filters or reference loading. Column expressions and writes remain usable for
 excluded fields. Insert requirements remain unchanged.
 A bare relation path beside columns of that relation (`load(Book.author, Book.author.bio)`) loads the related model's default selection united with those columns.
 
-`only()` is in the core. Schema query defaults need the `orm-query-defaults` package.
+`only()` is in the core. Schema query defaults need the `monorm-query-defaults` package.
 
-**Enable:** install `orm-query-defaults` (Python) or `@orm/query-defaults` (npm).
+**Enable:** install `monorm-query-defaults` (Python) or `@ufstack/monorm-query-defaults` (npm).
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
 
-The `orm-query-defaults` package supports schema policies:
+The `monorm-query-defaults` package supports schema policies:
 
 ```prisma
 model User {
@@ -165,7 +165,7 @@ model Order {
 ```
 
 ```python
-with orm.scope(shop=shop.id):          # a sync `with`; tasks started inside get it
+with monorm.scope(shop=shop.id):          # a sync `with`; tasks started inside get it
     orders = await Order.objects.filter(Order.total > 10)
 ```
 

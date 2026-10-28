@@ -26,7 +26,7 @@ body:
   - type: input
     id: profile
     attributes:
-      label: Native profile (`ORM_PROFILE`)
+      label: Native profile (`MONORM_PROFILE`)
       placeholder: postgres, sqlite, combined or tooling
   - type: dropdown
     id: extensions

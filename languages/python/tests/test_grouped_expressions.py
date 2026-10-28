@@ -5,8 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-import orm
-from orm import func
+import monorm
+from monorm import func
 
 URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 PLAIN = """
@@ -31,9 +31,9 @@ model Doc {
 
 
 async def connect(source: str, name: str, url: str):
-    registry = orm.Registry()
-    model = orm.loads(source, registry=registry)[name]
-    db = await orm.connect(url, registry=registry, default=False, max_connections=2)
+    registry = monorm.Registry()
+    model = monorm.loads(source, registry=registry)[name]
+    db = await monorm.connect(url, registry=registry, default=False, max_connections=2)
     await db.drop_tables()
     await db.create_tables()
     return db, model
@@ -45,7 +45,7 @@ async def items(request):
     source = PLAIN if request.param == "postgres" else SQLITE + PLAIN
     try:
         db, Item = await connect(source, "Item", url)
-    except orm.DatabaseError as e:
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     await Item.objects.using(db).insert_many([{"qty": q} for q in (1, 2, 3, 20, 30)])
     yield Item.objects.using(db), Item
@@ -57,7 +57,7 @@ async def items(request):
 async def docs():
     try:
         db, Doc = await connect(JSON, "Doc", URL)
-    except orm.DatabaseError as e:
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     await Doc.objects.using(db).insert_many(
         [{"meta": {"kind": k, "n": n}} for k, n in (("a", 1), ("a", 2), ("b", 3), ("it's \\ $1", 4))]
@@ -135,7 +135,7 @@ model Num {
 async def nums():
     try:
         db, Num = await connect(NUM, "Num", URL)
-    except orm.DatabaseError as e:
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     await Num.objects.using(db).insert_many([{"a": Decimal("5")}])
     yield Num.objects.using(db), Num

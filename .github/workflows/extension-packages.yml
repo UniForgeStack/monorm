@@ -49,8 +49,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: orm-contracts packages for crates.io
-        run: cargo package -p orm-contracts
+      - name: monorm-contracts packages for crates.io
+        run: cargo package -p monorm-contracts
       - name: Host crates name no extension
         run: |
           python3 -m unittest scripts/tests/test_check_extension_names.py
@@ -74,7 +74,7 @@ jobs:
           for manifest in extensions/*/orm-extension.toml tests/outside-extension/orm-extension.toml; do
             grep -q '^library' "$manifest" || continue
             dir=$(dirname "$manifest")
-            cargo run -q -p orm-extension-package -- library "$dir" --out "target/libraries/$(basename "$dir")"
+            cargo run -q -p monorm-extension-package -- library "$dir" --out "target/libraries/$(basename "$dir")"
           done
       - uses: actions/upload-artifact@v4
         with:
@@ -109,7 +109,7 @@ jobs:
             grep -q '^library' "$manifest" || continue
             dir=$(dirname "$manifest")
             name=$(basename "$dir")
-            cargo run -q -p orm-extension-package -- assemble "$dir" --libraries "target/libraries/$name" --out "target/assembled/$name" --tsc "$PWD/languages/js/node_modules/.bin/tsc"
+            cargo run -q -p monorm-extension-package -- assemble "$dir" --libraries "target/libraries/$name" --out "target/assembled/$name" --tsc "$PWD/languages/js/node_modules/.bin/tsc"
           done
       - name: Check the contents and record the sizes
         run: python3 scripts/check-assembled-packages.py target/assembled target/dist

@@ -1,6 +1,6 @@
 //! Fill `@client_default`s into omitted insert values.
 use crate::{error::{Error, Result}, params::{array_type, null_of}};
-use orm_core::{client_default::{ClientDefault, Literal}, ir::{ClientCall, ColType}, schema::Model};
+use monorm_core::{client_default::{ClientDefault, Literal}, ir::{ClientCall, ColType}, schema::Model};
 use sea_query::Value;
 
 type Rows = Vec<Vec<Option<Value>>>;

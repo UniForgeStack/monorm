@@ -4,11 +4,11 @@ import asyncio
 import os
 
 import pytest
-import orm
-from orm import func
+import monorm
+from monorm import func
 from artifact_caps import has_extension
 
-QUERY_DEFAULTS = has_extension("orm.query-defaults")
+QUERY_DEFAULTS = has_extension("monorm.query-defaults")
 
 
 def schema(dialect, defaults=True):
@@ -58,14 +58,14 @@ def schema(dialect, defaults=True):
             "schema_contract": 5,
             "read_defaults": [
                 {
-                    "source": "orm.query-defaults",
+                    "source": "monorm.query-defaults",
                     "name": "query",
                     "model": "SelectedAuthor",
                     "filter": {"t": "col", "path": [], "name": "visible"},
                     "fields": ["name", "note"],
                 },
                 {
-                    "source": "orm.query-defaults",
+                    "source": "monorm.query-defaults",
                     "name": "query",
                     "model": "SelectedBook",
                     "fields": ["title"],
@@ -79,14 +79,14 @@ def schema(dialect, defaults=True):
 
 
 async def open_db(dialect, defaults):
-    registry = orm.Registry()
-    classes = orm.define(schema(dialect, defaults), registry=registry)
+    registry = monorm.Registry()
+    classes = monorm.define(schema(dialect, defaults), registry=registry)
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     return db, classes["SelectedAuthor"], classes["SelectedBook"]
@@ -103,7 +103,7 @@ async def test_partial_selection(dialect):
         partial = await a.load(Author.name, Author.note).order_by(Author.id).first()
         assert partial.to_dict() == {"name": "ann", "note": None}
         assert partial.pk == author.pk
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             partial.bio
         with pytest.raises(TypeError):
             a.load(Author.name, Author.name)
@@ -116,7 +116,7 @@ async def test_partial_selection(dialect):
         full = await a.load().order_by(Author.id).first()
         assert "_orm_internal" not in full.__dict__ and full.bio == "large"
         book = await b.load(Book.title).get()
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             book.author
         assert (await b.load(Book.author).load(Book.title).get()).author.name == "changed"
     finally:
@@ -134,10 +134,10 @@ async def test_an_update_of_a_hidden_key_drops_the_cached_relation(dialect):
         await b.insert(title="one", author_id=authors[0].pk)
         book = await b.load(Book.title, Book.author).get()
         assert book.author.name == "ann"
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             book.author_id
         await book.update(author_id=authors[1].pk)
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             book.author
         assert (await book.load(Book.author)).author.name == "bob"
     finally:
@@ -145,7 +145,7 @@ async def test_an_update_of_a_hidden_key_drops_the_cached_relation(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_selection_defaults(dialect):
     db, Author, Book = await open_db(dialect, defaults=True)
@@ -161,7 +161,7 @@ async def test_selection_defaults(dialect):
         assert partial.to_dict() == {"name": "visible", "note": None}
         assert partial.pk == visible.pk
         for name in ("id", "bio", "visible"):
-            with pytest.raises(orm.NotLoaded):
+            with pytest.raises(monorm.NotLoaded):
                 getattr(partial, name)
         assert "bio" not in a.sql()
         assert await a.count() == 1 and await a.exists()
@@ -182,10 +182,10 @@ async def test_selection_defaults(dialect):
         assert len(joined) == 2 and joined[0].author.name == "changed" and joined[1].author is None
         assert joined[0].to_dict() == {"title": "one"}
         assert joined[0].author.to_dict() == {"name": "changed", "note": None}
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             joined[0].author_id
         await joined[1].update(author_id=visible.pk)
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             joined[1].author
         await joined[1].update(author_id=hidden.pk)
         assert joined[1]._field_value("author_id") == hidden.pk
@@ -196,13 +196,13 @@ async def test_selection_defaults(dialect):
         for named in (False, True):
             for filtered in (False, True):
                 books = await b.without_defaults().order_by(Book.id)
-                bound = orm.of(books).without_defaults(*(("query",) if named else ()))
+                bound = monorm.of(books).without_defaults(*(("query",) if named else ()))
                 if filtered:
                     bound = bound.filter(Book.id > 0)
                 await bound.load(Book.author)
                 assert [book.author.name for book in books] == ["changed", "hidden"]
         hidden_books = await b.without_defaults().order_by(Book.id)
-        await orm.of(hidden_books).load(Book.author)
+        await monorm.of(hidden_books).load(Book.author)
         assert hidden_books[0].author.name == "changed" and hidden_books[1].author is None
         assert await a.in_bulk() == {visible.pk: partial}
         changed_return = await a.load(Author.name).update(name="again").returning()
@@ -210,7 +210,7 @@ async def test_selection_defaults(dialect):
         default_return = await a.filter(Author.id == visible.pk).update(note="n").returning()
         assert default_return[0].to_dict() == {"name": "again", "note": "n"}
         cleared = await b.without_related().first()
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             cleared.author
         prefetched = await a.load(Author.books).get()
         assert prefetched.books.cached[0].title == "one"
@@ -242,20 +242,20 @@ async def open_annotated(dialect):
             "annotate": {"book_count": {"t": "func", "name": "count", "rel": ["books"]}},
         }
     )
-    registry = orm.Registry()
-    classes = orm.define(document, registry=registry)
+    registry = monorm.Registry()
+    classes = monorm.define(document, registry=registry)
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     return db, classes["SelectedAuthor"], classes["SelectedBook"]
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_keeps_model_instances(dialect):
     db, Author, Book = await open_annotated(dialect)
@@ -269,7 +269,7 @@ async def test_default_annotation_keeps_model_instances(dialect):
         assert [type(o) for o in rows] == [Author, Author]
         assert [o.book_count for o in rows] == [2, 0]
         assert rows[0].to_dict() == {"name": "ann", "note": None}
-        with pytest.raises(orm.NotLoaded):
+        with pytest.raises(monorm.NotLoaded):
             rows[0].bio
         prefetched = await a.load(Author.books).order_by(Author.name).first()
         assert prefetched.book_count == 2 and prefetched.books.cached[0].title in {"one", "two"}
@@ -282,7 +282,7 @@ async def test_default_annotation_keeps_model_instances(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_applies_to_prefetched_rows(dialect):
     db, Author, Book = await open_annotated(dialect)
@@ -302,7 +302,7 @@ async def test_default_annotation_applies_to_prefetched_rows(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_stays_out_of_projections(dialect):
     db, Author, Book = await open_annotated(dialect)
@@ -323,11 +323,11 @@ async def test_default_annotation_stays_out_of_projections(dialect):
 
 
 def test_current_filter_lists_filters_with_their_bypass_state():
-    classes = orm.define(schema("sqlite", True), registry=orm.Registry())
+    classes = monorm.define(schema("sqlite", True), registry=monorm.Registry())
     Author, Book = classes["SelectedAuthor"], classes["SelectedBook"]
     visible = {"t": "col", "path": [], "name": "visible"}
     assert Author.objects.current_filter() == [
-        {"source": "orm.query-defaults", "name": "query", "expr": visible, "active": True}
+        {"source": "monorm.query-defaults", "name": "query", "expr": visible, "active": True}
     ]
     assert Author.objects.without_defaults("query").current_filter()[0]["active"] is False
     assert Author.objects.without_defaults().current_filter()[0]["active"] is False
@@ -359,11 +359,11 @@ model Note {
 """
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_order(dialect):
-    registry = orm.Registry()
-    models = orm.loads(
+    registry = monorm.Registry()
+    models = monorm.loads(
         ORDERED.replace('"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'), registry=registry
     )
     Topic, Note = models["Topic"], models["Note"]
@@ -372,7 +372,7 @@ async def test_default_order(dialect):
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     t, n = Topic.objects.using(db), Note.objects.using(db)
@@ -422,8 +422,8 @@ async def test_default_order(dialect):
 @pytest.fixture(params=["sqlite", "postgres"])
 async def one_row_topics(request):
     dialect = request.param
-    registry = orm.Registry()
-    models = orm.loads(
+    registry = monorm.Registry()
+    models = monorm.loads(
         ORDERED.replace('@@query.defaults(order: ["-body"])', "")
         .replace('@@query.order("-rank nulls last", "id")', "")
         .replace('"sqlite"', '"postgresql"' if dialect == "postgres" else '"sqlite"'),
@@ -431,7 +431,7 @@ async def one_row_topics(request):
     )
     Topic = models["Topic"]
     url = "sqlite://:memory:" if dialect == "sqlite" else os.environ["ORM_TEST_DATABASE_URL"]
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     t = Topic.objects.using(db)
@@ -451,12 +451,12 @@ async def test_one_row_indices_and_default_order(one_row_topics):
     assert (await t.order_by(Topic.name)[0]).name == "a"
     assert (await t.without_defaults()[0]).name == "c"
     assert [x.name for x in await t[1:3]] == ["b", "a"]
-    assert (await t[orm.param("i")].prepare()(i=2)).name == "a"
+    assert (await t[monorm.param("i")].prepare()(i=2)).name == "a"
 
 
 async def test_one_row_missing_and_required(one_row_topics):
     _, Topic, t = one_row_topics
-    assert await t[orm.param("i")].prepare()(i=99) is None
+    assert await t[monorm.param("i")].prepare()(i=99) is None
     assert await t[99] is None
     assert await t.filter(Topic.name == "missing").first() is None
     with pytest.raises(Topic.DoesNotExist):
@@ -469,7 +469,7 @@ async def test_one_row_laziness_and_fresh_awaits(one_row_topics, observe_queries
     db, Topic, t = one_row_topics
     with observe_queries(db) as events:
         first, last, get, indexed = t.first(), t.last(), t.get(Topic.name == "b"), t[1]
-        assert isinstance(first, orm.OneRowQuery)
+        assert isinstance(first, monorm.OneRowQuery)
         assert events == []
         assert first.sql() and first.inspect().statements
         assert events == []
@@ -487,7 +487,7 @@ async def test_one_row_laziness_and_fresh_awaits(one_row_topics, observe_queries
 async def test_one_row_create_task(one_row_topics):
     _, Topic, t = one_row_topics
     query = t.first()
-    assert isinstance(query, orm.OneRowQuery)
+    assert isinstance(query, monorm.OneRowQuery)
     assert (await asyncio.create_task(query)).name == "c"
     assert (await query).name == "c"
     assert (await asyncio.create_task(t.get(Topic.name == "b"))).name == "b"
@@ -505,20 +505,20 @@ async def test_one_row_index_errors(one_row_topics):
     _, _, t = one_row_topics
     with pytest.raises(ValueError):
         t[-2]
-    limited = t.limit(orm.param("limit"))
+    limited = t.limit(monorm.param("limit"))
     for cut in [t[:2], t[1:], t.limit(0), t.offset(1), limited]:
         for one in [lambda q: q.first(), lambda q: q.last(), lambda q: q[0], lambda q: q[-1], lambda q: q.get()]:
-            with pytest.raises(orm.QueryError, match=r"use \[n\]"):
+            with pytest.raises(monorm.QueryError, match=r"use \[n\]"):
                 one(cut)
-    with pytest.raises(orm.QueryError, match=r"use \[n\]"):
+    with pytest.raises(monorm.QueryError, match=r"use \[n\]"):
         await limited.prepare().first(limit=0)
-    with pytest.raises(orm.QueryError, match=r"use \[n\]"):
+    with pytest.raises(monorm.QueryError, match=r"use \[n\]"):
         await limited.prepare().get(limit=0)
 
 
 async def test_one_row_param_index(one_row_topics):
     db, Topic, t = one_row_topics
-    prepared = t[orm.param("n")].prepare()
+    prepared = t[monorm.param("n")].prepare()
     sql = prepared.sql(n=1)
     assert sql.endswith("LIMIT 1 OFFSET 1")
     assert [(await prepared(n=i)).name for i in range(3)] == ["c", "b", "a"]
@@ -527,7 +527,7 @@ async def test_one_row_param_index(one_row_topics):
 
 def test_slice_combinations_raise(one_row_topics):
     _, _, t = one_row_topics
-    p = orm.param("n")
+    p = monorm.param("n")
     for build in [
         lambda: t[2:5][1:2],
         lambda: t[2:5][1],
@@ -541,22 +541,22 @@ def test_slice_combinations_raise(one_row_topics):
         lambda: t.offset(1).offset(2),
         lambda: t.limit(p)[:2],
     ]:
-        with pytest.raises((orm.QueryError, TypeError)):
+        with pytest.raises((monorm.QueryError, TypeError)):
             build()
     assert t.limit(2).offset(1).sql() == t.offset(1).limit(2).sql()
-    with pytest.raises(orm.QueryError, match=r"already has a limit and an offset;.*build a new query set"):
+    with pytest.raises(monorm.QueryError, match=r"already has a limit and an offset;.*build a new query set"):
         t.limit(1).offset(2).limit(3)
-    with pytest.raises(orm.QueryError, match=r"clear a limit.*build a new query set"):
+    with pytest.raises(monorm.QueryError, match=r"clear a limit.*build a new query set"):
         t.limit(1).limit(None)
     assert "LIMIT" not in t.sql()
-    with pytest.raises(orm.QueryError, match=r"already has an offset;"):
+    with pytest.raises(monorm.QueryError, match=r"already has an offset;"):
         t.offset(1)[0:2]
 
 
 async def test_one_row_prepared(one_row_topics, observe_queries):
     db, Topic, t = one_row_topics
     for make in [lambda q: q.first(), lambda q: q.last(), lambda q: q[0], lambda q: q.get()]:
-        query = make(t.filter(Topic.name == orm.param("name")))
+        query = make(t.filter(Topic.name == monorm.param("name")))
         prepared = query.prepare()
         with observe_queries(db) as events:
             assert prepared.sql(name="b") and prepared.inspect(name="b").statements
@@ -570,7 +570,7 @@ async def test_one_row_prepared(one_row_topics, observe_queries):
         await t.filter(Topic.name == "missing").require().first().prepare()()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 def test_default_order_options_have_one_source():
     both = ORDERED.replace(
         '@@query.defaults(order: ["-body"])', '@@query.defaults(order: ["-body"])\n  @@query.order("id")'
@@ -578,25 +578,25 @@ def test_default_order_options_have_one_source():
     with pytest.raises(
         Exception, match=r"Note: order is set by both @@query\.defaults\(order:\) at .* and @@query\.order at"
     ):
-        orm.loads(both, registry=orm.Registry())
+        monorm.loads(both, registry=monorm.Registry())
     with pytest.raises(Exception, match=r"order column \"nope\" is not a field"):
-        orm.loads(ORDERED.replace('"-body"', '"nope"'), registry=orm.Registry())
+        monorm.loads(ORDERED.replace('"-body"', '"nope"'), registry=monorm.Registry())
     with pytest.raises(
         Exception, match=r'Topic: order column "rank" can be NULL: write "-rank nulls first" or "-rank nulls last"'
     ):
-        orm.loads(ORDERED.replace('"-rank nulls last"', '"-rank"'), registry=orm.Registry())
+        monorm.loads(ORDERED.replace('"-rank nulls last"', '"-rank"'), registry=monorm.Registry())
     with pytest.raises(Exception, match=r'elsewhere quote it: "-name"'):
-        orm.loads(ORDERED.replace('"-rank nulls last", "id"', "-name"), registry=orm.Registry())
+        monorm.loads(ORDERED.replace('"-rank nulls last", "id"', "-name"), registry=monorm.Registry())
     with pytest.raises(Exception, match=r'order column "k" is json, which the database can\'t order'):
-        orm.loads(
+        monorm.loads(
             ORDERED.replace("  rank Int?\n", "  rank Int?\n  k Json @db.Json\n")
             .replace('"-rank nulls last", "id"', '"k"')
             .replace('"sqlite"', '"postgresql"'),
-            registry=orm.Registry(),
+            registry=monorm.Registry(),
         )
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 async def test_a_joined_model_brings_its_related_default():
     def field(name, kind="string", **flags):
         return {"name": name, "column": name, "type": kind, **flags}
@@ -639,14 +639,14 @@ async def test_a_joined_model_brings_its_related_default():
         "behavior": {
             "schema_contract": 5,
             "read_defaults": [
-                {"source": "orm.query-defaults", "name": "query", "model": "JBook", "load": [["author"]]}
+                {"source": "monorm.query-defaults", "name": "query", "model": "JBook", "load": [["author"]]}
             ],
         },
     }
-    registry = orm.Registry()
-    classes = orm.define(ir, registry=registry)
+    registry = monorm.Registry()
+    classes = monorm.define(ir, registry=registry)
     Author, Book, Shelf = classes["JAuthor"], classes["JBook"], classes["JShelf"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await Author.objects.using(db).insert(id=1, name="ann")
@@ -659,7 +659,7 @@ async def test_a_joined_model_brings_its_related_default():
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_join(request, dialect):
     db, A, B, P = await open_unset(request, dialect, True)
@@ -671,14 +671,14 @@ async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_joi
                 assert [row.author for row in loaded][1:] == ([None, None, None] if Model is B else [None, None])
             first, dangling, *rest = await rows.without_defaults().load(Model.author).all()
             assert first.author.name == "ann"
-            with pytest.raises(orm.NotLoaded):
+            with pytest.raises(monorm.NotLoaded):
                 dangling.author
     finally:
         await db.drop_tables()
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_the_target_flag_does_not_depend_on_model_order(request, dialect):
     # Put the book before the filtered author in the public schema.
@@ -692,7 +692,7 @@ async def test_the_target_flag_does_not_depend_on_model_order(request, dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_load_path_with_columns_unites_the_default_selection(dialect):
     db, Author, Book = await open_db(dialect, defaults=True)
@@ -721,7 +721,7 @@ async def test_load_path_with_columns_unites_the_default_selection(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
     ir = schema("postgres")
     book = ir["models"][1]
@@ -736,9 +736,9 @@ async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
             "relations": [{"name": "books", "kind": "many", "target": "SelectedBook", "from": "id", "to": "shelf_id"}],
         }
     )
-    registry = orm.Registry()
-    classes = orm.define(ir, registry=registry)
-    db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    registry = monorm.Registry()
+    classes = monorm.define(ir, registry=registry)
+    db = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
     Author, Book, Shelf = classes["SelectedAuthor"], classes["SelectedBook"], classes["SelectedShelf"]
     try:
         await db.drop_tables()
@@ -760,8 +760,8 @@ async def test_aggregate_to_one_tail_applies_the_target_default_in_the_join():
         row = (
             await Shelf.objects.using(db)
             .select(
-                orm.func.array_agg(Shelf.books.author.name, order_by=Shelf.books.title),
-                orm.func.count(Shelf.books.author),
+                monorm.func.array_agg(Shelf.books.author.name, order_by=Shelf.books.title),
+                monorm.func.count(Shelf.books.author),
             )
             .first()
         )
@@ -817,14 +817,14 @@ async def open_unset(request, dialect, filtered, target_last=False, composite=Fa
     if target_last:
         start, end = source.index("model UAuthor"), source.index("model UBook")
         source = source[:start] + source[end:] + source[start:end]
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     if dialect == "sqlite":
@@ -870,15 +870,15 @@ async def unset(request):
 @pytest.fixture
 def base_getter(monkeypatch):
     """The base getter: no reference adapter, as in a build without reference loading."""
-    import orm.model
+    import monorm.model
 
-    monkeypatch.setattr(orm.model, "_reference_adapter", None)
+    monkeypatch.setattr(monorm.model, "_reference_adapter", None)
 
 
 def state(book):
     try:
         return book.author
-    except orm.NotLoaded:
+    except monorm.NotLoaded:
         return "unset"
 
 
@@ -913,7 +913,7 @@ async def test_base_getter_keeps_none_for_has_one_and_label(base_getter, unset):
     assert books[1].__dict__["writer"] is None
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_base_getter_filtered_target_is_none_and_bypassed_prefetch_is_not_loaded(base_getter, request, dialect):
     db, A, B, P = await open_unset(request, dialect, True)
@@ -946,14 +946,14 @@ async def test_adapter_join_and_prefetch_of_required_and_nullable_dangling_keys(
     for Model in (B, P):
         for path in (Model.author, Model.author.objects.as_prefetch()):
             row = await Model.objects.using(db).load(path).get(Model.id == 2)
-            with pytest.raises(orm.NotLoaded):
+            with pytest.raises(monorm.NotLoaded):
                 row.author
 
 
 async def test_plain_load_of_a_required_dangling_key_raises_integrity_error(unset):
     db, A, B, P = unset
     row = await P.objects.using(db).get(P.id == 2)
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         await row.load(P.author)
 
 
@@ -971,7 +971,7 @@ async def test_plain_load_of_a_nullable_dangling_key_keeps_none(unset):
 @pytest.mark.parametrize("method", ["join", "prefetch", "instance"])
 async def test_absent_reference_message_tracks_the_loaded_key(request, dialect, composite, filtered, method):
     if filtered and not QUERY_DEFAULTS:
-        pytest.skip("needs the orm.query-defaults package")
+        pytest.skip("needs the monorm.query-defaults package")
     db, A, B, P = await open_unset(request, dialect, filtered, composite=composite)
     message = "the key is set and no row of the target has it"
     try:
@@ -982,22 +982,22 @@ async def test_absent_reference_message_tracks_the_loaded_key(request, dialect, 
             row = await rows.get(Model.id == 2)
             if method == "instance":
                 await row.load(Model.author.objects.without_defaults().as_prefetch(), reload=True)
-            with pytest.raises(orm.NotLoaded, match=message):
+            with pytest.raises(monorm.NotLoaded, match=message):
                 row.author
             source = "author_region" if composite else "author_id"
             row.__dict__[source] = 2 if composite else 98
-            with pytest.raises(orm.NotLoaded) as error:
+            with pytest.raises(monorm.NotLoaded) as error:
                 row.author
             assert message not in str(error.value)
             row = await Model.objects.using(db).get(Model.id == 2)
-            with pytest.raises(orm.NotLoaded) as error:
+            with pytest.raises(monorm.NotLoaded) as error:
                 row.author
             assert message not in str(error.value)
             await row.load(Model.author.objects.without_defaults().as_prefetch(), reload=True)
-            with pytest.raises(orm.NotLoaded, match=message):
+            with pytest.raises(monorm.NotLoaded, match=message):
                 row.author
             await row.update(author_id=3)
-            with pytest.raises(orm.NotLoaded) as error:
+            with pytest.raises(monorm.NotLoaded) as error:
                 row.author
             assert message not in str(error.value)
             await row.load(Model.author.objects.as_prefetch(), reload=True)
@@ -1020,18 +1020,18 @@ async def test_unknown_bypass_name_lists_the_defaults_of_the_model():
         assert qs.without_defaults("a").without_defaults("b", "a")._without_defaults == ("a", "b")
         assert qs.without_defaults("a").without_defaults()._without_defaults is True
         assert qs.without_defaults().without_defaults("a")._without_defaults is True
-        with pytest.raises(orm.QueryError, match=r'unknown default "nope"; available defaults: \[\]'):
+        with pytest.raises(monorm.QueryError, match=r'unknown default "nope"; available defaults: \[\]'):
             await qs.without_defaults("nope").count()
-        with pytest.raises(orm.QueryError, match='unknown default "nope"'):
+        with pytest.raises(monorm.QueryError, match='unknown default "nope"'):
             await qs.without_defaults("nope").filter(Author.name == "x").update(name="y")
-        with pytest.raises(orm.QueryError, match='unknown default "nope"'):
+        with pytest.raises(monorm.QueryError, match='unknown default "nope"'):
             await qs.without_defaults("nope").filter(Author.name == "x").delete()
     finally:
         await db.drop_tables()
         await db.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_bypass_by_name_keeps_the_other_defaults(dialect):
     db, Author, Book = await open_db(dialect, defaults=True)
@@ -1039,7 +1039,7 @@ async def test_bypass_by_name_keeps_the_other_defaults(dialect):
     try:
         await a.insert_many([{"name": "visible", "bio": "x"}, {"name": "hidden", "bio": "x", "visible": False}])
         assert await a.without_defaults("query").count() == 2
-        with pytest.raises(orm.QueryError, match=r'unknown default "nope"; available defaults: \["query"\]'):
+        with pytest.raises(monorm.QueryError, match=r'unknown default "nope"; available defaults: \["query"\]'):
             await a.without_defaults("nope").count()
         full = await a.without_defaults("query").order_by(Author.id).first()
         assert full.bio == "x"

@@ -1,6 +1,6 @@
-use orm_proxy::{models, ProxyField, ProxyModel, ProxySelection};
-use orm_contracts::{extension::{ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
-use orm_proxy::lower_specs;
+use monorm_proxy::{models, ProxyField, ProxyModel, ProxySelection};
+use monorm_contracts::{extension::{ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
+use monorm_proxy::lower_specs;
 use serde_json::json;
 
 fn schema() -> SchemaIr {
@@ -36,7 +36,7 @@ fn names(list: &[&str]) -> Vec<String> { list.iter().map(|n| n.to_string()).coll
 /// Redeclare a `User` field on a proxy, changed by `edit`.
 fn redeclare(ir: &mut SchemaIr, proxy: &str, field: &str, edit: impl FnOnce(&mut FieldIr)) {
     let mut declared = ir.models[0].fields.iter().find(|f| f.name == field).cloned()
-        .unwrap_or_else(|| FieldIr::plain(field, orm_contracts::ir::ColType::Text));
+        .unwrap_or_else(|| FieldIr::plain(field, monorm_contracts::ir::ColType::Text));
     edit(&mut declared);
     ir.models.iter_mut().find(|m| m.name == proxy).unwrap().fields.push(declared);
 }
@@ -75,9 +75,9 @@ fn chains_preserve_physical_constraints_enum_representation_and_relation_identit
         ProxyField { field: "name".into(), non_null: true, subset: None },
     ]);
     assert_eq!(ir.behavior.result_checks, [
-        ResultCheck { model: "Active".into(), field: "status".into(), non_null: false, allowed: Some(names(&["ACTIVE"])), code: "orm.proxy.shape".into() },
-        ResultCheck { model: "Named".into(), field: "status".into(), non_null: false, allowed: Some(names(&["ACTIVE"])), code: "orm.proxy.shape".into() },
-        ResultCheck { model: "Named".into(), field: "name".into(), non_null: true, allowed: None, code: "orm.proxy.shape".into() },
+        ResultCheck { model: "Active".into(), field: "status".into(), non_null: false, allowed: Some(names(&["ACTIVE"])), code: "monorm.proxy.shape".into() },
+        ResultCheck { model: "Named".into(), field: "status".into(), non_null: false, allowed: Some(names(&["ACTIVE"])), code: "monorm.proxy.shape".into() },
+        ResultCheck { model: "Named".into(), field: "name".into(), non_null: true, allowed: None, code: "monorm.proxy.shape".into() },
     ]);
     assert_eq!(ir.behavior.model_views.len(), 2);
     assert_eq!((ir.behavior.model_views[0].model.as_str(), ir.behavior.model_views[0].source.as_str(), ir.behavior.model_views[0].root.as_str()), ("Active", "User", "User"));
@@ -97,7 +97,7 @@ fn chains_preserve_physical_constraints_enum_representation_and_relation_identit
 fn proxy_only_edits_have_identical_postgres_and_sqlite_migrations() {
     for dialect in ["postgres", "sqlite"] {
         let mut a = schema();
-        a.dialect = if dialect == "sqlite" { orm_core::dialect::Dialect::Sqlite } else { orm_core::dialect::Dialect::Postgres };
+        a.dialect = if dialect == "sqlite" { monorm_core::dialect::Dialect::Sqlite } else { monorm_core::dialect::Dialect::Postgres };
         lower_specs(&mut a, &[spec("Active", "User"), spec("Named", "Active")]).unwrap();
         let mut b = schema();
         b.dialect = a.dialect;
@@ -107,13 +107,13 @@ fn proxy_only_edits_have_identical_postgres_and_sqlite_migrations() {
             select("Named", "Active", ProxySelection::Include(names(&["id", "name", "code"])))]).unwrap();
         let physical = |ir: SchemaIr| {
             let storage = ir.behavior.storage.unwrap();
-            orm_core::schema::Schema::from_ir(serde_json::from_value(json!({
+            monorm_core::schema::Schema::from_ir(serde_json::from_value(json!({
                 "models":storage.models,"enums":ir.enums,"dialect":ir.dialect
             })).unwrap()).unwrap()
         };
         let a = physical(a); let b = physical(b);
-        assert_eq!(orm_core::migrate::create_all(&a).unwrap(), orm_core::migrate::create_all(&b).unwrap());
-        assert!(orm_core::migrate::plan(&b, &orm_core::migrate::snapshot(&a).unwrap()).unwrap().up.is_empty());
+        assert_eq!(monorm_core::migrate::create_all(&a).unwrap(), monorm_core::migrate::create_all(&b).unwrap());
+        assert!(monorm_core::migrate::plan(&b, &monorm_core::migrate::snapshot(&a).unwrap()).unwrap().up.is_empty());
     }
 }
 
@@ -232,7 +232,7 @@ fn proxy_fields_declarations_reject_include_and_exclude_together() {
             {"attribute":"proxy.of","model":"Active","field":null,"arguments":{},"positional":["User"],"location":{"file":"s.prisma","line":1,"column":1}},
             {"attribute":"proxy.fields","model":"Active","field":null,"arguments":arguments,"positional":[],"location":{"file":"s.prisma","line":2,"column":3}}
         ])).unwrap();
-        orm_proxy::lower(&mut ir).map(|_| ir)
+        monorm_proxy::lower(&mut ir).map(|_| ir)
     };
     let error = declare(json!({"include": ["id"], "exclude": ["note"]})).unwrap_err();
     assert_eq!(error, "s.prisma:2:3: @@proxy.fields: include and exclude together; use one");
@@ -299,7 +299,7 @@ fn any_database_default_lets_a_not_null_field_be_omitted() {
         {"attribute":"proxy.fields","model":"Active","field":null,"arguments":{"exclude":["note"]},"positional":[],"location":{"file":"s.prisma","line":2,"column":3}},
         {"attribute":"proxy.fields","model":"Active","field":null,"arguments":{"exclude":["name"]},"positional":[],"location":{"file":"s.prisma","line":3,"column":3}}
     ])).unwrap();
-    assert_eq!(orm_proxy::lower(&mut ir).unwrap_err(), "s.prisma:3:3: @@proxy.fields: duplicate @@proxy.fields");
+    assert_eq!(monorm_proxy::lower(&mut ir).unwrap_err(), "s.prisma:3:3: @@proxy.fields: duplicate @@proxy.fields");
 }
 
 fn partition_schema() -> SchemaIr {
@@ -317,7 +317,7 @@ fn partition_schema() -> SchemaIr {
 }
 fn partition_spec(values: serde_json::Value) -> ProxyModel {
     let mut p = spec("Positive", "Reward");
-    p.partition = Some(orm_proxy::ProxyPartition {
+    p.partition = Some(monorm_proxy::ProxyPartition {
         table: String::new(), field: String::new(), values: values.as_array().unwrap().clone(),
     });
     p
@@ -329,7 +329,7 @@ fn partition_ownership_projects_local_objects_and_keeps_composite_identity() {
     let mut spec = partition_spec(json!(["positive"]));
     spec.selection = Some(ProxySelection::Exclude(names(&["kind"])));
     lower_specs(&mut ir, &[spec]).unwrap();
-    orm_core::partition::validate(&ir).unwrap();
+    monorm_core::partition::validate(&ir).unwrap();
     assert_eq!(ir.partitions.len(), 1);
     assert_eq!(ir.partitions[0].objects.table, "positive");
     assert_eq!(ir.partitions[0].objects.constraints.len(), 1);
@@ -337,10 +337,10 @@ fn partition_ownership_projects_local_objects_and_keeps_composite_identity() {
     assert_eq!(ir.models[1].primary_key, ["id", "kind"]);
     assert_eq!(field(&ir, "Positive", "kind").client_default, Some(ClientDefaultIr::Value(json!("positive"))));
     assert_eq!(ir.behavior.storage.as_ref().unwrap().models.len(), 1);
-    let physical = orm_core::schema::Schema::from_ir(serde_json::from_value(json!({
+    let physical = monorm_core::schema::Schema::from_ir(serde_json::from_value(json!({
         "models": ir.behavior.storage.unwrap().models, "partitions":ir.partitions
     })).unwrap()).unwrap();
-    let block = orm_core::dsl::compile(r#"model Reward {
+    let block = monorm_core::dsl::compile(r#"model Reward {
  id Int
  kind String
  amount Int?
@@ -349,22 +349,22 @@ fn partition_ownership_projects_local_objects_and_keeps_composite_identity() {
 }
 partition positive { of = Reward values = ["positive"] @@check("amount IS NOT NULL AND amount > 0") }
 "#, None).unwrap();
-    let block = orm_core::schema::Schema::from_ir(block).unwrap();
-    let snapshot = orm_core::migrate::snapshot(&block).unwrap();
-    assert!(orm_core::migrate::plan(&physical, &snapshot).unwrap().up.is_empty());
-    assert!(orm_core::migrate::plan(&block, &orm_core::migrate::snapshot(&physical).unwrap()).unwrap().up.is_empty());
+    let block = monorm_core::schema::Schema::from_ir(block).unwrap();
+    let snapshot = monorm_core::migrate::snapshot(&block).unwrap();
+    assert!(monorm_core::migrate::plan(&physical, &snapshot).unwrap().up.is_empty());
+    assert!(monorm_core::migrate::plan(&block, &monorm_core::migrate::snapshot(&physical).unwrap()).unwrap().up.is_empty());
 }
 
 #[test]
 fn proxy_partitions_share_bound_validation_with_blocks() {
     let mut ir = partition_schema();
     lower_specs(&mut ir, &[partition_spec(json!(["positive", "positive"]))]).unwrap();
-    assert!(orm_core::partition::validate(&ir).unwrap_err().contains("overlapping list value"));
+    assert!(monorm_core::partition::validate(&ir).unwrap_err().contains("overlapping list value"));
     let mut ir = partition_schema();
     lower_specs(&mut ir, &[partition_spec(json!(["positive"]))]).unwrap();
     let duplicate = serde_json::from_value(json!({"of":"Reward","bound":"FOR VALUES IN ('positive')","objects":{"name":"another","table":"another","fields":[]}})).unwrap();
     ir.partitions.push(duplicate);
-    assert!(orm_core::partition::validate(&ir).unwrap_err().contains("overlapping list value"));
+    assert!(monorm_core::partition::validate(&ir).unwrap_err().contains("overlapping list value"));
     for strategy in [None, Some("range"), Some("hash")] {
         let mut ir = partition_schema();
         ir.models[0].partition = strategy.map(|s| serde_json::from_value(json!({"strategy":s,"keys":[{"field":"kind"}]})).unwrap());
@@ -401,7 +401,7 @@ fn partition_ownership_rejects_proxy_sources_but_plain_children_keep_the_bound()
 #[test]
 fn partition_values_validate_enum_members_and_sqlite() {
     let mut ir = partition_schema();
-    ir.dialect = orm_core::dialect::Dialect::Sqlite;
+    ir.dialect = monorm_core::dialect::Dialect::Sqlite;
     assert!(lower_specs(&mut ir, &[partition_spec(json!(["positive"]))]).unwrap_err().contains("requires PostgreSQL"));
     let mut ir = partition_schema();
     ir.enums = serde_json::from_value(json!([{"name":"Kind","db_name":"kind","storage":"text","values":[{"name":"POSITIVE","value":"positive"}]}])).unwrap();

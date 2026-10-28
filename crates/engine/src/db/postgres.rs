@@ -26,7 +26,7 @@ use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::{NoTls, Row, SimpleQueryMessage, Statement};
 
 use super::{numeric, BoxFuture, Cell, DbError, DbResult, Driver, ErrorKind, Executor, RawRows, RowSet, SessionLock, Transaction};
-use orm_core::ir::{ColType, ValueType};
+use monorm_core::ir::{ColType, ValueType};
 
 const STATEMENT_CACHE_MAX: usize = 512;
 
@@ -691,7 +691,7 @@ impl PgTx {
         let mut session = self.session.lock().await;
         if self.done.load(Ordering::Acquire) { return Err(closed()); }
         super::check_savepoint(&session.savepoints, &self.savepoint)?;
-        let name = format!("orm_sp_{}", session.next_savepoint);
+        let name = format!("monorm_sp_{}", session.next_savepoint);
         session.next_savepoint += 1;
         let client = session.client.as_ref().ok_or_else(closed)?;
         client.batch_execute(&format!("SAVEPOINT {name}")).await.map_err(pg_err)?;

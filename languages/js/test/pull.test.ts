@@ -51,7 +51,7 @@ test("pull, baseline and drift of a Django-style database", async () => {
   assert.ok(pulled.gaps.some((g) => g.startsWith("rule bundles_bundle_soft_delete")));
   assert.deepEqual(pulled.differences.map((s) => s.summary), EXPECTED);
 
-  const dir = mkdtempSync(join(tmpdir(), "orm-pull-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-pull-"));
   pulled.write(join(dir, "schema.prisma"));
   const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")));
   assert.equal((await migrator.baseline()).name, "0001_initial");
@@ -85,7 +85,7 @@ test("rollback refuses a baselined migration unless forced", async () => {
   const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
   opened.push(db);
   await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public; CREATE TABLE keep (id bigint PRIMARY KEY); INSERT INTO keep VALUES (1)");
-  const dir = mkdtempSync(join(tmpdir(), "orm-baseline-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-baseline-"));
   (await pull(db)).write(join(dir, "schema.prisma"));
   const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")));
   await migrator.baseline();
@@ -95,7 +95,7 @@ test("rollback refuses a baselined migration unless forced", async () => {
 });
 
 test("SQLite pull, baseline and drift", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-pull-sqlite-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-pull-sqlite-"));
   const source = `
 datasource db {
   provider = "sqlite"
@@ -130,7 +130,7 @@ model Pet {
   assert.deepEqual(pulled.differences, []);
   assert.ok(pulled.schema.includes('@@check((age >= 0), name: "pet_age")'));
   pulled.write(join(dir, "pulled.prisma"));
-  await db.execute("DROP TABLE orm_migrations");
+  await db.execute("DROP TABLE monorm_migrations");
   const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "pulled.prisma")));
   await migrator.baseline();
   assert.deepEqual((await migrator.drift()).steps, []);

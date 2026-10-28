@@ -4,7 +4,7 @@ and ``!=`` / ``not_in`` on one in any ``filter()``, need ``or_null()`` or ``and_
 import pytest
 from blog.models import Comment, Post, User
 
-from orm import QueryError, not_
+from monorm import QueryError, not_
 
 x = Comment.author_id  # nullable
 ALICE = object.__new__(User)
@@ -49,7 +49,7 @@ def test_ne_and_not_in_on_a_nullable_column_raise_in_a_positive_filter(build):
 
 
 def test_a_having_condition_follows_the_same_rule():
-    from orm import func
+    from monorm import func
 
     with pytest.raises(QueryError, match="or_null"):
         Comment.objects.select(x, func.count()).group_by(x).having(x != 1)
@@ -122,9 +122,9 @@ model Place {
 
 
 def test_a_nested_subfield_is_nullable_only_when_its_declaration_says_so():
-    import orm
+    import monorm
 
-    Place = orm.loads(NESTED, registry=orm.Registry())["Place"]
+    Place = monorm.loads(NESTED, registry=monorm.Registry())["Place"]
     sure = [Place.spot.name, Place.spot.geo.lat, Place.js.name, Place.js.geo.lat]
     maybe = [Place.spot.geo.lng, Place.spot.where.lat, Place.opt.name, Place.opt.geo.lat, Place.js.geo.lng, Place.js.where.lat]
     def value(col):
@@ -169,9 +169,9 @@ def test_a_null_test_of_the_right_direction_handles_a_comparison():
 
 @pytest.fixture
 def lines():
-    import orm
+    import monorm
 
-    return orm.loads(
+    return monorm.loads(
         """
 model Item {
   shop BigInt
@@ -189,7 +189,7 @@ model Line {
   @@map("ns_line")
 }
 """,
-        registry=orm.Registry(),
+        registry=monorm.Registry(),
     )
 
 
@@ -215,9 +215,9 @@ def test_a_negated_like_on_a_not_null_column_needs_nothing(build):
 
 
 def test_a_negated_like_on_a_nullable_column_raises():
-    import orm
+    import monorm
 
-    Reading = orm.loads('model Reading {\n  id Int @id\n  name String?\n  @@map("ns_reading")\n}', registry=orm.Registry())["Reading"]
+    Reading = monorm.loads('model Reading {\n  id Int @id\n  name String?\n  @@map("ns_reading")\n}', registry=monorm.Registry())["Reading"]
     for build in (lambda: ~Reading.name.like("a%"), lambda: ~Reading.name.contains("a"), lambda: ~Reading.name.ilike("a%")):
         with pytest.raises(QueryError, match="under negation"):
             build()

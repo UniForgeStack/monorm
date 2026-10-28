@@ -1,29 +1,29 @@
 [package]
-name = "orm-cli"
+name = "monorm-cli"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The `orm` command line: one implementation, run as the `orm` binary, `python -m orm` and `npx orm`."
+description = "The `monorm` command line: one implementation, run as the `monorm` binary, `python -m monorm` and `npx @ufstack/monorm`."
 
 [lib]
-name = "orm_cli"
+name = "monorm_cli"
 
 [[bin]]
-name = "orm"
+name = "monorm"
 path = "src/main.rs"
 
 [dependencies]
-orm-core = { path = "../core", default-features = false }
-orm-engine = { path = "../engine", default-features = false }
+monorm-core = { path = "../core", default-features = false }
+monorm-engine = { path = "../engine", default-features = false }
 serde_json = "1"
 toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [features]
 default = ["postgres", "sqlite", "generate-python", "generate-typescript", "generate-rust", "reference-loading"]
-postgres = ["orm-engine/postgres"]
-sqlite = ["orm-engine/sqlite"]
-generate-rust = ["orm-core/generate-rust"]
-generate-python = ["orm-core/generate-python"]
-generate-typescript = ["orm-core/generate-typescript"]
-reference-loading = ["orm-core/reference-loading"]
+postgres = ["monorm-engine/postgres"]
+sqlite = ["monorm-engine/sqlite"]
+generate-rust = ["monorm-core/generate-rust"]
+generate-python = ["monorm-core/generate-python"]
+generate-typescript = ["monorm-core/generate-typescript"]
+reference-loading = ["monorm-core/reference-loading"]

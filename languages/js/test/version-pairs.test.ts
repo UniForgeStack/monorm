@@ -10,8 +10,8 @@ import { main as cli } from "../src/cli.js";
 import { hasExtension } from "./artifact-caps.js";
 import { scratch } from "./scratch.js";
 
-const locking = { skip: !hasExtension("orm.locking") };
-const both = { skip: !hasExtension("orm.locking") || !hasExtension("orm.soft-delete") };
+const locking = { skip: !hasExtension("monorm.locking") };
+const both = { skip: !hasExtension("monorm.locking") || !hasExtension("monorm.soft-delete") };
 type Models = Record<string, any>;
 const bound = (b: unknown): any => b;
 
@@ -49,13 +49,13 @@ async function open(dialect: string): Promise<[Database, Models, string[]]> {
   return [db, models, statements];
 }
 
-/** Load a schema through the `models.ts` that `orm generate` writes, as an application does, on SQLite. */
+/** Load a schema through the `models.ts` that `monorm generate` writes, as an application does, on SQLite. */
 async function openGenerated(schema: string): Promise<[Database, Models, string[]]> {
-  const root = scratch("orm-version-pairs-");
+  const root = scratch("monorm-version-pairs-");
   writeFileSync(join(root, "schema.prisma"), 'datasource db { provider = "sqlite" }\n' + schema);
-  assert.equal(await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"]), 0);
+  assert.equal(await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "@ufstack/monorm"]), 0);
   const src = join(import.meta.dirname, "..", "src");
-  const imports: Record<string, string> = { '"orm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"orm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
+  const imports: Record<string, string> = { '"@ufstack/monorm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"@ufstack/monorm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
   const emit = (from: string, to: string) => {
     mkdirSync(to, { recursive: true });
     for (const name of readdirSync(from).filter((n) => n.endsWith(".ts") && !n.endsWith(".d.ts"))) {
@@ -71,7 +71,7 @@ async function openGenerated(schema: string): Promise<[Database, Models, string[
   const source = readFileSync(file, "utf8");
   const isolated = source.replace(/define\(SCHEMA(\)|, \{)/, (_, tail: string) => `define(SCHEMA, { registry: __registry${tail === ")" ? " })" : ","}`);
   assert.notEqual(isolated, source);
-  writeFileSync(file, `import { Registry as __Registry } from ${imports['"orm"']};\nexport const __registry = new __Registry();\n${isolated}`);
+  writeFileSync(file, `import { Registry as __Registry } from ${imports['"@ufstack/monorm"']};\nexport const __registry = new __Registry();\n${isolated}`);
   const { __registry: registry, ...models } = (await import(pathToFileURL(file).href)) as Models;
   const db = await connect("sqlite://:memory:", { registry, default: false });
   await db.createTables();

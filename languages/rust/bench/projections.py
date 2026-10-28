@@ -28,37 +28,37 @@ def check(project):
 def main():
     # Recreate build-script output after cargo clean, without changing timed checks.
     subprocess.run(
-        ["cargo", "build", "--quiet", "-p", "orm-client"],
+        ["cargo", "build", "--quiet", "-p", "monorm-client"],
         cwd=ROOT,
         env=dict(os.environ, CARGO_TARGET_DIR=str(ROOT / "target"), CARGO_INCREMENTAL="0"),
         check=True,
         capture_output=True,
         text=True,
     )
-    generated = max((ROOT / "target/debug/build").glob("orm-client-*/out/models.rs"), key=lambda p: p.stat().st_mtime)
+    generated = max((ROOT / "target/debug/build").glob("monorm-client-*/out/models.rs"), key=lambda p: p.stat().st_mtime)
     variants = {
         "model_baseline": "let rows=User::objects.require().using(db).all().await?;std::hint::black_box(rows);",
         "tuple": "let rows=User::objects.select((User::email,User::nickname,User::TYPE.upper())).require().using(db).all().await?;std::hint::black_box(rows);",
-        "local_named": "let rows=orm_client::select_named!(User::objects;email=>User::email,nickname=>User::nickname,kind=>User::TYPE.upper()).require().using(db).all().await?;std::hint::black_box(rows);",
-        "exported_model_shape": "let rows=orm_client::select_named!(User::objects=>Contact;person=>orm_client::model::<User>(),nickname=>User::nickname).require().using(db).all().await?;for row in rows {let _: &String=email(&row.person);}",
+        "local_named": "let rows=monorm_client::select_named!(User::objects;email=>User::email,nickname=>User::nickname,kind=>User::TYPE.upper()).require().using(db).all().await?;std::hint::black_box(rows);",
+        "exported_model_shape": "let rows=monorm_client::select_named!(User::objects=>Contact;person=>monorm_client::model::<User>(),nickname=>User::nickname).require().using(db).all().await?;for row in rows {let _: &String=email(&row.person);}",
     }
     records = []
-    with tempfile.TemporaryDirectory(prefix="orm-projection-cost-") as temp:
+    with tempfile.TemporaryDirectory(prefix="monorm-projection-cost-") as temp:
         project = Path(temp)
         (project / "src").mkdir()
         (project / "Cargo.toml").write_text(f"""[package]
-name="orm-projection-cost"
+name="monorm-projection-cost"
 version="0.0.0"
 edition="2021"
 [workspace]
 [dependencies]
-orm-client={{path={json.dumps(str(ROOT / "languages/rust"))}}}
+monorm-client={{path={json.dumps(str(ROOT / "languages/rust"))}}}
 """)
         (project / "src/models.rs").write_text(generated.read_text())
         prefix = """#![allow(dead_code)]
 mod models;
 use models::User;
-orm_client::named_result! {pub struct Contact {person,nickname}}
+monorm_client::named_result! {pub struct Contact {person,nickname}}
 fn email<S:models::UserShape<Email=String>>(row:&S)->&String {row.email()}
 """
         # Warm all dependencies and this generated schema before comparing variants.
@@ -66,7 +66,7 @@ fn email<S:models::UserShape<Email=String>>(row:&S)->&String {row.email()}
         check(project)
         for label, body in variants.items():
             source = (
-                prefix + "pub async fn consume(db:&models::Database)->orm_client::Result<()> {" + body + "Ok(())}\n"
+                prefix + "pub async fn consume(db:&models::Database)->monorm_client::Result<()> {" + body + "Ok(())}\n"
             )
             samples = []
             for repeat in range(3):

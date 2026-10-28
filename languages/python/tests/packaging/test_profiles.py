@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-spec = importlib.util.spec_from_file_location("orm_profiles", Path(__file__).parents[2] / "orm/_profiles.py")
+spec = importlib.util.spec_from_file_location("monorm_profiles", Path(__file__).parents[2] / "monorm/_profiles.py")
 profiles = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profiles)
 
@@ -44,17 +44,17 @@ def artifact(name, **overrides):
         ([], None, "installed: none"),
         (["postgres", "sqlite"], None, "extras do not combine"),
         (["sqlite"], "postgres", "is not installed"),
-        (["sqlite"], "unknown", "unknown ORM_PROFILE"),
+        (["sqlite"], "unknown", "unknown MONORM_PROFILE"),
     ],
 )
 def test_bad_selection_fails_without_loading_engine(installed, selector, message):
-    environment = {} if selector is None else {"ORM_PROFILE": selector}
+    environment = {} if selector is None else {"MONORM_PROFILE": selector}
     with (
         patch.dict("os.environ", environment, clear=True),
         patch.object(
             profiles.importlib.util,
             "find_spec",
-            side_effect=lambda name: object() if name.removeprefix("orm_native_") in installed else None,
+            side_effect=lambda name: object() if name.removeprefix("monorm_native_") in installed else None,
         ),
         patch.object(profiles.importlib, "import_module") as load,
     ):
@@ -66,12 +66,12 @@ def test_bad_selection_fails_without_loading_engine(installed, selector, message
 def test_selector_loads_exactly_one_profile():
     module = artifact("combined")
     with (
-        patch.dict("os.environ", {"ORM_PROFILE": "combined"}, clear=True),
+        patch.dict("os.environ", {"MONORM_PROFILE": "combined"}, clear=True),
         patch.object(profiles.importlib.util, "find_spec", return_value=object()),
         patch.object(profiles.importlib, "import_module", return_value=module) as load,
     ):
         assert profiles.load() is module
-        load.assert_called_once_with("orm_native_combined._native")
+        load.assert_called_once_with("monorm_native_combined._native")
 
 
 @pytest.mark.parametrize(
@@ -101,8 +101,8 @@ def test_tooling_profile_is_not_another_profile():
 
 
 def test_installed_artifact_embeds_its_build_record():
-    import orm  # noqa: F401  (selects and validates the installed profile)
-    from orm import _native
+    import monorm  # noqa: F401  (selects and validates the installed profile)
+    from monorm import _native
 
     metadata = json.loads(_native.profile_metadata())
     build = metadata["build"]
@@ -111,7 +111,7 @@ def test_installed_artifact_embeds_its_build_record():
 
 
 def test_installed_artifact_reports_no_adapters():
-    from orm import _capabilities, _native
+    from monorm import _capabilities, _native
 
     assert json.loads(_native.profile_metadata())["adapters"] == []
     assert _capabilities.ADAPTERS == frozenset()

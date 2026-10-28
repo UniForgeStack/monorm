@@ -1,5 +1,5 @@
-use orm_core::{dialect::{Dialect, Target}, dsl, ir::ValueType};
-use orm_engine::{db::{self, Cell}, exec::{self, Conflict, Outcome}, params::NoParams};
+use monorm_core::{dialect::{Dialect, Target}, dsl, ir::ValueType};
+use monorm_engine::{db::{self, Cell}, exec::{self, Conflict, Outcome}, params::NoParams};
 use sea_query::Value;
 
 const SOURCE: &str = r#"
@@ -31,7 +31,7 @@ async fn exercise(url: &str, dialect: Dialect) {
     let target = Target::new(dialect);
     let db = db::connect(url, 1).await.unwrap();
     let conn = db.begin().await.unwrap();
-    for statement in orm_core::migrate::create_all(&schema).unwrap() { conn.batch(statement).await.unwrap(); }
+    for statement in monorm_core::migrate::create_all(&schema).unwrap() { conn.batch(statement).await.unwrap(); }
     let types: Vec<ValueType> = schema.model(schema.model_idx("Item").unwrap()).fields().iter().map(|f| f.value_type()).collect();
     let insert = |fields: &[&str], rows: Vec<Vec<Option<Value>>>, conflict| {
         exec::plan_insert(&schema, target, "Item", &fields.iter().map(|f| f.to_string()).collect::<Vec<_>>(), rows, conflict, &NoParams, &Default::default()).unwrap()

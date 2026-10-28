@@ -21,7 +21,7 @@ pub mod trace;
 pub use error::{Error, Result};
 pub use params::{NoParams, Params};
 
-use orm_core::ir::Operation;
+use monorm_core::ir::Operation;
 
 /// Parses a query IR document.
 pub fn parse_op(op_json: &str) -> Result<Operation> {

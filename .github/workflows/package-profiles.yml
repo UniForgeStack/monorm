@@ -44,10 +44,10 @@ jobs:
           for wheel in target/wheels/orm_native_${{ matrix.profile }}-*.whl; do
             echo "${{ matrix.os }} py${{ matrix.python }} $(basename "$wheel"): $(wc -c < "$wheel") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           done
-      - run: python -m pip install --no-index --find-links target/wheels "orm[${{ matrix.profile }}]"
+      - run: python -m pip install --no-index --find-links target/wheels "monorm[${{ matrix.profile }}]"
       - run: python languages/python/packaging/smoke-python.py
         env:
-          ORM_PROFILE: ${{ matrix.profile }}
+          MONORM_PROFILE: ${{ matrix.profile }}
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.python }}-${{ matrix.profile }}
@@ -79,12 +79,12 @@ jobs:
           for dir in extensions/*/; do
             name=$(basename "$dir")
             [ "$name" = file-storage ] && continue
-            cargo run -q -p orm-extension-package -- package "$dir" --out "target/wheels/$name" --tsc target/tools/node_modules/.bin/tsc
+            cargo run -q -p monorm-extension-package -- package "$dir" --out "target/wheels/$name" --tsc target/tools/node_modules/.bin/tsc
           done
-      - name: Install orm[full] from local wheels
+      - name: Install monorm[full] from local wheels
         run: |
           python -m venv target/full-env
-          target/full-env/bin/python -m pip install --no-index $(for d in target/wheels target/wheels/*/; do echo --find-links $d; done) "orm[full]"
+          target/full-env/bin/python -m pip install --no-index $(for d in target/wheels target/wheels/*/; do echo --find-links $d; done) "monorm[full]"
       - run: target/full-env/bin/python languages/python/packaging/smoke-full-extra.py
   node:
     strategy:

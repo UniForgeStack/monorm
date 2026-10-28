@@ -5,8 +5,8 @@
 //! Decimal as text, DateTime as RFC 3339 UTC text, and a missing subfield as null.
 
 use super::*;
-use orm_core::ir::{NestedIr, ObjectField, TypeFieldIr, TypeIr};
-use orm_core::migrate::nested_copy::leaf_json;
+use monorm_core::ir::{NestedIr, ObjectField, TypeFieldIr, TypeIr};
+use monorm_core::migrate::nested_copy::leaf_json;
 
 /// A nested type on `columns` storage, at `sub` below its model field: the leaf columns under it.
 pub(super) struct Group<'s> {
@@ -492,7 +492,7 @@ pub(super) fn leaf_default(c: &FieldIr, dialect: Dialect) -> Result<Option<Strin
     if dialect == Dialect::Sqlite || !c.nested.as_ref().is_some_and(|n| n.under_null) {
         return Ok(None);
     }
-    orm_core::migrate::model::default_sql(c).map_err(Error::query)
+    monorm_core::migrate::model::default_sql(c).map_err(Error::query)
 }
 
 /// An insert writes NULL, not the column default, for each nullable leaf of a `columns`

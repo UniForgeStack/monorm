@@ -1,5 +1,5 @@
 //! Optional compiler for model query policies; execution uses prepared host IR.
-use orm_contracts::{extension::{OrderKey, ReadDefault}, ir::{Nulls, SchemaIr}};
+use monorm_contracts::{extension::{OrderKey, ReadDefault}, ir::{Nulls, SchemaIr}};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
@@ -18,7 +18,7 @@ struct ModelPolicy {
 /// The entry that holds the order, fields, related paths and the `@@query.defaults(filter:)` filter.
 const POLICY: &str = "query";
 /// The `ReadDefault` source of every entry this extension emits.
-const SOURCE: &str = "orm.query-defaults";
+const SOURCE: &str = "monorm.query-defaults";
 
 /// The options of a policy, in `@@query.defaults(<option>: ...)` and `@@query.<option>(...)`.
 /// `@@query.filter` is not one: it adds named filters (see `named_filters`).
@@ -69,7 +69,7 @@ fn named_filters(ir: &SchemaIr, model: &str) -> Result<Vec<(String, String, Stri
 }
 
 /// `"-created_at nulls last"`: a field, `-` for descending, and an optional nulls position.
-fn order_key(model: &orm_contracts::ir::ModelIr, source: &Value) -> Result<OrderKey, String> {
+fn order_key(model: &monorm_contracts::ir::ModelIr, source: &Value) -> Result<OrderKey, String> {
     let source = source.as_str().ok_or_else(|| format!("{}: an order column is a string such as \"-created_at\"", model.name))?;
     let mut words = source.split_whitespace();
     let first = words.next().ok_or_else(|| format!("{}: empty order column", model.name))?;
@@ -88,7 +88,7 @@ fn order_key(model: &orm_contracts::ir::ModelIr, source: &Value) -> Result<Order
 
 /// A default order the model can run: its own fields, once each, an orderable type, and
 /// `nulls` on a column that can hold NULL. `source` is the model whose attribute set it.
-fn check_order(ir: &SchemaIr, model: &orm_contracts::ir::ModelIr, order: &[OrderKey], source: &str) -> Result<(), String> {
+fn check_order(ir: &SchemaIr, model: &monorm_contracts::ir::ModelIr, order: &[OrderKey], source: &str) -> Result<(), String> {
     let name = &model.name;
     let from = if source == name { String::new() } else { format!(" (from the default order of {source}; give {name} its own @@query.order(...), or clear it with @@query.order())") };
     let narrowed = |field: &str| ir.behavior.result_checks.iter().any(|c| c.model == *name && c.field == field && c.non_null);
@@ -265,7 +265,7 @@ mod tests {
     /// Declared effect `query-defaults`: the prepared policies only.
     #[test]
     fn lowering_changes_only_read_defaults_once() {
-        let effects = orm_contracts::extension::pass_effects(&ir(), lower).unwrap();
+        let effects = monorm_contracts::extension::pass_effects(&ir(), lower).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.read_defaults"]);
     }
     #[test]
@@ -432,7 +432,7 @@ mod tests {
         let mut schema = ir();
         declare(&mut schema, "Child", "query.order", json!({}), json!(["bio"]));
         schema.behavior.model_views.push(serde_json::from_value(json!({"model":"Child","source":"Parent","root":"Parent"})).unwrap());
-        schema.behavior.result_checks.push(serde_json::from_value(json!({"model":"Child","field":"bio","non_null":true,"code":"orm.proxy.shape"})).unwrap());
+        schema.behavior.result_checks.push(serde_json::from_value(json!({"model":"Child","field":"bio","non_null":true,"code":"monorm.proxy.shape"})).unwrap());
         let error = lower(&mut schema).unwrap_err();
         assert!(error.ends_with("Child: order column \"bio\" can be NULL: write \"bio nulls first\" or \"bio nulls last\""), "{error}");
         // Two levels down, the error still names the model that set the order.
@@ -535,4 +535,4 @@ mod tests {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-orm_contracts::extension!(("query.defaults.lower", lower));
+monorm_contracts::extension!(("query.defaults.lower", lower));

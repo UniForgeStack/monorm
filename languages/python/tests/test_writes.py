@@ -9,8 +9,8 @@ from decimal import Decimal
 import pytest
 from blog.models import Comment, Post, PostTag, Priority, Profile, Role, Tag, User
 
-import orm
-from orm import func
+import monorm
+from monorm import func
 from conftest import DATABASE_URL
 
 
@@ -45,7 +45,7 @@ async def test_insert_many_splits_by_the_parameter_limit(clean, observe_queries)
 async def test_insert_many_batch_size(clean, observe_queries):
     # One statement can't update a row twice; one row per statement can.
     rows = [{"email": "a@x.io", "name": "A1"}, {"email": "a@x.io", "name": "A2"}]
-    with pytest.raises(orm.DatabaseError, match="second time"):
+    with pytest.raises(monorm.DatabaseError, match="second time"):
         await User.objects.insert_many(rows).on_conflict(User.email, update=True)
     statement = User.objects.insert_many(rows, batch_size=1).on_conflict(User.email, update=True).returning()
     result = statement.inspect()
@@ -65,14 +65,14 @@ async def test_insert_many_batches_run_in_one_transaction(clean, observe_queries
     result = statement.inspect()
     assert result.statement_count == 3
     assert result.has_batching and all(s.has_batching for s in result.statements)
-    with observe_queries(clean) as events, pytest.raises(orm.IntegrityError):
+    with observe_queries(clean) as events, pytest.raises(monorm.IntegrityError):
         await statement
     assert len(events) == 3 and events[-1].error is not None
     assert await Tag.objects.count() == 1
 
 
 async def test_insert_many_batches_by_max_params(clean, observe_queries):
-    db = await orm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("max_params=5",))
+    db = await monorm.connect(DATABASE_URL, max_connections=2, default=False, _disable=("max_params=5",))
     try:
         rows = [{"email": "dup@x.io", "name": f"U{i}"} for i in range(3)]
         # Two parameters per row: two rows per statement, so the duplicate email
@@ -122,9 +122,9 @@ NOTES = """
 
 @pytest.fixture
 async def notes():
-    registry = orm.Registry()
-    classes = orm.loads(NOTES, registry=registry)
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False, max_connections=1)
+    registry = monorm.Registry()
+    classes = monorm.loads(NOTES, registry=registry)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False, max_connections=1)
     await db.create_tables()
     yield db, classes["Note"], classes["Solo"]
     await db.drop_tables()
@@ -143,7 +143,7 @@ async def test_model_indexes_offer_the_unique_indexes(notes):
 
 
 def test_a_field_named_indexes_keeps_its_column():
-    Shadow = orm.loads(
+    Shadow = monorm.loads(
         """
         datasource db { provider = "sqlite" }
         model Shadow {
@@ -152,9 +152,9 @@ def test_a_field_named_indexes_keeps_its_column():
           @@index([indexes], unique: true, map: "shadow_indexes")
         }
     """,
-        registry=orm.Registry(),
+        registry=monorm.Registry(),
     )["Shadow"]
-    assert isinstance(Shadow.indexes, orm.ColumnRef)
+    assert isinstance(Shadow.indexes, monorm.ColumnRef)
 
 
 async def test_on_conflict_index_picks_a_partial_index(notes, observe_queries):
@@ -220,8 +220,8 @@ async def test_on_conflict_index_with_a_boolean_column(notes):
 
 
 async def test_on_conflict_infers_the_partial_unique_index():
-    registry = orm.Registry()
-    Account = orm.loads(
+    registry = monorm.Registry()
+    Account = monorm.loads(
         """
         datasource db { provider = "postgresql" }
         model Account {
@@ -233,7 +233,7 @@ async def test_on_conflict_infers_the_partial_unique_index():
     """,
         registry=registry,
     )["Account"]
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.create_tables()
         accounts = Account.objects.using(db)
@@ -257,13 +257,13 @@ async def test_on_conflict_index_errors_name_the_problem(notes):
     with pytest.raises(TypeError, match="takes Note.indexes"):
         notes_.insert(slug="a").on_conflict(Note.slug, index="notes_slug_live", update=False)  # type: ignore[arg-type]
     # A forged reference reaches the engine, which checks the schema.
-    with pytest.raises(orm.QueryError, match="not unique"):
-        await notes_.insert(slug="a", body="b").on_conflict(Note.body, index=orm.IndexRef(Note, "notes_body_slug"), update=False)
-    with pytest.raises(orm.QueryError, match="exactly the conflict columns"):
+    with pytest.raises(monorm.QueryError, match="not unique"):
+        await notes_.insert(slug="a", body="b").on_conflict(Note.body, index=monorm.IndexRef(Note, "notes_body_slug"), update=False)
+    with pytest.raises(monorm.QueryError, match="exactly the conflict columns"):
         await notes_.insert(slug="a").on_conflict(Note.slug, index=Note.indexes.notes_body, update=False)
-    with pytest.raises(orm.QueryError, match="not an index of Note"):
-        await notes_.insert(slug="a").on_conflict(Note.slug, index=orm.IndexRef(Note, "nope"), update=False)
-    with pytest.raises(orm.QueryError, match="notes_slug_live, notes_slug_shown"):
+    with pytest.raises(monorm.QueryError, match="not an index of Note"):
+        await notes_.insert(slug="a").on_conflict(Note.slug, index=monorm.IndexRef(Note, "nope"), update=False)
+    with pytest.raises(monorm.QueryError, match="notes_slug_live, notes_slug_shown"):
         await notes_.insert(slug="a").on_conflict(Note.slug, update=False)
 
 
@@ -308,7 +308,7 @@ async def test_on_conflict_update_fields_and_values(clean):
             Post.id,
             update=True,
             update_fields=[Post.title],
-            update_values={"views": Post.views + orm.excluded(Post.views)},
+            update_values={"views": Post.views + monorm.excluded(Post.views)},
         )
         .returning()
     )
@@ -380,7 +380,7 @@ async def test_get_or_insert_reads_the_primary(clean):
     from test_connections import replica_url
 
     # The replica lags: it has none of the primary's rows.
-    routed = await orm.connect(clean.url, replicas=[await replica_url(clean)], default=False, max_connections=2)
+    routed = await monorm.connect(clean.url, replicas=[await replica_url(clean)], default=False, max_connections=2)
     try:
         users = User.objects.using(routed)
         user, created = await users.get_or_insert(email="a@x.io", defaults={"name": "A"})
@@ -392,7 +392,7 @@ async def test_get_or_insert_reads_the_primary(clean):
 
 async def test_get_or_insert_names_a_row_the_filters_hide(clean):
     await User.objects.insert(email="a@x.io", name="A")
-    with pytest.raises(orm.QueryError, match="filters hide it"):
+    with pytest.raises(monorm.QueryError, match="filters hide it"):
         await User.objects.filter(User.name == "B").get_or_insert(email="a@x.io", defaults={"name": "B"})
     # The limit and offset do not apply to the read.
     user, created = await User.objects.offset(1).limit(1).get_or_insert(email="a@x.io")
@@ -415,7 +415,7 @@ async def test_get_or_insert_checks_the_lookup(clean):
         await Comment.objects.get_or_insert(author_id=None, defaults={"body": "x", "post_id": 1})
     with pytest.raises(TypeError, match="unique constraint"):
         await User.objects.get_or_insert(defaults={"name": "A"})
-    with pytest.raises(orm.DatabaseError, match="no unique or exclusion constraint"):
+    with pytest.raises(monorm.DatabaseError, match="no unique or exclusion constraint"):
         await User.objects.get_or_insert(name="A", defaults={"email": "a@x.io"})
 
 
@@ -463,7 +463,7 @@ async def test_set_keeps_the_links_when_it_fails(clean):
     await post.tags.add(t1)
     # Checked before the delete, and a failed insert rolls the delete back.
     for bad in ({"tag_id": 1}, {"nope": 1}, {"position": "x"}):
-        with pytest.raises((TypeError, ValueError, orm.DatabaseError)):
+        with pytest.raises((TypeError, ValueError, monorm.DatabaseError)):
             await post.tags.set([t2], through_defaults=bad)
     assert [link.tag_id for link in await PostTag.objects.all()] == [t1.id]
 
@@ -499,7 +499,7 @@ async def test_copy_column_types(clean):
 async def test_copy_stops_at_a_duplicate_key(clean):
     await Tag.objects.insert(name="taken")
     rows = [{"name": f"n{i}"} for i in range(1000)] + [{"name": "taken"}]
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         await Tag.objects.insert_many(rows, copy=True)
     assert await Tag.objects.count() == 1
 
@@ -519,7 +519,7 @@ async def test_copy_in_a_tenant_block(clean):
 
 
 async def test_copy_is_seen_by_query_hooks(clean):
-    events: list[orm.QueryEvent] = []
+    events: list[monorm.QueryEvent] = []
     remove = clean.on_query(events.append)
     try:
         assert await Tag.objects.insert_many([{"name": "a"}, {"name": "b"}], copy=True) == 2
@@ -531,7 +531,7 @@ async def test_copy_is_seen_by_query_hooks(clean):
 @asynccontextmanager
 async def narrow_views():
     # A fresh pool has no cached statements on posts, so the type change cannot hit a stale plan.
-    narrow = await orm.connect(DATABASE_URL, max_connections=1, default=False)
+    narrow = await monorm.connect(DATABASE_URL, max_connections=1, default=False)
     await narrow.execute("ALTER TABLE posts ALTER COLUMN views TYPE smallint")
     try:
         yield narrow
@@ -547,7 +547,7 @@ async def test_copy_fits_narrow_columns(clean):
         posts = Post.objects.using(narrow)
         assert await posts.insert_many([{"author": alice, "title": "t", "body": "b", "views": 7}], copy=True) == 1
         assert await posts.filter(Post.views == 7).count() == 1
-        with pytest.raises(orm.DatabaseError, match="out of range"):
+        with pytest.raises(monorm.DatabaseError, match="out of range"):
             await posts.insert_many([{"author": alice, "title": "u", "body": "b", "views": 70_000}], copy=True)
 
 
@@ -572,8 +572,8 @@ async def test_typed_read_of_a_smallint_column(clean):
 
 
 async def test_typed_read_of_native_type_columns():
-    registry = orm.Registry()
-    Row = orm.loads(
+    registry = monorm.Registry()
+    Row = monorm.loads(
         """
         model NativeTypeRow {
           id    BigInt   @id
@@ -591,7 +591,7 @@ async def test_typed_read_of_native_type_columns():
         """,
         registry=registry,
     )["NativeTypeRow"]
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -624,14 +624,14 @@ async def test_copy_rejections(clean):
         Tag.objects.insert_many([{"name": "a"}], copy=True).on_conflict(Tag.name, update=False)
     with pytest.raises(TypeError, match="batch_size"):
         Tag.objects.insert_many([{"name": "a"}], copy=True, batch_size=2)  # type: ignore[call-overload]
-    with pytest.raises(orm.QueryError, match="some rows only"):
+    with pytest.raises(monorm.QueryError, match="some rows only"):
         await Tag.objects.insert_many([{"name": "a"}, {"name": "b", "priority": Priority.low}], copy=True)
     assert await Tag.objects.insert_many([], copy=True) == 0
 
 
 async def test_timestamp_write_read_with_non_utc_database():
-    registry = orm.Registry()
-    Row = orm.loads(
+    registry = monorm.Registry()
+    Row = monorm.loads(
         """
         model TimestampRoundtrip {
           id BigInt @id
@@ -641,7 +641,7 @@ async def test_timestamp_write_read_with_non_utc_database():
         }
         """, registry=registry,
     )["TimestampRoundtrip"]
-    admin = await orm.connect(DATABASE_URL, default=False)
+    admin = await monorm.connect(DATABASE_URL, default=False)
     name = (await admin.fetch("SELECT current_database() AS name"))[0]["name"]
     database = '"' + name.replace('"', '""') + '"'
     previous = await admin.fetch(
@@ -653,7 +653,7 @@ async def test_timestamp_write_read_with_non_utc_database():
     db = None
     try:
         await admin.execute(f"ALTER DATABASE {database} SET TimeZone = 'Asia/Tehran'")
-        db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+        db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
         await db.drop_tables()
         await db.create_tables()
         stamp = datetime(2024, 1, 2, 3, 4, 5, 123_000, tzinfo=timezone.utc)

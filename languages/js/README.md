@@ -36,7 +36,7 @@ The example in `examples/quickstart/quickstart.ts` (in-memory SQLite):
 
 ```ts
 // Build languages/js first; then npm install and node quickstart.ts (Node 23.6+).
-import { connect, loads } from "orm";
+import { connect, loads } from "@ufstack/monorm";
 
 const url = process.argv[2] ?? "sqlite://:memory:";
 const provider = url.startsWith("sqlite:") ? "sqlite" : "postgresql";

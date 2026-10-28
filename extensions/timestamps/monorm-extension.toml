@@ -1,0 +1,41 @@
+id = "monorm.timestamps"
+version = "0.1.0"
+abi = "0.2"
+library = "monorm_timestamps"
+schema_contract = "5.0"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+capabilities = ["schema-transformations", "physical-schema"]
+
+# Adds the field before the logical passes, so a proxy of the model copies it.
+[[passes]]
+id = "monorm.timestamps.fields"
+phase = "declaration"
+after = ["monorm.inherit.expand"]
+effects = ["models.timestamps", "storage.timestamps"]
+
+[[passes]]
+id = "monorm.timestamps.prepare"
+phase = "behavior"
+effects = ["behavior.write_assignments.timestamps", "storage.updated_at_triggers"]
+
+# `@@timestamps.updated_at("updated_at", map: "_updated_at", mode: "application", upsert: "pick")`: adds the field.
+[[attributes]]
+name = "timestamps.updated_at"
+target = "model"
+[[attributes.positional]]
+kind = "string"
+[attributes.arguments.mode]
+kind = "string"
+[attributes.arguments.upsert]
+kind = "string"
+[attributes.arguments.map]
+kind = "string"
+
+# The field form; the pass rejects it with the model attribute to write instead.
+[[attributes]]
+name = "timestamps.updated_at"
+target = "field"
+[attributes.arguments.mode]
+kind = "string"

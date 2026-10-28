@@ -1,5 +1,5 @@
 -- A database written by hand the way Django and a few raw migrations leave one:
--- the input of the `orm pull` tests (languages/python/tests/test_pull.py, languages/js/test/pull.test.ts).
+-- the input of the `monorm pull` tests (languages/python/tests/test_pull.py, languages/js/test/pull.test.ts).
 CREATE TYPE "shop_status" AS ENUM ('active', 'paused', 'closed');
 COMMENT ON TYPE "shop_status" IS 'shop lifecycle';
 

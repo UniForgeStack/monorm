@@ -3,7 +3,7 @@
 import pytest
 from conftest import DATABASE_URL
 
-import orm
+import monorm
 
 BASE = DATABASE_URL.split("?", 1)[0]
 
@@ -12,8 +12,8 @@ BASE = DATABASE_URL.split("?", 1)[0]
 async def own():
     """A connection of its own, without creating the blog schema."""
     try:
-        db = await orm.connect(DATABASE_URL, max_connections=2, default=False, registry=orm.Registry())
-    except orm.DatabaseError as e:
+        db = await monorm.connect(DATABASE_URL, max_connections=2, default=False, registry=monorm.Registry())
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {DATABASE_URL}: {e}")
     await db.execute("DROP TABLE IF EXISTS driver_probe; CREATE TABLE driver_probe (id int)")
     yield db
@@ -26,21 +26,21 @@ async def probe_count(own_db) -> int:
 
 
 async def test_unknown_url_scheme():
-    with pytest.raises(orm.DatabaseError, match="unsupported database URL scheme"):
-        await orm.connect("mysql://root@localhost/x", default=False)
+    with pytest.raises(monorm.DatabaseError, match="unsupported database URL scheme"):
+        await monorm.connect("mysql://root@localhost/x", default=False)
 
 
 async def test_unknown_sslmode(own):
-    with pytest.raises(orm.DatabaseError, match="unknown sslmode"):
-        await orm.connect(f"{BASE}?sslmode=sometimes", default=False)
+    with pytest.raises(monorm.DatabaseError, match="unknown sslmode"):
+        await monorm.connect(f"{BASE}?sslmode=sometimes", default=False)
 
 
 async def test_bad_password_fails_at_connect(own):
     url = BASE.replace("postgres:postgres@", "postgres:wrong@", 1)
     if url == BASE:
         pytest.skip("test URL has no postgres:postgres credentials")
-    with pytest.raises(orm.DatabaseError):
-        await orm.connect(url, default=False)
+    with pytest.raises(monorm.DatabaseError):
+        await monorm.connect(url, default=False)
 
 
 @pytest.mark.parametrize("mode", ["disable", "prefer", "require"])
@@ -49,7 +49,7 @@ async def test_sslmodes(own, mode):
     tls = rows[0][0] == "on"
     if mode == "require" and not tls:
         pytest.skip("server has no TLS")
-    other = await orm.connect(f"{BASE}?sslmode={mode}", default=False)
+    other = await monorm.connect(f"{BASE}?sslmode={mode}", default=False)
     try:
         used = await other._fetch_text("SELECT ssl::text FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
         assert used[0][0] == ("true" if mode != "disable" and tls else "false")
@@ -62,8 +62,8 @@ async def test_verify_full_rejects_untrusted_certificate(own):
     if rows[0][0] != "on":
         pytest.skip("server has no TLS")
     # The local test server's certificate is self-signed, not from a public CA.
-    with pytest.raises(orm.DatabaseError):
-        await orm.connect(f"{BASE}?sslmode=verify-full", default=False)
+    with pytest.raises(monorm.DatabaseError):
+        await monorm.connect(f"{BASE}?sslmode=verify-full", default=False)
 
 
 async def test_abandoned_transaction_is_rolled_back(own):
@@ -82,7 +82,7 @@ async def test_finished_transaction_rejects_queries(own):
     engine = own._engine
     tx = await engine.begin()
     await tx.commit()
-    with pytest.raises(orm.DatabaseError, match="already committed"):
+    with pytest.raises(monorm.DatabaseError, match="already committed"):
         await engine.execute("SELECT 1", tx)
-    with pytest.raises(orm.DatabaseError, match="already committed"):
+    with pytest.raises(monorm.DatabaseError, match="already committed"):
         await tx.rollback()

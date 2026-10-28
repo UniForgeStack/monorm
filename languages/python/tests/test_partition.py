@@ -2,7 +2,7 @@
 
 import pytest
 
-import orm
+import monorm
 from conftest import DATABASE_URL
 from artifact_caps import has_extension
 
@@ -28,19 +28,19 @@ default = true
 
 
 def test_partitions_survive_registry_extension():
-    registry = orm.Registry()
-    orm.loads("model PartitionBefore {\n id Int @id\n}", registry=registry)
-    orm.loads(SOURCE, registry=registry)
+    registry = monorm.Registry()
+    monorm.loads("model PartitionBefore {\n id Int @id\n}", registry=registry)
+    monorm.loads(SOURCE, registry=registry)
     assert len(registry.ir()["partitions"]) == 2
-    orm.loads("model PartitionExtra {\n id Int @id\n}", registry=registry)
+    monorm.loads("model PartitionExtra {\n id Int @id\n}", registry=registry)
     assert len(registry.ir()["partitions"]) == 2
     registry.prepare()
 
 
 async def test_partition_routes_orm_inserts_and_checks_moves():
-    registry = orm.Registry()
-    Row = orm.loads(SOURCE, registry=registry)["PartitionRow"]
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    registry = monorm.Registry()
+    Row = monorm.loads(SOURCE, registry=registry)["PartitionRow"]
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -55,9 +55,9 @@ async def test_partition_routes_orm_inserts_and_checks_moves():
             )
             .returning()
         )
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Row.objects.using(db).insert(kind="a", amount=None)
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await rows[1].update(kind="a")
         await rows[2].update(kind="a")
         await rows[2].load(reload=True)
@@ -71,15 +71,15 @@ async def test_partition_routes_orm_inserts_and_checks_moves():
 async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
     import json
     from pathlib import Path
-    from orm import _native
+    from monorm import _native
 
-    if not has_extension("orm.proxy"):
-        pytest.skip("requires the orm-proxy package")
+    if not has_extension("monorm.proxy"):
+        pytest.skip("requires the monorm-proxy package")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Reward, Percent, Fixed = (models[n] for n in ("Reward", "PercentageReward", "FixedReward"))
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -94,11 +94,11 @@ async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
         plan = str(await Percent.objects.using(db).without_defaults().explain())
         assert "partition_proxy_percent" in plan
         assert "partition_proxy_fixed" not in plan and "partition_proxy_price" not in plan
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Percent.objects.using(db).insert(shop=1, percent=10, content_hash="same")
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Percent.objects.using(db).insert(shop=1, percent=None)
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Percent.objects.using(db).insert(shop=1, percent=10, kind=models["RewardKind"].FIXED)
         assert await Percent.objects.using(db).without_defaults().update(percent=15) == 1
         await fixed.load(reload=True)
@@ -115,26 +115,26 @@ async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
 async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
     import json
     from pathlib import Path
-    from orm import _native
+    from monorm import _native
 
-    if not has_extension("orm.proxy", "orm.query-defaults", "orm.soft-delete"):
-        pytest.skip("requires proxy, orm.query-defaults and orm.soft-delete")
+    if not has_extension("monorm.proxy", "monorm.query-defaults", "monorm.soft-delete"):
+        pytest.skip("requires proxy, monorm.query-defaults and monorm.soft-delete")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-proxy.prisma").read_text()
     source = source.replace("deleted DateTime?", '@@soft_delete.deleted_at("deleted")')
     source = source.replace(
         '@@map("partition_proxy_reward")',
         '@@map("partition_proxy_reward")\n @@query.filter("tenant", "shop == scope.shop and deleted == null")',
     )
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Reward, Percent, Fixed = (models[n] for n in ("Reward", "PercentageReward", "FixedReward"))
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
         await Percent.objects.using(db).insert_many([{"shop": 1, "percent": 10}, {"shop": 2, "percent": 20}])
         await Fixed.objects.using(db).insert(shop=1, amount=5)
-        with orm.scope(shop=1):
+        with monorm.scope(shop=1):
             assert await Percent.objects.using(db).count() == 1
             assert await Reward.objects.using(db).count() == 2
             assert await Percent.objects.using(db).delete() == 1
@@ -151,10 +151,10 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
 
 async def test_multi_value_proxy_partition_requires_a_key_and_owns_only_its_values():
     import json
-    from orm import _native
+    from monorm import _native
 
-    if not has_extension("orm.proxy"):
-        pytest.skip("requires the orm-proxy package")
+    if not has_extension("monorm.proxy"):
+        pytest.skip("requires the monorm-proxy package")
     source = """
 model Item {
  id Int
@@ -170,10 +170,10 @@ model Selected {
 }
 partition multi_partition_other { of = Item default = true }
 """
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Item, Selected = models["Item"], models["Selected"]
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -183,9 +183,9 @@ partition multi_partition_other { of = Item default = true }
         assert await Item.objects.using(db).count() == 3
         with pytest.raises(ValueError, match="Selected.kind is required"):
             await Selected.objects.using(db).insert(id=2)
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Selected.objects.using(db).insert(id=2, kind="other")
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Selected.objects.using(db).insert_many([{"id": 2, "kind": "other"}], copy=True)
         assert (
             await Selected.objects.using(db).insert_many([{"id": 2, "kind": "a"}, {"id": 2, "kind": "b"}], copy=True)
@@ -201,13 +201,13 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
     import json
     from decimal import Decimal
     from pathlib import Path
-    from orm import _native
+    from monorm import _native
 
-    if not has_extension("orm.proxy", "orm.query-defaults", "orm.soft-delete"):
-        pytest.skip("requires proxy, orm.query-defaults and orm.soft-delete")
+    if not has_extension("monorm.proxy", "monorm.query-defaults", "monorm.soft-delete"):
+        pytest.skip("requires proxy, monorm.query-defaults and monorm.soft-delete")
     source = Path(__file__).parents[3].joinpath("fixtures").joinpath("partition-rewards.prisma").read_text()
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Tier, Reward, Percent, Fixed, Price = (
         models[n]
         for n in (
@@ -218,12 +218,12 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
             "SetPriceReward",
         )
     )
-    db = await orm.connect(DATABASE_URL, registry=registry, default=False)
+    db = await monorm.connect(DATABASE_URL, registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
         await Tier.objects.using(db).insert(id=1)
-        with orm.scope(shop=1):
+        with monorm.scope(shop=1):
             percent = await Percent.objects.using(db).insert(
                 shop_id=1, tier_id=1, content_hash="same", percent=Decimal("10.25")
             )
@@ -232,9 +232,9 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
             assert percent.percent == Decimal("10.25")
             assert await Reward.objects.using(db).count() == 3
             assert await Percent.objects.using(db).count() == 1
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 await Percent.objects.using(db).insert(shop_id=1, tier_id=1, content_hash="same", percent=Decimal("12"))
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 await Reward.objects.using(db).insert(
                     shop_id=1, tier_id=1, type=models["RewardType"].PERCENTAGE_DISCOUNT, percent=None
                 )
@@ -243,7 +243,7 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
             assert await Percent.objects.using(db).without_defaults().count() == 1
             await Percent.objects.using(db).insert(shop_id=1, tier_id=1, content_hash="same", percent=Decimal("20"))
             assert await Reward.objects.using(db).count() == 3
-        with orm.scope(shop=2):
+        with monorm.scope(shop=2):
             assert await Reward.objects.using(db).count() == 0
             assert await Percent.objects.using(db).count() == 0
         assert await Reward.objects.using(db).without_defaults().count() == 4

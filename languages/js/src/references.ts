@@ -18,7 +18,7 @@ type Host = {
   related(row: object): Record<string, unknown>;
   instanceUpdate(this: Row, values: object): Promise<void>;
 };
-const MISSING = Symbol("orm.missingReferenceKey");
+const MISSING = Symbol("monorm.missingReferenceKey");
 function peekField(row: Row, name: string, internal: symbol): unknown {
   if (Object.hasOwn(row, name)) return row[name];
   const values = row[internal] as Record<string, unknown> | undefined;
@@ -44,7 +44,7 @@ function fieldNames(meta: ModelMeta, irs: readonly string[]): string[] {
   return irs.map((ir) => meta.fieldByIr.get(ir)!.name);
 }
 
-const REFERENCE_STATE: unique symbol = Symbol("orm.referenceState");
+const REFERENCE_STATE: unique symbol = Symbol("monorm.referenceState");
 type ReferenceLoad = { context: readonly unknown[]; promise: Promise<unknown> };
 type ReferenceState = { pending: Map<string, ReferenceLoad>; tokens: Map<string, object>; keys: Map<string, unknown> };
 function referenceState(row: Row): ReferenceState {

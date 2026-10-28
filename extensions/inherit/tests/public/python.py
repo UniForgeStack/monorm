@@ -1,18 +1,18 @@
-"""`model_for` and the expanded models from the schema language to the database; needs the `orm-inherit` package."""
+"""`model_for` and the expanded models from the schema language to the database; needs the `monorm-inherit` package."""
 
 import asyncio
 from pathlib import Path
 
-import orm
-from orm_inherit import model_for
+import monorm
+from monorm_inherit import model_for
 
 ROOT = Path(__file__).parent.parent
 FIXTURE = ROOT.joinpath("fixtures/schema.prisma").read_text()
 
 
 async def run(provider: str, url: str) -> None:
-    registry = orm.Registry()
-    models = orm.loads(FIXTURE.replace('"sqlite"', f'"{provider}"'), registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(FIXTURE.replace('"sqlite"', f'"{provider}"'), registry=registry)
     assert sorted(models) == ["Admin", "AdminTeam", "MyUser", "Role", "Team", "UserTeam"], sorted(models)
     MyUser, Admin, Role = models["MyUser"], models["Admin"], models["Role"]
     Team, UserTeam, AdminTeam = models["Team"], models["UserTeam"], models["AdminTeam"]
@@ -20,7 +20,7 @@ async def run(provider: str, url: str) -> None:
     assert model_for("Admin", registry) is Admin
     assert model_for("Role", registry) is Role
     assert list(MyUser._meta.fields)[:4] == ["id", "email", "created_at", "bio"]
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:

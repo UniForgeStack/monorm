@@ -6,7 +6,7 @@ use crate::{
     params::NoParams,
     plan,
 };
-use orm_core::{
+use monorm_core::{
     behavior::{OwnerId, PreparedOwnerLink},
     dialect::Target,
     ir::{Delete, FieldIr, Select, Update, ValueType},
@@ -85,7 +85,7 @@ fn owner_chain(schema: &Schema, owner: OwnerId) -> Vec<&PreparedOwnerLink> {
 
 /// An unfiltered select of the whole logical model. The identity reads skip the default
 /// filters: they read back rows by key, which a filter (or an unset `scope.<name>`) must not hide.
-fn model_select(model: &str, without_defaults: orm_core::ir::Bypass, without_root_filter: bool) -> Result<Select> {
+fn model_select(model: &str, without_defaults: monorm_core::ir::Bypass, without_root_filter: bool) -> Result<Select> {
     serde_json::from_value(serde_json::json!({ "model": model, "without_defaults": without_defaults, "without_root_filter": without_root_filter }))
         .map_err(|e| query_err(e.to_string()))
 }
@@ -311,12 +311,12 @@ fn mutation(
     schema: &Schema,
     target: Target,
     model: &str,
-    filters: Vec<orm_core::ir::Expr>,
-    with: Vec<orm_core::ir::Cte>,
+    filters: Vec<monorm_core::ir::Expr>,
+    with: Vec<monorm_core::ir::Cte>,
     params: &dyn crate::Params,
     returning: bool,
     delete: bool,
-    without_defaults: orm_core::ir::Bypass,
+    without_defaults: monorm_core::ir::Bypass,
     without_root_filter: bool,
     prepared_match: Option<SelectStatement>,
 ) -> Result<Mutation> {
@@ -332,7 +332,7 @@ fn mutation(
     };
     // Lock the whole owner chain on PostgreSQL. SQLite's read transaction pins
     // the matched snapshot; an incompatible concurrent writer causes rollback.
-    if target.dialect == orm_core::dialect::Dialect::Postgres {
+    if target.dialect == monorm_core::dialect::Dialect::Postgres {
         let owners = &schema.physical().models;
         let mut alias = logical.table().to_owned();
         let mut locks = vec![Alias::new(&alias)];

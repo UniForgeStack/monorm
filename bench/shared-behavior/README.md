@@ -81,7 +81,7 @@ Correctness checks (the native bindings above must already be built):
 $env.ORM_TEST_DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:55439/orm_test'
 ^.venv/bin/python -m pytest -q
 ^cargo test -q
-^cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node
+^cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node
 ^.venv/bin/mypy --strict languages/python/orm
 ^.venv/bin/pyright languages/python/orm
 ^npm --prefix js test

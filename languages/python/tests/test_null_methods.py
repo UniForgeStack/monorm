@@ -5,10 +5,10 @@ from datetime import datetime
 import pytest
 from blog.models import Comment, Post, Profile, User
 
-import orm
+import monorm
 from conftest import DATABASE_URL
-from orm import QueryError
-from orm.expr import Func, differs
+from monorm import QueryError
+from monorm.expr import Func, differs
 
 SCHEMA = """
 model Reading {
@@ -120,25 +120,25 @@ def test_a_nullable_column_reached_through_a_to_many_relation_takes_the_method()
 def test_a_computed_value_takes_the_method():
     x = Comment.author_id
     assert where(Comment.objects.filter((x + 1 > 5).or_null())).endswith('("comments"."author_id" + 1) IS NULL')
-    assert where(Comment.objects.filter((orm.func.abs(x) > 5).and_not_null())).endswith("IS NOT NULL")
-    assert where(Comment.objects.filter((orm.func.max(x) > 5).or_null())).endswith("IS NULL")
-    for non_null in [orm.func.coalesce(x, 0) > 1, orm.func.count() > 1, orm.func.abs(Comment.id) > 1]:
+    assert where(Comment.objects.filter((monorm.func.abs(x) > 5).and_not_null())).endswith("IS NOT NULL")
+    assert where(Comment.objects.filter((monorm.func.max(x) > 5).or_null())).endswith("IS NULL")
+    for non_null in [monorm.func.coalesce(x, 0) > 1, monorm.func.count() > 1, monorm.func.abs(Comment.id) > 1]:
         for method in (non_null.or_null, non_null.and_not_null):
             with pytest.raises(QueryError, match="the value is NOT NULL"):
                 method()
     with pytest.raises(TypeError, match="already a NULL test"):
-        orm.func.max(x).is_null().or_null()
+        monorm.func.max(x).is_null().or_null()
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def models(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     source = SCHEMA + ARRAY_SCHEMA if request.param == "postgres" else 'datasource db {\n  provider = "sqlite"\n}\n' + SCHEMA
-    m = orm.loads(source, registry=registry)
+    m = monorm.loads(source, registry=registry)
     url = "sqlite://:memory:" if request.param == "sqlite" else DATABASE_URL
     try:
-        db = await orm.connect(url, registry=registry, default=False)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(url, registry=registry, default=False)
+    except monorm.DatabaseError as e:
         pytest.skip(f"database not reachable: {e}")
     await db.drop_tables()
     await db.create_tables()
@@ -239,7 +239,7 @@ def test_a_method_covers_every_nullable_column_of_a_comparison():
     ref = Comment.author_id
     between = ~Comment.id.between(ref, 5).or_null()
     assert where(Comment.objects.filter(between)).count('"comments"."author_id" IS NULL') == 1
-    computed = ~(orm.func.coalesce(Comment.id, 0) == ref).or_null()
+    computed = ~(monorm.func.coalesce(Comment.id, 0) == ref).or_null()
     assert where(Comment.objects.filter(computed)).endswith('"comments"."author_id" IS NULL)')
 
 
@@ -257,7 +257,7 @@ def test_a_condition_reads_back_in_the_messages():
     with pytest.raises(TypeError, match=r"User\.email LIKE 'a%'"):
         ((User.email.like("a%")) | (User.email.like("b%"))).or_null()
     with pytest.raises(TypeError, match=r"not to ~Comment\.author_id IS NULL"):
-        orm.not_(col.is_null()).and_not_null()
+        monorm.not_(col.is_null()).and_not_null()
 
 
 def test_differs_keeps_a_null_row_and_passes_a_null_test_through():
@@ -311,7 +311,7 @@ async def test_a_computed_comparison_keeps_or_drops_a_null_row(models):
     async def ids(condition):
         return {r.id for r in await Reading.objects.using(db).filter(condition)}
 
-    lower = orm.func.lower(Reading.name)
+    lower = monorm.func.lower(Reading.name)
     with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows, and_not_null\(\) drops them"):
         await ids(lower != "ab")
     with pytest.raises(QueryError, match=r"or_null\(\) drops NULL rows under negation"):
@@ -323,7 +323,7 @@ async def test_a_computed_comparison_keeps_or_drops_a_null_row(models):
     assert await ids(~(lower == "ab").and_not_null()) == {b.id, null.id}
     assert await ids((Reading.score + 1 > 20).or_null()) == {b.id, null.id}
     # a coalesce with a non-null last argument is provably non-null: no method, no raise
-    safe = orm.func.coalesce(Reading.score, 0)
+    safe = monorm.func.coalesce(Reading.score, 0)
     assert await ids(safe != 10) == {b.id, null.id}
     assert await ids(~(safe == 10)) == {b.id, null.id}
     with pytest.raises(QueryError, match="the value is NOT NULL"):
@@ -332,7 +332,7 @@ async def test_a_computed_comparison_keeps_or_drops_a_null_row(models):
 
 def test_the_strict_rule_runs_on_a_computed_value():
     x = Comment.author_id
-    fn = orm.func
+    fn = monorm.func
     assert Comment.objects.filter(fn.coalesce(x, 0) != 3).sql()
     assert Comment.objects.filter(fn.coalesce(x, Comment.id) != 3).sql()
     assert Comment.objects.filter(~(fn.abs(Comment.id) == 3)).sql()
@@ -350,7 +350,7 @@ def test_the_strict_rule_runs_on_a_computed_value():
 
 
 def test_a_scalar_subquery_is_nullable():
-    latest = Post.objects.filter(Post.author_id == orm.outer(User.id)).select(Post.id)[:1].as_scalar()
+    latest = Post.objects.filter(Post.author_id == monorm.outer(User.id)).select(Post.id)[:1].as_scalar()
     with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows"):
         User.objects.filter(latest != 3)
     assert User.objects.filter((latest != 3).or_null()).sql()
@@ -360,13 +360,13 @@ def test_a_scalar_subquery_is_nullable():
 
 def _computed_values():
     def sub(n):
-        return Post.objects.filter(Post.author_id == orm.outer(User.id)).select(Post.id)[:n].as_scalar()
+        return Post.objects.filter(Post.author_id == monorm.outer(User.id)).select(Post.id)[:n].as_scalar()
 
     def window(n):
-        return orm.func.lag(Comment.author_id, n).over(order_by=Comment.id)
+        return monorm.func.lag(Comment.author_id, n).over(order_by=Comment.id)
 
     def kase(n):
-        return orm.func.case((Comment.author_id > n, 1))
+        return monorm.func.case((Comment.author_id > n, 1))
 
     return [("subquery", User, sub(1), sub(2)), ("case", Comment, kase(1), kase(2)), ("window", Comment, window(1), window(2))]
 
@@ -388,7 +388,7 @@ def test_the_message_names_a_subquery_a_case_and_a_window_value():
 
 
 def test_a_having_condition_on_an_aggregate_follows_the_rule():
-    fn, x = orm.func, Comment.author_id
+    fn, x = monorm.func, Comment.author_id
     q = Comment.objects.select(x, fn.count()).group_by(x)
     assert q.having(fn.count() != 0).sql()
     with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows"):
@@ -399,7 +399,7 @@ def test_a_having_condition_on_an_aggregate_follows_the_rule():
 
 
 def test_the_strict_rule_runs_in_a_join_on_and_an_aggregate_filter_on_a_computed_value():
-    fn = orm.func
+    fn = monorm.func
     totals = Post.objects.select(Post.author_id, fn.sum(Post.views).label("views")).group_by(Post.author_id).cte("totals")
     with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows"):
         Comment.objects.join(totals, fn.abs(Comment.author_id) != 1)
@@ -412,13 +412,13 @@ def test_the_strict_rule_runs_in_a_join_on_and_an_aggregate_filter_on_a_computed
 
 
 def test_the_strict_rule_does_not_run_in_case_or_select():
-    fn, x = orm.func, Comment.author_id
+    fn, x = monorm.func, Comment.author_id
     assert Comment.objects.select(fn.case((fn.abs(x) != 1, 1), default=0)).sql()
     assert Comment.objects.select((fn.abs(x) != 1).label("different")).sql()
 
 
 def test_a_path_null_rule_reaches_a_condition_nested_in_a_function():
-    fn = orm.func
+    fn = monorm.func
     plain = where(Post.objects.filter(fn.coalesce(Post.author.name == "x", False) == True))  # noqa: E712
     ruled = where(Post.objects.filter(fn.coalesce(Post.author.or_null().name == "x", False) == True))  # noqa: E712
     assert 'NOT "t1"."name" IS NOT NULL' in ruled
@@ -426,9 +426,9 @@ def test_a_path_null_rule_reaches_a_condition_nested_in_a_function():
 
 
 def test_a_bound_parameter_and_a_constant_are_not_nullable():
-    prepared = Post.objects.filter(Post.id != orm.param("x")).prepare()
+    prepared = Post.objects.filter(Post.id != monorm.param("x")).prepare()
     assert prepared.sql(x=3).split(" WHERE ", 1)[1] == '"posts"."id" <> 3'
-    assert where(Post.objects.filter(~(orm.func.abs(Post.id) == 3))) == 'NOT (ABS("posts"."id")) = 3'
+    assert where(Post.objects.filter(~(monorm.func.abs(Post.id) == 3))) == 'NOT (ABS("posts"."id")) = 3'
 
 
 def test_an_array_index_is_nullable():
@@ -442,7 +442,7 @@ def test_an_array_index_is_nullable():
 
 
 def test_a_function_is_nullable_unless_it_is_known_to_keep_a_non_null_input_non_null():
-    fn = orm.func
+    fn = monorm.func
     for kept in [fn.lower(User.email), fn.length(User.email), fn.concat(User.email, "x"), fn.abs(Comment.id)]:
         with pytest.raises(QueryError, match="the value is NOT NULL"):
             (kept == "a").or_null()
@@ -462,7 +462,7 @@ def test_a_division_is_nullable_and_stays_non_strict():
 
 
 KEEPS_NULL = r"or_null\(\) keeps NULL rows"
-fn, x = orm.func, Comment.author_id
+fn, x = monorm.func, Comment.author_id
 comment = User.comments.alias()
 
 
@@ -545,7 +545,7 @@ def test_two_computed_values_that_differ_in_one_part_are_two_values_for_the_stri
 
 
 def test_a_value_over_a_to_one_path_is_nullable_and_flips_like_the_column():
-    lower = orm.func.lower
+    lower = monorm.func.lower
     column = where(Comment.objects.filter(Comment.author.name != "x"))
     assert "NOT EXISTS" in column
     assert where(Comment.objects.filter(lower(Comment.author.name) != "x")).count("NOT EXISTS") == 1
@@ -579,15 +579,15 @@ async def test_a_json_path_is_strict(models):
 
 
 def test_outer_is_strict():
-    outer = orm.outer(Comment.author_id)
+    outer = monorm.outer(Comment.author_id)
     with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows"):
         Post.objects.filter(Post.id != outer)
     assert Post.objects.filter((Post.id != outer).or_null()) is not None
-    assert Post.objects.filter(Post.id != orm.outer(Comment.id)) is not None
+    assert Post.objects.filter(Post.id != monorm.outer(Comment.id)) is not None
 
 
 def test_a_path_null_rule_reaches_the_whole_value_not_only_the_column():
-    fn = orm.func
+    fn = monorm.func
     author = Comment.author.or_null()
     plain = where(Comment.objects.filter(fn.lower(Comment.author.name) == "x"))
     ruled = where(Comment.objects.filter(fn.lower(author.name) == "x"))
@@ -597,7 +597,7 @@ def test_a_path_null_rule_reaches_the_whole_value_not_only_the_column():
 
 async def test_the_strict_rule_runs_in_having_a_join_on_and_an_aggregate_filter_on_rows(models):
     db, Reading, *_ = models
-    fn = orm.func
+    fn = monorm.func
     await Reading.objects.using(db).insert_many(
         [
             {"score": 10, "name": "a", "tag": "g1"},
@@ -638,7 +638,7 @@ async def test_two_separate_nodes_of_one_value_pair_a_ne_with_an_is_null(models)
     _, b, null = await Reading.objects.using(db).insert_many(
         [{"name": "a", "tag": "t"}, {"name": "b", "tag": "t"}, {"name": None, "tag": "t"}]
     ).returning()
-    fn = orm.func
+    fn = monorm.func
     rows = await Reading.objects.using(db).filter((fn.lower(Reading.name) != "a") | fn.lower(Reading.name).is_null())
     assert {r.id for r in rows} == {b.id, null.id}
 
@@ -695,8 +695,8 @@ async def test_an_outer_value_keeps_or_drops_a_null_row(models):
     ).returning()
 
     async def ids(method):
-        inner = Note.objects.filter(getattr(Note.id != orm.outer(Reading.score), method)())
-        return {r.id for r in await Reading.objects.using(db).filter(orm.exists(inner))}
+        inner = Note.objects.filter(getattr(Note.id != monorm.outer(Reading.score), method)())
+        return {r.id for r in await Reading.objects.using(db).filter(monorm.exists(inner))}
 
     assert await ids("or_null") == {b.id, null.id}
     assert await ids("and_not_null") == {b.id}
@@ -709,14 +709,14 @@ async def test_an_excluded_value_keeps_or_drops_a_null_row(models):
     )
     rows = [{"id": 1, "score": 1, "tag": "new"}, {"id": 2, "score": None, "tag": "new"}]
     for method, second in [("or_null", "x"), ("and_not_null", "y")]:
-        changed = getattr(orm.excluded(Reading.score) != 1, method)()
+        changed = getattr(monorm.excluded(Reading.score) != 1, method)()
         await (
             Reading.objects.using(db)
             .insert_many(rows)
             .on_conflict(
                 Reading.id,
                 update=True,
-                update_values={"tag": orm.func.case((changed, "x"), default="y")},
+                update_values={"tag": monorm.func.case((changed, "x"), default="y")},
             )
         )
         got = {r.id: r.tag for r in await Reading.objects.using(db).order_by(Reading.id)}

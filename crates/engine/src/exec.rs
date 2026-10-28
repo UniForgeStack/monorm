@@ -12,9 +12,9 @@ use crate::error::{query_err, Error, Result};
 use crate::params::{null_of, Params};
 pub use crate::plan::OnConflictTarget;
 use crate::plan::{self, Plan, PrefetchPlan, SelectPlan};
-use orm_core::dialect::{Dialect, Target};
-use orm_core::ir::{self, ValueType};
-use orm_core::schema::Schema;
+use monorm_core::dialect::{Dialect, Target};
+use monorm_core::ir::{self, ValueType};
+use monorm_core::schema::Schema;
 
 /// A related set fetched for parent rows, and the sets fetched for its own rows.
 pub struct Fetched {
@@ -38,7 +38,7 @@ pub enum Outcome {
     /// Rows affected by an UPDATE / DELETE without `RETURNING`.
     Affected(u64),
     /// Rows of `model` returned by a write (`RETURNING` every column).
-    Rows { model: usize, rows: Box<dyn RowSet>, types: Vec<ValueType>, shape: Option<orm_core::behavior::ResultShape> },
+    Rows { model: usize, rows: Box<dyn RowSet>, types: Vec<ValueType>, shape: Option<monorm_core::behavior::ResultShape> },
     /// The related rows of parent rows the caller gave ([`prefetch`]), and those rows.
     Prefetched { parents: Box<dyn RowSet>, prefetched: Vec<Fetched> },
 }
@@ -528,7 +528,7 @@ pub struct BulkCopy {
 /// every row or in none. COPY writes values as they are, so models with change-set hooks
 /// or SQL templates are rejected.
 pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String], rows: Vec<Vec<Option<Value>>>) -> Result<BulkCopy> {
-    if target.dialect != orm_core::dialect::Dialect::Postgres {
+    if target.dialect != monorm_core::dialect::Dialect::Postgres {
         return Err(Error::query("insert_many(copy=True) needs Postgres"));
     }
     if crate::multi_table::is_multi_table(schema, model)? {
@@ -536,7 +536,7 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
     }
     let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);
-    if m.hooks.as_deref().is_some_and(orm_core::hooks::HookPlan::changes_set) {
+    if m.hooks.as_deref().is_some_and(monorm_core::hooks::HookPlan::changes_set) {
         return Err(Error::query(format!("insert_many(copy=True): {} has change-set hooks; use insert_many()", m.ir.name)));
     }
     let (fields, rows) = crate::client_default::fill(m, fields, rows)?;
@@ -548,7 +548,7 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
             return Err(Error::query(format!("insert_many(copy=True): {}.{name} writes through SQL; use insert_many()", m.ir.name)));
         }
         let set = rows.iter().filter(|r| r.get(i).is_some_and(Option::is_some)).count();
-        if set != rows.len() && m.client_defaults.iter().any(|(p, d)| m.fields()[*p].name == *name && matches!(d, orm_core::client_default::ClientDefault::Expr(_) | orm_core::client_default::ClientDefault::Hook(_))) {
+        if set != rows.len() && m.client_defaults.iter().any(|(p, d)| m.fields()[*p].name == *name && matches!(d, monorm_core::client_default::ClientDefault::Expr(_) | monorm_core::client_default::ClientDefault::Hook(_))) {
             return Err(Error::query(format!("insert_many(copy=True): {}.{name} has an expression default; use insert_many()", m.ir.name)));
         }
         if set == 0 {

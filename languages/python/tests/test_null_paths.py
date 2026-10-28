@@ -4,9 +4,9 @@ rule, and the consumers (join `on`, aggregate `filter=`) — on PostgreSQL and S
 import pytest
 from blog.models import Comment, Post, User
 
-import orm
+import monorm
 from conftest import DATABASE_URL
-from orm import QueryError, func, not_
+from monorm import QueryError, func, not_
 
 SCHEMA = """
 model Writer {
@@ -30,13 +30,13 @@ model Note {
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def rows(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     source = SCHEMA if request.param == "postgres" else 'datasource db {\n  provider = "sqlite"\n}\n' + SCHEMA
-    m = orm.loads(source, registry=registry)
+    m = monorm.loads(source, registry=registry)
     url = "sqlite://:memory:" if request.param == "sqlite" else DATABASE_URL
     try:
-        db = await orm.connect(url, registry=registry, default=False)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(url, registry=registry, default=False)
+    except monorm.DatabaseError as e:
         pytest.skip(f"database not reachable: {e}")
     await db.drop_tables()
     await db.create_tables()

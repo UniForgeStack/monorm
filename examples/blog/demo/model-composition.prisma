@@ -1,4 +1,4 @@
-// Needs the orm-composition package (@@composition.model).
+// Needs the monorm-composition package (@@composition.model).
 
 model Person {
   id   Int    @id @default(autoincrement())

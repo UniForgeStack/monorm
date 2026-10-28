@@ -1,5 +1,5 @@
 [package]
-name = "orm-contracts"
+name = "monorm-contracts"
 version = "0.1.0"
 edition = "2021"
 description = "Contracts between the orm host and its extensions: manifests, hooks, schema IR and the native ABI."

@@ -2,7 +2,7 @@
 
 import pytest
 
-import orm
+import monorm
 
 def model(name: str, table: str, *fields: str) -> dict:
     cols = [{"name": "id", "column": "id", "type": "int", "primary_key": True}]
@@ -19,7 +19,7 @@ SCHEMA = {
 
 @pytest.fixture(scope="module")
 def models():
-    return orm.define(SCHEMA, registry=orm.Registry())
+    return monorm.define(SCHEMA, registry=monorm.Registry())
 
 
 def test_a_column_of_a_model_on_the_same_table_resolves_on_the_query_model(models):

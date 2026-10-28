@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-import orm
+import monorm
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -44,16 +44,16 @@ WHEN = dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
 
 @pytest.fixture(params=["postgres", "sqlite"])
 async def world(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     schema = COLUMNS + DAY
     if request.param == "sqlite":
-        classes = orm.loads(SQLITE + schema, registry=registry)
-        db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+        classes = monorm.loads(SQLITE + schema, registry=registry)
+        db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     else:
-        classes = orm.loads(schema, registry=registry)
+        classes = monorm.loads(schema, registry=registry)
         try:
-            db = await orm.connect(PG_URL, registry=registry, default=False, max_connections=2)
-        except orm.DatabaseError as e:
+            db = await monorm.connect(PG_URL, registry=registry, default=False, max_connections=2)
+        except monorm.DatabaseError as e:
             pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
     await db.drop_tables()
     await db.create_tables()
@@ -69,13 +69,13 @@ async def world(request):
 def test_a_json_field_refuses_a_type_with_a_dynamic_default(field):
     schema = f"type Stamp {{\n  {field}\n}}\nmodel M {{\n  id Int @id\n  s Stamp @storage(json)\n}}"
     with pytest.raises(Exception, match=r"Stamp\.at has a dynamic default"):
-        orm.loads(schema, registry=orm.Registry())
+        monorm.loads(schema, registry=monorm.Registry())
 
 
 def test_a_json_field_refuses_a_dynamic_default_below_a_nested_level():
     schema = "type In {\n  at DateTime @default(now())\n}\ntype Out {\n  i In\n}\nmodel M {\n  id Int @id\n  o Out @storage(json)\n}"
     with pytest.raises(Exception, match=r"In\.at has a dynamic default"):
-        orm.loads(schema, registry=orm.Registry())
+        monorm.loads(schema, registry=monorm.Registry())
 
 
 async def test_a_columns_subfield_with_a_dynamic_default_may_be_left_out(world):

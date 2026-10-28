@@ -2,14 +2,14 @@
 
 Three extension packages give a column a role that the ORM keeps on writes.
 Each one is a crate in `extensions/`; the host has no code for the roles, and the crate pushes neutral write records.
-Install its Python package or its npm package (`orm-timestamps`, `orm-soft-delete`, `orm-locking`; `@orm/timestamps`, `@orm/soft-delete`, `@orm/locking`).
-`orm-extension-package package <crate dir> --out <dir>` builds them for the host platform (see `optional-packaging.md`).
+Install its Python package or its npm package (`monorm-timestamps`, `monorm-soft-delete`, `monorm-locking`; `@ufstack/monorm-timestamps`, `@ufstack/monorm-soft-delete`, `@ufstack/monorm-locking`).
+`monorm-extension-package package <crate dir> --out <dir>` builds them for the host platform (see `optional-packaging.md`).
 
 | Crate | Extension id | Attribute |
 |---|---|---|
-| `orm-timestamps` (`extensions/timestamps`) | `orm.timestamps` | `@@timestamps.updated_at(name, map:, mode:, upsert:)` |
-| `orm-soft-delete` (`extensions/soft-delete`) | `orm.soft-delete` | `@@soft_delete.deleted_at(name, map:, mode:)` |
-| `orm-locking` (`extensions/locking`) | `orm.locking` | `@@locking.version(name, map:, upsert:)` |
+| `monorm-timestamps` (`extensions/timestamps`) | `monorm.timestamps` | `@@timestamps.updated_at(name, map:, mode:, upsert:)` |
+| `monorm-soft-delete` (`extensions/soft-delete`) | `monorm.soft-delete` | `@@soft_delete.deleted_at(name, map:, mode:)` |
+| `monorm-locking` (`extensions/locking`) | `monorm.locking` | `@@locking.version(name, map:, upsert:)` |
 
 The model attribute adds the column and gives it the role.
 The optional first argument is the snake_case field name; the default is `updated_at`, `deleted_at` or `version`.
@@ -81,7 +81,7 @@ model Book {
   One field for each model.
 * `delete()` on a query set or an instance sends `UPDATE ... SET deleted_at = <now> WHERE ... AND deleted_at IS NULL`, never `DELETE`.
   The count and `RETURNING` are the rows that the call soft-deleted; rows that are already soft-deleted do not count.
-* The members below come from the soft-delete extension's generated code (`orm_soft_delete`, `@orm/soft-delete`).
+* The members below come from the soft-delete extension's generated code (`monorm_soft_delete`, `@ufstack/monorm-soft-delete`).
   A model gets them when it declares `@@soft_delete.deleted_at`; other models, and proxy models, do not.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
@@ -117,12 +117,12 @@ model Book {
 * Application mode has no cascade.
 * A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
   Schema definition rejects `updated_at`, soft-delete and version fields anywhere in its ownership chain, including the composed model and every ancestor through the root.
-  The error names the composed model, the owner, the field and the extension id that wrote the record (`orm.timestamps`, `orm.soft-delete` or `orm.locking`), because composed writes cannot maintain those records.
+  The error names the composed model, the owner, the field and the extension id that wrote the record (`monorm.timestamps`, `monorm.soft-delete` or `monorm.locking`), because composed writes cannot maintain those records.
 
 ### Behavior changes
 
 * Error messages changed when the role code left the host.
-  A composed-chain error names the extension id, not the attribute: `a write record from orm.timestamps on Person.changed is not supported in a multi-table model's ownership chain`.
+  A composed-chain error names the extension id, not the attribute: `a write record from monorm.timestamps on Person.changed is not supported in a multi-table model's ownership chain`.
   A write record on a field of the wrong type says `wrong type for a time assignment` (it said `wrong type for updated_at`).
   The soft-delete extension still requires a nullable `DateTime`; the host rule for a delete rewrite accepts any `DateTime`, so another extension can rewrite deletes on a required column.
 
@@ -168,11 +168,11 @@ model Doc {
 * Each ORM write that updates a row (query set `update()`, instance `update()`, `update_many()`, a soft delete, `undelete()`, and the `DO UPDATE` branch of an upsert) adds `version = version + 1`, unless the write sets the field.
 * An insert stores the version that it names (`insert(version=7)`, `insert_many(version=5)`); the default is 0.
 * An instance `update()` or `delete()` also matches the loaded version: `WHERE pk = ... AND version = <loaded>`.
-  When no row matches and the row has another version, it raises `orm.VersionConflict` (`VersionConflict` in TypeScript).
+  When no row matches and the row has another version, it raises `monorm.VersionConflict` (`VersionConflict` in TypeScript).
   When the row is gone, `update()` raises `DoesNotExist`.
 * The instance must have the version field loaded.
 * The version enters writes only: a read or `lock()` through `post.qs()` refreshes a stale object.
-  Bound writes (`post.qs().update()`, `orm.of(posts).delete()`, `undelete()`, `hard_delete()`) match the pairs `(pk, version)` of the loaded objects and raise `VersionConflict` when a row has another version.
+  Bound writes (`post.qs().update()`, `monorm.of(posts).delete()`, `undelete()`, `hard_delete()`) match the pairs `(pk, version)` of the loaded objects and raise `VersionConflict` when a row has another version.
   A write of one object needs no transaction.
   A write of several objects runs in a transaction (a savepoint inside one transaction).
   A conflict rolls the transaction back, changes no row and restores the objects.
@@ -192,6 +192,6 @@ model Doc {
 doc = await Doc.objects.get(Doc.id == 1)
 try:
     await doc.update(title="new")
-except orm.VersionConflict:
+except monorm.VersionConflict:
     await doc.load(reload=True)  # load the other writer's change, then decide
 ```

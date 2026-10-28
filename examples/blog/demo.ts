@@ -10,10 +10,10 @@
  * The core section runs on every build. Each extension section runs when the native addon
  * has that extension, and prints how to get it otherwise. `scripts/install-extension-packages.sh` installs the extension packages into languages/js.
  *
- * The file-storage section also needs the `@orm/file-storage` package (`scripts/install-extension-packages.sh` installs it into languages/js). Each section creates its demo_* tables and drops them.
+ * The file-storage section also needs the `@ufstack/monorm-file-storage` package (`scripts/install-extension-packages.sh` installs it into languages/js). Each section creates its demo_* tables and drops them.
  *
  * The demo loads its schemas at run time (`loads`), so its models are untyped. Generated
- * models (`orm generate typescript`, see examples/blog/models.ts) type every column and row.
+ * models (`monorm generate typescript`, see examples/blog/models.ts) type every column and row.
  */
 
 import { createRequire } from "node:module";
@@ -21,7 +21,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { allowWrites, connect, debug, exists, func, load, loads, NotLoaded, outer, param, Registry, SchemaError, WriteProtected, type Database } from "orm";
+import { allowWrites, connect, debug, exists, func, load, loads, NotLoaded, outer, param, Registry, SchemaError, WriteProtected, type Database } from "@ufstack/monorm";
 
 type Models = Record<string, any>;
 
@@ -173,17 +173,17 @@ async function modelComposition(db: Database, m: Models): Promise<void> {
 
 async function fileStorage(db: Database, m: Models): Promise<void> {
   // Imported by path: the storage package and opendal are not dependencies of this example.
-  const root = new URL("../../languages/js/node_modules/@orm/file-storage/", import.meta.url);
+  const root = new URL("../../languages/js/node_modules/@ufstack/monorm-file-storage/", import.meta.url);
   let files: Models, model: Models, opendal: Models;
   try {
     [files, model] = await Promise.all(["index.js", "model.js"].map((path) => import(new URL(path, root).href)));
     opendal = createRequire(new URL("../../languages/js/package.json", import.meta.url))("opendal");
   } catch {
-    console.log("skipped: install @orm/file-storage with scripts/install-extension-packages.sh");
+    console.log("skipped: install @ufstack/monorm-file-storage with scripts/install-extension-packages.sh");
     return;
   }
   const { Report } = m;
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "orm-demo-"))); // the fs service wants a canonical root
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "monorm-demo-"))); // the fs service wants a canonical root
   try {
     const providers = new files.Registry(new Map([["reports", new opendal.Operator("fs", { root: directory })]]));
     model.installModel(Report._meta.Row.prototype, new Map([["file", new files.FileField("file", "reports", true)]]), providers, Report._meta);
@@ -199,7 +199,7 @@ async function fileStorage(db: Database, m: Models): Promise<void> {
 
 function loadGeneric(provider: string, registry: Registry): Models {
   // Identities live next to the schema; the demo copies both to a scratch directory.
-  const directory = mkdtempSync(join(tmpdir(), "orm-demo-"));
+  const directory = mkdtempSync(join(tmpdir(), "monorm-demo-"));
   try {
     const path = join(directory, "schema.prisma");
     writeFileSync(path, schema("generic-relations", provider));

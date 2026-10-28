@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-import orm
+import monorm
 from blog.models import Post, User
 from artifact_caps import has_extension
 
@@ -34,9 +34,9 @@ async def test_a_bound_update_writes_one_statement_and_fills_in_input_order(clea
 async def test_a_bound_update_of_a_partial_object_keeps_its_shape(clean):
     held = await seed()
     partial = await Post.objects.load(Post.title).get(Post.id == held[0].id)
-    [done] = await orm.of([partial]).update(title="changed")
+    [done] = await monorm.of([partial]).update(title="changed")
     assert done is partial and partial.title == "changed"
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         partial.views
 
 
@@ -81,7 +81,7 @@ async def test_a_bound_write_above_the_parameter_cap_is_a_query_error(clean):
     rows = [{"author": alice, "title": "p", "body": "b"} for _ in range(65_600)]
     held = await Post.objects.insert_many(rows).returning()
     for write in (lambda s: s.delete(), lambda s: s.update(title="x")):
-        with pytest.raises(orm.QueryError, match="parameters"):
+        with pytest.raises(monorm.QueryError, match="parameters"):
             await write(Post.objects.of(held))
     assert await Post.objects.count() == 65_600
 
@@ -93,9 +93,9 @@ SOURCE = (
 
 @pytest.fixture
 async def docs():
-    registry = orm.Registry()
-    Doc = orm.loads(SOURCE, registry=registry)["Doc"]
-    db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    registry = monorm.Registry()
+    Doc = monorm.loads(SOURCE, registry=registry)["Doc"]
+    db = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
     try:
         await db.drop_tables()
         await db.create_tables()
@@ -108,7 +108,7 @@ async def docs():
 
 
 soft_delete = pytest.mark.skipif(
-    not has_extension("orm.soft-delete"), reason="requires a selected soft-delete native artifact"
+    not has_extension("monorm.soft-delete"), reason="requires a selected soft-delete native artifact"
 )
 
 

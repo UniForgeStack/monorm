@@ -1,7 +1,7 @@
 //! Python module generation: `models.py` (runtime) and `models.pyi` (static types).
 //!
 //! The runtime module embeds the compiled schema IR and builds the model classes from
-//! it with `orm.define()`, so every schema detail (indexes, triggers, extension types)
+//! it with `monorm.define()`, so every schema detail (indexes, triggers, extension types)
 //! reaches the engine without Python code describing it. The stub gives editors and
 //! type checkers the per-model classes, relation paths, insert / update shapes and
 //! query sets.
@@ -230,7 +230,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
 
     // -- models.py -------------------------------------------------------------------
     let mut py = String::new();
-    writeln!(py, "# Generated from {source} by `python -m orm generate`. Do not edit.").unwrap();
+    writeln!(py, "# Generated from {source} by `python -m monorm generate`. Do not edit.").unwrap();
     py.push_str(
         "#\n\
          # Runtime half of the generated module: the model classes are built from the compiled\n\
@@ -238,7 +238,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          # inserts / updates and query sets) for editors and type checkers.\n\n",
     );
     let type_models = &ir.behavior.type_models;
-    writeln!(py, "from orm import {}QuerySet, define{}\n", if type_models.is_empty() { "" } else { "Model, " }, if query_sets.is_empty() { "" } else { ", use_query_set" }).unwrap();
+    writeln!(py, "from monorm import {}QuerySet, define{}\n", if type_models.is_empty() { "" } else { "Model, " }, if query_sets.is_empty() { "" } else { ", use_query_set" }).unwrap();
     for (model, (module, class)) in &model_methods {
         writeln!(py, "from {module} import {class} as _{model}Methods").unwrap();
     }
@@ -248,7 +248,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     // the extensions some model uses, with the models that use each, in chain order
     let model_exts: Vec<(&str, Vec<(usize, &super::ExtensionCode)>)> = names.iter().map(|n| (*n, options.model_extensions(ir, n))).filter(|(_, e)| !e.is_empty()).collect();
     let used_exts: BTreeSet<usize> = model_exts.iter().flat_map(|(_, e)| e.iter().map(|(i, _)| *i)).chain(options.extensions.iter().enumerate().filter(|(_, e)| e.runtime_module.is_some() && !e.members.query_set.is_empty()).map(|(i, _)| i)).collect();
-    let ext_base = options.ext_import.as_deref().unwrap_or("orm_ext");
+    let ext_base = options.ext_import.as_deref().unwrap_or("monorm_ext");
     let mut ext_kwargs = String::new();
     if !used_exts.is_empty() {
         for i in &used_exts {
@@ -383,7 +383,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         for a in &m.field_adapters {
             let Some((_, u)) = adapters.of(&a.adapter) else { continue };
             for member in &u.runtime.members {
-                writeln!(body, "    {}", orm_contracts::extension::expand_adapter_template(member, "python", &m.fields()[a.position].name)).unwrap();
+                writeln!(body, "    {}", monorm_contracts::extension::expand_adapter_template(member, "python", &m.fields()[a.position].name)).unwrap();
             }
         }
         let inherited = type_model_lines(type_models, name, false);
@@ -600,7 +600,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
 
     let mut pyi = String::new();
-    writeln!(pyi, "# Generated from {source} by `python -m orm generate`. Do not edit.").unwrap();
+    writeln!(pyi, "# Generated from {source} by `python -m monorm generate`. Do not edit.").unwrap();
     pyi.push_str(
         "#\n\
          # Static half of the generated module. Each model gets:\n\
@@ -638,7 +638,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
 
     pyi.push_str(
         "\nfrom typing_extensions import Self, Unpack\n\n\
-         from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, ",
+         from monorm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, ",
     );
     if body.contains("-> IndexRef: ...") {
         pyi.push_str("IndexRef, ");
@@ -648,7 +648,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             write!(pyi, "{name}, ").unwrap();
         }
     }
-    pyi.push_str("QuerySet, RelationPath, Update, UpdateMany\nfrom orm import fields as f\n\n");
+    pyi.push_str("QuerySet, RelationPath, Update, UpdateMany\nfrom monorm import fields as f\n\n");
     for (model, (module, class)) in &model_methods {
         writeln!(pyi, "from {module} import {class} as _{model}Methods").unwrap();
     }
@@ -657,7 +657,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         writeln!(pyi, "from {module} import {class} as _{model}{alias}").unwrap();
     }
     if used_exts.iter().any(|i| !options.extensions[*i].members.bound_query_set.is_empty()) {
-        pyi.push_str("from orm import BoundQuerySet\n");
+        pyi.push_str("from monorm import BoundQuerySet\n");
     }
     for i in &used_exts {
         let e = &options.extensions[*i];

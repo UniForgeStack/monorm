@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { connect } from 'orm';
+import { connect } from '@ufstack/monorm';
 import { ContentType, Label, Photo, Video } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
-const stamp = locked.behavior.packages['orm.generic'];
-assert.equal((await import('@orm/generic')).manifestHash, stamp.manifest_hash);
-assert.deepEqual(Object.keys(locked.behavior.extension_data['orm.generic']).sort(), ['relations', 'reverse']);
-const db = await connect(process.env.ORM_DATABASE_URL);
+const stamp = locked.behavior.packages['monorm.generic'];
+assert.equal((await import('@ufstack/monorm-generic')).manifestHash, stamp.manifest_hash);
+assert.deepEqual(Object.keys(locked.behavior.extension_data['monorm.generic']).sort(), ['relations', 'reverse']);
+const db = await connect(process.env.MONORM_DATABASE_URL);
 await db.dropTables();
 await db.createTables();
 try {

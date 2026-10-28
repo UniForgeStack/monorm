@@ -1,4 +1,4 @@
-"""Run in a fresh environment that holds `orm[full]`: every member is installed and its attribute works."""
+"""Run in a fresh environment that holds `monorm[full]`: every member is installed and its attribute works."""
 
 import asyncio
 import importlib.metadata as metadata
@@ -9,8 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-import orm
-from orm import _native
+import monorm
+from monorm import _native
 
 assert json.loads(_native.profile_metadata())["profile"] == "tooling"
 for requirement in metadata.requires("orm") or []:
@@ -57,7 +57,7 @@ model Employee {
   @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
 }
 """
-# `orm identities` lists an abstract model that `generate` skips, so the generic models get their own schema.
+# `monorm identities` lists an abstract model that `generate` skips, so the generic models get their own schema.
 GENERIC = """datasource db { provider = "sqlite" }
 model Photo {
   id   Int     @id
@@ -71,7 +71,7 @@ model Label {
 
 
 async def run_main(models):
-    db = await orm.connect("sqlite://:memory:")
+    db = await monorm.connect("sqlite://:memory:")
     try:
         await db.create_tables()
         note = await models.Note.objects.using(db).insert(id=1, text="a")
@@ -89,7 +89,7 @@ async def run_main(models):
 
 
 async def run_generic(models):
-    db = await orm.connect("sqlite://:memory:")
+    db = await monorm.connect("sqlite://:memory:")
     try:
         await db.create_tables()
         photo = await models.Photo.objects.using(db).insert(id=1)
@@ -104,7 +104,7 @@ def generate(work, name, source, identities):
     schema.write_text(source)
     commands = ([["identities"]] if identities else []) + [["generate", "python", "-o", str(work / f"{name}.py")]]
     for command in commands:
-        subprocess.run([sys.executable, "-m", "orm", "--schema", str(schema), *command], check=True, cwd=work)
+        subprocess.run([sys.executable, "-m", "monorm", "--schema", str(schema), *command], check=True, cwd=work)
     spec = importlib.util.spec_from_file_location(f"full_extra_{name}", work / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -115,7 +115,7 @@ def generate(work, name, source, identities):
 if len(sys.argv) == 1:
     for name in ("main", "generic"):
         subprocess.run([sys.executable, __file__, name], check=True)
-    print("orm[full] smoke ok")
+    print("monorm[full] smoke ok")
 else:
     with tempfile.TemporaryDirectory() as directory:
         work = Path(directory)

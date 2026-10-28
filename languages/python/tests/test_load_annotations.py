@@ -4,8 +4,8 @@ import pytest
 from blog.models import Comment, Post, User
 from pathlib import Path
 
-import orm
-from orm import func
+import monorm
+from monorm import func
 
 SQLITE_SOURCE = Path(__file__).resolve().parents[3].joinpath("examples/sqlite/schema.prisma").read_text()
 
@@ -131,10 +131,10 @@ async def test_select_ignores_labeled_loads(clean):
 
 
 async def test_sqlite_load_sets_the_label():
-    registry = orm.Registry()
-    m = orm.loads(SQLITE_SOURCE, registry=registry)
+    registry = monorm.Registry()
+    m = monorm.loads(SQLITE_SOURCE, registry=registry)
     Author, Book = m["Author"], m["Book"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     try:
         a, b = (

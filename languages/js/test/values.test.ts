@@ -89,8 +89,8 @@ test("every column type round-trips", async () => {
 test("fetched rows decode every type, nulls in every column, through the packed rows", async () => {
   await objects().delete();
   const micros = new Date("2026-05-06T07:08:09.123Z");
-  Object.defineProperty(micros, "orm:micros", { value: 456 });
-  Object.defineProperty(micros, "orm:micros-ms", { value: micros.getTime() });
+  Object.defineProperty(micros, "monorm:micros", { value: 456 });
+  Object.defineProperty(micros, "monorm:micros-ms", { value: micros.getTime() });
   await objects().insertMany([
     {
       data: { list: [1, 2.5, "é", null, { deep: true }], s: "日本", ["__proto__"]: 7 },
@@ -137,8 +137,8 @@ test("fetched rows decode every type, nulls in every column, through the packed 
   assert.equal(Object.getOwnPropertyDescriptor(full.data, "__proto__")?.value, 7); // an own key, not the prototype
   assert.equal(full.day.toISOString(), "2026-03-04T00:00:00.000Z");
   assert.equal(full.at.getTime(), micros.getTime());
-  assert.equal(full.at["orm:micros"], 456);
-  assert.equal(full.at["orm:micros-ms"], micros.getTime());
+  assert.equal(full.at["monorm:micros"], 456);
+  assert.equal(full.at["monorm:micros-ms"], micros.getTime());
   assert.equal(Object.keys(full.at).length, 0); // the hidden properties do not enumerate
   assert.equal(full.big, -9007199254740993n);
   assert.equal(full.small, 2147483647);

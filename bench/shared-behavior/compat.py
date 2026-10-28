@@ -8,11 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 from blog.models import User
-import orm
+import monorm
 
 
 async def main():
-    db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], max_connections=1)
+    db = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], max_connections=1)
     names = ["", "import", "ورود 🔒", "x" * 128, "x" * 129, "x" * 4096]
 
     async def probe(expected):
