@@ -103,7 +103,7 @@ metadata. It contributes no conventional multi-target foreign key. Database chec
 preserve pair validity for external scalar writes without promising target existence.
 
 **Enable:** install `orm-generic` (Python) or `@orm/generic` (npm). No build is needed.
-See [Installable packages](../contracts/build-time-extensions.md#installable-packages).
+See [Installable packages](../contracts/optional-packaging.md#installable-packages).
 Its relation and reverse records live in `behavior.extension_data["orm.generic"]`, and the host has no generic code or capability.
 Models generated for schema contract 2 fail to load with an instruction to regenerate them.
 Frozen identities and `ContentType` work in every build.

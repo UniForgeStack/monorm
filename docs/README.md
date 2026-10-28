@@ -2,8 +2,8 @@
 
 The ORM has one core and optional feature extensions.
 The core is in every build.
-An extension is a Rust crate that you select when you build the native library ([build-time-extensions.md](contracts/build-time-extensions.md)).
-A schema that uses an extension attribute needs a build with that extension.
+An extension is an installable package of a Rust library and runtime modules ([optional-packaging.md](contracts/optional-packaging.md#extension-contracts)).
+A schema that uses an extension attribute needs the installed package of that extension.
 
 Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScript, in-memory SQLite).
 
@@ -33,8 +33,8 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | inherit | `extensions/inherit` (`orm-inherit`) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
 | query-defaults | `extensions/query-defaults/` (`orm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 
-[build-time-extensions.md](contracts/build-time-extensions.md#installable-packages) shows how to install them.
-The same doc describes the extension contract: manifests, passes, native behavior profiles.
+[optional-packaging.md](contracts/optional-packaging.md#installable-packages) shows how to install them.
+The same doc describes the extension contract: manifests, passes, hooks.
 Protected writes, client defaults, cursor pagination and the N+1 finder are core features, not extensions.
 
 ## Apps

@@ -3,7 +3,7 @@
 Three extension packages give a column a role that the ORM keeps on writes.
 Each one is a crate in `extensions/`; the host has no code for the roles, and the crate pushes neutral write records.
 Install its Python package or its npm package (`orm-timestamps`, `orm-soft-delete`, `orm-locking`; `@orm/timestamps`, `@orm/soft-delete`, `@orm/locking`).
-`orm-extension-package package <crate dir> --out <dir>` builds them for the host platform (see `build-time-extensions.md`).
+`orm-extension-package package <crate dir> --out <dir>` builds them for the host platform (see `optional-packaging.md`).
 
 | Crate | Extension id | Attribute |
 |---|---|---|

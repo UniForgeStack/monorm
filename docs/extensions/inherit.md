@@ -5,7 +5,7 @@ It has no host feature and no capability.
 Its pass runs in the `declaration` phase, so the host and the other extensions see only ordinary models.
 
 **Enable:** install the `orm-inherit` Python package or the `@orm/inherit` npm package.
-The packages come from `scripts/install-extension-packages.sh`, which uses `orm-extension-package`; see [build-time-extensions.md](../contracts/build-time-extensions.md).
+The packages come from `scripts/install-extension-packages.sh`, which uses `orm-extension-package`; see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
 
 ## Schema
 
