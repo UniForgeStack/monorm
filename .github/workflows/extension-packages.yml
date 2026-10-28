@@ -41,6 +41,20 @@ jobs:
         with:
           name: extension-package-consumers
           path: target/package-seam-*/js
+  release-guards:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: orm-contracts packages for crates.io
+        run: cargo package -p orm-contracts
+      - name: Host crates name no extension
+        run: |
+          python3 -m unittest scripts/tests/test_check_extension_names.py
+          python3 scripts/check-extension-names.py
   # One wheel and one npm package hold the libraries of all 3 platforms, so each platform builds its own.
   libraries:
     strategy:
