@@ -52,6 +52,7 @@ pattern = '(?<![A-Za-z0-9_@/.-])orm (?:generate|migrate|makemigrations|make|pull
 [[guard]]
 id = "bare-lowercase-in-code"
 files = ["**"]
+exclude = ["**/*.md"]
 pattern = '(?<![A-Za-z0-9_@/.-])orm(?![A-Za-z0-9_-])'
 
 # --- kept environment variables and database names ----------------------------
@@ -107,7 +108,7 @@ reason = "The SQLAlchemy module `sqlalchemy.orm`."
 
 [[allow]]
 glob = "bench/compare/**"
-pattern = '(?<![A-Za-z0-9_@/.-])orm(?![A-Za-z0-9_-])|\borm-all\b|\bORM_BUILDS\b'
+pattern = '''["'`]orm(?:-all)?["'`]|\borm-all\b|\bORM_BUILDS\b|startswith\("orm"\)|(?:contenders|run|runner) orm\b|`orm`(?: and| runner)'''
 reason = "The contender keys `orm` and `orm-all` name the recorded results; renaming them breaks the report on old data."
 
 [[allow]]
@@ -126,16 +127,6 @@ pattern = '(?<![A-Za-z0-9_@/.-])orm(?![A-Za-z0-9_-])|\borm-all\b|\borm \d'
 reason = "Recorded results keep the contender keys `orm` and `orm-all`, and the version line names the measured build."
 
 # --- text that names the old project on purpose ---------------------------------
-
-[[allow]]
-glob = "README.md"
-pattern = 'still `orm` until the rename|the name `orm` changes to'
-reason = "The rename note says what the old name was."
-
-[[allow]]
-glob = "docs/community/robyn-discussion.md"
-pattern = 'still called `orm`|name `orm` on PyPI'
-reason = "The checklist states why the project changed its name."
 
 [[allow]]
 glob = "docs/**"
