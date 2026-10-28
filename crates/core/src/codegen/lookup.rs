@@ -159,7 +159,7 @@ mod tests {
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("orm-lookup-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("monorm-lookup-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -177,11 +177,11 @@ mod tests {
     fn python_package_path_starts_at_the_project_file_directory() {
         let root = dir("py-package");
         touch(&root.join("pyproject.toml"), "");
-        touch(&root.join("orm_auth/__init__.py"), "");
-        touch(&root.join("orm_auth/db/__init__.py"), "");
-        let schema = root.join("orm_auth/db/schema.prisma");
-        assert_eq!(target(Language::Python, &schema, &root, Q, "UserQueries").unwrap(), "orm_auth.db.queries:UserQueries");
-        assert_eq!(target(Language::Python, &schema, &root, M, "UserMethods").unwrap(), "orm_auth.db.methods:UserMethods");
+        touch(&root.join("monorm_auth/__init__.py"), "");
+        touch(&root.join("monorm_auth/db/__init__.py"), "");
+        let schema = root.join("monorm_auth/db/schema.prisma");
+        assert_eq!(target(Language::Python, &schema, &root, Q, "UserQueries").unwrap(), "monorm_auth.db.queries:UserQueries");
+        assert_eq!(target(Language::Python, &schema, &root, M, "UserMethods").unwrap(), "monorm_auth.db.methods:UserMethods");
     }
 
     #[test]
@@ -213,8 +213,8 @@ mod tests {
     fn python_installed_package_is_the_path_from_site_packages() {
         let root = dir("py-installed");
         touch(&root.join("pyproject.toml"), "");
-        let schema = root.join(".venv/lib/python3.14/site-packages/orm_auth/schema.prisma");
-        assert_eq!(target(Language::Python, &schema, &root, Q, "UserQueries").unwrap(), "orm_auth.queries:UserQueries");
+        let schema = root.join(".venv/lib/python3.14/site-packages/monorm_auth/schema.prisma");
+        assert_eq!(target(Language::Python, &schema, &root, Q, "UserQueries").unwrap(), "monorm_auth.queries:UserQueries");
     }
 
     #[test]
@@ -236,10 +236,10 @@ mod tests {
     fn typescript_reads_the_package_name() {
         let root = dir("ts-package");
         touch(&root.join("app/package.json"), r#"{"name":"app"}"#);
-        touch(&root.join("app/node_modules/orm-auth/package.json"), r#"{"name":"orm-auth"}"#);
-        let schema = root.join("app/node_modules/orm-auth/schema.prisma");
-        assert_eq!(target(Language::TypeScript, &schema, &root.join("app/src"), Q, "UserQueries").unwrap(), "orm-auth/queries.js#UserQueries");
-        assert_eq!(target(Language::TypeScript, &schema, &root.join("app/src"), M, "UserMethods").unwrap(), "orm-auth/methods.js#UserMethods");
+        touch(&root.join("app/node_modules/monorm-auth/package.json"), r#"{"name":"monorm-auth"}"#);
+        let schema = root.join("app/node_modules/monorm-auth/schema.prisma");
+        assert_eq!(target(Language::TypeScript, &schema, &root.join("app/src"), Q, "UserQueries").unwrap(), "monorm-auth/queries.js#UserQueries");
+        assert_eq!(target(Language::TypeScript, &schema, &root.join("app/src"), M, "UserMethods").unwrap(), "monorm-auth/methods.js#UserMethods");
     }
 
     #[test]
@@ -274,14 +274,14 @@ mod tests {
         let root = dir("from-unit");
         touch(&root.join("pyproject.toml"), "");
         let unit = |path: &str, model: &str| SchemaUnit { app: None, path: root.join(path), models: vec![model.into()], enums: vec![], types: vec![] };
-        let units = [unit("orm_auth/schema.prisma", "AbstractUser"), unit("app/schema.prisma", "User")];
+        let units = [unit("monorm_auth/schema.prisma", "AbstractUser"), unit("app/schema.prisma", "User")];
         let mut ir = crate::dsl::compile("model AbstractUser {\n id Int @id\n @@query_set(\"UserQueries\")\n}\nmodel User {\n id Int @id\n}", None).unwrap();
         ir.models[1].query_set = Some("UserQueries".into());
         ir.models[1].classes_from = Some("AbstractUser".into());
         let mut options = crate::codegen::Options::default();
         options.with_schema_classes(&ir, &units, Language::Python, &root).unwrap();
-        assert_eq!(options.query_sets["User"], "orm_auth.queries:UserQueries");
-        assert_eq!(options.query_sets["AbstractUser"], "orm_auth.queries:UserQueries");
+        assert_eq!(options.query_sets["User"], "monorm_auth.queries:UserQueries");
+        assert_eq!(options.query_sets["AbstractUser"], "monorm_auth.queries:UserQueries");
         ir.models[1].classes_from = Some("Gone".into());
         let error = crate::codegen::Options::default().with_schema_classes(&ir, &units, Language::Python, &root).unwrap_err();
         assert!(error.contains("User: @@query_set") && error.contains("Gone"), "{error}");

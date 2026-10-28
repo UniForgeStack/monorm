@@ -80,11 +80,11 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
     const code = extensions[id];
     if (code === undefined) throw new TypeError(`${meta.name}: extension ${id} is not in the generated extensions`);
     const record = packaged.get(id);
-    if (record === undefined) throw new TypeError(`generated models use extension ${id}, which the schema lock does not have; run \`orm generate\``);
+    if (record === undefined) throw new TypeError(`generated models use extension ${id}, which the schema lock does not have; run \`monorm generate\``);
     const overrides = new Set(record.overrides);
     const mixin = code.module[record.query_set];
     const instance = code.module[record.instance];
-    if (typeof mixin !== "function" || typeof instance !== "function") throw new TypeError(`extension ${id} has no ${record.query_set} or ${record.instance}; run \`orm generate\``);
+    if (typeof mixin !== "function" || typeof instance !== "function") throw new TypeError(`extension ${id} has no ${record.query_set} or ${record.instance}; run \`monorm generate\``);
     const rules: [string, readonly string[], (name: string) => boolean][] = [
       ["query set", record.query_set_members, hostQuerySetMember],
       ["instance", record.instance_members, (name) => name in meta.Row.prototype],
@@ -101,7 +101,7 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
     mixins.push(mixin as Mixin);
     if (record.bound_query_set) {
       const boundMixin = code.module[record.bound_query_set];
-      if (typeof boundMixin !== "function") throw new TypeError(`extension ${id} has no ${record.bound_query_set}; run \`orm generate\``);
+      if (typeof boundMixin !== "function") throw new TypeError(`extension ${id} has no ${record.bound_query_set}; run \`monorm generate\``);
       bound.push(boundMixin as (base: never) => unknown);
     }
     installInstance(meta, (instance as { prototype: object }).prototype);
@@ -139,13 +139,13 @@ export function packageContracts(ir: { behavior?: unknown; [key: string]: unknow
     const code = extensions[id] ?? { module: importRuntime(id, schema) };
     extensions[id] = code;
     const installed = code.module.manifestHash;
-    if (installed !== stamp.manifest_hash) process.emitWarning(`extension ${id}: locked manifest hash ${stamp.manifest_hash}, installed ${String(installed)}; run \`orm generate\``, "OrmStaleModelsWarning");
+    if (installed !== stamp.manifest_hash) process.emitWarning(`extension ${id}: locked manifest hash ${stamp.manifest_hash}, installed ${String(installed)}; run \`monorm generate\``, "OrmStaleModelsWarning");
     const section = stamp.language_members.typescript;
     if (section === undefined) continue;
     const names = (exportName: string | undefined, mixin: boolean): string[] => {
       if (!exportName) return [];
       const value = code.module[exportName];
-      if (typeof value !== "function") throw new TypeError(`extension ${id} has no ${exportName}; run \`orm generate\``);
+      if (typeof value !== "function") throw new TypeError(`extension ${id} has no ${exportName}; run \`monorm generate\``);
       const Base = class {};
       const cls = mixin ? (value as (base: unknown) => { prototype: object })(Base) : value as { prototype: object };
       // Instance installation uses only own descriptors; traversing the `super` proxy would add Object members.

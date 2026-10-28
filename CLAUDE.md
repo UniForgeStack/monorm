@@ -19,12 +19,12 @@ Outside contributors: read [CONTRIBUTING.md](CONTRIBUTING.md). It has the same c
 
 ```bash
 service postgresql start          # the test database (postgres:postgres@localhost/orm_test)
-. .venv/bin/activate && uv pip install -e .   # the thin `orm` package (languages/python/)
+. .venv/bin/activate && uv pip install -e .   # the thin `monorm` package (languages/python/)
 scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
 (cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
-cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-package
-mypy --strict languages/python/orm && pyright languages/python/orm
+cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm-contracts -p monorm-extension-package
+mypy --strict languages/python/monorm && pyright languages/python/monorm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
 cd ../..
@@ -37,11 +37,11 @@ python extensions/query-defaults/tests/public/python.py
 (cd apps/auth/typescript && npm test && npm run test:bun)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
-cargo package -p orm-contracts      # the crate that extension authors get from crates.io
+cargo package -p monorm-contracts      # the crate that extension authors get from crates.io
 ```
 
 Regenerate the example models after changing code generation:
-`cd examples/blog && python -m orm generate`, and for TypeScript
-`cargo run -q -p orm-cli -- --schema examples/blog/schema.prisma generate typescript`
+`cd examples/blog && python -m monorm generate`, and for TypeScript
+`cargo run -q -p monorm-cli -- --schema examples/blog/schema.prisma generate typescript`
 and the same with `-o languages/js/test/blog/models.ts --import ../../src/index.js`
 (a test checks both are current).

@@ -1,5 +1,5 @@
-use orm_core::dialect::Dialect;
-use orm_engine::db;
+use monorm_core::dialect::Dialect;
+use monorm_engine::db;
 
 #[test]
 fn availability_matches_compiled_features() {

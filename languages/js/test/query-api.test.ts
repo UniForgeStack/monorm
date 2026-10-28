@@ -121,7 +121,7 @@ test("bound load reads keys from the instances, to-one and many-to-many", async 
   assert.deepEqual((posts[0]!.tags as unknown as { cached: { name: string }[] }).cached.map((t) => t.name), ["a", "b"]);
 });
 
-test("orm.prefetch is removed", async () => {
+test("monorm.prefetch is removed", async () => {
   assert.equal("prefetch" in (await import("../src/index.js")), false);
 });
 

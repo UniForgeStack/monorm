@@ -1,6 +1,6 @@
 //! `outer()` through a path of to-one relations: a correlated scalar subquery.
-use orm_core::{dialect::{Dialect, Target}, ir::Operation, schema::Schema};
-use orm_engine::{db, params::NoParams, plan::{Plan, Planner}};
+use monorm_core::{dialect::{Dialect, Target}, ir::Operation, schema::Schema};
+use monorm_engine::{db, params::NoParams, plan::{Plan, Planner}};
 use serde_json::{json, Value};
 
 fn schema() -> Schema {

@@ -1,11 +1,11 @@
-//! The `orm` command line. There is one implementation, this crate, and it runs as:
+//! The `monorm` command line. There is one implementation, this crate, and it runs as:
 //!
-//! * the `orm` binary (`src/main.rs`),
-//! * `python -m orm`, through the Python extension (`languages/python/native`),
-//! * `npx orm` / `bunx orm`, through the Node addon (`languages/js/native`).
+//! * the `monorm` binary (`src/main.rs`),
+//! * `python -m monorm`, through the Python extension (`languages/python/native`),
+//! * `npx @ufstack/monorm` / `bunx @ufstack/monorm`, through the Node addon (`languages/js/native`).
 //!
 //! ```text
-//! orm [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>
+//! monorm [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>
 //!   check [-o FILE]                               compile the schema and check the package lock
 //!   compile [-o ir.json]                          the compiled schema (JSON IR)
 //!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
@@ -20,15 +20,15 @@
 //! ```
 //!
 //! The schema file and the migrations directory come from `--schema` / `--dir`, else
-//! from `[tool.orm]` in `pyproject.toml` or the `"orm"` key of `package.json`
+//! from `[tool.monorm]` in `pyproject.toml` or the `"monorm"` key of `package.json`
 //! (`schema`, `migrations`), else `schema.prisma` and `migrations`. The database URL
-//! comes from `--url` or `ORM_DATABASE_URL`. `generate` also reads the query-set classes
-//! from `[tool.orm.query_sets]` (Python) or `"orm": {"querySets": ...}` (TypeScript),
-//! and the model-methods classes from `[tool.orm.model_methods]` or `"orm": {"modelMethods": ...}`.
+//! comes from `--url` or `MONORM_DATABASE_URL`. `generate` also reads the query-set classes
+//! from `[tool.monorm.query_sets]` (Python) or `"monorm": {"querySets": ...}` (TypeScript),
+//! and the model-methods classes from `[tool.monorm.model_methods]` or `"monorm": {"modelMethods": ...}`.
 //!
 //! `--app NAME=PATH` (repeatable) gives the schema file of an installed app for `import "app:NAME"`;
-//! `python -m orm` and `npx orm` add it for the apps they find.
-//! `--extension ID=MANIFEST` (repeatable) gives the `orm-extension.toml` of an installed extension package;
+//! `python -m monorm` and `npx @ufstack/monorm` add it for the apps they find.
+//! `--extension ID=MANIFEST` (repeatable) gives the `monorm-extension.toml` of an installed extension package;
 //! they add it for the extensions they find. The schema selects the extensions it uses.
 //!
 //! Output goes to the process's stdout and stderr. Exit codes: 0 success, 1 failure
@@ -39,28 +39,28 @@ mod package_lock;
 
 use std::path::{Path, PathBuf};
 
-use orm_core::{codegen, dsl, migrate as files};
-use orm_engine::introspect;
-use orm_engine::migrate::{self, Down};
+use monorm_core::{codegen, dsl, migrate as files};
+use monorm_engine::introspect;
+use monorm_engine::migrate::{self, Down};
 
 /// Which program is running the CLI: it decides the name in the help, which
 /// configuration file is read first and what `generate` writes by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Host {
-    /// The standalone `orm` binary.
+    /// The standalone `monorm` binary.
     Binary,
-    /// `python -m orm`.
+    /// `python -m monorm`.
     Python,
-    /// `npx orm`.
+    /// `npx @ufstack/monorm`.
     Node,
 }
 
 impl Host {
     fn prog(self) -> &'static str {
         match self {
-            Host::Binary => "orm",
-            Host::Python => "python -m orm",
-            Host::Node => "npx orm",
+            Host::Binary => "monorm",
+            Host::Python => "python -m monorm",
+            Host::Node => "npx @ufstack/monorm",
         }
     }
 
@@ -93,9 +93,9 @@ const COMMANDS: &str = "  identities [--rename Old=New] [--restore Model]\n     
   drift                                    compare the database with the last migration's
                                            snapshot; exit 1 if they differ
 
-The schema and migrations directory come from --schema / --dir, else from [tool.orm]
-in pyproject.toml or \"orm\" in package.json, else schema.prisma and migrations/.
-The database URL comes from --url or ORM_DATABASE_URL.";
+The schema and migrations directory come from --schema / --dir, else from [tool.monorm]
+in pyproject.toml or \"monorm\" in package.json, else schema.prisma and migrations/.
+The database URL comes from --url or MONORM_DATABASE_URL.";
 
 fn usage(host: Host) -> String {
     format!("usage: {} [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>\n{COMMANDS}", host.prog())
@@ -110,8 +110,8 @@ enum Failure {
     Failed(String),
 }
 
-impl From<orm_engine::Error> for Failure {
-    fn from(e: orm_engine::Error) -> Self {
+impl From<monorm_engine::Error> for Failure {
+    fn from(e: monorm_engine::Error) -> Self {
         Failure::Failed(e.to_string())
     }
 }
@@ -211,31 +211,31 @@ struct Config {
 fn pyproject() -> Option<Config> {
     let text = std::fs::read_to_string("pyproject.toml").ok()?;
     let doc: toml::Table = text.parse().ok()?;
-    let orm = doc.get("tool")?.get("orm")?;
-    let get = |k: &str| orm.get(k).and_then(|v| v.as_str()).map(String::from);
+    let monorm = doc.get("tool")?.get("monorm")?;
+    let get = |k: &str| monorm.get(k).and_then(|v| v.as_str()).map(String::from);
     Some(Config { schema: get("schema"), migrations: get("migrations") })
 }
 
 fn package_json() -> Option<Config> {
     let text = std::fs::read_to_string("package.json").ok()?;
     let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let orm = doc.get("orm")?;
-    let get = |k: &str| orm.get(k).and_then(|v| v.as_str()).map(String::from);
+    let monorm = doc.get("monorm")?;
+    let get = |k: &str| monorm.get(k).and_then(|v| v.as_str()).map(String::from);
     Some(Config { schema: get("schema"), migrations: get("migrations") })
 }
 
-/// The `what` classes of `language` from its configuration file: `[tool.orm.<py_key>]`
-/// in `pyproject.toml` (Python) or `"orm": {"<js_key>": ...}` in `package.json`.
+/// The `what` classes of `language` from its configuration file: `[tool.monorm.<py_key>]`
+/// in `pyproject.toml` (Python) or `"monorm": {"<js_key>": ...}` in `package.json`.
 fn configured_targets(language: &str, what: &str, py_key: &str, js_key: &str) -> Result<std::collections::BTreeMap<String, String>> {
     if language == "rust" { return Ok(Default::default()); }
     let table: Option<Vec<(String, Option<String>)>> = if language == "python" {
         std::fs::read_to_string("pyproject.toml").ok().and_then(|t| t.parse::<toml::Table>().ok()).and_then(|doc| {
-            let sets = doc.get("tool")?.get("orm")?.get(py_key)?.as_table()?.clone();
+            let sets = doc.get("tool")?.get("monorm")?.get(py_key)?.as_table()?.clone();
             Some(sets.into_iter().map(|(k, v)| (k, v.as_str().map(String::from))).collect())
         })
     } else {
         std::fs::read_to_string("package.json").ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|doc| {
-            let sets = doc.get("orm")?.get(js_key)?.as_object()?.clone();
+            let sets = doc.get("monorm")?.get(js_key)?.as_object()?.clone();
             Some(sets.into_iter().map(|(k, v)| (k, v.as_str().map(String::from))).collect())
         })
     };
@@ -252,7 +252,7 @@ fn config(host: Host) -> Config {
     .unwrap_or_default()
 }
 
-fn load(path: &Path, args: &Args) -> Result<(orm_core::ir::SchemaIr, orm_core::schema::Schema)> {
+fn load(path: &Path, args: &Args) -> Result<(monorm_core::ir::SchemaIr, monorm_core::schema::Schema)> {
     let project = dsl::compile_project_file_with(path, &args.installed()?).map_err(Failure::Failed)?;
     print_warnings(&project);
     dsl::check(project.ir).map_err(Failure::Failed)
@@ -283,7 +283,7 @@ pub fn migrate_args(argv: &[String], host: Host) -> Option<(PathBuf, PathBuf, Op
     let cfg = config(host);
     let schema = PathBuf::from(args.opt(&["--schema"]).or(cfg.schema.as_deref()).unwrap_or("schema.prisma"));
     let dir = PathBuf::from(args.opt(&["--dir"]).or(cfg.migrations.as_deref()).unwrap_or("migrations"));
-    let env = std::env::var("ORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
+    let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let url = args.opt(&["--url"]).map(String::from).or(env);
     Some((schema, dir, url, args.arg(0).map(String::from)))
 }
@@ -369,10 +369,10 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
                     _ => {}
                 }
             }
-            let path = orm_core::identity::manifest_path(&schema);
-            let previous = if path.exists() { orm_core::identity::read(&path).map_err(Failure::Failed)? } else { Default::default() };
+            let path = monorm_core::identity::manifest_path(&schema);
+            let previous = if path.exists() { monorm_core::identity::read(&path).map_err(Failure::Failed)? } else { Default::default() };
             let manifest = dsl::generate_identities_with(&schema, &renames, &restores, &args.installed()?).map_err(Failure::Failed)?;
-            let changes = orm_core::identity::changes(&previous, &manifest);
+            let changes = monorm_core::identity::changes(&previous, &manifest);
             if changes.is_empty() { println!("no identity changes"); }
             for change in changes { println!("{change}"); }
             println!("wrote {}", path.display());
@@ -521,7 +521,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
             }
             let out = out.unwrap_or_else(|| schema.with_file_name("models.py"));
             options.with_schema_classes(&ir, &project.units, codegen::lookup::Language::Python, out.parent().unwrap_or(Path::new("."))).map_err(Failure::Failed)?;
-            let ext_dir = args.opt(&["--ext-dir"]).map(PathBuf::from).unwrap_or_else(|| out.with_file_name("orm_ext"));
+            let ext_dir = args.opt(&["--ext-dir"]).map(PathBuf::from).unwrap_or_else(|| out.with_file_name("monorm_ext"));
             if !options.extensions.is_empty() {
                 let name = ext_dir.file_name().unwrap().to_string_lossy().into_owned();
                 options.ext_import = Some(module_paths(&absolute(out.parent().unwrap_or(Path::new(".")))?, &absolute(&ext_dir)?, &name)?.1);
@@ -535,7 +535,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                 write(&out.with_extension("pyi"), &g.stub)?;
                 println!("wrote {} and {}", out.display(), out.with_extension("pyi").display());
             } else {
-                let shared = out.with_file_name("_orm_models.py");
+                let shared = out.with_file_name("_monorm_models.py");
                 let shared_abs = absolute(&shared)?;
                 let mut files = vec![(shared.clone(), g.module), (shared.with_extension("pyi"), g.stub)];
                 let mut outputs = std::collections::HashSet::new();
@@ -546,7 +546,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                     if !outputs.insert(target_abs.clone()) {
                         return Err(Failure::Failed(format!("multiple schema modules would write {}; put each schema in its own directory", target.display())));
                     }
-                    let (relative, import) = module_paths(target_abs.parent().unwrap(), &shared_abs, "_orm_models")?;
+                    let (relative, import) = module_paths(target_abs.parent().unwrap(), &shared_abs, "_monorm_models")?;
                     let mut merged = dsl::SchemaUnit { path: unit.path.clone(), app: None, models: unit.models.clone(), enums: unit.enums.clone(), types: unit.types.clone() };
                     if index == 0 {
                         for app in project.units.iter().filter(|u| u.app.is_some()) {
@@ -569,12 +569,12 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
         "typescript" => {
             let out = out.unwrap_or_else(|| schema.with_file_name("models.ts"));
             options.with_schema_classes(&ir, &project.units, codegen::lookup::Language::TypeScript, out.parent().unwrap_or(Path::new("."))).map_err(Failure::Failed)?;
-            let ext_dir = args.opt(&["--ext-dir"]).map(PathBuf::from).unwrap_or_else(|| out.with_file_name("orm-ext"));
+            let ext_dir = args.opt(&["--ext-dir"]).map(PathBuf::from).unwrap_or_else(|| out.with_file_name("monorm-ext"));
             if !options.extensions.is_empty() {
                 options.ext_import = Some(codegen::lookup::relative(&absolute(out.parent().unwrap_or(Path::new(".")))?, &absolute(&ext_dir)?));
             }
             write_extensions(&options, "typescript", &ext_dir)?;
-            let runtime = args.opt(&["--import"]).unwrap_or("orm");
+            let runtime = args.opt(&["--import"]).unwrap_or("@ufstack/monorm");
             write(&out, &codegen::typescript::generate_with(&ir, &compiled, &source, runtime, &options).map_err(Failure::Failed)?)?;
             println!("wrote {}", out.display());
         }
@@ -596,7 +596,7 @@ fn write_extensions(options: &codegen::Options, language: &str, dir: &Path) -> R
         .map(|(name, content)| (dir.join(name), content))
         .collect();
     if language == "python" {
-        files.push((dir.join("__init__.py"), "# Generated by `orm generate`. Do not edit.\n".into()));
+        files.push((dir.join("__init__.py"), "# Generated by `monorm generate`. Do not edit.\n".into()));
     }
     for (path, content) in files {
         write(&path, &content)?;
@@ -669,11 +669,11 @@ fn print_gaps(gaps: &[String]) {
 }
 
 async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Result<i32> {
-    let env = std::env::var("ORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
+    let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let Some(url) = args.opt(&["--url"]).map(String::from).or(env) else {
-        return Err(Failure::Setup("no database; pass --url or set ORM_DATABASE_URL".into()));
+        return Err(Failure::Setup("no database; pass --url or set MONORM_DATABASE_URL".into()));
     };
-    let driver = orm_engine::db::connect(&url, 1).await.map_err(failed)?;
+    let driver = monorm_engine::db::connect(&url, 1).await.map_err(failed)?;
     let result = async {
         match command {
             "migrate" => {

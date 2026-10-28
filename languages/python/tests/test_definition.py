@@ -1,8 +1,8 @@
 """Definition publishes a prepared snapshot, or leaves the registry intact."""
 
 import pytest
-import orm
-from orm.fields import Integer
+import monorm
+from monorm.fields import Integer
 
 GOOD = """model User {
   id Int @id
@@ -11,13 +11,13 @@ GOOD = """model User {
 
 
 def test_definition_is_eager_and_failure_is_atomic():
-    registry = orm.Registry()
-    User = orm.loads(GOOD, registry=registry)["User"]
+    registry = monorm.Registry()
+    User = monorm.loads(GOOD, registry=registry)["User"]
     prepared = registry._native
     assert prepared is not None
     before = registry.ir()
-    with pytest.raises(orm.SchemaError, match="unknown model"):
-        orm.define(
+    with pytest.raises(monorm.SchemaError, match="unknown model"):
+        monorm.define(
             {
                 "models": [
                     {
@@ -40,18 +40,18 @@ def test_definition_is_eager_and_failure_is_atomic():
 
 
 def test_existing_models_keep_their_prepared_snapshot():
-    registry = orm.Registry()
-    User = orm.loads(GOOD, registry=registry)["User"]
+    registry = monorm.Registry()
+    User = monorm.loads(GOOD, registry=registry)["User"]
     snapshot = User._meta.registry.native()
-    orm.loads("model Other {\n id Int @id\n}", registry=registry)
+    monorm.loads("model Other {\n id Int @id\n}", registry=registry)
     assert User._meta.registry.native() is snapshot
     assert registry.native() is not snapshot
 
 
 def test_class_declarations_require_preparation_and_keep_previous_snapshot():
-    registry = orm.Registry()
+    registry = monorm.Registry()
 
-    class User(orm.Model, registry=registry):
+    class User(monorm.Model, registry=registry):
         id = Integer(primary_key=True)
 
     with pytest.raises(TypeError, match="prepare"):
@@ -60,7 +60,7 @@ def test_class_declarations_require_preparation_and_keep_previous_snapshot():
     old_query = User.objects.filter(User.id == 7)
     old_native = User._meta.registry.native()
 
-    class Other(orm.Model, registry=registry):
+    class Other(monorm.Model, registry=registry):
         id = Integer(primary_key=True)
 
     assert User._meta.registry.native() is old_native
@@ -73,7 +73,7 @@ def test_class_declarations_require_preparation_and_keep_previous_snapshot():
 
 
 def test_definition_owns_input_schema():
-    registry = orm.Registry()
+    registry = monorm.Registry()
     ir = {
         "models": [
             {
@@ -85,17 +85,17 @@ def test_definition_owns_input_schema():
             }
         ]
     }
-    User = orm.define(ir, registry=registry)["User"]
+    User = monorm.define(ir, registry=registry)["User"]
     ir["models"][0]["table"] = "mutated"
     assert User._meta.registry.ir()["models"][0]["table"] == "users"
 
 
 def test_migrations_prepare_class_declarations(tmp_path):
-    from orm.migrations import Migrations
+    from monorm.migrations import Migrations
 
-    registry = orm.Registry()
+    registry = monorm.Registry()
 
-    class Author(orm.Model, registry=registry):
+    class Author(monorm.Model, registry=registry):
         id = Integer(primary_key=True)
 
     assert 'CREATE TABLE "author"' in Migrations(tmp_path, registry).plan().up[0].sql

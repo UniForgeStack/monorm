@@ -1,0 +1,58 @@
+id = "monorm.file-storage"
+version = "0.1.0"
+abi = "0.2"
+library = "monorm_file_storage"
+schema_contract = "5.0"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+
+[[attributes]]
+name = "storage.file"
+target = "field"
+[attributes.arguments.storage]
+kind = "string"
+required = true
+
+[[passes]]
+id = "monorm.file-storage.fields"
+phase = "behavior"
+effects = ["behavior.field_adapters"]
+
+[python]
+source = "integration/python/src/monorm_file_storage"
+dependencies = ["opendal>=0.47,<0.48"]
+[[python.field_adapters]]
+adapter = "file-storage.reference.v1"
+module = "monorm_file_storage.model"
+install = "install"
+imports = [
+  "from collections.abc import AsyncIterator",
+  "from monorm_file_storage import Reference, Registry as StorageRegistry, Upload",
+]
+value = "Reference"
+input = "Reference | Upload"
+members = [
+  "async def {field}_signed_url(self, *, expires_in: int = 300) -> str: ...",
+  "def {field}_open(self) -> AsyncIterator[bytes]: ...",
+]
+methods = ["{field}_signed_url", "{field}_open"]
+module_functions = [{ name = "configure_file_storage", method = "configure", stub = "(registry: StorageRegistry) -> None" }]
+
+[typescript]
+source = "integration/typescript/src"
+dependencies = { opendal = "^0.49.0" }
+exports = { "./decoder" = "decoder.js", "./model" = "model.js" }
+[[typescript.field_adapters]]
+adapter = "file-storage.reference.v1"
+module = "@ufstack/monorm-file-storage/model"
+install = "install"
+imports = ['import type { Reference, Registry as StorageRegistry, Upload } from "@ufstack/monorm-file-storage";']
+value = "Reference"
+input = "Reference | Upload"
+members = [
+  "{field}SignedUrl(options?: { expiresIn?: number }): Promise<string>;",
+  "{field}Open(): AsyncIterable<Uint8Array>;",
+]
+methods = ["{field}SignedUrl", "{field}Open"]
+module_functions = [{ name = "configureFileStorage", method = "configure", stub = "(registry: StorageRegistry) => void" }]

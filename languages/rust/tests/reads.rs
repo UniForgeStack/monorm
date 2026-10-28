@@ -8,7 +8,7 @@ mod postgres {
 mod other_sqlite {
     include!(concat!(env!("OUT_DIR"), "/models.rs"));
 }
-use orm_client::{BatchLoad, Error, Instance, Loaded, Unloaded};
+use monorm_client::{BatchLoad, Error, Instance, Loaded, Unloaded};
 use std::hash::{Hash, Hasher};
 fn hash<T: Hash>(v: &T) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -20,7 +20,7 @@ macro_rules! exercise {
     ($module:ident,$url:expr) => {{
         use $module::{Database, Post, User};
         // Fixture setup is outside the read surface; all assertions use public reads.
-        let fixture = orm_engine::db::connect($url, 1).await.unwrap();
+        let fixture = monorm_engine::db::connect($url, 1).await.unwrap();
         fixture.batch(FIXTURE.into()).await.unwrap();
         fixture.close().await;
         let db = Database::connect($url, 1).await.unwrap();
@@ -40,7 +40,7 @@ macro_rules! exercise {
         assert!(matches!(User::objects.filter(User::ID.eq(99)).require().first().await, Err(Error::NotFound)));
         assert_eq!(User::objects.count().await.unwrap(), 3);
         assert!(User::objects.exists().await.unwrap());
-        let empty_path = std::env::temp_dir().join(format!("orm-rust-empty-{}-{}.db", std::process::id(), stringify!($module)));
+        let empty_path = std::env::temp_dir().join(format!("monorm-rust-empty-{}-{}.db", std::process::id(), stringify!($module)));
         // Explicit binding must override the configured default, rather than silently route to it.
         let explicit = other_sqlite::Database::connect(&format!("sqlite://{}", empty_path.display()), 1).await.unwrap();
         assert!(matches!(other_sqlite::User::objects.using(&explicit).count().await, Err(Error::Engine(_))));
@@ -64,9 +64,9 @@ macro_rules! exercise {
         assert!(!runtime.is_loaded("id"));
         assert_eq!(runtime.get::<String>("email").unwrap(), "a@example.com");
         assert!(matches!(runtime.get::<i32>("id"), Err(Error::Unloaded(_))));
-        type Requested=User<Unloaded,Loaded,Unloaded,Unloaded,orm_client::Cached<Post<Unloaded,Unloaded,Loaded,Unloaded>>>;
+        type Requested=User<Unloaded,Loaded,Unloaded,Unloaded,monorm_client::Cached<Post<Unloaded,Unloaded,Loaded,Unloaded>>>;
         fn titles<'a,S,P>(row:&'a S)->Vec<&'a str>
-        where S:$module::UserShape<Email=String,Posts=orm_client::LoadedMany<P>>,
+        where S:$module::UserShape<Email=String,Posts=monorm_client::LoadedMany<P>>,
               P:$module::PostShape<Title=String>+'a {
             row.posts().cached().iter().map(|post|post.title().as_str()).collect()
         }
@@ -97,7 +97,7 @@ macro_rules! exercise {
         let accepted:Requested=runtime.try_into_static().unwrap();
         assert_eq!(accepted.posts.cached().len(),2);
         assert_eq!(titles(&accepted),vec!["alpha","beta"]);
-        assert_eq!(accepted.public_json().unwrap(),orm_client::serde_json::json!({"email":"a@example.com","nickname":null,"posts":[{"title":"alpha"},{"title":"beta"}]}));
+        assert_eq!(accepted.public_json().unwrap(),monorm_client::serde_json::json!({"email":"a@example.com","nickname":null,"posts":[{"title":"alpha"},{"title":"beta"}]}));
         let all = User::objects.using(&db).await.unwrap();
         assert_eq!(all.len(), 3);
         let user = User::objects
@@ -274,17 +274,17 @@ macro_rules! exercise {
         assert_eq!(stmt.execute().await.unwrap().len(), 1);
         assert_eq!(User::METADATA.fields[3].column, "kind");
         // Scalar codecs and composite unique tokens use the same public read boundary.
-        let fixture=orm_engine::db::connect($url,1).await.unwrap();
+        let fixture=monorm_engine::db::connect($url,1).await.unwrap();
         let pg=fixture.dialect().is_postgres();
         fixture.batch("DROP TABLE IF EXISTS rust_read_scalars".into()).await.unwrap();
         let failure=$module::Scalar::objects.using(&db).all().await;
-        match failure {Err(Error::Engine(orm_engine::Error::Db(e)))=>{assert!(!e.message.is_empty());if pg {assert_eq!(e.sqlstate.as_deref(),Some("42P01"));}},_=>panic!("expected structured database failure")}
+        match failure {Err(Error::Engine(monorm_engine::Error::Db(e)))=>{assert!(!e.message.is_empty());if pg {assert_eq!(e.sqlstate.as_deref(),Some("42P01"));}},_=>panic!("expected structured database failure")}
         let types=if pg {"flag boolean,big bigint,ratio double precision,moment timestamptz,day date,key uuid,payload jsonb"}else{"flag boolean,big bigint,ratio double precision,moment text,day text,key text,payload text"};
         fixture.batch(format!("CREATE TABLE rust_read_scalars(id integer PRIMARY KEY,status text,priority integer,{types}); INSERT INTO rust_read_scalars VALUES(1,'ACTIVE',10,{},9007199254740993,1.5,'{}','2026-10-10','a03807af-cc91-4a3e-a65d-f573c7b8f31a','{{\"ok\":true}}')",if pg {"true"}else{"1"},if pg {"2026-10-10 12:00:00+00"}else{"2026-10-10 12:00:00"})).await.unwrap();
         fixture.close().await;
         let scalar=$module::Scalar::objects.filter($module::Scalar::STATUS.eq($module::Status::Active)).using(&db).get($module::Scalar::STATUS_PRIORITY_KEY,($module::Status::Active,$module::Priority::High)).await.unwrap().unwrap();
-        assert_eq!(scalar.big,9007199254740993);assert_eq!(scalar.priority,$module::Priority::High);assert!(scalar.flag);assert_eq!(scalar.ratio,1.5);assert_eq!(scalar.payload,orm_client::serde_json::json!({"ok":true}));assert_eq!(scalar.day.to_string(),"2026-10-10");assert_eq!(scalar.moment.timestamp(),1791633600);assert_eq!(scalar.key.to_string(),"a03807af-cc91-4a3e-a65d-f573c7b8f31a");
-        assert!(matches!(User::objects.limit(u64::MAX).using(&db).all().await,Err(Error::Engine(orm_engine::Error::Value(_)))));
+        assert_eq!(scalar.big,9007199254740993);assert_eq!(scalar.priority,$module::Priority::High);assert!(scalar.flag);assert_eq!(scalar.ratio,1.5);assert_eq!(scalar.payload,monorm_client::serde_json::json!({"ok":true}));assert_eq!(scalar.day.to_string(),"2026-10-10");assert_eq!(scalar.moment.timestamp(),1791633600);assert_eq!(scalar.key.to_string(),"a03807af-cc91-4a3e-a65d-f573c7b8f31a");
+        assert!(matches!(User::objects.limit(u64::MAX).using(&db).all().await,Err(Error::Engine(monorm_engine::Error::Value(_)))));
         assert_eq!(User::objects.order_by(User::ID.asc()).slice(0,2).unwrap().slice(1,3).unwrap().using(&db).all().await.unwrap().iter().map(|u|u.id).collect::<Vec<_>>(),vec![2]);
         assert_eq!(User::objects.slice(2,1).unwrap().using(&db).count().await.unwrap(),0);
         db.close().await;
@@ -292,7 +292,7 @@ macro_rules! exercise {
 }
 #[tokio::test]
 async fn sqlite_public_reads() {
-    let path = std::env::temp_dir().join(format!("orm-rust-reads-{}.db", std::process::id()));
+    let path = std::env::temp_dir().join(format!("monorm-rust-reads-{}.db", std::process::id()));
     let url = format!("sqlite://{}", path.display());
     exercise!(sqlite, &url);
     std::fs::remove_file(path).unwrap();
@@ -302,7 +302,7 @@ async fn postgres_public_reads() {
     let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
     exercise!(postgres, &url);
-    let fixture = orm_engine::db::connect(&url, 1).await.unwrap();
+    let fixture = monorm_engine::db::connect(&url, 1).await.unwrap();
     fixture.batch("DROP TABLE IF EXISTS rust_read_extra; CREATE TABLE rust_read_extra(id integer PRIMARY KEY,amount numeric,tags text[],priorities integer[]); INSERT INTO rust_read_extra VALUES(1,12.50,ARRAY['a','b'],ARRAY[1,10]);".into()).await.unwrap();
     fixture.close().await;
     let db = postgres::Database::connect(&url, 1).await.unwrap();

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from opendal import AsyncOperator
-from orm_file_storage import (
+from monorm_file_storage import (
     CapabilityError,
     FileAdapter,
     FileField,
@@ -19,7 +19,7 @@ from orm_file_storage import (
     StorageError,
     UploadError,
 )
-from orm_file_storage.storage import CHUNK_SIZE
+from monorm_file_storage.storage import CHUNK_SIZE
 
 FIXTURES = Path(__file__).parents[2] / "../fixtures/references.json"
 
@@ -246,7 +246,7 @@ class MemoryUsageTest(unittest.TestCase):
             import asyncio, json, resource, sys, tempfile
             sys.path[:] = json.loads(sys.argv[1])
             from opendal import AsyncOperator
-            from orm_file_storage import Registry
+            from monorm_file_storage import Registry
 
             async def source():
                 for _ in range(1024):

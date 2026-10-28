@@ -101,7 +101,7 @@ test("SQLite migrations, target checks and file persistence", async () => {
   const source = readFileSync(join(root, "examples/sqlite/schema.prisma"), "utf8");
   const reg = new Registry();
   loads(source, { registry: reg });
-  const dir = mkdtempSync(join(tmpdir(), "orm-sqlite-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-sqlite-"));
   const migrations = new Migrations(join(dir, "migrations"), reg);
   migrations.make("initial");
   const url = `sqlite://${join(dir, "database.db")}`;
@@ -137,7 +137,7 @@ test("SQLite rebuilds after a rename ignore the kept rename hints", async () => 
     loads(text, { registry: reg });
     return reg;
   });
-  const dir = mkdtempSync(join(tmpdir(), "orm-sqlite-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-sqlite-"));
   ["initial", "rename", "later"].forEach((name, i) => new Migrations(dir, regs[i]!).make(name));
   const db = await connect("sqlite://:memory:", { registry: regs[0]!, default: false });
   try {

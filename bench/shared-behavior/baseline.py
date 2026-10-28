@@ -1,7 +1,7 @@
 """Original public lock implementation, retained as the benchmark control."""
 
 import hashlib
-from orm.errors import QueryError, TransactionRequired
+from monorm.errors import QueryError, TransactionRequired
 
 
 async def lock(self, key: int | str, exclusive: bool = True, *, nowait: bool = False) -> bool:

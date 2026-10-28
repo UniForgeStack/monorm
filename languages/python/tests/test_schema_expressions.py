@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import orm
+import monorm
 from conftest import DATABASE_URL
-from orm import _native
+from monorm import _native
 
 PROVIDERS = {
     "postgres": ("postgresql", DATABASE_URL),
@@ -28,11 +28,11 @@ def source(provider, table, check, extra=""):
 @asynccontextmanager
 async def opened(name, check, extra=""):
     provider, url = PROVIDERS[name]
-    registry = orm.Registry()
-    classes = orm.loads(source(provider, f"pl12_stock_{name}", check, extra), registry=registry)
+    registry = monorm.Registry()
+    classes = monorm.loads(source(provider, f"pl12_stock_{name}", check, extra), registry=registry)
     try:
-        db = await orm.connect(url, registry=registry, default=False)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(url, registry=registry, default=False)
+    except monorm.DatabaseError as e:
         pytest.skip(f"{name} not reachable: {e}")
     await db.drop_tables()
     await db.create_tables()
@@ -53,7 +53,7 @@ async def test_a_native_check_rejects_a_bad_row(stock):
     objects = stock.model.objects.using(stock.db)
     await objects.insert(qty=5, reserved=2, name="ok")
     for bad in ({"qty": 1, "reserved": 2}, {"qty": -1, "reserved": -2}):
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await objects.insert(name="bad", **bad)
     assert await objects.count() == 1
 
@@ -76,7 +76,7 @@ async def test_a_native_check_gives_the_same_answer_on_both_dialects(provider, c
         objects = stock.model.objects.using(stock.db)
         await objects.insert(**{**ROW, **good})
         if bad:
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 await objects.insert(**{**ROW, **bad})
         assert await objects.count() == 1
 
@@ -84,15 +84,15 @@ async def test_a_native_check_gives_the_same_answer_on_both_dialects(provider, c
 def test_a_plain_string_check_warns_with_file_line_column_and_names_raw(tmp_path):
     schema = tmp_path / "schema.prisma"
     schema.write_text(source("sqlite", "t", '"qty > 0"'))
-    with pytest.warns(orm.SchemaWarning, match=r"schema\.prisma:10:11: warning: .*raw\(") as caught:
-        orm.load(schema, registry=orm.Registry())
+    with pytest.warns(monorm.SchemaWarning, match=r"schema\.prisma:10:11: warning: .*raw\(") as caught:
+        monorm.load(schema, registry=monorm.Registry())
     assert len(caught) == 1
 
 
 def test_generate_python_raises_the_schema_warnings(tmp_path):
     schema = tmp_path / "schema.prisma"
     schema.write_text(source("sqlite", "t", '"qty > 0"'))
-    with pytest.warns(orm.SchemaWarning, match=r"schema\.prisma:10:11: warning: .*raw\(") as caught:
+    with pytest.warns(monorm.SchemaWarning, match=r"schema\.prisma:10:11: warning: .*raw\(") as caught:
         _native.generate_python(str(schema))
     assert len(caught) == 1
 
@@ -100,16 +100,16 @@ def test_generate_python_raises_the_schema_warnings(tmp_path):
 def test_a_native_or_raw_check_does_not_warn():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        orm.loads(source("sqlite", "t1", "qty > 0"), registry=orm.Registry())
-        orm.loads(source("sqlite", "t2", 'raw("qty > 0")'), registry=orm.Registry())
+        monorm.loads(source("sqlite", "t1", "qty > 0"), registry=monorm.Registry())
+        monorm.loads(source("sqlite", "t2", 'raw("qty > 0")'), registry=monorm.Registry())
 
 
 def test_native_adoption_survives_registry_ir_and_unrelated_snapshots(tmp_path):
-    from orm.migrations import Migrations
+    from monorm.migrations import Migrations
 
     def registry(check, extra=""):
-        reg = orm.Registry()
-        orm.loads(source("sqlite", "stock", check, extra), registry=reg)
+        reg = monorm.Registry()
+        monorm.loads(source("sqlite", "stock", check, extra), registry=reg)
         return reg
 
     old = registry('raw("((qty > 0))")')
@@ -130,7 +130,7 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
     import subprocess
     import sys
 
-    from orm.migrations import Migrations, Migrator, pull
+    from monorm.migrations import Migrations, Migrator, pull
 
     dialect, url = PROVIDERS[provider]
     path = tmp_path / "schema.prisma"
@@ -145,9 +145,9 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
     migrations = Migrations(tmp_path / "migrations", path)
     first = migrations.make()
     assert first is not None
-    connection_registry = orm.Registry()
-    orm.loads(f'datasource db {{ provider = "{dialect}" }}\n', registry=connection_registry)
-    db = await orm.connect(url, registry=connection_registry, default=False, max_connections=1)
+    connection_registry = monorm.Registry()
+    monorm.loads(f'datasource db {{ provider = "{dialect}" }}\n', registry=connection_registry)
+    db = await monorm.connect(url, registry=connection_registry, default=False, max_connections=1)
     if provider == "postgres":
         await db.execute("CREATE SCHEMA pl12_conversion; SET search_path = pl12_conversion")
     runner = Migrator(db, migrations)
@@ -155,7 +155,7 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         await runner.upgrade()
         await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (1, 2), (2, 3)')
         converted = subprocess.run(
-            [sys.executable, "-m", "orm", "--schema", str(path), "--dir", str(migrations.directory), "fmt", "--native"],
+            [sys.executable, "-m", "monorm", "--schema", str(path), "--dir", str(migrations.directory), "fmt", "--native"],
             capture_output=True, text=True,
         )
         assert converted.returncode == 0, converted.stderr
@@ -163,20 +163,20 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         assert not migrations.plan()
         assert migrations.plan().down == []
         assert await runner.upgrade() == []
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, -1)')
         # Shadow verification must accept the native form of the existing rules.
         pulled = await pull(db)
         assert pulled.differences == [], (pulled.schema, pulled.differences)
-        fresh_registry = orm.Registry()
-        orm.loads(pulled.schema, registry=fresh_registry)
-        fresh = await orm.connect(url, registry=fresh_registry, default=False, max_connections=1)
+        fresh_registry = monorm.Registry()
+        monorm.loads(pulled.schema, registry=fresh_registry)
+        fresh = await monorm.connect(url, registry=fresh_registry, default=False, max_connections=1)
         try:
             if provider == "postgres":
                 await fresh.execute("CREATE SCHEMA pl12_fresh; SET search_path = pl12_fresh")
             await fresh.create_tables()
             await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (1, 2), (2, 3)')
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, -1)')
             assert not (await pull(fresh)).differences
         finally:
@@ -196,7 +196,7 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         real = migrations.make("stricter")
         assert real is not None and real.down_sql
         await runner.upgrade()
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, 1)')
         await runner.downgrade()
         await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, 1)')

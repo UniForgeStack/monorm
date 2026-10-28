@@ -1,17 +1,17 @@
 [package]
-name = "orm-composition"
+name = "monorm-composition"
 version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Shared-primary-key model composition for ORM: child models stored across parent tables"
 
 [dependencies]
-orm-contracts = { path = "../../crates/contracts" }
+monorm-contracts = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [dev-dependencies]
-orm-core = { path = "../../crates/core" }
-orm-engine = { path = "../../crates/engine" }
+monorm-core = { path = "../../crates/core" }
+monorm-engine = { path = "../../crates/engine" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [lib]

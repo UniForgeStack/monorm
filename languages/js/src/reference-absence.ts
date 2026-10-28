@@ -1,7 +1,7 @@
 /** Keys for which an unfiltered eager reference load found no target row. */
 import { key } from "./value-key.js";
 
-const ABSENT = Symbol("orm.referenceAbsent");
+const ABSENT = Symbol("monorm.referenceAbsent");
 type Marked = { [ABSENT]?: Map<string, readonly unknown[]> };
 export function markAbsent(row: object, name: string, values: readonly unknown[]): void {
   if (values.some((v) => v === null || v === undefined)) return;

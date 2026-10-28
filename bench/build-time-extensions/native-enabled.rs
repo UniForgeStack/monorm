@@ -1,6 +1,6 @@
 //! Focused release timings; compile with allocation-probe only to count allocations.
-use orm_core::{behavior::NativeModel, dialect::Target, dsl, ir::ValueType};
-use orm_engine::{behavior, db::{Cell, DbResult, RowSet}, exec::Outcome, NoParams, parse_op, plan::Planner};
+use monorm_core::{behavior::NativeModel, dialect::Target, dsl, ir::ValueType};
+use monorm_engine::{behavior, db::{Cell, DbResult, RowSet}, exec::Outcome, NoParams, parse_op, plan::Planner};
 use sea_query::Value;
 use std::{hint::black_box, time::Instant};
 
@@ -47,14 +47,14 @@ fn main() {
     let proxy_source = source.replace("BenchItem", "BenchView");
     let mut proxy_ir = dsl::compile(&proxy_source,None).unwrap();
     proxy_ir.models[0].table = schema.models[0].ir.table.clone();
-    let proxy = orm_core::schema::Schema::from_ir(proxy_ir).unwrap();
+    let proxy = monorm_core::schema::Schema::from_ir(proxy_ir).unwrap();
     let mut owned_json: serde_json::Value = serde_json::from_str(include_str!("ownership-schema.json")).unwrap();
     let mut physical = owned_json["models"].clone();
     physical[1]["fields"].as_array_mut().unwrap().pop();
     owned_json["behavior"]["storage"] = serde_json::json!({"models":physical});
-    let mut owned_ir: orm_core::ir::SchemaIr = serde_json::from_value(owned_json).unwrap();
+    let mut owned_ir: monorm_core::ir::SchemaIr = serde_json::from_value(owned_json).unwrap();
     owned_ir.dialect = schema.dialect;
-    let owned = orm_core::schema::Schema::from_ir(owned_ir).unwrap();
+    let owned = monorm_core::schema::Schema::from_ir(owned_ir).unwrap();
     let map=[None,Some(0),None,None,None];
     let fields=[Value::from("alice")];
     let mut results=serde_json::Map::new();

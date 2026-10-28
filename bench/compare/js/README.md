@@ -10,7 +10,7 @@ export BENCH_DATABASE_URL=postgres://postgres:postgres@localhost:55432/bench
 node run.mjs check                                   # equality check only
 node run.mjs run --rounds 2 --iters 5                # check, then timing; writes results/smoke (defaults: 20 x 20, --max-load 2)
 bun run.mjs run                                      # ours and Prisma; read-pk, read-1000, bulk-insert-1000
-node run.mjs run --orm-artifact DIR                  # adds orm-all: ORM_NATIVE=DIR/orm.node
+node run.mjs run --orm-artifact DIR                  # adds orm-all: MONORM_NATIVE=DIR/monorm.node
 node run.mjs profile --cases projection-1000         # one case under the V8 profiler; writes results/profile (see ../README.md)
 ```
 

@@ -5,29 +5,29 @@ import json
 import os
 import subprocess
 import sys
-import orm
-from orm import _native
-from orm._capabilities import ADAPTERS
+import monorm
+from monorm import _native
+from monorm._capabilities import ADAPTERS
 
 metadata = json.loads(_native.profile_metadata())
-assert metadata["profile"] == os.environ["ORM_PROFILE"]
+assert metadata["profile"] == os.environ["MONORM_PROFILE"]
 assert not ADAPTERS
-_selector = os.environ["ORM_PROFILE"]
-os.environ["ORM_PROFILE"] = "invalid-after-initialization"
-from orm import _native as _again
+_selector = os.environ["MONORM_PROFILE"]
+os.environ["MONORM_PROFILE"] = "invalid-after-initialization"
+from monorm import _native as _again
 
 assert _again is _native
-os.environ["ORM_PROFILE"] = _selector
+os.environ["MONORM_PROFILE"] = _selector
 assert hasattr(_native, "cli") == metadata["capabilities"]["cli"]
 assert hasattr(_native, "generate_python") == metadata["capabilities"]["generate-python"]
 assert hasattr(_native, "generate_typescript") is False  # only Node exposes its generator
 
 
-cli = subprocess.run([sys.executable, "-m", "orm", "--help"], capture_output=True, text=True)
+cli = subprocess.run([sys.executable, "-m", "monorm", "--help"], capture_output=True, text=True)
 if metadata["capabilities"]["cli"]:
     assert cli.returncode == 0 and "generate" in cli.stdout, cli.stdout + cli.stderr
 else:
-    assert cli.returncode != 0 and "install orm[tooling]" in cli.stderr, cli.stderr
+    assert cli.returncode != 0 and "install monorm[tooling]" in cli.stderr, cli.stderr
 
 
 def source(backend):
@@ -41,21 +41,21 @@ model Probe {{
 async def run():
     for backend in ("postgres", "sqlite"):
         provider = "postgresql" if backend == "postgres" else backend
-        registry = orm.Registry()
+        registry = monorm.Registry()
         if backend not in metadata["backends"]:
             try:
-                orm.loads(source(provider), registry=registry)
-            except (orm.DatabaseError, orm.SchemaError) as error:
+                monorm.loads(source(provider), registry=registry)
+            except (monorm.DatabaseError, monorm.SchemaError) as error:
                 assert "not compiled" in str(error)
             else:
                 raise AssertionError("excluded backend accepted at definition")
             continue
         if backend == "postgres" and not os.environ.get("ORM_TEST_DATABASE_URL"):
             continue
-        models = orm.loads(source(provider), registry=registry)
+        models = monorm.loads(source(provider), registry=registry)
         Probe = models["Probe"]
         url = os.environ["ORM_TEST_DATABASE_URL"] if backend == "postgres" else "sqlite://:memory:"
-        db = await orm.connect(url, registry=registry, default=False)
+        db = await monorm.connect(url, registry=registry, default=False)
         try:
             await db.create_tables()
             first = await Probe.objects.using(db).insert(name="first")

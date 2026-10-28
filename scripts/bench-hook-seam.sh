@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Gate: the hook seam adds no measured cost to a model with no hook.
 # Usage: scripts/bench-hook-seam.sh BASELINE_CHECKOUT [ROUNDS=15]
-# BASELINE_CHECKOUT is a checkout of `main` (for example `git worktree add ../orm-main main`).
+# BASELINE_CHECKOUT is a checkout of `main` (for example `git worktree add ../monorm-main main`).
 # Run it on a quiet machine. It builds both checkouts into separate venvs under a temp directory,
 # runs them interleaved twice, and fails when the median of this checkout is slower than the baseline by more than the noise.
 set -euo pipefail

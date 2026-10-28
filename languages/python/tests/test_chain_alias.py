@@ -2,7 +2,7 @@
 
 import pytest
 
-import orm
+import monorm
 from conftest import DATABASE_URL
 
 SCHEMA = """
@@ -35,13 +35,13 @@ model Note {
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def data(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     source = SCHEMA if request.param == "postgres" else 'datasource db {\n  provider = "sqlite"\n}\n' + SCHEMA
-    m = orm.loads(source, registry=registry)
+    m = monorm.loads(source, registry=registry)
     url = "sqlite://:memory:" if request.param == "sqlite" else DATABASE_URL
     try:
-        db = await orm.connect(url, registry=registry, default=False)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(url, registry=registry, default=False)
+    except monorm.DatabaseError as e:
         pytest.skip(f"database not reachable: {e}")
     await db.drop_tables()
     await db.create_tables()
@@ -122,7 +122,7 @@ model Stall {
 
 
 def test_a_nested_column_behind_a_path_keeps_the_alias_the_rule_and_the_to_one_state():
-    m = orm.loads('datasource db {\n  provider = "sqlite"\n}\n' + NESTED, registry=orm.Registry())
+    m = monorm.loads('datasource db {\n  provider = "sqlite"\n}\n' + NESTED, registry=monorm.Registry())
     Stall = m["Stall"]
     same = Stall.objects.filter(Stall.shop.geo.city == "a", Stall.shop.geo.zip == "b").sql()
     other = Stall.objects.filter(Stall.shop.geo.city == "a", Stall.shop.alias().geo.zip == "b").sql()
@@ -134,7 +134,7 @@ def test_a_nested_column_behind_a_path_keeps_the_alias_the_rule_and_the_to_one_s
 def test_the_alias_message_names_the_only_places_it_works():
     from blog.models import Post
 
-    from orm import outer
+    from monorm import outer
 
-    with pytest.raises(orm.QueryError, match=r"it works only in filter\(\) and exclude\(\)"):
+    with pytest.raises(monorm.QueryError, match=r"it works only in filter\(\) and exclude\(\)"):
         outer(Post.comments.alias().id)

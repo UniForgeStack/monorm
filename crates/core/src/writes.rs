@@ -3,7 +3,7 @@
 //! (the field exists and has a fitting type); the role rules stay in the extensions.
 use std::collections::HashMap;
 
-pub use orm_contracts::writes::{AssignValue, UpsertDefault, WriteKind};
+pub use monorm_contracts::writes::{AssignValue, UpsertDefault, WriteKind};
 
 use crate::behavior::Requirements;
 use crate::ir::{ColType, Expr, FieldIr};

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import orm
+import monorm
 from blog.models import User
 from test_sqlite import models
 
@@ -16,7 +16,7 @@ async def case(request, clean):
         yield SimpleNamespace(db=clean, model=User, make=lambda i: {"email": f"{i}@x.io", "name": "n"})
         return
     registry, classes = models()
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     yield SimpleNamespace(db=db, model=classes["Author"], make=lambda i: {"email": f"{i}@x.io", "name": "n"})
     await db.drop_tables()
@@ -34,34 +34,34 @@ async def seed(c):
 async def test_a_caught_error_aborts_the_commit(case):
     c, seen = case, []
     await seed(c)
-    with pytest.raises(orm.TransactionAborted) as e:
+    with pytest.raises(monorm.TransactionAborted) as e:
         async with c.db.transaction():
             await c.model.objects.using(c.db).insert(**c.make("kept"))
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 await seed(c)
             await c.db.on_commit(lambda: seen.append("ran"))
-    assert isinstance(e.value.__cause__, orm.IntegrityError)
+    assert isinstance(e.value.__cause__, monorm.IntegrityError)
     assert e.value.__cause__.sqlstate == "23505" and "earlier error" in str(e.value)
     assert str(e.value.__cause__).splitlines()[0] in str(e.value)
-    assert isinstance(e.value, orm.DatabaseError)
+    assert isinstance(e.value, monorm.DatabaseError)
     assert await count(c) == 1 and seen == []
 
 
 async def test_a_later_statement_raises_transaction_aborted(case):
     c = case
     await seed(c)
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         async with c.db.transaction():
-            with pytest.raises(orm.IntegrityError) as first:
+            with pytest.raises(monorm.IntegrityError) as first:
                 await seed(c)
             with pytest.raises(ValueError):
                 async with c.db.transaction(savepoint=False):
                     raise ValueError("a later application failure")
-            with pytest.raises(orm.TransactionAborted) as later:
+            with pytest.raises(monorm.TransactionAborted) as later:
                 await c.model.objects.using(c.db).insert(**c.make("later"))
             assert later.value.__cause__ is not first.value
-            assert isinstance(later.value.__cause__, orm.IntegrityError)
-            with pytest.raises(orm.TransactionAborted):
+            assert isinstance(later.value.__cause__, monorm.IntegrityError)
+            with pytest.raises(monorm.TransactionAborted):
                 await count(c)
             raise first.value
     assert await count(c) == 1
@@ -72,7 +72,7 @@ async def test_a_savepoint_in_a_try_keeps_the_other_writes(case):
     await seed(c)
     async with c.db.transaction():
         await c.model.objects.using(c.db).insert(**c.make("before"))
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             async with c.db.transaction():
                 await c.db.on_commit(lambda: seen.append("inner"))
                 await seed(c)
@@ -85,9 +85,9 @@ async def test_a_caught_error_in_a_savepoint_block_aborts_that_savepoint(case):
     c = case
     await seed(c)
     async with c.db.transaction():
-        with pytest.raises(orm.TransactionAborted):
+        with pytest.raises(monorm.TransactionAborted):
             async with c.db.transaction():
-                with pytest.raises(orm.IntegrityError):
+                with pytest.raises(monorm.IntegrityError):
                     await seed(c)
         await c.model.objects.using(c.db).insert(**c.make("after"))
     assert await count(c) == 2
@@ -100,14 +100,14 @@ async def test_savepoint_false_joins_the_enclosing_transaction(case):
         async with c.db.transaction(savepoint=False):
             await c.model.objects.using(c.db).insert(**c.make("joined"))
     assert await count(c) == 2
-    with pytest.raises(orm.TransactionAborted):
+    with pytest.raises(monorm.TransactionAborted):
         async with c.db.transaction():
             await c.model.objects.using(c.db).insert(**c.make("lost"))
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 async with c.db.transaction(savepoint=False):
                     await seed(c)
     assert await count(c) == 2
-    with pytest.raises(orm.TransactionAborted):
+    with pytest.raises(monorm.TransactionAborted):
         async with c.db.transaction():
             with pytest.raises(ValueError):
                 async with c.db.transaction(savepoint=False):
@@ -121,18 +121,18 @@ async def test_savepoint_false_joins_the_enclosing_transaction(case):
 async def test_an_uncaught_error_rolls_back_and_raises_the_original(case):
     c = case
     await seed(c)
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         async with c.db.transaction():
             await c.model.objects.using(c.db).insert(**c.make("lost"))
             await seed(c)
-    assert not isinstance(e.value, orm.TransactionAborted)
+    assert not isinstance(e.value, monorm.TransactionAborted)
     assert await count(c) == 1
 
 
 async def test_joined_application_error_keeps_original_cause(case):
     c = case
     original = ValueError("application failure")
-    with pytest.raises(orm.TransactionAborted) as commit:
+    with pytest.raises(monorm.TransactionAborted) as commit:
         async with c.db.transaction():
             await c.model.objects.using(c.db).insert(**c.make("lost"))
             with pytest.raises(ValueError):
@@ -142,10 +142,10 @@ async def test_joined_application_error_keeps_original_cause(case):
             with pytest.raises(TypeError):
                 async with c.db.transaction(savepoint=False):
                     raise TypeError("second failure")
-            with pytest.raises(orm.TransactionAborted) as later:
+            with pytest.raises(monorm.TransactionAborted) as later:
                 await count(c)
             assert later.value.__cause__ is original
-            with pytest.raises(orm.TransactionAborted) as begin:
+            with pytest.raises(monorm.TransactionAborted) as begin:
                 async with c.db.transaction():
                     pass
             assert begin.value.__cause__ is original
@@ -159,11 +159,11 @@ async def test_joined_failure_in_savepoint_leaves_outer_usable(case, application
     await seed(c)
     async with c.db.transaction():
         await c.model.objects.using(c.db).insert(**c.make("before"))
-        with pytest.raises(orm.TransactionAborted):
+        with pytest.raises(monorm.TransactionAborted):
             async with c.db.transaction():
                 await c.db.on_commit(lambda: seen.append("inner"))
                 await c.model.objects.using(c.db).insert(**c.make("lost"))
-                with pytest.raises(ValueError if application_error else orm.IntegrityError):
+                with pytest.raises(ValueError if application_error else monorm.IntegrityError):
                     async with c.db.transaction(savepoint=False):
                         if application_error:
                             raise ValueError("joined savepoint failed")
@@ -175,7 +175,7 @@ async def test_joined_failure_in_savepoint_leaves_outer_usable(case, application
 
 @pytest.mark.parametrize("application_error", [False, True])
 async def test_caught_data_migration_failure_rolls_back(case, tmp_path, application_error):
-    from orm.migrations import Migration, Migrations, Migrator
+    from monorm.migrations import Migration, Migrations, Migrator
 
     c, seen = case, []
     path = tmp_path / "0001_failure"
@@ -194,24 +194,24 @@ async def test_caught_data_migration_failure_rolls_back(case, tmp_path, applicat
                 async with db.transaction(savepoint=False):
                     raise original
         else:
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 await seed(c)
         await db.on_commit(lambda: seen.append("ran"))
 
     await seed(c)
     migrator = Migrator(c.db, Migrations(tmp_path, c.db._registry))
     await migrator._load_pending(None)
-    with pytest.raises(orm.TransactionAborted) as aborted:
+    with pytest.raises(monorm.TransactionAborted) as aborted:
         await migrator._upgrade(None, [(migration, run)])
     if application_error:
         assert aborted.value.__cause__ is original
     else:
-        assert isinstance(aborted.value.__cause__, orm.IntegrityError)
+        assert isinstance(aborted.value.__cause__, monorm.IntegrityError)
     assert await count(c) == 1 and seen == []
-    with pytest.raises(orm.DatabaseError):
+    with pytest.raises(monorm.DatabaseError):
         await c.db.fetch("SELECT * FROM migration_probe")
-    assert not await c.db.fetch("SELECT * FROM orm_migrations")
-    await c.db.execute("DROP TABLE orm_migrations")
+    assert not await c.db.fetch("SELECT * FROM monorm_migrations")
+    await c.db.execute("DROP TABLE monorm_migrations")
 
 
 # -- a failure in an ORM-internal multi-statement call marks the enclosing transaction -------------
@@ -266,7 +266,7 @@ async def linked(request, clean):
     from test_sqlite import models as sqlite_models
 
     registry, m = sqlite_models(FOLLOW)
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     Person, Follow = m["Person"], m["Follow"]
 
@@ -293,18 +293,18 @@ async def linked(request, clean):
 
 async def test_a_failed_related_set_marks_the_enclosing_transaction(linked):
     c = await linked()
-    with pytest.raises(orm.TransactionAborted) as e:
+    with pytest.raises(monorm.TransactionAborted) as e:
         async with c.db.transaction():
-            with pytest.raises(orm.DatabaseError):
+            with pytest.raises(monorm.DatabaseError):
                 await c.rel.set([c.bad], **c.fail)
             await c.db.on_commit(lambda: None)
-    assert isinstance(e.value.__cause__, orm.DatabaseError)
+    assert isinstance(e.value.__cause__, monorm.DatabaseError)
     assert await c.count() == 1
 
 
 async def test_a_failed_related_set_outside_a_transaction_stays_atomic(linked):
     c = await linked()
-    with pytest.raises(orm.DatabaseError):
+    with pytest.raises(monorm.DatabaseError):
         await c.rel.set([c.bad], **c.fail)
     assert [getattr(link, c.key) for link in await c.links()] == [c.kept]
 
@@ -312,7 +312,7 @@ async def test_a_failed_related_set_outside_a_transaction_stays_atomic(linked):
 async def test_a_nested_transaction_recovers_a_failed_related_set(linked):
     c = await linked()
     async with c.db.transaction():
-        with pytest.raises(orm.DatabaseError):
+        with pytest.raises(monorm.DatabaseError):
             async with c.db.transaction():
                 await c.rel.set([c.bad], **c.fail)
         assert await c.count() == 1
@@ -333,10 +333,10 @@ async def test_concurrent_nested_transactions_raise(case):
         await started.wait()
         try:
             for _ in range(2):
-                with pytest.raises(orm.QueryError, match="concurrent nested transactions share one connection"):
+                with pytest.raises(monorm.QueryError, match="concurrent nested transactions share one connection"):
                     async with c.db.transaction():
                         pytest.fail("overlapping sibling entered")
-            with pytest.raises(orm.QueryError, match="concurrent nested transactions share one connection"):
+            with pytest.raises(monorm.QueryError, match="concurrent nested transactions share one connection"):
                 await c.db.execute("SELECT 1")
         finally:
             attempted.set()

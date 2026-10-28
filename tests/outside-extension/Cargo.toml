@@ -1,4 +1,4 @@
-# An extension built outside the ORM workspace: it depends on orm-contracts only, as a package of another team would.
+# An extension built outside the ORM workspace: it depends on monorm-contracts only, as a package of another team would.
 [package]
 name = "outside-extension"
 version = "0.1.0"
@@ -11,7 +11,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-orm-contracts = { path = "../../crates/contracts" }
+monorm-contracts = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [features]

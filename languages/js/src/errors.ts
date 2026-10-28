@@ -138,12 +138,12 @@ function build(cls: new (message: string) => Error, message: string, fields: Nat
   return out;
 }
 
-/** The error class for an error the native engine threw (`[orm:<Kind>] message`). */
+/** The error class for an error the native engine threw (`[monorm:<Kind>] message`). */
 export function fromNative(e: unknown): unknown {
   if (!(e instanceof Error)) {
     return e;
   }
-  const m = /^\[orm:(\w+)(\+?)\] ([\s\S]*)$/.exec(e.message);
+  const m = /^\[monorm:(\w+)(\+?)\] ([\s\S]*)$/.exec(e.message);
   const cls = m && KINDS[m[1]!];
   if (!m || !cls) {
     return e;

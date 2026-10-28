@@ -7,7 +7,7 @@ use sea_query::Value;
 use tokio::sync::{oneshot, Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::{BoxFuture, Cell, DbError, DbResult, Driver, ErrorKind, Executor, RawRows, RowSet, Transaction};
-use orm_core::{dialect::Dialect, ir::{ColType, ValueType}};
+use monorm_core::{dialect::Dialect, ir::{ColType, ValueType}};
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
@@ -65,7 +65,7 @@ impl SqliteDriver {
         if path.is_empty() || path.contains('?') || path.contains('#') { return Err(DbError::other("SQLite URL requires a file path or :memory:; URL options are unsupported")); }
         let (sender, receive) = mpsc::channel::<Job>();
         let (ready, opened) = oneshot::channel();
-        std::thread::Builder::new().name("orm-sqlite".into()).spawn(move || {
+        std::thread::Builder::new().name("monorm-sqlite".into()).spawn(move || {
             let result = Connection::open(&path).and_then(|conn| {
                 conn.busy_timeout(std::time::Duration::from_secs(5))?;
                 conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA case_sensitive_like = ON;")?;
@@ -312,7 +312,7 @@ impl Executor for SqliteTx {
                 if parent.done.load(Ordering::Acquire) { return Err(closed()); }
                 let mut stack = parent.savepoints.lock().unwrap();
                 super::check_savepoint(&stack, &parent.savepoint)?;
-                let name = format!("orm_sp_{}", parent.worker.next_savepoint.fetch_add(1, Ordering::Relaxed));
+                let name = format!("monorm_sp_{}", parent.worker.next_savepoint.fetch_add(1, Ordering::Relaxed));
                 c.execute_batch(&format!("SAVEPOINT {name}")).map_err(sqlite_err)?;
                 stack.push(name.clone());
                 let state = Arc::new(TxState {

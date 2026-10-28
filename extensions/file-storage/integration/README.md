@@ -1,11 +1,11 @@
 # File-field binding preparation
 
-`python/` and `typescript/` are the runtime sources of the `orm-file-storage` and `@orm/file-storage` packages.
+`python/` and `typescript/` are the runtime sources of the `monorm-file-storage` and `@ufstack/monorm-file-storage` packages.
 They depend on `opendal`, not on the project's storage library. They keep the Reference
 codec v1, `Upload`, the `Registry` (storage name to OpenDAL operator), `max_size` while
 streaming and the upload error with the candidate reference. They do not import ORM
 internals or install a runtime native callback registry. They use only the
-public async field adapter API: Python `orm.adapters.register_field_adapter`
+public async field adapter API: Python `monorm.adapters.register_field_adapter`
 and TypeScript `registerFieldAdapter` from `orm`.
 
 `install_model` / `installModel` register one `FileAdapter` per file field: its
@@ -68,8 +68,8 @@ prepared file layout exists in the native core.
 
 Code generation reads the `file-storage.reference.v1` runtime entry of the
 extension manifest (`[[python.field_adapters]]`, `[[typescript.field_adapters]]`).
-The generated module imports `install` from `orm_file_storage.model` (Python) or
-`@orm/file-storage/model` (TypeScript) and calls it once for each model with the
+The generated module imports `install` from `monorm_file_storage.model` (Python) or
+`@ufstack/monorm-file-storage/model` (TypeScript) and calls it once for each model with the
 field names, their options and nullability. Generated modules expose
 `configure_file_storage(registry)` / `configureFileStorage(registry)` for the
 application's storage Registry. Methods delegate signing/opening explicitly;

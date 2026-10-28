@@ -1,4 +1,4 @@
-"""End-to-end timings of the `orm` package on the blog models, for comparing engines.
+"""End-to-end timings of the `monorm` package on the blog models, for comparing engines.
 
     (cd languages/python/packaging/tooling && maturin develop --release)
     python bench/engine_bench.py [--url URL] [--rounds N] [--out results.json]
@@ -24,11 +24,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples"))
 
 from blog.models import Comment, Post, User  # noqa: E402
 
-import orm  # noqa: E402
+import monorm  # noqa: E402
 
 
 async def seed() -> None:
-    db = orm.get_database()
+    db = monorm.get_database()
     await db.drop_tables()
     await db.create_tables()
     users = await User.objects.insert_many(
@@ -58,7 +58,7 @@ async def main() -> None:
     ap.add_argument("--out")
     args = ap.parse_args()
 
-    await orm.connect(args.url, max_connections=4)
+    await monorm.connect(args.url, max_connections=4)
     await seed()
     counter = iter(range(10**9))
 
@@ -70,12 +70,12 @@ async def main() -> None:
         await User.objects.insert_many([{"email": f"m{n}-{i}@x.io", "name": "M"} for i in range(50)])
 
     async def tx_2_writes():
-        async with orm.get_database().transaction():
+        async with monorm.get_database().transaction():
             await Post.objects.filter(Post.id == 1).update(views=Post.views + 1)
             await Post.objects.filter(Post.id == 2).update(views=Post.views + 1)
 
-    get_by_pk = Post.objects.filter(Post.id == orm.param("id")).prepare()
-    read_page = Post.objects.order_by(Post.id).limit(orm.param("n")).prepare()
+    get_by_pk = Post.objects.filter(Post.id == monorm.param("id")).prepare()
+    read_page = Post.objects.order_by(Post.id).limit(monorm.param("n")).prepare()
 
     cases = {
         "get by pk": (lambda: Post.objects.get(Post.id == 500), 200),
@@ -99,7 +99,7 @@ async def main() -> None:
         print(f"{name:34} {results[name]:9.1f} µs")
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2) + "\n")
-    await orm.get_database().drop_tables()
+    await monorm.get_database().drop_tables()
 
 
 if __name__ == "__main__":

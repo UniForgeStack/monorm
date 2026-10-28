@@ -16,12 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
 from blog.models import Post, User  # noqa: E402
 
-import orm  # noqa: E402
+import monorm  # noqa: E402
 
 URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
 
-async def best(db: orm.Database, load) -> float:
+async def best(db: monorm.Database, load) -> float:
     times = []
     for _ in range(REPEATS):
         await db.execute("TRUNCATE posts RESTART IDENTITY CASCADE")
@@ -32,7 +32,7 @@ async def best(db: orm.Database, load) -> float:
 
 
 async def main() -> None:
-    db = await orm.connect(URL, max_connections=2)
+    db = await monorm.connect(URL, max_connections=2)
     await db.drop_tables()
     await db.create_tables()
     try:

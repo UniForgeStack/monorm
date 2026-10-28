@@ -17,7 +17,7 @@ SCANNED = [
     "languages/python/native",
     "languages/js/native",
 ]
-MANIFESTS = ["extensions/*/orm-extension.toml", "tests/outside-extension/orm-extension.toml"]
+MANIFESTS = ["extensions/*/monorm-extension.toml", "tests/outside-extension/monorm-extension.toml"]
 EDGE = "A-Za-z0-9_-"
 TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*mod\s")
 

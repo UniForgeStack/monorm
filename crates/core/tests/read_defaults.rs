@@ -1,5 +1,5 @@
 //! The neutral `read_defaults` slot, built by hand: the merge and validation rules need no extension.
-use orm_core::{behavior::{merge_definition, Requirements, SCHEMA_CONTRACT}, ir::SchemaIr, schema::Schema};
+use monorm_core::{behavior::{merge_definition, Requirements, SCHEMA_CONTRACT}, ir::SchemaIr, schema::Schema};
 use serde_json::{json, Value};
 
 fn raw(defaults: Value) -> Value {
@@ -27,7 +27,7 @@ fn neutral_slot_merges_filters_paths_and_preserves_owners() {
         entry("visibility-ext", "published", json!({"filter":{"t":"cmp","op":"gt","l":{"t":"col","path":[],"name":"id"},"r":{"t":"int","value":0}},"load":[["owner"],["other_owner"]],"order":[{"field":"id"}],"annotate":{"label":count_of("owner")}}))
     ])).unwrap();
     let m = &schema.models[0];
-    let Some(orm_core::ir::Expr::And { items }) = &m.read_defaults.filter else { panic!("merged AND") };
+    let Some(monorm_core::ir::Expr::And { items }) = &m.read_defaults.filter else { panic!("merged AND") };
     assert_eq!(items.len(), 2);
     assert!(m.read_flags.filtered);
     assert_eq!(m.read_flags.fields.as_ref().unwrap(), &["id"]);
@@ -108,7 +108,7 @@ fn neutral_contract_participates_in_empty_merge_and_rebuild_checks() {
 
 #[test]
 fn generated_code_types_the_default_names() {
-    use orm_core::codegen::{python, typescript, Options};
+    use monorm_core::codegen::{python, typescript, Options};
     let value = raw(json!([
         entry("tenant-ext", "tenant", json!({"filter":{"t":"col","path":[],"name":"active"}})),
         entry("visibility-ext", "published", json!({}))
@@ -119,7 +119,7 @@ fn generated_code_types_the_default_names() {
     let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
     assert!(py.stub.contains(r#"def without_defaults(self, *names: Literal["tenant", "published"]) -> Self: ...  # type: ignore[override]"#), "{}", py.stub);
     assert_eq!(py.stub.matches("def without_defaults").count(), 1, "Owner has no defaults");
-    let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "orm", &options).unwrap();
+    let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "@ufstack/monorm", &options).unwrap();
     assert_eq!(ts.matches(r#"readonly defaults: "tenant" | "published";"#).count(), 1, "{ts}");
 }
 

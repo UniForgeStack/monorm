@@ -1,6 +1,6 @@
 //! The C ABI of a native extension library, version 0.2.
-//! The library exports `orm_ext_abi_version`, `orm_ext_run_pass` and `orm_ext_free` (0.1),
-//! and in 0.2 the optional `orm_ext_init`, `orm_ext_drop_state` and `orm_ext_hooks`.
+//! The library exports `monorm_ext_abi_version`, `monorm_ext_run_pass` and `monorm_ext_free` (0.1),
+//! and in 0.2 the optional `monorm_ext_init`, `monorm_ext_drop_state` and `monorm_ext_hooks`.
 //! It links to neither Python nor Node. `extension!` writes the exports; the host loader calls them by these names and types.
 //! A panic in a pass or a hook is caught, so it never crosses the ABI. The library must build with `panic = "unwind"`.
 //! The host may call the hooks of one state from several threads at once, and may drop the state on another thread: a state is `Send + Sync`.
@@ -10,12 +10,12 @@ use std::any::Any;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-pub const SYMBOL_ABI_VERSION: &[u8] = b"orm_ext_abi_version\0";
-pub const SYMBOL_RUN_PASS: &[u8] = b"orm_ext_run_pass\0";
-pub const SYMBOL_FREE: &[u8] = b"orm_ext_free\0";
-pub const SYMBOL_INIT: &[u8] = b"orm_ext_init\0";
-pub const SYMBOL_DROP_STATE: &[u8] = b"orm_ext_drop_state\0";
-pub const SYMBOL_HOOKS: &[u8] = b"orm_ext_hooks\0";
+pub const SYMBOL_ABI_VERSION: &[u8] = b"monorm_ext_abi_version\0";
+pub const SYMBOL_RUN_PASS: &[u8] = b"monorm_ext_run_pass\0";
+pub const SYMBOL_FREE: &[u8] = b"monorm_ext_free\0";
+pub const SYMBOL_INIT: &[u8] = b"monorm_ext_init\0";
+pub const SYMBOL_DROP_STATE: &[u8] = b"monorm_ext_drop_state\0";
+pub const SYMBOL_HOOKS: &[u8] = b"monorm_ext_hooks\0";
 
 /// The pass or the hook ran; `out` holds the new IR JSON, or the value of the hook.
 pub const STATUS_OK: i32 = 0;
@@ -28,7 +28,7 @@ pub const STATUS_UNKNOWN_PASS: i32 = 3;
 /// The id, the IR JSON, a value or the state did not parse or did not fit; `out` holds the text.
 pub const STATUS_BAD_INPUT: i32 = 4;
 
-/// A buffer that the library allocated. The host frees it with `orm_ext_free(ptr, len)`.
+/// A buffer that the library allocated. The host frees it with `monorm_ext_free(ptr, len)`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Buffer { pub ptr: *mut u8, pub len: usize }
@@ -62,7 +62,7 @@ pub const TAG_DATE: u32 = 10;
 /// The typed value on the ABI. `tag` picks the field that holds it:
 /// `int` for bool (0 or 1), int, datetime (microseconds since the Unix epoch, UTC) and date (days since 1970-01-01),
 /// `float` for float, and `ptr`/`len` for decimal (canonical text), text (UTF-8), bytes, uuid (16 bytes) and json (JSON text).
-/// An input value is borrowed for the call. An output value that has `ptr`/`len` is allocated by the library; the host copies it and calls `orm_ext_free(ptr, len)`.
+/// An input value is borrowed for the call. An output value that has `ptr`/`len` is allocated by the library; the host copies it and calls `monorm_ext_free(ptr, len)`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct OrmValue { pub tag: u32, pub int: i64, pub float: f64, pub ptr: *const u8, pub len: usize }
@@ -85,7 +85,7 @@ pub struct OrmContext { pub args: *const OrmArg, pub len: usize }
 #[derive(Clone, Copy)]
 pub struct OrmHookEntry { pub name_ptr: *const u8, pub name_len: usize, pub call: HookFn }
 
-/// The static table that `orm_ext_hooks` returns.
+/// The static table that `monorm_ext_hooks` returns.
 #[repr(C)]
 pub struct OrmHookTable { pub len: usize, pub entries: *const OrmHookEntry }
 
@@ -144,7 +144,7 @@ fn leak_bytes(bytes: Vec<u8>) -> (*const u8, usize) {
     (Box::into_raw(boxed) as *const u8, len)
 }
 
-/// True for the tags whose `ptr`/`len` hold a buffer of the library (see `Value::leak`); the host frees it with `orm_ext_free`.
+/// True for the tags whose `ptr`/`len` hold a buffer of the library (see `Value::leak`); the host frees it with `monorm_ext_free`.
 /// The other tags do not use `ptr` and `len`, so a library may leave any bytes in them.
 pub const fn owns_bytes(tag: u32) -> bool { matches!(tag, TAG_DECIMAL | TAG_TEXT | TAG_BYTES | TAG_UUID | TAG_JSON) }
 
@@ -174,7 +174,7 @@ impl Value {
         }
     }
 
-    /// An `OrmValue` that owns its bytes. The host copies it and calls `orm_ext_free(ptr, len)`.
+    /// An `OrmValue` that owns its bytes. The host copies it and calls `monorm_ext_free(ptr, len)`.
     pub fn leak(self) -> OrmValue {
         let tag = self.tag();
         let owned = |bytes: Vec<u8>| { let (ptr, len) = leak_bytes(bytes); OrmValue { tag, int: 0, float: 0.0, ptr, len } };
@@ -278,7 +278,7 @@ pub unsafe fn call_hook<S: 'static>(hook: HookRust<S>, state: *const c_void, arg
     status
 }
 
-/// The body of `orm_ext_init`. An empty `data` is JSON null. On an error, `error` (if not null) holds the text.
+/// The body of `monorm_ext_init`. An empty `data` is JSON null. On an error, `error` (if not null) holds the text.
 ///
 /// # Safety
 /// `data` is readable, and `state_out` is writable. `error` is null or writable.
@@ -309,7 +309,7 @@ pub unsafe fn init<S: Send + Sync + 'static>(init: InitRust<S>, data: *const u8,
     status
 }
 
-/// The body of `orm_ext_drop_state`. A panic in the `Drop` of the state does not cross the ABI.
+/// The body of `monorm_ext_drop_state`. A panic in the `Drop` of the state does not cross the ABI.
 ///
 /// # Safety
 /// `state` is null, or comes from `init` of this library, and nothing drops it twice.
@@ -328,7 +328,7 @@ unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(ptr, len) }
 }
 
-/// The body of `orm_ext_run_pass`.
+/// The body of `monorm_ext_run_pass`.
 ///
 /// # Safety
 /// The byte ranges are readable and `out` is writable.
@@ -357,7 +357,7 @@ pub unsafe fn run_pass(passes: &[(&str, PassFn)], id: *const u8, id_len: usize, 
     status
 }
 
-/// The body of `orm_ext_free`.
+/// The body of `monorm_ext_free`.
 ///
 /// # Safety
 /// `ptr` and `len` come from a `Buffer`, or from the `ptr`/`len` of an `OrmValue` that `owns_bytes`, of this library, and nothing frees them twice.
@@ -370,13 +370,13 @@ pub unsafe fn free(ptr: *mut u8, len: usize) {
 /// Write the exports of ABI 0.2. Call it once, at the root of a `cdylib` crate:
 ///
 /// ```
-/// use orm_contracts::abi::{Arg, Context, Value};
-/// use orm_contracts::ir::SchemaIr;
+/// use monorm_contracts::abi::{Arg, Context, Value};
+/// use monorm_contracts::ir::SchemaIr;
 /// struct State(String);
 /// fn init(data: &serde_json::Value) -> Result<State, String> { Ok(State(data.to_string())) }
 /// fn hook(state: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Text(state.0.clone())) }
 /// fn pass(_: &mut SchemaIr) -> Result<(), String> { Ok(()) }
-/// orm_contracts::extension! {
+/// monorm_contracts::extension! {
 ///     init = init;                  // optional: fn(&serde_json::Value) -> Result<S, String>
 ///     hooks { "my.hook" => hook };  // optional: fn(&S, &[Arg], &Context) -> Result<Value, String>
 ///     ("my.pass", pass)             // fn(&mut SchemaIr) -> Result<(), String>
@@ -390,35 +390,35 @@ pub unsafe fn free(ptr: *mut u8, len: usize) {
 /// Each hook takes the state that `init` returns, and that state is `Send + Sync`. A hook of another state is a compile error:
 ///
 /// ```compile_fail,E0308
-/// use orm_contracts::abi::{Arg, Context, Value};
+/// use monorm_contracts::abi::{Arg, Context, Value};
 /// struct State;
 /// fn hook(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
-/// orm_contracts::extension! { hooks { "x.hook" => hook }; }
+/// monorm_contracts::extension! { hooks { "x.hook" => hook }; }
 /// ```
 ///
 /// ```compile_fail,E0308
-/// use orm_contracts::abi::{Arg, Context, Value};
+/// use monorm_contracts::abi::{Arg, Context, Value};
 /// struct State;
 /// struct Other;
 /// fn init(_: &serde_json::Value) -> Result<State, String> { Ok(State) }
 /// fn hook(_: &Other, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
-/// orm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
+/// monorm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
 /// ```
 ///
 /// The host calls the hooks of one state from several threads, so a state that is not `Send + Sync` is a compile error:
 ///
 /// ```compile_fail,E0277
-/// use orm_contracts::abi::{Arg, Context, Value};
+/// use monorm_contracts::abi::{Arg, Context, Value};
 /// use std::rc::Rc;
 /// fn init(_: &serde_json::Value) -> Result<Rc<u8>, String> { Ok(Rc::new(0)) }
 /// fn hook(_: &Rc<u8>, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
-/// orm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
+/// monorm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
 /// ```
 ///
 /// An input that matches no form is a compile error that lists the forms:
 ///
 /// ```compile_fail
-/// orm_contracts::extension! { hooks "x.hook" => hook }
+/// monorm_contracts::extension! { hooks "x.hook" => hook }
 /// ```
 #[macro_export]
 macro_rules! extension {
@@ -443,11 +443,11 @@ macro_rules! extension {
     };
     (@exports ($bits:expr) ($init:path) [$(($name:expr, $hook:path))*]; $(($id:expr, $pass:expr)),*) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn orm_ext_abi_version() -> u32 { $bits }
+        pub extern "C" fn monorm_ext_abi_version() -> u32 { $bits }
         /// # Safety
         /// Called by the ORM loader with readable ranges and a writable `out`.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn orm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut $crate::abi::Buffer) -> i32 {
+        pub unsafe extern "C" fn monorm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut $crate::abi::Buffer) -> i32 {
             let passes: &[(&str, $crate::abi::PassFn)] = &[$(($id, $pass as $crate::abi::PassFn)),*];
             // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents, and this function hands them on unchanged.
             unsafe { $crate::abi::run_pass(passes, id, id_len, ir, ir_len, out) }
@@ -455,26 +455,26 @@ macro_rules! extension {
         /// # Safety
         /// Called by the ORM loader with a buffer of this library.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn orm_ext_free(ptr: *mut u8, len: usize) {
+        pub unsafe extern "C" fn monorm_ext_free(ptr: *mut u8, len: usize) {
             // SAFETY: the loader passes a buffer that this library returned, once.
             unsafe { $crate::abi::free(ptr, len) }
         }
         /// # Safety
         /// Called by the ORM loader with a readable `data`, and a writable `state_out` and `error`.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn orm_ext_init(data: *const u8, data_len: usize, state_out: *mut *mut ::std::ffi::c_void, error: *mut $crate::abi::Buffer) -> i32 {
+        pub unsafe extern "C" fn monorm_ext_init(data: *const u8, data_len: usize, state_out: *mut *mut ::std::ffi::c_void, error: *mut $crate::abi::Buffer) -> i32 {
             // SAFETY: the loader passes the arguments that `init` documents.
             unsafe { $crate::abi::init($init, data, data_len, state_out, error) }
         }
         /// # Safety
         /// Called by the ORM loader with a state of this library, once.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn orm_ext_drop_state(state: *mut ::std::ffi::c_void) {
-            // SAFETY: the loader passes a state that `orm_ext_init` returned, once.
+        pub unsafe extern "C" fn monorm_ext_drop_state(state: *mut ::std::ffi::c_void) {
+            // SAFETY: the loader passes a state that `monorm_ext_init` returned, once.
             unsafe { $crate::abi::drop_state(state) }
         }
         #[unsafe(no_mangle)]
-        pub extern "C" fn orm_ext_hooks() -> *const $crate::abi::OrmHookTable {
+        pub extern "C" fn monorm_ext_hooks() -> *const $crate::abi::OrmHookTable {
             const ENTRIES: &[$crate::abi::OrmHookEntry] = &[$($crate::abi::OrmHookEntry {
                 name_ptr: $name.as_ptr(),
                 name_len: $name.len(),

@@ -14,10 +14,10 @@ pub struct InsertOptions {
     pub scope: std::collections::BTreeMap<String, usize>,
     pub conflict: Option<Vec<String>>,
     pub update: Option<Vec<String>>,
-    pub set: Vec<orm_core::ir::Assignment>,
+    pub set: Vec<monorm_core::ir::Assignment>,
     pub indexes: Option<Vec<String>>,
     #[serde(default)]
-    pub without_defaults: orm_core::ir::Bypass,
+    pub without_defaults: monorm_core::ir::Bypass,
 }
 
 #[derive(Default, Debug, PartialEq, Eq, Serialize)]

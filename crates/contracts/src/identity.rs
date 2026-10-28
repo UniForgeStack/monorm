@@ -55,7 +55,7 @@ impl IdentityManifest {
                 return Err(format!("ContentType ID {} reassigned from {} to {}; use explicit identity rename", old.id, old.model, new.model));
             }
             if old.retired && !new.retired && new.restorations <= old.restorations {
-                return Err(format!("ContentType ID {} for {} was reactivated without explicit restoration; use orm identities --restore", old.id, new.model));
+                return Err(format!("ContentType ID {} for {} was reactivated without explicit restoration; use monorm identities --restore", old.id, new.model));
             }
             if old.previous_names.iter().any(|n| n != &new.model && !new.previous_names.contains(n)) {
                 return Err(format!("ContentType ID {} lost its rename history", old.id));

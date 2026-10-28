@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-import orm
+import monorm
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ VARIANTS = {
 
 
 class Auth:
-    def __init__(self, db: orm.Database, registry: orm.Registry, models: dict[str, Any], variant: Variant) -> None:
+    def __init__(self, db: monorm.Database, registry: monorm.Registry, models: dict[str, Any], variant: Variant) -> None:
         self.db, self.registry, self.models, self.variant = db, registry, models, variant
         self.User = models[variant.model]
         self.Role, self.Permission = models["Role"], models["Permission"]

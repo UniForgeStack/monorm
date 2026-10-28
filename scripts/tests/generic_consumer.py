@@ -1,19 +1,19 @@
-"""Runs against generated models that use the installed orm-generic package."""
+"""Runs against generated models that use the installed monorm-generic package."""
 import asyncio
 import json
 import os
 from pathlib import Path
-import orm
+import monorm
 from models import ContentType, Label, Photo, Video
-from orm._packages import import_runtime
+from monorm._packages import import_runtime
 
 
 async def run():
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
-    stamp = locked["behavior"]["packages"]["orm.generic"]
-    assert import_runtime("orm.generic").MANIFEST_HASH == stamp["manifest_hash"]
-    assert set(locked["behavior"]["extension_data"]["orm.generic"]) == {"relations", "reverse"}
-    db = await orm.connect(os.environ["ORM_DATABASE_URL"])
+    stamp = locked["behavior"]["packages"]["monorm.generic"]
+    assert import_runtime("monorm.generic").MANIFEST_HASH == stamp["manifest_hash"]
+    assert set(locked["behavior"]["extension_data"]["monorm.generic"]) == {"relations", "reverse"}
+    db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
     await db.drop_tables()
     await db.create_tables()
     try:

@@ -6,7 +6,7 @@
 The core section runs on every build. Each extension section runs when the native
 library has that extension, and prints how to get it otherwise. Install the extension packages
 with `scripts/install-extension-packages.sh`.
-The file-storage section also needs the `orm-file-storage` package.
+The file-storage section also needs the `monorm-file-storage` package.
 Each section creates its demo_* tables and drops them at the end.
 """
 
@@ -19,8 +19,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-import orm
-from orm import func
+import monorm
+from monorm import func
 
 HERE = Path(__file__).resolve().parent / "demo"
 
@@ -32,22 +32,22 @@ def schema(name: str, provider: str) -> str:
 async def section(
     name: str,
     url: str,
-    run: Callable[[orm.Database, dict[str, Any]], Awaitable[None]],
-    load: Callable[[str, orm.Registry], dict[str, Any]] | None = None,
+    run: Callable[[monorm.Database, dict[str, Any]], Awaitable[None]],
+    load: Callable[[str, monorm.Registry], dict[str, Any]] | None = None,
 ) -> None:
     """Load the section's schema into its own registry, run it, and drop its tables."""
     print(f"\n== {name}")
     provider = "sqlite" if url.startswith("sqlite:") else "postgresql"
-    registry = orm.Registry()
+    registry = monorm.Registry()
     try:
-        models = load(provider, registry) if load else orm.loads(schema(name, provider), registry=registry)
-    except orm.SchemaError as e:
+        models = load(provider, registry) if load else monorm.loads(schema(name, provider), registry=registry)
+    except monorm.SchemaError as e:
         # An extension attribute, or the extension type `Generic`, on a build without it.
         if "not compiled into this artifact" not in str(e) and "extension" not in str(e):
             raise
         print(f"skipped: this native library has no {name} extension ({e})")
         return
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
@@ -57,7 +57,7 @@ async def section(
         await db.close()
 
 
-async def core(db: orm.Database, m: dict[str, Any]) -> None:
+async def core(db: monorm.Database, m: dict[str, Any]) -> None:
     User, Post, Comment, Tag, AuditLog, Role = (m[k] for k in ("User", "Post", "Comment", "Tag", "AuditLog", "Role"))
 
     # Writes are explicit statements: INSERT ... RETURNING gives back the stored rows.
@@ -97,7 +97,7 @@ async def core(db: orm.Database, m: dict[str, Any]) -> None:
         .select(
             func.concat(User.name, " <", User.email, ">").label("who"),
             func.count(User.posts).label("posts"),
-            orm.exists(Post.objects.filter(Post.author_id == orm.outer(User.id), Post.views > 4)).label("popular"),
+            monorm.exists(Post.objects.filter(Post.author_id == monorm.outer(User.id), Post.views > 4)).label("popular"),
         )
         .order_by(User.name)
     )
@@ -110,9 +110,9 @@ async def core(db: orm.Database, m: dict[str, Any]) -> None:
     # Prepared queries: build once, bind values per call.
     by_author = (
         Post.objects.using(db)
-        .filter(Post.author_id == orm.param("author"))
+        .filter(Post.author_id == monorm.param("author"))
         .order_by(Post.id)
-        .limit(orm.param("n"))
+        .limit(monorm.param("n"))
         .prepare()
     )
     print("prepared:", [p.title for p in await by_author(author=alice.id, n=2)])
@@ -133,22 +133,22 @@ async def core(db: orm.Database, m: dict[str, Any]) -> None:
     # Protected writes: an application-level check, not a database permission.
     try:
         await AuditLog.objects.using(db).insert(action="outside")
-    except orm.WriteProtected as e:
+    except monorm.WriteProtected as e:
         print("write protected:", e)
-    with orm.allow_writes(AuditLog):
+    with monorm.allow_writes(AuditLog):
         await AuditLog.objects.using(db).insert(action="inside")
     print("audit rows:", await AuditLog.objects.using(db).count())
 
     # The N+1 finder: one load per row in a loop is reported with its fix.
     comments = await Comment.objects.using(db).insert_many([{"post_id": p.id, "body": "+1"} for p in posts]).returning()
     comments = await Comment.objects.using(db).filter(Comment.id.in_([x.id for x in comments]))
-    with warnings.catch_warnings(record=True), orm.debug.n_plus_one(threshold=3) as report:
+    with warnings.catch_warnings(record=True), monorm.debug.n_plus_one(threshold=3) as report:
         for x in comments:
             await x.load(Comment.post)
     print("N+1:", [(s.count, s.fix) for s in report.repeated])
 
 
-async def proxy_models(db: orm.Database, m: dict[str, Any]) -> None:
+async def proxy_models(db: monorm.Database, m: dict[str, Any]) -> None:
     Account, ActiveAccount, Status = m["Account"], m["ActiveAccount"], m["Status"]
     await Account.objects.using(db).insert_many(
         [
@@ -162,7 +162,7 @@ async def proxy_models(db: orm.Database, m: dict[str, Any]) -> None:
     print("rows through the proxy:", await ActiveAccount.objects.using(db).count(), "(one shared table)")
 
 
-async def query_defaults(db: orm.Database, m: dict[str, Any]) -> None:
+async def query_defaults(db: monorm.Database, m: dict[str, Any]) -> None:
     Article = m["Article"]
     await Article.objects.using(db).insert_many(
         [
@@ -175,12 +175,12 @@ async def query_defaults(db: orm.Database, m: dict[str, Any]) -> None:
     print("default filter and order:", [r.title for r in rows])
     try:
         rows[0].body
-    except orm.NotLoaded:
+    except monorm.NotLoaded:
         print("body is selected out by default")
     print("without_defaults():", await Article.objects.using(db).without_defaults().count(), "rows")
 
 
-async def model_composition(db: orm.Database, m: dict[str, Any]) -> None:
+async def model_composition(db: monorm.Database, m: dict[str, Any]) -> None:
     Person, Employee, Customer = m["Person"], m["Employee"], m["Customer"]
     ann = await Employee.objects.using(db).insert(name="Ann", salary=10)  # a Person row and an Employee row
     await Customer.objects.using(db).attach(ann.id, {"points": 5})  # Ann is also a customer
@@ -189,13 +189,13 @@ async def model_composition(db: orm.Database, m: dict[str, Any]) -> None:
     print("composed:", person.name, person.employee.salary, person.customer.points)
 
 
-async def file_storage(db: orm.Database, m: dict[str, Any]) -> None:
+async def file_storage(db: monorm.Database, m: dict[str, Any]) -> None:
     try:
         from opendal import AsyncOperator
-        from orm_file_storage import FileField, Registry, Upload
-        from orm_file_storage.model import install_model
+        from monorm_file_storage import FileField, Registry, Upload
+        from monorm_file_storage.model import install_model
     except ImportError:
-        print("skipped: install the orm-file-storage package (scripts/install-extension-packages.sh)")
+        print("skipped: install the monorm-file-storage package (scripts/install-extension-packages.sh)")
         return
     Report = m["Report"]
     with tempfile.TemporaryDirectory() as directory:
@@ -210,16 +210,16 @@ async def file_storage(db: orm.Database, m: dict[str, Any]) -> None:
         print("file field:", type(report.file).__name__, content)
 
 
-def load_generic(provider: str, registry: orm.Registry) -> dict[str, Any]:
+def load_generic(provider: str, registry: monorm.Registry) -> dict[str, Any]:
     # Identities live next to the schema; the demo copies both to a scratch directory.
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "schema.prisma"
         path.write_text(schema("generic-relations", provider))
         shutil.copy(HERE / "generic-relations.identities.json", Path(directory) / "schema.identities.json")
-        return orm.load(path, registry=registry)
+        return monorm.load(path, registry=registry)
 
 
-async def generic_relations(db: orm.Database, m: dict[str, Any]) -> None:
+async def generic_relations(db: monorm.Database, m: dict[str, Any]) -> None:
     Photo, Video, Label, ContentType = m["Photo"], m["Video"], m["Label"], m["ContentType"]
     photo = await Photo.objects.using(db).insert(id=1, url="cat.png")
     await Video.objects.using(db).insert(id=1, title="cats")

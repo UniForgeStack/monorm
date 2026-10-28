@@ -91,7 +91,7 @@ test("raw fetch keeps __proto__ as an own key in json on sqlite", async () => {
 });
 
 test("fromNative keeps the stack frames and not the lines of a multi-line message", () => {
-  const e = new Error("[orm:DatabaseError] first line\nDETAIL: second line");
+  const e = new Error("[monorm:DatabaseError] first line\nDETAIL: second line");
   const out = fromNative(e) as Error;
   assert.ok(out instanceof DatabaseError);
   const lines = out.stack!.split("\n");

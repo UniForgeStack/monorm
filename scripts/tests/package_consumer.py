@@ -5,10 +5,10 @@ import json
 import os
 from importlib.metadata import requires
 from pathlib import Path
-import orm
+import monorm
 from acme_outside import Wrapped
 from models import Note, configure_outside
-from orm._packages import import_runtime
+from monorm._packages import import_runtime
 
 
 async def run():
@@ -18,7 +18,7 @@ async def run():
     # The generated lock and the installed runtime expose the same manifest identity.
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
     packages = locked["behavior"]["packages"]
-    assert set(packages) == {"acme.outside", "orm.inherit", "orm.locking", "orm.query-defaults", "orm.soft-delete", "orm.timestamps"}
+    assert set(packages) == {"acme.outside", "monorm.inherit", "monorm.locking", "monorm.query-defaults", "monorm.soft-delete", "monorm.timestamps"}
     for ident, stamp in packages.items():
         assert import_runtime(ident).MANIFEST_HASH == stamp["manifest_hash"]
     # The lock stores an expression default as a record: `region` from a hook that generate evaluated, `owner` still a hook.
@@ -26,13 +26,13 @@ async def run():
     assert defaults["shop_id"] == {"expr": {"t": "scope", "name": "shop"}}
     assert defaults["region"] == {"expr": {"t": "text", "value": "eu"}}
     assert defaults["owner"] == {"hook": {"export": "acme.outside.owner"}}
-    db = await orm.connect(os.environ["ORM_DATABASE_URL"])
+    db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
     await db.drop_tables()
     await db.create_tables()
     try:
         notes = Note.objects.using(db)
 
-        async def fails(coro, *parts, errors=(orm.QueryError,)):
+        async def fails(coro, *parts, errors=(monorm.QueryError,)):
             try:
                 await (coro() if callable(coro) else coro)
             except errors as error:
@@ -41,7 +41,7 @@ async def run():
                 return
             raise AssertionError(f"expected an error with {parts}")
 
-        with orm.scope(shop=1, user="ann"):
+        with monorm.scope(shop=1, user="ann"):
             # `@@query.filter("positive", "id > 0")` hides this row; the guard filter and the package filter both apply.
             await notes.insert(id=-1, text="hidden", start=1, end=2, shop_id=1, secret="")
             assert await notes.count() == 0
@@ -95,7 +95,7 @@ async def run():
             assert [n.initials for n in await notes.update_many([{"id": 5, "first": "emmy", "last": "noether"}]).returning()] == ["EN"]
             await notes.filter(Note.id == 5).delete()
             # The bindings drop a computed field from the update input, so the call fails before the engine runs.
-            await fails(lambda: notes.filter(Note.id == 3).update(initials="ZZ"), "initials", errors=(orm.QueryError, TypeError))
+            await fails(lambda: notes.filter(Note.id == 3).update(initials="ZZ"), "initials", errors=(monorm.QueryError, TypeError))
             await fails(lambda: notes.filter(Note.initials == "AL").count(), "computed fields")
             await notes.filter(Note.id == 3).delete()
             # Hook 1 seals `secret` before the write; hook 5 reads it back as `secret_plain`.
@@ -106,17 +106,17 @@ async def run():
             # Another shop's row is outside the default filter `shop_id == scope.shop`.
             await notes.insert(id=2, text="other", start=1, end=2, shop_id=2, secret="")
             assert [n.id for n in await notes.all()] == [1]
-        with orm.scope(shop=2, user="bob"):
+        with monorm.scope(shop=2, user="bob"):
             assert [n.id for n in await notes.all()] == [2]
             assert await notes.filter(Note.text == "other").update(text="bulk") == 1
             assert (await notes.get(Note.id == 2)).updated_by == "bob"
             assert (await notes.get(Note.id == 2)).editor == "by:bob"
             assert (await notes.get(Note.id == 2)).touched_by == "bob"
-        with orm.scope(shop=1):
+        with monorm.scope(shop=1):
             await fails(notes.insert(id=8, text="x", start=1, end=2, secret=""), "user")
             assert await notes.filter(Note.id == 8).count() == 0
             await fails(row.update(text="again"), "no user in the request scope")
-        with orm.scope(shop=1, user="ann"):
+        with monorm.scope(shop=1, user="ann"):
             await row.delete()
             assert await notes.all() == []
             # The soft-deleted rows 3, 4 and 5 stay visible next to row 1.

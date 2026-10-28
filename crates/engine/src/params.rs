@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use sea_query::{ArrayType, Value};
 
 use crate::error::{Error, Result};
-use orm_core::ir::{ColType, ValueType};
+use monorm_core::ir::{ColType, ValueType};
 
 /// A binding's parameter list.
 pub trait Params {
@@ -69,12 +69,12 @@ impl Params for Scoped<'_> {
 }
 
 /// `update_many` filters: a list of expressions, or `{"filters": [...], "scope": {...}}`.
-pub fn scoped_filters(json: &str) -> Result<(Vec<orm_core::ir::Expr>, BTreeMap<String, usize>)> {
+pub fn scoped_filters(json: &str) -> Result<(Vec<monorm_core::ir::Expr>, BTreeMap<String, usize>)> {
     #[derive(serde::Deserialize)]
     #[serde(untagged)]
     enum Filters {
-        List(Vec<orm_core::ir::Expr>),
-        Scoped { filters: Vec<orm_core::ir::Expr>, scope: BTreeMap<String, usize> },
+        List(Vec<monorm_core::ir::Expr>),
+        Scoped { filters: Vec<monorm_core::ir::Expr>, scope: BTreeMap<String, usize> },
     }
     match serde_json::from_str(json).map_err(|e| Error::query(format!("invalid filter IR: {e}")))? {
         Filters::List(filters) => Ok((filters, BTreeMap::new())),

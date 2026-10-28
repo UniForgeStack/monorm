@@ -6,7 +6,7 @@ use crate::{
     query::{Erase, Tree},
     *,
 };
-use orm_core::ir::{self, Expr};
+use monorm_core::ir::{self, Expr};
 use std::sync::{
     atomic::{AtomicU64, Ordering as AtomicOrdering},
     Arc,
@@ -268,8 +268,8 @@ impl<M: Model, T: Codec + Send + 'static> ProjectionItem<M::Source> for ScalarSu
     }
     fn read(
         &self,
-        _schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        _schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
         col: usize,
     ) -> Result<T> {
@@ -284,8 +284,8 @@ impl<M: Model, T: Codec + Send + 'static> Projection<M::Source> for ScalarSubque
     }
     fn read(
         &self,
-        schema: &orm_core::schema::Schema,
-        rows: &orm_engine::exec::Selected,
+        schema: &monorm_core::schema::Schema,
+        rows: &monorm_engine::exec::Selected,
         row: usize,
     ) -> Result<Self::Row> {
         Ok((ProjectionItem::read(self, schema, rows, row, 0)?,))

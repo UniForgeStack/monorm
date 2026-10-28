@@ -1,10 +1,10 @@
-/** Model composition through the public API; needs the @orm/composition package. */
+/** Model composition through the public API; needs the @ufstack/monorm-composition package. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, IntegrityError, TransactionAborted, loads, Registry, scope, statementInspection, type InspectedStatement } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
-const enabled = hasExtension("orm.composition");
+const enabled = hasExtension("monorm.composition");
 const source = `
 model Person {
  id Int @id @default(autoincrement())
@@ -130,9 +130,9 @@ for (const provider of ["sqlite", "postgresql"]) {
 }
 
 for (const [attribute, extension] of [
-  ['@@locking.version', "orm.locking"],
-  ['@@soft_delete.deleted_at("deleted")', "orm.soft-delete"],
-  ['@@timestamps.updated_at("changed")', "orm.timestamps"],
+  ['@@locking.version', "monorm.locking"],
+  ['@@soft_delete.deleted_at("deleted")', "monorm.soft-delete"],
+  ['@@timestamps.updated_at("changed")', "monorm.timestamps"],
 ] as const) {
   test(`a role on a composed model is rejected (${extension})`, { skip: !enabled || !hasExtension(extension) }, () => {
     const roleSource = `datasource db {\n provider = "sqlite"\n}

@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-import orm_auth
-from orm_auth import authenticate, check_password, make_password, needs_update, sync_permissions
+import monorm_auth
+from monorm_auth import authenticate, check_password, make_password, needs_update, sync_permissions
 
 from auth_support import Auth
 
@@ -22,14 +22,14 @@ def django_hash(raw: str) -> str:
 
 def test_the_schema_copies_of_both_packages_match_the_source() -> None:
     source = APP.joinpath("schema.prisma").read_text()
-    assert APP.joinpath("python/orm_auth/schema.prisma").read_text() == source
+    assert APP.joinpath("python/monorm_auth/schema.prisma").read_text() == source
     assert APP.joinpath("typescript/schema.prisma").read_text() == source
 
 
 async def test_the_models_get_the_methods_and_the_query_set(auth: Auth) -> None:
-    assert isinstance(auth.User.objects, orm_auth.UserQueries)
+    assert isinstance(auth.User.objects, monorm_auth.UserQueries)
     users = await auth.seed()
-    assert isinstance(users["staff"], orm_auth.UserMethods)
+    assert isinstance(users["staff"], monorm_auth.UserMethods)
     assert auth.User.__name__ == auth.variant.model
 
 
@@ -57,10 +57,10 @@ async def test_check_password_with_update_rehashes_a_django_hash_but_not_a_wrong
 
 async def test_a_missing_user_still_costs_one_hash_check(auth: Auth, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[str] = []
-    real = orm_auth.auth.check_password
-    monkeypatch.setattr(orm_auth.auth, "check_password", lambda raw, encoded: seen.append(encoded) or real(raw, encoded))
+    real = monorm_auth.auth.check_password
+    monkeypatch.setattr(monorm_auth.auth, "check_password", lambda raw, encoded: seen.append(encoded) or real(raw, encoded))
     assert await authenticate("nobody", "s3cret", **auth.kw) is None
-    assert seen == [orm_auth.auth._DUMMY]
+    assert seen == [monorm_auth.auth._DUMMY]
 
 
 async def test_authenticate(auth: Auth) -> None:

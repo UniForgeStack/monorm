@@ -22,7 +22,7 @@ model BenchItem {
 
 
 def package(root, name):
-    path = Path(root) / "languages/python/orm"
+    path = Path(root) / "languages/python/monorm"
     spec = importlib.util.spec_from_file_location(name, path / "__init__.py", submodule_search_locations=[str(path)])
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -48,7 +48,7 @@ async def main():
     def write_label(side):
         return f"write{separator}{side}"
 
-    modules = [package(args.before, "orm_before"), package(args.after, "orm_after")]
+    modules = [package(args.before, "monorm_before"), package(args.after, "monorm_after")]
     source = SCHEMA.replace("BACKEND", "sqlite" if args.url.startswith("sqlite:") else "postgresql")
     dbs, models, registries = [], [], []
     for module in modules:

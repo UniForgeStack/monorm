@@ -1,8 +1,8 @@
 //! `@@timestamps.updated_at`: the model gets an `updated_at` field that the ORM sets on each
 //! update. Database mode adds a row trigger so other writers set it too.
-use orm_contracts::{dialect::Dialect, ir::{ColType, FieldIr, ModelIr, SchemaIr, TriggerIr}, tracking::{self, error, Tracked}, writes::{AssignValue, WriteAssignment, WriteKind}};
+use monorm_contracts::{dialect::Dialect, ir::{ColType, FieldIr, ModelIr, SchemaIr, TriggerIr}, tracking::{self, error, Tracked}, writes::{AssignValue, WriteAssignment, WriteKind}};
 
-const SOURCE: &str = "orm.timestamps";
+const SOURCE: &str = "monorm.timestamps";
 const TRACKED: Tracked = Tracked { attribute: "timestamps.updated_at", field: "updated_at" };
 
 /// Who keeps the column current for writers outside the ORM.
@@ -107,7 +107,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orm_contracts::writes::UpsertDefault;
+    use monorm_contracts::writes::UpsertDefault;
 
     /// A model with a declaration and without the field: the input of `add_fields`.
     fn declared(dialect: &str, positional: serde_json::Value, arguments: serde_json::Value, field: Option<&str>) -> SchemaIr {
@@ -126,20 +126,20 @@ mod tests {
     fn schema(dialect: &str, mode: Option<&str>) -> SchemaIr {
         let arguments = mode.map(|m| serde_json::json!({"mode": m})).unwrap_or_else(|| serde_json::json!({}));
         let mut ir = declared(dialect, serde_json::json!(["changed"]), arguments, None);
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         add_fields(&mut ir).unwrap();
         ir.behavior.storage = None;
         ir
     }
 
     fn prepared(ir: &mut SchemaIr) -> Result<(), String> {
-        orm_contracts::extension::capture_storage(ir)?;
+        monorm_contracts::extension::capture_storage(ir)?;
         prepare(ir)
     }
 
     fn added(positional: serde_json::Value) -> Result<SchemaIr, String> {
         let mut ir = declared("postgres", positional, serde_json::json!({}), None);
-        orm_contracts::extension::capture_storage(&mut ir)?;
+        monorm_contracts::extension::capture_storage(&mut ir)?;
         add_fields(&mut ir)?;
         Ok(ir)
     }
@@ -151,14 +151,14 @@ mod tests {
             let f = model.fields.last().unwrap();
             assert_eq!((f.name.as_str(), f.column.as_str(), f.ty, f.nullable, f.default_now), ("updated_at", "updated_at", ColType::DateTime, false, true));
         }
-        let effects = orm_contracts::extension::pass_effects(&declared("postgres", serde_json::json!([]), serde_json::json!({}), None), add_fields).unwrap();
+        let effects = monorm_contracts::extension::pass_effects(&declared("postgres", serde_json::json!([]), serde_json::json!({}), None), add_fields).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.storage", "models"]);
     }
 
     #[test]
     fn map_sets_the_column_of_the_updated_at_field() {
         let mut ir = declared("postgres", serde_json::json!([]), serde_json::json!({"map": "editedAt"}), None);
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         add_fields(&mut ir).unwrap();
         for model in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
             let f = model.fields.last().unwrap();
@@ -178,13 +178,13 @@ mod tests {
     fn upsert_pick_keeps_the_field_in_the_default_upsert_list() {
         for (arguments, expected) in [(serde_json::json!({}), UpsertDefault::Drop), (serde_json::json!({"upsert": "drop"}), UpsertDefault::Drop), (serde_json::json!({"upsert": "pick"}), UpsertDefault::Pick)] {
             let mut ir = declared("postgres", serde_json::json!(["changed"]), arguments, None);
-            orm_contracts::extension::capture_storage(&mut ir).unwrap();
+            monorm_contracts::extension::capture_storage(&mut ir).unwrap();
             add_fields(&mut ir).unwrap();
             prepare(&mut ir).unwrap();
             assert_eq!(ir.behavior.write_assignments[0].upsert, expected);
         }
         let mut ir = declared("postgres", serde_json::json!([]), serde_json::json!({"upsert": "merge"}), None);
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         add_fields(&mut ir).unwrap();
         assert!(prepare(&mut ir).unwrap_err().ends_with("upsert must be \"drop\" or \"pick\""));
     }
@@ -199,7 +199,7 @@ mod tests {
         ];
         for (field, arguments, line) in cases {
             let mut ir = declared("postgres", serde_json::json!([]), arguments, Some(field));
-            orm_contracts::extension::capture_storage(&mut ir).unwrap();
+            monorm_contracts::extension::capture_storage(&mut ir).unwrap();
             let err = add_fields(&mut ir).unwrap_err();
             assert_eq!(err, format!("schema.prisma:4:3: @timestamps.updated_at: a field attribute is no longer supported; delete the field Post.{field} and write {line} in the model block"));
         }
@@ -208,17 +208,17 @@ mod tests {
     #[test]
     fn a_field_with_the_same_name_is_an_error_that_names_both() {
         let mut ir = declared("postgres", serde_json::json!([]), serde_json::json!({}), None);
-        ir.models[0].fields.push(orm_contracts::ir::FieldIr::plain("updated_at", ColType::DateTime));
-        orm_contracts::extension::capture_storage(&mut ir).unwrap();
+        ir.models[0].fields.push(monorm_contracts::ir::FieldIr::plain("updated_at", ColType::DateTime));
+        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
         let err = add_fields(&mut ir).unwrap_err();
         assert_eq!(err, "schema.prisma:4:3: @timestamps.updated_at: adds the field Post.updated_at, which already exists; remove that field or name another field with @@timestamps.updated_at(\"other_name\")");
     }
 
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
-        let effects = orm_contracts::extension::pass_effects(&schema("postgres", None), prepare).unwrap();
+        let effects = monorm_contracts::extension::pass_effects(&schema("postgres", None), prepare).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.storage", "behavior.write_assignments", "models"]);
-        let effects = orm_contracts::extension::pass_effects(&schema("postgres", Some("application")), prepare).unwrap();
+        let effects = monorm_contracts::extension::pass_effects(&schema("postgres", Some("application")), prepare).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.write_assignments"]);
     }
 
@@ -256,7 +256,7 @@ mod tests {
         view.name = "PostView".into();
         if !keeps_field { view.fields.retain(|f| f.name != "changed"); }
         ir.models.push(view);
-        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
+        ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
         ir
     }
 
@@ -267,7 +267,7 @@ mod tests {
             prepared(&mut ir).unwrap();
             let a = &ir.behavior.write_assignments;
             assert_eq!(a.len(), 1);
-            assert_eq!((a[0].source.as_str(), a[0].model.as_str(), a[0].field.as_str(), a[0].value.clone(), a[0].upsert), ("orm.timestamps", "Post", "changed", AssignValue::Now, UpsertDefault::Drop));
+            assert_eq!((a[0].source.as_str(), a[0].model.as_str(), a[0].field.as_str(), a[0].value.clone(), a[0].upsert), ("monorm.timestamps", "Post", "changed", AssignValue::Now, UpsertDefault::Drop));
             assert_eq!(a[0].on, [WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite]);
         }
     }
@@ -292,7 +292,7 @@ mod tests {
             let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
             view.name = "PostView".into();
             ir.models.push(view);
-            ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
+            ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
             prepare(&mut ir).unwrap();
             prepare(&mut ir).unwrap();
             let models: Vec<_> = ir.behavior.write_assignments.iter().map(|a| a.model.as_str()).collect();
@@ -323,8 +323,8 @@ mod tests {
     /// The migration of the physical schema, as the host plans it.
     fn migration(ir: &SchemaIr) -> Vec<String> {
         let storage = serde_json::json!({"dialect": ir.dialect, "models": ir.behavior.storage.as_ref().unwrap().models});
-        let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap();
-        let plan = orm_core::migrate::plan(&schema, &Default::default()).unwrap();
+        let schema = monorm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap();
+        let plan = monorm_core::migrate::plan(&schema, &Default::default()).unwrap();
         plan.up.into_iter().map(|s| s.sql).collect()
     }
 
@@ -366,4 +366,4 @@ mod tests {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-orm_contracts::extension!(("orm.timestamps.fields", add_fields), ("orm.timestamps.prepare", prepare));
+monorm_contracts::extension!(("monorm.timestamps.fields", add_fields), ("monorm.timestamps.prepare", prepare));

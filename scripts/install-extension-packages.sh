@@ -13,11 +13,13 @@ if [ ! -x "$TSC" ]; then
   TSC=$tools/node_modules/.bin/tsc
 fi
 for extension in timestamps soft-delete locking inherit query-defaults generic proxy model-composition file-storage; do
-  cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-package -- package "$ROOT/extensions/$extension" --out "$OUT/$extension" --tsc "$TSC"
+  # A renamed package leaves its old wheel behind, and the install below globs every wheel.
+  rm -rf "$OUT/$extension"
+  cargo run -q --manifest-path "$ROOT/Cargo.toml" -p monorm-extension-package -- package "$ROOT/extensions/$extension" --out "$OUT/$extension" --tsc "$TSC"
 done
 uv pip install --python "$PY" "$OUT"/*/*.whl
-# The package directories import orm; resolve it through the checkout.
-mkdir -p "$ROOT/node_modules"
-ln -sfn ../languages/js "$ROOT/node_modules/orm"
+# The package directories import monorm; resolve it through the checkout.
+mkdir -p "$ROOT/node_modules/@ufstack"
+ln -sfn ../../languages/js "$ROOT/node_modules/@ufstack/monorm"
 (cd "$ROOT/languages/js" && npm install --no-audit --no-fund)
 (cd "$ROOT/apps/auth/typescript" && npm install --no-audit --no-fund)

@@ -105,7 +105,7 @@ test("a Generic field creates its pair, its index and the reverse field", async 
     assert.deepEqual(tag.fields.map((f) => [f.name, f.nullable ?? false, f.enum ?? null]),
       [["id", false, null], ["target_type", true, "ContentType"], ["target_id", true, null], ["note", false, null]]);
     assert.deepEqual(tag.indexes, [{ columns: [{ field: "target_type" }, { field: "target_id" }] }]);
-    assert.deepEqual((ir.behavior["extension_data"] as Record<string, { reverse: unknown }>)["orm.generic"]!.reverse, [{ model: "Post", name: "tags", source: "Tag", relation: "target" }]);
+    assert.deepEqual((ir.behavior["extension_data"] as Record<string, { reverse: unknown }>)["monorm.generic"]!.reverse, [{ model: "Post", name: "tags", source: "Tag", relation: "target" }]);
   } finally { rmSync(dir, { recursive: true }); }
 });
 

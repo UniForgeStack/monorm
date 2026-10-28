@@ -2,13 +2,13 @@
 
 import pytest
 
-import orm
+import monorm
 
 
 @pytest.fixture
 async def required_queries():
-    registry = orm.Registry()
-    Note = orm.loads(
+    registry = monorm.Registry()
+    Note = monorm.loads(
         """
         datasource db { provider = "sqlite" }
         model Note {
@@ -18,7 +18,7 @@ async def required_queries():
     """,
         registry=registry,
     )["Note"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         await Note.objects.using(db).insert_many([{"id": 1, "n": None}, {"id": 2, "n": 5}])
@@ -69,28 +69,28 @@ async def test_optional_and_required_selected_rows(required_queries):
     assert await empty.first() is None
     assert await empty.all() == []
     for read in [empty.require().get, empty.require().first, empty.require().all]:
-        with pytest.raises(orm.DoesNotExist):
+        with pytest.raises(monorm.DoesNotExist):
             await read()
-    with pytest.raises(orm.DoesNotExist):
+    with pytest.raises(monorm.DoesNotExist):
         await empty.require()
     assert await empty.get() is None
     for query in [qs, qs.require()]:
-        with pytest.raises(orm.MultipleObjectsReturned):
+        with pytest.raises(monorm.MultipleObjectsReturned):
             await query.get()
     assert await qs.require().get(Note.id == 1) == (None,)
     assert await qs.order_by(Note.id).require().first() == (None,)
     assert await qs.order_by(Note.id).require().all() == [(None,), (5,)]
     assert await Note.objects.using(db).require().filter(Note.id == 1).select(Note.n).get() == (None,)
     assert await qs.filter(Note.id == 1).require().scalar() is None
-    with pytest.raises(orm.DoesNotExist):
+    with pytest.raises(monorm.DoesNotExist):
         await empty.require().scalar()
-    with pytest.raises(orm.DoesNotExist):
+    with pytest.raises(monorm.DoesNotExist):
         await empty.require().scalars()
 
 
 async def test_required_prepared_queries(required_queries):
     db, Note = required_queries
-    qs = Note.objects.using(db).filter(Note.id == orm.param("id"))
+    qs = Note.objects.using(db).filter(Note.id == monorm.param("id"))
     optional = qs.prepare()
     assert await optional.get(id=-1) is None
     assert await optional.first(id=-1) is None

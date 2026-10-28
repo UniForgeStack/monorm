@@ -1,5 +1,5 @@
 {
-  "name": "orm",
+  "name": "@ufstack/monorm",
   "version": "0.1.0",
   "description": "TypeScript ORM with a Rust core: the same engine and schema as the Python package",
   "license": "MIT",
@@ -42,7 +42,7 @@
     }
   },
   "bin": {
-    "orm": "./dist/src/cli.js"
+    "monorm": "./dist/src/cli.js"
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
@@ -61,15 +61,15 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.9.0",
-    "@orm/timestamps": "file:../../target/extension-packages/timestamps/npm",
-    "@orm/soft-delete": "file:../../target/extension-packages/soft-delete/npm",
-    "@orm/locking": "file:../../target/extension-packages/locking/npm",
-    "@orm/inherit": "file:../../target/extension-packages/inherit/npm",
-    "@orm/query-defaults": "file:../../target/extension-packages/query-defaults/npm",
-    "@orm/generic": "file:../../target/extension-packages/generic/npm",
-    "@orm/proxy": "file:../../target/extension-packages/proxy/npm",
-    "@orm/composition": "file:../../target/extension-packages/model-composition/npm",
-    "@orm/file-storage": "file:../../target/extension-packages/file-storage/npm",
+    "@ufstack/monorm-timestamps": "file:../../target/extension-packages/timestamps/npm",
+    "@ufstack/monorm-soft-delete": "file:../../target/extension-packages/soft-delete/npm",
+    "@ufstack/monorm-locking": "file:../../target/extension-packages/locking/npm",
+    "@ufstack/monorm-inherit": "file:../../target/extension-packages/inherit/npm",
+    "@ufstack/monorm-query-defaults": "file:../../target/extension-packages/query-defaults/npm",
+    "@ufstack/monorm-generic": "file:../../target/extension-packages/generic/npm",
+    "@ufstack/monorm-proxy": "file:../../target/extension-packages/proxy/npm",
+    "@ufstack/monorm-composition": "file:../../target/extension-packages/model-composition/npm",
+    "@ufstack/monorm-file-storage": "file:../../target/extension-packages/file-storage/npm",
     "opendal": "^0.49.0"
   },
   "files": [
@@ -77,23 +77,23 @@
     "README.md"
   ],
   "peerDependencies": {
-    "@orm/native-postgres": "0.1.0",
-    "@orm/native-sqlite": "0.1.0",
-    "@orm/native-combined": "0.1.0",
-    "@orm/native-tooling": "0.1.0",
+    "@ufstack/monorm-native-postgres": "0.1.0",
+    "@ufstack/monorm-native-sqlite": "0.1.0",
+    "@ufstack/monorm-native-combined": "0.1.0",
+    "@ufstack/monorm-native-tooling": "0.1.0",
     "@opentelemetry/api": "^1.0.0"
   },
   "peerDependenciesMeta": {
-    "@orm/native-postgres": {
+    "@ufstack/monorm-native-postgres": {
       "optional": true
     },
-    "@orm/native-sqlite": {
+    "@ufstack/monorm-native-sqlite": {
       "optional": true
     },
-    "@orm/native-combined": {
+    "@ufstack/monorm-native-combined": {
       "optional": true
     },
-    "@orm/native-tooling": {
+    "@ufstack/monorm-native-tooling": {
       "optional": true
     },
     "@opentelemetry/api": {

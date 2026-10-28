@@ -4,7 +4,7 @@ import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Operator } from "opendal";
-import { CHUNK_SIZE, CapabilityError, Reference, Registry, SizeLimitError, StorageError, UploadError } from "@orm/file-storage";
+import { CHUNK_SIZE, CapabilityError, Reference, Registry, SizeLimitError, StorageError, UploadError } from "@ufstack/monorm-file-storage";
 
 async function collect(source: AsyncIterable<Uint8Array>): Promise<Buffer> {
   const parts: Uint8Array[] = []; for await (const part of source) parts.push(part); return Buffer.concat(parts);

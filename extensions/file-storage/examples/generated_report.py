@@ -1,6 +1,6 @@
 """A report producer independent of ORM models and SQL transactions."""
 
-from orm_file_storage import Reference, Registry
+from monorm_file_storage import Reference, Registry
 
 
 async def generate_report(registry: Registry) -> Reference:

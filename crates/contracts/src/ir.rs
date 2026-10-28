@@ -438,7 +438,7 @@ pub enum ClientDefaultIr {
     /// VALUES of each row that omits the field; the field takes no transform or validator.
     Expr(serde_json::Value),
     /// A query IR expression that a library hook (point 7) returns. The hook reads the request context, and the
-    /// engine calls it once for each insert statement. `orm generate` evaluates a hook that reads no context once
+    /// engine calls it once for each insert statement. `monorm generate` evaluates a hook that reads no context once
     /// and stores the result as `Expr`.
     Hook { export: String },
 }

@@ -1,6 +1,6 @@
 //! Result checks recorded by extension passes, inside existing planning/materialization.
 use crate::db::{Cell, DbResult, RowSet};
-use orm_core::{behavior::ResultShape, ir::ValueType, result_check::{Category, EnumScalar, PreparedChecks, PreparedField, Warning, Warnings}};
+use monorm_core::{behavior::ResultShape, ir::ValueType, result_check::{Category, EnumScalar, PreparedChecks, PreparedField, Warning, Warnings}};
 
 /// Check public instance columns only. An absent LEFT JOIN object is not a loaded
 /// null field and produces no warning. Row order/count/values remain untouched.

@@ -48,9 +48,9 @@ REPO = HERE.parents[2]
 
 def make(name: str) -> Any:
     if name.startswith("orm"):
-        from orm_contender import OrmContender
+        from monorm_contender import MonormContender
 
-        return OrmContender(name)
+        return MonormContender(name)
     if name.startswith("sqlalchemy"):
         from sqlalchemy_contender import SqlalchemyContender
 
@@ -176,7 +176,7 @@ def environment(infos: dict[str, dict[str, Any]], artifact: str | None, before: 
     conn = connect()
     pg = conn.execute("select version()").fetchone()[0]  # type: ignore[index]
     conn.close()
-    pkgs = {p: md.version(p) for p in ("orm", "django", "psycopg", "psycopg-binary", "psycopg-pool", "asgiref", "sqlalchemy", "asyncpg", "greenlet")}
+    pkgs = {p: md.version(p) for p in ("monorm", "django", "psycopg", "psycopg-binary", "psycopg-pool", "asgiref", "sqlalchemy", "asyncpg", "greenlet")}
     return {
         "date": dt.datetime.now(dt.UTC).isoformat(),
         "git_sha": subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip(),
@@ -188,7 +188,7 @@ def environment(infos: dict[str, dict[str, Any]], artifact: str | None, before: 
         "pool_size": POOL_SIZE,
         "uptime_before": before,
         "uptime_after": uptime(),
-        "orm_artifact": artifact,
+        "monorm_artifact": artifact,
         "warmup_calls": WARMUP_CALLS,
         "contenders": infos,
     } | extra

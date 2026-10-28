@@ -28,7 +28,7 @@ source = next(
     if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "SCHEMA" for t in n.targets)
 )
 fixture = root / "crates/extension-build/tests/fixtures/native"
-extension_manifest = tomllib.loads((fixture / "Cargo.toml").read_text())["package"]["metadata"]["orm-extension"]
+extension_manifest = tomllib.loads((fixture / "Cargo.toml").read_text())["package"]["metadata"]["monorm-extension"]
 target = root / "target/extension-proof"
 env = dict(os.environ, CARGO_TARGET_DIR=str(target), PYO3_PYTHON=sys.executable)
 metadata = {
@@ -45,8 +45,8 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
                 "binaries": {
                     name: {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                     for name, path in [
-                        ("python", workspace / "languages/python/orm/_native.so"),
-                        ("node", workspace / "languages/js/orm.node"),
+                        ("python", workspace / "languages/python/monorm/_native.so"),
+                        ("node", workspace / "languages/js/monorm.node"),
                     ]
                 },
                 "execution_sha256": hashlib.sha256((workspace / "engine-composition.rs").read_bytes()).hexdigest(),
@@ -85,7 +85,7 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
     start = time.perf_counter()
     if not (args.resume and extension.exists()):
         subprocess.run(
-            ["cargo", "run", "--offline", "--locked", "-q", "-p", "orm-extension-build", "--", str(config)],
+            ["cargo", "run", "--offline", "--locked", "-q", "-p", "monorm-extension-build", "--", str(config)],
             cwd=root,
             env=env,
             check=True,
@@ -97,8 +97,8 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
         # libraries were packaged. Rebuild that profile rather than treating
         # directory existence as a completed build.
         if (
-            not (extension / "languages/python/orm/_native.so").exists()
-            or not (extension / "languages/js/orm.node").exists()
+            not (extension / "languages/python/monorm/_native.so").exists()
+            or not (extension / "languages/js/monorm.node").exists()
         ):
             buildenv = dict(
                 env,
@@ -117,9 +117,9 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
                     "--manifest-path",
                     str(extension / "Cargo.toml"),
                     "-p",
-                    "orm-python",
+                    "monorm-python",
                     "-p",
-                    "orm-node",
+                    "monorm-node",
                 ],
                 env=buildenv,
                 check=True,
@@ -130,13 +130,13 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
         (workspace / "languages/python").mkdir(parents=True, exist_ok=True)
         (workspace / "languages/js").mkdir(parents=True, exist_ok=True)
         shutil.copytree(
-            root / "languages/python/orm",
-            workspace / "languages/python/orm",
+            root / "languages/python/monorm",
+            workspace / "languages/python/monorm",
             ignore=shutil.ignore_patterns("*.so", "__pycache__"),
             dirs_exist_ok=True,
         )
         suffix = "dylib" if sys.platform == "darwin" else "so"
-        py = workspace / "languages/python/orm/_native.so"
+        py = workspace / "languages/python/monorm/_native.so"
         if elapsed is not None:
             shutil.copy2(target / f"release/lib_native.{suffix}", py)
         shutil.copytree(root / "languages/js/dist", workspace / "languages/js/dist", dirs_exist_ok=True)
@@ -145,9 +145,9 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
             (workspace / "languages/js/node_modules").symlink_to(
                 root / "languages/js/node_modules", target_is_directory=True
             )
-        node = workspace / "languages/js/orm.node"
+        node = workspace / "languages/js/monorm.node"
         if elapsed is not None:
-            shutil.copy2(target / f"release/liborm_node.{suffix}", node)
+            shutil.copy2(target / f"release/libmonorm_node.{suffix}", node)
         return {
             "incremental_build_seconds": elapsed,
             "binaries": {
@@ -166,7 +166,7 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
             name
             for name in names
             if name == "node_modules"
-            or (Path(directory) == extension / "languages/python" and name == "orm")
+            or (Path(directory) == extension / "languages/python" and name == "monorm")
             or (Path(directory) == extension / "languages/js" and name != "native")
         ],
     )
@@ -194,9 +194,9 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
             "--manifest-path",
             str(builtin / "Cargo.toml"),
             "-p",
-            "orm-python",
+            "monorm-python",
             "-p",
-            "orm-node",
+            "monorm-node",
         ],
         env=buildenv,
         check=True,
@@ -236,7 +236,7 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
                     "--manifest-path",
                     str(workspace / "Cargo.toml"),
                     "-p",
-                    "orm-engine",
+                    "monorm-engine",
                     "--features",
                     features,
                     "--example",

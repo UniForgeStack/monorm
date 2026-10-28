@@ -19,7 +19,7 @@ try {
   assert.equal(await child.load(m.Child.parent), child);
   assert.equal(child.parent.id, 1);
   if (!expected) {
-    assert.ok(!Object.getOwnPropertySymbols(child).some((symbol) => symbol.description === "orm.referenceState"));
+    assert.ok(!Object.getOwnPropertySymbols(child).some((symbol) => symbol.description === "monorm.referenceState"));
     const joined = await m.Child.objects.using(db).load(m.Child.parent).get();
     assert.equal(joined.parent.id, 1);
     assert.throws(() => define({ models: [] }, { requiredCapabilities: ["reference-loading"] }), /rebuild/);

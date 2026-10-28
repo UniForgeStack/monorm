@@ -1,8 +1,8 @@
 /**
  * Finds the schema of each installed app that a schema imports with `import "app:<name>"`.
  *
- * Build time only (`orm generate`, `orm migrate`): generated models embed the compiled schema.
- * An app declares its schema in its `package.json`: `"orm": {"app": "./schema.prisma"}`.
+ * Build time only (`monorm generate`, `monorm migrate`): generated models embed the compiled schema.
+ * An app declares its schema in its `package.json`: `"monorm": {"app": "./schema.prisma"}`.
  * Resolution is the one of Node (`node_modules` from the importing schema's real directory), so an
  * app that only another app depends on resolves under npm, pnpm and bun.
  */
@@ -19,14 +19,14 @@ function schemaOf(name: string, from: string): string | undefined {
   for (let dir = from; ; dir = dirname(dir)) {
     const manifest = join(dir, "node_modules", name, "package.json");
     if (existsSync(manifest)) {
-      const orm = (JSON.parse(readFileSync(manifest, "utf8")) as { orm?: { app?: unknown } }).orm;
-      if (typeof orm?.app !== "string") {
+      const monorm = (JSON.parse(readFileSync(manifest, "utf8")) as { monorm?: { app?: unknown } }).monorm;
+      if (typeof monorm?.app !== "string") {
         throw new SchemaError(
-          `import "app:${name}": the \`${name}\` package declares no schema; its package.json needs "orm": {"app": "./schema.prisma"}`,
+          `import "app:${name}": the \`${name}\` package declares no schema; its package.json needs "monorm": {"app": "./schema.prisma"}`,
         );
       }
-      const file = resolve(dirname(manifest), orm.app);
-      if (!existsSync(file)) throw new SchemaError(`import "app:${name}": ${orm.app} of \`${name}\` is not a file (${file})`);
+      const file = resolve(dirname(manifest), monorm.app);
+      if (!existsSync(file)) throw new SchemaError(`import "app:${name}": ${monorm.app} of \`${name}\` is not a file (${file})`);
       // the real path: a pnpm symlink would hide the app's own node_modules siblings
       return realpathSync(file);
     }

@@ -3,7 +3,7 @@
 import asyncio
 import sys
 
-import orm
+import monorm
 
 SCHEMA = """
 model User {
@@ -24,9 +24,9 @@ model Post {
 async def main():
     url = sys.argv[1] if len(sys.argv) > 1 else "sqlite://:memory:"
     provider = "sqlite" if url.startswith("sqlite:") else "postgresql"
-    models = orm.loads(f'datasource db {{\n  provider = "{provider}"\n}}\n' + SCHEMA)
+    models = monorm.loads(f'datasource db {{\n  provider = "{provider}"\n}}\n' + SCHEMA)
     User, Post = models["User"], models["Post"]
-    db = await orm.connect(url)
+    db = await monorm.connect(url)
     try:
         await db.create_tables()
         alice = await User.objects.insert(name="Alice")

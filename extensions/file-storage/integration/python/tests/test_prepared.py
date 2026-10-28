@@ -1,9 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
-from orm.adapters import Pending
+from monorm.adapters import Pending
 from opendal import AsyncOperator
-from orm_file_storage import (
+from monorm_file_storage import (
     FileAdapter,
     FileField,
     FileFieldError,

@@ -1,0 +1,52 @@
+id = "monorm.soft-delete"
+version = "0.1.0"
+abi = "0.2"
+library = "monorm_soft_delete"
+schema_contract = "5.0"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+capabilities = ["schema-transformations", "physical-schema"]
+
+# Adds the field before the logical passes, so a proxy of the model copies it.
+[[passes]]
+id = "monorm.soft-delete.fields"
+phase = "declaration"
+after = ["monorm.inherit.expand"]
+effects = ["models.soft_delete", "storage.soft_delete"]
+
+[[passes]]
+id = "monorm.soft-delete.prepare"
+phase = "behavior"
+after = ["monorm.locking.prepare", "monorm.timestamps.prepare"]
+effects = ["behavior.read_defaults", "behavior.delete_rewrites", "storage.soft_delete_triggers"]
+
+# `@@soft_delete.deleted_at("deleted_at", map: "_deleted_at", mode: "application")`: adds the field.
+[[attributes]]
+name = "soft_delete.deleted_at"
+target = "model"
+[[attributes.positional]]
+kind = "string"
+[attributes.arguments.mode]
+kind = "string"
+[attributes.arguments.map]
+kind = "string"
+
+# The field form; the pass rejects it with the model attribute to write instead.
+[[attributes]]
+name = "soft_delete.deleted_at"
+target = "field"
+[attributes.arguments.mode]
+kind = "string"
+
+[python]
+source = "python/monorm_soft_delete"
+query_set = "SoftDeleteQuerySet"
+instance = "SoftDeleteInstance"
+bound_query_set = "SoftDeleteBoundQuerySet"
+
+[typescript]
+source = "typescript/src"
+query_set = "softDeleteQuerySet"
+bound_query_set = "softDeleteBoundQuerySet"
+instance = "SoftDeleteInstance"

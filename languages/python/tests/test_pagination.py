@@ -9,9 +9,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import orm
+import monorm
 from artifact_caps import has_extension
-from orm import QueryError, pagination
+from monorm import QueryError, pagination
 
 SCHEMA = """
 datasource db {
@@ -41,16 +41,16 @@ T0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def items(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     provider = "postgresql" if request.param == "postgres" else "sqlite"
-    models = orm.loads(SCHEMA.replace('"sqlite"', f'"{provider}"'), registry=registry)
+    models = monorm.loads(SCHEMA.replace('"sqlite"', f'"{provider}"'), registry=registry)
     Owner, Item = models["Owner"], models["Item"]
     url = (
         "sqlite://:memory:"
         if request.param == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     owner = await Owner.objects.using(db).insert(name="o")
@@ -121,7 +121,7 @@ async def test_page_shape_and_related_rows(items):
     page = await qs.load(Item.owner).load(Item.name).order_by(-Item.at).paginate(first=5)
     assert len(page.items) == 5 and page.has_next and not page.has_previous
     assert page.items[0].owner.name == "o"
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         page.items[0].at
     rest = await qs.load(Item.name).order_by(-Item.at).paginate(first=100, after=page.next_cursor)
     assert len(rest.items) == 18 and not rest.has_next and rest.has_previous
@@ -247,15 +247,15 @@ model Coded {
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_a_nullable_unique_order_gets_the_primary_key(dialect):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     provider = "postgresql" if dialect == "postgres" else "sqlite"
-    Coded = orm.loads(f'datasource db {{ provider = "{provider}" }}\n' + NULLABLE_UNIQUE, registry=registry)["Coded"]
+    Coded = monorm.loads(f'datasource db {{ provider = "{provider}" }}\n' + NULLABLE_UNIQUE, registry=registry)["Coded"]
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
@@ -273,9 +273,9 @@ async def postgres():
     url = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
     async def open(source):
-        registry = orm.Registry()
-        models = orm.loads(source, registry=registry)
-        db = await orm.connect(url, registry=registry, default=False)
+        registry = monorm.Registry()
+        models = monorm.loads(source, registry=registry)
+        db = await monorm.connect(url, registry=registry, default=False)
         await db.drop_tables()
         await db.create_tables()
         opened.append(db)
@@ -300,17 +300,17 @@ async def test_a_char_order_column(postgres):
 
 async def test_a_char_column_from_ir_without_write_sql():
     """A generated module embeds compiled IR; its `char(n)` column has no `write_sql`."""
-    source = orm.Registry()
-    orm.loads(
+    source = monorm.Registry()
+    monorm.loads(
         'datasource db {\n  provider = "postgresql"\n}\nmodel Padded {\n  id Int @id\n  k String @db.Char(4)\n  @@map("page07_padded_ir")\n}',
         registry=source,
     )
     ir = source.ir()
     for f in ir["models"][0]["fields"]:
         f.pop("write_sql", None)
-    registry = orm.Registry()
-    Padded = orm.define(ir, registry=registry)["Padded"]
-    db = await orm.connect(
+    registry = monorm.Registry()
+    Padded = monorm.define(ir, registry=registry)["Padded"]
+    db = await monorm.connect(
         os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test"),
         registry=registry,
         default=False,
@@ -362,7 +362,7 @@ model Named {
 """
 
 
-@pytest.mark.skipif(not has_extension("orm.proxy"), reason="requires the orm-proxy package")
+@pytest.mark.skipif(not has_extension("monorm.proxy"), reason="requires the monorm-proxy package")
 async def test_a_proxy_narrowed_order_column(postgres):
     models, db = await postgres(PROXY)
     User, Named = models["User"], models["Named"]

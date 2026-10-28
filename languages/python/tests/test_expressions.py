@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-import orm
-from orm import QueryError
+import monorm
+from monorm import QueryError
 
 SOURCE = """
 model Doc {
@@ -20,16 +20,16 @@ URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@loca
 
 
 def load(source: str = SOURCE):
-    registry = orm.Registry()
-    return registry, orm.loads(source, registry=registry)["Doc"]
+    registry = monorm.Registry()
+    return registry, monorm.loads(source, registry=registry)["Doc"]
 
 
 @pytest.fixture
 async def docs():
     registry, Doc = load()
     try:
-        db = await orm.connect(URL, registry=registry, default=False, max_connections=2)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(URL, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     await db.drop_tables()
     await db.create_tables()
@@ -129,9 +129,9 @@ async def test_json_methods_refuse_none(docs):
 
 async def test_json_contains_prepared_param(docs):
     Doc, objects = docs
-    contains = objects.filter(Doc.meta.json_contains(orm.param("v"))).order_by(Doc.title).prepare()
+    contains = objects.filter(Doc.meta.json_contains(monorm.param("v"))).order_by(Doc.title).prepare()
     assert [d.title for d in await contains(v={"kind": "post"})] == ["a", "c"]
-    contained = objects.filter(Doc.meta.json_contained_by(orm.param("v"))).prepare()
+    contained = objects.filter(Doc.meta.json_contained_by(monorm.param("v"))).prepare()
     assert [
         d.title for d in await contained(v={"kind": "page", "n": 1, "author": {"name": "Bob"}, "tags": ["y"], "z": 0})
     ] == ["b"]
@@ -151,7 +151,7 @@ async def test_json_on_sqlite_is_an_error():
     registry, Doc = load(
         'datasource db { provider = "sqlite" }\n' + SOURCE.replace("  tags  String[] @default([])\n", "")
     )
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         for cond in (Doc.meta["a"] == 1, Doc.meta.json_contains({"a": 1}), Doc.meta.has_key("a")):
@@ -174,12 +174,12 @@ model Article {
 
 
 def load_articles(source: str = ARTICLES):
-    registry = orm.Registry()
-    return registry, orm.loads(source, registry=registry)["Article"]
+    registry = monorm.Registry()
+    return registry, monorm.loads(source, registry=registry)["Article"]
 
 
 def test_full_text_search_sql():
-    from orm import func
+    from monorm import func
 
     registry, Article = load_articles()
     vector = func.to_tsvector("english", Article.body)
@@ -210,7 +210,7 @@ def test_full_text_search_sql():
 
 
 def test_full_text_search_config_names():
-    from orm import func
+    from monorm import func
 
     registry, Article = load_articles()
     assert (
@@ -222,12 +222,12 @@ def test_full_text_search_config_names():
 
 
 async def test_matches_prepared_param():
-    from orm import func
+    from monorm import func
 
     registry, Article = load_articles()
     try:
-        db = await orm.connect(URL, registry=registry, default=False, max_connections=2)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(URL, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     try:
         await db.drop_tables()
@@ -237,7 +237,7 @@ async def test_matches_prepared_param():
             [{"body": "The quick brown fox"}, {"body": "A lazy dog sleeps"}, {"body": "Dogs are running"}]
         )
         vector = func.to_tsvector("english", Article.body)
-        found = objects.filter(vector.matches(orm.param("q"))).order_by(Article.id).prepare()
+        found = objects.filter(vector.matches(monorm.param("q"))).order_by(Article.id).prepare()
         assert [a.id for a in await found(q="dogs")] == [2, 3]
         assert [a.id for a in await found(q="fox")] == [1]
     finally:
@@ -246,12 +246,12 @@ async def test_matches_prepared_param():
 
 
 async def test_matches_forms():
-    from orm import func
+    from monorm import func
 
     registry, Article = load_articles()
     try:
-        db = await orm.connect(URL, registry=registry, default=False, max_connections=2)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(URL, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     try:
         await db.drop_tables()
@@ -272,12 +272,12 @@ async def test_matches_forms():
 
 
 async def test_full_text_search():
-    from orm import func
+    from monorm import func
 
     registry, Article = load_articles()
     try:
-        db = await orm.connect(URL, registry=registry, default=False, max_connections=2)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(URL, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     try:
         await db.drop_tables()
@@ -313,7 +313,7 @@ async def test_full_text_search():
 
 
 async def test_full_text_search_on_sqlite_is_an_error():
-    from orm import func
+    from monorm import func
 
     registry, Article = load_articles(
         'datasource db { provider = "sqlite" }\n'
@@ -321,7 +321,7 @@ async def test_full_text_search_on_sqlite_is_an_error():
             '  @@index([sql("to_tsvector(\'english\', body)")], type: Gin, name: "articles_body_search")\n', ""
         )
     )
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         with pytest.raises(QueryError, match="sqlite does not support full-text search"):

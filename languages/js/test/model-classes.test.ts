@@ -29,7 +29,7 @@ function typeErrors(dir: string): { code: number; text: string }[] {
   const options: ts.CompilerOptions = {
     strict: true, noEmit: true, skipLibCheck: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler, baseUrl: dir,
-    paths: { orm: [runtimeSource()] },
+    paths: { "@ufstack/monorm": [runtimeSource()] },
   };
   const files = ["models", "methods", "queries"].map((name) => join(dir, `${name}.ts`));
   return ts.getPreEmitDiagnostics(ts.createProgram(files, options))
@@ -38,7 +38,7 @@ function typeErrors(dir: string): { code: number; text: string }[] {
 }
 
 function directory(t: TestContext): string {
-  const dir = mkdtempSync(join(tmpdir(), "orm-model-classes-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-model-classes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -52,10 +52,10 @@ function schemaIn(dir: string, name?: string): string {
 }
 
 test("the module lookup reads the name of the nearest package.json of an installed schema", (t) => {
-  const schema = schemaIn(join(directory(t), "node_modules", "orm-auth", "src"), "orm-auth");
+  const schema = schemaIn(join(directory(t), "node_modules", "@ufstack/monorm-auth", "src"), "@ufstack/monorm-auth");
   const generated = native().generateTypescript(schema);
-  assert.ok(generated.includes('import * as _q0 from "orm-auth/queries.js";'), generated);
-  assert.ok(generated.includes('import * as _m0 from "orm-auth/methods.js";'));
+  assert.ok(generated.includes('import * as _q0 from "@ufstack/monorm-auth/queries.js";'), generated);
+  assert.ok(generated.includes('import * as _m0 from "@ufstack/monorm-auth/methods.js";'));
   assert.ok(generated.includes("useQuerySet(User, () => _q0.UserQueries);"));
   assert.ok(generated.includes("useModelMethods(User, () => _m0.UserMethods);"));
 });
@@ -86,10 +86,10 @@ test("an installed package without a name asks for the full path", (t) => {
 
 test("a consumer target replaces the schema class", async (t) => {
   const dir = directory(t);
-  const schema = schemaIn(join(dir, "src"), "orm-auth");
+  const schema = schemaIn(join(dir, "src"), "@ufstack/monorm-auth");
   const generated = native().generateTypescript(schema, null, { User: "./mine.js#MyQueries" }, { User: "./mine.js#MyMethods" });
   assert.ok(generated.includes("_q0.MyQueries") && generated.includes("_m0.MyMethods"), generated);
-  assert.ok(!generated.includes("orm-auth/"));
+  assert.ok(!generated.includes("@ufstack/monorm-auth/"));
   const output = join(dir, "src", "out.ts");
   const args = ["--schema", schema, "generate", "typescript", "-o", output];
   assert.equal(await native().cli([...args, "--model-methods", "User=./mine.js#MyMethods"]), 0);
@@ -101,7 +101,7 @@ test("a consumer target replaces the schema class", async (t) => {
 // the strict-mode program takes seconds, and Bun times a test out after 5 s
 test("the methods module may import the models module (import cycle)", { timeout: 120_000 }, async (t) => {
   const dir = directory(t);
-  const schema = schemaIn(dir, "orm-auth");
+  const schema = schemaIn(dir, "@ufstack/monorm-auth");
   const methodsSource = [
     'import type { User } from "./models.js";',
     "export class UserMethods {",
@@ -110,7 +110,7 @@ test("the methods module may import the models module (import cycle)", { timeout
   ].join("\n");
   writeFileSync(join(dir, "methods.ts"), methodsSource);
   writeFileSync(join(dir, "queries.ts"), [
-    'import { QuerySet } from "orm";',
+    'import { QuerySet } from "@ufstack/monorm";',
     'import type { User } from "./models.js";',
     "export class UserQueries extends QuerySet<any> { static readonly model?: typeof User; }",
   ].join("\n"));
@@ -122,7 +122,7 @@ test("the methods module may import the models module (import cycle)", { timeout
   writeFileSync(join(dir, "methods.ts"), methodsSource);
   assert.equal(await native().cli(["--schema", schema, "generate", "typescript", "-o", join(dir, "models.ts"), "--import", runtime]), 0);
   for (const name of ["models", "methods", "queries"]) {
-    let source = readFileSync(join(dir, `${name}.ts`), "utf8").replace('from "orm"', `from "${runtime}"`);
+    let source = readFileSync(join(dir, `${name}.ts`), "utf8").replace('from "@ufstack/monorm"', `from "${runtime}"`);
     // Bun runs every test file in one process, so the default registry already holds other schemas.
     if (name === "models") source = `import { Registry as _R } from "${runtime}";\n${source.replace("define(SCHEMA, {", "define(SCHEMA, { registry: new _R(),")}`;
     writeFileSync(join(dir, `${name}.js`), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);

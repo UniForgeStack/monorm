@@ -156,7 +156,11 @@ def test_protected_names_stay(repo: Path) -> None:
 
 def test_range_miss_stops_before_any_write(repo: Path, tmp_path: Path) -> None:
     rules = tmp_path / "narrow.toml"
-    rules.write_text((FIXTURES / "rules.toml").read_text().replace("expect = [2, 2]", "expect = [9, 9]", 1))
+    rules.write_text(
+        (FIXTURES / "rules.toml")
+        .read_text()
+        .replace('expect = [2, 2]\n\n[[rule]]\nid = "js-import', 'expect = [9, 9]\n\n[[rule]]\nid = "js-import', 1)
+    )
     before = snapshot(repo)
     code, lines = run(repo, "apply", rules=rules)
     assert code == 1
@@ -173,6 +177,53 @@ def test_dry_run_reports_and_writes_nothing(repo: Path) -> None:
     assert any(line.startswith("  npm-scope: 2 in 2 files") for line in lines)
     assert "uncovered hits: 0" in lines
     assert snapshot(repo) == before
+
+
+def test_dry_run_fails_on_an_uncovered_hit(repo: Path) -> None:
+    (repo / "crates/engine/src/extra.rs").write_text("use ORM_NEW_FLAG;\n")
+    sh(repo, "git", "add", "-A")
+    code, lines = run(repo, "dry-run")
+    assert code == 1
+    assert "uncovered hits: 1" in lines
+
+
+def test_env_rule_outside_its_range_stops_the_apply(repo: Path, tmp_path: Path) -> None:
+    rules = tmp_path / "env.toml"
+    rules.write_text(
+        (FIXTURES / "rules.toml")
+        .read_text()
+        .replace("expect = [2, 2]\n\n[[env_rename]]", "expect = [9, 9]\n\n[[env_rename]]", 1)
+    )
+    code, lines = run(repo, "apply", rules=rules)
+    assert code == 1
+    assert any(line.startswith("error: rule env-ORM_DATABASE_URL: 2 matches, expected 9..9") for line in lines)
+
+
+def test_allow_entry_does_not_hide_another_name_on_the_line(repo: Path) -> None:
+    assert run(repo, "apply")[0] == 0
+    (repo / "crates/engine/src/extra.rs").write_text("let a = (ORM_TEST_DATABASE_URL, orm_core);\n")
+    sh(repo, "git", "add", "-A")
+    code, lines = run(repo, "check")
+    assert code == 1
+    assert any(line.startswith("crates/engine/src/extra.rs:1:") for line in lines)
+    (repo / "crates/engine/src/extra.rs").write_text("let a = ORM_TEST_DATABASE_URL;\n")
+    assert run(repo, "check")[0] == 0
+
+
+def test_guard_pattern_exclude(repo: Path, tmp_path: Path) -> None:
+    allow = tmp_path / "allow.toml"
+    allow.write_text(
+        (FIXTURES / "allow.toml").read_text()
+        + '\n[[guard]]\nid = "bare"\nfiles = ["**"]\nexclude = ["**/*.md"]\npattern = "orm package"\n'
+    )
+    assert run(repo, "apply")[0] == 0
+    (repo / "docs/prose.md").write_text("The orm package.\n")
+    sh(repo, "git", "add", "-A")
+    assert run(repo, "check", allow=allow)[0] == 0
+    (repo / "crates/engine/src/extra.rs").write_text("// the orm package\n")
+    sh(repo, "git", "add", "-A")
+    code, lines = run(repo, "check", allow=allow)
+    assert code == 1 and len(lines) == 1
 
 
 def test_move_onto_existing_target_is_refused(repo: Path) -> None:

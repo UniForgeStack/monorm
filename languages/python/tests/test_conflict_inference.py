@@ -2,15 +2,15 @@
 
 import pytest
 
-import orm
+import monorm
 from conftest import DATABASE_URL
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])
 async def inference(request):
     provider = request.param
-    registry = orm.Registry()
-    models = orm.loads(
+    registry = monorm.Registry()
+    models = monorm.loads(
         f'datasource db {{ provider = "{provider}" }}' + """
         model Mixed {
           id BigInt @id @default(autoincrement())
@@ -39,7 +39,7 @@ async def inference(request):
         """,
         registry=registry,
     )
-    db = await orm.connect("sqlite://:memory:" if provider == "sqlite" else DATABASE_URL, registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:" if provider == "sqlite" else DATABASE_URL, registry=registry, default=False)
     try:
         await db.create_tables()
         events = []
@@ -80,9 +80,9 @@ async def test_inference_two_partial_indexes_raise(inference):
     Partial = models["Partial"]
     rows = Partial.objects.using(db)
     message = "matches 2 unique indexes of Partial: partial_active, partial_shown"
-    with pytest.raises(orm.QueryError, match=message):
+    with pytest.raises(monorm.QueryError, match=message):
         await rows.insert(slug="a").on_conflict(Partial.slug, update=False)
-    with pytest.raises(orm.QueryError, match=message):
+    with pytest.raises(monorm.QueryError, match=message):
         await rows.get_or_insert(slug="a")
     assert not any("INSERT" in e.sql for e in events)
     assert await rows.count() == 0

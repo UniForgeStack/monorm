@@ -24,14 +24,14 @@ import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
 import type { InstanceLoaded, LoadItem, LockOptions, ManyRelatedSet, QuerySet, QuerySetOf, RelatedSet } from "./query.js";
 
 /** Where an instance keeps its loaded relations. */
-export const RELATED: unique symbol = Symbol("orm.related");
+export const RELATED: unique symbol = Symbol("monorm.related");
 /** The database an instance was read from (`using(db)`), which it writes back to. */
-export const DB: unique symbol = Symbol("orm.db");
+export const DB: unique symbol = Symbol("monorm.db");
 /** Hidden values of a partial instance (identity, relation keys) that adapters read but ordinary property access does not show. */
-export const INTERNAL: unique symbol = Symbol.for("orm.internal");
+export const INTERNAL: unique symbol = Symbol.for("monorm.internal");
 // The native artifact is fixed for the process; read its capabilities once.
 const capabilities: readonly string[] = (JSON.parse(native().nativeArtifact()) as { capabilities: string[] }).capabilities;
-// Adapter selection happens once. The import is static: a top-level await would stop a synchronous require() of any package that imports `orm`.
+// Adapter selection happens once. The import is static: a top-level await would stop a synchronous require() of any package that imports `monorm`.
 const referenceAdapter = capabilities.includes("reference-loading") ? references : undefined;
 
 export type IRField = {
@@ -995,7 +995,7 @@ function detached<T>(value: T): T {
 export const registry = new Registry();
 
 /**
- * Builds the models of a compiled schema (the JSON IR `orm compile` and {@link load}
+ * Builds the models of a compiled schema (the JSON IR `monorm compile` and {@link load}
  * produce). Generated `models.ts` modules call this and type the result.
  */
 export function define(

@@ -1,12 +1,12 @@
-"""Model composition through the public API; needs the orm-composition package."""
+"""Model composition through the public API; needs the monorm-composition package."""
 
 import os
 
 import pytest
-import orm
+import monorm
 from artifact_caps import has_extension
 
-pytestmark = pytest.mark.skipif(not has_extension("orm.composition"), reason="requires the orm.composition package")
+pytestmark = pytest.mark.skipif(not has_extension("monorm.composition"), reason="requires the monorm.composition package")
 
 SOURCE = """
 model Person {
@@ -37,10 +37,10 @@ async def test_composed_create_attach_update_delete(provider):
     url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
     if not url:
         pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
-    registry = orm.Registry()
-    models = orm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
     Person, Employee, Manager, Customer = (models[k] for k in ("Person", "Employee", "Manager", "Customer"))
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
@@ -48,7 +48,7 @@ async def test_composed_create_attach_update_delete(provider):
         result = insert.inspect()
         assert result.statement_count == 4  # three owners and the logical identity read
         assert not result.has_batching
-        assert result.statements[-1] == orm.StatementInspection(joins_count=1, scalar_correlated=2)
+        assert result.statements[-1] == monorm.StatementInspection(joins_count=1, scalar_correlated=2)
         alice = await insert
         assert (alice.name, alice.salary, alice.level) == ("Alice", 20, 1)
         counts = [await m.objects.using(db).count() for m in (Person, Employee, Manager)]
@@ -57,16 +57,16 @@ async def test_composed_create_attach_update_delete(provider):
         # One person is an Employee and a Customer at the same time.
         customer = await Customer.objects.using(db).attach(alice.id, {"points": 5})
         assert (customer.id, customer.name, customer.points) == (alice.id, "Alice", 5)
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Customer.objects.using(db).attach(alice.id, {"points": 6})
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Customer.objects.using(db).attach(alice.id + 100, {"points": 6})
         assert await Customer.objects.using(db).count() == 1
 
         # A failed leaf insert rolls back its root and middle rows.
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Manager.objects.using(db).insert(name="Bob", salary=10, level=0)
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Manager.objects.using(db).insert(name="BADROOT", salary=10, level=1)
         assert await Person.objects.using(db).count() == 1
 
@@ -100,28 +100,28 @@ async def test_a_failed_composed_insert_marks_the_enclosing_transaction(provider
     url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
     if not url:
         pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
-    registry = orm.Registry()
-    models = orm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
     Person, Manager = models["Person"], models["Manager"]
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
         bad = {"name": "Bob", "salary": 10, "level": 0}
         # Outside a transaction the insert is atomic: its root row rolls back.
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             await Manager.objects.using(db).insert(**bad)
         assert await Person.objects.using(db).count() == 0
         # Inside one it opens no savepoint: the failure marks the transaction.
-        with pytest.raises(orm.TransactionAborted) as e:
+        with pytest.raises(monorm.TransactionAborted) as e:
             async with db.transaction():
-                with pytest.raises(orm.IntegrityError):
+                with pytest.raises(monorm.IntegrityError):
                     await Manager.objects.using(db).insert(**bad)
-        assert isinstance(e.value.__cause__, orm.IntegrityError)
+        assert isinstance(e.value.__cause__, monorm.IntegrityError)
         assert await Person.objects.using(db).count() == 0
         # A nested transaction() recovers.
         async with db.transaction():
-            with pytest.raises(orm.IntegrityError):
+            with pytest.raises(monorm.IntegrityError):
                 async with db.transaction():
                     await Manager.objects.using(db).insert(**bad)
             await Manager.objects.using(db).insert(name="Ok", salary=1, level=1)
@@ -147,30 +147,30 @@ model Employee {
 
 
 @pytest.mark.skipif(
-    not has_extension("orm.query-defaults"),
-    reason="requires the orm.query-defaults package",
+    not has_extension("monorm.query-defaults"),
+    reason="requires the monorm.query-defaults package",
 )
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 async def test_composed_writes_read_the_scope(provider):
     url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
     if not url:
         pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
-    registry = orm.Registry()
-    models = orm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SCOPED, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SCOPED, registry=registry)
     Employee = models["Employee"]
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     try:
         employees = Employee.objects.using(db)
-        with orm.scope(shop=1):
+        with monorm.scope(shop=1):
             ann = await employees.insert(name="Ann", shop_id=1)
             assert (ann.name, ann.shop_id) == ("Ann", 1)
-        with orm.scope(shop=2):
+        with monorm.scope(shop=2):
             await employees.insert(name="Bob", shop_id=2)
             # Inserts do not read the scope, and the identity read skips the filter.
             assert (await employees.insert(name="Cid", shop_id=1)).name == "Cid"
-        with orm.scope(shop=1):
+        with monorm.scope(shop=1):
             assert await employees.filter(Employee.name == "Ann").update(name="Ann 2") == 1
             assert await employees.filter(Employee.name == "Bob").delete() == 0
         assert await employees.without_defaults().filter(Employee.name == "Bob").update(name="Bob 2") == 1
@@ -183,9 +183,9 @@ async def test_composed_writes_read_the_scope(provider):
 @pytest.mark.parametrize(
     "attribute,extension",
     [
-        ('@@locking.version', "orm.locking"),
-        ('@@soft_delete.deleted_at("deleted")', "orm.soft-delete"),
-        ('@@timestamps.updated_at("changed")', "orm.timestamps"),
+        ('@@locking.version', "monorm.locking"),
+        ('@@soft_delete.deleted_at("deleted")', "monorm.soft-delete"),
+        ('@@timestamps.updated_at("changed")', "monorm.timestamps"),
     ],
 )
 def test_a_tracking_attribute_on_a_composed_model_is_rejected(attribute, extension):
@@ -205,7 +205,7 @@ model Employee {{
 }}
 """
     with pytest.raises(Exception, match="not supported in a multi-table model.s ownership chain"):
-        orm.loads('datasource db {\n provider = "sqlite"\n}\n' + source, registry=orm.Registry())
+        monorm.loads('datasource db {\n provider = "sqlite"\n}\n' + source, registry=monorm.Registry())
 
 
 COMPUTED = """
@@ -231,13 +231,13 @@ model Staff {
 
 @pytest.mark.skipif(not has_extension("acme.outside"), reason="requires the acme.outside test extension")
 async def test_a_composed_write_returns_the_computed_field():
-    registry = orm.Registry()
-    models = orm.loads('datasource db {\n provider = "sqlite"\n}\n' + COMPUTED, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads('datasource db {\n provider = "sqlite"\n}\n' + COMPUTED, registry=registry)
     Staff = models["Staff"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     try:
-        with orm.scope(shop=1, user="ann"):
+        with monorm.scope(shop=1, user="ann"):
             row = await Staff.objects.using(db).insert(name="Ada", text="t", start=1, end=2, first="grace", last="hopper")
             assert row.initials == "GH"
             updated = await Staff.objects.using(db).filter(Staff.id == row.id).update(first="mary", last="shelley").returning()

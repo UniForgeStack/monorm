@@ -8,7 +8,7 @@
 # a quiet machine before every round, and rotates the contender order every round.
 # The Rust slot runs only when bench/compare/rust exists, and no runner for it exists yet, so it is skipped.
 # Builds go to bench/compare/build/ (git-ignored): a venv, a Node addon and the `all` extension artifact (the tooling profile plus the extension packages).
-# The default `.venv` and languages/js/orm.node are never touched.
+# The default `.venv` and languages/js/monorm.node are never touched.
 #
 #   --ignore-load   run although the 1-minute load is above 2 (no wait, no per-round wait). Pipeline smoke only: the numbers are not valid.
 #   --fast-build    keep the CARGO_PROFILE_RELEASE_* overrides of the environment (no fat LTO). Smoke only.
@@ -93,14 +93,14 @@ build_python() {
   rm -rf "$BUILD/wheels" && mkdir -p "$BUILD/wheels"
   # The default profile of the shipped wheel: postgres, release.
   (cd "$ROOT/languages/python/packaging/postgres" && "$VENV/bin/maturin" build --release -q -i "$PY" -o "$BUILD/wheels")
-  uv pip install -q --python "$PY" --force-reinstall --no-deps "$BUILD"/wheels/orm_native_postgres-*.whl
+  uv pip install -q --python "$PY" --force-reinstall --no-deps "$BUILD"/wheels/monorm_native_postgres-*.whl
   uv pip install -q --python "$PY" --force-reinstall --no-deps "$ROOT"
 }
 
 build_node() {
   (cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s && npm run -s build)
-  (cd "$ROOT" && cargo build -q --release -p orm-node --no-default-features --features profile-postgres)
-  cp "$CARGO_TARGET_DIR/release/liborm_node.$DYLIB" "$BUILD/orm.node"
+  (cd "$ROOT" && cargo build -q --release -p monorm-node --no-default-features --features profile-postgres)
+  cp "$CARGO_TARGET_DIR/release/libmonorm_node.$DYLIB" "$BUILD/monorm.node"
   (cd "$HERE/js" && npm install --no-audit --no-fund -s && node make-prisma-schema.mjs && npx prisma generate >/dev/null)
 }
 
@@ -112,10 +112,10 @@ build_all() {
   uv pip install -q --python "$venv/bin/python" maturin==1.15.0 "psycopg[binary]==3.3.6" psycopg-pool==3.3.3 asgiref==3.12.1
   rm -rf "$ALL/wheels" && mkdir -p "$ALL/wheels"
   (cd "$ROOT/languages/python/packaging/tooling" && "$venv/bin/maturin" build --release -q -i "$venv/bin/python" -o "$ALL/wheels")
-  uv pip install -q --python "$venv/bin/python" --no-deps "$ALL"/wheels/orm_native_tooling-*.whl "$ROOT"
+  uv pip install -q --python "$venv/bin/python" --no-deps "$ALL"/wheels/monorm_native_tooling-*.whl "$ROOT"
   ORM_PACKAGE_PYTHON=$venv/bin/python "$ROOT/scripts/install-extension-packages.sh"
-  (cd "$ROOT" && cargo build -q --release -p orm-node --no-default-features --features profile-tooling)
-  cp "$CARGO_TARGET_DIR/release/liborm_node.$DYLIB" "$ALL/orm.node"
+  (cd "$ROOT" && cargo build -q --release -p monorm-node --no-default-features --features profile-tooling)
+  cp "$CARGO_TARGET_DIR/release/libmonorm_node.$DYLIB" "$ALL/monorm.node"
 }
 
 if [ "$SKIP_BUILD" = 0 ]; then
@@ -123,9 +123,9 @@ if [ "$SKIP_BUILD" = 0 ]; then
   timed build-node-addon build_node
   [ "$BUILD_ALL" = 0 ] || timed build-all-artifact build_all
 fi
-[ -x "$PY" ] && [ -f "$BUILD/orm.node" ] || { echo "no build in $BUILD; run without --skip-build" >&2; exit 1; }
+[ -x "$PY" ] && [ -f "$BUILD/monorm.node" ] || { echo "no build in $BUILD; run without --skip-build" >&2; exit 1; }
 ARTIFACT=()
-if [ "$BUILD_ALL" = 1 ] && [ -f "$ALL/orm.node" ]; then ARTIFACT=(--orm-artifact "$ALL"); fi
+if [ "$BUILD_ALL" = 1 ] && [ -f "$ALL/monorm.node" ]; then ARTIFACT=(--orm-artifact "$ALL"); fi
 
 wait_quiet
 UPTIME_BEFORE=$(uptime)
@@ -145,10 +145,10 @@ echo "== Python (check, then $ROUNDS rounds x $ITERS iterations)"
 (cd "$HERE/python" && "$PY" run.py run --rounds "$ROUNDS" --iters "$ITERS" --max-load "$RUNNER_LOAD" --out "$OUT/python" ${ARTIFACT[@]+"${ARTIFACT[@]}"}) 2>&1 | tee "$LOG/python.log"
 
 echo "== TypeScript on Node"
-(cd "$HERE/js" && ORM_NATIVE=$BUILD/orm.node node run.mjs run --rounds "$ROUNDS" --iters "$ITERS" --max-load "$RUNNER_LOAD" --out "$OUT/js" ${ARTIFACT[@]+"${ARTIFACT[@]}"}) 2>&1 | tee "$LOG/node.log"
+(cd "$HERE/js" && MONORM_NATIVE=$BUILD/monorm.node node run.mjs run --rounds "$ROUNDS" --iters "$ITERS" --max-load "$RUNNER_LOAD" --out "$OUT/js" ${ARTIFACT[@]+"${ARTIFACT[@]}"}) 2>&1 | tee "$LOG/node.log"
 
 echo "== TypeScript on Bun"
-(cd "$HERE/js" && ORM_NATIVE=$BUILD/orm.node bun run.mjs run --rounds "$ROUNDS" --iters "$ITERS" --max-load "$RUNNER_LOAD" --out "$OUT/js") 2>&1 | tee "$LOG/bun.log"
+(cd "$HERE/js" && MONORM_NATIVE=$BUILD/monorm.node bun run.mjs run --rounds "$ROUNDS" --iters "$ITERS" --max-load "$RUNNER_LOAD" --out "$OUT/js") 2>&1 | tee "$LOG/bun.log"
 
 # The Rust slot: skipped, no runner exists for it.
 if [ -d "$HERE/rust" ]; then echo "== Rust: bench/compare/rust exists, but run.sh has no runner for it yet; skipped"

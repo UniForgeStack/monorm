@@ -1,12 +1,12 @@
 [package]
-name = "orm-locking"
+name = "monorm-locking"
 version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Selected optimistic-locking compiler for ORM: a version field checked on instance writes"
 
 [dependencies]
-orm-contracts = { path = "../../crates/contracts" }
+monorm-contracts = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [lib]

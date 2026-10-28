@@ -7,7 +7,7 @@ from typing import Any, assert_type
 
 from blog.models import Comment, Post, PostInsert, PostQuerySet, Priority, Profile, Role, Tag, User, UserQuerySet
 
-from orm import (
+from monorm import (
     BoundQuerySet,
     of,
     Case,
@@ -35,7 +35,7 @@ from orm import (
     param,
     window,
 )
-from orm import get_database as orm_db
+from monorm import get_database as monorm_db
 
 
 async def check() -> None:
@@ -139,7 +139,7 @@ async def check() -> None:
     Post.objects.filter(Post.author_id.in_(User.objects.select(User.id)))
     assert_type(Post.objects.lock(exclusive=False, skip_locked=True), PostQuerySet)
     assert_type(await Post.objects.lock().get(Post.id == 1), Post | None)
-    assert_type(await orm_db().lock("key", nowait=True), bool)
+    assert_type(await monorm_db().lock("key", nowait=True), bool)
     assert_type(await post.qs().lock(skip_locked=True), list[Post])
     assert_type(Post.author == alice, Condition)
     assert_type(Post.author != None, Condition)  # noqa: E711
@@ -248,7 +248,7 @@ async def errors() -> None:
 
 
 def inspection_types() -> None:
-    from orm import StatementInspection
+    from monorm import StatementInspection
 
     result = User.objects.all().inspect()
     assert_type(result, QueryInspection)

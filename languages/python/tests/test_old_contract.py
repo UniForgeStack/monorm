@@ -3,16 +3,16 @@
 import json
 
 import pytest
-import orm
+import monorm
 
 
 def test_define_rejects_an_old_schema_contract_and_names_the_cure():
     ir = {"models": [], "behavior": {"schema_contract": 2}}
-    with pytest.raises(orm.SchemaError, match=r"schema contract 2 is older than this engine .*regenerate the models and rebuild the native artifact"):
-        orm.define(json.dumps(ir), registry=orm.Registry())
+    with pytest.raises(monorm.SchemaError, match=r"schema contract 2 is older than this engine .*regenerate the models and rebuild the native artifact"):
+        monorm.define(json.dumps(ir), registry=monorm.Registry())
 
 
 def test_define_rejects_old_proxy_models_and_names_the_cure():
     ir = {"models": [], "behavior": {"proxy_models": [{"model": "A", "parent": "U", "defaults": {}}]}}
-    with pytest.raises(orm.SchemaError, match=r"unknown field `proxy_models`.*regenerate the models and rebuild the native artifact"):
-        orm.define(ir, registry=orm.Registry())
+    with pytest.raises(monorm.SchemaError, match=r"unknown field `proxy_models`.*regenerate the models and rebuild the native artifact"):
+        monorm.define(ir, registry=monorm.Registry())

@@ -1,7 +1,7 @@
 /** `UserMethods`: the methods of every user model (`@@model_methods("UserMethods")`). */
 
-import { and, exists, or, outer, type BoundQuerySet, type Database, type ModelSpec, type Row } from "orm";
-import { boundMeta, databaseOf } from "orm/ext";
+import { and, exists, or, outer, type BoundQuerySet, type Database, type ModelSpec, type Row } from "@ufstack/monorm";
+import { boundMeta, databaseOf } from "@ufstack/monorm/ext";
 
 import { checkPassword, makePassword, needsUpdate } from "./hashers.js";
 import { activeModel } from "./permissions.js";

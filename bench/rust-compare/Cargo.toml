@@ -1,5 +1,5 @@
 [package]
-name = "orm-rust-compare"
+name = "monorm-rust-compare"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -7,8 +7,8 @@ publish = false
 [workspace]
 
 [dependencies]
-orm-core = { path = "../../crates/core" }
-orm-engine = { path = "../../crates/engine" }
+monorm-core = { path = "../../crates/core" }
+monorm-engine = { path = "../../crates/engine" }
 sea-orm = { version = "=2.0.4", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-json", "with-chrono", "with-uuid", "with-bigdecimal", "postgres-array"] }
 sea-query = "1.0"
 serde_json = "1"

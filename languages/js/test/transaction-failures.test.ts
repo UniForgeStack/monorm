@@ -193,7 +193,7 @@ for (const applicationError of [false, true]) {
 for (const applicationError of [false, true]) {
   test(`a caught data migration failure (${applicationError ? "application" : "database"}) rolls back SQL, data, history and callbacks`, () =>
     run(async (c) => {
-      const dir = mkdtempSync(join(tmpdir(), "orm-tx-failure-"));
+      const dir = mkdtempSync(join(tmpdir(), "monorm-tx-failure-"));
       const original = new TypeError("data migration failed");
       const path = join(dir, "0001_failure");
       mkdirSync(path);
@@ -221,8 +221,8 @@ for (const applicationError of [false, true]) {
         assert.equal(await c.count(), 1);
         assert.deepEqual(seen, []);
         await assert.rejects(c.db.fetch("SELECT * FROM migration_probe"), DatabaseError);
-        assert.deepEqual(await c.db.fetch("SELECT * FROM orm_migrations"), []);
-        await c.db.execute("DROP TABLE orm_migrations");
+        assert.deepEqual(await c.db.fetch("SELECT * FROM monorm_migrations"), []);
+        await c.db.execute("DROP TABLE monorm_migrations");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

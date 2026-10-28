@@ -12,8 +12,8 @@ const FIXTURE:&str="DROP TABLE IF EXISTS rust_read_posts; DROP TABLE IF EXISTS r
 macro_rules! exercise {
     ($module:ident,$url:expr,$checked_fails:expr) => {{
         use $module::{Database,Post,User};
-        use orm_client::{exists,in_subquery,not_in_subquery,scalar,scalar_checked,Error,Parent,Subquery};
-        let raw=orm_engine::db::connect($url,1).await.unwrap();
+        use monorm_client::{exists,in_subquery,not_in_subquery,scalar,scalar_checked,Error,Parent,Subquery};
+        let raw=monorm_engine::db::connect($url,1).await.unwrap();
         raw.batch(FIXTURE.into()).await.unwrap();raw.close().await;
         let db=Database::connect($url,1).await.unwrap();
         let s=|v:&str|Some(v.to_owned());
@@ -136,7 +136,7 @@ macro_rules! exercise {
 }
 #[tokio::test]
 async fn sqlite_subqueries() {
-    let path = std::env::temp_dir().join(format!("orm-rust-subqueries-{}.db", std::process::id()));
+    let path = std::env::temp_dir().join(format!("monorm-rust-subqueries-{}.db", std::process::id()));
     let url = format!("sqlite://{}", path.display());
     exercise!(sqlite, &url, false);
     std::fs::remove_file(path).unwrap();

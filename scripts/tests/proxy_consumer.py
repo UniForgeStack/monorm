@@ -1,19 +1,19 @@
-"""Runs against generated models that use the installed orm-proxy package."""
+"""Runs against generated models that use the installed monorm-proxy package."""
 import asyncio
 import json
 import os
 from pathlib import Path
-import orm
+import monorm
 from models import Account, ActiveAccount, Status
-from orm._packages import import_runtime
+from monorm._packages import import_runtime
 
 
 async def run():
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
-    stamp = locked["behavior"]["packages"]["orm.proxy"]
-    assert import_runtime("orm.proxy").MANIFEST_HASH == stamp["manifest_hash"]
+    stamp = locked["behavior"]["packages"]["monorm.proxy"]
+    assert import_runtime("monorm.proxy").MANIFEST_HASH == stamp["manifest_hash"]
     assert "proxy_models" not in locked["behavior"]
-    db = await orm.connect(os.environ["ORM_DATABASE_URL"])
+    db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
     await db.drop_tables()
     await db.create_tables()
     try:

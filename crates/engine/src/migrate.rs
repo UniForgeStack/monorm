@@ -1,8 +1,8 @@
-//! Applying and reverting the migrations of a directory (`orm_core::migrate::files`) on
-//! a database. The bindings and the `orm` CLI all run this one implementation.
+//! Applying and reverting the migrations of a directory (`monorm_core::migrate::files`) on
+//! a database. The bindings and the `monorm` CLI all run this one implementation.
 //!
 //! Applied migrations are recorded with the SHA-256 of their `up.sql` in the
-//! `orm_migrations` table; a migration whose file changed after it was applied stops
+//! `monorm_migrations` table; a migration whose file changed after it was applied stops
 //! [`upgrade`]. Each migration runs in its own transaction together with its row, under
 //! an advisory lock, so a failing migration leaves the database at the previous one and
 //! concurrent migrators apply each migration once.
@@ -13,13 +13,13 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use orm_core::dialect::Dialect;
-use orm_core::migrate::files::{self, MigrationFolder};
+use monorm_core::dialect::Dialect;
+use monorm_core::migrate::files::{self, MigrationFolder};
 
 use crate::db::{Executor, Transaction};
 use crate::error::{Error, Result};
 
-pub const TABLE: &str = "orm_migrations";
+pub const TABLE: &str = "monorm_migrations";
 /// Arbitrary constant: the advisory lock serializing concurrent migrators.
 pub const LOCK_ID: i64 = 0x6F72_6D6D;
 
@@ -143,7 +143,7 @@ pub async fn status(conn: &dyn Executor, dir: &Path) -> Result<Vec<Status>> {
         let snapshot = m.path.join("snapshot.json");
         if snapshot.exists() {
             let text = std::fs::read_to_string(&snapshot).map_err(|e| Error::Migration(e.to_string()))?;
-            let target = orm_core::migrate::parse_snapshot(&text).map_err(Error::Migration)?.dialect;
+            let target = monorm_core::migrate::parse_snapshot(&text).map_err(Error::Migration)?.dialect;
             if target != conn.dialect() {
                 return Err(Error::Migration(format!("{} targets {}, connection uses {}", m.name, target.name(), conn.dialect().name())));
             }
@@ -285,7 +285,7 @@ pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
 pub async fn upgrade(conn: &dyn Executor, dir: &Path, target: Option<&str>) -> Result<Vec<Migration>> {
     let todo = pending(conn, dir, target).await?;
     if let Some((m, file)) = todo.iter().find_map(|m| m.data_file().map(|f| (m, f))) {
-        let tool = if file == "data.py" { "python -m orm migrate (or Migrator.upgrade())" } else { "npx orm migrate (or Migrator.upgrade())" };
+        let tool = if file == "data.py" { "python -m monorm migrate (or Migrator.upgrade())" } else { "npx @ufstack/monorm migrate (or Migrator.upgrade())" };
         return Err(Error::Migration(format!("{} has a data step ({file}); apply it with {tool}", m.name)));
     }
     let mut done = vec![];
@@ -305,7 +305,7 @@ pub async fn applied_names(conn: &dyn Executor) -> Result<Vec<String>> {
 }
 
 /// Records the first migration of `dir` as applied without running it, for a database
-/// that already has its schema (`orm pull`). Refused once any migration is applied.
+/// that already has its schema (`monorm pull`). Refused once any migration is applied.
 pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
     let first = list(dir)?.into_iter().next().ok_or_else(|| Error::Migration(format!("no migration in {}", dir.display())))?;
     ensure_table(conn).await?;

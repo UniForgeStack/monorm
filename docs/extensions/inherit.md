@@ -1,11 +1,11 @@
 # Abstract models and model overrides
 
-The `orm.inherit` extension (crate `orm-inherit`, `extensions/inherit`) lets one schema share model shape and lets a consumer replace an app model.
+The `monorm.inherit` extension (crate `monorm-inherit`, `extensions/inherit`) lets one schema share model shape and lets a consumer replace an app model.
 It has no host feature and no capability.
 Its pass runs in the `declaration` phase, so the host and the other extensions see only ordinary models.
 
-**Enable:** install the `orm-inherit` Python package or the `@orm/inherit` npm package.
-The packages come from `scripts/install-extension-packages.sh`, which uses `orm-extension-package`; see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
+**Enable:** install the `monorm-inherit` Python package or the `@ufstack/monorm-inherit` npm package.
+The packages come from `scripts/install-extension-packages.sh`, which uses `monorm-extension-package`; see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
 
 ## Schema
 
@@ -100,12 +100,12 @@ A hand-written `through:` relation on `User` and its join model follow the child
 
 ## Get the active model
 
-`model_for("User")` (Python, `orm_inherit`) and `modelFor("User")` (TypeScript, `@orm/inherit`) return `MyUser`.
+`model_for("User")` (Python, `monorm_inherit`) and `modelFor("User")` (TypeScript, `@ufstack/monorm-inherit`) return `MyUser`.
 They return the name's own model when nothing overrides it.
 The Python function returns `Any`; the TypeScript function returns the registered model without a static type.
 
 ```python
-from orm_inherit import model_for
+from monorm_inherit import model_for
 
 Account = model_for("User")
 ```
@@ -136,7 +136,7 @@ Codegen does not reject a class that is not generic, but then the type checker d
 
 ```python
 from typing import TYPE_CHECKING, Self
-from orm import QuerySet
+from monorm import QuerySet
 
 if TYPE_CHECKING:
     from models import AbstractUserFields

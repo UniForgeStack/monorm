@@ -1,0 +1,2399 @@
+"""Lazy, immutable, awaitable query sets."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import AsyncIterator, Coroutine, Generator, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeAlias, TypeVar, Unpack, cast, overload
+
+from .inspection import QueryInspection, _inspect
+from ._cache import cached
+from .errors import QueryError, TransactionRequired
+from .expr import (
+    IR,
+    ColumnRef,
+    Condition,
+    ConditionLike,
+    Expression,
+    Func,
+    IRContext,
+    Labeled,
+    Ordering,
+    Param,
+    RelationPath,
+    SlotParams,
+    _Slot,
+    _Ctes,
+    and_,
+    no_alias,
+    as_condition,
+    resolve_null_rule,
+    differs,
+    not_,
+    or_,
+)
+from . import pagination
+from .fields import BelongsTo, HasMany, ManyToMany, key_items, key_value
+from .nested import NestedRef
+from .pagination import Page
+from .protection import allowed_writes
+from . import adapters, debug
+from .write import (
+    CopyInsert,
+    Delete,
+    InsertMany,
+    InsertOne,
+    Returning,
+    Update,
+    UpdateMany,
+    assignments,
+    lookup_values,
+    prepare_rows,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from typing_extensions import Self
+
+    from .cte import Cte
+    from .db import Database
+    from .model import Model
+    from .select import RequiredSelect, Select
+
+M = TypeVar("M", bound="Model")
+T_co = TypeVar("T_co", covariant=True)
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+T3 = TypeVar("T3")
+T4 = TypeVar("T4")
+T5 = TypeVar("T5")
+T6 = TypeVar("T6")
+
+__all__ = [
+    "OneRowQuery",
+    "PreparedOneRowQuery",
+    "QuerySet",
+    "RelatedSet",
+    "ManyRelatedSet",
+    "Prepared",
+    "of",
+    "BoundQuerySet",
+    "use_query_set",
+    "use_extensions",
+]
+
+# Ids per query in in_bulk(), well below Postgres' 65535 parameters.
+IN_BULK_CHUNK = 10_000
+# A key of several fields matches as an OR of ANDs; SQLite limits the expression depth.
+IN_BULK_KEY_CHUNK = 500
+
+
+def _key_after(refs: tuple[ColumnRef[Any], ...], value: Any) -> Condition:
+    """The rows after ``value`` in key order."""
+    if len(refs) == 1:
+        return as_condition(refs[0] > value)
+    items = key_items(tuple(r._field.name for r in refs), value)
+    return or_(
+        *(
+            and_(*(r == items[r._field.name] for r in refs[:i]), refs[i] > items[refs[i]._field.name])
+            for i in range(len(refs))
+        )
+    )
+
+
+# get_or_insert: rounds of read, then insert, before a concurrent delete wins.
+GET_OR_INSERT_ROUNDS = 3
+
+
+class _Prefetch:
+    """One relation loaded by an ``IN (...)`` query: its rows fill the relation, or the
+    attribute ``to_attr`` (a ``.label()``), with ``queryset`` filtering, ordering and
+    slicing them per parent."""
+
+    __slots__ = ("path", "queryset", "to_attr", "one")
+
+    def __init__(
+        self,
+        path: RelationPath[Any],
+        queryset: QuerySet[Any] | None = None,
+        *,
+        to_attr: str | None = None,
+        one: bool = False,
+    ) -> None:
+        self.path = path
+        self.queryset = queryset
+        self.to_attr = to_attr
+        self.one = one
+
+    def __repr__(self) -> str:
+        return (
+            f"_Prefetch({self.path!r}, {self.queryset!r}, to_attr={self.to_attr!r}{', one=True' if self.one else ''})"
+        )
+
+
+class _Node:
+    """One relation in the tree of prefetches."""
+
+    __slots__ = ("relation", "attr", "qs", "children", "one")
+
+    def __init__(self, relation: str, attr: str, qs: QuerySet[Any] | None) -> None:
+        self.relation = relation
+        self.attr = attr
+        self.qs = qs
+        self.one = False
+        self.children: list[tuple[tuple[str, ...], _Prefetch]] = []
+
+
+def _prefetch_tree(model: type[Model], items: Iterable[tuple[tuple[str, ...], _Prefetch]]) -> dict[str, _Node]:
+    """Nodes by attribute: paths sharing a prefix share its node, so
+    ``User.posts.comments`` nests under ``User.posts``."""
+    nodes: dict[str, _Node] = {}
+    for hops, p in items:
+        hop = hops[0]
+        if hop not in model._meta.relations:
+            raise ValueError(f"{model.__name__} has no relation {hop!r}")
+        if (
+            len(hops) == 1
+            and p.to_attr is not None
+            and (p.to_attr in model._meta.fields or p.to_attr in model._meta.relations or hasattr(model, p.to_attr))
+        ):
+            raise ValueError(f"label {p.to_attr!r} is a field, relation or member of {model.__name__}")
+        attr = (p.to_attr or hop) if len(hops) == 1 else hop
+        node = nodes.get(attr)
+        if node is None:
+            node = nodes[attr] = _Node(hop, attr, None)
+        elif node.relation != hop:
+            raise ValueError(f"load() stores {model.__name__}.{node.relation} and .{hop} both in {attr!r}")
+        if len(hops) == 1:
+            node.one = node.one or p.one
+            if p.queryset is not None:
+                if (
+                    node.qs is not None
+                    and node.qs is not p.queryset
+                    and not (node.qs._plain_relation() and p.queryset._plain_relation())
+                ):
+                    raise ValueError(f"{p.path!r} is loaded twice with different query sets; label() one of them")
+                node.qs = p.queryset
+        else:
+            node.children.append((hops[1:], p))
+    return nodes
+
+
+def _check_annotations(model: type[Model], annotations: list[Labeled[Any]], tree: dict[str, _Node]) -> None:
+    """A label is no field, relation or member of the model, no other label and no relation-set label."""
+    seen: set[str] = set()
+    for item in annotations:
+        name = item._name
+        if name in model._meta.fields or name in model._meta.relations or hasattr(model, name):
+            raise ValueError(f"label {name!r} is a field, relation or member of {model.__name__}")
+        if name in seen or name in tree:
+            raise ValueError(f"load() stores {model.__name__}.{name!r} twice")
+        seen.add(name)
+
+
+def _prefetch_ir(model: type[Model], items: Iterable[tuple[tuple[str, ...], _Prefetch]], params: list[Any]) -> list[IR]:
+    out = []
+    for node in _prefetch_tree(model, items).values():
+        target = model._meta.relations[node.relation].target
+        qs: QuerySet[Any] = node.qs if node.qs is not None else target.objects
+        if qs._lock is not None:
+            raise QueryError("a relation query set in load() can't lock rows")
+        children = [(p.path._path, p) for p in qs._prefetch] + node.children
+        ir, ctx = qs._query_ir("select", params, prefetch=False)
+        if children:
+            ir["prefetch"] = _prefetch_ir(target, children, params)
+        ctx.finish(ir)
+        del ir["op"]
+        ir["relation"] = node.relation
+        if node.attr != node.relation:
+            ir["attr"] = node.attr
+        if node.one:
+            ir["one"] = True
+        out.append(ir)
+    return out
+
+
+# What load() takes: a column, a relation path, a relation query set (``User.posts.objects``) or a labeled relation aggregate.
+_LoadItem: TypeAlias = "ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]"
+
+
+def _to_many(model: type[Model], hops: tuple[str, ...]) -> bool:
+    for hop in hops:
+        rel = model._meta.relations[hop]
+        if isinstance(rel, (HasMany, ManyToMany)):
+            return True
+        model = rel.target
+    return False
+
+
+def _load_path(item: _LoadItem) -> tuple[str, ...]:
+    if isinstance(item, Labeled):
+        return ()
+    if isinstance(item, QuerySet):
+        assert item._via is not None
+        return item._via._path
+    return item._path
+
+
+def _full_selection(qs: QuerySet[Any]) -> bool:
+    """An unlabeled relation query set that loads the target's normal selection and nothing else of its own."""
+    if qs._label is not None:
+        return False
+    fields = qs._model._meta.field_names
+    return not qs._loads and (qs._model_fields is None or qs._model_fields == fields)
+
+
+def _derive(
+    model: type[Model], loads: Iterable[_LoadItem], *, by_query: bool = False
+) -> tuple[
+    list[str],
+    tuple[tuple[str, ...], ...],
+    tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...],
+    tuple[_Prefetch, ...],
+]:
+    """The model's own fields, joined paths, fields of partial joined models and
+    ``IN (...)`` loads for ``load(*loads)``. Items under one first hop share a strategy:
+    a join, unless one of them needs a query (a to-many hop, a relation query set that
+    filters, orders, slices, labels or loads); ``by_query`` gives every hop a query."""
+    own: list[str] = []
+    groups: dict[str, list[tuple[tuple[str, ...], _LoadItem]]] = {}
+    for item in loads:
+        if isinstance(item, Labeled):
+            continue
+        if isinstance(item, ColumnRef):
+            if not item._path:
+                own.extend(item._load_names() if isinstance(item, NestedRef) else [item._field.name])
+                continue
+            hops = item._path
+        elif isinstance(item, RelationPath):
+            hops = item._path
+        else:
+            assert item._via is not None
+            hops = item._via._path
+        groups.setdefault(hops[0], []).append((hops, item))
+    related: list[tuple[str, ...]] = []
+    fields: dict[tuple[str, ...], list[str]] = {}
+    whole: set[tuple[str, ...]] = set()
+    prefetch: list[_Prefetch] = []
+    for hop, entries in groups.items():
+        if not by_query and not any(
+            _to_many(model, hops) or (isinstance(item, QuerySet) and not item._plain_relation())
+            for hops, item in entries
+        ):
+            for hops, item in entries:
+                related.extend(hops[:i] for i in range(1, len(hops) + 1) if hops[:i] not in related)
+                if isinstance(item, ColumnRef):
+                    names = fields.setdefault(hops, [])
+                    for name in item._load_names() if isinstance(item, NestedRef) else [item._field.name]:
+                        if name not in names:
+                            names.append(name)
+                else:
+                    whole.add(hops)
+            continue
+        target = model._meta.relations[hop].target
+        path: RelationPath[Any] = RelationPath(model, (hop,), target)
+        # a bare path (or a plain query set) asks for the normal selection; named columns add to it (the engine unites them)
+        bare = any(
+            len(h) == 1 and (isinstance(i, RelationPath) or (isinstance(i, QuerySet) and _full_selection(i)))
+            for h, i in entries
+        )
+        base: QuerySet[Any] | None = None
+        inner: list[_LoadItem] = []
+        plain = False
+        for hops, item in entries:
+            rest = hops[1:]
+            if isinstance(item, QuerySet) and not rest and item._label is not None:
+                prefetch.append(_Prefetch(path, item, to_attr=item._label, one=item._one))
+                continue
+            plain = True
+            if isinstance(item, QuerySet):
+                if rest:
+                    assert item._via is not None
+                    inner.append(item._clone(_via=RelationPath(target, rest, item._via._target)))
+                elif base is not None and base is not item and not (base._plain_relation() and item._plain_relation()):
+                    raise ValueError(f"{path!r} is loaded twice with different query sets; label() one of them")
+                else:
+                    base = item
+            elif isinstance(item, ColumnRef):
+                column: ColumnRef[Any] = (
+                    item._at(target, rest) if isinstance(item, NestedRef) else ColumnRef(target, rest, item._field)
+                )
+                if not any(c._path == rest and c._field is item._field for c in inner if isinstance(c, ColumnRef)):
+                    inner.append(column)
+            elif rest and isinstance(item, RelationPath):
+                inner.append(RelationPath(target, rest, item._target))
+        if base is not None and (
+            base._filters
+            or base._order
+            or base._limit is not None
+            or base._offset is not None
+            or base._without_defaults
+        ):
+            if any(isinstance(item, (RelationPath, ColumnRef)) for _, item in entries):
+                raise ValueError(
+                    f"{path!r} has a column or path beside a query set that changes its rows; "
+                    "put the columns in the set's own .load() or label() the set"
+                )
+        if plain:
+            qs = base if base is not None else target.objects
+            if base is not None:
+                owned = {i._field.name for i in base._loads if isinstance(i, ColumnRef) and not i._path}
+                inner = [i for i in inner if not (isinstance(i, ColumnRef) and not i._path and i._field.name in owned)]
+            if inner:
+                qs = qs.load(*inner)
+            if bare and qs._model_fields is not None:
+                qs = qs._clone(_with_default_fields=True)
+            prefetch.append(_Prefetch(path, qs))
+    related_fields = tuple((p, tuple(f), p in whole) for p, f in fields.items())
+    return own, tuple(related), related_fields, tuple(prefetch)
+
+
+_SUBCLASS_SLOTS: dict[type, tuple[str, ...]] = {}
+
+
+def _copy_subclass_state(source: QuerySet[Any], target: QuerySet[Any]) -> None:
+    """Copy what a QuerySet subclass adds: its own slots and any instance ``__dict__``."""
+    cls = type(source)
+    names = _SUBCLASS_SLOTS.get(cls)
+    if names is None:
+        found: list[str] = []
+        for klass in cls.__mro__[: cls.__mro__.index(QuerySet)]:
+            slots = klass.__dict__.get("__slots__", ())
+            found.extend((slots,) if isinstance(slots, str) else slots)
+        names = _SUBCLASS_SLOTS[cls] = tuple(n for n in found if n not in ("__dict__", "__weakref__"))
+    for name in names:
+        try:
+            setattr(target, name, getattr(source, name))
+        except AttributeError:
+            pass
+    state = getattr(source, "__dict__", None)
+    if state:
+        target.__dict__.update(state)
+
+
+class QuerySet(Generic[M]):
+    """A query over one model. Every method returns a new query set; nothing runs until
+    the query set is awaited (``await User.objects.filter(...)`` gives a list) or a
+    terminal coroutine (``first``, ``get``, ``count``, ``update``, ...) is awaited.
+
+    Awaiting the same query set again gives the same rows without querying again (the
+    result cache, see ``_cache.py``); ``await qs.all()`` queries afresh.
+
+    Filters are expressions over the model's columns and relation paths::
+
+        await User.objects.filter(User.posts.created_at < yesterday)
+
+    Conditions inside one ``filter()`` call that go through the same to-many relation
+    must hold for the same related row; separate ``filter()`` calls are independent.
+    ``exclude(c)`` keeps rows for which ``c`` does not hold, e.g.
+    ``exclude(User.posts.published == False)`` keeps users with no unpublished post.
+    """
+
+    __slots__ = (
+        "_required",
+        "_model_helpers",
+        "_without_defaults",
+        "_without_root_filter",
+        "_without_related",
+        "_model_fields",
+        "_with_default_fields",
+        "_related_fields",
+        "_model",
+        "_filters",
+        "_order",
+        "_limit",
+        "_offset",
+        "_cuts",
+        "_related",
+        "_prefetch",
+        "_loads",
+        "_via",
+        "_label",
+        "_one",
+        "_as_prefetch",
+        "_lock",
+        "_db",
+        "_from",
+        "_joins",
+        "_result",
+    )
+
+    def __init__(self, model: type[M]) -> None:
+        self._required = False
+        self._model_helpers: tuple[str, ...] = ()
+        self._without_defaults: bool | tuple[str, ...] = False
+        self._without_root_filter = False
+        self._without_related = False
+        self._model_fields: tuple[str, ...] | None = None
+        # _model_fields adds to the model's default selection (a bare path beside columns)
+        self._with_default_fields = False
+        # load() through to-one paths: the fields of each partial joined model, by path, and whether they add to its default selection.
+        self._related_fields: tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...] = ()
+        self._model = model
+        self._filters: tuple[Condition, ...] = ()
+        self._order: tuple[Ordering, ...] = ()
+        self._limit: int | Param | None = None
+        self._offset: int | Param | None = None
+        # which of "limit", "offset", "slice" were applied; a second cut of one kind raises
+        self._cuts: tuple[str, ...] = ()
+        self._related: tuple[tuple[str, ...], ...] = ()
+        self._prefetch: tuple[_Prefetch, ...] = ()
+        # what load() was given; _model_fields, _related, _related_fields and _prefetch derive from it
+        self._loads: tuple[_LoadItem, ...] = ()
+        # a relation query set (``User.posts.objects``): its relation, label and strategy
+        self._via: RelationPath[Any] | None = None
+        self._label: str | None = None
+        self._one = False
+        self._as_prefetch = False
+        self._lock: dict[str, bool] | None = None
+        self._db: Database | None = None
+        self._from: Cte | None = None
+        self._joins: tuple[tuple[Cte, Condition, bool], ...] = ()
+        self._result: asyncio.Task[list[M]] | None = None
+
+    @property
+    def model(self) -> type[M]:
+        return self._model
+
+    def _clone(self, **changes: Any) -> Self:
+        # Every builder step clones; explicit slot copies keep that step cheap.
+        cls = type(self)
+        new = cls.__new__(cls)
+        new._required = self._required
+        new._model_helpers = self._model_helpers
+        new._without_defaults = self._without_defaults
+        new._without_root_filter = self._without_root_filter
+        new._without_related = self._without_related
+        new._model_fields = self._model_fields
+        new._with_default_fields = self._with_default_fields
+        new._related_fields = self._related_fields
+        new._model = self._model
+        new._filters = self._filters
+        new._order = self._order
+        new._limit = self._limit
+        new._offset = self._offset
+        new._cuts = self._cuts
+        new._related = self._related
+        new._prefetch = self._prefetch
+        new._loads = self._loads
+        new._via = self._via
+        new._label = self._label
+        new._one = self._one
+        new._as_prefetch = self._as_prefetch
+        new._lock = self._lock
+        new._db = self._db
+        new._from = self._from
+        new._joins = self._joins
+        new._result = None
+        if cls is not QuerySet:
+            _copy_subclass_state(self, new)
+        for k, v in changes.items():
+            setattr(new, k, v)
+        return new
+
+    # -- building ------------------------------------------------------------------------
+
+    def require(self) -> RequiredQuerySet[M]:
+        """Reject absent results when reading rows; leave the original query unchanged."""
+        return cast("RequiredQuerySet[M]", self._clone(_required=True))
+
+    def all(self) -> Self:
+        return self._clone()
+
+    def without_defaults(self, *names: str) -> Self:
+        """Bypass named defaults, or all defaults with no names; retain caller filters."""
+        if not names or self._without_defaults is True:
+            return self._clone(_without_defaults=True)
+        previous = self._without_defaults if isinstance(self._without_defaults, tuple) else ()
+        return self._clone(_without_defaults=tuple(dict.fromkeys((*previous, *names))))
+
+    def without_related(self) -> Self:
+        """Clear the default joins and the joins ``load()`` asked for; relations loaded by
+        ``IN (...)`` query stay."""
+        joined = {p[0] for p in self._related}
+        loads = tuple(i for i in self._loads if not (_load_path(i)[:1] and _load_path(i)[0] in joined))
+        return self._clone(_without_related=True, _loads=loads)._derived()
+
+    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
+        """Choose what the model instances carry::
+
+            Post.objects.load(Post.title)                      # partial posts
+            Post.objects.load(Post.author)                     # post.author, by a join
+            Post.objects.load(Post.author.name)                # a partial post.author
+            User.objects.load(User.posts.comments)             # by IN (...) queries
+            User.objects.load(User.posts.objects.filter(Post.published).order_by(Post.views.desc())[:3])
+            User.objects.load(User.posts.objects[:3].label("top_posts"))
+            Post.objects.load(func.count(Post.comments).label("n_comments"))   # post.n_comments
+
+        A column of the model makes its instances partial: they hold the named fields
+        (and, hidden, the primary key and relation keys); reading another field raises
+        :class:`~monorm.NotLoaded`. A related model is partial in the same way when a column
+        of it is named and no bare path ends at it. Without a column of the model, its
+        instances keep their normal selection.
+
+        To-one relations are joined; a path with a to-many hop is loaded with one
+        ``IN (...)`` query per relation level. A relation query set (``User.posts.objects``)
+        filters, orders and slices the related rows (a slice applies per parent), loads
+        its own items with ``.load()``, and goes to the relation, or to the plain
+        attribute ``.label(name)`` (``[n].label(name)``: one row or ``None``).
+        ``.as_prefetch()`` loads a to-one relation by ``IN (...)`` query instead of a join.
+
+        A labeled relation aggregate (``func.count(Post.comments).label("n")``) sets the attribute
+        ``n`` on each object, from a correlated subquery in the same statement. The label must not
+        be a field, relation or member of the model, nor another label of the same ``load()``.
+
+        Relation query sets run only inside ``load()``; standalone reads and writes
+        raise ``TypeError``. Label a filtered, ordered or sliced set when also loading
+        a path or column through that relation, or put the columns in the set's own ``.load()``.
+        A bare path gives the normal selection united with the columns named beside it.
+
+        Calls add up. ``load()`` without items gives full instances again (it bypasses a
+        default selection)."""
+        if not items:
+            loads = tuple(i for i in self._loads if not (isinstance(i, ColumnRef) and not i._path))
+            return self._clone(_loads=loads, _model_fields=self._model._meta.field_names)._derived()
+        own: list[str] = []
+        for item in items:
+            if isinstance(item, QuerySet):
+                if item._via is None:
+                    raise TypeError(
+                        f"load() takes a relation query set such as {self._model.__name__}.<relation>.objects, not {item!r}"
+                    )
+                self._check_path(item._via)
+            elif isinstance(item, OneRowQuery):
+                raise TypeError("a one-row query in load() needs .label(name)")
+            elif isinstance(item, Labeled):
+                inner = item._inner
+                if not isinstance(inner, Func) or inner._rel is None:
+                    raise TypeError("load() takes relation aggregates with a label; use select() for other expressions")
+                self._check_path(inner._rel)
+            elif isinstance(item, Expression) and not isinstance(item, (ColumnRef, RelationPath)):
+                raise TypeError(
+                    f"load() needs a label on {item!r}: {item!r}.label(name); "
+                    "load() takes relation aggregates with a label, use select() for other expressions"
+                )
+            elif isinstance(item, RelationPath):
+                self._check_path(item)
+            elif isinstance(item, ColumnRef) and item._root is self._model:
+                no_alias(item)
+                if not item._path:
+                    own.extend(item._load_names() if isinstance(item, NestedRef) else [item._field.name])
+            else:
+                raise TypeError(
+                    f"load() takes columns, relations and relation query sets of {self._model.__name__}, got {item!r}"
+                )
+        if len(set(own)) != len(own):
+            raise TypeError("duplicate model field")
+        return self._clone(_loads=(*self._loads, *items))._derived()
+
+    def _derived(self) -> Self:
+        """``_model_fields``, ``_related``, ``_related_fields`` and ``_prefetch`` from ``_loads``."""
+        own, related, related_fields, prefetch = _derive(self._model, self._loads)
+        model_fields = tuple(dict.fromkeys(own)) if own else self._model_fields
+        qs = self._clone(
+            _model_fields=model_fields, _related=related, _related_fields=related_fields, _prefetch=prefetch
+        )
+        tree = _prefetch_tree(self._model, ((p.path._path, p) for p in prefetch))  # validates
+        _check_annotations(self._model, qs._annotations(), tree)
+        return qs
+
+    def _annotations(self) -> list[Labeled[Any]]:
+        return [i for i in self._loads if isinstance(i, Labeled)]
+
+    def label(self, name: str) -> Self:
+        """Store related rows in a plain list attribute; use ``[n].label(name)`` for one row."""
+        self._bound("label")
+        if not isinstance(name, str) or not name.isidentifier() or name.startswith("_"):
+            raise ValueError(f"label {name!r} must be an identifier not starting with '_'")
+        return self._clone(_label=name)
+
+    def as_prefetch(self) -> Self:
+        """Load this relation with an ``IN (...)`` query instead of a join; the rows are
+        the same."""
+        self._bound("as_prefetch")
+        return self._clone(_as_prefetch=True)
+
+    def _bound(self, method: str) -> None:
+        if self._via is None:
+            raise TypeError(
+                f"{method}() applies to a relation query set such as User.posts.objects, not to {self._model.__name__}.objects"
+            )
+
+    def _plain_relation(self) -> bool:
+        """A relation query set that asks for nothing a join can't give."""
+        return not (
+            self._filters
+            or self._order
+            or self._limit is not None
+            or self._offset is not None
+            or self._loads
+            or self._model_fields is not None
+            or self._label is not None
+            or self._as_prefetch
+            or self._lock is not None
+            or self._without_defaults
+            or self._without_related
+            or self._from is not None
+            or self._joins
+        )
+
+    def filter(self, *conditions: ConditionLike) -> Self:
+        """Keep rows matching all ``conditions``. One to-many path is one related row for the
+        whole query, here and in other ``filter()`` calls; ``path.alias()`` asks for another."""
+        if not conditions:
+            return self._clone()
+        condition = and_(*conditions)
+        condition = resolve_null_rule(condition)
+        return self._clone(_filters=(*self._filters, condition))
+
+    def exclude(self, *conditions: ConditionLike) -> Self:
+        """Drop rows matching all ``conditions``."""
+        if not conditions:
+            return self._clone()
+        return self._clone(_filters=(*self._filters, not_(and_(*conditions))))
+
+    def order_by(self, *items: Expression[Any] | Ordering) -> Self:
+        """Replace the ordering. ``order_by(Post.created_at.desc(), Post.id)``."""
+        order = tuple(i if isinstance(i, Ordering) else Ordering(i, desc=False) for i in items)
+        return self._clone(_order=order)
+
+    def _cut(self, kind: str) -> tuple[str, ...]:
+        if kind in self._cuts or "slice" in self._cuts or (kind == "slice" and self._cuts):
+            cuts = " and ".join(f"{'an' if cut == 'offset' else 'a'} {cut}" for cut in self._cuts)
+            raise QueryError(
+                f"{kind} can't be applied to a query set that already has {cuts}; "
+                "use one limit() and one offset(), or a single slice; to change or clear a limit "
+                "or offset, build a new query set"
+            )
+        return (*self._cuts, kind)
+
+    def _no_cuts(self, what: str) -> None:
+        if self._cuts:
+            raise QueryError(f"{what} can't be used on a query set with a limit, offset or slice; use [n] to read the n-th row")
+
+    def limit(self, n: int | None) -> Self:
+        """At most ``n`` rows; ``n`` may be a :func:`monorm.param` in a prepared query."""
+        return self._clone(_limit=n, _cuts=self._cut("limit"))
+
+    def offset(self, n: int | None) -> Self:
+        """Skip ``n`` rows; ``n`` may be a :func:`monorm.param` in a prepared query."""
+        return self._clone(_offset=n if isinstance(n, Param) else n or None, _cuts=self._cut("offset"))
+
+    def _at(self, n: int | Param, order: tuple[Ordering, ...]) -> OneRowQuery[M | None]:
+        self._no_cuts("[n]")
+        cuts = ("slice",)
+        return OneRowQuery(self._clone(_order=order, _offset=n if isinstance(n, Param) else n or None, _limit=1, _cuts=cuts))
+
+    @overload
+    def __getitem__(self, s: int) -> OneRowQuery[M | None]: ...
+    @overload
+    def __getitem__(self, s: slice) -> Self: ...
+    def __getitem__(self, s: int | slice) -> OneRowQuery[M | None] | Self:
+        """Slice rows, or lazily read the row at an index (an int or :func:`monorm.param`);
+        ``[-1]`` is ``last()``. A query set takes one slice, and no slice after ``limit()`` or ``offset()``."""
+        if isinstance(s, Param):
+            return self._at(s, self._default_order())
+        if isinstance(s, int):
+            if s == -1:
+                return self.last()
+            if s < 0:
+                raise ValueError("only -1 or non-negative indices are supported")
+            return self._at(s, self._default_order())
+        if not isinstance(s, slice):
+            raise TypeError("query set indices must be integers or slices")
+        cuts = self._cut("slice")
+        if s.step is not None or (s.start or 0) < 0 or (s.stop is not None and s.stop < 0):
+            raise ValueError("only non-negative slices without a step are supported")
+        start = s.start or 0
+        limit = None if s.stop is None else max(s.stop - start, 0)
+        return self._clone(_offset=start or None, _limit=limit, _cuts=cuts)
+
+    def lock(self, exclusive: bool = True, *, nowait: bool = False, skip_locked: bool = False) -> Self:
+        """Lock the rows this query reads until the transaction ends.
+
+        ``exclusive=True`` is ``FOR UPDATE`` (others can't lock, update or delete the
+        rows), ``False`` is ``FOR SHARE`` (others can read-lock them too, but not change
+        them). Only this model's rows are locked, not rows joined by ``load()``.
+        Rows locked by another transaction are waited for, unless ``nowait`` (raise
+        :class:`~monorm.LockNotAvailable`) or ``skip_locked`` (leave them out, e.g. for job
+        queues). Must run inside ``db.transaction()``.
+        """
+        if nowait and skip_locked:
+            raise ValueError("lock() takes nowait or skip_locked, not both")
+        return self._clone(_lock={"exclusive": exclusive, "nowait": nowait, "skip_locked": skip_locked})
+
+    def using(self, db: Database | Literal["primary"] | None) -> Self:
+        """Run on ``db``; ``"primary"`` sends reads of this query set to the primary of
+        its database (the default one, resolved now), not to a replica."""
+        if isinstance(db, str):
+            if db != "primary":
+                raise ValueError(f'using() takes a Database or "primary", got {db!r}')
+            from .db import resolve
+
+            db = resolve(self._db).primary
+        return self._clone(_db=db)
+
+    def of(self, objs: Iterable[M] | M) -> BoundQuerySet[M]:
+        """A query set bound to ``objs`` (one object or an iterable, of this model): awaiting
+        it reads their rows, with this query set's filters, and fills the objects in place."""
+        items = _bound_objects(objs)
+        if type(items[0]) is not self._model:
+            raise TypeError(f"{self._model.__name__}.objects.of() takes {self._model.__name__} objects")
+        self._standalone()
+        if isinstance(self, (RelatedSet, ManyRelatedSet)):
+            raise TypeError("of() takes Model.objects, not a relation query set")
+        if (
+            self._order
+            or self._limit is not None
+            or self._offset is not None
+            or self._from is not None
+            or self._joins
+            or self._required
+            or self._one
+            or self._as_prefetch
+            or self._label is not None
+        ):
+            raise TypeError("of() takes a query set without order, slice, join, CTE or union state")
+        return _bound_class(self._model)(items, self._clone(_without_root_filter=True))
+
+    # -- CTEs -------------------------------------------------------------------------------
+
+    def cte(
+        self,
+        name: str,
+        *,
+        recursive: Callable[[Cte], QuerySet[Any]] | None = None,
+        distinct: bool = False,
+        materialized: bool | None = None,
+    ) -> Cte:
+        """This query as a CTE (``WITH <name> AS (...)``) with the model's columns: read
+        it with ``Model.objects.from_(cte)``. ``recursive`` builds the recursive part
+        from the CTE (``WITH RECURSIVE``; ``UNION ALL``, or ``UNION`` with ``distinct``);
+        ``materialized`` forces ``[NOT] MATERIALIZED``. See :mod:`monorm.cte`."""
+        from .cte import Cte
+
+        self._standalone()
+        return Cte(name, self, recursive=recursive, distinct=distinct, materialized=materialized)
+
+    def join(self, cte: Cte, on: ConditionLike, *, outer: bool = False) -> Self:
+        """``JOIN <cte> ON <on>`` (``LEFT JOIN`` with ``outer``): the CTE's columns
+        (``cte.c.<name>``) come along with each row, for filters, ordering and
+        ``select()``::
+
+            totals = Post.objects.select(Post.author_id, func.sum(Post.views).label("views")) \\
+                .group_by(Post.author_id).cte("totals")
+            await User.objects.join(totals, totals.c.author_id == User.id).select(User, totals.c.views)
+
+        A row matching several CTE rows comes back once per match, as in SQL.
+        """
+        from .cte import Cte
+
+        if not isinstance(cte, Cte):
+            raise TypeError(f"join() takes a CTE, got {cte!r}")
+        if any(c is cte for c, _, _ in self._joins) or cte is self._from:
+            raise ValueError(f"{cte.name} is already read by this query")
+        return self._clone(_joins=(*self._joins, (cte, resolve_null_rule(as_condition(on)), outer)))
+
+    def from_(self, cte: Cte) -> Self:
+        """Read the rows from ``cte`` instead of the model's table: a subquery in
+        ``FROM``. The CTE must have the model's columns (``Post.objects....cte(...)`` or
+        a ``select(Post, ...)``); its other columns are ``cte.c.<name>``::
+
+            await Post.objects.from_(ranked).filter(ranked.c.rank <= 3)
+        """
+        from .cte import Cte
+
+        if not isinstance(cte, Cte):
+            raise TypeError(f"from_() takes a CTE, got {cte!r}")
+        if cte._model is not self._model:
+            raise TypeError(f"from_({cte.name}) needs a CTE with the columns of {self._model.__name__}")
+        return self._clone(_from=cte)
+
+    # -- select(...) ----------------------------------------------------------------------
+    # Each column is an expression (its value type) or the model itself (an instance).
+
+    @overload
+    def select(self, a: Expression[T1] | type[T1], /) -> Select[T1]: ...
+    @overload
+    def select(self, a: Expression[T1] | type[T1], b: Expression[T2] | type[T2], /) -> Select[T1, T2]: ...
+    @overload
+    def select(
+        self, a: Expression[T1] | type[T1], b: Expression[T2] | type[T2], c: Expression[T3] | type[T3], /
+    ) -> Select[T1, T2, T3]: ...
+    @overload
+    def select(
+        self,
+        a: Expression[T1] | type[T1],
+        b: Expression[T2] | type[T2],
+        c: Expression[T3] | type[T3],
+        d: Expression[T4] | type[T4],
+        /,
+    ) -> Select[T1, T2, T3, T4]: ...
+    @overload
+    def select(
+        self,
+        a: Expression[T1] | type[T1],
+        b: Expression[T2] | type[T2],
+        c: Expression[T3] | type[T3],
+        d: Expression[T4] | type[T4],
+        e: Expression[T5] | type[T5],
+        /,
+    ) -> Select[T1, T2, T3, T4, T5]: ...
+    @overload
+    def select(
+        self,
+        a: Expression[T1] | type[T1],
+        b: Expression[T2] | type[T2],
+        c: Expression[T3] | type[T3],
+        d: Expression[T4] | type[T4],
+        e: Expression[T5] | type[T5],
+        f: Expression[T6] | type[T6],
+        /,
+    ) -> Select[T1, T2, T3, T4, T5, T6]: ...
+    @overload
+    def select(self, *items: Expression[Any] | type[Model]) -> Select[Unpack[tuple[Any, ...]]]: ...
+    def select(self, *items: Any) -> Any:
+        """Rows of the given columns and aggregates instead of instances: see
+        :mod:`monorm.select`. ``await qs.select(Post.id, Post.title)`` gives ``Row``s,
+        ``.scalars()`` / ``.scalar()`` one column's values."""
+        from .select import Select
+
+        self._standalone()
+        return Select(self, items)
+
+    # -- batches --------------------------------------------------------------------------
+
+    async def batches(self, size: int = 1000) -> AsyncIterator[list[M]]:
+        """The rows in lists of ``size``, walking the primary key (``WHERE pk > last
+        ORDER BY pk LIMIT size``), so memory stays flat and each batch is an index
+        range scan. ``load()`` and ``lock()`` apply per
+        batch; a custom ``order_by`` or slicing is rejected.
+
+        ::
+
+            async for batch in Post.objects.filter(Post.published).batches(500):
+                await index(batch)
+        """
+        if size < 1:
+            raise ValueError("batch size must be at least 1")
+        if self._order:
+            raise QueryError("batches() walk the primary key in order; drop order_by()")
+        if self._limit is not None or self._offset is not None:
+            raise QueryError("batches() can't be used on a sliced query set")
+        key = self._model._meta.key_refs()
+        last: Any = None
+        seen: set[str] = set()
+        while True:
+            page = self if last is None else self.filter(_key_after(key, last))
+            # No `yield` inside: the loop scope must not reach the consumer's queries.
+            with debug.internal_loop(seen):
+                objs = await page.order_by(*key)[:size]._fetch()
+            if objs:
+                yield objs
+            if len(objs) < size:
+                return
+            last = objs[-1].pk
+
+    async def iterate(self, batch_size: int = 1000) -> AsyncIterator[M]:
+        """Every row, fetched ``batch_size`` at a time (see :meth:`batches`)::
+
+        async for post in Post.objects.iterate():
+            ...
+        """
+        async for batch in self.batches(batch_size):
+            for obj in batch:
+                yield obj
+
+    def _check_path(self, p: RelationPath[Any]) -> None:
+        if not isinstance(p, RelationPath):
+            raise TypeError(f"expected a relation such as {self._model.__name__}.<relation>, got {p!r}")
+        if p._root is not self._model:
+            raise ValueError(f"{p!r} does not start at {self._model.__name__}")
+        no_alias(p)
+
+    # -- IR ------------------------------------------------------------------------------
+
+    def _context(self, params: list[Any], outer: IRContext | None, ctes: _Ctes | None) -> IRContext:
+        ctx = IRContext(self._model, params, outer, ctes)
+        if self._from is not None:
+            ctx.use_cte(self._from)
+        return ctx
+
+    def _root_name(self) -> str:
+        name: str = self._model._meta.name
+        return name
+
+    def _query_ir(
+        self,
+        op: str,
+        params: list[Any],
+        outer: IRContext | None = None,
+        ctes: _Ctes | None = None,
+        *,
+        prefetch: bool = True,
+    ) -> tuple[dict[str, Any], IRContext]:
+        """The query's IR and the context it compiled in (``finish()`` it to declare its
+        CTEs). In a subquery (``outer``) or a CTE (``ctes``), related loading is left out."""
+        ctx = self._context(params, outer, ctes)
+        ir: dict[str, Any] = {"op": op, "model": self._root_name()}
+        if self._without_defaults:
+            ir["without_defaults"] = self._without_defaults
+        if self._without_root_filter:
+            ir["without_root_filter"] = True
+        if self._without_related:
+            ir["without_related"] = True
+        if self._model_fields is not None:
+            ir["model_fields"] = list(self._model_fields)
+            if self._with_default_fields:
+                ir["with_default_fields"] = True
+        if self._related_fields and op == "select" and outer is None and ctes is None:
+            ir["related_fields"] = [
+                {"path": list(p), "fields": list(f), **({"with_default_fields": True} if union else {})}
+                for p, f, union in self._related_fields
+            ]
+        if self._model_helpers:
+            ir["model_helpers"] = list(self._model_helpers)
+        if self._from is not None:
+            ir["from"] = self._from.name
+        if self._joins:
+            joins = []
+            for cte, on, is_outer in self._joins:
+                ctx.use_cte(cte)
+                joins.append({"cte": cte.name, "on": on._ir(ctx), "outer": is_outer})
+            ir["joins"] = joins
+        if self._filters:
+            ir["filters"] = [f._ir(ctx) for f in self._filters]
+        if self._order:
+            ir["order"] = [o._ir(ctx) for o in self._order]
+        if self._limit is not None:
+            ir["limit"] = self._limit._ir(ctx) if isinstance(self._limit, Param) else ctx.param(self._limit)
+        if self._offset is not None:
+            ir["offset"] = self._offset._ir(ctx) if isinstance(self._offset, Param) else ctx.param(self._offset)
+        top = outer is None and ctes is None
+        if self._related and op == "select" and top:
+            ir["select_related"] = [list(p) for p in self._related]
+        if op == "select" and top:
+            annotations = self._annotations()
+            if annotations:
+                ir["annotations"] = [{"name": a._name, "expr": a._ir(ctx)} for a in annotations]
+        if self._prefetch and op == "select" and top and prefetch:
+            ir["prefetch"] = _prefetch_ir(self._model, ((p.path._path, p) for p in self._prefetch), params)
+        if self._lock is not None:
+            if op != "select":
+                raise QueryError(f"{op}() can't lock rows; lock() applies to reading rows")
+            ir["lock"] = self._lock
+        ctx.add_windows(ir)
+        return ir, ctx
+
+    def _standalone(self) -> None:
+        if self._via is not None:
+            raise TypeError(
+                f"a relation query set can only be used inside load(); use {self._model.__name__}.objects for a standalone query"
+            )
+
+    def _select_ir(self, op: str, params: list[Any]) -> dict[str, Any]:
+        self._standalone()
+        ir, ctx = self._query_ir(op, params)
+        return ctx.finish(ir)
+
+    def _subquery_ir(self, ctx: IRContext, what: str) -> dict[str, Any]:
+        self._standalone()
+        if self._lock is not None:
+            raise QueryError("a subquery can't lock rows")
+        return self._query_ir("select", ctx.params, ctx)[0]
+
+    def _cte_ir(self, params: list[Any], ctes: _Ctes) -> dict[str, Any]:
+        self._standalone()
+        return self._query_ir("select", params, ctes=ctes)[0]
+
+    def _mutation_ir(self, op: str, params: list[Any], values: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        self._standalone()
+        if self._limit is not None or self._offset is not None:
+            raise QueryError(f"{op}() is not supported on a sliced query set")
+        if self._lock is not None:
+            raise QueryError(f"{op}() locks the rows it changes; drop lock()")
+        if self._from is not None or self._joins:
+            raise QueryError(f"{op}() writes the model's table; it can't run on a query set with from_() or join()")
+        ctx = IRContext(self._model, params)
+        ir: dict[str, Any] = {"op": op, "model": self._model._meta.name, "filters": [f._ir(ctx) for f in self._filters]}
+        if self._without_defaults:
+            ir["without_defaults"] = self._without_defaults
+        if self._without_root_filter:
+            ir["without_root_filter"] = True
+        if self._model_fields is not None:
+            ir["model_fields"] = list(self._model_fields)
+        if values is not None:
+            ir["set"] = assignments(self._model, values, ctx)
+        return ctx.finish(ir)
+
+    def _native(self) -> Any:
+        return self._model._meta.registry.native()
+
+    def prepare(self) -> Prepared[M]:
+        """This query compiled once, to run many times with :func:`monorm.param` values::
+
+            by_author = Post.objects.filter(Post.author_id == monorm.param("author")).prepare()
+            posts = await by_author(author=3)
+
+        Each call skips building the query (the expression tree, the IR and its JSON) and
+        only binds the values. Build it once, e.g. at module level, and reuse it."""
+        self._standalone()
+        return Prepared(self)
+
+    def sql(self) -> str:
+        """The SELECT this query set runs, with parameters inlined (for debugging)."""
+        params: list[Any] = []
+        from .db import _with_scope
+
+        ir = self._select_ir("select", params)
+        sql: str = self._native().sql(*_with_scope(json.dumps(ir), params))
+        return sql
+
+    def inspect(self) -> QueryInspection:
+        """Inspect planned statement templates without executing this query.
+
+        Includes prefetches once each; use ``Database.on_query()`` for actual
+        execution counts and ``explain()`` for the database's physical strategy.
+        """
+        params: list[Any] = []
+        return _inspect(self, self._select_ir("select", params), params)
+
+    async def explain(self, analyze: bool = False) -> str:
+        """The database's plan for this query's SELECT (not for its prefetch queries).
+
+        Postgres gives ``EXPLAIN`` text; ``analyze=True`` runs the query with
+        ``EXPLAIN (ANALYZE, BUFFERS)`` and adds the real times and row counts. SQLite gives
+        ``EXPLAIN QUERY PLAN``, each step indented under its parent, and has no
+        ``analyze``.
+        """
+        from .db import _with_scope, resolve
+
+        if analyze and self._lock is not None:
+            raise QueryError(
+                "explain(analyze=True) would run the query and take its row locks; drop lock() to explain it"
+            )
+        params: list[Any] = []
+        op, params = _with_scope(json.dumps(self._select_ir("select", params)), params)
+        db = resolve(self._db)
+        engine, tx = db._reader(), db._tx()
+        plan: str = await db._call(lambda t: engine.explain(op, params, analyze, tx, t))
+        return plan
+
+    # -- execution -----------------------------------------------------------------------
+
+    async def _run(self, ir: dict[str, Any], params: list[Any], row_cls: type | None = None) -> Any:
+        from .db import resolve
+
+        return await resolve(self._db)._run(ir, params, row_cls, self._db)
+
+    def _defaults_select(self) -> str:
+        """The select IR the engine needs to answer a defaults question: the model and the bypass."""
+        return json.dumps(
+            {
+                "model": self._model._meta.name,
+                "without_defaults": self._without_defaults,
+                "without_root_filter": self._without_root_filter,
+                "from": None if self._from is None else "cte",
+            }
+        )
+
+    def _read_defaults(self) -> dict[str, Any]:
+        """The active default order and filtered flag."""
+        result: dict[str, Any] = json.loads(self._native().effective_order(self._defaults_select()))
+        return result
+
+    def current_filter(self) -> list[dict[str, Any]]:
+        """The default filters of this query as ``{source, name, expr, active}``.
+
+        ``active`` is false for a default that ``without_defaults()`` removed. ``expr`` is the IR
+        expression the default was declared with; scope values are not filled in."""
+        result: list[dict[str, Any]] = json.loads(self._native().current_filter(self._defaults_select()))
+        return result
+
+    def _default_order(self) -> tuple[Ordering, ...]:
+        """The order of this read: ``order_by()``, else the schema default order, else the pk."""
+        if self._order:
+            return self._order
+        meta = self._model._meta
+        keys = self._read_defaults()["order"]
+        if keys:
+            return tuple(
+                Ordering(ColumnRef(self._model, (), meta.fields[k["field"]]), k["desc"], k["nulls"]) for k in keys
+            )
+        return tuple(Ordering(ref, desc=False) for ref in meta.key_refs())
+
+    async def _fetch(self) -> list[M]:
+        params: list[Any] = []
+        ir = self._select_ir("select", params)
+        self._check_lock()
+        objs: list[M] = await self._run(ir, params)
+        return objs
+
+    def _check_lock(self) -> None:
+        if self._lock is not None:
+            from .db import resolve
+
+            if resolve(self._db)._tx() is None:
+                raise TransactionRequired(
+                    "lock() outside a transaction would release the locks as soon as the "
+                    "query ends; run it inside `async with db.transaction():`"
+                )
+
+    def _check_rows(self, rows: list[M]) -> list[M]:
+        if self._required and not rows:
+            raise self._model.DoesNotExist(f"no {self._model.__name__} matches the query")
+        return rows
+
+    async def _read(self) -> list[M]:
+        return self._check_rows(await self._fetch())
+
+    def __await__(self) -> Generator[Any, None, list[M]]:
+        self._standalone()
+        return cached(self, self._read, enabled=self is not self._model.__dict__.get("objects")).__await__()
+
+    async def __aiter__(self) -> AsyncIterator[M]:
+        for obj in await self:
+            yield obj
+
+    async def paginate(
+        self, *, first: int | None = None, after: str | None = None, last: int | None = None, before: str | None = None
+    ) -> Page[M]:
+        """A page of rows by keyset: ``paginate(first=20, after=cursor)`` reads on from a
+        cursor, ``paginate(last=20, before=cursor)`` reads back.
+
+        The order is ``order_by()``, else the schema default order, else the primary key;
+        the primary key is added when the order is not unique. Order columns are columns
+        of the model itself, and a nullable one needs ``nulls=``. ``load()`` and
+        query defaults apply to each page.
+        """
+        if (first is None) == (last is None):
+            raise TypeError("paginate() takes first= or last=")
+        if (first is not None and before is not None) or (last is not None and after is not None):
+            raise TypeError("paginate() takes first= with after=, or last= with before=")
+        size = first if first is not None else last
+        if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+            raise ValueError("a page size is an integer of at least 1")
+        if self._limit is not None or self._offset is not None:
+            raise QueryError("paginate() can't be used on a sliced query set")
+        keys = pagination.keyset(self._model, self._default_order())
+        fp = pagination.fingerprint(self._model, keys)
+        forward = first is not None
+        order = [o if forward else o.reversed() for _, o in keys]
+        helpers = (*self._model_helpers, *(f.name for f, _ in keys if f.name not in self._model_helpers))
+        qs = self._clone(_model_helpers=helpers)
+        cursor = after if forward else before
+        if cursor is not None:
+            qs = qs.filter(
+                pagination.after(self._model, order, pagination.decode_cursor(self._model, cursor, fp, keys))
+            )
+        rows = await qs.order_by(*order)[: size + 1]._fetch()
+        more = len(rows) > size
+        rows = rows[:size] if forward else rows[:size][::-1]
+        return Page(
+            rows,
+            has_next=more if forward else cursor is not None,
+            has_previous=cursor is not None if forward else more,
+            next_cursor=pagination.encode_cursor(fp, keys, rows[-1]) if rows else None,
+            previous_cursor=pagination.encode_cursor(fp, keys, rows[0]) if rows else None,
+        )
+
+    def first(self) -> OneRowQuery[M | None]:
+        """Lazy first row by the current ordering, or None."""
+        self._no_cuts("first()")
+        return OneRowQuery(self._clone(_order=self._default_order(), _limit=1, _cuts=("slice",)))
+
+    def last(self) -> OneRowQuery[M | None]:
+        """Lazy last row by the current ordering, or None; slices are unsupported."""
+        self._no_cuts("last()")
+        order = tuple(o.reversed() for o in self._default_order())
+        return OneRowQuery(self._clone(_order=order, _limit=1, _cuts=("slice",)))
+
+    def get(self, *conditions: ConditionLike) -> OneRowQuery[M | None]:
+        """Lazy single matching row, or None; multiple matches always raise.
+
+        ``require().get()`` also raises ``Model.DoesNotExist`` when absent."""
+        self._no_cuts("get()")
+        return OneRowQuery(self.filter(*conditions).limit(2), unique=True)
+
+    async def count(self) -> int:
+        params: list[Any] = []
+        n: int = await self._run(self._select_ir("count", params), params)
+        return n
+
+    async def exists(self) -> bool:
+        """Whether any row matches. For ``EXISTS`` inside another query use
+        :func:`monorm.exists`."""
+        params: list[Any] = []
+        b: bool = await self._run(self._select_ir("exists", params), params)
+        return b
+
+    async def in_bulk(self, ids: Iterable[Any] | None = None, *, field: ColumnRef[Any] | None = None) -> dict[Any, M]:
+        """The rows whose ``field`` (the primary key by default; otherwise a unique
+        field) is one of ``ids``, by that value: ``{1: <Post 1>, 3: <Post 3>}``. Missing
+        ids are left out. Without ``ids``, every row. Large id lists run as several
+        queries of 10 000 ids."""
+        self._standalone()
+        meta = self._model._meta
+        if field is None and len(meta.key) > 1:
+            return await self._in_bulk_by_key(ids)
+        col = meta.pk_ref() if field is None else field
+        if not isinstance(col, ColumnRef) or col._root is not self._model or col._path:
+            raise TypeError(f"in_bulk(field=...) takes a column of {self._model.__name__}, got {col!r}")
+        if not (col._field.primary_key or col._field.unique):
+            raise ValueError(f"in_bulk(field={col!r}) needs a unique field")
+        if self._limit is not None or self._offset is not None:
+            raise QueryError("in_bulk() can't be used on a sliced query set")
+        name = col._field.name
+        if ids is None:
+            return {
+                o._field_value(name): o for o in await self._clone(_model_helpers=(*self._model_helpers, name))._fetch()
+            }
+        keys = list(dict.fromkeys(ids))
+        out: dict[Any, M] = {}
+        seen: set[str] = set()
+        for i in range(0, len(keys), IN_BULK_CHUNK):
+            with debug.internal_loop(seen):
+                chunk = (
+                    await self.filter(col.in_(keys[i : i + IN_BULK_CHUNK]))
+                    ._clone(_model_helpers=(*self._model_helpers, name))
+                    ._fetch()
+                )
+            for o in chunk:
+                out[o._field_value(name)] = o
+        return out
+
+    async def _in_bulk_by_key(self, ids: Iterable[Any] | None) -> dict[Any, M]:
+        from .model import key_match
+
+        if self._limit is not None or self._offset is not None:
+            raise QueryError("in_bulk() can't be used on a sliced query set")
+        meta = self._model._meta
+        qs = self._clone(_model_helpers=(*self._model_helpers, *meta.key_names))
+        if ids is None:
+            return {o.pk: o for o in await qs._fetch()}
+        keys = list(dict.fromkeys(ids))
+        out: dict[Any, M] = {}
+        seen: set[str] = set()
+        for i in range(0, len(keys), IN_BULK_KEY_CHUNK):
+            match = or_(*(key_match(self._model, (), meta.key, k) for k in keys[i : i + IN_BULK_KEY_CHUNK]))
+            with debug.internal_loop(seen):
+                chunk = await qs.filter(match)._fetch()
+            for o in chunk:
+                out[o.pk] = o
+        return out
+
+    def update(self, **values: Any) -> Update[M]:
+        """``UPDATE`` every matching row; values may be expressions, e.g.
+        ``views=Post.views + 1``. ``await`` gives the number of rows updated;
+        ``await qs.update(...).returning()`` gives the updated rows instead."""
+        split = adapters.split(self._model, values)
+        if split is None:
+            return Update.build(self, values)
+        checked, pending = split
+        if pending:
+            return adapters.PendingUpdate(self, checked, pending)
+        return Update.build(self, checked)
+
+    def update_many(self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None) -> UpdateMany[M]:
+        """``UPDATE`` each row to its own values: ``rows`` are dicts with the primary key
+        and the fields to set (the same fields in every row)::
+
+            await Post.objects.update_many([{"id": 1, "title": "a"}, {"id": 2, "title": "b"}])
+
+        Rows outside this query set's filters are left alone. One statement per
+        ``batch_size`` rows (by default as many as fit), all in one transaction.
+        ``await`` gives the number of rows updated; ``.returning()`` gives the rows."""
+        self._standalone()
+        checked, pending = adapters.split_rows(self._model, rows)
+        if pending:
+            return adapters.PendingUpdateMany(self, checked, pending, batch_size)
+        return UpdateMany(self, checked, batch_size)
+
+    def delete(self) -> Delete[M]:
+        """``DELETE`` every matching row. ``await`` gives the number of rows deleted;
+        ``await qs.delete().returning()`` gives the deleted rows instead."""
+        return Delete.build(self)
+
+    def insert(self, **values: Any) -> InsertOne[M]:
+        """``INSERT`` one row; ``await`` gives the new instance with database defaults
+        (id, timestamps) filled in. Chain ``.on_conflict(...)`` for an upsert."""
+        self._standalone()
+        split = adapters.split(self._model, values)
+        if split is not None:
+            values, pending = split
+            if pending:
+                return adapters.PendingInsert(self, values, pending)
+        fields, rows, provided = prepare_rows(self._model, [values])
+        return InsertOne(self, fields, rows, provided)
+
+    async def get_or_insert(self, defaults: Mapping[str, Any] | None = None, **lookup: Any) -> tuple[M, bool]:
+        """The row matching ``lookup``, or a new row of ``lookup`` and ``defaults``:
+        ``(row, created)``::
+
+            user, created = await User.objects.get_or_insert(email="a@b.c", defaults={"name": "A"})
+
+        ``lookup`` names the fields of one unique constraint (the database checks this).
+        Safe under concurrency: the insert is ``ON CONFLICT (lookup) DO NOTHING``, and a
+        row that a concurrent insert wins is read back. The reads go to the primary, see
+        the query set's filters and ignore its limit and offset; a row that the filters
+        hide raises ``QueryError``. With a partial unique index, the lookup must be unique
+        among the rows the query set sees: the reads do not carry the index predicate."""
+        key = lookup_values(self._model, lookup)
+        fields = self._model._meta.fields
+        cols: list[ColumnRef[Any]] = [ColumnRef(self._model, (), fields[name]) for name in key]
+        values = {**(defaults or {}), **lookup}
+        where = [c == key[c._field.name] for c in cols]
+        # A replica can lag behind the insert's conflict, so the reads see the primary too.
+        reads = self.using("primary")._clone(_limit=None, _offset=None, _cuts=(), _required=False)
+
+        async def read() -> M | None:
+            return await reads.get(*where)
+
+        found = await read()
+        for _ in range(GET_OR_INSERT_ROUNDS):
+            if found is not None:
+                return found, False
+            row = await self.insert(**values).on_conflict(*cols, update=False).returning()
+            if row is not None:
+                return row, True
+            found = await read()
+            # Bare bypass on purpose: it tells a row hidden by a default from a row deleted concurrently.
+            if (
+                found is None
+                and await QuerySet(self._model)._clone(_db=reads._db, _without_defaults=True).filter(*where).exists()
+            ):
+                raise QueryError(
+                    f"get_or_insert: a {self._model.__name__} row matching the lookup exists, "
+                    f"but the query set's filters hide it"
+                )
+        raise QueryError(
+            f"get_or_insert: a {self._model.__name__} row matching the lookup was deleted "
+            f"concurrently {GET_OR_INSERT_ROUNDS} times"
+        )
+
+    async def attach(self, parent_id: Any, values: Mapping[str, Any]) -> M:
+        """Attach local child values to an existing parent without altering it."""
+        from .multi_table import attach
+
+        return await attach(self, parent_id, values)
+
+    @overload
+    def insert_many(
+        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: Literal[False] = False
+    ) -> InsertMany[M]: ...
+    @overload
+    def insert_many(self, rows: Iterable[Mapping[str, Any]], *, copy: Literal[True]) -> CopyInsert[M]: ...
+    def insert_many(
+        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: bool = False
+    ) -> InsertMany[M] | CopyInsert[M]:
+        """``INSERT`` many rows; ``await`` gives the number of rows inserted, and
+        ``await qs.insert_many(rows).returning()`` the new instances. One statement per
+        ``batch_size`` rows (by default as many as fit in the parameter limit), all in
+        one transaction.
+
+        ``copy=True`` loads the rows with Postgres ``COPY`` instead, for large imports:
+        ``await`` gives the row count, and ``on_conflict()`` is not available."""
+        self._standalone()
+        checked, pending = adapters.split_rows(self._model, rows)
+        if pending:
+            if copy:
+                raise adapters.FieldAdapterError("insert_many(copy=True) takes no value that needs prepare")
+            return adapters.PendingInsertMany(self, checked, pending, batch_size)
+        fields, aligned, provided = prepare_rows(self._model, checked)
+        if copy:
+            if batch_size is not None:
+                raise TypeError("insert_many(copy=True) takes no batch_size: COPY is one statement")
+            return CopyInsert(self, fields, aligned)
+        return InsertMany(self, fields, aligned, provided, batch_size=batch_size)
+
+    def __or__(self, other: QuerySet[M]) -> Self:
+        """``qs1 | qs2``: the rows of either, as one query set with the filter
+        ``(filters of qs1) OR (filters of qs2)``; the rest (order, loading, ``using``)
+        comes from ``qs1``. ``qs2`` sets nothing but filters, neither is sliced, and each
+        has at most one ``filter()``/``exclude()`` call: conditions of one call through a
+        to-many relation hold for one related row, so two calls can't be joined.
+        A relation set on the left gives a plain query set; a custom class takes its
+        state from the left side."""
+        from .expr import or_
+
+        if not isinstance(other, QuerySet) or other._model is not self._model:
+            raise TypeError(f"| combines query sets of {self._model.__name__}")
+        for qs in (self, other):
+            if qs._limit is not None or qs._offset is not None:
+                raise QueryError("| can't combine a sliced query set")
+            if len(qs._filters) > 1:
+                raise QueryError(f"| needs one filter() call per side{qs._or_origin()}; put the conditions in one call")
+        base = QuerySet(self._model)
+        for name in QuerySet.__slots__:
+            if name in ("_filters", "_model", "_result"):
+                continue
+            theirs, ours = getattr(other, name), getattr(base, name)
+            if (theirs is not ours) if name == "_via" else (theirs != ours):
+                raise QueryError(f"| takes filters only from the right query set, which also sets {name.lstrip('_')}")
+        left = self._plain()
+        if not self._filters or not other._filters:
+            return left._clone(_filters=())
+        return left._clone(_filters=(or_(self._filters[0], other._filters[0]),))
+
+    def _plain(self) -> Self:
+        return self
+
+    def _or_origin(self) -> str:
+        return ""
+
+    def __repr__(self) -> str:
+        parts = [f"filter{f!r}" for f in self._filters]
+        if self._order:
+            parts.append(f"order_by{self._order!r}")
+        if isinstance(self._limit, Param) or isinstance(self._offset, Param):
+            parts += [f"{k}({v!r})" for k, v in (("offset", self._offset), ("limit", self._limit)) if v is not None]
+        elif self._limit is not None or self._offset is not None:
+            parts.append(f"[{self._offset or 0}:{'' if self._limit is None else (self._offset or 0) + self._limit}]")
+        return f"<{type(self).__name__} {self._model.__name__}{' ' if parts else ''}{'.'.join(parts)}>"
+
+
+class _Compiled:
+    """One statement of a prepared query: its IR as JSON and its parameters, with the
+    :func:`monorm.param` slots to fill per call."""
+
+    __slots__ = ("json", "params", "slots", "names")
+
+    def __init__(self, ir: IR, params: SlotParams) -> None:
+        self.json = json.dumps(ir)
+        self.params = list(params)
+        self.slots = [(i, p.name, p.transform) for i, p in enumerate(params) if isinstance(p, _Slot)]
+        self.names = frozenset(name for _, name, _ in self.slots)
+
+    def bind(self, values: Mapping[str, Any], known: frozenset[str]) -> list[Any]:
+        if missing := self.names - values.keys():
+            raise TypeError(f"missing values for {', '.join(sorted(missing))}")
+        if unknown := values.keys() - known:
+            raise TypeError(f"the prepared query has no param {', '.join(sorted(unknown))}")
+        params = self.params.copy()
+        for i, name, transform in self.slots:
+            v = values[name]
+            if v is None:
+                raise ValueError(f"param({name!r}) can't be None; compare with None (IS NULL) in the query itself")
+            params[i] = v if transform is None else transform(v)
+        return params
+
+
+class OneRowQuery(Coroutine[Any, Any, T_co]):
+    """A lazy one-row read. Each await runs afresh; tasks drive one inner coroutine."""
+
+    def __init__(self, qs: QuerySet[Any], *, unique: bool = False) -> None:
+        self._qs = qs
+        self._unique = unique
+        self._coroutine: Coroutine[Any, Any, T_co] | None = None
+
+    def label(self, name: str) -> QuerySet[Any]:
+        """Load one related row per parent into ``name`` (or None when absent)."""
+        if self._unique:
+            raise TypeError("get() can't be loaded per parent; use [0].label(name)")
+        return self._qs.label(name)._clone(_one=True)
+
+    def __repr__(self) -> str:
+        return f"<OneRowQuery {self._qs!r}>"
+
+    def _result(self, rows: list[Any]) -> T_co:
+        if self._unique and len(rows) > 1:
+            model = self._qs.model
+            raise model.MultipleObjectsReturned(f"more than one {model.__name__} matches the query")
+        return cast(T_co, rows[0] if rows else None)
+
+    async def _read(self) -> T_co:
+        return self._result(await self._qs._read())
+
+    def __await__(self) -> Generator[Any, None, T_co]:
+        return self._read().__await__()
+
+    def send(self, value: Any) -> Any:
+        if self._coroutine is None:
+            self._coroutine = self._read()
+        return self._coroutine.send(value)
+
+    def throw(self, typ: Any, val: Any = None, tb: Any = None) -> Any:
+        if self._coroutine is None:
+            self._coroutine = self._read()
+        if val is None and tb is None:
+            return self._coroutine.throw(typ)
+        return self._coroutine.throw(typ, val, tb)
+
+    def close(self) -> None:
+        if self._coroutine is not None:
+            self._coroutine.close()
+
+    def prepare(self) -> PreparedOneRowQuery[T_co]:
+        return PreparedOneRowQuery(self, self._qs.prepare())
+
+    def inspect(self) -> QueryInspection:
+        return self._qs.inspect()
+
+    def sql(self) -> str:
+        return self._qs.sql()
+
+
+class PreparedOneRowQuery(Generic[T_co]):
+    """A compiled one-row query whose calls bind parameters and return one row."""
+
+    def __init__(self, query: OneRowQuery[T_co], prepared: Prepared[Any]) -> None:
+        self._query = query
+        self._prepared = prepared
+
+    async def __call__(self, **values: Any) -> T_co:
+        return self._query._result(await self._prepared.all(**values))
+
+    def inspect(self, **values: Any) -> QueryInspection:
+        return self._prepared.inspect(**values)
+
+    def sql(self, **values: Any) -> str:
+        return self._prepared.sql(**values)
+
+
+class Prepared(Generic[M]):
+    """A query set compiled by :meth:`QuerySet.prepare`. Await a call to get the rows
+    (``await q(author=3)``), or use :meth:`get`, :meth:`first`, :meth:`count` and
+    :meth:`exists`; each takes the :func:`monorm.param` values as keywords."""
+
+    __slots__ = ("_qs", "_compiled", "_names")
+
+    def __init__(self, qs: QuerySet[M]) -> None:
+        self._qs = qs
+        self._compiled: dict[str, _Compiled] = {}
+        self._names = self._statement("select").names
+
+    def _statement(self, kind: str) -> _Compiled:
+        c = self._compiled.get(kind)
+        if c is None:
+            qs = self._qs
+            op = "select"
+            if kind == "get":
+                qs._no_cuts("get()")
+                qs = qs.limit(2)
+            elif kind == "first":
+                qs._no_cuts("first()")
+                qs = qs._clone(_order=qs._default_order(), _limit=1, _cuts=("slice",))
+            elif kind in ("count", "exists"):
+                op = kind
+            params = SlotParams()
+            c = self._compiled[kind] = _Compiled(qs._select_ir(op, params), params)
+        return c
+
+    def _start(self, kind: str, values: Mapping[str, Any]) -> Awaitable[Any]:
+        """Starts the statement; the engine's awaitable comes back as is, without a
+        coroutine around it, unless a query hook or an N+1 scope observes it."""
+        from .db import _with_scope, resolve
+
+        c = self._statement(kind)
+        params = c.bind(values, self._names)
+        qs = self._qs
+        if qs._lock is not None:
+            qs._check_lock()
+        db = resolve(qs._db)
+        op, params = _with_scope(c.json, params)
+        engine, tx, allowed = db._reader(), db._tx(), allowed_writes()
+        return db._call(lambda t: engine.run(op, params, tx, None, qs._db, allowed, t))
+
+    def require(self) -> RequiredPrepared[M]:
+        """Require at least one row from each prepared read."""
+        return cast("RequiredPrepared[M]", Prepared(self._qs.require()))
+
+    async def all(self, **values: Any) -> list[M]:
+        rows: list[M] = await self._start("select", values)
+        return self._qs._check_rows(rows)
+
+    def __call__(self, **values: Any) -> Awaitable[list[M]]:
+        """The rows, like awaiting the query set."""
+        return self.all(**values) if self._qs._required else self._start("select", values)
+
+    async def get(self, **values: Any) -> M | None:
+        objs: list[M] = await self._start("get", values)
+        self._qs._check_rows(objs)
+        model = self._qs.model
+        if len(objs) > 1:
+            raise model.MultipleObjectsReturned(f"more than one {model.__name__} matches the query")
+        return objs[0] if objs else None
+
+    async def first(self, **values: Any) -> M | None:
+        objs: list[M] = await self._start("first", values)
+        self._qs._check_rows(objs)
+        return objs[0] if objs else None
+
+    async def count(self, **values: Any) -> int:
+        n: int = await self._start("count", values)
+        return n
+
+    async def exists(self, **values: Any) -> bool:
+        b: bool = await self._start("exists", values)
+        return b
+
+    def inspect(self, **values: Any) -> QueryInspection:
+        """Inspect the prepared SELECT for these bound parameter values."""
+        from .db import _with_scope
+        from .inspection import _native as inspection_native
+
+        c = self._statement("select")
+        return QueryInspection._from_json(
+            inspection_native(self._qs).inspect(
+                *_with_scope(c.json, c.bind(values, self._names)),
+            )
+        )
+
+    def sql(self, **values: Any) -> str:
+        """The SELECT for these values, parameters inlined (for debugging)."""
+        from .db import _with_scope
+
+        c = self._statement("select")
+        sql: str = self._qs._native().sql(*_with_scope(c.json, c.bind(values, self._names)))
+        return sql
+
+    @property
+    def params(self) -> frozenset[str]:
+        """The names of the values each call takes."""
+        return self._names
+
+    def __repr__(self) -> str:
+        return f"<Prepared {self._qs!r}>"
+
+
+async def prefetch(
+    instances: Iterable[M],
+    *relations: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any],
+    using: Database | None = None,
+    without_defaults: bool | tuple[str, ...] = False,
+) -> None:
+    """The relation-only read of :class:`BoundQuerySet` and ``load_instance``: ``IN (...)``
+    queries for ``relations`` of ``instances``, and no query for the instances themselves.
+    Not public: ``monorm.of(objs).load(...)`` is the public form."""
+    from .db import _with_scope, resolve
+    from .fields import BelongsTo
+
+    objs = list(instances)
+    if not objs or not relations:
+        return
+    model = type(objs[0])
+    if any(type(o) is not model for o in objs):
+        raise TypeError("prefetch() takes instances of one model")
+    db = using if using is not None else objs[0].__dict__.get("_db")
+    database = resolve(db)
+    if using is None and any(resolve(o.__dict__.get("_db")) is not database for o in objs):
+        raise QueryError("prefetch() takes instances from one database; pass using= to read another")
+    loads = model.objects.load(*relations)._loads
+    if any(isinstance(i, Labeled) for i in loads):
+        raise TypeError("prefetch() loads relations; a labeled aggregate has nothing to prefetch")
+    if any(isinstance(i, ColumnRef) and not i._path for i in loads):
+        raise TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load")
+    qs = model.objects._clone(_prefetch=_derive(model, loads, by_query=True)[3], _without_defaults=without_defaults)
+    if using is not None:
+        qs = qs.using(using)
+    params: list[Any] = []
+    ir = qs._select_ir("select", params)
+    meta = model._meta
+    keys: list[str] = []
+    for node in _prefetch_tree(model, ((p.path._path, p) for p in qs._prefetch)).values():
+        rel = meta.relations[node.relation]
+        for key in rel.via_fields if isinstance(rel, BelongsTo) else rel.from_fields:  # type: ignore[attr-defined]
+            if key not in keys:
+                keys.append(key)
+    rows = [[o._field_value(k) for k in keys] for o in objs]
+    op, params = _with_scope(json.dumps(ir), params)
+    await database._call(lambda trace: database._engine.prefetch(op, params, keys, rows, objs, database._tx(), db, trace))
+
+
+def _bound_objects(objs: Iterable[M] | M) -> tuple[M, ...]:
+    from .model import _ABSENT, Model, _peek
+
+    items = (objs,) if isinstance(objs, Model) else tuple(objs)
+    if not items:
+        raise TypeError("of() takes at least one object")
+    model = type(items[0])
+    if not isinstance(items[0], Model) or any(type(o) is not model for o in items):
+        raise TypeError("of() takes objects of one model")
+    for o in items:
+        if any(_peek(o, f.name) in (_ABSENT, None) for f in model._meta.key):
+            raise TypeError(f"of() takes objects with a primary key; this {model.__name__} has none")
+    return items
+
+
+def of(objs: Iterable[M] | M) -> BoundQuerySet[M]:
+    """A query set bound to ``objs`` (one object or an iterable, of one model): it reads
+    those rows and fills the objects in place, as ``Model.objects.of(objs)`` does."""
+    items = _bound_objects(objs)
+    return type(items[0]).objects.of(items)
+
+
+class BoundQuerySet(Generic[M]):
+    """A query set filtered to the given objects, which it fills in place when awaited.
+
+    Get one from ``Model.objects.of(objs)``, :func:`monorm.of` or ``obj.qs()``. It has no
+    ordering, slicing, ``first()``, ``get()`` or other shape-changing method: an await
+    returns the matched objects in input order and an unmatched object stays unchanged.
+    """
+
+    __slots__ = ("_objs", "_qs", "_explicit_db", "_guarded")
+
+    def __init__(self, objs: tuple[M, ...], qs: QuerySet[M], explicit_db: bool = False, guarded: bool = False) -> None:
+        self._objs = objs
+        self._qs = qs
+        self._explicit_db = explicit_db
+        self._guarded = guarded
+
+    def _clone(self, qs: QuerySet[M], explicit_db: bool | None = None) -> Self:
+        return type(self)(self._objs, qs, self._explicit_db if explicit_db is None else explicit_db, self._guarded)
+
+    def _guard(self) -> Self:
+        """This set, marked as guarded: its filters match the loaded guard values of the rows, so a
+        write extension adds no such check."""
+        return type(self)(self._objs, self._qs, self._explicit_db, True)
+
+    def filter(self, *conditions: ConditionLike) -> Self:
+        return self._clone(self._qs.filter(*conditions))
+
+    def exclude(self, *conditions: ConditionLike) -> Self:
+        return self._clone(self._qs.exclude(*conditions))
+
+    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
+        return self._clone(self._qs.load(*items))
+
+    def lock(self, exclusive: bool = True, *, nowait: bool = False, skip_locked: bool = False) -> Self:
+        return self._clone(self._qs.lock(exclusive, nowait=nowait, skip_locked=skip_locked))
+
+    def using(self, db: Database | Literal["primary"] | None) -> Self:
+        """Run on ``db``; ``"primary"`` is the primary of the objects' database."""
+        if isinstance(db, str):
+            if db != "primary":
+                raise ValueError(f'using() takes a Database or "primary", got {db!r}')
+            from .db import resolve
+
+            db = resolve(self._qs._db or self._objs[0].__dict__.get("_db")).primary
+        return self._clone(self._qs.using(db), explicit_db=db is not None)
+
+    def without_defaults(self, *names: str) -> Self:
+        return self._clone(self._qs.without_defaults(*names))
+
+    def without_related(self) -> Self:
+        return self._clone(self._qs.without_related())
+
+    def _database(self) -> Database | None:
+        """The database to read: the one ``using()`` named, else the objects' common one."""
+        from .db import resolve
+
+        if self._explicit_db:
+            return self._qs._db
+        db = self._objs[0].__dict__.get("_db")
+        database = resolve(db)
+        if any(resolve(o.__dict__.get("_db")) is not database for o in self._objs):
+            raise QueryError("of() takes objects from one database; call using() to read another")
+        return db
+
+    def _keys(self) -> list[Any]:
+        return list(dict.fromkeys(o.pk for o in self._objs))
+
+    def _condition(self, keys: list[Any]) -> Condition:
+        from .model import key_match
+
+        meta = self._qs._model._meta
+        if len(meta.key) == 1 and len(keys) != 1:
+            return meta.pk_ref().in_(keys)
+        return or_(*(key_match(self._qs._model, (), meta.key, k) for k in keys))
+
+    def _query(self) -> QuerySet[M]:
+        """The query of all the keys, for a write: one statement."""
+        return self._qs.using(self._database()).filter(self._condition(self._keys()))
+
+    def _read_queries(self) -> list[QuerySet[M]]:
+        """The queries of a read: at most ``IN_BULK_KEY_CHUNK`` keys each, half that for a
+        composite key, whose OR of ANDs is two levels deep per key (SQLite stops at depth 1000)."""
+        base = self._qs.using(self._database())
+        keys = self._keys()
+        size = IN_BULK_KEY_CHUNK if len(self._qs._model._meta.key) == 1 else IN_BULK_KEY_CHUNK // 2
+        return [base.filter(self._condition(keys[i : i + size])) for i in range(0, len(keys), size)]
+
+    async def _read(self) -> list[M]:
+        from ._loading import merge
+
+        loads = self._qs._loads
+        own = any((isinstance(i, ColumnRef) and not i._path) or isinstance(i, Labeled) for i in loads)
+        relation_only = bool(loads) and not own
+        if relation_only and not self._qs._filters and self._qs._lock is None:
+            await prefetch(
+                self._objs,
+                *cast("tuple[Any, ...]", loads),
+                using=self._database(),
+                without_defaults=self._qs._without_defaults,
+            )
+            return list(self._objs)
+        fresh: dict[Any, M] = {}
+        for query in self._read_queries():
+            if relation_only:
+                query = query._clone(_loads=(), _model_fields=tuple(f.name for f in self._qs._model._meta.key))
+            fresh.update((row.pk, row) for row in await query._fetch())
+        matched = [o for o in self._objs if o.pk in fresh]
+        for o in matched:
+            merge(o, fresh[o.pk], True)
+        if relation_only:
+            await prefetch(
+                matched,
+                *cast("tuple[Any, ...]", loads),
+                using=self._database(),
+                without_defaults=self._qs._without_defaults,
+            )
+        return matched
+
+    def __await__(self) -> Generator[Any, None, list[M]]:
+        return self._read().__await__()
+
+    async def _write(self, build: Callable[[QuerySet[M]], Returning[M]]) -> list[M]:
+        """Run the ``RETURNING`` statement that ``build`` makes of the bound query, fill the
+        objects whose rows it returns, and give those objects in input order."""
+        from ._loading import merge
+
+        query = self._query()
+        if any("_orm_internal" in o.__dict__ for o in self._objs):
+            meta = self._qs._model._meta
+            group = meta.leaf_group
+            held = [n for n in meta.field_names if any(n in o.__dict__ or group.get(n) in o.__dict__ for o in self._objs)]
+            query = query.load(*(ColumnRef(self._qs._model, (), meta.fields[n]) for n in held))
+        returned = {row.pk: row for row in await build(query)}
+        if len(self._objs) == 1 and len(returned) == 1:
+            # a key change returns the row under its new key
+            merge(self._objs[0], next(iter(returned.values())), True)
+            return list(self._objs)
+        changed = [o for o in self._objs if o.pk in returned]
+        for o in changed:
+            merge(o, returned[o.pk], True)
+        return changed
+
+    async def update(self, **values: Any) -> list[M]:
+        """``UPDATE`` the rows of the objects, in one statement, and fill the objects from the
+        updated rows. Gives the objects whose rows changed, in input order."""
+        key_names = {f.name for f in self._qs._model._meta.key}
+        if len(self._keys()) > 1 and key_names & values.keys():
+            raise TypeError("a bound update of 2 or more objects cannot assign a key field: the rows cannot be matched to the objects afterwards")
+        return await self._write(lambda qs: qs.update(**values).returning())
+
+    async def delete(self) -> list[M]:
+        """``DELETE`` the rows of the objects, in one statement (a model with a delete rewrite
+        sets its field instead). Gives the objects whose rows changed, in input order, filled from the rows."""
+        return await self._write(lambda qs: qs.delete().returning())
+
+    async def count(self) -> int:
+        return sum([await query.count() for query in self._read_queries()])
+
+    async def exists(self) -> bool:
+        for query in self._read_queries():
+            if await query.exists():
+                return True
+        return False
+
+    def sql(self) -> str:
+        """The SQL of the first statement of a read."""
+        return self._read_queries()[0].sql()
+
+    def inspect(self) -> QueryInspection:
+        return self._read_queries()[0].inspect()
+
+    def __repr__(self) -> str:
+        return f"<BoundQuerySet {self._qs._model.__name__} of {len(self._objs)} objects>"
+
+
+def use_query_set(model: type[M], query_set: type[QuerySet[M]] | str) -> None:
+    """Make ``query_set`` (a :class:`QuerySet` subclass, or ``"module:Class"``) the class
+    of ``model.objects``, of the query sets built from it and of the model's relation
+    sets (``user.posts``). A ``"module:Class"`` path is imported on the first access to
+    ``model.objects``, so that module can import the models module. Generated
+    ``models.py`` modules call this for ``--query-set Model=module:Class``."""
+    if not isinstance(query_set, str):
+        _check_query_set(model, query_set)
+    meta = model._meta
+    meta.query_set = query_set
+    meta.composed_set = None
+    meta.related_sets = {}
+    setattr(model, "objects", _Objects())
+
+
+def use_extensions(
+    model: type[M],
+    query_sets: tuple[type[QuerySet[M]], ...],
+    bound_sets: tuple[type[BoundQuerySet[M]], ...] = (),
+) -> None:
+    """Mix the query-set classes of extensions into ``model.objects`` and its relation sets,
+    after a ``use_query_set`` class and before ``QuerySet``. ``query_sets`` are in MRO order
+    (the last extension of the chain first). ``define()`` calls this for the generated models."""
+    for cls in query_sets:
+        _check_query_set(model, cls)
+    meta = model._meta
+    meta.extension_sets = query_sets
+    meta.composed_set = None
+    meta.bound_extension_sets = bound_sets
+    meta.composed_bound = None
+    meta.related_sets = {}
+    setattr(model, "objects", _Objects())
+
+
+class _Objects:
+    """``Model.objects`` until its first access, which builds the root query set and
+    puts it in the model's place."""
+
+    def __get__(self, obj: object, owner: type[Model]) -> QuerySet[Any]:
+        qs = _query_set_class(owner)(owner)
+        setattr(owner, "objects", qs)
+        return qs
+
+
+def _bound_class(model: type[Model]) -> type[BoundQuerySet[Any]]:
+    meta = model._meta
+    if not meta.bound_extension_sets:
+        return BoundQuerySet
+    if meta.composed_bound is None:
+        meta.composed_bound = cast(
+            "type[BoundQuerySet[Any]]",
+            type(f"{model.__name__}BoundQuerySet", (*meta.bound_extension_sets, BoundQuerySet), {}),
+        )
+    return meta.composed_bound
+
+
+def _query_set_class(model: type[Model]) -> type[QuerySet[Any]]:
+    meta = model._meta
+    cls = meta.query_set
+    if meta.extension_sets:
+        if meta.composed_set is None:
+            user = [_resolve_query_set(model, cls)] if cls is not None else []
+            meta.composed_set = cast(
+                "type[QuerySet[Any]]", type(f"{model.__name__}QuerySet", (*user, *meta.extension_sets, QuerySet), {})
+            )
+        return meta.composed_set
+    if cls is None:
+        return QuerySet
+    return _resolve_query_set(model, cls)
+
+
+def _resolve_query_set(model: type[Model], cls: type[QuerySet[Any]] | str) -> type[QuerySet[Any]]:
+    meta = model._meta
+    if isinstance(cls, str):
+        import importlib
+
+        module, sep, name = cls.partition(":")
+        if not sep or not module or not name:
+            raise TypeError(f"{model.__name__}: query set {cls!r} must be 'module:Class'")
+        found = importlib.import_module(module)
+        for part in name.split("."):
+            found = getattr(found, part)
+        cls = meta.query_set = _check_query_set(model, found)
+    return cls
+
+
+def _check_query_set(model: type[Model], cls: Any) -> type[QuerySet[Any]]:
+    if not isinstance(cls, type) or not issubclass(cls, QuerySet) or issubclass(cls, (RelatedSet, ManyRelatedSet)):
+        raise TypeError(f"{model.__name__}: a query set class is a subclass of monorm.QuerySet, got {cls!r}")
+    for klass in cls.__mro__[: cls.__mro__.index(QuerySet)]:
+        if klass.__dict__.get("__slots__"):
+            raise TypeError(f"{cls.__name__} declares __slots__; a query set class can't, it mixes with relation sets")
+    return cls
+
+
+def _relation_set_class(base: type[QuerySet[Any]], model: type[Model]) -> type[QuerySet[Any]]:
+    """``base`` with the model's query set methods, built once per model."""
+    custom = _query_set_class(model)
+    if custom is QuerySet:
+        return base
+    cache: dict[type, type] = model._meta.related_sets
+    cls = cache.get(base)
+    if cls is None:
+        cls = cache[base] = type(f"{model.__name__}{base.__name__}", (base, custom), {"__slots__": ()})
+    return cls
+
+
+class RelatedSet(QuerySet[M]):
+    """``user.posts``: the rows of a to-many relation of one instance.
+
+    Awaiting it returns the rows loaded by ``load()`` when there are any,
+    otherwise it runs the query. ``.cached`` gives the prefetched rows without awaiting.
+    """
+
+    __slots__ = ("_relation", "_instance")
+
+    def __new__(cls, *args: Any) -> Self:
+        made: Any = _relation_set_class(RelatedSet, args[0].target) if cls is RelatedSet and args else cls
+        return cast("Self", object.__new__(made))
+
+    def _plain(self) -> QuerySet[M]:  # type: ignore[override]
+        """The same query as a plain query set of the model: no relation, no loaded rows."""
+        plain = _query_set_class(self._model)
+        new: QuerySet[M] = plain.__new__(plain)
+        for name in QuerySet.__slots__:
+            setattr(new, name, None if name == "_result" else getattr(self, name))
+        state = getattr(self, "__dict__", None)
+        if state:
+            new.__dict__.update(state)
+        return new
+
+    def _or_origin(self) -> str:
+        return f" ({self._relation.name}: write filter(a | b))"
+
+    def __or__(self, other: QuerySet[M]) -> QuerySet[M]:  # type: ignore[override]
+        return cast("QuerySet[M]", super().__or__(other))
+
+    def __init__(self, relation: HasMany[M, Any], instance: Model) -> None:
+        super().__init__(relation.target)
+        self._relation = relation
+        self._instance = instance
+        self._db = instance.__dict__.get("_db")
+        from .model import key_match
+
+        fields = relation.target._meta.fields
+        key = key_value(instance, relation.from_fields)
+        self._filters = (key_match(relation.target, (), [fields[n] for n in relation.via_fields], key),)
+
+    @property
+    def cached(self) -> list[M]:
+        """Rows loaded with ``load()``; raises ``NotLoaded`` otherwise."""
+        from .errors import NotLoaded
+
+        rows = self._instance.__dict__.get(self._relation.name)
+        if rows is None:
+            raise NotLoaded(f"{self._relation.model.__name__}.{self._relation.name} was not prefetched")
+        return list(rows)
+
+    def _is_pristine(self) -> bool:
+        return len(self._filters) == 1 and not self._order and self._limit is None and self._offset is None
+
+    async def _fetch(self) -> list[M]:
+        rows = self._instance.__dict__.get(self._relation.name)
+        if (
+            rows is not None
+            and self._is_pristine()
+            and not self._prefetch
+            and not self._related
+            and not self._annotations()
+        ):
+            return list(rows)
+        if debug._scope.get() is not None and self._is_pristine():
+            with debug.relation_load(self._relation.model.__name__, self._relation.name, "load"):
+                return await super()._fetch()
+        return await super()._fetch()
+
+    def insert(self, **values: Any) -> InsertOne[M]:
+        """Insert a related row pointing at this instance."""
+        return super().insert(**{**values, **self._link()})
+
+    async def get_or_insert(self, defaults: Mapping[str, Any] | None = None, **lookup: Any) -> tuple[M, bool]:
+        """The related row matching ``lookup``, or a new one pointing at this instance;
+        the link field is part of the lookup."""
+        return await super().get_or_insert(defaults, **{**lookup, **self._link()})
+
+    @overload
+    def insert_many(
+        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: Literal[False] = False
+    ) -> InsertMany[M]: ...
+    @overload
+    def insert_many(self, rows: Iterable[Mapping[str, Any]], *, copy: Literal[True]) -> CopyInsert[M]: ...
+    def insert_many(
+        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: bool = False
+    ) -> InsertMany[M] | CopyInsert[M]:
+        """Insert related rows pointing at this instance."""
+        link = self._link()
+        linked = ({**r, **link} for r in rows)
+        if copy:
+            if batch_size is not None:
+                raise TypeError("insert_many(copy=True) takes no batch_size: COPY is one statement")
+            return super().insert_many(linked, copy=True)
+        return super().insert_many(linked, batch_size=batch_size)
+
+    def _link(self) -> dict[str, Any]:
+        return key_items(self._relation.via_fields, key_value(self._instance, self._relation.from_fields))
+
+
+class ManyRelatedSet(QuerySet[M]):
+    """``post.tags``: the rows a many-to-many relation links to one instance.
+
+    A query set over the related model (filtered through the join model), which also
+    reads rows loaded by ``load()`` (``.cached``, or awaiting it unchanged),
+    and changes the links: ``add()``, ``remove()``, ``set()``, ``clear()`` and
+    ``insert()`` write rows of the join model.
+    """
+
+    __slots__ = ("_relation", "_instance")
+
+    def __new__(cls, *args: Any) -> Self:
+        made: Any = _relation_set_class(ManyRelatedSet, args[0].target) if cls is ManyRelatedSet and args else cls
+        return cast("Self", object.__new__(made))
+
+    def _plain(self) -> QuerySet[M]:  # type: ignore[override]
+        """The same query as a plain query set of the model: no relation, no loaded rows."""
+        plain = _query_set_class(self._model)
+        new: QuerySet[M] = plain.__new__(plain)
+        for name in QuerySet.__slots__:
+            setattr(new, name, None if name == "_result" else getattr(self, name))
+        state = getattr(self, "__dict__", None)
+        if state:
+            new.__dict__.update(state)
+        return new
+
+    def _or_origin(self) -> str:
+        return f" ({self._relation.name}: write filter(a | b))"
+
+    def __or__(self, other: QuerySet[M]) -> QuerySet[M]:  # type: ignore[override]
+        return cast("QuerySet[M]", super().__or__(other))
+
+    def __init__(self, relation: ManyToMany[M, Any], instance: Model) -> None:
+        from .expr import exists, outer
+
+        super().__init__(relation.target)
+        self._relation = relation
+        self._instance = instance
+        self._db = instance.__dict__.get("_db")
+        join = relation.through
+        fields = join._meta.fields
+        source: ColumnRef[Any] = ColumnRef(join, (), fields[relation.source])
+        target: ColumnRef[Any] = ColumnRef(join, (), fields[relation.target_field])
+        to: ColumnRef[Any] = ColumnRef(relation.target, (), relation.target._meta.fields[relation.to])
+        self._filters = (exists(join.objects.filter(source == self._key, target == outer(to))),)
+
+    @property
+    def _key(self) -> Any:
+        return self._instance._field_value(self._relation.from_)
+
+    @property
+    def cached(self) -> list[M]:
+        """Rows loaded with ``load()``; raises ``NotLoaded`` otherwise."""
+        from .errors import NotLoaded
+
+        rows = self._instance.__dict__.get(self._relation.name)
+        if rows is None:
+            raise NotLoaded(f"{self._relation.model.__name__}.{self._relation.name} was not prefetched")
+        return list(rows)
+
+    async def _fetch(self) -> list[M]:
+        rows = self._instance.__dict__.get(self._relation.name)
+        pristine = len(self._filters) == 1 and not self._order and self._limit is None and self._offset is None
+        if rows is not None and pristine and not self._prefetch and not self._related:
+            return list(rows)
+        if debug._scope.get() is not None and pristine:
+            with debug.relation_load(self._relation.model.__name__, self._relation.name, "load"):
+                return await super()._fetch()
+        return await super()._fetch()
+
+    # -- links ------------------------------------------------------------------------------
+
+    def _links(self) -> QuerySet[Any]:
+        """The join rows of this instance."""
+        join = self._relation.through
+        source: ColumnRef[Any] = ColumnRef(join, (), join._meta.fields[self._relation.source])
+        db = self._db if self._db is not None else self._instance.__dict__.get("_db")
+        return join.objects.using(db).filter(source == self._key)
+
+    def _target_keys(self, objs: Iterable[Any]) -> list[Any]:
+        """Keys of related instances (or the keys themselves)."""
+        to = self._relation.to
+        target = self._relation.target
+        keys = []
+        for o in objs:
+            if isinstance(o, target):
+                keys.append(o._field_value(to))
+            elif hasattr(o, "_meta"):
+                raise TypeError(
+                    f"{self._relation.model.__name__}.{self._relation.name} links {target.__name__}, not {o!r}"
+                )
+            else:
+                keys.append(o)
+        return list(dict.fromkeys(keys))
+
+    def _target_col(self) -> ColumnRef[Any]:
+        join = self._relation.through
+        return ColumnRef(join, (), join._meta.fields[self._relation.target_field])
+
+    def _forget(self) -> None:
+        # prefetched rows no longer match the links
+        self._instance.__dict__.pop(self._relation.name, None)
+
+    async def add(self, *objs: Any, through_defaults: Mapping[str, Any] | None = None) -> None:
+        """Link the given instances (or keys); links that exist are left alone, and a link
+        that a delete rewrite hid (a soft-deleted one) is restored.
+        ``through_defaults`` sets other fields of the new join rows
+        (``post.tags.add(tag, through_defaults={"position": 1})``)."""
+        from .db import resolve
+
+        extra = self._through_defaults(through_defaults)
+        keys = self._target_keys(objs)
+        if not keys:
+            return
+        # Uploads run before the transaction opens, so none holds it.
+        extra = await adapters.prepare_values(self._relation.through, extra)
+        if self._hidden_links() is None:
+            await self._add(keys, extra)
+            return
+        async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(
+            savepoint=False
+        ):
+            await self._add(keys, extra)
+
+    def _hidden_links(self) -> tuple[ColumnRef[Any], tuple[str, ...]] | None:
+        """The delete-rewrite field of the join model and the names of the read defaults that hide
+        its rewritten rows, from the neutral behavior records; ``None`` when no rewrite applies."""
+        from .ext import behavior_records
+
+        join = self._relation.through
+        rewrites = behavior_records(join, "delete_rewrites")
+        if not rewrites:
+            return None
+        rewrite = rewrites[0]
+        names = tuple(d["name"] for d in behavior_records(join, "read_defaults") if d["source"] == rewrite["source"])
+        return ColumnRef(join, (), join._meta.fields[rewrite["field"]]), names
+
+    async def _add(self, keys: list[Any], extra: Mapping[str, Any]) -> None:
+        col = self._target_col()
+        links = self._links()
+        hidden = self._hidden_links()
+        if hidden is not None:
+            field, names = hidden
+            links = links.without_defaults(*names)
+            gone = set(await links.filter(col.in_(keys), field.is_not_null()).select(col).scalars())
+            if gone:
+                await links.filter(col.in_(list(gone)), field.is_not_null()).update(**{field._field.name: None})
+        have = set(await links.filter(col.in_(keys)).select(col).scalars())
+        link = {self._relation.source: self._key}
+        rows = [{**extra, **link, self._relation.target_field: k} for k in keys if k not in have]
+        if rows:
+            await self._links().insert_many(rows)
+        self._forget()
+
+    def _through_defaults(self, values: Mapping[str, Any] | None) -> dict[str, Any]:
+        join = self._relation.through
+        keys = {self._relation.source, self._relation.target_field}
+        for rel in join._meta.relations.values():
+            if isinstance(rel, BelongsTo) and keys.issuperset(rel.via_fields):
+                keys.add(rel.name)
+        bad = sorted(keys & set(values or ()))
+        if bad:
+            raise TypeError(f"through_defaults can't set the link's key {', '.join(bad)}")
+        known = set(join._meta.input_fields) | set(join._meta.relations)
+        unknown = sorted(set(values or ()) - known)
+        if unknown:
+            raise TypeError(f"through_defaults: {join.__name__} has no field {', '.join(unknown)}")
+        return dict(values or {})
+
+    async def remove(self, *objs: Any) -> int:
+        """Unlink the given instances (or keys); returns the number of links removed."""
+        keys = self._target_keys(objs)
+        if not keys:
+            return 0
+        n = await self._links().filter(self._target_col().in_(keys)).delete()
+        self._forget()
+        return n
+
+    async def clear(self) -> int:
+        """Remove every link of this instance; returns how many there were."""
+        n = await self._links().delete()
+        self._forget()
+        return n
+
+    async def set(self, objs: Iterable[Any], *, through_defaults: Mapping[str, Any] | None = None) -> None:
+        """Make the given instances (or keys) exactly the linked ones;
+        ``through_defaults`` sets other fields of the new join rows. One transaction; inside
+        one, a failure marks it (no savepoint), so wrap the call in a nested ``transaction()`` to recover."""
+        from .db import resolve
+
+        extra = self._through_defaults(through_defaults)
+        keys = self._target_keys(objs)
+        col = self._target_col()
+        # Uploads run before the transaction opens, so none holds it; one call stores one value in every row.
+        if keys:
+            extra = await adapters.prepare_values(self._relation.through, extra)
+        async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(
+            savepoint=False
+        ):
+            await self._links().filter(differs(col, keys)).delete()
+            if keys:
+                await self._add(keys, extra)
+
+    async def insert(self, **values: Any) -> M:  # type: ignore[override]
+        """Insert a related row and link it, in one transaction (see ``set()`` inside one)."""
+        from .db import resolve
+
+        db = self._db if self._db is not None else self._instance.__dict__.get("_db")
+        insert = QuerySet(self._model).using(db).insert(**values)
+        if isinstance(insert, adapters.PendingInsert):
+            await insert.prepare()  # keeps the upload I/O out of the transaction
+        async with resolve(db).transaction(savepoint=False):
+            obj: M = await insert
+            await self.add(obj)
+        return obj
+
+    async def get_or_insert(self, defaults: Mapping[str, Any] | None = None, **lookup: Any) -> tuple[M, bool]:
+        raise TypeError(
+            f"{self._relation.model.__name__}.{self._relation.name}.get_or_insert() isn't supported; "
+            f"use {self._model.__name__}.objects.get_or_insert(), then add()"
+        )
+
+    def insert_many(  # type: ignore[override]
+        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: bool = False
+    ) -> InsertMany[M]:
+        raise TypeError(
+            f"{self._relation.model.__name__}.{self._relation.name}.insert_many() isn't supported; "
+            f"insert the rows, then link them with add()"
+        )
+
+
+if TYPE_CHECKING:
+
+    class RequiredQuerySet(QuerySet[M]):
+        """The type of a query whose row reads require a result."""
+
+        def get(self, *conditions: ConditionLike) -> OneRowQuery[M]: ...
+        def first(self) -> OneRowQuery[M]: ...
+        def last(self) -> OneRowQuery[M]: ...
+        @overload
+        def __getitem__(self, s: int) -> OneRowQuery[M]: ...
+        @overload
+        def __getitem__(self, s: slice) -> Self: ...
+        def __getitem__(self, s: int | slice) -> OneRowQuery[M] | Self: ...
+        def prepare(self) -> RequiredPrepared[M]: ...
+
+        @overload
+        def select(self, a: Expression[T1] | type[T1], /) -> RequiredSelect[T1]: ...
+        @overload
+        def select(self, a: Expression[T1] | type[T1], b: Expression[T2] | type[T2], /) -> RequiredSelect[T1, T2]: ...
+        @overload
+        def select(
+            self, a: Expression[T1] | type[T1], b: Expression[T2] | type[T2], c: Expression[T3] | type[T3], /
+        ) -> RequiredSelect[T1, T2, T3]: ...
+        @overload
+        def select(
+            self,
+            a: Expression[T1] | type[T1],
+            b: Expression[T2] | type[T2],
+            c: Expression[T3] | type[T3],
+            d: Expression[T4] | type[T4],
+            /,
+        ) -> RequiredSelect[T1, T2, T3, T4]: ...
+        @overload
+        def select(
+            self,
+            a: Expression[T1] | type[T1],
+            b: Expression[T2] | type[T2],
+            c: Expression[T3] | type[T3],
+            d: Expression[T4] | type[T4],
+            e: Expression[T5] | type[T5],
+            /,
+        ) -> RequiredSelect[T1, T2, T3, T4, T5]: ...
+        @overload
+        def select(
+            self,
+            a: Expression[T1] | type[T1],
+            b: Expression[T2] | type[T2],
+            c: Expression[T3] | type[T3],
+            d: Expression[T4] | type[T4],
+            e: Expression[T5] | type[T5],
+            f: Expression[T6] | type[T6],
+            /,
+        ) -> RequiredSelect[T1, T2, T3, T4, T5, T6]: ...
+        @overload
+        def select(self, *items: Expression[Any] | type[Model]) -> RequiredSelect[Unpack[tuple[Any, ...]]]: ...
+        def select(self, *items: Any) -> Any: ...
+
+    class RequiredPrepared(Prepared[M]):
+        async def get(self, **values: Any) -> M: ...
+        async def first(self, **values: Any) -> M: ...

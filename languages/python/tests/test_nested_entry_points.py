@@ -3,7 +3,7 @@
 import pytest
 
 from test_nested import address, seed, shop, world  # noqa: F401
-from orm.write import lookup_values
+from monorm.write import lookup_values
 
 
 async def test_update_many_refuses_a_dict_for_a_nested_field(shop):

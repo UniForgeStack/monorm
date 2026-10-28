@@ -5,10 +5,10 @@ mod sqlite {
 mod postgres {
     include!(concat!(env!("OUT_DIR"), "/postgres.rs"));
 }
-use orm_client::{BatchLoad, Instance};
+use monorm_client::{BatchLoad, Instance};
 macro_rules! exercise { ($module:ident,$url:expr) => {{
     use $module::{CompositeOwner as Owner, CompositeChild as Child, Database};
-    let driver=orm_engine::db::connect($url,1).await.unwrap();
+    let driver=monorm_engine::db::connect($url,1).await.unwrap();
     driver.batch("DROP TABLE IF EXISTS rust_load_composite_children; DROP TABLE IF EXISTS rust_load_composite_owners; CREATE TABLE rust_load_composite_owners(tenant INTEGER,id INTEGER,name TEXT,PRIMARY KEY(tenant,id)); CREATE TABLE rust_load_composite_children(id INTEGER PRIMARY KEY,owner_tenant INTEGER,owner_id INTEGER,title TEXT); INSERT INTO rust_load_composite_owners VALUES(1,7,'one'),(2,7,'two'); INSERT INTO rust_load_composite_children VALUES(1,1,7,'a'),(2,2,7,'b'),(3,NULL,7,'none');".into()).await.unwrap();
     driver.close().await;
     let db=Database::connect($url,1).await.unwrap();
@@ -38,7 +38,7 @@ macro_rules! exercise { ($module:ident,$url:expr) => {{
 #[tokio::test]
 async fn sqlite_composite_loading() {
     let path =
-        std::env::temp_dir().join(format!("orm-composite-loading-{}.db", std::process::id()));
+        std::env::temp_dir().join(format!("monorm-composite-loading-{}.db", std::process::id()));
     let url = format!("sqlite://{}", path.display());
     exercise!(sqlite, &url);
     std::fs::remove_file(path).unwrap();

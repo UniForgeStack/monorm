@@ -1,16 +1,16 @@
-"""The public hooks that packages such as orm-file-storage use (`orm.hooks`)."""
+"""The public hooks that packages such as monorm-file-storage use (`monorm.hooks`)."""
 
 import pytest
-import orm
-from orm.hooks import decode_field, prepare_insert, prepare_update
+import monorm
+from monorm.hooks import decode_field, prepare_insert, prepare_update
 
 SCHEMA = 'datasource db { provider = "sqlite" }\nmodel HookReport {\n id Int @id\n code String @unique\n size Int\n note String?\n}'
 
 
 async def open_db():
-    registry = orm.Registry()
-    Report = orm.loads(SCHEMA, registry=registry)["HookReport"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    Report = monorm.loads(SCHEMA, registry=registry)["HookReport"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     return db, Report
 

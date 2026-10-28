@@ -19,7 +19,7 @@ async function open(dialect: string, source: string): Promise<[Database, Models]
 
 for (const dialect of ["sqlite", "postgres"]) {
   for (const mode of ["database", "application"]) {
-    test(`updated_at is set on ORM updates and by the trigger (${dialect}, ${mode})`, { skip: !hasExtension("orm.timestamps") }, async () => {
+    test(`updated_at is set on ORM updates and by the trigger (${dialect}, ${mode})`, { skip: !hasExtension("monorm.timestamps") }, async () => {
       const [db, models] = await open(dialect, `
 model Note {
   id      Int      @id
@@ -43,7 +43,7 @@ model Note {
       } finally { await db.dropTables(); await db.close(); }
     });
 
-    test(`soft delete updates instead of deleting (${dialect}, ${mode})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+    test(`soft delete updates instead of deleting (${dialect}, ${mode})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
       const [db, models] = await open(dialect, `
 model Author {
   id      Int       @id
@@ -98,7 +98,7 @@ model Doc {
   @@map("tracking_node_soft_docs")
 }`;
 
-  test(`a soft-deleted instance can be undeleted (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") }, async () => {
+  test(`a soft-deleted instance can be undeleted (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -111,7 +111,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an instance reloads and updates its own soft-deleted row (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") }, async () => {
+  test(`an instance reloads and updates its own soft-deleted row (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -124,7 +124,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a partial versioned instance updates twice without a conflict (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
+  test(`a partial versioned instance updates twice without a conflict (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int    @id
@@ -145,9 +145,9 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  const versionedSkip = { skip: !hasExtension("orm.soft-delete", "orm.locking") };
+  const versionedSkip = { skip: !hasExtension("monorm.soft-delete", "monorm.locking") };
 
-  test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.query-defaults") }, async () => {
+  test(`the soft-delete methods bypass only the deleted default (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.query-defaults") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -173,14 +173,14 @@ model Doc {
       });
       const rows = await docs.withoutDefaults().orderBy(Doc.id.asc()).all();
       assert.deepEqual(rows.map((d: { id: number; deleted: Date | null }) => [d.id, d.deleted !== null]), [[3, true], [4, false]]);
-      const reads = /default "tenant" from orm\.query-defaults .* reads scope\.shop/;
+      const reads = /default "tenant" from monorm\.query-defaults .* reads scope\.shop/;
       for (const statement of [docs.undelete(), docs.hardDelete(), docs.allWithDeleted().count(), docs.deletedOnly().count()]) {
         await assert.rejects(Promise.resolve(statement), reads);
       }
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an instance hardDelete also drops the tenant filter (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.query-defaults") }, async () => {
+  test(`an instance hardDelete also drops the tenant filter (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.query-defaults") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -200,7 +200,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an upsert onto a soft-deleted row changes nothing (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+  test(`an upsert onto a soft-deleted row changes nothing (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -219,7 +219,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a query-set bypass lets an upsert update a soft-deleted row (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+  test(`a query-set bypass lets an upsert update a soft-deleted row (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -239,7 +239,7 @@ model Doc {
   });
 
   for (const mode of ["application", "database"]) {
-    test(`add restores a soft-deleted link and inserts the missing ones (${dialect}, ${mode})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+    test(`add restores a soft-deleted link and inserts the missing ones (${dialect}, ${mode})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
       const [db, models] = await open(dialect, `
 model Post {
   id   Int   @id
@@ -281,17 +281,17 @@ model PostTag {
     });
   }
 
-  test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.query-defaults") }, async () => {
+  test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.query-defaults") }, async () => {
     await assert.rejects(open(dialect, `
 model Doc {
   id      Int       @id
   @@soft_delete.deleted_at("deleted", mode: "application")
   @@query.filter("deleted", "id > 0")
   @@map("tracking_node_clash_docs")
-}`), /default name is set by both orm\.soft-delete default "deleted" and orm\.query-defaults default "deleted"/);
+}`), /default name is set by both monorm\.soft-delete default "deleted" and monorm\.query-defaults default "deleted"/);
   });
 
-  test(`a reference to a soft-deleted row loads null (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+  test(`a reference to a soft-deleted row loads null (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Author {
   id      Int       @id
@@ -331,7 +331,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`the soft-delete members work on a two-word field (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+  test(`the soft-delete members work on a two-word field (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Page {
   id         Int       @id
@@ -375,7 +375,7 @@ model Book {
   @@locking.version
   @@map("tracking_node_cascade_books")
 }`;
-  const cascadeSkip = { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") };
+  const cascadeSkip = { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.locking") };
 
   test(`a hard delete of a soft-deleted parent leaves no orphan (${dialect})`, cascadeSkip, async () => {
     const [db, models] = await open(dialect, cascadeVersioned);
@@ -413,7 +413,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !hasExtension("orm.soft-delete") || !hasExtension("orm.locking") }, async () => {
+  test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -428,7 +428,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a stale instance write throws VersionConflict (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
+  test(`a stale instance write throws VersionConflict (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int    @id
@@ -464,7 +464,7 @@ model Doc {
   @@map("tracking_node_upsert_docs")
 }`;
 
-  test(`an upsert bumps the version (${dialect})`, { skip: !hasExtension("orm.locking") || !hasExtension("orm.timestamps") }, async () => {
+  test(`an upsert bumps the version (${dialect})`, { skip: !hasExtension("monorm.locking") || !hasExtension("monorm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "application", version: true }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -479,7 +479,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an upsert sets updated_at in application mode (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
+  test(`an upsert sets updated_at in application mode (${dialect})`, { skip: !hasExtension("monorm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "application" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -492,7 +492,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`the default upsert update list drops updated_at (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
+  test(`the default upsert update list drops updated_at (${dialect})`, { skip: !hasExtension("monorm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "application" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -503,7 +503,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an update: true upsert does not reset the version (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
+  test(`an update: true upsert does not reset the version (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ version: true }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -514,7 +514,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
+  test(`an upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !hasExtension("monorm.timestamps") }, async () => {
     const [db, models] = await open(dialect, upsertDoc({ mode: "database" }));
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -529,7 +529,7 @@ for (const dialect of ["sqlite", "postgres"]) {
   for (const mode of [null, "application", "database"]) {
     for (const operation of ["update", "delete"]) {
       test(`stale proxy instance checks the loaded version (${dialect}, ${operation}, ${mode})`, {
-        skip: !hasExtension("orm.proxy", "orm.locking") || (mode !== null && !hasExtension("orm.soft-delete")),
+        skip: !hasExtension("monorm.proxy", "monorm.locking") || (mode !== null && !hasExtension("monorm.soft-delete")),
       }, async () => {
         const [db, models] = await open(dialect, `
 model Doc {
@@ -570,7 +570,7 @@ model Review {
     }
   }
 
-  test(`instance rejects an explicit version (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
+  test(`instance rejects an explicit version (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
  id Int @id
@@ -593,9 +593,9 @@ model Doc {
 }
 
 const TRACKING = [
-  { extension: "orm.timestamps", attribute: "@@timestamps.updated_at", name: "updated_at", field: "updatedAt", customName: "edited_at", customField: "editedAt" },
-  { extension: "orm.soft-delete", attribute: "@@soft_delete.deleted_at", name: "deleted_at", field: "deletedAt", customName: "removed_at", customField: "removedAt" },
-  { extension: "orm.locking", attribute: "@@locking.version", name: "version", field: "version", customName: "revision", customField: "revision" },
+  { extension: "monorm.timestamps", attribute: "@@timestamps.updated_at", name: "updated_at", field: "updatedAt", customName: "edited_at", customField: "editedAt" },
+  { extension: "monorm.soft-delete", attribute: "@@soft_delete.deleted_at", name: "deleted_at", field: "deletedAt", customName: "removed_at", customField: "removedAt" },
+  { extension: "monorm.locking", attribute: "@@locking.version", name: "version", field: "version", customName: "revision", customField: "revision" },
 ];
 const trackingSchema = (attribute: string) => `
 model Story {
@@ -650,7 +650,7 @@ for (const { extension, attribute, name, field, customName, customField } of TRA
     assert.throws(() => loads(source, { registry: new Registry() }), (e: Error) => e.message.includes(`adds the field Story.${name}, but the field Story.taken already uses the column ${name}`));
   });
 
-  test(`${attribute} on an abstract or extends base reaches each concrete child`, { skip: !hasExtension(extension, "orm.inherit") }, async () => {
+  test(`${attribute} on an abstract or extends base reaches each concrete child`, { skip: !hasExtension(extension, "monorm.inherit") }, async () => {
     const [db, models] = await open("sqlite", inheritedSchema(attribute));
     try {
       assert.deepEqual(Object.keys(models).sort(), ["Child", "Grandchild"]);
@@ -662,7 +662,7 @@ for (const { extension, attribute, name, field, customName, customField } of TRA
 }
 
 for (const model of ["Child", "Grandchild"]) {
-  test(`a concrete child maintains the tracking fields of its base (${model})`, { skip: !hasExtension("orm.inherit", "orm.timestamps", "orm.soft-delete", "orm.locking") }, async () => {
+  test(`a concrete child maintains the tracking fields of its base (${model})`, { skip: !hasExtension("monorm.inherit", "monorm.timestamps", "monorm.soft-delete", "monorm.locking") }, async () => {
     const attributes = '@@timestamps.updated_at("changed", mode: "application")\n  @@soft_delete.deleted_at(mode: "application")\n  @@locking.version';
     const [db, models] = await open("sqlite", inheritedSchema(attributes));
     const Model = models[model]!, rows = Model.objects.using(db);
@@ -679,7 +679,7 @@ for (const model of ["Child", "Grandchild"]) {
   });
 }
 
-test("the added fields have the documented types and defaults", { skip: !hasExtension("orm.timestamps", "orm.soft-delete", "orm.locking") }, async () => {
+test("the added fields have the documented types and defaults", { skip: !hasExtension("monorm.timestamps", "monorm.soft-delete", "monorm.locking") }, async () => {
   const [db, models] = await open("sqlite", `
 model Story {
   id Int @id
@@ -701,7 +701,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     const argument = upsert === undefined ? "" : `, upsert: "${upsert}"`;
     const label = `upsert ${upsert ?? "default"} ${kept ? "keeps" : "drops"} the field in the default upsert list (${dialect})`;
 
-    test(`timestamps ${label}`, { skip: !hasExtension("orm.timestamps") }, async () => {
+    test(`timestamps ${label}`, { skip: !hasExtension("monorm.timestamps") }, async () => {
       const [db, models] = await open(dialect, `
 model Doc {
   id    Int    @id
@@ -721,7 +721,7 @@ model Doc {
       } finally { await db.dropTables(); await db.close(); }
     });
 
-    test(`locking ${label}`, { skip: !hasExtension("orm.locking") }, async () => {
+    test(`locking ${label}`, { skip: !hasExtension("monorm.locking") }, async () => {
       const [db, models] = await open(dialect, `
 model Doc {
   id    Int    @id
@@ -743,7 +743,7 @@ model Doc {
 }
 
 for (const dialect of ["sqlite", "postgres"]) {
-  test(`a timestamps map argument keeps the live column (${dialect})`, { skip: !hasExtension("orm.timestamps") }, async () => {
+  test(`a timestamps map argument keeps the live column (${dialect})`, { skip: !hasExtension("monorm.timestamps") }, async () => {
     const [db, models] = await open(dialect, 'model Story {\n  id Int @id\n  @@timestamps.updated_at(map: "_updated_at")\n  @@map("tracking_node_story_map_ts")\n}\n');
     try {
       const stories = models.Story!.objects.using(db);
@@ -753,7 +753,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a soft-delete map argument keeps the live column (${dialect})`, { skip: !hasExtension("orm.soft-delete") }, async () => {
+  test(`a soft-delete map argument keeps the live column (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, 'model Story {\n  id Int @id\n  @@soft_delete.deleted_at(map: "_deleted_at")\n  @@map("tracking_node_story_map_sd")\n}\n');
     try {
       const Story = models.Story!;
@@ -768,7 +768,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a locking map argument keeps the live column (${dialect})`, { skip: !hasExtension("orm.locking") }, async () => {
+  test(`a locking map argument keeps the live column (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, 'model Story {\n  id Int @id\n  @@locking.version(map: "rev")\n  @@map("tracking_node_story_map_lk")\n}\n');
     try {
       const Story = models.Story!;
@@ -783,17 +783,17 @@ for (const dialect of ["sqlite", "postgres"]) {
 }
 
 const OLD_FIELD_ATTRIBUTES = [
-  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: "changed DateTime @default(now()) @timestamps.updated_at", field: "changed", line: '@@timestamps.updated_at("changed")', note: "" },
-  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: 'updated_at DateTime @default(now()) @timestamps.updated_at(mode: "application")', field: "updated_at", line: '@@timestamps.updated_at(mode: "application")', note: "" },
-  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: "editedAt DateTime @default(now()) @timestamps.updated_at", field: "editedAt", line: '@@timestamps.updated_at("edited_at", map: "editedAt")', note: "" },
-  { extension: "orm.timestamps", attribute: "timestamps.updated_at", old: 'changed DateTime @default(now()) @map("_changed") @timestamps.updated_at(mode: "database")', field: "changed", line: '@@timestamps.updated_at("changed", map: "_changed", mode: "database")', note: "" },
-  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: "deleted_at DateTime? @soft_delete.deleted_at", field: "deleted_at", line: "@@soft_delete.deleted_at", note: "" },
-  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: 'removed DateTime? @soft_delete.deleted_at(mode: "database")', field: "removed", line: '@@soft_delete.deleted_at("removed", mode: "database")', note: "" },
-  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: "_deleted_at DateTime? @soft_delete.deleted_at", field: "_deleted_at", line: '@@soft_delete.deleted_at(map: "_deleted_at")', note: "" },
-  { extension: "orm.soft-delete", attribute: "soft_delete.deleted_at", old: 'deleted_at DateTime? @map("_deleted_at") @soft_delete.deleted_at', field: "deleted_at", line: '@@soft_delete.deleted_at(map: "_deleted_at")', note: "" },
-  { extension: "orm.locking", attribute: "locking.version", old: "version Int @default(0) @locking.version", field: "version", line: "@@locking.version", note: "" },
-  { extension: "orm.locking", attribute: "locking.version", old: "rev Int @default(0) @locking.version", field: "rev", line: '@@locking.version("rev")', note: "" },
-  { extension: "orm.locking", attribute: "locking.version", old: "version BigInt @default(0) @locking.version", field: "version", line: "@@locking.version", note: "; the added field has the type Int, not BigInt; change the type by hand" },
+  { extension: "monorm.timestamps", attribute: "timestamps.updated_at", old: "changed DateTime @default(now()) @timestamps.updated_at", field: "changed", line: '@@timestamps.updated_at("changed")', note: "" },
+  { extension: "monorm.timestamps", attribute: "timestamps.updated_at", old: 'updated_at DateTime @default(now()) @timestamps.updated_at(mode: "application")', field: "updated_at", line: '@@timestamps.updated_at(mode: "application")', note: "" },
+  { extension: "monorm.timestamps", attribute: "timestamps.updated_at", old: "editedAt DateTime @default(now()) @timestamps.updated_at", field: "editedAt", line: '@@timestamps.updated_at("edited_at", map: "editedAt")', note: "" },
+  { extension: "monorm.timestamps", attribute: "timestamps.updated_at", old: 'changed DateTime @default(now()) @map("_changed") @timestamps.updated_at(mode: "database")', field: "changed", line: '@@timestamps.updated_at("changed", map: "_changed", mode: "database")', note: "" },
+  { extension: "monorm.soft-delete", attribute: "soft_delete.deleted_at", old: "deleted_at DateTime? @soft_delete.deleted_at", field: "deleted_at", line: "@@soft_delete.deleted_at", note: "" },
+  { extension: "monorm.soft-delete", attribute: "soft_delete.deleted_at", old: 'removed DateTime? @soft_delete.deleted_at(mode: "database")', field: "removed", line: '@@soft_delete.deleted_at("removed", mode: "database")', note: "" },
+  { extension: "monorm.soft-delete", attribute: "soft_delete.deleted_at", old: "_deleted_at DateTime? @soft_delete.deleted_at", field: "_deleted_at", line: '@@soft_delete.deleted_at(map: "_deleted_at")', note: "" },
+  { extension: "monorm.soft-delete", attribute: "soft_delete.deleted_at", old: 'deleted_at DateTime? @map("_deleted_at") @soft_delete.deleted_at', field: "deleted_at", line: '@@soft_delete.deleted_at(map: "_deleted_at")', note: "" },
+  { extension: "monorm.locking", attribute: "locking.version", old: "version Int @default(0) @locking.version", field: "version", line: "@@locking.version", note: "" },
+  { extension: "monorm.locking", attribute: "locking.version", old: "rev Int @default(0) @locking.version", field: "rev", line: '@@locking.version("rev")', note: "" },
+  { extension: "monorm.locking", attribute: "locking.version", old: "version BigInt @default(0) @locking.version", field: "version", line: "@@locking.version", note: "; the added field has the type Int, not BigInt; change the type by hand" },
 ];
 
 for (const { extension, attribute, old, field, line, note } of OLD_FIELD_ATTRIBUTES) {

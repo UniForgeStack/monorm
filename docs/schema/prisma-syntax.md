@@ -29,9 +29,9 @@ records why the syntax looks the way it does and how the `.orm` syntax maps onto
   Prisma CLI, engines or generators. We use what Prisma publishes for free: the
   syntax, the editor extension, and the Apache-2.0 engine source as a reference.
 * **No `generator orm { }` block.** Prisma accepts generator blocks without error, but
-  `provider = "orm"` makes `prisma generate` look for an `orm` generator program and
-  fail. We don't need a marker: the `orm` CLI is given the schema path (flag or
-  `[tool.orm] schema` in `pyproject.toml`), and settings stay where they are today.
+  `provider = "monorm"` makes `prisma generate` look for an `orm` generator program and
+  fail. We don't need a marker: the `monorm` CLI is given the schema path (flag or
+  `[tool.monorm] schema` in `pyproject.toml`), and settings stay where they are today.
 
 ## Formatter rules (tested)
 
@@ -356,7 +356,7 @@ Where the mapping above leaves something open:
 * A to-many relation finds its key through the to-one relation on the other model,
   including composite foreign keys that reference a composite `@@id`.
 * `datasource` is optional and its `url` is ignored (the URL comes from
-  `ORM_DATABASE_URL`). `generator` blocks are read and ignored, so a file can also
+  `MONORM_DATABASE_URL`). `generator` blocks are read and ignored, so a file can also
   drive Prisma Client.
 * Comments are `//` only, as in Prisma.
 * Prisma Client makes `uuid()` and `cuid()`, not the database. So an imported
@@ -371,7 +371,7 @@ The migrator stays ours, in Rust (`crates/core/src/migrate/`), and reads only ou
 handles triggers, checks, exclusions and functions like any other object. Prisma's
 engine code is a reference, not a dependency:
 
-* Live-database introspection (`orm pull`, drift detection) is ours too, in
+* Live-database introspection (`monorm pull`, drift detection) is ours too, in
   `crates/engine/src/introspect.rs`: it reads `pg_catalog`, including `pg_trigger` and
   `pg_proc`. `schema-engine/sql-schema-describer/src/postgres.rs` in
   `prisma/prisma-engines` (Apache-2.0) shows the catalog queries, but the crate itself
@@ -379,7 +379,7 @@ engine code is a reference, not a dependency:
   names of check constraints.
 * Prisma's differ compares Prisma datamodels, so it can't diff our objects.
 
-The migration file layout, the `orm_migrations` table and down migrations stay as
+The migration file layout, the `monorm_migrations` table and down migrations stay as
 described in [`schema.md`](schema.md#migrations). A database migrated with Prisma's
 CLI and one migrated with ours are not interchangeable: Prisma doesn't know about our
 triggers and checks and would report drift.

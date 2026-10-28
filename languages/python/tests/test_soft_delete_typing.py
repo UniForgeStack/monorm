@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from artifact_caps import has_extension
-from orm.__main__ import main as cli
+from monorm.__main__ import main as cli
 
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA = """\
@@ -53,7 +53,7 @@ async def go(post: Post, tag: Tag) -> None:
 EXPECTED = {i for i, line in enumerate(USE.splitlines(), 1) if "# E:" in line}
 
 pytestmark = pytest.mark.skipif(
-    not has_extension("orm.soft-delete"),
+    not has_extension("monorm.soft-delete"),
     reason="requires a selected soft-delete native artifact",
 )
 

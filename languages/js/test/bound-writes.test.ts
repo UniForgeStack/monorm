@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { connect, loads, of, Registry, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
-const soft = { skip: !hasExtension("orm.soft-delete") };
+const soft = { skip: !hasExtension("monorm.soft-delete") };
 type Models = Record<string, any>;
 const bound = (b: unknown): any => b;
 

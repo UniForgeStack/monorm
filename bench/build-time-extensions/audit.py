@@ -27,7 +27,7 @@ for label, workspace in [
             "--manifest-path",
             str(workspace / "Cargo.toml"),
             "-p",
-            "orm-python",
+            "monorm-python",
             "-e",
             "normal",
             "--prefix",
@@ -37,9 +37,9 @@ for label, workspace in [
     )
     (args.out / f"{label}-dependencies.txt").write_text(tree)
     if label == "disabled":
-        assert "native-rules" not in tree and "example-" not in tree and "orm-extension-build" not in tree
+        assert "native-rules" not in tree and "example-" not in tree and "monorm-extension-build" not in tree
     else:
-        assert "orm-app-native-rules" in tree
+        assert "monorm-app-native-rules" in tree
     record = {"dependency_sha256": hashlib.sha256(tree.encode()).hexdigest()}
     if label != "disabled":
         source = (workspace / "engine-composition.rs").read_text()

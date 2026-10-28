@@ -10,10 +10,10 @@ Each kind leaves out the methods that do not fit its result.
 | `QuerySet` (or a custom subclass) | `Post.objects` | yes | Every normal read and write. |
 | Relation query set | `User.posts.objects` (class path) | no: `TypeError` outside `load()` | A `load()` item: filter, order, slice, `.label()`, `.as_prefetch()`. |
 | `RelatedSet` / `ManyRelatedSet` | `u.posts` | yes | The rows of one parent. `insert()` fills the key; `add()` / `remove()` for many-to-many. |
-| `BoundQuerySet` | `post.qs()`, `orm.of(posts)` | yes | Fills the same objects in place. |
+| `BoundQuerySet` | `post.qs()`, `monorm.of(posts)` | yes | Fills the same objects in place. |
 | `Select` (not a query set) | `qs.select(...)` | yes | `Row`s, `group_by()`, `having()`, `distinct()`. |
 | One-row query (not a query set) | `first()`, `last()`, `get()`, `qs[n]`, `qs.at(n)` | yes, when awaited | One row or `None`. No query runs until it is awaited; it also works in `load()`, `prepare()` and `inspect()`. |
-| `Prepared` (not a query set) | `qs.prepare()` | yes, per call with values | A read that is built once; each call binds the `orm.param()` values. Python: `await p(**values)`, `.get()`, `.first()`, `.count()`, `.exists()`, `.require()`. TypeScript: `.all(values)` and the same methods. |
+| `Prepared` (not a query set) | `qs.prepare()` | yes, per call with values | A read that is built once; each call binds the `monorm.param()` values. Python: `await p(**values)`, `.get()`, `.first()`, `.count()`, `.exists()`, `.require()`. TypeScript: `.all(values)` and the same methods. |
 | `PreparedOneRowQuery` (not a query set) | `qs.first().prepare()` and the other one-row queries | yes, per call with values | One row or `None` per call. Python: `await p(**values)`; TypeScript: `.run(values)`. |
 
 ## What each kind leaves out

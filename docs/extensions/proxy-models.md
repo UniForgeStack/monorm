@@ -1,11 +1,11 @@
 # Same-table proxy models
 
-The `orm-proxy` package (`@orm/proxy` for Node) supplies proxy models.
+The `monorm-proxy` package (`@ufstack/monorm-proxy` for Node) supplies proxy models.
 A proxy is a different logical view of one physical model.
-Default filters and default selection come from the `orm-query-defaults` package
+Default filters and default selection come from the `monorm-query-defaults` package
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
-**Enable:** install the `orm-proxy` package (`extensions/proxy`).
+**Enable:** install the `monorm-proxy` package (`extensions/proxy`).
 See [optional-packaging.md](../contracts/optional-packaging.md#installable-packages).
 
 ```prisma
@@ -42,7 +42,7 @@ A proxy cannot declare `@@protected_write`; it shares the protection of its root
 For example, a proxy of a soft-delete model has `all_with_deleted()`, `deleted_only()`, `undelete()` and `hard_delete()`.
 A model gets the members of an extension when the prepared record of that extension names it, a proxy too.
 A proxy also uses the user query-set class of its root model, unless it names its own.
-This holds in generated Python and TypeScript code (`--query-set`) and in `[tool.orm.query_sets]`.
+This holds in generated Python and TypeScript code (`--query-set`) and in `[tool.monorm.query_sets]`.
 A direct `use_query_set` or `useQuerySet` call on the root model does not reach its proxies.
 A method of that class may name a column of the root model, such as `Post.published.eq(true)`.
 A query accepts a column of any model on the same table and resolves it by name on its own model.
@@ -54,7 +54,7 @@ The package build leaves out a field rule or computed field when the proxy does 
 An inherited record rule that needs a field the proxy drops fails the build.
 The error names the rule and the field. Keep the field in the proxy, or declare an own record rule of the same export in the proxy.
 The own rule replaces the inherited rule of that export only; any other inherited rule that needs a dropped field still fails the build.
-Models that `orm.loads` or `define()` build at run time get extension members only from the caller.
+Models that `monorm.loads` or `define()` build at run time get extension members only from the caller.
 
 **Inherited fields.** `@@proxy.fields(include: [...])` or
 `@@proxy.fields(exclude: [...])` selects the source fields and relations by name.
@@ -107,7 +107,7 @@ A physical decoding error remains a decoding error.
 Native diagnostics emit JSON to stderr once per operation/model/field/category:
 
 ```json
-{"code":"orm.proxy.shape","model":"ActiveUser","field":"status","expected_shape":{"non_null":false,"enum_members":["ACTIVE"]},"category":"enum_subset","occurrence_count":2}
+{"code":"monorm.proxy.shape","model":"ActiveUser","field":"status","expected_shape":{"non_null":false,"enum_members":["ACTIVE"]},"category":"enum_subset","occurrence_count":2}
 ```
 
 The records contain schema metadata and counts, never raw field values. The checks
@@ -121,7 +121,7 @@ These contracts give warnings and do not enforce the shape, thus returned values
 can violate those hints. Strict validation requires a separately declared validator.
 
 The proxy pass emits `model_views`, `result_checks` and `storage`, which the host reads.
-Its own data stays in `extension_data["orm.proxy"]`.
+Its own data stays in `extension_data["monorm.proxy"]`.
 The host has no proxy feature and no proxy record.
 Without the installed package, `@@proxy.of` fails at definition with an unknown attribute.
 

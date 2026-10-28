@@ -25,8 +25,8 @@ use sea_query::PostgresQueryBuilder;
 #[cfg(feature = "sqlite")]
 use sea_query::SqliteQueryBuilder;
 
-use orm_core::dialect::Dialect;
-use orm_core::ir::ValueType;
+use monorm_core::dialect::Dialect;
+use monorm_core::ir::ValueType;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type DbResult<T> = Result<T, DbError>;

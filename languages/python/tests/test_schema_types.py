@@ -6,8 +6,8 @@ from decimal import Decimal
 import pytest
 from blog.models import Post, PostTag, Priority, Profile, Role, Tag, User
 
-import orm
-from orm import func
+import monorm
+from monorm import func
 
 
 async def users():
@@ -44,7 +44,7 @@ async def test_decimal_values_are_exact(clean):
     with pytest.raises(TypeError, match="finite decimal"):
         await q.update(balance="lots")
     # values numeric(12, 2) can't hold are the database's error
-    with pytest.raises(orm.DatabaseError):
+    with pytest.raises(monorm.DatabaseError):
         await q.update(balance=Decimal("1e20"))
 
 
@@ -75,7 +75,7 @@ async def test_native_enum(clean):
     assert a.role is Role.editor
     rows = await Profile.objects.select(Profile.role).order_by(Profile.role)
     assert [r.role for r in rows] == [Role.editor, Role.admin]  # the enum's order
-    with pytest.raises(orm.DatabaseError, match="invalid input value for enum"):
+    with pytest.raises(monorm.DatabaseError, match="invalid input value for enum"):
         await a.update(role="owner")
 
 
@@ -86,7 +86,7 @@ async def test_int_enum(clean):
     assert hot.priority == 3 and hot.priority is Priority.high
     assert [x.name for x in await Tag.objects.filter(Tag.priority > Priority.normal)] == ["hot"]
     assert await Tag.objects.select(func.max(Tag.priority)).scalar() is Priority.high
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         await Tag.objects.insert(name="bad", priority=7)
 
 
@@ -129,7 +129,7 @@ async def test_array_columns(clean):
 async def test_has_one(clean):
     alice, bob = await users()
     p = await Profile.objects.insert(user=alice, role=Role.admin)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         alice.profile
     us = await User.objects.load(User.profile).order_by(User.id)
     assert us[0].profile == p and us[1].profile is None
@@ -140,7 +140,7 @@ async def test_has_one(clean):
     assert [u.name for u in await User.objects.exclude(User.profile.role == Role.admin)] == ["Bob"]
     rows = await User.objects.select(User.name, User.profile.role).order_by(User.id)
     assert [tuple(r) for r in rows] == [("Alice", Role.admin), ("Bob", None)]
-    with pytest.raises(orm.IntegrityError):
+    with pytest.raises(monorm.IntegrityError):
         await Profile.objects.insert(user=alice)  # one profile per user
 
 
@@ -218,5 +218,5 @@ async def test_many_to_many_prefetch(clean):
     assert [[t.name for t in p.tags.cached] for p in posts] == [["news"], [], []]
     # links changed: the prefetched rows are dropped
     await posts[0].tags.add(py)
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         posts[0].tags.cached

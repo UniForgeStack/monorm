@@ -1,5 +1,5 @@
 // A proxy of a model inherits its root's extension members and its root's QuerySet class.
-// Runs only with the orm-proxy and orm-soft-delete packages installed.
+// Runs only with the monorm-proxy and monorm-soft-delete packages installed.
 // Each `// E:` line of the typing use must fail and no other line may.
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -29,7 +29,7 @@ model Note {
   @@map("proxy_members_note")
 }
 `;
-const QUERIES = `import { QuerySet } from "orm";
+const QUERIES = `import { QuerySet } from "@ufstack/monorm";
 import { Post, type PostSpec } from "./models.js";
 
 export class PostQueries extends QuerySet<PostSpec> {
@@ -38,7 +38,7 @@ export class PostQueries extends QuerySet<PostSpec> {
   }
 }
 `;
-const USE = `import { of } from "orm";
+const USE = `import { of } from "@ufstack/monorm";
 import { Draft, Note, Post } from "./models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -65,14 +65,14 @@ export async function go() {
 }
 `;
 const EXPECTED = USE.split("\n").flatMap((line, i) => (line.includes("// E:") ? [i + 1] : []));
-const skip = !hasExtension("orm.proxy", "orm.soft-delete");
+const skip = !hasExtension("monorm.proxy", "monorm.soft-delete");
 
 test("a proxy has the soft-delete members and the query-set class of its root", { skip }, async () => {
-  const root = scratch("orm-proxy-members-");
+  const root = scratch("monorm-proxy-members-");
   writeFileSync(join(root, "schema.prisma"), SCHEMA);
   writeFileSync(join(root, "queries.ts"), QUERIES);
   writeFileSync(join(root, "use.ts"), USE);
-  const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm"];
+  const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "@ufstack/monorm"];
   assert.equal(await cli([...args, "--query-set", "Post=./queries.js#PostQueries"]), 0);
   const generated = readFileSync(join(root, "models.ts"), "utf8");
   assert.match(generated, /useQuerySet\(Post, \(\) => _q0\.PostQueries\)/);
@@ -93,7 +93,7 @@ test("a proxy has the soft-delete members and the query-set class of its root", 
     noEmit: true,
     skipLibCheck: true,
     baseUrl: root,
-    paths: { orm: [join(src, "index.ts")], "orm/ext": [join(src, "ext.ts")] },
+    paths: { "@ufstack/monorm": [join(src, "index.ts")], "@ufstack/monorm/ext": [join(src, "ext.ts")] },
   };
   const program = ts.createProgram([join(root, "use.ts")], options);
   const errors = ts.getPreEmitDiagnostics(program).filter((d) => d.category === ts.DiagnosticCategory.Error);
@@ -115,13 +115,13 @@ test("a proxy gets the soft-delete members at run time through the record of the
 const url = process.env["ORM_TEST_DATABASE_URL"] ?? "";
 
 test("an inherited query-set method returns rows of the proxy at run time", { skip: skip || !url }, async () => {
-  const root = scratch("orm-proxy-members-run-");
+  const root = scratch("monorm-proxy-members-run-");
   writeFileSync(join(root, "schema.prisma"), SCHEMA);
   writeFileSync(join(root, "queries.ts"), QUERIES);
-  const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "orm", "--query-set", "Post=./queries.js#PostQueries"];
+  const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "@ufstack/monorm", "--query-set", "Post=./queries.js#PostQueries"];
   assert.equal(await cli(args), 0);
   const src = join(import.meta.dirname, "..", "src");
-  const imports: Record<string, string> = { '"orm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"orm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
+  const imports: Record<string, string> = { '"@ufstack/monorm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"@ufstack/monorm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
   const emit = (from: string, to: string) => {
     mkdirSync(to, { recursive: true });
     for (const name of readdirSync(from).filter((n) => n.endsWith(".ts") && !n.endsWith(".d.ts"))) {
@@ -136,7 +136,7 @@ test("an inherited query-set method returns rows of the proxy at run time", { sk
   const modelsFile = join(out, "models.js");
   const isolated = readFileSync(modelsFile, "utf8").replace(/define\(SCHEMA(\)|, \{)/, (_, tail: string) => `define(SCHEMA, { registry: __registry${tail === ")" ? " })" : ","}`);
   assert.notEqual(isolated, readFileSync(modelsFile, "utf8"));
-  writeFileSync(modelsFile, `import { Registry as __Registry } from ${imports['"orm"']};\nexport const __registry = new __Registry();\n${isolated}`);
+  writeFileSync(modelsFile, `import { Registry as __Registry } from ${imports['"@ufstack/monorm"']};\nexport const __registry = new __Registry();\n${isolated}`);
   const { Draft, Post, __registry: registry } = (await import(pathToFileURL(join(out, "models.js")).href)) as Record<string, any>;
   const db = await connect(url, { registry, default: false });
   try {

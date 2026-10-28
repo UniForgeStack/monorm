@@ -4,12 +4,12 @@ import hashlib
 
 import pytest
 
-import orm
+import monorm
 
 
 @pytest.mark.parametrize("key", ["", "import", "ورود 🔒", "x" * 128, "x" * 129, "x" * 4096])
 async def test_string_and_numeric_keys_contend(db, key):
-    other = await orm.connect(db.url, default=False, max_connections=1)
+    other = await monorm.connect(db.url, default=False, max_connections=1)
     numeric = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=8).digest(), "big", signed=True)
     try:
         async with db.transaction():
@@ -24,7 +24,7 @@ async def test_string_and_numeric_keys_contend(db, key):
 
 
 async def test_lock_validation(db):
-    with pytest.raises(orm.TransactionRequired):
+    with pytest.raises(monorm.TransactionRequired):
         await db.lock(True)
     async with db.transaction():
         for key in [True, 1.5, None]:

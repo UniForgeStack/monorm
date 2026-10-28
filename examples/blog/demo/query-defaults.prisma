@@ -1,4 +1,4 @@
-// Needs the orm-query-defaults package.
+// Needs the monorm-query-defaults package.
 
 model Article {
   id         Int      @id @default(autoincrement())

@@ -13,7 +13,7 @@ const { values: args } = parseArgs({ options: {
 const roots = [args.before, args.after], models = [], schemas = [], dbs = [];
 const source = `datasource db {\n provider = "sqlite"\n}\nmodel BenchItem {\n id BigInt @id @default(autoincrement())\n label String\n number Int @default(0)\n data Json?\n}`;
 for (const side of args.reverse ? [1, 0] : [0, 1]) {
-  process.env.ORM_NATIVE = `${roots[side]}/languages/js/orm.node`;
+  process.env.MONORM_NATIVE = `${roots[side]}/languages/js/monorm.node`;
   const module = await import(pathToFileURL(`${roots[side]}/languages/js/dist/src/index.js`).href);
   const registry = new module.Registry();
   models[side] = module.loads(source, { registry }).BenchItem;

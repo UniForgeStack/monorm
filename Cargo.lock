@@ -657,6 +657,211 @@ dependencies = [
 ]
 
 [[package]]
+name = "monorm-cli"
+version = "0.1.0"
+dependencies = [
+ "monorm-core",
+ "monorm-engine",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "monorm-client"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "monorm-core",
+ "monorm-engine",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "monorm-composition"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "monorm-core",
+ "monorm-engine",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "monorm-contracts"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "monorm-core"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "libloading",
+ "monorm-contracts",
+ "monorm-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "monorm-engine"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "blake2",
+ "bytes",
+ "chrono",
+ "deadpool-postgres",
+ "monorm-contracts",
+ "monorm-core",
+ "rusqlite",
+ "rustls",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "uuid",
+ "webpki-roots",
+]
+
+[[package]]
+name = "monorm-extension-package"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "monorm-file-storage"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "serde_json",
+]
+
+[[package]]
+name = "monorm-generic"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "monorm-inherit"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "monorm-core",
+ "monorm-engine",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "monorm-locking"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "serde_json",
+]
+
+[[package]]
+name = "monorm-node"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "monorm-cli",
+ "monorm-core",
+ "monorm-engine",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "sea-query",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "monorm-proxy"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "monorm-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "monorm-python"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "monorm-cli",
+ "monorm-core",
+ "monorm-engine",
+ "pyo3",
+ "pyo3-async-runtimes",
+ "sea-query",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "monorm-query-defaults"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "serde_json",
+]
+
+[[package]]
+name = "monorm-soft-delete"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "monorm-core",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
+name = "monorm-timestamps"
+version = "0.1.0"
+dependencies = [
+ "monorm-contracts",
+ "monorm-core",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
 name = "napi"
 version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -782,211 +987,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "orm-cli"
-version = "0.1.0"
-dependencies = [
- "orm-core",
- "orm-engine",
- "serde_json",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "orm-client"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "chrono",
- "orm-core",
- "orm-engine",
- "sea-query",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "orm-composition"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "orm-core",
- "orm-engine",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "orm-contracts"
-version = "0.1.0"
-dependencies = [
- "semver",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "orm-core"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "chrono",
- "libloading",
- "orm-contracts",
- "orm-core",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "orm-engine"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "blake2",
- "bytes",
- "chrono",
- "deadpool-postgres",
- "orm-contracts",
- "orm-core",
- "rusqlite",
- "rustls",
- "sea-query",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "uuid",
- "webpki-roots",
-]
-
-[[package]]
-name = "orm-extension-package"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "orm-file-storage"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "serde_json",
-]
-
-[[package]]
-name = "orm-generic"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "orm-inherit"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "orm-core",
- "orm-engine",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "orm-locking"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "serde_json",
-]
-
-[[package]]
-name = "orm-node"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "chrono",
- "napi",
- "napi-build",
- "napi-derive",
- "orm-cli",
- "orm-core",
- "orm-engine",
- "sea-query",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "orm-proxy"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "orm-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "orm-python"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "chrono",
- "orm-cli",
- "orm-core",
- "orm-engine",
- "pyo3",
- "pyo3-async-runtimes",
- "sea-query",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "orm-query-defaults"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "serde_json",
-]
-
-[[package]]
-name = "orm-soft-delete"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "orm-core",
- "rusqlite",
- "serde_json",
-]
-
-[[package]]
-name = "orm-timestamps"
-version = "0.1.0"
-dependencies = [
- "orm-contracts",
- "orm-core",
- "rusqlite",
- "serde_json",
 ]
 
 [[package]]

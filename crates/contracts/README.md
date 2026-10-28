@@ -1,6 +1,6 @@
-# orm-contracts
+# monorm-contracts
 
-The contracts between the orm host and an extension: the extension manifest (`orm-extension.toml`), the hook and ABI types, and the schema IR.
+The contracts between the orm host and an extension: the extension manifest (`monorm-extension.toml`), the hook and ABI types, and the schema IR.
 An extension crate depends on this crate and on nothing else of the host.
 
 The public API is not stable before 1.0.

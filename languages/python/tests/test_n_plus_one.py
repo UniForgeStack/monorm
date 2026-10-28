@@ -1,14 +1,14 @@
-"""`orm.debug.n_plus_one`: find N+1 query patterns by statement shape."""
+"""`monorm.debug.n_plus_one`: find N+1 query patterns by statement shape."""
 
 import asyncio
 import sys
 import warnings
 
 import pytest
-import orm
-from orm import debug
+import monorm
+from monorm import debug
 
-pytest_plugins = ["orm.testing", "pytester"]
+pytest_plugins = ["monorm.testing", "pytester"]
 
 SOURCE = """datasource db {
   provider = "sqlite"
@@ -28,9 +28,9 @@ model Customer {
 
 @pytest.fixture
 async def shop():
-    registry = orm.Registry()
-    models = orm.loads(SOURCE, registry=registry)
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    models = monorm.loads(SOURCE, registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     Person, Customer = models["Person"], models["Customer"]
     await Person.objects.using(db).insert_many([{"id": i, "name": f"p{i}"} for i in range(8)])
@@ -86,10 +86,10 @@ model PersonTag {
 }
 """
     ).replace("  customers Customer[]", "  customers Customer[]\n  tags      Tag[]      @relation(through: PersonTag)")
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     Person = models["Person"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     await Person.objects.using(db).insert_many([{"id": i, "name": f"p{i}"} for i in range(6)])
     people = await Person.objects.using(db).order_by(Person.id)
@@ -155,16 +155,16 @@ async def test_the_pytest_fixture_counts_the_test(shop, n_plus_one):
 
 
 def test_the_pytest_fixture_fails_a_test_with_an_n_plus_one(pytester):
-    pytester.makeconftest('pytest_plugins = ["orm.testing"]')
+    pytester.makeconftest('pytest_plugins = ["monorm.testing"]')
     pytester.makepyfile(f"""
-import orm
+import monorm
 
 SOURCE = {SOURCE!r}
 
 async def test_loop(n_plus_one):
-    registry = orm.Registry()
-    Person = orm.loads(SOURCE, registry=registry)["Person"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    Person = monorm.loads(SOURCE, registry=registry)["Person"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     await db.create_tables()
     for i in range(6):
         await Person.objects.using(db).filter(Person.id == i).first()
@@ -195,7 +195,7 @@ async def test_the_pages_of_one_orm_loop_count_once_and_long_sql_is_cut(shop):
 async def test_nested_scopes_prepared_update_many_and_a_filtered_related_set(shop):
     Person, Customer, db = shop
     people = await Person.objects.using(db).order_by(Person.id)
-    by_id = Person.objects.using(db).filter(Person.id == orm.param("id")).prepare()
+    by_id = Person.objects.using(db).filter(Person.id == monorm.param("id")).prepare()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         with debug.n_plus_one(threshold=10) as outer:

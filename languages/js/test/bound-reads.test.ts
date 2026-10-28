@@ -276,7 +276,7 @@ for (const provider of ["sqlite", "postgresql"]) {
   });
 }
 
-const queryDefaults = hasExtension("orm.query-defaults");
+const queryDefaults = hasExtension("monorm.query-defaults");
 
 test("of() applies no query default on the root; withoutDefaults() stays accepted", { skip: !queryDefaults }, async () => {
   const registry = new Registry();
@@ -284,7 +284,7 @@ test("of() applies no query default on the root; withoutDefaults() stays accepte
   const models = define({ dialect: "sqlite", models: [
     { name: "BoundNote", table: "bound_note", fields: [field("id", "int", { primary_key: true }), field("visible", "bool", { default: true }), field("body")], relations: [] },
   ], behavior: { schema_contract: 5, read_defaults: [
-    { source: "orm.query-defaults", name: "query", model: "BoundNote", filter: { t: "col", path: [], name: "visible" } },
+    { source: "monorm.query-defaults", name: "query", model: "BoundNote", filter: { t: "col", path: [], name: "visible" } },
   ] } } as never, { registry });
   const Note = models["BoundNote"] as Any;
   const db = await connect("sqlite://:memory:", { registry, default: false });

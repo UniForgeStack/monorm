@@ -3,8 +3,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 #[cfg(feature = "allocation-probe")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use orm_core::{dialect::Target, dsl};
-use orm_engine::{NoParams, parse_op, plan::Planner};
+use monorm_core::{dialect::Target, dsl};
+use monorm_engine::{NoParams, parse_op, plan::Planner};
 
 #[cfg(feature = "allocation-probe")]
 struct Count;

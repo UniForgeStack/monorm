@@ -10,7 +10,7 @@ Mark each number you report as measured (and say if the machine was loaded), est
 | [`engine_bench.py`](engine_bench.py) | The public Python API on the blog models, end to end: reads, `select_related`, prefetch, inserts, updates, a transaction, concurrent gets | Runs on any build (core features only) |
 | [`copy_insert.py`](copy_insert.py) | PostgreSQL COPY versus batched `insert_many()` through Python on the blog models | Runs on any PostgreSQL build |
 | [`aggregates_pagination.py`](aggregates_pagination.py) | Scalar versus LATERAL relation aggregates with an unindexed parent sort, LIMIT 20 and OFFSET 10; 100,000 users / 1,000,000 posts by default | Runs on any build (PostgreSQL) |
-| [`rust-compare/`](rust-compare) | `orm-engine` (typed IR and JSON IR) against SeaORM 2.0.4 and Diesel-async, in Rust only; `diagnose` adds raw SQLx and a streaming read | Not applicable (engine only) |
+| [`rust-compare/`](rust-compare) | `monorm-engine` (typed IR and JSON IR) against SeaORM 2.0.4 and Diesel-async, in Rust only; `diagnose` adds raw SQLx and a streaming read | Not applicable (engine only) |
 | [`compare/`](compare) | Our ORM against Django and SQLAlchemy (sync and async), Prisma 7, Drizzle and `pg` on one schema: 20 cases, equality check, release builds, `run.sh` and `report.py` | `orm-all` row uses the `all` extension artifact |
 | [`shared-behavior/`](shared-behavior) | Paired A/B of `Database.lock` advisory locks: the earlier Python/TypeScript key hashing against the Rust helper, through the public API | Not applicable (core) |
 | [`build-time-extensions/`](build-time-extensions) | The cost gate of build-time extensions: handwritten built-in controls against generated extension code, Python and Node, PostgreSQL and SQLite; allocation and artifact-size probes | This is the extension benchmark |
@@ -49,12 +49,12 @@ JSON output; the output includes both SQL forms and `EXPLAIN (ANALYZE, BUFFERS)`
 
 ```bash
 cd bench/rust-compare
-ORM_BENCH_URL=postgres://... cargo run --release --bin orm-rust-compare # writes results-diesel.json
+ORM_BENCH_URL=postgres://... cargo run --release --bin monorm-rust-compare # writes results-diesel.json
 ORM_BENCH_URL=postgres://... cargo run --release --bin diagnose
 ```
 
 A separate Cargo workspace with path dependencies on `crates/core/` and `crates/engine/`.
-The tables `orm_rust_compare_post` and `orm_rust_diagnose_post` must not exist before a run.
+The tables `monorm_rust_compare_post` and `monorm_rust_diagnose_post` must not exist before a run.
 `ORM_BENCH_OUT` sets the output file; `ORM_BENCH_SEA_FAST=1` turns off SeaORM's per-checkout health ping (a matched-setting run).
 See [`rust-compare/README.md`](rust-compare/README.md).
 
@@ -75,9 +75,9 @@ See [`shared-behavior/README.md`](shared-behavior/README.md).
 From the repository root, with `CARGO_INCREMENTAL=0` and Cargo dependencies fetched (the builds are `--offline --locked`):
 
 ```bash
-.venv/bin/python bench/build-time-extensions/controls.py --out /tmp/orm-controls     # release builds of both sides
+.venv/bin/python bench/build-time-extensions/controls.py --out /tmp/monorm-controls     # release builds of both sides
 .venv/bin/python bench/build-time-extensions/run.py --native-profile \
-  --before /tmp/orm-controls --after /tmp/orm-controls --url <isolated-pg-url> --out <results-dir>
+  --before /tmp/monorm-controls --after /tmp/monorm-controls --url <isolated-pg-url> --out <results-dir>
 .venv/bin/python bench/build-time-extensions/report.py --native-profile --check --directory <results-dir>
 ```
 

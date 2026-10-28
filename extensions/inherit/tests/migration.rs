@@ -1,6 +1,6 @@
 //! An override keeps the base table, so a migration adds or drops only the child's own columns.
-use orm_contracts::{extension::capture_storage, ir::SchemaIr};
-use orm_core::migrate::{self, DbSchema, Step};
+use monorm_contracts::{extension::capture_storage, ir::SchemaIr};
+use monorm_core::migrate::{self, DbSchema, Step};
 use serde_json::{json, Value};
 
 const OWN: &str = "nick";
@@ -27,10 +27,10 @@ fn plan(dialect: &str, overriding: bool, map: Option<&str>, previous: &DbSchema)
             "positional": ["User"], "location": {"file": "schema.prisma", "line": 9, "column": 1}}));
     }
     let mut ir: SchemaIr = serde_json::from_value(json!({"dialect": dialect, "models": models, "behavior": {"declarations": declarations}})).unwrap();
-    orm_inherit::expand(&mut ir).unwrap();
+    monorm_inherit::expand(&mut ir).unwrap();
     capture_storage(&mut ir).unwrap();
     let storage = json!({"dialect": ir.dialect, "models": ir.behavior.storage.as_ref().unwrap().models});
-    let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap();
     let plan = migrate::plan(&schema, previous).unwrap();
     (plan.up, plan.snapshot)
 }
@@ -85,7 +85,7 @@ fn sqlite_override_with_its_own_table_renames_and_keeps_the_rows() {
 fn postgres_override_of_a_table_with_rows_keeps_the_rows_and_removing_it_drops_only_own_columns() {
     let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let conn = orm_engine::db::connect(&url, 1).await.unwrap();
+        let conn = monorm_engine::db::connect(&url, 1).await.unwrap();
         conn.batch("DROP SCHEMA IF EXISTS inherit_acceptance CASCADE; CREATE SCHEMA inherit_acceptance; SET search_path TO inherit_acceptance, public".into()).await.unwrap();
         let columns = |table: &'static str| format!("SELECT column_name FROM information_schema.columns WHERE table_schema = 'inherit_acceptance' AND table_name = '{table}' ORDER BY ordinal_position");
         let names = |rows: Vec<Vec<Option<String>>>| rows.into_iter().map(|r| r[0].clone().unwrap()).collect::<Vec<_>>();
@@ -114,7 +114,7 @@ fn postgres_override_of_a_table_with_rows_keeps_the_rows_and_removing_it_drops_o
 fn postgres_override_with_its_own_table_renames_and_keeps_the_rows() {
     let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let conn = orm_engine::db::connect(&url, 1).await.unwrap();
+        let conn = monorm_engine::db::connect(&url, 1).await.unwrap();
         conn.batch("DROP SCHEMA IF EXISTS inherit_rename CASCADE; CREATE SCHEMA inherit_rename; SET search_path TO inherit_rename, public".into()).await.unwrap();
         let (up, v1) = plan("postgres", false, None, &DbSchema::default());
         for step in &up { conn.batch(step.sql.clone()).await.unwrap(); }
@@ -166,10 +166,10 @@ fn declare(attribute: &str, model: &str, positional: &[&str]) -> Value {
 
 fn expand_and_plan(dialect: &str, models: Vec<Value>, declarations: Vec<Value>, previous: &DbSchema) -> (Vec<Step>, DbSchema) {
     let mut ir: SchemaIr = serde_json::from_value(json!({"dialect": dialect, "models": models, "behavior": {"declarations": declarations}})).unwrap();
-    orm_inherit::expand(&mut ir).unwrap();
+    monorm_inherit::expand(&mut ir).unwrap();
     capture_storage(&mut ir).unwrap();
     let storage = json!({"dialect": ir.dialect, "models": ir.behavior.storage.as_ref().unwrap().models});
-    let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap();
     let plan = migrate::plan(&schema, previous).unwrap();
     (plan.up, plan.snapshot)
 }
@@ -262,7 +262,7 @@ const PG_KEYS: &str = "SELECT conname FROM pg_constraint WHERE contype = 'f' AND
 fn postgres_override_plus_extends_keeps_the_rows_and_the_foreign_keys_into_the_table() {
     let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let conn = orm_engine::db::connect(&url, 1).await.unwrap();
+        let conn = monorm_engine::db::connect(&url, 1).await.unwrap();
         conn.batch("DROP SCHEMA IF EXISTS inherit_keys CASCADE; CREATE SCHEMA inherit_keys; SET search_path TO inherit_keys, public".into()).await.unwrap();
         let (up, v1) = plan_with_keys("postgres", None, &DbSchema::default());
         for step in &up { conn.batch(step.sql.clone()).await.unwrap(); }
@@ -285,7 +285,7 @@ fn postgres_override_plus_extends_keeps_the_rows_and_the_foreign_keys_into_the_t
 fn postgres_removing_an_override_with_its_own_map_keeps_the_rows_in_two_steps() {
     let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let conn = orm_engine::db::connect(&url, 1).await.unwrap();
+        let conn = monorm_engine::db::connect(&url, 1).await.unwrap();
         conn.batch("DROP SCHEMA IF EXISTS inherit_two_step CASCADE; CREATE SCHEMA inherit_two_step; SET search_path TO inherit_two_step, public".into()).await.unwrap();
         let (up, v1) = plan_with_keys("postgres", None, &DbSchema::default());
         for step in &up { conn.batch(step.sql.clone()).await.unwrap(); }
@@ -358,7 +358,7 @@ fn sqlite_a_generated_join_model_keeps_its_link_rows_under_an_override() {
 fn postgres_a_generated_join_model_keeps_its_link_rows_under_an_override() {
     let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let conn = orm_engine::db::connect(&url, 1).await.unwrap();
+        let conn = monorm_engine::db::connect(&url, 1).await.unwrap();
         conn.batch("DROP SCHEMA IF EXISTS inherit_join CASCADE; CREATE SCHEMA inherit_join; SET search_path TO inherit_join, public".into()).await.unwrap();
         let (up, v1) = plan_join("postgres", false, &DbSchema::default());
         for step in &up { conn.batch(step.sql.clone()).await.unwrap(); }

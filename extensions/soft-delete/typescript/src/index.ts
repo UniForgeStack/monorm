@@ -1,6 +1,6 @@
-import type { BoundQuerySet, InspectedStatement, ModelSpec, QuerySet } from "orm";
-import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatement } from "orm/ext";
-import type { BoundQuerySetCtor, QuerySetCtor } from "orm/ext";
+import type { BoundQuerySet, InspectedStatement, ModelSpec, QuerySet } from "@ufstack/monorm";
+import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatement } from "@ufstack/monorm/ext";
+import type { BoundQuerySetCtor, QuerySetCtor } from "@ufstack/monorm/ext";
 
 type AnyQuerySet = QuerySet<ModelSpec>;
 type Deleted = ReturnType<typeof behaviorField>;
@@ -9,7 +9,7 @@ const DEFAULT = "deleted" as never;
 type RowsOf<T> = T extends QuerySet<infer M, any, any, any, any, any> ? M["row"][] : never;
 type Returning = { readonly returning?: boolean };
 
-const SOURCE = "orm.soft-delete";
+const SOURCE = "monorm.soft-delete";
 
 // One lookup for each model class, not one for each call.
 const fields = new WeakMap<object, Deleted>();

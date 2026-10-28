@@ -1,13 +1,13 @@
 [package]
-name = "orm-extension-allocation-probe"
+name = "monorm-extension-allocation-probe"
 version = "0.1.0"
 edition = "2021"
 
 [workspace]
 
 [dependencies]
-orm-core = { path = "../../../crates/core" }
-orm-engine = { path = "../../../crates/engine" }
+monorm-core = { path = "../../../crates/core" }
+monorm-engine = { path = "../../../crates/engine" }
 serde_json = "1"
 
 [profile.release]

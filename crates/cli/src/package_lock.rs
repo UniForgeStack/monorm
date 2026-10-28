@@ -1,7 +1,7 @@
 //! Read generated schema literals without executing the models or loading extension libraries.
 use std::path::{Path, PathBuf};
 
-use orm_core::{dsl, ir::SchemaIr, loader};
+use monorm_core::{dsl, ir::SchemaIr, loader};
 
 pub(super) fn check(schema: &Path, out: Option<&str>, installed: &dsl::Installed) -> Result<(), String> {
     let paths = match out {
@@ -12,13 +12,13 @@ pub(super) fn check(schema: &Path, out: Option<&str>, installed: &dsl::Installed
         let source = match std::fs::read_to_string(&path) {
             Ok(source) => source,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if out.is_some() { return Err(format!("no generated models at {}; run `orm generate`", path.display())); }
+                if out.is_some() { return Err(format!("no generated models at {}; run `monorm generate`", path.display())); }
                 continue;
             }
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         if !generated(&source) { continue; }
-        let locked = embedded(&path, &source).map_err(|e| format!("{}: {e}; run `orm generate`", path.display()))?;
+        let locked = embedded(&path, &source).map_err(|e| format!("{}: {e}; run `monorm generate`", path.display()))?;
         let mut errors = vec![];
         for (id, stamp) in &locked.behavior.packages {
             let locked_identity = format!("locked version {} hash {}", stamp.version, stamp.manifest_hash);
@@ -34,7 +34,7 @@ pub(super) fn check(schema: &Path, out: Option<&str>, installed: &dsl::Installed
                 },
                 _ => format!("installed more than once: {}", found.iter().map(|(_, p)| p.display().to_string()).collect::<Vec<_>>().join(", ")),
             };
-            errors.push(format!("extension {id}: {locked_identity}; {installed_identity}; run `orm generate`"));
+            errors.push(format!("extension {id}: {locked_identity}; {installed_identity}; run `monorm generate`"));
         }
         if !errors.is_empty() { return Err(errors.join("\n")); }
     }
@@ -45,8 +45,8 @@ pub(super) fn check(schema: &Path, out: Option<&str>, installed: &dsl::Installed
 fn generated(source: &str) -> bool {
     let header = source.lines().next().unwrap_or("");
     header == "# Generated schema module. Do not edit."
-        || (header.starts_with("# Generated from ") && header.ends_with(" by `python -m orm generate`. Do not edit."))
-        || (header.starts_with("// Generated from ") && header.ends_with(" by `orm generate typescript`. Do not edit."))
+        || (header.starts_with("# Generated from ") && header.ends_with(" by `python -m monorm generate`. Do not edit."))
+        || (header.starts_with("// Generated from ") && header.ends_with(" by `monorm generate typescript`. Do not edit."))
 }
 
 fn embedded(path: &Path, source: &str) -> Result<SchemaIr, String> {

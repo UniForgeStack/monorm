@@ -2222,7 +2222,7 @@ export class Prepared<M extends ModelSpec, R, P> {
 // -- related sets -------------------------------------------------------------------------------------
 
 /** A copied method keeps its home object, so `super` can't reach a mixed-in class; `fetch()` and `getOrInsert()` go through this instead. */
-const SUPER: unique symbol = Symbol("orm.super");
+const SUPER: unique symbol = Symbol("monorm.super");
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
@@ -2631,7 +2631,7 @@ export function hardDeleteStatement<M extends ModelSpec>(qs: QuerySet<M, any, an
 
 type QuerySetClass = new (meta: ModelMeta, state?: QueryState) => QuerySet<ModelSpec>;
 /** On a relation-set class mixed with a query-set class: the relation-set base. */
-const MIXED: unique symbol = Symbol("orm.mixed");
+const MIXED: unique symbol = Symbol("monorm.mixed");
 
 /**
  * Makes `querySet` (a `QuerySet` subclass, or an arrow function that gives it) the class of

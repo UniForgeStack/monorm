@@ -1,6 +1,6 @@
 //! String functions, concatenation, array element access and `unnest` in the planner.
-use orm_core::{dialect::{Dialect, Target}, ir::Operation, schema::Schema};
-use orm_engine::{db, params::NoParams, plan::{Plan, Planner}};
+use monorm_core::{dialect::{Dialect, Target}, ir::Operation, schema::Schema};
+use monorm_engine::{db, params::NoParams, plan::{Plan, Planner}};
 use serde_json::{json, Value};
 
 fn schema(dialect: &str) -> Schema {

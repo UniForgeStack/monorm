@@ -16,7 +16,6 @@ Source: the geometric mean of 20 cases in one run on one machine, with the datab
 Method, limits and the cases where it is not faster: [Benchmarks](#benchmarks).
 
 The name is MonOrm.
-The packages, the import name and the commands are still `orm` until the rename.
 
 ## Example
 
@@ -66,7 +65,7 @@ Thank you to the projects below. We claim only what we took from each.
 - [Prisma](https://www.prisma.io): the schema-first idea and the `schema.prisma` language.
   MonOrm is independent of Prisma ([details](docs/schema/prisma-syntax.md)).
   It is not a drop-in replacement for Prisma Client, and its query API is its own.
-- [Django](https://www.djangoproject.com): the model API (`Model.objects`, querysets) and migrations from the schema (`orm makemigrations`, `orm migrate`, see [schema.md](docs/schema/schema.md)).
+- [Django](https://www.djangoproject.com): the model API (`Model.objects`, querysets) and migrations from the schema (`monorm makemigrations`, `monorm migrate`, see [schema.md](docs/schema/schema.md)).
 
 ## Quickstart
 
@@ -92,9 +91,9 @@ You need `uv`, Rust (`cargo`), and Node 20.19+ or 22.12+ (or Bun) for the TypeSc
 | Python API: queries, pagination, subqueries, windows, CTEs, writes, transactions, locks, hooks | [python-api.md](docs/api/python-api.md) |
 | TypeScript API with the same sections | [typescript-api.md](docs/api/typescript-api.md) |
 | Migrations from the schema | [schema.md](docs/schema/schema.md) |
-| Protected writes, cursor pagination, the N+1 finder (`orm.debug`) | [python-api.md](docs/api/python-api.md) |
+| Protected writes, cursor pagination, the N+1 finder (`monorm.debug`) | [python-api.md](docs/api/python-api.md) |
 | Native profiles (`postgres`, `sqlite`, `combined`, `tooling`) | [optional-packaging.md](docs/contracts/optional-packaging.md) |
-| Auth app (`orm-auth`) | [auth.md](docs/apps/auth.md) |
+| Auth app (`monorm-auth`) | [auth.md](docs/apps/auth.md) |
 
 Build-time extensions are Rust crates that you select when you build the native library:
 proxy models, query defaults, model composition, file storage, generic relations, timestamps, soft delete, locking and inheritance.
@@ -144,7 +143,7 @@ Run the comparison yourself before you decide.
 
 Both API docs list what is not done yet: [Python](docs/api/python-api.md#not-done-yet) and [schema](docs/schema/schema.md#not-done-yet).
 The API is async only. There is no MySQL driver.
-The packages are not published, and the name `orm` changes to `monorm` in the rename.
+The packages are not published.
 
 ## Docs
 

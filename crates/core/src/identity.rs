@@ -1,5 +1,5 @@
 //! ContentType synthesis and explicit identity generation. Ordinary compilation is read-only.
-pub use orm_contracts::identity::*;
+pub use monorm_contracts::identity::*;
 use std::{collections::{BTreeSet, HashMap}, path::{Path, PathBuf}};
 use crate::ir::{EnumIr, EnumStorage, EnumValueIr, SchemaIr};
 
@@ -74,7 +74,7 @@ pub fn validate(ir: &SchemaIr, manifests: &[crate::behavior::Manifest]) -> Resul
     let proxies = view_models(ir, manifests);
     let actual: BTreeSet<_> = ir.models.iter().filter(|m| !proxies.contains(m.name.as_str())).map(|m| m.name.as_str()).collect();
     let expected: BTreeSet<_> = manifest.active().map(|e| e.model.as_str()).collect();
-    if actual != expected { return Err("stale identity manifest: active models differ from the application schema; run orm identities".into()); }
+    if actual != expected { return Err("stale identity manifest: active models differ from the application schema; run monorm identities".into()); }
     for v in &ir.behavior.model_views {
         let view = ir.models.iter().find(|m| m.name == v.model).ok_or_else(|| format!("unknown view identity {}", v.model))?;
         let root = ir.models.iter().find(|m| m.name == v.root && expected.contains(m.name.as_str()))
@@ -132,7 +132,7 @@ fn validate_names(ir: &SchemaIr, proxies: &BTreeSet<&str>) -> Result<(), String>
 }
 
 pub fn read(path: &Path) -> Result<IdentityManifest, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}; run orm identities to generate frozen IDs", path.display()))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}; run monorm identities to generate frozen IDs", path.display()))?;
     let manifest: IdentityManifest = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     manifest.validate()?;
     Ok(manifest)
@@ -222,13 +222,13 @@ mod tests {
     }
     #[test]
     fn generation_and_split_compile_are_read_only() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("orm-identities-{}", std::process::id()));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("monorm-identities-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("schema.prisma");
         let post = "model Post {\nid Int @id\n@@map(\"posts\")\n}";
         let tag = "model Tag {\nid Int @id\ncontent_type ContentType\nobject_id Int\n}";
         std::fs::write(&path, format!("{post}\n{tag}")).unwrap();
-        assert!(crate::dsl::compile_file(&path).unwrap_err().contains("orm identities"));
+        assert!(crate::dsl::compile_file(&path).unwrap_err().contains("monorm identities"));
         let manifest = crate::dsl::generate_identities(&path, &[], &[]).unwrap();
         let before = std::fs::read(manifest_path(&path)).unwrap();
         let one = crate::dsl::compile_file(&path).unwrap();
@@ -248,7 +248,7 @@ mod tests {
     }
     #[test]
     fn generation_rejects_name_and_table_collisions() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("orm-identity-names-{}", std::process::id()));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("monorm-identity-names-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let tag = "model Tag {\nid Int @id\nkind ContentType\n}\n";
         for (models, error) in [
@@ -267,7 +267,7 @@ mod tests {
     }
     #[test]
     fn generation_checks_plain_schemas_but_defers_extension_schemas() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("orm-identity-check-{}", std::process::id()));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("monorm-identity-check-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("schema.prisma");
         let invalid = "model Tag {\nid Int @id\nkind ContentType\n}\nmodel Note {\nid Int @id\nother Int @id\n}\n";
@@ -285,7 +285,7 @@ mod tests {
         let source = "enum ContentType {\nPost @value(7)\n@@storage(int)\n}\nmodel Tag {\nid Int @id\nt ContentType\n}";
         crate::dsl::check(crate::dsl::compile(source, None).unwrap()).unwrap();
         // A stray manifest beside the schema does not override the handwritten enum.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("orm-handwritten-{}", std::process::id()));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-tmp").join(format!("monorm-handwritten-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("schema.prisma");
         std::fs::write(&path, source).unwrap();
@@ -311,7 +311,7 @@ mod integration_tests {
         let mut ir = ir("sqlite");
         let mut view = serde_json::to_value(&ir.models[0]).unwrap(); view["name"] = "PublicPost".into();
         ir.models.push(serde_json::from_value(view).unwrap());
-        ir.behavior.model_views.push(orm_contracts::extension::ModelView {
+        ir.behavior.model_views.push(monorm_contracts::extension::ModelView {
             model: "PublicPost".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None,
         });
         validate(&ir, &[]).unwrap();

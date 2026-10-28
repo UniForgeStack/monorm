@@ -1,6 +1,6 @@
 # Frozen model identities
 
-`orm identities` explicitly generates `schema.identities.json` beside the root
+`monorm identities` explicitly generates `schema.identities.json` beside the root
 schema. It collects the root and its explicit `.prisma` imports, preserving table
 prefixes and the separate extension catalog import mechanism. It never scans
 neighboring schemas. Commit the manifest with the schema.
@@ -8,10 +8,10 @@ neighboring schemas. Commit the manifest with the schema.
 Initial positive signed 32-bit IDs are allocated in model-name order. Subsequent
 models receive IDs above the highest allocation; existing values never move.
 Removed models retain permanent retired entries. Reintroducing a name allocates a
-new ID unless `orm identities --restore Model` explicitly restores its single
+new ID unless `monorm identities --restore Model` explicitly restores its single
 retired identity; the entry's `restorations` count records that intent, and a
 manifest that reactivates a tombstone without it is rejected. Renames use
-`orm identities --rename Old=New`. Rename chains,
+`monorm identities --rename Old=New`. Rename chains,
 including a return to an original name, retain the original ID and history.
 The command prints each added, renamed, retired, and restored entry.
 Moving a declaration between files or changing its table mapping preserves its ID.
@@ -43,7 +43,7 @@ enables generic relation behavior by itself.
 
 ## Generic relation compiler contribution
 
-The installed `orm-generic` package (`@orm/generic` for npm) declares these namespaced attributes.
+The installed `monorm-generic` package (`@ufstack/monorm-generic` for npm) declares these namespaced attributes.
 The field form declares a generic relation as one field of the reserved type `Generic`:
 
 ```prisma
@@ -102,9 +102,9 @@ for paired nulls and the allowed discriminator subset, plus forward/reverse setu
 metadata. It contributes no conventional multi-target foreign key. Database checks
 preserve pair validity for external scalar writes without promising target existence.
 
-**Enable:** install `orm-generic` (Python) or `@orm/generic` (npm). No build is needed.
+**Enable:** install `monorm-generic` (Python) or `@ufstack/monorm-generic` (npm). No build is needed.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
-Its relation and reverse records live in `behavior.extension_data["orm.generic"]`, and the host has no generic code or capability.
+Its relation and reverse records live in `behavior.extension_data["monorm.generic"]`, and the host has no generic code or capability.
 Models generated for schema contract 2 fail to load with an instruction to regenerate them.
 Frozen identities and `ContentType` work in every build.
 

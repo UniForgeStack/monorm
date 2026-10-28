@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { connect, define, func, IntegrityError, loads, NotLoaded, of, Registry } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
-const queryDefaults = hasExtension("orm.query-defaults");
+const queryDefaults = hasExtension("monorm.query-defaults");
 
 async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated = false) {
   const registry = new Registry();
@@ -17,8 +17,8 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated
       { name: "SelectedBook", table: "selection03_js_books", fields: [field("title"), field("author_id", "int"), field("id", "int", { primary_key: true, auto_increment: true }), field("isbn", "string", { nullable: true })],
         relations: [{ name: "author", kind: "one", target: "SelectedAuthor", from: "author_id", to: "id", foreign_key: true, on_delete: "cascade" }] },
     ], behavior: defaults ? { schema_contract: 5, read_defaults: [
-      { source: "orm.query-defaults", name: "query", model: "SelectedAuthor", filter: { t: "col", path: [], name: "visible" }, fields: ["name", "note"] },
-      { source: "orm.query-defaults", name: "query", model: "SelectedBook", fields: ["title"], load: [["author"]] },
+      { source: "monorm.query-defaults", name: "query", model: "SelectedAuthor", filter: { t: "col", path: [], name: "visible" }, fields: ["name", "note"] },
+      { source: "monorm.query-defaults", name: "query", model: "SelectedBook", fields: ["title"], load: [["author"]] },
       ...(annotated ? [{ source: "test.counts", name: "counts", model: "SelectedAuthor", annotate: { bookCount: { t: "func", name: "count", rel: ["books"] } } }] : []),
     ] } : {} } as never, { registry });
   const Author = models["SelectedAuthor"] as any;
@@ -33,7 +33,7 @@ test("currentFilter lists filters with their bypass state", async () => {
   const { db, Author, Book } = await open("sqlite", true);
   try {
     const visible = { t: "col", path: [], name: "visible" };
-    assert.deepEqual(Author.objects.currentFilter(), [{ source: "orm.query-defaults", name: "query", expr: visible, active: true }]);
+    assert.deepEqual(Author.objects.currentFilter(), [{ source: "monorm.query-defaults", name: "query", expr: visible, active: true }]);
     assert.equal(Author.objects.withoutDefaults("query").currentFilter()[0].active, false);
     assert.equal(Author.objects.withoutDefaults().currentFilter()[0].active, false);
     assert.deepEqual(Book.objects.currentFilter(), []);
@@ -88,7 +88,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 
   test(`schema query defaults: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs the orm.query-defaults package");
+      t.skip("needs the monorm.query-defaults package");
       return;
     }
     const { db, Author, Book, a, b } = await open(dialect, true);
@@ -179,7 +179,7 @@ model Note {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`schema default order: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs the orm.query-defaults package");
+      t.skip("needs the monorm.query-defaults package");
       return;
     }
     const registry = new Registry();
@@ -227,7 +227,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`a default annotation stays an instance read: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs the orm.query-defaults package");
+      t.skip("needs the monorm.query-defaults package");
       return;
     }
     const { db, Author, a, b } = await open(dialect, true, true);
@@ -254,7 +254,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`a default annotation applies to prefetched rows: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs the orm.query-defaults package");
+      t.skip("needs the monorm.query-defaults package");
       return;
     }
     const { db, Author, Book, a, b } = await open(dialect, true, true);
@@ -274,7 +274,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 
 test("schema default order: one source per option", (t) => {
   if (!queryDefaults) {
-    t.skip("needs the orm.query-defaults package");
+    t.skip("needs the monorm.query-defaults package");
     return;
   }
   const both = ordered.replace('@@query.defaults(order: ["-body"])', '@@query.defaults(order: ["-body"])\n  @@query.order("id")');
@@ -286,7 +286,7 @@ test("schema default order: one source per option", (t) => {
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`load() of a path with columns unites the default selection: ${dialect}`, async (t) => {
     if (!queryDefaults) {
-      t.skip("needs the orm.query-defaults package");
+      t.skip("needs the monorm.query-defaults package");
       return;
     }
     const { db, Author, Book, a, b } = await open(dialect, true);
@@ -396,7 +396,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   }
 
   test(`the target flag does not depend on model order: ${dialect}`, async (t) => {
-    if (!queryDefaults) { t.skip("needs the orm.query-defaults package"); return; }
+    if (!queryDefaults) { t.skip("needs the monorm.query-defaults package"); return; }
     const { db, Book } = await openUnset(dialect, true, false, true);
     try {
       const books = Book.objects.using(db).orderBy(Book.id);
@@ -436,7 +436,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   });
 
   test(`a filtered target is null and a bypassed prefetch is not loaded: ${dialect}`, async (t) => {
-    if (!queryDefaults) { t.skip("needs the orm.query-defaults package"); return; }
+    if (!queryDefaults) { t.skip("needs the monorm.query-defaults package"); return; }
     const { db, Book } = await openUnset(dialect, true);
     try {
       const prefetched = await Book.objects.using(db).orderBy(Book.id).load(Book.author.objects.asPrefetch()).all();
@@ -468,7 +468,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   });
 
   test(`a missing reference is null only when the engine filtered the join: ${dialect}`, async (t) => {
-    if (!queryDefaults) { t.skip("needs the orm.query-defaults package"); return; }
+    if (!queryDefaults) { t.skip("needs the monorm.query-defaults package"); return; }
     const { db, Book, Profile } = await openUnset(dialect, true);
     try {
       for (const Model of [Book, Profile]) {

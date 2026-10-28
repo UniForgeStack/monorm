@@ -1,4 +1,4 @@
-use orm_contracts::ir::{ModelIr, SchemaIr};
+use monorm_contracts::ir::{ModelIr, SchemaIr};
 use serde_json::{json, Value};
 
 fn field(name: &str, ty: &str) -> Value {
@@ -21,7 +21,7 @@ fn schema(models: Vec<Value>, declarations: Vec<Value>) -> SchemaIr {
     serde_json::from_value(json!({"models": models, "behavior": {"declarations": declarations}})).unwrap()
 }
 fn lower(ir: &mut SchemaIr) -> Result<(), String> {
-    orm_inherit::expand(ir)
+    monorm_inherit::expand(ir)
 }
 fn rejected(ir: SchemaIr) -> String {
     let mut ir = ir;
@@ -55,7 +55,7 @@ fn stamped() -> SchemaIr {
 /// Declared effects `models.inherit` and `storage.inherit`, plus the two neutral records.
 #[test]
 fn lowering_changes_only_the_declared_sections_once() {
-    let effects = orm_contracts::extension::pass_effects(&stamped(), orm_inherit::expand).unwrap();
+    let effects = monorm_contracts::extension::pass_effects(&stamped(), monorm_inherit::expand).unwrap();
     assert_eq!(
         effects.into_iter().collect::<Vec<_>>(),
         ["behavior.declarations", "behavior.storage", "behavior.type_models", "models"]
@@ -293,7 +293,7 @@ fn override_replaces_the_base_and_keeps_its_table() {
 
 #[test]
 fn override_effects_are_declared_once() {
-    let effects = orm_contracts::extension::pass_effects(&parent(), orm_inherit::expand).unwrap();
+    let effects = monorm_contracts::extension::pass_effects(&parent(), monorm_inherit::expand).unwrap();
     assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.declarations", "behavior.model_overrides", "behavior.storage", "models"]);
 }
 
@@ -608,10 +608,10 @@ fn an_explicit_name_is_fine_with_one_child() {
 #[test]
 fn a_placeholder_on_delete_is_applied_to_the_generated_foreign_key() {
     let mut ir = commented();
-    ir.models[1].relations[0].on_delete = Some(orm_contracts::ir::OnDelete::SetNull);
+    ir.models[1].relations[0].on_delete = Some(monorm_contracts::ir::OnDelete::SetNull);
     lower(&mut ir).unwrap();
     let comment = get(&ir, "Comment");
-    assert!(comment.relations.iter().all(|r| r.on_delete == Some(orm_contracts::ir::OnDelete::SetNull)), "{:?}", comment.relations);
+    assert!(comment.relations.iter().all(|r| r.on_delete == Some(monorm_contracts::ir::OnDelete::SetNull)), "{:?}", comment.relations);
     assert!(get(&ir, "Article").relations.iter().all(|r| r.on_delete.is_none()));
 }
 
@@ -721,12 +721,12 @@ fn a_through_template_gives_each_child_its_own_join_model() {
     assert!(join.fields.iter().all(|f| !f.nullable));
     let links: Vec<_> = join.relations.iter().map(|r| (r.name.as_str(), r.target.as_str(), r.from[0].as_str(), r.to[0].as_str(), r.foreign_key, r.on_delete)).collect();
     assert_eq!(links, [
-        ("user", "User", "user_id", "id", true, Some(orm_contracts::ir::OnDelete::Cascade)),
-        ("role", "Role", "role_id", "id", true, Some(orm_contracts::ir::OnDelete::Cascade)),
+        ("user", "User", "user_id", "id", true, Some(monorm_contracts::ir::OnDelete::Cascade)),
+        ("role", "Role", "role_id", "id", true, Some(monorm_contracts::ir::OnDelete::Cascade)),
     ]);
     // No explicit name: core derives it per table and shortens it to the identifier limit.
     let unique: Vec<_> = [join, get(&ir, "AdminRole")].iter().map(|m| match &m.constraints[..] {
-        [orm_contracts::ir::ConstraintIr::Unique { name, fields, .. }] => (name.clone(), fields.clone()),
+        [monorm_contracts::ir::ConstraintIr::Unique { name, fields, .. }] => (name.clone(), fields.clone()),
         other => panic!("{other:?}"),
     }).collect();
     assert_eq!(unique[0], (None, vec!["user_id".to_string(), "role_id".to_string()]));

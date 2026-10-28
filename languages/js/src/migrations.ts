@@ -1,6 +1,6 @@
 /**
  * Migrations: generated from the schema file, stored as SQL, applied in order. The same
- * files and bookkeeping as the Python package (`orm_migrations`, SHA-256 checksums of
+ * files and bookkeeping as the Python package (`monorm_migrations`, SHA-256 checksums of
  * `up.sql`), so either can manage a database; a migration with a `data.py` needs Python,
  * one with a `data.ts` needs this package.
  *
@@ -15,7 +15,7 @@
  * Generating a migration (`crates/core/src/migrate`) diffs the schema against the newest
  * `snapshot.json`, so it needs no database. Applying and reverting
  * (`crates/engine/src/migrate.rs`) records each migration with a checksum and refuses to
- * continue if an applied file changed. Both are the Rust code the `orm` command line and
+ * continue if an applied file changed. Both are the Rust code the `monorm` command line and
  * the Python package run too.
  *
  * A live database under migrations: `pull()` writes its schema file, `Migrator.baseline()` marks
@@ -181,7 +181,7 @@ export function hasDataSteps(directory: string): boolean {
   return call(() => native().listMigrations(directory)).some(([, path]) => existsSync(join(path!, "data.ts")));
 }
 
-/** @internal `npx orm migrate` for a directory with data steps: applies with
+/** @internal `npx @ufstack/monorm migrate` for a directory with data steps: applies with
  * `Migrator.upgrade()`. The data modules are imported first, so the models they import
  * are in the default registry when the database connects. */
 export async function migrateCommand(schema: string, directory: string, url: string, target: string | null): Promise<number> {
@@ -224,7 +224,7 @@ export interface Status {
 /**
  * Applies and reverts the migrations of a directory on a database. Each migration runs
  * in its own transaction (on a connection of the pool, not in the caller's transaction)
- * together with its `orm_migrations` row, under an advisory lock: a failing migration
+ * together with its `monorm_migrations` row, under an advisory lock: a failing migration
  * leaves the database at the previous one, and concurrent migrators apply each
  * migration once.
  */
@@ -265,7 +265,7 @@ export class Migrator {
     const todo = (await wait(() => this.db.engine.migrationPending(this.dir, target))).map(([name, path]) => new Migration(name!, path!));
     for (const m of todo) {
       if (existsSync(join(m.path, "data.py"))) {
-        throw new MigrationError(`${m.name} has a data step (data.py); apply it with python -m orm migrate`);
+        throw new MigrationError(`${m.name} has a data step (data.py); apply it with python -m monorm migrate`);
       }
     }
     const out: Pending = [];

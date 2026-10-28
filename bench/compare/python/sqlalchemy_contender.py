@@ -200,7 +200,7 @@ class SqlalchemyContender(Contender):
             "pool": f"QueuePool pool_size={POOL_SIZE} max_overflow=0, one engine per process",
             "session_note": "one session per operation; the session begins a transaction on first use, so a read runs "
             "BEGIN, SELECT, ROLLBACK and a write runs BEGIN, the statement, COMMIT",
-            "insert_note": "bulk-insert-* is insert(Comment).returning(Comment): full instances, as orm returns",
+            "insert_note": "bulk-insert-* is insert(Comment).returning(Comment): full instances, as monorm returns",
             "upsert_note": "on_conflict_do_update adds RETURNING id: SQLAlchemy has no rowcount for a multi-row VALUES",
             "update_note": "update()/delete() run with synchronize_session='auto' (the default): bulk-update-100 "
             "falls back to 'fetch' and adds RETURNING id",

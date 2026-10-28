@@ -1,10 +1,10 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
-use orm_contracts::abi::{Arg, Context, Value};
-use orm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, SCHEMA_CONTRACT_VERSION};
-use orm_core::dsl::{compile_file_with, Installed};
-use orm_core::loader::{Library, Plan};
-use orm_core::ir::{ClientDefaultIr, ColType, FieldIr, SchemaIr};
+use monorm_contracts::abi::{Arg, Context, Value};
+use monorm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, SCHEMA_CONTRACT_VERSION};
+use monorm_core::dsl::{compile_file_with, Installed};
+use monorm_core::loader::{Library, Plan};
+use monorm_core::ir::{ClientDefaultIr, ColType, FieldIr, SchemaIr};
 use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, process::Command, sync::Mutex};
 
 const ID: &str = "acme.outside";
@@ -36,7 +36,7 @@ fn variant(feature: &str) -> &str { if feature.is_empty() { "default" } else { f
 
 /// The manifest of the package, with the `abi` that it says.
 fn manifest(abi: &str) -> String {
-    fs::read_to_string(root().join("orm-extension.toml")).unwrap().replace("abi = \"0.2\"", &format!("abi = \"{abi}\""))
+    fs::read_to_string(root().join("monorm-extension.toml")).unwrap().replace("abi = \"0.2\"", &format!("abi = \"{abi}\""))
 }
 
 /// The file name of the library that every build writes.
@@ -65,7 +65,7 @@ fn built(builds: &mut Builds, feature: &str) -> PathBuf {
 fn install(name: &str, library: &Path, text: &str) -> PathBuf {
     let dir = scratch(name);
     fs::copy(library, dir.join(library.file_name().unwrap())).unwrap();
-    let path = dir.join("orm-extension.toml");
+    let path = dir.join("monorm-extension.toml");
     fs::write(&path, text).unwrap();
     path
 }
@@ -101,7 +101,7 @@ fn compile(name: &str, schema: &str, extensions: &[(&str, &Path)]) -> Result<Sch
 
 /// The plan of the package at `manifest` with the manifests of the artifact.
 fn plan(manifest: &Path) -> Plan {
-    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], orm_core::behavior::manifests()).unwrap().unwrap()
+    monorm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], monorm_core::behavior::manifests()).unwrap().unwrap()
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn an_outside_view_writes_the_general_records_that_the_core_reads() {
     let check = &ir.behavior.result_checks[0];
     assert_eq!((check.model.as_str(), check.field.as_str(), check.non_null, check.code.as_str()), ("OpenTicket", "note", true, "acme.outside.shape"));
     assert_eq!((ir.behavior.schema_contract_minor, ir.models.iter().find(|m| m.name == "OpenTicket").unwrap().table.as_str()), (0, "ticket"));
-    let schema = orm_core::schema::Schema::from_ir(ir).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir(ir).unwrap();
     let at = schema.model_idx("OpenTicket").unwrap();
     let filter = schema.model(at).view.as_ref().and_then(|v| v.filter.as_ref()).expect("the filter is prepared at define()");
     assert_eq!((filter.column.as_str(), filter.values.as_str()), ("status", "'open'"));
@@ -144,7 +144,7 @@ fn an_outside_view_of_an_unknown_model_names_the_attribute() {
 #[test]
 fn the_generator_key_loads_a_library_that_no_attribute_selects() {
     let manifest = installed("", "0.2");
-    let schema = "generator client {\n provider = \"orm\"\n extensions = [\"acme.outside\"]\n}\nmodel Post {\n id Int @id\n}\n";
+    let schema = "generator client {\n provider = \"monorm\"\n extensions = [\"acme.outside\"]\n}\nmodel Post {\n id Int @id\n}\n";
     assert!(compile("named", schema, &[(ID, &manifest)]).unwrap().behavior.packages.contains_key(ID));
     assert!(compile("unused", "model Post {\n id Int @id\n}\n", &[(ID, &manifest)]).unwrap().behavior.packages.is_empty());
 }
@@ -168,7 +168,7 @@ fn a_missing_extension_says_how_to_install_it() {
 #[test]
 fn two_extensions_that_own_one_effect_conflict() {
     let manifest = installed("", "0.2");
-    let rival = scratch("rival").join("orm-extension.toml");
+    let rival = scratch("rival").join("monorm-extension.toml");
     fs::write(&rival, "id = \"acme.rival\"\nversion = \"1.0.0\"\nschema_contract = \"5.0\"\nabi = \"0.2\"\nlibrary = \"none\"\nlanguages = [\"python\"]\ndatabases = [\"sqlite\"]\n[[passes]]\nid = \"acme.rival.tag\"\nphase = \"declaration\"\neffects = [\"models.outside\"]\n").unwrap();
     let schema = "generator client {\n extensions = [\"acme.outside\", \"acme.rival\"]\n}\nmodel Post {\n id Int @id\n}\n";
     let error = compile("conflict", schema, &[(ID, &manifest), ("acme.rival", &rival)]).unwrap_err();
@@ -178,7 +178,7 @@ fn two_extensions_that_own_one_effect_conflict() {
 #[test]
 fn a_broken_manifest_of_another_package_fails_only_a_compile_that_it_can_own() {
     let manifest = installed("", "0.2");
-    let broken = scratch("broken").join("orm-extension.toml");
+    let broken = scratch("broken").join("monorm-extension.toml");
     fs::write(&broken, "id = \"acme.broken\"\nversion = [").unwrap();
     compile("broken-other", SCHEMA, &[(ID, &manifest), ("acme.broken", &broken)]).unwrap();
     let error = compile("broken-owner", SCHEMA, &[("acme.broken", &broken)]).unwrap_err();
@@ -205,7 +205,7 @@ fn a_library_with_a_higher_abi_minor_asks_for_an_update() {
 #[test]
 fn a_manifest_of_another_abi_fails_before_any_library_loads() {
     for (abi, advice) in [("1.0", "install a release of"), ("0.3", "update the ORM")] {
-        let path = scratch(&format!("manifest-{abi}")).join("orm-extension.toml");
+        let path = scratch(&format!("manifest-{abi}")).join("monorm-extension.toml");
         fs::write(&path, manifest(abi).replace("library = \"outside_extension\"", "library = \"gone\"")).unwrap();
         let error = compile(&format!("manifest-{abi}"), SCHEMA, &[(ID, &path)]).unwrap_err();
         assert!(error.contains(ID) && error.contains(&format!("ABI {abi}")) && error.contains("ABI 0.2") && error.contains(advice) && !error.contains("gone"), "{error}");
@@ -233,7 +233,7 @@ fn a_manifest_that_disagrees_still_fails_when_the_library_is_already_loaded() {
 fn lowering_a_lowered_schema_again_keeps_one_field() {
     let manifest = installed("", "0.2");
     let mut ir = compile("again", SCHEMA, &[(ID, &manifest)]).unwrap();
-    orm_core::behavior::prepare_with(&mut ir, None, Some(&plan(&manifest))).unwrap();
+    monorm_core::behavior::prepare_with(&mut ir, None, Some(&plan(&manifest))).unwrap();
     assert_eq!(ir.models[0].fields.iter().filter(|f| f.name == "tag").count(), 1);
 }
 
@@ -262,7 +262,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
          [[passes]]\nid = \"acme.static.prep\"\nphase = \"declaration\"\neffects = [\"models.static_prep\"]\n\
          [[passes]]\nid = \"acme.static.late\"\nphase = \"declaration\"\nafter = [\"acme.outside.tag\"]\neffects = [\"models.static_late\"]\n"
     )).unwrap();
-    let plan = orm_core::loader::plan(&[(ID.to_owned(), ordered)], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap();
+    let plan = monorm_core::loader::plan(&[(ID.to_owned(), ordered)], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap();
 
     // Each compiled pass records whether the library pass has run before it.
     let seen = RefCell::new(vec![]);
@@ -351,7 +351,7 @@ fn a_hook_of_point_two_returns_nothing_and_refuses_a_value_that_is_not_text() {
 fn drop_state_runs_once_when_the_state_drops() {
     // A copy of the library at its own path has its own counter.
     let library = open(&package("drops", "", &manifest("0.2")));
-    let drops = |state: &orm_core::loader::State| state.call("outside.drops", &[], &Context::default()).unwrap();
+    let drops = |state: &monorm_core::loader::State| state.call("outside.drops", &[], &Context::default()).unwrap();
     let first = library.init(&serde_json::Value::Null).unwrap();
     assert_eq!(drops(&first), Value::Int(0));
     let second = library.init(&serde_json::Value::Null).unwrap();
@@ -409,7 +409,7 @@ fn a_library_of_slice_one_lowers_a_schema_without_a_hook_table() {
 fn a_manifest_that_declares_exports_for_a_library_of_slice_one_names_the_missing_table() {
     let path = package("pass-only-exports", "pass-only", &manifest("0.1"));
     let error = plan(&path).library(ID).err().unwrap();
-    assert!(error.contains(ID) && error.contains("has no `orm_ext_hooks`") && error.contains("the manifest declares exports"), "{error}");
+    assert!(error.contains(ID) && error.contains("has no `monorm_ext_hooks`") && error.contains("the manifest declares exports"), "{error}");
 }
 
 // A schema with a hook record: the compiled pass `acme.static.bind` binds the hook and sets the `extension_data` of the library.
@@ -420,7 +420,7 @@ fn bind_plan(manifest: &Path) -> Plan {
          languages = [\"python\"]\ndatabases = [\"postgres\"]\n\
          [[passes]]\nid = \"acme.static.bind\"\nphase = \"declaration\"\neffects = [\"models.static_bind\"]\n"
     )).unwrap();
-    orm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap()
+    monorm_core::loader::plan(&[(ID.to_owned(), manifest.to_path_buf())], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap()
 }
 
 /// A hook of the library at `point` on the field `field` of `Post`.
@@ -454,7 +454,7 @@ fn an_expression_record_stamps_no_minor_also_after_generate_removed_its_hook() {
     assert!(ir.behavior.hooks.is_empty(), "a hook that reads no context is evaluated at generate");
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap();
     assert!(matches!(tag.client_default, Some(ClientDefaultIr::Expr(_))), "{:?}", tag.client_default);
-    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (orm_contracts::extension::SCHEMA_CONTRACT, 0));
+    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (monorm_contracts::extension::SCHEMA_CONTRACT, 0));
     let ir = lower_with(&plan, &HookBinding { reads_context: true, ..binding(7, "tag", "acme.outside.region") }).unwrap();
     assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, 0));
 }
@@ -479,12 +479,12 @@ fn an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model() {
     let manifest = installed("", "0.2");
     let path = scratch("schema-fields").join("schema.prisma");
     fs::write(&path, FIELDS).unwrap();
-    let _ = fs::remove_file(orm_core::identity::manifest_path(&path));
+    let _ = fs::remove_file(monorm_core::identity::manifest_path(&path));
     let installed = Installed { extensions: [(ID.to_owned(), manifest)].into(), ..Installed::new() };
     let error = compile_file_with(&path, &installed).unwrap_err();
-    assert!(error.contains("orm identities"), "an attribute with identities = true needs the identity file: {error}");
-    orm_core::dsl::generate_identities_with(&path, &[], &[], &installed).unwrap();
-    assert!(orm_core::identity::manifest_path(&path).is_file());
+    assert!(error.contains("monorm identities"), "an attribute with identities = true needs the identity file: {error}");
+    monorm_core::dsl::generate_identities_with(&path, &[], &[], &installed).unwrap();
+    assert!(monorm_core::identity::manifest_path(&path).is_file());
 
     let ir = compile_file_with(&path, &installed).unwrap();
     assert!(ir.identities.is_some());
@@ -505,7 +505,7 @@ fn an_outside_pass_writes_a_two_table_model_that_the_schema_marks_as_foreign_sto
     assert!(ir.models.iter().all(|m| m.fields.iter().all(|f| f.hints.keys().all(|k| !k.starts_with("composition.")))), "the pass writes no hint");
     let names: Vec<&str> = ir.models[1].fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["id", "bio", "email"]);
-    let schema = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
     let flags: Vec<(&str, bool)> = schema.models.iter().map(|m| (m.ir.name.as_str(), m.has_foreign_storage)).collect();
     assert_eq!(flags, [("Account", false), ("Profile", true)]);
 }
@@ -516,7 +516,7 @@ fn an_owner_link_that_no_field_storage_reads_through_fails_the_schema() {
     let mut ir = compile("base-orphan", BASE, &[(ID, &manifest)]).unwrap();
     ir.behavior.field_storage.clear();
     ir.models[1].fields.retain(|f| f.name != "email");
-    let error = orm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).err().expect("the schema must fail");
+    let error = monorm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).err().expect("the schema must fail");
     assert!(error.to_string().contains("owner link Profile -> Account: no field_storage reads a field through it"), "{error}");
 }
 
@@ -529,8 +529,8 @@ fn hooked(hooks: Vec<HookBinding>, data: serde_json::Value) -> SchemaIr {
     let mut ir = SchemaIr { models: vec![serde_json::from_value(post).unwrap()], ..SchemaIr::default() };
     ir.behavior.hooks = hooks;
     ir.behavior.extension_data.insert(ID.to_owned(), data);
-    ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
-    ir.behavior.packages.insert(ID.to_owned(), orm_contracts::extension::PackageStamp { version: "0.1.0".into(), languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
+    ir.behavior.schema_contract = monorm_contracts::extension::SCHEMA_CONTRACT;
+    ir.behavior.packages.insert(ID.to_owned(), monorm_contracts::extension::PackageStamp { version: "0.1.0".into(), languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
     ir
 }
 
@@ -540,7 +540,7 @@ fn packages(manifest: &Path) -> BTreeMap<String, PathBuf> { [(ID.to_owned(), man
 fn define_resolves_the_bindings_of_a_library_into_the_hook_plan_of_the_model() {
     let manifest = installed("", "0.2");
     let ir = hooked(vec![binding(1, "tag", "outside.prefix"), binding(2, "tag", "outside.audit")], serde_json::json!({"prefix": "x"}));
-    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
     let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
     assert_eq!((plan.transforms.len(), plan.validators.len(), plan.records.len()), (1, 1, 0));
     let (position, hook) = &plan.transforms[0];
@@ -553,7 +553,7 @@ fn define_resolves_the_bindings_of_a_library_into_the_hook_plan_of_the_model() {
 #[test]
 fn a_hook_binding_without_a_package_directory_fails_define() {
     let ir = hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
-    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
     assert!(error.contains(ID) && error.contains("no package directory"), "{error}");
 }
 
@@ -561,18 +561,18 @@ fn a_hook_binding_without_a_package_directory_fails_define() {
 #[test]
 fn a_schema_with_hook_bindings_builds_unbound_without_a_package_directory() {
     let ir = hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
-    let schema = orm_core::schema::Schema::from_ir_unbound(ir).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir_unbound(ir).unwrap();
     assert!(schema.models.iter().all(|m| m.hooks.is_none()), "no binding is resolved");
-    let (_, checked) = orm_core::dsl::check(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null)).unwrap();
+    let (_, checked) = monorm_core::dsl::check(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null)).unwrap();
     assert!(checked.models.iter().all(|m| m.hooks.is_none()));
 }
 
 #[test]
 fn a_binding_to_a_missing_export_and_a_failing_init_fail_define_with_the_id() {
     let manifest = installed("", "0.2");
-    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.gone")], serde_json::Value::Null), &packages(&manifest)).err().expect("no export");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.gone")], serde_json::Value::Null), &packages(&manifest)).err().expect("no export");
     assert!(error.contains("Post.tag") && error.contains(ID) && error.contains("outside.gone"), "{error}");
-    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::json!({"fail": true})), &packages(&manifest)).err().expect("init fails");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::json!({"fail": true})), &packages(&manifest)).err().expect("init fails");
     assert!(error.contains(ID) && error.contains("init asked to fail"), "{error}");
 }
 
@@ -583,9 +583,9 @@ fn bind_refuses_a_binding_of_an_extension_that_did_not_run_as_a_library() {
     let hooks = || hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null);
     let mut requirements = hooks().behavior;
     requirements.packages.clear();
-    let mut schema = orm_core::schema::Schema::from_ir_unbound(hooks()).unwrap();
+    let mut schema = monorm_core::schema::Schema::from_ir_unbound(hooks()).unwrap();
     let index = [("Post".to_owned(), 0)].into();
-    let error = orm_core::hooks::bind(&mut schema.models, &index, &requirements, &packages(&manifest)).unwrap_err();
+    let error = monorm_core::hooks::bind(&mut schema.models, &index, &requirements, &packages(&manifest)).unwrap_err();
     assert!(error.contains("Post.tag") && error.contains(ID) && error.contains("did not run as a library"), "{error}");
     assert!(schema.models[0].hooks.is_none(), "a refused binding leaves no plan");
 }
@@ -593,14 +593,14 @@ fn bind_refuses_a_binding_of_an_extension_that_did_not_run_as_a_library() {
 #[test]
 fn a_binding_of_an_unknown_field_fails_define() {
     let manifest = installed("", "0.2");
-    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "nope", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("no field");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "nope", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("no field");
     assert!(error.contains("Post.nope") && error.contains("outside.prefix"), "{error}");
 }
 
 #[test]
 fn a_library_with_the_wrong_abi_fails_define_with_both_versions() {
     let manifest = installed("abi-newer", "0.2");
-    let error = orm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("abi");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(hooked(vec![binding(1, "tag", "outside.prefix")], serde_json::Value::Null), &packages(&manifest)).err().expect("abi");
     assert!(error.contains(ID) && error.contains("ABI 0.3") && error.contains("ABI 0.2"), "{error}");
 }
 
@@ -610,9 +610,9 @@ fn actor_ir(binding_ok: bool) -> SchemaIr {
     let mut hook = binding(4, "tag", "acme.outside.actor");
     hook.reads_context = true;
     let mut ir = hooked(if binding_ok { vec![hook] } else { vec![] }, serde_json::Value::Null);
-    ir.behavior.write_assignments.push(orm_contracts::writes::WriteAssignment {
-        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![orm_contracts::writes::WriteKind::Update],
-        value: orm_contracts::writes::AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: Default::default(),
+    ir.behavior.write_assignments.push(monorm_contracts::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![monorm_contracts::writes::WriteKind::Update],
+        value: monorm_contracts::writes::AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: Default::default(),
     });
     ir
 }
@@ -620,7 +620,7 @@ fn actor_ir(binding_ok: bool) -> SchemaIr {
 #[test]
 fn a_point_four_binding_resolves_into_the_assign_list_and_reads_the_context() {
     let manifest = installed("", "0.2");
-    let schema = orm_core::schema::Schema::from_ir_with_packages(actor_ir(true), &packages(&manifest)).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir_with_packages(actor_ir(true), &packages(&manifest)).unwrap();
     let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
     assert_eq!((plan.assign.len(), plan.no_upsert, plan.reads_context()), (1, false, true));
     let hook = plan.assigner(1).expect("the tag field has a hook");
@@ -632,7 +632,7 @@ fn a_point_four_binding_resolves_into_the_assign_list_and_reads_the_context() {
 #[test]
 fn a_hook_assignment_without_its_point_four_binding_fails_define() {
     let manifest = installed("", "0.2");
-    let error = orm_core::schema::Schema::from_ir_with_packages(actor_ir(false), &packages(&manifest)).err().expect("no binding");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(actor_ir(false), &packages(&manifest)).err().expect("no binding");
     assert!(error.contains("Post.tag") && error.contains("acme.outside.actor") && error.contains("no point-4 binding"), "{error}");
 }
 
@@ -641,7 +641,7 @@ fn a_point_four_hook_that_returns_the_wrong_type_fails_define() {
     let manifest = installed("", "0.2");
     let mut ir = actor_ir(true);
     ir.models[0].fields[1] = FieldIr::plain("tag", ColType::Int);
-    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).err().expect("type");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).err().expect("type");
     assert!(error.contains("Post.tag") && error.contains("acme.outside.actor"), "{error}");
 }
 
@@ -657,7 +657,7 @@ fn initials_ir(mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
         source: ID.into(), point: 5, model: "Person".into(), field: Some("initials".into()), export: "acme.outside.initials".into(),
         dependencies: vec!["first".into(), "last".into()], reads_context: false,
     });
-    ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
+    ir.behavior.result_fields.push(monorm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
     mutate(&mut ir);
     ir
 }
@@ -665,7 +665,7 @@ fn initials_ir(mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
 #[test]
 fn a_point_five_binding_resolves_into_the_computed_list_of_the_hook_plan() {
     let manifest = installed("", "0.2");
-    let schema = orm_core::schema::Schema::from_ir_with_packages(initials_ir(|_| {}), &packages(&manifest)).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir_with_packages(initials_ir(|_| {}), &packages(&manifest)).unwrap();
     let model = schema.model(0);
     let plan = model.hooks.as_deref().expect("the model has a plan");
     assert_eq!(plan.computed.len(), 1);
@@ -700,7 +700,7 @@ fn a_point_five_binding_on_a_declared_result_field_lowers() {
 #[test]
 fn a_computed_field_that_depends_on_a_computed_field_fails() {
     let error = lower_initials(|ir| {
-        ir.behavior.result_fields.push(orm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "last".into(), dependencies: vec!["first".into()] });
+        ir.behavior.result_fields.push(monorm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "last".into(), dependencies: vec!["first".into()] });
         ir.behavior.hooks.push(HookBinding {
             source: ID.into(), point: 5, model: "Person".into(), field: Some("last".into()), export: "acme.outside.initials".into(),
             dependencies: vec!["first".into()], reads_context: false,
@@ -723,14 +723,14 @@ fn a_point_five_binding_without_a_result_field_or_with_the_wrong_type_fails() {
 fn expression_ir(reads_context: bool, mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
     let (write, default) = if reads_context { ("acme.outside.editor", "acme.outside.owner") } else { ("acme.outside.label", "acme.outside.region") };
     let mut ir = hooked(vec![], serde_json::Value::Null);
-    let note = FieldIr { client_default: Some(orm_contracts::ir::ClientDefaultIr::Hook { export: default.into() }), ..FieldIr::plain("note", ColType::Text) };
+    let note = FieldIr { client_default: Some(monorm_contracts::ir::ClientDefaultIr::Hook { export: default.into() }), ..FieldIr::plain("note", ColType::Text) };
     ir.models[0].fields.push(note);
     for (point, field, export) in [(6, "tag", write), (7, "note", default)] {
         ir.behavior.hooks.push(HookBinding { reads_context, ..binding(point, field, export) });
     }
-    ir.behavior.write_assignments.push(orm_contracts::writes::WriteAssignment {
-        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![orm_contracts::writes::WriteKind::Update],
-        value: orm_contracts::writes::AssignValue::ExprHook { export: write.into() }, upsert: Default::default(),
+    ir.behavior.write_assignments.push(monorm_contracts::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![monorm_contracts::writes::WriteKind::Update],
+        value: monorm_contracts::writes::AssignValue::ExprHook { export: write.into() }, upsert: Default::default(),
     });
     mutate(&mut ir);
     ir
@@ -755,30 +755,30 @@ fn lower_expressions(seed: SchemaIr) -> Result<SchemaIr, String> {
 
 #[test]
 fn an_expression_hook_that_reads_no_context_becomes_a_stored_expression_at_lowering() {
-    use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    use monorm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
     let ir = lower_expressions(expression_ir(false, |_| {})).unwrap();
     assert!(ir.behavior.hooks.is_empty(), "the bindings are gone: {:?}", ir.behavior.hooks);
     let guarded = serde_json::json!({"t": "text", "value": "guarded"});
     assert_eq!(ir.behavior.write_assignments[0].value, AssignValue::Expr(guarded));
     assert!(matches!(&ir.models[0].fields[2].client_default, Some(ClientDefaultIr::Expr(e)) if *e == serde_json::json!({"t": "text", "value": "eu"})));
     // `define()` needs no package directory and loads no library for a stored expression.
-    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).unwrap();
     assert!(schema.model(0).hooks.is_none());
     assert!(schema.model(0).assignments[0].expr.is_some());
 }
 
 #[test]
 fn an_expression_hook_that_reads_the_context_stays_a_record_and_runs_on_each_statement() {
-    use orm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    use monorm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
     let ir = lower_expressions(expression_ir(true, |_| {})).unwrap();
     assert_eq!(ir.behavior.hooks.len(), 2);
     assert!(matches!(ir.behavior.write_assignments[0].value, AssignValue::ExprHook { .. }));
     assert!(matches!(ir.models[0].fields[2].client_default, Some(ClientDefaultIr::Hook { .. })));
-    let error = orm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
+    let error = monorm_core::schema::Schema::from_ir_with_packages(ir, &BTreeMap::new()).err().expect("no directory");
     assert!(error.contains(ID) && error.contains("no package directory"), "{error}");
     let manifest = installed("", "0.2");
     let ir = lower_expressions(expression_ir(true, |_| {})).unwrap();
-    let schema = orm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir_with_packages(ir, &packages(&manifest)).unwrap();
     let plan = schema.model(0).hooks.as_deref().expect("the model has a plan");
     assert_eq!((plan.expr_assign.len(), plan.expr_default.len(), plan.reads_context()), (1, 1, true));
     let context = Context { values: vec![arg("user", text("ada"))] };

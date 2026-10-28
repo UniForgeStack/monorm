@@ -1,18 +1,18 @@
-"""Runs against generated models that use the installed orm-composition package."""
+"""Runs against generated models that use the installed monorm-composition package."""
 import asyncio
 import json
 import os
 from pathlib import Path
-import orm
+import monorm
 from models import Person, Employee, Customer
-from orm._packages import import_runtime
+from monorm._packages import import_runtime
 
 
 async def run():
     locked = json.loads(Path("models.py").read_text().split('_SCHEMA = r"""\n', 1)[1].split('\n"""', 1)[0])
-    stamp = locked["behavior"]["packages"]["orm.composition"]
-    assert import_runtime("orm.composition").MANIFEST_HASH == stamp["manifest_hash"]
-    db = await orm.connect(os.environ["ORM_DATABASE_URL"])
+    stamp = locked["behavior"]["packages"]["monorm.composition"]
+    assert import_runtime("monorm.composition").MANIFEST_HASH == stamp["manifest_hash"]
+    db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
     await db.drop_tables()
     await db.create_tables()
     try:

@@ -1,5 +1,11 @@
 # A reduced copy of the shapes in scripts/rename/rules.toml, with ranges for the fixture tree.
-env_rename = ["ORM_DATABASE_URL", "ORM_PROFILE"]
+[[env_rename]]
+name = "ORM_DATABASE_URL"
+expect = [2, 2]
+
+[[env_rename]]
+name = "ORM_PROFILE"
+expect = [2, 2]
 
 [[protect]]
 id = "kept-database-names"

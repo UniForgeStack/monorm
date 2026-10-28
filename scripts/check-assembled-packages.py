@@ -2,7 +2,7 @@
 """Check the assembled packages, pack the npm packages and record the sizes.
 
 usage: check-assembled-packages.py <assembled-dir> <dist-dir>
-`<assembled-dir>/<extension>/` holds the output of `orm-extension-package assemble`.
+`<assembled-dir>/<extension>/` holds the output of `monorm-extension-package assemble`.
 """
 import json
 import os

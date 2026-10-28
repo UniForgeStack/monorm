@@ -67,9 +67,9 @@ run(uv, "pip", "install", "--python", python, *glob.glob(str(wheels / "*.whl")),
 # The tooling native package for Node is a shim over the addon of the checkout.
 native = work / "native"
 native.mkdir()
-(native / "index.cjs").write_text("module.exports = require('./orm.node');\n")
-shutil.copy2(ROOT / "languages/js/orm.node", native)
-(native / "package.json").write_text(json.dumps({"name": "@orm/native-tooling", "version": "0.1.0", "main": "index.cjs"}))
+(native / "index.cjs").write_text("module.exports = require('./monorm.node');\n")
+shutil.copy2(ROOT / "languages/js/monorm.node", native)
+(native / "package.json").write_text(json.dumps({"name": "@ufstack/monorm-native-tooling", "version": "0.1.0", "main": "index.cjs"}))
 tarballs = work / "tarballs"
 tarballs.mkdir()
 for directory in (ROOT / "languages/js", native):
@@ -84,12 +84,12 @@ for dialect in dialects:
     consumer.mkdir()
     (consumer / "schema.prisma").write_text(SCHEMA.format(dialect=dialect))
     models_py, models_ts = consumer / "models.py", consumer / "models.ts"
-    run(python, "-m", "orm", "--schema", consumer / "schema.prisma", "generate", "python", "-o", models_py, cwd=js)
-    run(node, "node_modules/orm/dist/src/cli.js", "--schema", consumer / "schema.prisma", "generate", "typescript", "-o", models_ts, cwd=js)
+    run(python, "-m", "monorm", "--schema", consumer / "schema.prisma", "generate", "python", "-o", models_py, cwd=js)
+    run(node, "node_modules/@ufstack/monorm/dist/src/cli.js", "--schema", consumer / "schema.prisma", "generate", "typescript", "-o", models_ts, cwd=js)
     run(node, TSC, models_ts, "--outDir", consumer, "--module", "ESNext", "--target", "ES2022", "--moduleResolution", "Bundler", "--skipLibCheck", "--noCheck")
     shutil.copy2(ROOT / "scripts/tests/package_consumer.py", consumer / "use.py")
     shutil.copy2(ROOT / "scripts/tests/package_consumer.mjs", consumer / "use.mjs")
-    env = {"ORM_DATABASE_URL": "sqlite://:memory:" if dialect == "sqlite" else os.environ["ORM_TEST_DATABASE_URL"]}
+    env = {"MONORM_DATABASE_URL": "sqlite://:memory:" if dialect == "sqlite" else os.environ["ORM_TEST_DATABASE_URL"]}
     run(python, "use.py", cwd=consumer, env=env)
     run(node, "use.mjs", cwd=consumer, env=env)
     run(bun, "use.mjs", cwd=consumer, env=env)

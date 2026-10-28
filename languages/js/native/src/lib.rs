@@ -1,4 +1,4 @@
-//! Native engine behind the `orm` TypeScript package (Node, Bun).
+//! Native engine behind the `monorm` TypeScript package (Node, Bun).
 //!
 //! The same calls as the Python binding: the schema is sent once (`new Schema(json)`),
 //! then one IR document per operation, its literals in a separate array of JS values.
@@ -6,7 +6,7 @@
 //! the promise resolves with the rows packed into one buffer per row set (`pack`), plus
 //! how the rows become objects, which the TypeScript runtime builds.
 //!
-//! Errors are thrown as JS errors whose message starts with `[orm:<Kind>] `; the
+//! Errors are thrown as JS errors whose message starts with `[monorm:<Kind>] `; the
 //! runtime turns them into its error classes.
 
 mod convert;
@@ -32,19 +32,19 @@ use napi_derive::napi;
 
 use crate::convert::{Conv, JsParams};
 use crate::js::{Js, V};
-use orm_core::dialect::Target;
-use orm_core::ir::{self, ValueType};
-use orm_core::{migrate, schema};
-use orm_engine::db::{self, DbError, Driver, ErrorKind, Executor, RowSet};
-use orm_engine::exec::{self, Conflict, Fetched, Outcome};
-use orm_engine::plan::{self, Output, Planner};
-use orm_engine::migrate as engine_migrate;
-use orm_engine::{parse_op, protect, Error};
+use monorm_core::dialect::Target;
+use monorm_core::ir::{self, ValueType};
+use monorm_core::{migrate, schema};
+use monorm_engine::db::{self, DbError, Driver, ErrorKind, Executor, RowSet};
+use monorm_engine::exec::{self, Conflict, Fetched, Outcome};
+use monorm_engine::plan::{self, Output, Planner};
+use monorm_engine::migrate as engine_migrate;
+use monorm_engine::{parse_op, protect, Error};
 
 // -- errors ---------------------------------------------------------------------------------
 
 fn tagged(kind: &str, msg: impl std::fmt::Display) -> napi::Error {
-    napi::Error::from_reason(format!("[orm:{kind}] {msg}"))
+    napi::Error::from_reason(format!("[monorm:{kind}] {msg}"))
 }
 
 fn db_kind(e: &DbError) -> &'static str {
@@ -57,14 +57,14 @@ fn db_kind(e: &DbError) -> &'static str {
     }
 }
 
-/// A database error; with SQLSTATE fields the tag is `[orm:<Kind>+] <json>\n<message>`
+/// A database error; with SQLSTATE fields the tag is `[monorm:<Kind>+] <json>\n<message>`
 /// (JSON escapes newlines, so the first line is the whole object).
 fn db_tagged(e: DbError) -> napi::Error {
     let kind = db_kind(&e);
     if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() && e.cause.is_none() {
         return tagged(kind, e);
     }
-    napi::Error::from_reason(format!("[orm:{kind}+] {}\n{}", db_fields(&e), e.message))
+    napi::Error::from_reason(format!("[monorm:{kind}+] {}\n{}", db_fields(&e), e.message))
 }
 
 /// The JSON line of a database error: SQLSTATE fields, and the `cause` error (kind,
@@ -228,7 +228,7 @@ fn prefetched_js(js: Js, schema: &schema::Schema, fetched: &[Fetched]) -> napi::
 /// for a count or a write without `RETURNING`, a boolean for exists, `{model, rows}` for
 /// rows a write returned.
 fn outcome_js(env: &Env, schema: &schema::Schema, out: Outcome) -> napi::Result<Raw> {
-    orm_engine::result_check::emit(&orm_engine::result_check::diagnostics(&schema.result_checks, &out).map_err(db_tagged)?);
+    monorm_engine::result_check::emit(&monorm_engine::result_check::diagnostics(&schema.result_checks, &out).map_err(db_tagged)?);
     let js = Js(env.raw());
     Ok(Raw(match out {
         Outcome::Select(s) => {
@@ -320,37 +320,37 @@ fn update_many_plan(
         .into_iter()
         .map(|r| r.into_iter().map(|v| v.expect("no defaults in update_many")).collect())
         .collect();
-    let (filters, scope) = orm_engine::params::scoped_filters(filters_json).map_err(engine_err)?;
+    let (filters, scope) = monorm_engine::params::scoped_filters(filters_json).map_err(engine_err)?;
     let p = params(env, params_)?;
-    let p = orm_engine::params::Scoped { params: &p, scope: &scope };
+    let p = monorm_engine::params::Scoped { params: &p, scope: &scope };
     exec::plan_update_many(schema, target, model, fields, values, &filters, &p, returning, batch_size.map(|n| n as usize), &serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?)
         .map_err(engine_err)
 }
 
-fn inspection_json(result: orm_engine::inspect::Inspection) -> napi::Result<String> {
+fn inspection_json(result: monorm_engine::inspect::Inspection) -> napi::Result<String> {
     serde_json::to_string(&result).map_err(query_err)
 }
 
 fn inspect_operation(env: &Env, schema: &schema::Schema, target: Target, op_json: &str, params_: Unknown<'_>) -> napi::Result<String> {
     let op = parse_op(op_json).map_err(engine_err)?;
     let plan = Planner::plan(schema, target, &op, &params(env, params_)?).map_err(engine_err)?;
-    inspection_json(orm_engine::inspect::Inspection::plans(&[plan], false))
+    inspection_json(monorm_engine::inspect::Inspection::plans(&[plan], false))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn inspect_insert(env: &Env, schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: Unknown<'_>,
     options: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool) -> napi::Result<String> {
-    let opts: orm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(query_err)?;
+    let opts: monorm_engine::inspect::InsertOptions = serde_json::from_str(options).map_err(query_err)?;
     let conflict = opts.conflict.map(|target| match opts.update {
-        Some(update) => Conflict::Update { target, index: orm_engine::exec::index_target(opts.indexes), update, set: opts.set },
-        None => Conflict::Nothing { target, index: orm_engine::exec::index_target(opts.indexes) },
+        Some(update) => Conflict::Update { target, index: monorm_engine::exec::index_target(opts.indexes), update, set: opts.set },
+        None => Conflict::Nothing { target, index: monorm_engine::exec::index_target(opts.indexes) },
     });
     let values = convert_rows(env, schema, model, fields, rows, true)?;
     let p = params(env, params_)?;
-    let scoped = orm_engine::params::Scoped { params: &p, scope: &opts.scope };
+    let scoped = monorm_engine::params::Scoped { params: &p, scope: &opts.scope };
     let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, &opts.without_defaults).map_err(engine_err)?;
     let batching = plans.len() > 1;
-    inspection_json(orm_engine::inspect::Inspection::plans(&plans, batching))
+    inspection_json(monorm_engine::inspect::Inspection::plans(&plans, batching))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -358,9 +358,9 @@ fn inspect_updates(env: &Env, schema: &schema::Schema, target: Target, model: &s
     filters_json: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: &str) -> napi::Result<String> {
     let (stmts, _) = update_many_plan(env, schema, target, model, fields, rows, filters_json, params_, returning, batch_size, without_defaults)?;
     let batching = stmts.len() > 1;
-    inspection_json(orm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
+    inspection_json(monorm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
         use sea_query::QueryStatementBuilder;
-        orm_engine::inspect::statement(&s.into_sub_query_statement(), batching)
+        monorm_engine::inspect::statement(&s.into_sub_query_statement(), batching)
     }).collect()))
 }
 
@@ -418,7 +418,7 @@ impl JsSchema {
     pub fn validate_insert(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, allowed: Vec<String>) -> napi::Result<()> {
         protect::ensure_writable(&self.inner, &model, &allowed).map_err(engine_err)?;
         let values = convert_rows(env, &self.inner, &model, &fields, rows, true)?;
-        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), &model, &fields, values, None, &orm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
+        exec::plan_insert(&self.inner, Target::new(self.inner.dialect), &model, &fields, values, None, &monorm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
         Ok(())
     }
 
@@ -438,7 +438,7 @@ impl JsSchema {
     pub fn new(schema_json: String, packages: Option<std::collections::BTreeMap<String, String>>) -> napi::Result<Self> {
         let mut ir: ir::SchemaIr =
             ir::SchemaIr::from_json(&schema_json).map_err(schema_err)?;
-        orm_core::behavior::prepare(&mut ir, Some("typescript")).map_err(schema_err)?;
+        monorm_core::behavior::prepare(&mut ir, Some("typescript")).map_err(schema_err)?;
         let inner = match packages {
             Some(packages) => {
                 let packages = packages.into_iter().map(|(id, dir)| (id, std::path::PathBuf::from(dir))).collect();
@@ -576,14 +576,14 @@ pub struct QueryEvent {
 
 /// The statements of the engine calls it is passed to, drained by `take()`.
 #[napi]
-pub struct Trace(orm_engine::trace::Trace);
+pub struct Trace(monorm_engine::trace::Trace);
 
 #[napi]
 impl Trace {
     #[napi(constructor)]
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Trace(orm_engine::trace::Trace::new())
+        Trace(monorm_engine::trace::Trace::new())
     }
 
     /// The events so far, oldest first; the trace is empty afterwards.
@@ -617,7 +617,7 @@ impl SessionLock {
         let lock = self.inner.clone();
         let (sql, trace) = (self.unlock.clone(), trace.map(|t| t.0.clone()));
         env.spawn_future(async move {
-            orm_engine::trace::timed(trace.as_ref(), sql, lock.release(), |_| 1).await.map_err(db_tagged)
+            monorm_engine::trace::timed(trace.as_ref(), sql, lock.release(), |_| 1).await.map_err(db_tagged)
         })
     }
 }
@@ -641,7 +641,7 @@ impl Engine {
 
     /// `conn(tx)`, recording each statement into `trace` when given.
     fn traced(&self, tx: Option<&Transaction>, trace: Option<&Trace>) -> Arc<dyn Executor> {
-        orm_engine::trace::wrap(self.conn(tx), trace.map(|t| &t.0))
+        monorm_engine::trace::wrap(self.conn(tx), trace.map(|t| &t.0))
     }
 
     fn script<'env>(
@@ -783,7 +783,7 @@ impl Engine {
             Some(json) => serde_json::from_str(&json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
             None => vec![],
         };
-        let index = orm_engine::exec::index_target(conflict_indexes);
+        let index = monorm_engine::exec::index_target(conflict_indexes);
         let conflict = conflict.map(|target| match update {
             Some(update) => Conflict::Update { target, index, update, set },
             None => Conflict::Nothing { target, index },
@@ -791,7 +791,7 @@ impl Engine {
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
         let p = params(env, params_)?;
         let scope = serde_json::from_str(scope.as_deref().unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
-        let scoped = orm_engine::params::Scoped { params: &p, scope: &scope };
+        let scoped = monorm_engine::params::Scoped { params: &p, scope: &scope };
         let plans = exec::plan_inserts(&self.schema, self.target, &model, &fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, &without_defaults)
             .map_err(engine_err)?;
         let target = self.target;
@@ -880,7 +880,7 @@ impl Engine {
         exclusive: bool, nowait: bool, tx: &Transaction, trace: Option<&Trace>,
     ) -> napi::Result<PromiseRaw<'env, bool>> {
         let key = match name {
-            Some(name) => orm_engine::advisory::key(&name),
+            Some(name) => monorm_engine::advisory::key(&name),
             None => key.parse::<i64>().map_err(|_| tagged("TypeError", "lock key must fit in 64 bits"))?,
         };
         let conn = self.traced(Some(tx), trace);
@@ -905,16 +905,16 @@ impl Engine {
         exclusive: bool, nowait: bool, timeout_ms: Option<u32>, trace: Option<&Trace>,
     ) -> napi::Result<PromiseRaw<'env, Option<SessionLock>>> {
         let key = match name {
-            Some(name) => orm_engine::advisory::key(&name),
+            Some(name) => monorm_engine::advisory::key(&name),
             None => key.parse::<i64>().map_err(|_| tagged("TypeError", "lock key must fit in 64 bits"))?,
         };
         let driver = self.driver.clone();
         let trace = trace.map(|t| t.0.clone());
-        let sql = orm_engine::advisory::session_sql(key, exclusive, nowait);
-        let unlock = orm_engine::advisory::unlock_sql(key, exclusive);
+        let sql = monorm_engine::advisory::session_sql(key, exclusive, nowait);
+        let unlock = monorm_engine::advisory::unlock_sql(key, exclusive);
         env.spawn_future(async move {
             let taken = driver.session_lock(key, exclusive, nowait, timeout_ms.map(u64::from));
-            let lock = orm_engine::trace::timed(trace.as_ref(), sql, taken, |l| l.is_some() as u64).await.map_err(db_tagged)?;
+            let lock = monorm_engine::trace::timed(trace.as_ref(), sql, taken, |l| l.is_some() as u64).await.map_err(db_tagged)?;
             Ok(lock.map(|inner| SessionLock { inner, unlock }))
         })
     }
@@ -956,7 +956,7 @@ impl Engine {
         trace: Option<&Trace>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         let c = conv(env)?;
-        let args = c.js.elements(params_.raw())?.into_iter().map(|v| c.value(v, None)).collect::<orm_engine::Result<Vec<_>>>().map_err(engine_err)?;
+        let args = c.js.elements(params_.raw())?.into_iter().map(|v| c.value(v, None)).collect::<monorm_engine::Result<Vec<_>>>().map_err(engine_err)?;
         let conn = self.traced(tx, trace);
         env.spawn_future_with_callback(
             async move { conn.fetch(sql, args).await.map_err(db_tagged) },
@@ -1015,7 +1015,7 @@ impl Engine {
     }
 
     /// The migrations of `dir` and whether they are applied: JSON
-    /// `[{name, path, applied, appliedAt}]` (see `orm_engine::migrate`).
+    /// `[{name, path, applied, appliedAt}]` (see `monorm_engine::migrate`).
     #[napi]
     pub fn migration_status<'env>(&self, env: &'env Env, dir: String) -> napi::Result<PromiseRaw<'env, String>> {
         let driver = self.driver.clone();
@@ -1040,12 +1040,12 @@ impl Engine {
     }
 
     /// The live database as a schema file: JSON `{schema, gaps, steps: [{summary, sql}]}`
-    /// (see `orm_engine::introspect::pull`).
+    /// (see `monorm_engine::introspect::pull`).
     #[napi]
     pub fn pull_schema<'env>(&self, env: &'env Env) -> napi::Result<PromiseRaw<'env, String>> {
         let driver = self.driver.clone();
         env.spawn_future(async move {
-            let p = orm_engine::introspect::pull(&*driver).await.map_err(engine_err)?;
+            let p = monorm_engine::introspect::pull(&*driver).await.map_err(engine_err)?;
             Ok(serde_json::json!({"schema": p.schema, "gaps": p.gaps, "steps": p.steps}).to_string())
         })
     }
@@ -1056,7 +1056,7 @@ impl Engine {
     pub fn migration_drift<'env>(&self, env: &'env Env, dir: String) -> napi::Result<PromiseRaw<'env, String>> {
         let driver = self.driver.clone();
         env.spawn_future(async move {
-            let d = orm_engine::introspect::drift(&*driver, Path::new(&dir)).await.map_err(engine_err)?;
+            let d = monorm_engine::introspect::drift(&*driver, Path::new(&dir)).await.map_err(engine_err)?;
             Ok(serde_json::json!({"migration": d.migration, "steps": d.steps, "gaps": d.gaps}).to_string())
         })
     }
@@ -1162,13 +1162,13 @@ impl Engine {
         let model_idx = self.schema.model_idx(&model).map_err(schema_err)?;
         let identity = conv(env)?.value(parent_id.raw(), Some(self.schema.model(model_idx).pk_field().value_type())).map_err(engine_err)?;
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
-        let plan = orm_engine::multi_table::prepare_attach(&self.schema, self.target, &model, identity, &fields, values).map_err(engine_err)?;
+        let plan = monorm_engine::multi_table::prepare_attach(&self.schema, self.target, &model, identity, &fields, values).map_err(engine_err)?;
         let target = self.target;
         let own_tx = tx.is_none();
         let conn = self.traced(tx, trace);
         let schema = self.schema.clone();
         env.spawn_future_with_callback(
-            async move { orm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
+            async move { monorm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
             move |env, out| outcome_js(env, &schema, out),
         )
     }
@@ -1184,59 +1184,59 @@ pub fn prepare_schema(schema_json: String, context_json: Option<String>) -> napi
     let mut ir = ir::SchemaIr::from_json(&schema_json).map_err(schema_err)?;
     if let Some(context) = context_json {
         let context = serde_json::from_str(&context).map_err(|e| schema_err(format!("invalid definition context: {e}")))?;
-        ir = orm_core::behavior::merge_definition(context, ir).map_err(schema_err)?;
+        ir = monorm_core::behavior::merge_definition(context, ir).map_err(schema_err)?;
     }
-    orm_core::behavior::prepare(&mut ir, Some("typescript")).map_err(schema_err)?;
+    monorm_core::behavior::prepare(&mut ir, Some("typescript")).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(|e| schema_err(e.to_string()))
 }
 
 #[napi]
 pub fn native_artifact() -> napi::Result<String> {
-    serde_json::to_string(&orm_core::behavior::artifact()).map_err(|e| schema_err(e.to_string()))
+    serde_json::to_string(&monorm_core::behavior::artifact()).map_err(|e| schema_err(e.to_string()))
 }
 
 /// Schema expression warnings go to `process.emitWarning(message, "SchemaWarning")`.
-fn emit_warnings(env: &Env, project: &orm_core::dsl::CompiledProject) -> napi::Result<()> {
+fn emit_warnings(env: &Env, project: &monorm_core::dsl::CompiledProject) -> napi::Result<()> {
     for warning in &project.warnings {
         Js(env.raw()).emit_warning(&warning.to_string(), "SchemaWarning")?;
     }
     Ok(())
 }
 
-fn compiled(env: &Env, project: orm_core::dsl::CompiledProject) -> napi::Result<String> {
+fn compiled(env: &Env, project: monorm_core::dsl::CompiledProject) -> napi::Result<String> {
     emit_warnings(env, &project)?;
-    let (ir, _) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
+    let (ir, _) = monorm_core::dsl::check(project.ir).map_err(schema_err)?;
     serde_json::to_string(&ir).map_err(schema_err)
 }
 
 #[napi]
 pub fn compile_schema(env: &Env, source: String, path: Option<String>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
     let apps = installed(None, extensions);
-    let project = orm_core::dsl::compile_project_with(&source, path.as_deref().map(std::path::Path::new), &apps).map_err(schema_err)?;
+    let project = monorm_core::dsl::compile_project_with(&source, path.as_deref().map(std::path::Path::new), &apps).map_err(schema_err)?;
     compiled(env, project)
 }
 
-/// `npx orm`: the `orm` command line (`orm_cli`). Resolves to the exit code; output
+/// `npx @ufstack/monorm`: the `monorm` command line (`monorm_cli`). Resolves to the exit code; output
 /// goes to the process's stdout / stderr.
 #[cfg(feature = "cli")]
 #[napi]
 pub fn cli<'env>(env: &'env Env, argv: Vec<String>) -> napi::Result<PromiseRaw<'env, i32>> {
-    env.spawn_future(async move { Ok(orm_cli::run(&argv, orm_cli::Host::Node).await) })
+    env.spawn_future(async move { Ok(monorm_cli::run(&argv, monorm_cli::Host::Node).await) })
 }
 
 /// The schema file of a command line, as the CLI resolves it.
 #[cfg(feature = "cli")]
 #[napi]
 pub fn cli_schema(argv: Vec<String>) -> String {
-    orm_cli::schema_path(&argv, orm_cli::Host::Node).to_string_lossy().into_owned()
+    monorm_cli::schema_path(&argv, monorm_cli::Host::Node).to_string_lossy().into_owned()
 }
 
-/// For `npx orm migrate`: `[schema, dir, url, target]` as the CLI resolves them (null
+/// For `npx @ufstack/monorm migrate`: `[schema, dir, url, target]` as the CLI resolves them (null
 /// entries for a missing URL or target), or null for any other command line.
 #[cfg(feature = "cli")]
 #[napi]
 pub fn cli_migrate_args(argv: Vec<String>) -> Option<Vec<Option<String>>> {
-    orm_cli::migrate_args(&argv, orm_cli::Host::Node).map(|(schema, dir, url, target)| {
+    monorm_cli::migrate_args(&argv, monorm_cli::Host::Node).map(|(schema, dir, url, target)| {
         vec![Some(schema.to_string_lossy().into_owned()), Some(dir.to_string_lossy().into_owned()), url, target]
     })
 }
@@ -1256,8 +1256,8 @@ pub fn find_migration(dir: String, name: String) -> napi::Result<Vec<String>> {
 }
 
 /// The installed apps and extension manifests that Node found, as the loader reads them.
-fn installed(apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> orm_core::dsl::Installed {
-    let mut installed: orm_core::dsl::Installed = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
+fn installed(apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> monorm_core::dsl::Installed {
+    let mut installed: monorm_core::dsl::Installed = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
     let mut extensions: Vec<_> = extensions.unwrap_or_default().into_iter().map(|(id, file)| (id, file.into())).collect();
     extensions.sort();
     installed.extensions = extensions;
@@ -1267,7 +1267,7 @@ fn installed(apps: Option<std::collections::HashMap<String, String>>, extensions
 #[napi]
 pub fn compile_schema_file(env: &Env, path: String, apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
     let apps = installed(apps, extensions);
-    let project = orm_core::dsl::compile_project_file_with(std::path::Path::new(&path), &apps).map_err(schema_err)?;
+    let project = monorm_core::dsl::compile_project_file_with(std::path::Path::new(&path), &apps).map_err(schema_err)?;
     compiled(env, project)
 }
 
@@ -1285,18 +1285,18 @@ pub fn generate_typescript(
 ) -> napi::Result<String> {
     let p = std::path::Path::new(&path);
     let apps = installed(apps, extensions);
-    let project = orm_core::dsl::compile_project_file_with(p, &apps).map_err(schema_err)?;
+    let project = monorm_core::dsl::compile_project_file_with(p, &apps).map_err(schema_err)?;
     emit_warnings(env, &project)?;
-    let (ir, schema) = orm_core::dsl::check(project.ir).map_err(schema_err)?;
+    let (ir, schema) = monorm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut options = orm_core::codegen::Options {
+    let mut options = monorm_core::codegen::Options {
         query_sets: query_sets.unwrap_or_default().into_iter().collect(),
         model_methods: model_methods.unwrap_or_default().into_iter().collect(),
         ..Default::default()
     };
     let out_dir = p.parent().unwrap_or(std::path::Path::new("."));
-    options.with_schema_classes(&ir, &project.units, orm_core::codegen::lookup::Language::TypeScript, out_dir).map_err(schema_err)?;
-    orm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("orm"), &options).map_err(schema_err)
+    options.with_schema_classes(&ir, &project.units, monorm_core::codegen::lookup::Language::TypeScript, out_dir).map_err(schema_err)?;
+    monorm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("@ufstack/monorm"), &options).map_err(schema_err)
 }
 
 /// Static packaging compatibility metadata (separate from extension manifests).
@@ -1309,16 +1309,16 @@ pub fn profile_metadata() -> napi::Result<String> {
         else { "custom" };
     serde_json::to_string(&serde_json::json!({
         "abi": 1, "version": env!("CARGO_PKG_VERSION"), "language": "node", "profile": profile,
-        "backends": orm_engine::compiled_backends(),
+        "backends": monorm_engine::compiled_backends(),
         "adapters": [],
-        "build": serde_json::from_str::<serde_json::Value>(env!("ORM_BUILD_RECORD")).map_err(|e| schema_err(e.to_string()))?,
+        "build": serde_json::from_str::<serde_json::Value>(env!("MONORM_BUILD_RECORD")).map_err(|e| schema_err(e.to_string()))?,
         "capabilities": { "cli": cfg!(feature = "cli"),
             "generate-python": cfg!(feature = "generate-python"),
             "generate-typescript": cfg!(feature = "generate-typescript") }
     })).map_err(|e| schema_err(e.to_string()))
 }
 
-fn shape_js(js: Js, shape: Option<&orm_core::behavior::ResultShape>) -> napi::Result<V> {
+fn shape_js(js: Js, shape: Option<&monorm_core::behavior::ResultShape>) -> napi::Result<V> {
     let Some(shape) = shape else { return js.null() };
     js.array_of(shape.fields.iter().map(|f| {
         let o = js.object()?;

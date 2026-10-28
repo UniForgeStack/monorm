@@ -1,2 +1,2 @@
 //! Schema feature contracts shared with extension authors.
-pub use orm_contracts::features::*;
+pub use monorm_contracts::features::*;

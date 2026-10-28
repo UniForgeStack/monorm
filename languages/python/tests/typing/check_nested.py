@@ -6,7 +6,7 @@ from typing import assert_type
 
 from nested.models import Address, Geo, Opt, Plain, Shop, Slugged, Tagged, Wrap, Wrapped
 
-from orm import ColumnRef, Condition, IndexRef
+from monorm import ColumnRef, Condition, IndexRef
 
 
 def read(shop: Shop) -> None:

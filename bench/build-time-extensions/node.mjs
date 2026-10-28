@@ -19,11 +19,11 @@ const writeLabel = side => `write${separator}${side}`;
 const modules = [], natives = [], registries = [], models = [], dbs = [], seeds = [];
 const require = createRequire(import.meta.url);
 for (const root of [args.before, args.after]) {
-  process.env.ORM_NATIVE = `${root}/languages/js/orm.node`;
+  process.env.MONORM_NATIVE = `${root}/languages/js/monorm.node`;
   const mod = await import(pathToFileURL(`${root}/languages/js/dist/src/index.js`).href);
   const reg = new mod.Registry();
   const model = mod.loads(source, { registry: reg }).BenchItem;
-  const addon = require(process.env.ORM_NATIVE);
+  const addon = require(process.env.MONORM_NATIVE);
   modules.push(mod); natives.push(addon); registries.push(reg); models.push(model);
   const db = await mod.connect(args.url, { registry: reg, default: false, maxConnections: 4 });
   await db.createTables(); dbs.push(db);

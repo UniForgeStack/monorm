@@ -20,7 +20,7 @@ DATABASES = {
         "PASSWORD": _url.password,
         "HOST": _url.hostname,
         "PORT": _url.port,
-        # psycopg 3 pool of the same size as orm.connect(max_connections=...); prepared statements stay at
+        # psycopg 3 pool of the same size as monorm.connect(max_connections=...); prepared statements stay at
         # psycopg's default (prepare_threshold=5).
         "OPTIONS": {"pool": {"min_size": POOL_SIZE, "max_size": POOL_SIZE}},
     }

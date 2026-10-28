@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from 'orm';
-import { Reference, Registry, Upload, FileField, FileFieldError } from '@orm/file-storage';
-import { installModel } from '@orm/file-storage/model';
+import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '@ufstack/monorm';
+import { Reference, Registry, Upload, FileField, FileFieldError } from '@ufstack/monorm-file-storage';
+import { installModel } from '@ufstack/monorm-file-storage/model';
 import { Operator } from 'opendal';
 
 class CountingRegistry extends Registry {
@@ -14,7 +14,7 @@ class CountingRegistry extends Registry {
   upload(...args) { this.uploads++; return super.upload(...args); }
 }
 async function fixture(run, { protectedWrite = false } = {}) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'orm-file07-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'monorm-file07-')));
   const storage = new CountingRegistry(new Map([['reports', new Operator('fs', { root })]]));
   const providers = storage;
   const url = process.env.FILE_STORAGE_DATABASE_URL ?? 'sqlite://:memory:';

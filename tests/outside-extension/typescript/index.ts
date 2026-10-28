@@ -1,5 +1,5 @@
 // The package build exposes this module; the fixture tests compile it to CommonJS.
-import { registerFieldAdapter, type FieldAdapter, type ModelMeta } from "orm";
+import { registerFieldAdapter, type FieldAdapter, type ModelMeta } from "@ufstack/monorm";
 
 export const manifestHash = "feb1941ebdbd1c55d4a3233c741b85b89b714f1f8eb907fc24a43e0bab78afce";
 

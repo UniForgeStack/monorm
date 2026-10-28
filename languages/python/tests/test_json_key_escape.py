@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-import orm
-from orm import QueryError, func
+import monorm
+from monorm import QueryError, func
 
 SOURCE = """
 model KeyDoc {
@@ -22,11 +22,11 @@ KEYS = ["a'); DROP TABLE json_key_docs;--\\", "$1", "it's", "back\\slash", "--",
 
 @pytest.fixture(params=["on", "off"])
 async def docs(request):
-    registry = orm.Registry()
-    Doc = orm.loads(SOURCE, registry=registry)["KeyDoc"]
+    registry = monorm.Registry()
+    Doc = monorm.loads(SOURCE, registry=registry)["KeyDoc"]
     try:
-        db = await orm.connect(URL, registry=registry, default=False, max_connections=1)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(URL, registry=registry, default=False, max_connections=1)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {URL}: {e}")
     await db.execute(f"SET standard_conforming_strings = {request.param}")
     await db.drop_tables()
@@ -61,15 +61,15 @@ async def test_hostile_keys_filter_select_and_group(docs, observe_queries):
 
 
 def test_nul_key_is_rejected():
-    Doc = orm.loads(SOURCE, registry=orm.Registry())["KeyDoc"]
+    Doc = monorm.loads(SOURCE, registry=monorm.Registry())["KeyDoc"]
     with pytest.raises(QueryError, match="NUL"):
         Doc.objects.filter(Doc.meta["a\0b"].as_text() == "x").sql()
 
 
 async def test_sqlite_rejects_json_paths():
-    registry = orm.Registry()
-    Doc = orm.loads('datasource db { provider = "sqlite" }\n' + SOURCE, registry=registry)["KeyDoc"]
-    db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    Doc = monorm.loads('datasource db { provider = "sqlite" }\n' + SOURCE, registry=registry)["KeyDoc"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
         with pytest.raises(QueryError, match="sqlite does not support JSON paths"):

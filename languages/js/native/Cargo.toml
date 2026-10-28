@@ -1,17 +1,17 @@
 [package]
-name = "orm-node"
+name = "monorm-node"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [lib]
-name = "orm_node"
+name = "monorm_node"
 crate-type = ["cdylib"]
 
 [dependencies]
-orm-core = { path = "../../../crates/core", default-features = false }
-orm-engine = { path = "../../../crates/engine", default-features = false }
-orm-cli = { path = "../../../crates/cli", optional = true, default-features = false }
+monorm-core = { path = "../../../crates/core", default-features = false }
+monorm-engine = { path = "../../../crates/engine", default-features = false }
+monorm-cli = { path = "../../../crates/cli", optional = true, default-features = false }
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt", "serde-json"] }
 napi-derive = "3"
 sea-query = { version = "1.0", default-features = false, features = ["with-chrono", "with-json", "with-uuid", "with-bigdecimal", "postgres-array", "thread-safe", "hashable-value"] }
@@ -25,12 +25,12 @@ napi-build = "2"
 
 [features]
 default = ["postgres", "sqlite", "cli", "generate-python", "generate-typescript", "reference-loading"]
-postgres = ["orm-engine/postgres", "sea-query/backend-postgres", "orm-cli?/postgres"]
-sqlite = ["orm-engine/sqlite", "sea-query/backend-sqlite", "orm-cli?/sqlite"]
-cli = ["dep:orm-cli"]
-generate-python = ["orm-core/generate-python", "orm-cli?/generate-python"]
-generate-typescript = ["orm-core/generate-typescript", "orm-cli?/generate-typescript"]
-reference-loading = ["orm-core/reference-loading", "orm-cli?/reference-loading"]
+postgres = ["monorm-engine/postgres", "sea-query/backend-postgres", "monorm-cli?/postgres"]
+sqlite = ["monorm-engine/sqlite", "sea-query/backend-sqlite", "monorm-cli?/sqlite"]
+cli = ["dep:monorm-cli"]
+generate-python = ["monorm-core/generate-python", "monorm-cli?/generate-python"]
+generate-typescript = ["monorm-core/generate-typescript", "monorm-cli?/generate-typescript"]
+reference-loading = ["monorm-core/reference-loading", "monorm-cli?/reference-loading"]
 
 # Named release profiles must be built with --no-default-features.
 profile-postgres = ["postgres"]

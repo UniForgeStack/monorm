@@ -1,6 +1,6 @@
 /**
  * Finds the installed extension packages: the direct dependencies of the project's `package.json`
- * whose own `package.json` has `"orm": {"extension": "<id>"}`. The manifest is `orm-extension.toml`
+ * whose own `package.json` has `"monorm": {"extension": "<id>"}`. The manifest is `monorm-extension.toml`
  * in the package root. Discovery reads metadata; definition imports the selected runtime packages.
  */
 
@@ -12,12 +12,12 @@ import { dirname, join, resolve } from "node:path";
 
 import { SchemaError } from "./errors.js";
 
-const MANIFEST = "orm-extension.toml";
+const MANIFEST = "monorm-extension.toml";
 const DEPENDENCY_KEYS = ["dependencies", "devDependencies", "optionalDependencies"] as const;
 
 interface InstalledPackage { manifest: string; name: string; root: string }
 
-type PackageJson = { orm?: { extension?: unknown } } & Partial<Record<(typeof DEPENDENCY_KEYS)[number], Record<string, string>>>;
+type PackageJson = { monorm?: { extension?: unknown } } & Partial<Record<(typeof DEPENDENCY_KEYS)[number], Record<string, string>>>;
 
 function readJson(file: string): PackageJson {
   try {
@@ -56,9 +56,9 @@ function discover(schema?: string): Record<string, InstalledPackage> {
   for (const name of [...names].sort()) {
     const dir = installedRoot(name, root);
     if (dir === undefined) continue;
-    const id = readJson(join(dir, "package.json")).orm?.extension;
+    const id = readJson(join(dir, "package.json")).monorm?.extension;
     if (id === undefined) continue;
-    if (typeof id !== "string") throw new SchemaError(`${join(dir, "package.json")}: "orm": {"extension"} is the extension id, a string`);
+    if (typeof id !== "string") throw new SchemaError(`${join(dir, "package.json")}: "monorm": {"extension"} is the extension id, a string`);
     const manifest = join(dir, MANIFEST);
     if (!existsSync(manifest)) throw new SchemaError(`the package \`${name}\` declares extension \`${id}\` but has no ${MANIFEST} file in ${dir}`);
     if (id in found && found[id]?.manifest !== manifest) {

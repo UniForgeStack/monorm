@@ -6,8 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-import orm
-from orm import DecodeError
+import monorm
+from monorm import DecodeError
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -68,15 +68,15 @@ LEAVES = {"price": Decimal("12.50"), "at": WHEN, "big": 2**60 + 1, "color": "RED
 
 
 async def open_world(request, schema, drop=True):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     if request == "sqlite":
-        classes = orm.loads(SQLITE + schema, registry=registry)
-        db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+        classes = monorm.loads(SQLITE + schema, registry=registry)
+        db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     else:
-        classes = orm.loads(schema, registry=registry)
+        classes = monorm.loads(schema, registry=registry)
         try:
-            db = await orm.connect(PG_URL, registry=registry, default=False, max_connections=2)
-        except orm.DatabaseError as e:
+            db = await monorm.connect(PG_URL, registry=registry, default=False, max_connections=2)
+        except monorm.DatabaseError as e:
             pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
     await db.drop_tables()
     await db.create_tables()

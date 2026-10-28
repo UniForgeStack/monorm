@@ -1,15 +1,15 @@
-"""Public tests of the installed `orm-file-storage` package; run in a consumer with the package installed."""
+"""Public tests of the installed `monorm-file-storage` package; run in a consumer with the package installed."""
 
 import json
 import asyncio
 import os
 from tempfile import TemporaryDirectory
 import unittest
-import orm
-from orm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError
+import monorm
+from monorm.adapters import AdapterWriteCancelled, AdapterWriteError, FieldAdapterError
 import opendal
-from orm_file_storage import FileField, FileFieldError, Reference, Registry, Upload
-from orm_file_storage.model import install_model
+from monorm_file_storage import FileField, FileFieldError, Reference, Registry, Upload
+from monorm_file_storage.model import install_model
 
 
 class CountingRegistry(Registry):
@@ -26,16 +26,16 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         self.storage = CountingRegistry({"reports": opendal.AsyncOperator("fs", root=self.directory.name)})
         self.registry = self.storage
         self.url = os.environ.get("FILE_STORAGE_DATABASE_URL", "sqlite://:memory:")
-        ir = json.loads(orm._native.compile_schema("model FileReport07 {\n id Int @id\n file Json?\n}", None))
+        ir = json.loads(monorm._native.compile_schema("model FileReport07 {\n id Int @id\n file Json?\n}", None))
         ir["dialect"] = "sqlite" if self.url.startswith("sqlite:") else "postgres"
         ir["behavior"] = {
             "schema_contract": 5,
             "field_adapters": [{"model": "FileReport07", "field": "file", "adapter": "file-storage.reference.v1"}],
         }
-        reg = orm.Registry()
-        self.Report = orm.define(ir, registry=reg)["FileReport07"]
+        reg = monorm.Registry()
+        self.Report = monorm.define(ir, registry=reg)["FileReport07"]
         self.adapter = install_model(self.Report, {"file": FileField("file", "reports", True)}, self.registry)
-        self.db = await orm.connect(self.url, registry=reg)
+        self.db = await monorm.connect(self.url, registry=reg)
         await self.db.drop_tables()
         await self.db.create_tables()
 
@@ -203,32 +203,32 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_protected_file_write_reads_its_scope_at_the_await(self):
         ir = json.loads(
-            orm._native.compile_schema("model FileReport08 {\n id Int @id\n file Json?\n @@protected_write\n}", None)
+            monorm._native.compile_schema("model FileReport08 {\n id Int @id\n file Json?\n @@protected_write\n}", None)
         )
         ir["dialect"] = "sqlite"
         ir["behavior"] = {
             "schema_contract": 5,
             "field_adapters": [{"model": "FileReport08", "field": "file", "adapter": "file-storage.reference.v1"}],
         }
-        reg = orm.Registry()
-        Protected = orm.define(ir, registry=reg)["FileReport08"]
+        reg = monorm.Registry()
+        Protected = monorm.define(ir, registry=reg)["FileReport08"]
         install_model(Protected, {"file": FileField("file", "reports", True)}, self.registry)
-        db = await orm.connect("sqlite://:memory:", registry=reg, default=False)
+        db = await monorm.connect("sqlite://:memory:", registry=reg, default=False)
         try:
             await db.create_tables()
             objects = Protected.objects.using(db)
             # Built inside the scope, awaited outside it: rejected before the upload.
-            with orm.allow_writes(Protected):
+            with monorm.allow_writes(Protected):
                 insert = objects.insert(id=1, file=Upload(b"x"))
                 update = objects.filter(Protected.id == 1).update(file=Upload(b"y"))
             for statement in [insert, update]:
-                with self.assertRaises(orm.WriteProtected):
+                with self.assertRaises(monorm.WriteProtected):
                     await statement
             self.assertEqual(self.storage.uploads, 0)
             # Built outside the scope, awaited inside it: written, like a write without a file.
             insert = objects.insert(id=1, file=Upload(b"x"))
             update = objects.filter(Protected.id == 1).update(file=Upload(b"y"))
-            with orm.allow_writes(Protected):
+            with monorm.allow_writes(Protected):
                 await insert
                 await update
             self.assertEqual(self.storage.uploads, 2)
@@ -244,7 +244,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
             "behavior": {"schema_contract": 4},
         }
         with self.assertRaisesRegex(Exception, "schema contract 4 is older.*regenerate the models and rebuild"):
-            orm.define(ir, registry=orm.Registry())
+            monorm.define(ir, registry=monorm.Registry())
 
 
 if __name__ == "__main__":

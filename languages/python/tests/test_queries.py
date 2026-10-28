@@ -6,7 +6,7 @@ import warnings
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
-import orm
+import monorm
 import pytest
 from blog.models import Comment, Post, User
 from conftest import DATABASE_URL
@@ -157,7 +157,7 @@ async def test_instances_are_read_only(clean):
 async def test_result_cache(clean, observe_queries):
     await User.objects.insert(email="a@example.com", name="A")
     qs = User.objects.filter(User.name != "Z")
-    assert qs.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(),))
+    assert qs.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(),))
     with observe_queries(clean) as events:
         first = await qs
     assert len(events) == 1
@@ -182,11 +182,11 @@ async def test_result_cache(clean, observe_queries):
     rows = User.objects.select(User.name)
     assert await rows == await rows
     # A failed run isn't kept.
-    bad = User.objects.filter(User.id == orm.param("id"))
-    with pytest.raises(orm.QueryError):
+    bad = User.objects.filter(User.id == monorm.param("id"))
+    with pytest.raises(monorm.QueryError):
         await bad
     failed = bad._result
-    with pytest.raises(orm.QueryError):
+    with pytest.raises(monorm.QueryError):
         await bad
     assert bad._result is not failed
 
@@ -249,7 +249,7 @@ async def test_nested_and_reverse_paths(clean):
 async def test_load_to_one(clean, observe_queries):
     await seed()
     query = Comment.objects.load(Comment.post.author, Comment.author).order_by(Comment.id)
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(joins_count=3),))
+    assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(joins_count=3),))
     with observe_queries(clean) as events:
         comments = await query
         assert len(events) == 1
@@ -263,7 +263,7 @@ async def test_load_to_one(clean, observe_queries):
 async def test_unloaded_to_one_raises(clean):
     await seed()
     post = await Post.objects.first()
-    with pytest.raises(orm.NotLoaded, match=r"load\(Post.author\)"):
+    with pytest.raises(monorm.NotLoaded, match=r"load\(Post.author\)"):
         post.author  # noqa: B018
     c = await Comment.objects.filter(Comment.author_id == None).get()  # noqa: E711
     assert c.author is None  # null FK needs no loading
@@ -272,8 +272,8 @@ async def test_unloaded_to_one_raises(clean):
 async def test_load_to_many(clean, observe_queries):
     await seed()
     query = User.objects.load(User.posts).order_by(User.name)
-    assert query.inspect() == orm.QueryInspection(
-        2, True, (orm.StatementInspection(), orm.StatementInspection(has_batching=True))
+    assert query.inspect() == monorm.QueryInspection(
+        2, True, (monorm.StatementInspection(), monorm.StatementInspection(has_batching=True))
     )
     with observe_queries(clean) as events:
         users = await query
@@ -288,7 +288,7 @@ async def test_load_to_many(clean, observe_queries):
 
 async def test_related_set_queries_and_insert(clean):
     alice, *_ = await seed()
-    with pytest.raises(orm.NotLoaded):
+    with pytest.raises(monorm.NotLoaded):
         alice.posts.cached  # noqa: B018
     assert len(await alice.posts) == 2
     assert await alice.posts.filter(Post.published).count() == 1
@@ -310,7 +310,7 @@ async def test_terminal_methods(clean):
     assert (await User.objects.get(User.email == "bob@example.com")).name == "Bob"
     with pytest.raises(User.DoesNotExist):
         await User.objects.require().get(User.email == "nobody@example.com")
-    with pytest.raises(orm.MultipleObjectsReturned):
+    with pytest.raises(monorm.MultipleObjectsReturned):
         await User.objects.get(User.name.startswith(""))
     assert await User.objects.all()[1:].count() == 2
     assert [u.name async for u in User.objects.order_by(User.id)[1:3]] == [
@@ -384,7 +384,7 @@ async def test_upsert_with_expressions(clean):
         .on_conflict(
             Post.id,
             update=True,
-            update_values={"views": Post.views + orm.excluded(Post.views)},
+            update_values={"views": Post.views + monorm.excluded(Post.views)},
         )
         .returning()
     )
@@ -410,13 +410,13 @@ async def test_upsert_with_expressions(clean):
         .on_conflict(
             Post.id,
             update=True,
-            update_values={"views": orm.excluded(Post.views) * 100},
+            update_values={"views": monorm.excluded(Post.views) * 100},
         )
         .returning()
     )
     assert sorted(o.views for o in out) == [2, 100]
-    with pytest.raises(orm.QueryError):
-        await Post.objects.update(views=orm.excluded(Post.views))
+    with pytest.raises(monorm.QueryError):
+        await Post.objects.update(views=monorm.excluded(Post.views))
 
 
 async def test_update_many(clean):
@@ -457,7 +457,7 @@ async def test_update_many_batches_are_one_transaction(clean, observe_queries):
         {"id": a2.id, "views": 8},
         {"id": b1.id, "views": -1},
     ]
-    with pytest.raises(orm.IntegrityError):  # views >= 0 fails in the third batch
+    with pytest.raises(monorm.IntegrityError):  # views >= 0 fails in the third batch
         await Post.objects.update_many(rows, batch_size=1)
     assert sorted(p.views for p in await Post.objects) == [5, 50, 100]  # nothing kept
     statement = Post.objects.update_many(rows[:2], batch_size=1).returning()
@@ -471,7 +471,7 @@ async def test_update_many_batches_are_one_transaction(clean, observe_queries):
 async def test_fallback_sql_runs_on_postgres(clean):
     """The SQL used for databases without these features, run on Postgres."""
     alice, bob, carol, (a1, a2, b1) = await seed()
-    db = await orm.connect(
+    db = await monorm.connect(
         DATABASE_URL,
         default=False,
         max_connections=2,
@@ -488,7 +488,7 @@ async def test_fallback_sql_runs_on_postgres(clean):
             ("y", 2),
         }
         assert names(await User.objects.using(db).filter(User.name.icontains("ALI"))) == ["Alice"]
-        with pytest.raises(orm.QueryError, match="does not support update"):
+        with pytest.raises(monorm.QueryError, match="does not support update"):
             await Post.objects.using(db).update(views=0).returning()
     finally:
         await db.close()
@@ -496,7 +496,7 @@ async def test_fallback_sql_runs_on_postgres(clean):
 
 async def test_select_rows(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
-    from orm import func
+    from monorm import func
 
     query = (
         Post.objects.select(
@@ -507,7 +507,7 @@ async def test_select_rows(clean):
         .group_by(Post.author_id)
         .order_by(Post.author_id)
     )
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(),))
+    assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(),))
     rows = await query
     assert rows == [(alice.id, 2, 55), (bob.id, 1, 100)]
     r = rows[0]
@@ -537,11 +537,11 @@ async def test_select_rows(clean):
     one = await Post.objects.filter(Post.id == b1.id).select(Post.title, Post.author.name.label("author")).get()
     assert (one.title, one.author) == ("bob's old", "Bob")
     assert await Post.objects.select(Post.title).get(Post.id == b1.id) == ("bob's old",)
-    with pytest.raises(orm.DoesNotExist):
+    with pytest.raises(monorm.DoesNotExist):
         await Post.objects.select(Post.id).require().get(Post.id == -1)
-    with pytest.raises(orm.MultipleObjectsReturned):
+    with pytest.raises(monorm.MultipleObjectsReturned):
         await Post.objects.select(Post.id).get()
-    with pytest.raises(orm.QueryError):
+    with pytest.raises(monorm.QueryError):
         await Post.objects.select(Post.id, Post.title).scalars()
     assert sorted(await Post.objects.select(Post.author_id).distinct().scalars()) == sorted([alice.id, bob.id])
     top = (
@@ -559,14 +559,14 @@ async def test_select_rows(clean):
 
 async def test_select_model_with_relation_aggregates(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
-    from orm import func
+    from monorm import func
 
     # Same-relation aggregates share one LATERAL subquery: empty counts stay 0, empty sums None.
     query = User.objects.select(User, func.count(User.posts).label("posts"), func.sum(User.posts.views)).order_by(
         User.id
     )
-    assert query.inspect() == orm.QueryInspection(
-        1, False, (orm.StatementInspection(joins_count=1, derived_correlated=1),)
+    assert query.inspect() == monorm.QueryInspection(
+        1, False, (monorm.StatementInspection(joins_count=1, derived_correlated=1),)
     )
     rows = await query
     assert [(u.name, n, v) for u, n, v in rows] == [
@@ -576,13 +576,13 @@ async def test_select_model_with_relation_aggregates(clean):
     ]
     assert rows[0].user == alice and rows[0].posts == 2
     page = query.order_by(User.name).offset(1).limit(2)
-    assert page.inspect().statements[0] == orm.StatementInspection(scalar_correlated=2)
+    assert page.inspect().statements[0] == monorm.StatementInspection(scalar_correlated=2)
     assert [(u.name, n, v) for u, n, v in await page] == [("Bob", 1, 100), ("Carol", 0, None)]
     # Two counts over different relations don't multiply each other (no JOIN fan-out).
     query = User.objects.select(User.name, func.count(User.posts), func.count(User.comments).label("c")).order_by(
         User.id
     )
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(scalar_correlated=2),))
+    assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(scalar_correlated=2),))
     rows = await query
     assert rows == [("Alice", 2, 1), ("Bob", 1, 1), ("Carol", 0, 0)]
     # Per-aggregate filter and distinct inside one shared subquery, next to another relation.
@@ -593,8 +593,8 @@ async def test_select_model_with_relation_aggregates(clean):
         func.count(User.posts.views, distinct=True),
         func.count(User.comments).label("comments"),
     ).order_by(User.id)
-    assert query.inspect() == orm.QueryInspection(
-        1, False, (orm.StatementInspection(joins_count=1, scalar_correlated=1, derived_correlated=1),)
+    assert query.inspect() == monorm.QueryInspection(
+        1, False, (monorm.StatementInspection(joins_count=1, scalar_correlated=1, derived_correlated=1),)
     )
     rows = await query
     assert rows == [
@@ -631,7 +631,7 @@ async def test_batches(clean, observe_queries):
     assert sizes == [10, 10, 5]
     query = Post.objects.filter(Post.views == 0)
     # iterate() repeats this template at runtime, so it is not batching.
-    assert query.inspect() == orm.QueryInspection(1, False, (orm.StatementInspection(),))
+    assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(),))
     with observe_queries(clean) as events:
         seen = [p.id async for p in query.iterate(batch_size=7)]
     assert len(events) == 4
@@ -642,11 +642,11 @@ async def test_batches(clean, observe_queries):
     assert [len(b) async for b in Post.objects.filter(Post.id > 0).batches(25)] == [25]
     batch = await anext(Post.objects.load(Post.author).batches(3))
     assert batch[0].author == alice
-    with pytest.raises(orm.QueryError):
+    with pytest.raises(monorm.QueryError):
         await anext(Post.objects.order_by(Post.title).batches(10))
-    with pytest.raises(orm.QueryError):
+    with pytest.raises(monorm.QueryError):
         await anext(Post.objects.all()[:5].batches(10))
-    async with orm.get_database().transaction():
+    async with monorm.get_database().transaction():
         assert len(await anext(Post.objects.lock(skip_locked=True).batches(4))) == 4
 
 
@@ -654,7 +654,7 @@ async def _in_new_tx(fn):
     """Run ``fn`` in a separate transaction (a task outside the caller's one)."""
 
     async def run():
-        async with orm.get_database().transaction():
+        async with monorm.get_database().transaction():
             return await fn()
 
     return await asyncio.create_task(run(), context=contextvars.Context())
@@ -662,18 +662,18 @@ async def _in_new_tx(fn):
 
 async def test_row_locks(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
-    db = orm.get_database()
-    with pytest.raises(orm.TransactionRequired):
+    db = monorm.get_database()
+    with pytest.raises(monorm.TransactionRequired):
         await User.objects.lock().get(User.id == alice.id)
-    with pytest.raises(orm.QueryError):
+    with pytest.raises(monorm.QueryError):
         await User.objects.lock().count()
 
     async with db.transaction():
         locked = await User.objects.lock().get(User.id == alice.id)
         assert locked == alice
-        with pytest.raises(orm.LockNotAvailable):
+        with pytest.raises(monorm.LockNotAvailable):
             await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
-        with pytest.raises(orm.LockNotAvailable):  # exclusive blocks shared too
+        with pytest.raises(monorm.LockNotAvailable):  # exclusive blocks shared too
             await _in_new_tx(lambda: User.objects.lock(False, nowait=True).get(User.id == alice.id))
         others = await _in_new_tx(lambda: User.objects.order_by(User.id).lock(skip_locked=True))
         assert names(others) == ["Bob", "Carol"]
@@ -685,14 +685,14 @@ async def test_row_locks(clean):
         # Shared locks coexist; the joined author row isn't locked at all.
         assert len(await _in_new_tx(lambda: Post.objects.lock(False, nowait=True).filter(Post.id == a1.id))) == 1
         await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
-        with pytest.raises(orm.LockNotAvailable):
+        with pytest.raises(monorm.LockNotAvailable):
             await _in_new_tx(lambda: Post.objects.lock(nowait=True).filter(Post.id == a1.id))
 
 
 async def test_bound_lock_replaces_refresh_lock(clean):
     alice, bob, _, _ = await seed()
-    db = orm.get_database()
-    with pytest.raises(orm.TransactionRequired):
+    db = monorm.get_database()
+    with pytest.raises(monorm.TransactionRequired):
         await alice.qs().lock()
     with pytest.raises(ValueError):
         await alice.qs().lock(nowait=True, skip_locked=True)
@@ -700,7 +700,7 @@ async def test_bound_lock_replaces_refresh_lock(clean):
 
     async with db.transaction():
         assert await alice.qs().load(User.name).lock() == [alice]
-        with pytest.raises(orm.LockNotAvailable):
+        with pytest.raises(monorm.LockNotAvailable):
             await _in_new_tx(lambda: User.objects.lock(nowait=True).get(User.id == alice.id))
     await User.objects.filter(User.id == alice.id).update(name="Alicia")
     await alice.load(reload=True)
@@ -714,7 +714,7 @@ async def test_bound_lock_replaces_refresh_lock(clean):
     async with db.transaction():
         await User.objects.lock().get(User.id == alice.id)
         await User.objects.filter(User.id == alice.id).update(name="Al")
-        with pytest.raises(orm.LockNotAvailable):
+        with pytest.raises(monorm.LockNotAvailable):
             await _in_new_tx(lambda: other.qs().lock(nowait=True))
         assert await _in_new_tx(lambda: other.qs().lock(skip_locked=True)) == []
         assert other.name == "Alicia"  # unchanged
@@ -733,7 +733,7 @@ async def test_relation_equals_instance(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     qs = Post.objects.filter(Post.author == alice).order_by(Post.id)
     assert qs.sql() == Post.objects.filter(Post.author_id == alice.id).order_by(Post.id).sql()
-    assert qs.inspect().statements[0] == orm.StatementInspection()
+    assert qs.inspect().statements[0] == monorm.StatementInspection()
     assert [p.id for p in await qs] == [a1.id, a2.id]
     assert [p.id for p in await Post.objects.filter(Post.author != alice)] == [b1.id]
     assert await Post.objects.filter(Post.author == carol).count() == 0
@@ -742,7 +742,7 @@ async def test_relation_equals_instance(clean):
     comment = await Comment.objects.insert(post=b1, author=alice, body="hi")
     nested = Comment.objects.filter(Comment.post.author == bob)
     # One correlated subquery into posts, none into users.
-    assert nested.inspect().statements[0] == orm.StatementInspection(set_correlated=1)
+    assert nested.inspect().statements[0] == monorm.StatementInspection(set_correlated=1)
     expected = await Comment.objects.filter(Comment.post_id == b1.id).order_by(Comment.id)
     assert comment in expected
     assert await nested.order_by(Comment.id) == expected
@@ -758,8 +758,8 @@ async def test_relation_equals_instance(clean):
 
 
 async def test_advisory_locks(clean):
-    db = orm.get_database()
-    with pytest.raises(orm.TransactionRequired):
+    db = monorm.get_database()
+    with pytest.raises(monorm.TransactionRequired):
         await db.lock("import")
     async with db.transaction():
         assert await db.lock("import") is True
@@ -771,16 +771,16 @@ async def test_advisory_locks(clean):
 
 async def test_integrity_error(clean):
     a = await User.objects.insert(email="dup@example.com", name="A")
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await User.objects.insert(email="dup@example.com", name="B")
     assert e.value.sqlstate == "23505"
     assert e.value.constraint == "users_email_key"
     assert e.value.detail == "Key (email)=(dup@example.com) already exists."
-    with pytest.raises(orm.IntegrityError) as e:
+    with pytest.raises(monorm.IntegrityError) as e:
         await Post.objects.insert(author_id=a.id + 1000, title="t", body="b")
     assert (e.value.sqlstate, e.value.constraint) == ("23503", "posts_author_id_fkey")
-    with pytest.raises(orm.DatabaseError) as e:
-        await orm.get_database().execute("SELECT 1/0")
+    with pytest.raises(monorm.DatabaseError) as e:
+        await monorm.get_database().execute("SELECT 1/0")
     assert (e.value.sqlstate, e.value.constraint, e.value.detail) == (
         "22012",
         None,
@@ -789,12 +789,12 @@ async def test_integrity_error(clean):
 
 
 def test_database_error_fields_default_to_none():
-    err = orm.DatabaseError("from user code")
+    err = monorm.DatabaseError("from user code")
     assert (err.sqlstate, err.constraint, err.detail) == (None, None, None)
 
 
 async def test_transactions(clean):
-    db = orm.get_database()
+    db = monorm.get_database()
     async with db.transaction():
         await User.objects.insert(email="in-tx@example.com", name="T")
     assert await User.objects.count() == 1
@@ -808,7 +808,7 @@ async def test_transactions(clean):
 
     async with db.transaction():
         await User.objects.insert(email="outer@example.com", name="O")
-        with pytest.raises(orm.IntegrityError):
+        with pytest.raises(monorm.IntegrityError):
             async with db.transaction():  # savepoint
                 await User.objects.insert(email="outer@example.com", name="dup")
         await User.objects.insert(email="after@example.com", name="A")

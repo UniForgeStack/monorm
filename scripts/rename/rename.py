@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -25,6 +26,7 @@ PLACEHOLDER = "\x01{}\x02"
 ENV_LOOKBEHIND = r"(?<![A-Za-z0-9_])"
 
 
+@lru_cache(maxsize=None)
 def glob_regex(glob: str) -> re.Pattern[str]:
     """Translate a glob: `**/` is any directories, `**` any text, `*` one segment."""
     out, i = [], 0
@@ -124,14 +126,15 @@ def load_rules(path: Path) -> tuple[list[Rule], list[Move]]:
                 expect,
             )
         )
-    for name in data.get("env_rename", []):
+    for raw in data.get("env_rename", []):
+        name = raw["name"]
         rules.append(
             Rule(
                 f"env-{name}",
                 ["**"],
                 re.compile(rf"{ENV_LOOKBEHIND}{re.escape(name)}\b"),
                 "MON" + name,
-                (1, 10**6),
+                tuple(raw["expect"]),
             )
         )
     ids = [r.id for r in rules]
@@ -187,7 +190,7 @@ def moved_path(path: str, planned: list[tuple[str, str]]) -> str:
     return "/".join(out)
 
 
-def rewrite(text: str, path: str, rules: list[Rule], record: bool = True) -> str:
+def rewrite(text: str, path: str, rules: list[Rule]) -> str:
     """Apply the protect rules, then the rewrite rules, then restore the protected text."""
     saved: list[str] = []
 
@@ -199,14 +202,14 @@ def rewrite(text: str, path: str, rules: list[Rule], record: bool = True) -> str
         if not rule.protect or not matches_any(path, rule.files):
             continue
         text, n = rule.pattern.subn(mask, text)
-        if n and record:
+        if n:
             rule.count += n
             rule.hit_files.add(path)
     for rule in rules:
         if rule.protect or not matches_any(path, rule.files):
             continue
         text, n = rule.pattern.subn(rule.replace, text)  # type: ignore[arg-type]
-        if n and record:
+        if n:
             rule.count += n
             rule.hit_files.add(path)
     return re.sub(r"\x01(\d+)\x02", lambda m: saved[int(m.group(1))], text)
@@ -224,15 +227,31 @@ class Allow:
 
 
 @dataclass
+class GuardPattern:
+    id: str
+    pattern: re.Pattern[str]
+    files: list[str]
+    exclude: list[str]
+    path_only: bool
+
+
+@dataclass
 class Guard:
-    patterns: list[tuple[str, re.Pattern[str], list[str], bool]]
+    patterns: list[GuardPattern]
     allows: list[Allow]
 
 
 def load_guard(path: Path) -> Guard:
     data = tomllib.loads(path.read_text())
     patterns = [
-        (g["id"], re.compile(g["pattern"]), g.get("files", ["**"]), g.get("target") == "path") for g in data["guard"]
+        GuardPattern(
+            g["id"],
+            re.compile(g["pattern"]),
+            g.get("files", ["**"]),
+            g.get("exclude", []),
+            g.get("target") == "path",
+        )
+        for g in data["guard"]
     ]
     allows = []
     for raw in data.get("allow", []):
@@ -242,32 +261,35 @@ def load_guard(path: Path) -> Guard:
     return Guard(patterns, allows)
 
 
+def violates(guard: Guard, path: str, number: int, line: str) -> bool:
+    """True when a guard pattern matches the line (line 0 is the path itself)."""
+    return any(
+        g.path_only == (number == 0)
+        and matches_any(path, g.files)
+        and not matches_any(path, g.exclude)
+        and g.pattern.search(line)
+        for g in guard.patterns
+    )
+
+
 def guard_hits(guard: Guard, path: str, text: str | None) -> list[tuple[str, int, str]]:
     """Old-name hits as (path, line number, line); line 0 is the path itself."""
-    hits: list[tuple[str, int, str]] = []
     scanned = [(0, path)]
     if text is not None:
         scanned += list(enumerate(text.split("\n"), 1))
-    for number, line in scanned:
-        for _name, regex, files, path_only in guard.patterns:
-            if path_only != (number == 0):
-                continue
-            if matches_any(path, files) and regex.search(line):
-                hits.append((path, number, line))
-                break
-    return hits
+    return [(path, number, line) for number, line in scanned if violates(guard, path, number, line)]
 
 
 def apply_allow(guard: Guard, hits: list[tuple[str, int, str]]) -> list[tuple[str, int, str]]:
+    """Drop a hit only when the line is clean once the allowed text is cut out."""
     left = []
     for path, number, line in hits:
-        allowed = False
+        rest = line
         for allow in guard.allows:
-            if matches_any(path, [allow.glob]) and allow.pattern.search(line):
-                allow.used += 1
-                allowed = True
-                break
-        if not allowed:
+            if matches_any(path, [allow.glob]):
+                rest, n = allow.pattern.subn("\x00", rest)
+                allow.used += bool(n)
+        if violates(guard, path, number, rest):
             left.append((path, number, line))
     return left
 
@@ -356,7 +378,8 @@ def run(root: Path, mode: str, rules_path: Path, allow_path: Path, out=print, ve
         for f, text in new_texts.items():
             (root / moved_path(f, planned)).write_text(text)
         out(f"applied: {len(planned)} moves, {len(new_texts)} files rewritten")
-    return 0
+        return 0
+    return 1 if left or stale else 0
 
 
 def main(argv: list[str] | None = None) -> int:

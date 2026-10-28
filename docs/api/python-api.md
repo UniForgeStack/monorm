@@ -24,11 +24,11 @@ composition, file fields, generic relations) have their own docs: see [README.md
 
 | Path | What |
 |---|---|
-| `languages/python/orm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](../schema/schema.md)), `_profiles.py` (native profile selection) |
-| `crates/core/` | Rust crate `orm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `orm` CLI (see [`schema.md`](../schema/schema.md)) |
-| `crates/engine/` | Rust crate `orm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
-| `crates/cli/` | Rust crate `orm-cli`: the `orm` command line, run as the `orm` binary, `python -m orm` and `npx orm` |
-| `languages/python/native/` | Rust crate `orm-python` (PyO3) on top of `orm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `orm_native_<profile>._native`; `orm._native` forwards to the selected profile |
+| `languages/python/monorm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](../schema/schema.md)), `_profiles.py` (native profile selection) |
+| `crates/core/` | Rust crate `monorm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `monorm` CLI (see [`schema.md`](../schema/schema.md)) |
+| `crates/engine/` | Rust crate `monorm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
+| `crates/cli/` | Rust crate `monorm-cli`: the `monorm` command line, run as the `monorm` binary, `python -m monorm` and `npx @ufstack/monorm` |
+| `languages/python/native/` | Rust crate `monorm-python` (PyO3) on top of `monorm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `monorm_native_<profile>._native`; `monorm._native` forwards to the selected profile |
 | `languages/python/packaging/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation): [`optional-packaging.md`](../contracts/optional-packaging.md) |
 | `languages/js/`, `languages/js/native/` | The TypeScript package on the same engine: [`typescript-api.md`](typescript-api.md) |
 | `examples/blog/` | `schema.prisma`, the `models.py` / `models.pyi` generated from it, its migrations, `demo.py` |
@@ -45,18 +45,18 @@ python -m pytest           # needs Postgres; ORM_TEST_DATABASE_URL overrides the
 python examples/blog/demo.py sqlite://:memory:
 ```
 
-`orm` needs exactly one native profile: install `orm[postgres]`, `orm[sqlite]`,
-`orm[combined]` or `orm[tooling]`. Set `ORM_PROFILE` when more than one is installed.
+`orm` needs exactly one native profile: install `monorm[postgres]`, `monorm[sqlite]`,
+`monorm[combined]` or `monorm[tooling]`. Set `MONORM_PROFILE` when more than one is installed.
 
 ## Models: the generated module
 
-`python -m orm generate` turns `schema.prisma` into two files (see [`schema.md`](../schema/schema.md)):
+`python -m monorm generate` turns `schema.prisma` into two files (see [`schema.md`](../schema/schema.md)):
 
-* **`models.py` (runtime).** The compiled schema IR plus `orm.define()`, which builds
-  the model classes (field and relation descriptors) from it. `orm.load("schema.prisma")`
-  does the same at runtime without a generated file. `orm.load` does not resolve `import "app:..."`:
-  generate the models (or `python -m orm`) so the command line finds the installed app
-  through its `orm.apps` entry point (see [`schema.md`](../schema/schema.md#installed-app-import)).
+* **`models.py` (runtime).** The compiled schema IR plus `monorm.define()`, which builds
+  the model classes (field and relation descriptors) from it. `monorm.load("schema.prisma")`
+  does the same at runtime without a generated file. `monorm.load` does not resolve `import "app:..."`:
+  generate the models (or `python -m monorm`) so the command line finds the installed app
+  through its `monorm.apps` entry point (see [`schema.md`](../schema/schema.md#installed-app-import)).
 * **`models.pyi` (types).** Per model:
   * the model class (`id: f.BigInt[int]`, `posts: f.HasMany[Post, _PostPath]`, a typed
     `update()`);
@@ -70,18 +70,18 @@ python examples/blog/demo.py sqlite://:memory:
     builders return `Self`;
   * a `load_<relation>()` method for each to-one relation ([`async-reference-loading.md`](async-reference-loading.md)).
 
-`orm.define(schema, *, registry=None, module=None, required_capabilities=())` builds the
-classes from a compiled IR; `orm.load(path)` and `orm.loads(source)` compile a schema
+`monorm.define(schema, *, registry=None, module=None, required_capabilities=())` builds the
+classes from a compiled IR; `monorm.load(path)` and `monorm.loads(source)` compile a schema
 file or text first. Each returns the model and enum classes by name. Classes join
-`orm.registry` unless you pass `registry=orm.Registry()`; `connect(..., registry=...)`
+`monorm.registry` unless you pass `registry=monorm.Registry()`; `connect(..., registry=...)`
 uses that registry.
 
 Models can also be declared as classes, without a schema file:
 
 ```python
-from orm.fields import Integer, String
+from monorm.fields import Integer, String
 
-class Counter(orm.Model, registry=registry, table="counters"):
+class Counter(monorm.Model, registry=registry, table="counters"):
     id = Integer(primary_key=True)
     label = String(default=lambda: "new", nullable=True)          # Python callable default
     token = String(client_default={"call": "uuid"}, nullable=True)  # the IR of @client_default(uuid())
@@ -91,7 +91,7 @@ registry.prepare()
 
 `Field(*, primary_key=False, auto_increment=False, nullable=False, unique=False,
 index=False, column=None, default=MISSING, default_now=False, server_default=False,
-client_default=None)` is the base of every field class in `orm.fields`. `default` is a
+client_default=None)` is the base of every field class in `monorm.fields`. `default` is a
 literal (a database default) or a callable (run by the ORM for each insert).
 `client_default` takes the IR form of `@client_default`: a literal or
 `{"call": "uuid" | "uuid7" | "now"}`. `has_insert_default` tells whether an omitted
@@ -131,20 +131,20 @@ class PostQueries(PostQuerySet):
 Generate the models with the class, as `module:Class`:
 
 ```bash
-python -m orm generate --query-set Post=blog.queries:PostQueries
+python -m monorm generate --query-set Post=blog.queries:PostQueries
 ```
 
 or in `pyproject.toml`:
 
 ```toml
-[tool.orm.query_sets]
+[tool.monorm.query_sets]
 Post = "blog.queries:PostQueries"
 ```
 
 The native tooling generator accepts the same mapping explicitly:
 
 ```python
-from orm import _native
+from monorm import _native
 
 module, stub = _native.generate_python(
     "schema.prisma", query_sets={"Post": "blog.queries:PostQueries"}
@@ -159,9 +159,9 @@ Then `Post.objects` is a `PostQueries`, and the methods chain with every builder
 `await Post.objects.published().filter(Post.author_id == 1).popular()`.
 `models.pyi` types `Post.objects` as the class, so mypy and pyright check the calls.
 
-* `models.py` calls `orm.use_query_set(Post, "blog.queries:PostQueries")`.
+* `models.py` calls `monorm.use_query_set(Post, "blog.queries:PostQueries")`.
   The module is imported on the first use of `Post.objects`, so it can import `blog.models` without an import cycle.
-  `use_query_set(Model, cls)` also takes the class itself, for models from `orm.load()`.
+  `use_query_set(Model, cls)` also takes the class itself, for models from `monorm.load()`.
 * Relation sets have the methods too: `await user.posts.published()`, `post.tags.<method>()`.
   The stub does not type them on a relation set yet; `Post.objects.published().filter(Post.author_id == user.id)` is typed.
 * `User.posts.objects.published()` uses them for related rows in `load()`.
@@ -188,13 +188,13 @@ class UserMethods:
         return verify(raw, self.password)
 ```
 
-* `models.py` declares `class User(UserMethods, orm.Model)`, so `models.pyi` types the methods.
+* `models.py` declares `class User(UserMethods, monorm.Model)`, so `models.pyi` types the methods.
   The methods module must not import `auth.models` at import time: use `TYPE_CHECKING`, as above.
-* A consumer replaces the class with `--model-methods User=module:Class`, `[tool.orm.model_methods]` in `pyproject.toml`, or the `model_methods=` argument of `_native.generate_python`.
-* `define(..., model_methods={"User": UserMethods})`, `orm.load(path, model_methods=...)` and `orm.loads(text, model_methods=...)` set it for a model from a schema file or text.
+* A consumer replaces the class with `--model-methods User=module:Class`, `[tool.monorm.model_methods]` in `pyproject.toml`, or the `model_methods=` argument of `_native.generate_python`.
+* `define(..., model_methods={"User": UserMethods})`, `monorm.load(path, model_methods=...)` and `monorm.loads(text, model_methods=...)` set it for a model from a schema file or text.
 * A method name that is a field, a relation, a member of `Model` or an extension member (for example `delete`) raises `TypeError: User.delete: model method collision` when the model is prepared.
   A methods class may define `__str__` and `__repr__`; every other `object` member (`__eq__`, `__hash__`) still raises.
-* `@@query_set("UserQueries")` in the schema names the query set class of the section above. Codegen writes the dotted path from the import root (the nearest directory with `pyproject.toml`, `setup.py` or `setup.cfg`, `src/` under it, or `site-packages`) to the schema directory: `orm_auth.queries:UserQueries`, or `acme.auth.queries:UserQueries` for `src/acme/auth/`.
+* `@@query_set("UserQueries")` in the schema names the query set class of the section above. Codegen writes the dotted path from the import root (the nearest directory with `pyproject.toml`, `setup.py` or `setup.cfg`, `src/` under it, or `site-packages`) to the schema directory: `monorm_auth.queries:UserQueries`, or `acme.auth.queries:UserQueries` for `src/acme/auth/`.
   A schema in the import root gives `queries:UserQueries`. With no import root, codegen fails and asks for `--query-set`.
 
 ## Queries
@@ -214,7 +214,7 @@ User.objects.all()[10:20]                     # LIMIT 10 OFFSET 10
 async for u in User.objects.filter(...): ...
 
 await qs.first() / qs.last()                  # lazy OneRowQuery; by ordering, else pk; None if empty
-await qs[n] / qs[-1]                         # row n (n may be orm.param()); [-1] is last()
+await qs[n] / qs[-1]                         # row n (n may be monorm.param()); [-1] is last()
 qs.first().prepare() / qs.first().inspect()  # prepare a one-row read or inspect its plan
 await qs.get(cond)                            # User | None; rejects multiple matches
 await qs.require().get(cond)                  # User; rejects zero or multiple matches
@@ -224,9 +224,9 @@ await qs.count() / qs.exists()
 await qs.in_bulk([1, 2, 3])                   # {1: <User 1>, 3: <User 3>}: by pk, missing ids left out
 await qs.in_bulk(emails, field=User.email)    # by a unique field; no ids: every row
 qs.sql()                                      # SQL with values inlined, for debugging
-qs.limit(n) / qs.offset(n)                    # the same as a slice; takes orm.param()
+qs.limit(n) / qs.offset(n)                    # the same as a slice; takes monorm.param()
 qs.load(User.name, User.email)                # partial instances: other fields raise NotLoaded
-qs.without_defaults()                         # skip the schema query defaults (orm-query-defaults package)
+qs.without_defaults()                         # skip the schema query defaults (monorm-query-defaults package)
 qs.current_filter()                           # [{source, name, expr, active}] of the default filters
 qs.without_related()                          # drop default and explicit relation loading
 qs.model                                      # the model class
@@ -234,7 +234,7 @@ qs.model                                      # the model class
 
 `OneRowQuery` runs afresh on each await; TypeScript reuses the result of its first await.
 Only `-1` or non-negative integer indices are supported; another negative index raises `ValueError`.
-`first()`, `last()` (also `[-1]`), `get()`, `[n]` and prepared `first()` / `get()` raise `QueryError` at the call on a query set with any `limit()`, `offset()` or slice, literal or `param()`: read the n-th row with `[n]` (`qs[65]`, not `offset(60)[5]`). `[orm.param("n")]` gives `OFFSET $n LIMIT 1`.
+`first()`, `last()` (also `[-1]`), `get()`, `[n]` and prepared `first()` / `get()` raise `QueryError` at the call on a query set with any `limit()`, `offset()` or slice, literal or `param()`: read the n-th row with `[n]` (`qs[65]`, not `offset(60)[5]`). `[monorm.param("n")]` gives `OFFSET $n LIMIT 1`.
 A query set takes one slice, or one `limit()` and one `offset()` in either order; a second slice, a slice after `limit()` / `offset()`, `limit()` / `offset()` after a slice, and the same method twice raise `QueryError`.
 Use a relation's `[n].label(name)` in `load()` to store one row per parent (or `None`); `get().label(name)` raises `TypeError`.
 
@@ -458,11 +458,11 @@ requested values. `await post.load(reload=True)` with no items reads all scalar 
 filtered relation querysets work too. Collection values remain in `.cached`.
 `post.load()`, `post.update()` and `post.delete()` run through `post.qs()`: they apply no query default to the row itself, but a relation or aggregate they load keeps the defaults of its target.
 
-**Instances you already have.** `await orm.of(instances).load(*items)` loads relations onto them, as `load()` does for the rows of a query:
+**Instances you already have.** `await monorm.of(instances).load(*items)` loads relations onto them, as `load()` does for the rows of a query:
 
 ```python
 bundle = await Bundle.objects.require().get(Bundle.id == 1)
-await orm.of([bundle]).load(Bundle.items.product, Bundle.versions.objects.order_by(-Version.id)[:1].label("latest"))
+await monorm.of([bundle]).load(Bundle.items.product, Bundle.versions.objects.order_by(-Version.id)[:1].label("latest"))
 ```
 
 A bound load of relations only runs no query for the objects themselves: the keys come from the instances, and every relation loads with an `IN (...)` query.
@@ -472,13 +472,13 @@ Each of those queries gives a query event.
 
 ### Bound query sets
 
-`orm.of(objs)`, `Model.objects.of(objs)` and `post.qs()` give a bound query set: a query set filtered to the primary keys of objects you already hold.
+`monorm.of(objs)`, `Model.objects.of(objs)` and `post.qs()` give a bound query set: a query set filtered to the primary keys of objects you already hold.
 Awaiting it reads those rows, fills the objects in place, and gives the matched objects in input order.
 An object whose row is missing stays unchanged.
 The objects are of one model and one database; `using(db)` names the database to read.
 
 ```python
-await orm.of(posts).load(Post.author, Post.comments)    # relations only: no query for the posts
+await monorm.of(posts).load(Post.author, Post.comments)    # relations only: no query for the posts
 await Post.objects.of(posts).filter(Post.views > 10)    # a read of the rows, with a filter
 async with db.transaction():
     await post.qs().lock()                              # reload and lock
@@ -503,7 +503,7 @@ await post.qs().delete()
 * `await post.load(reload=True)` does not reload a label such as `func.count(Post.comments).label("n")`: the instance does not know the label's expression.
 * The version enters writes only: reads and `lock()` refresh a stale object.
   A bound write (`update()`, `delete()`, `undelete()`, `hard_delete()`) on a model with locking matches the loaded version of each object.
-  The write raises `orm.VersionConflict` when a row has another version.
+  The write raises `monorm.VersionConflict` when a row has another version.
   A write of several objects runs in a transaction (a savepoint inside one transaction).
   A conflict rolls the transaction back, changes no row and restores the objects.
   An object that a filter hides, or whose row is gone from the table, is not a conflict.
@@ -520,12 +520,12 @@ await post.qs().delete()
 | `await post.refresh(Post.views)` | `await post.load(Post.views, reload=True)` |
 | `await post.refresh(lock=True)` | `await post.qs().lock()` |
 | `await job.refresh(lock=True, skip_locked=True)` gives `False` | `await job.qs().lock(skip_locked=True)` gives `[]` |
-| `await orm.prefetch(posts, Post.author)` | `await orm.of(posts).load(Post.author)` |
-| `await qs.offset(i).first()` (or `qs[i:][0]`) | `await qs[i]`, or `qs[orm.param("i")]` in a prepared query |
+| `await monorm.prefetch(posts, Post.author)` | `await monorm.of(posts).load(Post.author)` |
+| `await qs.offset(i).first()` (or `qs[i:][0]`) | `await qs[i]`, or `qs[monorm.param("i")]` in a prepared query |
 
 `refresh()` raised `DoesNotExist` for a row that is not found; `qs().lock()` and the other bound reads give `[]`.
 
-`orm.prefetch()` is removed.
+`monorm.prefetch()` is removed.
 
 ### One-to-one and many-to-many
 
@@ -711,7 +711,7 @@ func.to_tsquery("english", "cat & !dog") / func.plainto_tsquery("english", text)
 * `User.posts.objects.order_by(-Post.views)[0].label("best")` in `load()` stores the first related row, or `None`, in `user.best` instead of a list.
   Positions apply per parent; `[-1]` reverses the order. A to-many relation and a label are required.
   An unlabeled one-row query in `load()` raises `TypeError`; awaiting a relation query outside `load()` also raises `TypeError`.
-* `orm.column(Bundle, "items.product.title")` is the column a dotted path names, the same as `Bundle.items.product.title`.
+* `monorm.column(Bundle, "items.product.title")` is the column a dotted path names, the same as `Bundle.items.product.title`.
   Each name before the last is a relation, the last a field; an unknown name raises `LookupError`.
   It is for adapters that map request names to columns (search and ordering filters). It is a function, not `Model.column`, so it can't collide with a field named `column`.
 
@@ -757,15 +757,15 @@ The primary key is added as the last order column when no column of the order is
 ### Prepared queries
 
 A query the app runs over and over with different values (a lookup per request) can be
-built once and then only bound per call. `orm.param("name")` marks a value to supply
+built once and then only bound per call. `monorm.param("name")` marks a value to supply
 on each call:
 
 ```python
 # module level: the query set, its IR and the IR's JSON are built once
-post_by_id = Post.objects.load(Post.author).filter(Post.id == orm.param("id")).prepare()
-latest = (Post.objects.filter(Post.author_id == orm.param("user"))
+post_by_id = Post.objects.load(Post.author).filter(Post.id == monorm.param("id")).prepare()
+latest = (Post.objects.filter(Post.author_id == monorm.param("user"))
           .order_by(Post.created_at.desc())
-          .limit(orm.param("n")).offset(orm.param("skip")).prepare())
+          .limit(monorm.param("n")).offset(monorm.param("skip")).prepare())
 
 post = await post_by_id.get(id=post_id)         # Post | None; also .first() .count() .exists()
 post = await post_by_id.require().get(id=post_id)  # Post; absence raises
@@ -830,8 +830,8 @@ await Post.objects.filter(Post.author_id.in_(User.objects.filter(...).select(Use
 ```
 
 Like model queries, selected-row queries use `.get(*conditions)` to return zero or
-one result, rejecting multiple matches with `orm.MultipleObjectsReturned`.
-`.require()` rejects queries returning no rows with `orm.DoesNotExist`; it also
+one result, rejecting multiple matches with `monorm.MultipleObjectsReturned`.
+`.require()` rejects queries returning no rows with `monorm.DoesNotExist`; it also
 applies to `.first()`, `.all()`, awaiting the selection, `.scalar()` and `.scalars()`.
 A row containing NULL values is still a result: a required scalar may return `None`
 when its row exists but its column is NULL.
@@ -944,7 +944,7 @@ set or `select()` goes inside another query, and `outer(col)` (Django's `OuterRe
 names a column of the enclosing query:
 
 ```python
-from orm import exists, outer
+from monorm import exists, outer
 
 # EXISTS as a condition (negate with ~), or a boolean column
 await User.objects.filter(exists(Post.objects.filter(Post.author_id == outer(User.id), Post.views > 100)))
@@ -1177,7 +1177,7 @@ await post.load(Post.views, reload=True)         # some fields
   raises `QueryError` and lists the candidates: pass `index=`. `index=` can name only
   an index that the schema declares. To name an index that you made by hand in the
   database, declare it in the schema first. The next migration then emits
-  `CREATE UNIQUE INDEX` without `IF NOT EXISTS`, so drop the old index first. `orm pull`
+  `CREATE UNIQUE INDEX` without `IF NOT EXISTS`, so drop the old index first. `monorm pull`
   writes such an index into the schema as `where: raw(...)`.
 * `get_or_insert(defaults=..., **lookup)` reads the row that matches `lookup`.
   When there is none, it inserts `lookup` and `defaults` with
@@ -1232,14 +1232,14 @@ The column-role extensions change these writes (see `schema-extensions.md`).
 On a `@@soft_delete.deleted_at` model, `delete()` soft-deletes, and `hard_delete()`, `undelete()`, `all_with_deleted()` and `deleted_only()` exist (from the soft-delete extension's generated code).
 Plain reads hide deleted rows (the `"deleted"` default); `all_with_deleted()` and `deleted_only()` bypass only that default.
 On a query set, bypass only it with `without_defaults("deleted")`: a bare `without_defaults()` drops all defaults, a tenant filter too. An instance `hard_delete()` uses the bare bypass. A to-one reference to the model is `T | None`. See [Behavior changes](../extensions/schema-extensions.md#behavior-changes).
-A stale versioned instance write raises `orm.VersionConflict`.
+A stale versioned instance write raises `monorm.VersionConflict`.
 
 ### Connections
 
 ```python
-db = await orm.connect("postgres://user:pw@host/db", max_connections=10)   # also sqlite:///path, sqlite://:memory:
-other = await orm.connect(url, default=False, registry=registry)          # not the default database
-orm.get_database()                     # the default database; NotConnected before connect()
+db = await monorm.connect("postgres://user:pw@host/db", max_connections=10)   # also sqlite:///path, sqlite://:memory:
+other = await monorm.connect(url, default=False, registry=registry)          # not the default database
+monorm.get_database()                     # the default database; NotConnected before connect()
 await db.execute("VACUUM")             # raw SQL, returns the row count; no ORM checks apply
 await db.create_tables(); await db.drop_tables()
 await db.close()
@@ -1291,7 +1291,7 @@ async with db.transaction():
     try:
         async with db.transaction():          # savepoint: its rollback clears the failed mark
             await Order.objects.insert(...)   # may raise IntegrityError
-    except orm.IntegrityError:
+    except monorm.IntegrityError:
         pass
     await Audit.objects.insert(...)           # the outer transaction still works
 ```
@@ -1305,7 +1305,7 @@ Outside a transaction it runs in a transaction of its own.
 
 ### Database errors
 
-An `orm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`, `TransactionAborted`) has three attributes:
+An `monorm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`, `TransactionAborted`) has three attributes:
 
 * `sqlstate`: the five-character SQLSTATE, for example `"23505"` (unique), `"23503"` (foreign key), `"23502"` (not null), `"23514"` (check).
   SQLite constraint failures get the same Postgres codes; other SQLite errors give `None`.
@@ -1317,7 +1317,7 @@ Each is `None` when the database did not give it.
 ```python
 try:
     await User.objects.insert(email=email, name=name)
-except orm.IntegrityError as e:
+except monorm.IntegrityError as e:
     if e.constraint != "users_email_key":
         raise
     ...  # the email is taken
@@ -1333,7 +1333,7 @@ async def transfer(db, a, b, amount, attempts=3):
             async with db.transaction():
                 ...  # the whole transaction, reads included
             return
-        except orm.DatabaseError as e:
+        except monorm.DatabaseError as e:
             if e.sqlstate not in ("40001", "40P01") or attempt == attempts - 1:
                 raise
             await asyncio.sleep(0.05 * 2**attempt)
@@ -1350,13 +1350,13 @@ Raw SQL (`db.execute`), migrations, other ORM processes without this schema, and
 For database-level protection, use `@@trigger` or database grants.
 
 ```python
-with orm.allow_writes(Post):               # a sync `with`: it does no I/O
+with monorm.allow_writes(Post):               # a sync `with`: it does no I/O
     await post.update(title="new")
 
-await Post.objects.filter(...).update(title="x")   # raises orm.WriteProtected
+await Post.objects.filter(...).update(title="x")   # raises monorm.WriteProtected
 ```
 
-Every ORM write to a `@@protected_write` model fails outside `orm.allow_writes(...)` with `orm.WriteProtected`:
+Every ORM write to a `@@protected_write` model fails outside `monorm.allow_writes(...)` with `monorm.WriteProtected`:
 `insert`, `insert_many`, upserts, `update`, `update_many`, `delete`, instance writes and composed writes.
 The check is on the table that the SQL writes, so `post.tags.add()` needs `allow_writes(PostTag)` when `PostTag` is protected.
 The scope is a `ContextVar`, like the transaction: tasks started inside it get it.
@@ -1364,7 +1364,7 @@ A nested scope adds its models to the outer ones. `allow_writes` starts no trans
 A query set is lazy, so the scope applies where the write is awaited, not where it is built:
 `u = qs.update(...)` inside the scope and `await u` outside it raises `WriteProtected`.
 Do not `yield` inside `allow_writes` in an async generator: when the consumer stops early, the scope stays open in the consumer task.
-`orm.hooks.prepare_insert` and `prepare_update` also check protection, so a file field uploads nothing for a rejected write.
+`monorm.hooks.prepare_insert` and `prepare_update` also check protection, so a file field uploads nothing for a rejected write.
 See `docs/schema/schema.md`, "Protected writes".
 
 ### Locks
@@ -1374,7 +1374,7 @@ async with db.transaction():
     post = await Post.objects.lock().require().get(Post.id == 1)                      # FOR UPDATE
     await Post.objects.filter(...).lock(exclusive=False)                     # FOR SHARE
     todo = await Post.objects.filter(~Post.published).lock(skip_locked=True).limit(10)
-    await Post.objects.lock(nowait=True).get(...)       # raises orm.LockNotAvailable if locked
+    await Post.objects.lock(nowait=True).get(...)       # raises monorm.LockNotAvailable if locked
     await post.qs().lock()                              # reload and lock this row
     if not await job.qs().lock(skip_locked=True):       # []: another worker has it
         ...
@@ -1392,7 +1392,7 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   It locks the whole row. A row that is missing, or locked elsewhere with `skip_locked`, gives `[]` and leaves the instance unchanged.
   `post.qs()` applies no query default to the row of the post, so it also locks a soft-deleted row.
 * Row locks and `db.lock(key)` without `session=True` are held until the transaction
-  ends, so they raise `orm.TransactionRequired` outside `db.transaction()`. `count()` / `exists()` /
+  ends, so they raise `monorm.TransactionRequired` outside `db.transaction()`. `count()` / `exists()` /
   `update()` / `delete()` on a locked query set raise `QueryError` (writes lock the rows
   they change anyway).
 * SQLite has no row locks and no advisory locks: `lock()` and `db.lock()` raise `QueryError` there.
@@ -1407,7 +1407,7 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   connect (estimated 1–5 ms) and counts against the server's `max_connections`. Session
   locks are unsafe behind PgBouncer in transaction mode. It waits at most `timeout` seconds (forever when `None` or `inf`, not at all with
   `nowait=True`; at most 2147483.647, the Postgres limit) and raises
-  `orm.LockNotAvailable` when another session still holds the lock. `timeout` without
+  `monorm.LockNotAvailable` when another session still holds the lock. `timeout` without
   `session=True` raises `TypeError`. The lock is released when the block ends, also on
   an error. When the unlock fails, the connection is closed, so the server releases the
   lock, and the block's own result or error stays. A task cancelled while it waits
@@ -1415,12 +1415,12 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   Reads in the block go to a replica when the database has replicas: read in a
   transaction or with `.using("primary")` to see the last write of the previous holder.
 * Optimistic locking (version columns) is not in the core.
-  Install the `orm-locking` package and add `@@locking.version` to the model; see `schema-extensions.md`.
+  Install the `monorm-locking` package and add `@@locking.version` to the model; see `schema-extensions.md`.
 
 ### Read replicas
 
 ```python
-db = await orm.connect(primary_url, replicas=[replica1_url, replica2_url])
+db = await monorm.connect(primary_url, replicas=[replica1_url, replica2_url])
 users = await User.objects.filter(...)                  # a replica, in turn
 fresh = await User.objects.using("primary").get(...)    # the primary
 ```
@@ -1451,18 +1451,18 @@ with db.tenant(shop.id):                 # a sync `with`: it does no I/O
 * Replicas get the same setting. Session locks (`session=True`) do not.
 * The policy must read the setting, for example `USING (shop_id::text = current_setting('app.tenant', true))`. The ORM does not create policies. A superuser and the table owner bypass RLS unless the table has `FORCE ROW LEVEL SECURITY`.
 * SQLite raises `QueryError`.
-* `orm.scope(shop=...)` is the application-side filter (see `docs/schema/selection-and-defaults.md`, "Scope values").
+* `monorm.scope(shop=...)` is the application-side filter (see `docs/schema/selection-and-defaults.md`, "Scope values").
 
-### Finding N+1 queries: `orm.debug`
+### Finding N+1 queries: `monorm.debug`
 
 The ORM never loads a relation by itself, so an N+1 comes from explicit code: an instance `load(...)` call or a query in a loop.
-`orm.debug.n_plus_one` finds it:
+`monorm.debug.n_plus_one` finds it:
 
 ```python
-with orm.debug.n_plus_one(threshold=5, fail=True):
+with monorm.debug.n_plus_one(threshold=5, fail=True):
     for c in customers:
         await c.load(Customer.person)
-# orm.debug.NPlusOne: 20 queries with one shape `SELECT ... FROM "person" WHERE "person"."id" = $1 ...`
+# monorm.debug.NPlusOne: 20 queries with one shape `SELECT ... FROM "person" WHERE "person"."id" = $1 ...`
 #   at app/views.py:42; use load(Customer.person)
 ```
 
@@ -1478,13 +1478,13 @@ with orm.debug.n_plus_one(threshold=5, fail=True):
   The pages of one ORM loop (`batches()`, `iterate()`, the chunks of `in_bulk()`) count as one query when they have one shape.
 * The call site is the line that awaits the query (`await qs`, `await p.customers.all()`).
   A query that `asyncio.gather()` or `create_task()` runs reports the line that started the event loop.
-* When the block ends, a shape that ran more than `threshold` times (default 5) raises `orm.debug.NPlusOne` with `fail=True`, or gives an `orm.debug.NPlusOneWarning`.
+* When the block ends, a shape that ran more than `threshold` times (default 5) raises `monorm.debug.NPlusOne` with `fail=True`, or gives a `monorm.debug.NPlusOneWarning`.
   The exception and the `with ... as report` value carry the report: each shape, its SQL, its count, the call site of its first query and the fix.
-* The report is an `orm.debug.Report`: `.shapes` and `.repeated` hold `Shape(key, sql, count, site, fix)` values, and `.message()` gives the text above.
+* The report is a `monorm.debug.Report`: `.shapes` and `.repeated` hold `Shape(key, sql, count, site, fix)` values, and `.message()` gives the text above.
 * The fix is `load(...)` for a repeated instance `load(...)` and for a repeated unchanged to-many or many-to-many query (`await post.comments`, `await post.tags`).
 * The call site and the SQL text are captured only inside the scope.
   Outside it, each query pays one `ContextVar` read (about 15 ns, measured).
-* In a test suite, add `pytest_plugins = ["orm.testing"]` to `conftest.py`.
+* In a test suite, add `pytest_plugins = ["monorm.testing"]` to `conftest.py`.
   The `n_plus_one` fixture counts the whole test and fails it at teardown; set `n_plus_one.threshold` to change the threshold.
 
 * To mock `db.lock` in tests, use `AsyncMock` for `await db.lock(k)`, and an async context manager for `session=True`: `lock` is not a coroutine function (`create_autospec(Database)` makes a mock that cannot be awaited).
@@ -1522,14 +1522,14 @@ print(await Post.objects.filter(Post.author_id == 7).explain(analyze=True))  # r
 `db.on_query(hook)` calls `hook(event)` after each statement that the database runs, and gives a function that removes the hook:
 
 ```python
-def log_slow(e: orm.QueryEvent) -> None:
+def log_slow(e: monorm.QueryEvent) -> None:
     if e.duration > 0.1:
         logger.warning("%.0f ms, %d rows: %s", e.duration * 1000, e.rows, e.sql)
 
 remove = db.on_query(log_slow)
 ```
 
-* `orm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL and `db.fetch(sql, *params)` have placeholders; `db.execute(sql)` goes as written, with any literal value in it), `start` (Unix seconds), `duration` (seconds), `rows`, `error` and `raw` (`True` for `db.execute(sql)`, which takes no parameters).
+* `monorm.QueryEvent` has `sql` (the SQL as sent: ORM-built SQL and `db.fetch(sql, *params)` have placeholders; `db.execute(sql)` goes as written, with any literal value in it), `start` (Unix seconds), `duration` (seconds), `rows`, `error` and `raw` (`True` for `db.execute(sql)`, which takes no parameters).
   `rows` is the rows returned, or the rows affected by a statement that returns no rows.
   `error` is the first line of the database's message when the statement failed; the ORM call still raises.
   The line has no `DETAIL` and so no key value, but it can still hold an input value (`invalid input syntax for type integer: "abc"`).
@@ -1556,19 +1556,19 @@ remove = db.on_query(log_slow)
   With a hook, each call creates a trace and each statement records one event.
   A prepared `get`, median of 9 rounds of 2000 calls (measured, loaded machine): SQLite 163 µs with an empty hook and 152 µs without; Postgres 201 µs and 192 µs. The hook adds about 10 µs.
 
-`orm.otel.instrument(db)` gives each statement a client span, and gives a function that stops the spans.
-It needs `opentelemetry-api` (`pip install 'orm[otel]'`); configure the SDK and the exporter as usual.
-`instrument(db, tracer=t)` uses the tracer `t` instead of `get_tracer("orm")`.
+`monorm.otel.instrument(db)` gives each statement a client span, and gives a function that stops the spans.
+It needs `opentelemetry-api` (`pip install 'monorm[otel]'`); configure the SDK and the exporter as usual.
+`instrument(db, tracer=t)` uses the tracer `t` instead of `get_tracer("monorm")`.
 
 * The span starts and ends at the statement's times. Its parent is the current span of the caller.
 * The span name is the SQL operation (`SELECT`, `INSERT`, ...).
   The attributes are `db.system.name` (`postgresql` or `sqlite`), `db.operation.name`, `db.query.text` (as in the event, cut at 4096 characters then `...`; left out for `db.execute(sql)` unless `instrument(db, raw_sql=True)`, because its SQL can hold literal values) and `db.response.returned_rows`.
 * A failed statement gets the `ERROR` status and the database's message.
 
-### Hooks for packages: `orm.hooks`
+### Hooks for packages: `monorm.hooks`
 
 A package that changes writes and reads from outside the ORM (for example
-`orm-file-storage`) uses these public hooks, not private names:
+`monorm-file-storage`) uses these public hooks, not private names:
 
 * `prepare_insert(qs, values)` checks one insert as `insert()` does (required fields,
   conversion, native planning) without SQL or I/O. `await prepared.execute(values)`
@@ -1598,7 +1598,7 @@ This is not a full hook: `update()` gives a lazy `Update` that runs only when aw
 
 The ORM has no factory library. It gives the two things a factory library needs:
 
-* `orm.describe(Model)`: plain data about the model.
+* `monorm.describe(Model)`: plain data about the model.
   `primary_key` and relation `from`/`to` are always lists of field names in key order, even for a single field (for example, `["id"]`).
   `fields` gives per field the name, column, schema type, `python_type` (an enum field gives its enum class), `nullable`, `array` (with `element_type`), `max_length`, `primary_key`, `unique`, `default` (`"database"`, `"client"` or `None`) and `insert` (whether `insert()` takes it).
   `relations` gives the kind (`belongs_to`, `has_one`, `has_many`, `many_to_many`), the target class, the `from`/`to` fields, the `through` model and `nullable`.
@@ -1631,19 +1631,19 @@ factory_boy has no async support, so a `SubFactory` with `create` gives a corout
 ### Errors
 
 `DatabaseError`, `QueryError` (a `ValueError`), `SchemaError` (a `ValueError`) and
-`WriteProtected` come from the native engine. The other errors derive from `orm.ORMError`.
+`WriteProtected` come from the native engine. The other errors derive from `monorm.ORMError`.
 
 | Error | Raised when |
 |---|---|
-| `orm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints), `LockNotAvailable` (`nowait`) and `TransactionAborted` (failed transaction) derive from it |
-| `orm.QueryError` | the ORM rejects a query before SQL (an unsupported feature, a bad cursor) |
-| `orm.SchemaError` | a schema fails to compile or define |
-| `Model.DoesNotExist`, `Model.MultipleObjectsReturned` | `get()` finds no row or more than one (`orm.DoesNotExist` and `orm.MultipleObjectsReturned` are the bases) |
-| `orm.NotLoaded` | a relation or field was not loaded |
-| `orm.NotConnected` | no default database |
-| `orm.TransactionRequired` | `lock()` or `db.lock()` outside a transaction |
-| `orm.WriteProtected` | a write to a `@@protected_write` model outside `allow_writes` |
-| `orm.debug.NPlusOne` | the N+1 finder with `fail=True` |
+| `monorm.DatabaseError` | the database rejects a statement; `IntegrityError` (constraints), `LockNotAvailable` (`nowait`) and `TransactionAborted` (failed transaction) derive from it |
+| `monorm.QueryError` | the ORM rejects a query before SQL (an unsupported feature, a bad cursor) |
+| `monorm.SchemaError` | a schema fails to compile or define |
+| `Model.DoesNotExist`, `Model.MultipleObjectsReturned` | `get()` finds no row or more than one (`monorm.DoesNotExist` and `monorm.MultipleObjectsReturned` are the bases) |
+| `monorm.NotLoaded` | a relation or field was not loaded |
+| `monorm.NotConnected` | no default database |
+| `monorm.TransactionRequired` | `lock()` or `db.lock()` outside a transaction |
+| `monorm.WriteProtected` | a write to a `@@protected_write` model outside `allow_writes` |
+| `monorm.debug.NPlusOne` | the N+1 finder with `fail=True` |
 
 ## The FFI boundary
 
@@ -1692,11 +1692,11 @@ Rust took these from ~2.3 / ~4.3 ms
    `using()`.
 8. `db.create_tables()` / `drop_tables()` stay as a development helper (idempotent
    `IF NOT EXISTS` DDL). Evolving databases use migrations: see [`schema.md`](../schema/schema.md).
-   An existing database is adopted with `await orm.migrations.pull(db)` (its schema file),
+   An existing database is adopted with `await monorm.migrations.pull(db)` (its schema file),
    `Migrator.baseline()` and `Migrator.drift()`
    (see [`schema.md`](../schema/schema.md#pull-baseline-and-drift-a-live-database-under-migrations)).
    A migration may hold a `data.py` with `async def run(db)`, run by `Migrator.upgrade()`
-   and `python -m orm migrate` in the migration's transaction
+   and `python -m monorm migrate` in the migration's transaction
    (see [`schema.md`](../schema/schema.md#data-migrations)).
    `Migrator.downgrade(..., force=True)` reverts a baselined migration, which it refuses otherwise.
 9. **Async only**, no sync API.
@@ -1708,17 +1708,17 @@ Rust took these from ~2.3 / ~4.3 ms
 
 ```
 planner ──sea-query statement──▶ db::build(dialect) ──(SQL, [Value])──▶ Driver ──▶ database
-   └── checks orm_contracts::dialect::Capabilities
+   └── checks monorm_contracts::dialect::Capabilities
 ```
 
 * **SQL building is per dialect.** The dialects are PostgreSQL and SQLite.
-  `orm_contracts::dialect` (re-exported as `orm_core::dialect`) lists what each dialect
+  `monorm_contracts::dialect` (re-exported as `monorm_core::dialect`) lists what each dialect
   can do (`RETURNING`, `ON CONFLICT`, `ILIKE`, row-lock flavours, `DISTINCT ON`,
   `UPDATE ... FROM (VALUES ...)`, savepoints, `max_params`). The planner
   checks it, so a query needing a missing feature raises `QueryError` naming it (or is
   emulated: `icontains` becomes `LOWER(x) LIKE ...` without `ILIKE`) instead of sending
   SQL the database rejects. Schema definition checks it too.
-  `orm.connect(url, _disable=("ilike", "update_from_values"))` switches capabilities off,
+  `monorm.connect(url, _disable=("ilike", "update_from_values"))` switches capabilities off,
   so the tests run those fallback paths on Postgres.
 * **Execution is per driver**, behind the traits in `crates/engine/src/db/mod.rs`: `Driver`
   (a pool), `Executor` (run SQL with values, on the pool or in a transaction),

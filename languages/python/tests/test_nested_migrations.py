@@ -7,9 +7,9 @@ import os
 
 import pytest
 
-import orm
-from orm import Registry, SchemaError
-from orm.migrations import Migrations, Migrator
+import monorm
+from monorm import Registry, SchemaError
+from monorm.migrations import Migrations, Migrator
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -38,7 +38,7 @@ CHECK = (
 
 def models(source: str) -> Registry:
     reg = Registry()
-    orm.loads(source, registry=reg)
+    monorm.loads(source, registry=reg)
     return reg
 
 
@@ -224,15 +224,15 @@ def test_a_second_make_after_a_json_backfill_finds_nothing(tmp_path):
 
 
 DIALECTS = ["postgres", "sqlite"]
-DROP = "DROP TABLE IF EXISTS shop; DROP TABLE IF EXISTS orm_migrations"
+DROP = "DROP TABLE IF EXISTS shop; DROP TABLE IF EXISTS monorm_migrations"
 
 
 @contextlib.asynccontextmanager
 async def database(dialect, registry):
     url = "sqlite://:memory:" if dialect == "sqlite" else PG_URL
     try:
-        db = await orm.connect(url, registry=registry, default=False, max_connections=2)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(url, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
     try:
         await db.execute(DROP)
@@ -522,7 +522,7 @@ STAMPS = [
 ]
 
 
-def orm_source(dialect, storage="", extra=""):
+def monorm_source(dialect, storage="", extra=""):
     return (SQLITE if dialect == "sqlite" else "") + ORM_SOURCE % {"storage": storage, "extra": extra}
 
 
@@ -551,11 +551,11 @@ def seen(rows):
 async def connected(dialect, source, tmp_path):
     """A connection, bound to the models of `source`, on a database that outlives the connection."""
     registry = Registry()
-    classes = orm.loads(source, registry=registry)
+    classes = monorm.loads(source, registry=registry)
     url = f"sqlite://{tmp_path / 'live.db'}" if dialect == "sqlite" else PG_URL
     try:
-        db = await orm.connect(url, registry=registry, default=False, max_connections=2)
-    except orm.DatabaseError as e:
+        db = await monorm.connect(url, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
     try:
         yield db, classes["Shop"]
@@ -577,7 +577,7 @@ async def read(dialect, source, tmp_path):
 async def test_rows_written_through_the_orm_read_and_filter_after_a_storage_change(tmp_path, dialect, columns, first):
     where = {"columns": columns, "json": "@storage(json)"}
     other = "json" if first == "columns" else "columns"
-    sources = {w: orm_source(dialect, where[w]) for w in where}
+    sources = {w: monorm_source(dialect, where[w]) for w in where}
     migrations = tmp_path / "m"
     async with connected(dialect, sources[first], tmp_path) as (db, Shop):
         await db.execute(DROP)
@@ -605,8 +605,8 @@ async def test_a_new_subfield_with_a_default_is_filled_by_a_storage_change_throu
     for first, other in pairs:
         where = {"columns": "", "json": "@storage(json)"}
         migrations = tmp_path / f"from_{first}"
-        before = orm_source(dialect, where[first])
-        after = orm_source(dialect, where[other], extra)
+        before = monorm_source(dialect, where[first])
+        after = monorm_source(dialect, where[other], extra)
         async with connected(dialect, before, tmp_path) as (db, Shop):
             await db.execute(DROP)
             try:

@@ -6,7 +6,7 @@ import { connect, loads, Registry } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const source = readFileSync(resolve(process.cwd(), "../../fixtures/proxy.prisma"), "utf8").replaceAll("proxy_05_", "proxy_05_node_");
-const enabled = hasExtension("orm.proxy");
+const enabled = hasExtension("monorm.proxy");
 for (const dialect of ["sqlite", "postgres"]) {
   test(`proxy rows, client defaults, writes and relation targets (${dialect})`, { skip: !enabled }, async () => {
     const registry = new Registry();
@@ -104,7 +104,7 @@ model Draft {
   @@proxy.of(Doc)
 }
 `;
-const rolesEnabled = hasExtension("orm.proxy", "orm.soft-delete", "orm.locking");
+const rolesEnabled = hasExtension("monorm.proxy", "monorm.soft-delete", "monorm.locking");
 for (const dialect of ["sqlite", "postgres"]) {
   test(`a proxy takes the roles of its root (${dialect})`, { skip: !rolesEnabled }, async () => {
     const registry = new Registry();
@@ -124,7 +124,7 @@ for (const dialect of ["sqlite", "postgres"]) {
   });
 }
 
-test("a proxy must keep the soft-delete field", { skip: !hasExtension("orm.proxy", "orm.soft-delete") }, () => {
+test("a proxy must keep the soft-delete field", { skip: !hasExtension("monorm.proxy", "monorm.soft-delete") }, () => {
   const bad = rolesSource.replace("@@proxy.of(Doc)", '@@proxy.of(Doc)\n  @@proxy.fields(exclude: ["deleted"])');
   assert.throws(() => loads(bad, { registry: new Registry() }), /proxy must keep the soft-delete field deleted/);
 });

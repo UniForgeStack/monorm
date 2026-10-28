@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from orm_auth import check_password, make_password, needs_update
+from monorm_auth import check_password, make_password, needs_update
 
 VECTORS = json.loads(Path(__file__).parents[2].joinpath("fixtures/hashes.json").read_text())
 

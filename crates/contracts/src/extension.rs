@@ -6,11 +6,11 @@ pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
 pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
-/// The C ABI that `orm_contracts::extension!` writes.
+/// The C ABI that `monorm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
-/// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
+/// The version of `monorm.ext` / `@ufstack/monorm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
 pub const LANGUAGES: [&str; 2] = ["python", "typescript"];
@@ -118,7 +118,7 @@ pub struct HookBinding {
 #[serde(deny_unknown_fields)]
 pub struct PackageStamp {
     pub version: String,
-    /// SHA-256 of the raw installed `orm-extension.toml` bytes (lowercase hex).
+    /// SHA-256 of the raw installed `monorm-extension.toml` bytes (lowercase hex).
     /// Empty only for schemas generated before package locks carried a hash.
     #[serde(default)]
     pub manifest_hash: String,
@@ -351,7 +351,7 @@ pub struct Manifest {
     pub passes: Vec<Pass>,
     #[serde(default)]
     pub exports: Vec<Export>,
-    /// The `orm.ext` version that the language code needs; required when a language section exists.
+    /// The `monorm.ext` version that the language code needs; required when a language section exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language_contract: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,7 +392,7 @@ pub struct LanguageSection {
     /// The export that adds instance members. Empty only when `field_adapters` is not.
     #[serde(default)]
     pub instance: String,
-    /// Optional export for the bound query set (`orm.of(objs)`): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript, whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
+    /// Optional export for the bound query set (`monorm.of(objs)`): a `BoundQuerySet` subclass in Python, a mixin function in TypeScript, whose members keep "at most one row per bound object". Its members are a subset of the `query_set` members; empty means none.
     #[serde(default)]
     pub bound_query_set: String,
     /// The host members that the extension replaces; every other name collision is an error.
@@ -793,7 +793,7 @@ pub fn same_value_type(a: ColType, b: ColType) -> bool {
 }
 
 /// One hook binding. The model, field and dependency checks run always. The export, point and type checks need the
-/// manifest of `source`; `Plan::lower` has it, so they run at `orm generate`. A generated model carries only the stamp of the
+/// manifest of `source`; `Plan::lower` has it, so they run at `monorm generate`. A generated model carries only the stamp of the
 /// package, so there `source` must be in `behavior.packages`.
 fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> Result<(), String> {
     let at = |field: Option<&str>| match field { Some(f) => format!("{}.{f}", hook.model), None => hook.model.clone() };
@@ -1435,12 +1435,12 @@ mod tests {
     #[test]
     fn merge_definition_keeps_the_packages_of_a_later_batch() {
         let stamp = |version: &str| PackageStamp { version: version.into(), attributes: vec!["soft_delete.deleted_at".into()], ..PackageStamp::default() };
-        let batch = |version: Option<&str>| { let mut ir = SchemaIr::default(); if let Some(v) = version { ir.behavior.packages.insert("orm.soft-delete".into(), stamp(v)); } ir };
+        let batch = |version: Option<&str>| { let mut ir = SchemaIr::default(); if let Some(v) = version { ir.behavior.packages.insert("monorm.soft-delete".into(), stamp(v)); } ir };
         let merged = merge_definition(batch(None), batch(Some("1"))).unwrap();
-        assert_eq!(merged.behavior.packages["orm.soft-delete"], stamp("1"));
+        assert_eq!(merged.behavior.packages["monorm.soft-delete"], stamp("1"));
         assert!(merge_definition(batch(Some("1")), batch(Some("1"))).is_ok());
         let error = merge_definition(batch(Some("1")), batch(Some("2"))).unwrap_err();
-        assert!(error.contains("orm.soft-delete") && error.contains("rebuild"), "{error}");
+        assert!(error.contains("monorm.soft-delete") && error.contains("rebuild"), "{error}");
     }
 
     #[test]

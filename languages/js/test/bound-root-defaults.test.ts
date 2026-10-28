@@ -25,7 +25,7 @@ model BqKid {
 `;
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
-const skip = !hasExtension("orm.query-defaults");
+const skip = !hasExtension("monorm.query-defaults");
 
 for (const provider of ["sqlite", "postgresql"]) {
   const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];

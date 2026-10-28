@@ -1,4 +1,4 @@
-# Generated from schema.prisma by `python -m orm generate`. Do not edit.
+# Generated from schema.prisma by `python -m monorm generate`. Do not edit.
 #
 # Static half of the generated module. Each model gets:
 #   * the model class: column descriptors (`User.email` is a ColumnRef[str] on the class,
@@ -16,8 +16,8 @@ from typing import Any, ClassVar, Literal, NotRequired, Required, TypedDict, ove
 
 from typing_extensions import Self, Unpack
 
-from orm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, IndexRef, NestedRef, NestedValue, QuerySet, RelationPath, Update, UpdateMany
-from orm import fields as f
+from monorm import ColumnRef, CopyInsert, Expression, InsertMany, InsertOne, Model, IndexRef, NestedRef, NestedValue, QuerySet, RelationPath, Update, UpdateMany
+from monorm import fields as f
 
 # -- Geo --------------------------------------------------------------------------------
 

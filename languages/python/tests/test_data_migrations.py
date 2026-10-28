@@ -10,9 +10,9 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest
 from conftest import DATABASE_URL
 
-import orm
-from orm import Registry
-from orm.migrations import MigrationError, Migrations, Migrator
+import monorm
+from monorm import Registry
+from monorm.migrations import MigrationError, Migrations, Migrator
 
 _url = urlsplit(DATABASE_URL)
 DATA_DB = _url.path.lstrip("/") + "_data"
@@ -51,8 +51,8 @@ async def run(db):
 @pytest.fixture(scope="module", autouse=True)
 async def data_database():
     try:
-        admin = await orm.connect(DATABASE_URL, max_connections=1, default=False, registry=Registry())
-    except orm.DatabaseError as e:
+        admin = await monorm.connect(DATABASE_URL, max_connections=1, default=False, registry=Registry())
+    except monorm.DatabaseError as e:
         pytest.skip(f"Postgres not reachable at {DATABASE_URL}: {e}")
     try:
         if not await admin._fetch_text(f"SELECT 1 FROM pg_database WHERE datname = '{DATA_DB}'"):
@@ -75,9 +75,9 @@ def write_versions(tmp_path: Path) -> Migrations:
 
 async def test_data_step_runs_in_the_migration_transaction(tmp_path):
     migrations = write_versions(tmp_path)
-    db = await orm.connect(DATA_URL, max_connections=2, default=False, registry=Registry())
+    db = await monorm.connect(DATA_URL, max_connections=2, default=False, registry=Registry())
     try:
-        await db.execute("DROP TABLE IF EXISTS author, extra, orm_migrations CASCADE")
+        await db.execute("DROP TABLE IF EXISTS author, extra, monorm_migrations CASCADE")
         migrator = Migrator(db, migrations)
         assert [m.name for m in await migrator.upgrade("1")] == ["0001_initial"]
         await db.execute("INSERT INTO author (name) VALUES ('Ann'), ('Bob')")
@@ -126,16 +126,16 @@ def test_python_m_orm_migrate_runs_data_steps(tmp_path):
     assert second is not None
     (second.path / "data.py").write_text(SEED)
 
-    env = {**os.environ, "ORM_DATABASE_URL": f"sqlite://{tmp_path / 'app.db'}"}
-    base = [sys.executable, "-m", "orm", "--schema", "schema.prisma", "--dir", "migrations"]
+    env = {**os.environ, "MONORM_DATABASE_URL": f"sqlite://{tmp_path / 'app.db'}"}
+    base = [sys.executable, "-m", "monorm", "--schema", "schema.prisma", "--dir", "migrations"]
 
-    def orm_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    def monorm_cli(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run([*base, *args], cwd=tmp_path, env=env, capture_output=True, text=True)
 
-    done = orm_cli("migrate")
+    done = monorm_cli("migrate")
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == ["Applied 0001_initial", "Applied 0002_slug"]
-    shown = orm_cli("showmigrations").stdout
+    shown = monorm_cli("showmigrations").stdout
     assert "[x] 0001_initial" in shown and "[x] 0002_slug" in shown
 
     (tmp_path / "migrations" / "0003_bad").mkdir()
@@ -143,19 +143,19 @@ def test_python_m_orm_migrate_runs_data_steps(tmp_path):
     (tmp_path / "migrations" / "0003_bad" / "data.py").write_text(
         "async def run(db):\n    raise ValueError('bad data')\n"
     )
-    failed = orm_cli("migrate")
+    failed = monorm_cli("migrate")
     assert failed.returncode == 1
     assert "error: bad data" in failed.stderr
 
 
 NESTED = """
-import orm
+import monorm
 
 
 async def run(db):
     async def after():
         # another connection sees the row only after the commit
-        other = await orm.connect(db.url, max_connections=1, default=False, registry=orm.Registry())
+        other = await monorm.connect(db.url, max_connections=1, default=False, registry=monorm.Registry())
         try:
             await other.execute("INSERT INTO seen (n) SELECT count(*) FROM author")
         finally:
@@ -193,13 +193,13 @@ async def run(db):
 """
 
 
-async def fresh(tmp_path: Path) -> tuple[orm.Database, Migrations]:
+async def fresh(tmp_path: Path) -> tuple[monorm.Database, Migrations]:
     schema = tmp_path / "schema.prisma"
     migrations = Migrations(tmp_path / "migrations", schema)
     schema.write_text(V1)
     migrations.make()
-    db = await orm.connect(DATA_URL, max_connections=3, default=False, registry=Registry())
-    await db.execute("DROP TABLE IF EXISTS author, extra, seen, orm_migrations CASCADE; CREATE TABLE seen (n bigint)")
+    db = await monorm.connect(DATA_URL, max_connections=3, default=False, registry=Registry())
+    await db.execute("DROP TABLE IF EXISTS author, extra, seen, monorm_migrations CASCADE; CREATE TABLE seen (n bigint)")
     return db, migrations
 
 
@@ -279,8 +279,8 @@ def test_python_m_orm_migrate_needs_no_schema_and_skips_applied_steps(tmp_path):
     migrations.make()
     # an applied data step whose import fails today must not stop later migrations
     data_migration(migrations, "0002_old", "data.py", "import gone_module\n\nasync def run(db):\n    pass\n")
-    env = {**os.environ, "ORM_DATABASE_URL": f"sqlite://{tmp_path / 'app.db'}"}
-    base = [sys.executable, "-m", "orm", "--schema", "schema.prisma", "--dir", "migrations"]
+    env = {**os.environ, "MONORM_DATABASE_URL": f"sqlite://{tmp_path / 'app.db'}"}
+    base = [sys.executable, "-m", "monorm", "--schema", "schema.prisma", "--dir", "migrations"]
     (tmp_path / "migrations" / "0002_old" / "data.py").write_text("async def run(db):\n    pass\n")
     assert subprocess.run([*base, "migrate"], cwd=tmp_path, env=env, capture_output=True, text=True).returncode == 0
     (tmp_path / "migrations" / "0002_old" / "data.py").write_text(

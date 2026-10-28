@@ -32,3 +32,8 @@ reason = "Test and bench variables stay."
 glob = "bench/compare/**"
 pattern = 'orm-all'
 reason = "Contender key of the recorded results."
+
+[[allow]]
+glob = "**"
+pattern = '\borm_test\b'
+reason = "Local database name of the test setup."

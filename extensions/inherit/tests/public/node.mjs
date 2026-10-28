@@ -1,8 +1,8 @@
-// `modelFor` and the expanded models from the schema language to the database; needs the `@orm/inherit` package.
+// `modelFor` and the expanded models from the schema language to the database; needs the `@ufstack/monorm-inherit` package.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { connect, loads, Registry } from '../../../../languages/js/dist/src/index.js';
-import { modelFor } from '../../../../languages/js/node_modules/@orm/inherit/index.js';
+import { modelFor } from '../../../../languages/js/node_modules/@ufstack/monorm-inherit/index.js';
 const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.url), 'utf8');
 
 // loads() discovers direct package dependencies from the consumer's working directory.

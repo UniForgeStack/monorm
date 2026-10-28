@@ -274,7 +274,7 @@ async fn fetch_upgrade<M: Model, R, L, D>(
     query: Query<M, R, L, D>,
     db: &Database<M::Schema>,
 ) -> Result<Vec<RowData>> {
-    use orm_engine::{exec::Outcome, plan::Output};
+    use monorm_engine::{exec::Outcome, plan::Output};
     let (mut q, p) = query.erase()?;
     crate::query::validate_views(&db.schema, &q)?;
     let model = db
@@ -304,10 +304,10 @@ async fn fetch_upgrade<M: Model, R, L, D>(
     for chunk in rows.chunks(budget / model.key.len()) {
         let mut params = p.clone();
         let mut root = q.clone();
-        root.filters.push(orm_core::ir::Expr::Or {
+        root.filters.push(monorm_core::ir::Expr::Or {
             items: chunk
                 .iter()
-                .map(|row| orm_core::ir::Expr::And {
+                .map(|row| monorm_core::ir::Expr::And {
                     items: model
                         .key
                         .iter()
@@ -315,15 +315,15 @@ async fn fetch_upgrade<M: Model, R, L, D>(
                         .map(|(&pos, value)| {
                             let i = params.0.len();
                             params.0.push(value.clone());
-                            orm_core::ir::Expr::Cmp {
-                                l: Box::new(orm_core::ir::Expr::Col {
+                            monorm_core::ir::Expr::Cmp {
+                                l: Box::new(monorm_core::ir::Expr::Col {
                                     path: vec![],
                                     name: model.fields()[pos].name.clone(),
                                     sub: vec![],
                                     alias: vec![],
                                 }),
-                                op: orm_core::ir::CmpOp::Eq,
-                                r: Box::new(orm_core::ir::Expr::Param { i }),
+                                op: monorm_core::ir::CmpOp::Eq,
+                                r: Box::new(monorm_core::ir::Expr::Param { i }),
                             }
                         })
                         .collect(),
@@ -334,9 +334,9 @@ async fn fetch_upgrade<M: Model, R, L, D>(
         let mut child = q.clone();
         child.prefetch = relations.clone();
         child.without_defaults = false.into();
-        let mut plans = orm_engine::plan::plan_prefetch_only(
+        let mut plans = monorm_engine::plan::plan_prefetch_only(
             &db.schema,
-            orm_core::dialect::Target::new(db.driver.dialect()),
+            monorm_core::dialect::Target::new(db.driver.dialect()),
             &child,
             &params,
         )?;
@@ -358,9 +358,9 @@ async fn fetch_upgrade<M: Model, R, L, D>(
                     .collect::<Result<_>>()?;
             }
         }
-        match orm_engine::exec::prefetch(
+        match monorm_engine::exec::prefetch(
             db.driver.as_ref(),
-            orm_core::dialect::Target::new(db.driver.dialect()),
+            monorm_core::dialect::Target::new(db.driver.dialect()),
             selected.rows,
             plans,
         )

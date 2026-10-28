@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 from blog.models import User
 from baseline import lock as baseline
-import orm
+import monorm
 
 
 async def main():
@@ -24,11 +24,11 @@ async def main():
     ap.add_argument("--connections", type=int, default=1)
     ap.add_argument("--only", help="comma-separated case names")
     args = ap.parse_args()
-    db = await orm.connect(os.environ["ORM_TEST_DATABASE_URL"], max_connections=args.connections)
-    other = await orm.connect(db.url, default=False, max_connections=1)
+    db = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], max_connections=args.connections)
+    other = await monorm.connect(db.url, default=False, max_connections=1)
     await db.create_tables()
     user = await User.objects.using(db).insert(email=f"lockbench-{time.time_ns()}@x.io", name="Bench")
-    candidate = orm.Database.lock
+    candidate = monorm.Database.lock
     result = {
         "runtime": sys.version,
         "platform": platform.platform(),
@@ -45,7 +45,7 @@ async def main():
         count = min(args.inner, 40) if name.startswith("long/") else args.inner
         samples = {"baseline": [], "candidate": [], "inner": count}
         for method in (baseline, candidate):
-            orm.Database.lock = method
+            monorm.Database.lock = method
             for _ in range(30):
                 await fn()
         for block in range(args.rounds):
@@ -53,7 +53,7 @@ async def main():
             if block % 2:
                 order.reverse()
             for label, method in order:
-                orm.Database.lock = method
+                monorm.Database.lock = method
                 start = time.perf_counter_ns()
                 for _ in range(count):
                     await fn()
@@ -103,7 +103,7 @@ async def main():
 
     await measure("transaction+read+write", read_write)
     await User.objects.using(db).filter(User.id == user.id).delete()
-    orm.Database.lock = candidate
+    monorm.Database.lock = candidate
     result["server"] = await db._fetch_text("SELECT version()")
     Path(args.out).write_text(json.dumps(result, indent=2) + "\n")
     await other.close()

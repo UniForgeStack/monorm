@@ -1,7 +1,7 @@
 #![cfg(feature = "sqlite")]
 use std::sync::Arc;
-use orm_core::{dsl, migrate as ddl};
-use orm_engine::{db::{self, Executor, ErrorKind}, exec};
+use monorm_core::{dsl, migrate as ddl};
+use monorm_engine::{db::{self, Executor, ErrorKind}, exec};
 
 fn runtime() -> tokio::runtime::Runtime { tokio::runtime::Runtime::new().unwrap() }
 

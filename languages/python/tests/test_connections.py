@@ -5,23 +5,23 @@ import time
 
 import pytest
 
-import orm
+import monorm
 from artifact_caps import has_extension
-from orm.hooks import prepare_update
+from monorm.hooks import prepare_update
 from blog.models import Post, User
 
 SQLITE = 'datasource db { provider = "sqlite" }\nmodel Item {\n  id Int @id @default(autoincrement())\n}\n'
 
 
 async def sqlite_db():
-    registry = orm.Registry()
-    orm.loads(SQLITE, registry=registry)
-    return await orm.connect("sqlite://:memory:", registry=registry, default=False)
+    registry = monorm.Registry()
+    monorm.loads(SQLITE, registry=registry)
+    return await monorm.connect("sqlite://:memory:", registry=registry, default=False)
 
 
 async def test_on_commit_runs_after_the_outer_commit(clean):
     db = clean
-    other = await orm.connect(db.url, default=False, max_connections=1)
+    other = await monorm.connect(db.url, default=False, max_connections=1)
     seen = []
 
     async def check():
@@ -52,7 +52,7 @@ async def test_on_commit_is_dropped_on_rollback_and_runs_at_once_outside(clean):
             1 / 0
     await db.on_commit(lambda: seen.append("now"))
     assert seen == ["now"]
-    other = await orm.connect(db.url, default=False, max_connections=1)
+    other = await monorm.connect(db.url, default=False, max_connections=1)
     try:
         async with db.transaction():
             # A callback on a database with no open transaction runs at once.
@@ -63,10 +63,10 @@ async def test_on_commit_is_dropped_on_rollback_and_runs_at_once_outside(clean):
 
 
 async def two_sqlite_files(tmp_path):
-    registry = orm.Registry()
-    Item = orm.loads(SQLITE, registry=registry)["Item"]
+    registry = monorm.Registry()
+    Item = monorm.loads(SQLITE, registry=registry)["Item"]
     dbs = [
-        await orm.connect(f"sqlite://{tmp_path / name}", registry=registry, default=False) for name in ("a.db", "b.db")
+        await monorm.connect(f"sqlite://{tmp_path / name}", registry=registry, default=False) for name in ("a.db", "b.db")
     ]
     for db in dbs:
         await db.create_tables()
@@ -116,7 +116,7 @@ async def test_on_commit_after_the_transaction_ended_raises(tmp_path):
         async with a.transaction():
             task = asyncio.create_task(late())
         ended.set()
-        with pytest.raises(orm.TransactionRequired, match="has ended"):
+        with pytest.raises(monorm.TransactionRequired, match="has ended"):
             await task
     finally:
         await a.close()
@@ -149,16 +149,16 @@ async def test_on_commit_on_sqlite():
 
 
 async def test_session_lock_outside_a_transaction_with_a_timeout(db):
-    other = await orm.connect(db.url, default=False, max_connections=2)
+    other = await monorm.connect(db.url, default=False, max_connections=2)
     try:
         async with db.lock("import", session=True, timeout=5):
             assert db._tx() is None
             started = time.monotonic()
-            with pytest.raises(orm.LockNotAvailable, match="after 0.2s"):
+            with pytest.raises(monorm.LockNotAvailable, match="after 0.2s"):
                 async with other.lock("import", session=True, timeout=0.2):
                     pytest.fail("the lock is held")
             assert 0.15 < time.monotonic() - started < 3
-            with pytest.raises(orm.LockNotAvailable):
+            with pytest.raises(monorm.LockNotAvailable):
                 async with other.lock("import", session=True, nowait=True):
                     pass
             # The transaction-scoped form sees the session lock too.
@@ -171,7 +171,7 @@ async def test_session_lock_outside_a_transaction_with_a_timeout(db):
 
 
 async def test_session_lock_is_released_on_error_and_shared_locks_share(db):
-    other = await orm.connect(db.url, default=False, max_connections=2)
+    other = await monorm.connect(db.url, default=False, max_connections=2)
     try:
         with pytest.raises(ZeroDivisionError):
             async with db.lock(7, session=True):
@@ -180,7 +180,7 @@ async def test_session_lock_is_released_on_error_and_shared_locks_share(db):
             pass
         async with db.lock(8, False, session=True):
             async with other.lock(8, exclusive=False, session=True, nowait=True):
-                with pytest.raises(orm.LockNotAvailable):
+                with pytest.raises(monorm.LockNotAvailable):
                     async with other.lock(8, session=True, timeout=0):
                         pass
     finally:
@@ -188,7 +188,7 @@ async def test_session_lock_is_released_on_error_and_shared_locks_share(db):
 
 
 async def test_session_lock_survives_a_cancelled_waiter(db):
-    other = await orm.connect(db.url, default=False, max_connections=2)
+    other = await monorm.connect(db.url, default=False, max_connections=2)
     try:
         async with db.lock(9, session=True):
             waiter = asyncio.create_task(other.lock(9, session=True).__aenter__())
@@ -218,7 +218,7 @@ async def test_session_lock_keeps_the_error_of_its_block_when_the_unlock_fails(d
         await db.execute(kill)
     # A failed unlock on a live connection closes it, so the server drops the lock.
     await db.execute(RLS_ROLE)
-    app = await orm.connect("postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], default=False, max_connections=1)
+    app = await monorm.connect("postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], default=False, max_connections=1)
     try:
         async with app.lock(4242, session=True):
             await db.execute("REVOKE EXECUTE ON FUNCTION pg_advisory_unlock(bigint) FROM PUBLIC")
@@ -244,7 +244,7 @@ async def test_session_lock_timeout_bounds(db):
 async def test_session_lock_validation():
     db = await sqlite_db()
     try:
-        with pytest.raises(orm.QueryError, match="sqlite does not support advisory locks"):
+        with pytest.raises(monorm.QueryError, match="sqlite does not support advisory locks"):
             async with db.lock(1, session=True):
                 pass
     finally:
@@ -258,7 +258,7 @@ async def replica_url(db, n=1):
     url = db.url.rsplit("/", 1)[0] + "/" + name
     if not await db._fetch_text(f"SELECT 1 FROM pg_database WHERE datname = '{name}'"):
         await db.execute(f'CREATE DATABASE "{name}"')
-    replica = await orm.connect(url, default=False, max_connections=1)
+    replica = await monorm.connect(url, default=False, max_connections=1)
     try:
         await replica.drop_tables()
         await replica.create_tables()
@@ -306,7 +306,7 @@ async def test_replica_disconnect_observation_rejects_a_leaked_session(monkeypat
 async def test_replicas_answer_reads_outside_a_transaction(clean):
     db = clean
     url, url2 = await replica_url(db), await replica_url(db, 2)
-    routed = await orm.connect(db.url, replicas=[url, url2], default=False, max_connections=2)
+    routed = await monorm.connect(db.url, replicas=[url, url2], default=False, max_connections=2)
     try:
         await User.objects.using(routed).insert(email="p@example.com", name="Primary")
         users = User.objects.using(routed)
@@ -317,7 +317,7 @@ async def test_replicas_answer_reads_outside_a_transaction(clean):
         r2 = users.filter(User.name == "R2-0")
         assert sorted([await r2.exists(), await r2.exists()]) == [False, True]
         assert [u.name for u in await users.filter(User.name == "Replica")] in (["Replica"], [])
-        prepared = users.filter(User.name == orm.param("n")).prepare()
+        prepared = users.filter(User.name == monorm.param("n")).prepare()
         assert sorted([len(await prepared(n="Replica")), len(await prepared(n="Replica"))]) == [0, 1]
         assert [u.name for u in await users.using("primary")] == ["Primary"]
         assert [u.name for u in await User.objects.using(routed.primary)] == ["Primary"]
@@ -339,7 +339,7 @@ async def test_replicas_answer_reads_outside_a_transaction(clean):
 async def test_instance_reload_reads_the_primary_in_one_statement(clean, observe_queries):
     db = clean
     url = await replica_url(db)
-    routed = await orm.connect(db.url, replicas=[url], default=False, max_connections=2)
+    routed = await monorm.connect(db.url, replicas=[url], default=False, max_connections=2)
     try:
         user = await User.objects.using(routed).insert(email="p@example.com", name="Primary")
         await User.objects.using(routed.primary).filter(User.id == user.id).update(name="Newer")
@@ -355,7 +355,7 @@ async def test_instance_reload_reads_the_primary_in_one_statement(clean, observe
 async def test_instance_reload_reads_the_primary_for_to_one_and_to_many(clean):
     db = clean
     url = await replica_url(db)
-    routed = await orm.connect(db.url, replicas=[url], default=False, max_connections=2)
+    routed = await monorm.connect(db.url, replicas=[url], default=False, max_connections=2)
     try:
         user = await User.objects.using(routed).insert(email="p@example.com", name="Primary")
         post = await Post.objects.using(routed).insert(author=user, title="t", body="b")
@@ -371,7 +371,7 @@ async def test_instance_reload_reads_the_primary_for_to_one_and_to_many(clean):
 async def test_using_primary_resolves_the_default_database(clean):
     db = clean
     url = await replica_url(db)
-    routed = await orm.connect(db.url, replicas=[url], max_connections=2)
+    routed = await monorm.connect(db.url, replicas=[url], max_connections=2)
     try:
         assert [u.name for u in await User.objects] == ["Replica"]
         assert [u.name for u in await User.objects.using("primary")] == []
@@ -379,7 +379,7 @@ async def test_using_primary_resolves_the_default_database(clean):
             User.objects.using("replica")  # type: ignore[arg-type]
     finally:
         await routed.close()
-        orm.db._default = db
+        monorm.db._default = db
 
 
 NOTES = """datasource db { provider = "postgresql" }
@@ -393,8 +393,8 @@ model Note {
 
 RLS_ROLE = """
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'orm_s6_app') THEN
-    CREATE ROLE orm_s6_app LOGIN PASSWORD 'app';
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'monorm_s6_app') THEN
+    CREATE ROLE monorm_s6_app LOGIN PASSWORD 'app';
   END IF;
 END $$;
 """
@@ -402,8 +402,8 @@ END $$;
 RLS = (
     RLS_ROLE
     + """
-GRANT SELECT, INSERT, UPDATE, DELETE ON s6_notes TO orm_s6_app;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO orm_s6_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON s6_notes TO monorm_s6_app;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO monorm_s6_app;
 ALTER TABLE s6_notes ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON s6_notes
   USING (tenant = current_setting('app.tenant', true))
@@ -413,15 +413,15 @@ CREATE POLICY tenant ON s6_notes
 
 
 async def test_tenant_sets_app_tenant_for_row_level_security(db):
-    registry = orm.Registry()
-    Note = orm.loads(NOTES, registry=registry)["Note"]
-    admin = await orm.connect(db.url, registry=registry, default=False, max_connections=1)
+    registry = monorm.Registry()
+    Note = monorm.loads(NOTES, registry=registry)["Note"]
+    admin = await monorm.connect(db.url, registry=registry, default=False, max_connections=1)
     await admin.drop_tables()
     await admin.create_tables()
     await admin.execute(RLS)
     await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
-    app = await orm.connect(
-        "postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=1
+    app = await monorm.connect(
+        "postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=1
     )
     try:
         assert await Note.objects.using(app).count() == 0  # no tenant: the policy hides every row
@@ -430,7 +430,7 @@ async def test_tenant_sets_app_tenant_for_row_level_security(db):
             async with app.transaction():
                 assert await Note.objects.using(app).count() == 1
                 await Note.objects.using(app).insert(tenant="a", body="3")
-            with pytest.raises(orm.DatabaseError, match="row-level security"):
+            with pytest.raises(monorm.DatabaseError, match="row-level security"):
                 await Note.objects.using(app).insert(tenant="b", body="x")
             with app.tenant(7):
                 assert await Note.objects.using(app).count() == 0
@@ -445,7 +445,7 @@ async def test_tenant_sets_app_tenant_for_row_level_security(db):
         await admin.close()
     sqlite = await sqlite_db()
     try:
-        with pytest.raises(orm.QueryError, match="row-level security"):
+        with pytest.raises(monorm.QueryError, match="row-level security"):
             with sqlite.tenant("a"):
                 pass
     finally:
@@ -453,15 +453,15 @@ async def test_tenant_sets_app_tenant_for_row_level_security(db):
 
 
 async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
-    registry = orm.Registry()
-    Note = orm.loads(NOTES, registry=registry)["Note"]
-    admin = await orm.connect(db.url, registry=registry, default=False, max_connections=1)
+    registry = monorm.Registry()
+    Note = monorm.loads(NOTES, registry=registry)["Note"]
+    admin = await monorm.connect(db.url, registry=registry, default=False, max_connections=1)
     await admin.drop_tables()
     await admin.create_tables()
     await admin.execute(RLS)
     await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
-    app = await orm.connect(
-        "postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2
+    app = await monorm.connect(
+        "postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2
     )
     try:
 
@@ -475,12 +475,12 @@ async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
             task = asyncio.create_task(other())
             async with app.transaction():
                 assert await task == ["2"]
-                with pytest.raises(orm.QueryError, match="another tenant"):
+                with pytest.raises(monorm.QueryError, match="another tenant"):
                     with app.tenant("b"):
                         pass
                 # A savepoint keeps the tenant of its transaction.
                 async with app.transaction():
-                    with pytest.raises(orm.QueryError, match="another tenant"):
+                    with pytest.raises(monorm.QueryError, match="another tenant"):
                         with app.tenant("b"):
                             pass
                 # The same tenant is allowed.
@@ -488,7 +488,7 @@ async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
                     assert [n.body for n in await Note.objects.using(app)] == ["1"]
         # A transaction with no tenant counts as different.
         async with app.transaction():
-            with pytest.raises(orm.QueryError, match="another tenant"):
+            with pytest.raises(monorm.QueryError, match="another tenant"):
                 with app.tenant("a"):
                     pass
         # Outside any transaction the tenant switches freely.
@@ -504,7 +504,7 @@ async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
 async def test_refresh_reads_the_primary_on_a_database_with_replicas(clean):
     db = clean
     url = await replica_url(db)
-    routed = await orm.connect(db.url, replicas=[url], default=False, max_connections=2)
+    routed = await monorm.connect(db.url, replicas=[url], default=False, max_connections=2)
     try:
         user = await User.objects.using(routed).insert(email="p@example.com", name="Primary")
         # The replica holds no such row: a replica read would raise DoesNotExist.
@@ -528,7 +528,7 @@ async def test_tenant_ids_are_checked(db):
             pass
 
 
-QUERY_DEFAULTS = has_extension("orm.query-defaults")
+QUERY_DEFAULTS = has_extension("monorm.query-defaults")
 
 
 def scoped_schema(dialect):
@@ -572,7 +572,7 @@ def scoped_schema(dialect):
             "schema_contract": 5,
             "read_defaults": [
                 {
-                    "source": "orm.query-defaults",
+                    "source": "monorm.query-defaults",
                     "name": "query",
                     "model": "Order",
                     "filter": {
@@ -587,14 +587,14 @@ def scoped_schema(dialect):
     }
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
 async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect):
-    registry = orm.Registry()
-    m = orm.define(scoped_schema(dialect), registry=registry)
+    registry = monorm.Registry()
+    m = monorm.define(scoped_schema(dialect), registry=registry)
     Shop, Order = m["Shop"], m["Order"]
     url = "sqlite://:memory:" if dialect == "sqlite" else db.url
-    sdb = await orm.connect(url, registry=registry, default=False, max_connections=2)
+    sdb = await monorm.connect(url, registry=registry, default=False, max_connections=2)
     await sdb.drop_tables()
     await sdb.create_tables()
     try:
@@ -610,12 +610,12 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
             lambda: Shop.objects.using(sdb).filter(Shop.orders.total > 25).count(),
         ):
             with pytest.raises(
-                orm.QueryError,
-                match=r'Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop',
+                monorm.QueryError,
+                match=r'Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop',
             ):
                 await read()
         assert await orders.without_defaults().count() == 3
-        with orm.scope(shop=s1.id):
+        with monorm.scope(shop=s1.id):
             assert sorted(o.total for o in await orders.all()) == [10, 20]
             assert await orders.count() == 2
             assert [o.total for o in await orders.filter(Order.total > 15).prepare()()] == [20]
@@ -623,15 +623,15 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
             assert await Shop.objects.using(sdb).filter(Shop.orders.total > 25).count() == 0
             shop = await Shop.objects.using(sdb).load(Shop.orders).get(Shop.id == s1.id)
             assert len(await shop.orders) == 2
-            with orm.scope(shop=s2.id):
+            with monorm.scope(shop=s2.id):
                 assert [o.total for o in await orders.all()] == [30]
             # Every path that plans a statement reads the scope.
             assert "s6_orders" in orders.sql()
-            assert "s6_orders" in orders.filter(Order.total > orm.param("t")).prepare().sql(t=1)
+            assert "s6_orders" in orders.filter(Order.total > monorm.param("t")).prepare().sql(t=1)
             assert "s6_orders" in orders.select(Order.total).sql()
             assert prepare_update(orders.filter(Order.id == o1.id), {"total": 11}).unique
-            with orm.debug.n_plus_one():
-                assert (await orders.filter(Order.id == orm.param("i")).prepare().get(i=o1.id)).total == 10
+            with monorm.debug.n_plus_one():
+                assert (await orders.filter(Order.id == monorm.param("i")).prepare().get(i=o1.id)).total == 10
             assert await orders.update(total=0) == 2
             assert await orders.update_many([{"id": o3.id, "total": 99}]) == 0
             assert await orders.filter(Order.id == o3.id).delete() == 0
@@ -641,14 +641,14 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
         await sdb.close()
 
 
-@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the orm.query-defaults package")
+@pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
 async def test_prefetch_applies_scope_values(db, dialect):
-    registry = orm.Registry()
-    m = orm.define(scoped_schema(dialect), registry=registry)
+    registry = monorm.Registry()
+    m = monorm.define(scoped_schema(dialect), registry=registry)
     Shop, Order = m["Shop"], m["Order"]
     url = "sqlite://:memory:" if dialect == "sqlite" else db.url
-    sdb = await orm.connect(url, registry=registry, default=False, max_connections=2)
+    sdb = await monorm.connect(url, registry=registry, default=False, max_connections=2)
     await sdb.drop_tables()
     await sdb.create_tables()
     try:
@@ -663,20 +663,20 @@ async def test_prefetch_applies_scope_values(db, dialect):
         shops = await Shop.objects.using(sdb).order_by(Shop.id).all()
         # Outside a scope the default filter is closed, as for load().
         with pytest.raises(
-            orm.QueryError,
-            match=r'Order default "query" from orm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop',
+            monorm.QueryError,
+            match=r'Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop',
         ):
-            await orm.of(shops).using(sdb).load(Shop.orders)
-        with orm.scope(shop=s1.id):
-            await orm.of(shops).using(sdb).load(Shop.orders)
+            await monorm.of(shops).using(sdb).load(Shop.orders)
+        with monorm.scope(shop=s1.id):
+            await monorm.of(shops).using(sdb).load(Shop.orders)
             assert [sorted(o.total for o in await s.orders) for s in shops] == [[10, 20], []]
-            with orm.scope(shop=s2.id):
-                await orm.of(shops).using(sdb).load(Shop.orders)
+            with monorm.scope(shop=s2.id):
+                await monorm.of(shops).using(sdb).load(Shop.orders)
                 assert [sorted(o.total for o in await s.orders) for s in shops] == [[], [30]]
-        with orm.scope(shop=None):
-            with pytest.raises(orm.QueryError, match=r"scope\.shop is None"):
-                await orm.of(shops).using(sdb).load(Shop.orders)
-            with pytest.raises(orm.QueryError, match=r"scope\.shop is None"):
+        with monorm.scope(shop=None):
+            with pytest.raises(monorm.QueryError, match=r"scope\.shop is None"):
+                await monorm.of(shops).using(sdb).load(Shop.orders)
+            with pytest.raises(monorm.QueryError, match=r"scope\.shop is None"):
                 await Shop.objects.using(sdb).load(Shop.orders).all()
     finally:
         await sdb.drop_tables()
@@ -686,8 +686,8 @@ async def test_prefetch_applies_scope_values(db, dialect):
 async def test_query_hooks_see_replica_reads_and_session_locks(clean):
     db = clean
     url = await replica_url(db)
-    routed = await orm.connect(db.url, replicas=[url], default=False, max_connections=2)
-    events: list[orm.QueryEvent] = []
+    routed = await monorm.connect(db.url, replicas=[url], default=False, max_connections=2)
+    events: list[monorm.QueryEvent] = []
     remove = routed.on_query(events.append)
     try:
         assert [u.name for u in await User.objects.using(routed)] == ["Replica"]
@@ -706,7 +706,7 @@ async def test_query_hooks_see_replica_reads_and_session_locks(clean):
 
 
 async def test_waiting_session_lock_does_not_hold_a_pool_slot(db):
-    other = await orm.connect(db.url, default=False, max_connections=1)
+    other = await monorm.connect(db.url, default=False, max_connections=1)
     try:
         async with db.lock(31, session=True):
             waiter = asyncio.create_task(other.lock(31, session=True, timeout=5).__aenter__())

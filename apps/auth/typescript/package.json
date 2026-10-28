@@ -1,7 +1,7 @@
 {
-  "name": "orm-auth",
+  "name": "@ufstack/monorm-auth",
   "version": "0.1.0",
-  "description": "Users, roles, permissions and passwords for the orm package: one schema, no native code",
+  "description": "Users, roles, permissions and passwords for the monorm package: one schema, no native code",
   "license": "MIT",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -22,7 +22,7 @@
     "./schema.prisma": "./schema.prisma",
     "./package.json": "./package.json"
   },
-  "orm": {
+  "monorm": {
     "app": "./schema.prisma"
   },
   "engines": {
@@ -38,16 +38,16 @@
     "@node-rs/argon2": "^2.0.0"
   },
   "peerDependencies": {
-    "orm": "*"
+    "@ufstack/monorm": "*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "orm": "file:../../../languages/js",
+    "@ufstack/monorm": "file:../../../languages/js",
     "typescript": "^5.9.0",
-    "@orm/timestamps": "file:../../../target/extension-packages/timestamps/npm",
-    "@orm/soft-delete": "file:../../../target/extension-packages/soft-delete/npm",
-    "@orm/locking": "file:../../../target/extension-packages/locking/npm",
-    "@orm/inherit": "file:../../../target/extension-packages/inherit/npm"
+    "@ufstack/monorm-timestamps": "file:../../../target/extension-packages/timestamps/npm",
+    "@ufstack/monorm-soft-delete": "file:../../../target/extension-packages/soft-delete/npm",
+    "@ufstack/monorm-locking": "file:../../../target/extension-packages/locking/npm",
+    "@ufstack/monorm-inherit": "file:../../../target/extension-packages/inherit/npm"
   },
   "files": [
     "dist/src",

@@ -48,7 +48,7 @@ after(async () => {
 });
 
 test("a data step runs in the migration's transaction", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-data-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-data-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);
   writeFileSync(schema, V1);
@@ -59,7 +59,7 @@ test("a data step runs in the migration's transaction", async () => {
 
   const db = await connect(DATA_URL, { maxConnections: 2, default: false, registry: new Registry() });
   opened.push(db);
-  await db.execute("DROP TABLE IF EXISTS author, extra, orm_migrations CASCADE");
+  await db.execute("DROP TABLE IF EXISTS author, extra, monorm_migrations CASCADE");
   const migrator = new Migrator(db, migrations);
   assert.deepEqual((await migrator.upgrade("1")).map((m) => m.name), ["0001_initial"]);
   await db.execute("INSERT INTO author (name) VALUES ('Ann'), ('Bob')");
@@ -80,11 +80,11 @@ test("a data step runs in the migration's transaction", async () => {
   await assert.rejects(migrator.upgrade(), MigrationError);
 });
 
-// `npx orm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
+// `npx @ufstack/monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
 
-test("npx orm migrate runs data steps", () => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-data-cli-"));
+test("npx @ufstack/monorm migrate runs data steps", () => {
+  const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const sqlite = 'datasource db {\n  provider = "sqlite"\n}\n';
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);
@@ -96,7 +96,7 @@ test("npx orm migrate runs data steps", () => {
     join(second.path, "data.ts"),
     "export async function run(db) {\n  await db.execute(\"INSERT INTO author (name, slug) VALUES ('Ann', 'ann')\");\n}\n",
   );
-  const env = { ...process.env, ORM_DATABASE_URL: `sqlite://${join(dir, "app.db")}` };
+  const env = { ...process.env, MONORM_DATABASE_URL: `sqlite://${join(dir, "app.db")}` };
   const run = (...args: string[]) =>
     spawnSync(process.execPath, [CLI, "--schema", "schema.prisma", "--dir", "migrations", ...args], { cwd: dir, env, encoding: "utf8" });
   const done = run("migrate");
@@ -112,14 +112,14 @@ test("npx orm migrate runs data steps", () => {
 });
 
 async function fresh(): Promise<{ db: Database; migrations: Migrations; dir: string }> {
-  const dir = mkdtempSync(join(tmpdir(), "orm-data-"));
+  const dir = mkdtempSync(join(tmpdir(), "monorm-data-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);
   writeFileSync(schema, V1);
   migrations.make();
   const db = await connect(DATA_URL, { maxConnections: 3, default: false, registry: new Registry() });
   opened.push(db);
-  await db.execute("DROP TABLE IF EXISTS author, extra, seen, orm_migrations CASCADE; CREATE TABLE seen (n bigint)");
+  await db.execute("DROP TABLE IF EXISTS author, extra, seen, monorm_migrations CASCADE; CREATE TABLE seen (n bigint)");
   return { db, migrations, dir };
 }
 
@@ -214,14 +214,14 @@ test("concurrent upgrades run a data step once", async () => {
   assert.deepEqual(await db.fetchText("SELECT count(*) FROM author"), [["1"]]);
 });
 
-test("npx orm migrate needs no schema file and skips applied data steps", () => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-data-cli-"));
+test("npx @ufstack/monorm migrate needs no schema file and skips applied data steps", () => {
+  const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);
   writeFileSync(schema, 'datasource db {\n  provider = "sqlite"\n}\n' + V1);
   migrations.make();
   const old = dataMigration(migrations, "0002_old", "data.ts", "export async function run() {}\n");
-  const env = { ...process.env, ORM_DATABASE_URL: `sqlite://${join(dir, "app.db")}` };
+  const env = { ...process.env, MONORM_DATABASE_URL: `sqlite://${join(dir, "app.db")}` };
   const run = (...args: string[]) =>
     spawnSync(process.execPath, [CLI, "--schema", "schema.prisma", "--dir", "migrations", ...args], { cwd: dir, env, encoding: "utf8" });
   assert.equal(run("migrate").status, 0);
@@ -234,14 +234,14 @@ test("npx orm migrate needs no schema file and skips applied data steps", () => 
   assert.deepEqual(done.stdout.trim().split("\n"), ["Applied 0003_new"]);
 });
 
-test("npx orm migrate with a data step and no database is a usage error", () => {
-  const dir = mkdtempSync(join(tmpdir(), "orm-data-cli-"));
+test("npx @ufstack/monorm migrate with a data step and no database is a usage error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);
   writeFileSync(schema, V1);
   migrations.make();
   dataMigration(migrations, "0002_step", "data.ts", "export async function run() {}\n");
-  const env = { ...process.env, ORM_DATABASE_URL: "" };
+  const env = { ...process.env, MONORM_DATABASE_URL: "" };
   const done = spawnSync(process.execPath, [CLI, "--schema", "schema.prisma", "--dir", "migrations", "migrate"], { cwd: dir, env, encoding: "utf8" });
   assert.equal(done.status, 2, done.stderr);
   assert.ok(done.stderr.includes("no database"), done.stderr);

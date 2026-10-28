@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 import pytest
 
-import orm
+import monorm
 from artifact_caps import has_extension
 
 DATABASES = ["sqlite", "postgres"]
@@ -14,21 +14,21 @@ OLD = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
 def requires(name: str) -> pytest.MarkDecorator:
-    """Skip unless the artifact or an installed package has the extension, such as `orm.locking`."""
+    """Skip unless the artifact or an installed package has the extension, such as `monorm.locking`."""
     return pytest.mark.skipif(not has_extension(name), reason=f"requires {name} in the native artifact")
 
 
-async def connect(dialect: str, source: str) -> tuple[orm.Database, dict]:
+async def connect(dialect: str, source: str) -> tuple[monorm.Database, dict]:
     if dialect == "sqlite":
         source = 'datasource db { provider = "sqlite" }\n' + source
-    registry = orm.Registry()
-    models = orm.loads(source, registry=registry)
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
     url = (
         "sqlite://:memory:"
         if dialect == "sqlite"
         else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     )
-    db = await orm.connect(url, registry=registry, default=False)
+    db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
     return db, models
@@ -38,7 +38,7 @@ def as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-@requires("orm.timestamps")
+@requires("monorm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("mode", ["database", "application"])
 async def test_updated_at_is_set_on_orm_updates_and_by_the_trigger(dialect, mode):
@@ -90,7 +90,7 @@ model Book {{
 """
 
 
-@requires("orm.soft-delete")
+@requires("monorm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("mode", ["database", "application"])
 async def test_soft_delete_updates_instead_of_deleting(dialect, mode):
@@ -138,8 +138,8 @@ model Doc {
 """
 
 
-@requires("orm.soft-delete")
-@requires("orm.locking")
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_soft_deleted_instance_can_be_undeleted(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
@@ -167,8 +167,8 @@ model Doc {
 """
 
 
-@requires("orm.soft-delete")
-@requires("orm.query-defaults")
+@requires("monorm.soft-delete")
+@requires("monorm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
     db, models = await connect(dialect, TENANT_SOFT_DELETE)
@@ -176,9 +176,9 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
     try:
         docs = Doc.objects.using(db)
         await docs.insert_many([{"id": i, "shop": 1 if i < 3 else 2} for i in (1, 2, 3, 4)])
-        with orm.scope(shop=2):
+        with monorm.scope(shop=2):
             assert await docs.filter(Doc.id == 3).delete() == 1
-        with orm.scope(shop=1):
+        with monorm.scope(shop=1):
             assert await docs.filter(Doc.id == 1).delete() == 1
             assert [d.id for d in await docs.order_by(Doc.id)] == [2]
             assert [d.id for d in await docs.all_with_deleted().order_by(Doc.id)] == [1, 2]
@@ -196,15 +196,15 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
             docs.all_with_deleted().count(),
             docs.deleted_only().count(),
         ):
-            with pytest.raises(Exception, match=r'default "tenant" from orm.query-defaults .* reads scope.shop'):
+            with pytest.raises(Exception, match=r'default "tenant" from monorm.query-defaults .* reads scope.shop'):
                 await statement
     finally:
         await db.drop_tables()
         await db.close()
 
 
-@requires("orm.soft-delete")
-@requires("orm.query-defaults")
+@requires("monorm.soft-delete")
+@requires("monorm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
     db, models = await connect(dialect, TENANT_SOFT_DELETE)
@@ -212,11 +212,11 @@ async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
     try:
         docs = Doc.objects.using(db)
         await docs.insert_many([{"id": 1, "shop": 1}, {"id": 2, "shop": 2}])
-        with orm.scope(shop=2):
+        with monorm.scope(shop=2):
             doc = await docs.get(Doc.id == 2)
         # The instance uses a bare bypass: no scope is set, and the shop 2 row is gone.
         await doc.hard_delete()
-        with orm.scope(shop=1):
+        with monorm.scope(shop=1):
             assert await docs.all_with_deleted().count() == 1
         assert [d.id for d in await docs.without_defaults()] == [1]
     finally:
@@ -224,9 +224,9 @@ async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
         await db.close()
 
 
-@requires("orm.soft-delete")
-@requires("orm.locking")
-@requires("orm.query-defaults")
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
+@requires("monorm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
@@ -236,7 +236,7 @@ async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
         await docs.insert_many([{"id": 1}])
         doc = await docs.get(Doc.id == 1)
         assert await docs.filter(Doc.id == 1).delete() == 1
-        with pytest.raises(orm.VersionConflict):
+        with pytest.raises(monorm.VersionConflict):
             await doc.update(deleted=None)
     finally:
         await db.drop_tables()
@@ -261,8 +261,8 @@ model Book {
 """
 
 
-@requires("orm.soft-delete")
-@requires("orm.locking")
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_hard_delete_of_a_soft_deleted_parent_leaves_no_orphan(dialect):
     db, models = await connect(dialect, CASCADE_VERSIONED)
@@ -287,8 +287,8 @@ async def test_a_hard_delete_of_a_soft_deleted_parent_leaves_no_orphan(dialect):
         await db.close()
 
 
-@requires("orm.soft-delete")
-@requires("orm.locking")
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_the_soft_delete_triggers_bump_the_version(dialect):
     db, models = await connect(dialect, CASCADE_VERSIONED)
@@ -304,15 +304,15 @@ async def test_the_soft_delete_triggers_bump_the_version(dialect):
         stored = {b.id: b.version for b in await books.all_with_deleted()}
         assert stored == {1: 1, 2: 1}
         for stale in (cascaded, raw):
-            with pytest.raises(orm.VersionConflict):
+            with pytest.raises(monorm.VersionConflict):
                 await stale.update(removed=None)
     finally:
         await db.drop_tables()
         await db.close()
 
 
-@requires("orm.soft-delete")
-@requires("orm.locking")
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
@@ -325,14 +325,14 @@ async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
         assert doc.version == 1
         stale = await Doc.objects.using(db).all_with_deleted().get(Doc.id == 1)
         await stale.undelete()
-        with pytest.raises(orm.VersionConflict):
+        with pytest.raises(monorm.VersionConflict):
             await doc.delete()
     finally:
         await db.drop_tables()
         await db.close()
 
 
-@requires("orm.locking")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_stale_instance_write_raises_version_conflict(dialect):
     db, models = await connect(
@@ -353,9 +353,9 @@ model Doc {
         second = await docs.get(Doc.id == 1)
         await first.update(title="b")
         assert first.version == 1 and first.title == "b"
-        with pytest.raises(orm.VersionConflict):
+        with pytest.raises(monorm.VersionConflict):
             await second.update(title="c")
-        with pytest.raises(orm.VersionConflict):
+        with pytest.raises(monorm.VersionConflict):
             await second.delete()
         assert (await docs.get(Doc.id == 1)).title == "b"
         assert await docs.update(title="d") == 1
@@ -386,8 +386,8 @@ model Doc {{
 """
 
 
-@requires("orm.locking")
-@requires("orm.timestamps")
+@requires("monorm.locking")
+@requires("monorm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_bumps_the_version(dialect):
     db, models = await connect(dialect, upsert_doc("application", version=True))
@@ -401,14 +401,14 @@ async def test_an_upsert_bumps_the_version(dialect):
         await docs.insert(id=1, title="c").on_conflict(Doc.id, update=True, update_fields=[Doc.title])
         await docs.insert(id=1, title="d").on_conflict(Doc.id, update=True, update_values={"title": "e"})
         assert (await docs.get(Doc.id == 1)).version == 3
-        with pytest.raises(orm.VersionConflict):
+        with pytest.raises(monorm.VersionConflict):
             await stale.update(title="x")
     finally:
         await db.drop_tables()
         await db.close()
 
 
-@requires("orm.timestamps")
+@requires("monorm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
     db, models = await connect(dialect, upsert_doc("application"))
@@ -428,7 +428,7 @@ async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
         await db.close()
 
 
-@requires("orm.timestamps")
+@requires("monorm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_the_default_upsert_update_list_drops_updated_at(dialect):
     db, models = await connect(dialect, upsert_doc("application"))
@@ -444,7 +444,7 @@ async def test_the_default_upsert_update_list_drops_updated_at(dialect):
         await db.close()
 
 
-@requires("orm.locking")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
     db, models = await connect(dialect, upsert_doc(version=True))
@@ -460,7 +460,7 @@ async def test_an_update_true_upsert_does_not_reset_the_version(dialect):
         await db.close()
 
 
-@requires("orm.timestamps")
+@requires("monorm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
     db, models = await connect(dialect, upsert_doc("database"))
@@ -499,8 +499,8 @@ model PostTag {
 """
 
 
-@requires("orm.soft-delete")
-@requires("orm.query-defaults")
+@requires("monorm.soft-delete")
+@requires("monorm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect):
     db, models = await connect(dialect, FILTERED_JOIN_MODEL)
@@ -523,13 +523,13 @@ async def test_a_soft_deleted_join_row_is_hidden_from_loads_and_filters(dialect)
         await db.close()
 
 
-@requires("orm.proxy")
-@requires("orm.locking")
+@requires("monorm.proxy")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("operation", ["update", "delete"])
 @pytest.mark.parametrize("mode", [None, "application", "database"])
 async def test_a_stale_proxy_instance_checks_the_loaded_version(dialect, operation, mode):
-    if mode is not None and not has_extension("orm.soft-delete"):
+    if mode is not None and not has_extension("monorm.soft-delete"):
         pytest.skip("requires soft-delete")
     source = upsert_doc(version=True)
     if mode is not None:
@@ -555,7 +555,7 @@ model Review {
         await docs.insert_many([{"id": 1, "title": "original"}])
         stale = await Review.objects.using(db).get(Review.id == 1)
         await docs.filter(Doc.id == 1).update(title="other writer")
-        with pytest.raises(orm.VersionConflict):
+        with pytest.raises(monorm.VersionConflict):
             if operation == "update":
                 await stale.update(title="stale writer")
             else:
@@ -576,7 +576,7 @@ model Review {
         await db.close()
 
 
-@requires("orm.locking")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_instance_rejects_an_explicit_version(dialect):
     db, models = await connect(dialect, upsert_doc(version=True))
@@ -595,13 +595,13 @@ async def test_an_instance_rejects_an_explicit_version(dialect):
         await db.close()
 
 
-@requires("orm.composition")
+@requires("monorm.composition")
 @pytest.mark.parametrize(
     "extension,field,attribute",
     [
-        ("orm.timestamps", "changed", '@@timestamps.updated_at("changed")'),
-        ("orm.soft-delete", "deleted", '@@soft_delete.deleted_at("deleted")'),
-        ("orm.locking", "version", '@@locking.version'),
+        ("monorm.timestamps", "changed", '@@timestamps.updated_at("changed")'),
+        ("monorm.soft-delete", "deleted", '@@soft_delete.deleted_at("deleted")'),
+        ("monorm.locking", "version", '@@locking.version'),
     ],
 )
 @pytest.mark.parametrize("owner", ["Person", "Employee", "Manager"])
@@ -625,8 +625,8 @@ model Manager {{
  @@composition.model(parent: "Employee", parentRef: "employee", childRef: "manager")
 }}
 """
-    with pytest.raises(orm.SchemaError) as error:
-        orm.loads(source, registry=orm.Registry())
+    with pytest.raises(monorm.SchemaError) as error:
+        monorm.loads(source, registry=monorm.Registry())
     message = str(error.value)
     assert owner in message and field in message and extension in message
     assert "Employee" in message or "Manager" in message
@@ -640,9 +640,9 @@ class Tracking(NamedTuple):
 
 
 TRACKING = [
-    Tracking("orm.timestamps", "@@timestamps.updated_at", "updated_at", "edited_at"),
-    Tracking("orm.soft-delete", "@@soft_delete.deleted_at", "deleted_at", "removed_at"),
-    Tracking("orm.locking", "@@locking.version", "version", "revision"),
+    Tracking("monorm.timestamps", "@@timestamps.updated_at", "updated_at", "edited_at"),
+    Tracking("monorm.soft-delete", "@@soft_delete.deleted_at", "deleted_at", "removed_at"),
+    Tracking("monorm.locking", "@@locking.version", "version", "revision"),
 ]
 each_tracking = pytest.mark.parametrize("tracking", TRACKING, ids=lambda tracking: tracking.default)
 
@@ -661,14 +661,14 @@ model Story {{
 def test_the_model_attribute_adds_the_field_with_its_default_or_given_name(tracking):
     if not has_extension(tracking.extension):
         pytest.skip(f"requires {tracking.extension}")
-    fields = lambda source: list(orm.loads(source, registry=orm.Registry())["Story"]._meta.fields)
+    fields = lambda source: list(monorm.loads(source, registry=monorm.Registry())["Story"]._meta.fields)
     assert fields(tracking_schema(tracking.attribute)) == ["id", tracking.default]
     assert fields(tracking_schema(f'{tracking.attribute}("{tracking.custom}")')) == ["id", tracking.custom]
 
 
-@requires("orm.timestamps")
-@requires("orm.soft-delete")
-@requires("orm.locking")
+@requires("monorm.timestamps")
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
 async def test_the_added_fields_have_the_documented_types_and_defaults():
     db, models = await connect(
         "sqlite",
@@ -690,7 +690,7 @@ model Story {
         await db.close()
 
 
-@requires("orm.timestamps")
+@requires("monorm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("upsert,kept", [(None, False), ("drop", False), ("pick", True)])
 async def test_timestamps_upsert_pick_keeps_the_field_in_the_default_upsert_list(dialect, upsert, kept):
@@ -721,7 +721,7 @@ model Doc {{
         await db.close()
 
 
-@requires("orm.locking")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("upsert,kept", [(None, False), ("drop", False), ("pick", True)])
 async def test_locking_upsert_pick_keeps_the_field_in_the_default_upsert_list(dialect, upsert, kept):
@@ -751,7 +751,7 @@ model Doc {{
         await db.close()
 
 
-@requires("orm.timestamps")
+@requires("monorm.timestamps")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_timestamps_map_argument_keeps_the_live_column(dialect):
     db, models = await connect(dialect, 'model Story {\n  id Int @id\n  @@timestamps.updated_at(map: "_updated_at")\n  @@map("tracking_story_map_ts")\n}\n')
@@ -765,7 +765,7 @@ async def test_a_timestamps_map_argument_keeps_the_live_column(dialect):
         await db.close()
 
 
-@requires("orm.soft-delete")
+@requires("monorm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_soft_delete_map_argument_keeps_the_live_column(dialect):
     db, models = await connect(dialect, 'model Story {\n  id Int @id\n  @@soft_delete.deleted_at(map: "_deleted_at")\n  @@map("tracking_story_map_sd")\n}\n')
@@ -782,7 +782,7 @@ async def test_a_soft_delete_map_argument_keeps_the_live_column(dialect):
         await db.close()
 
 
-@requires("orm.locking")
+@requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_locking_map_argument_keeps_the_live_column(dialect):
     db, models = await connect(dialect, 'model Story {\n  id Int @id\n  @@locking.version(map: "rev")\n  @@map("tracking_story_map_lk")\n}\n')
@@ -801,25 +801,25 @@ async def test_a_locking_map_argument_keeps_the_live_column(dialect):
 @pytest.mark.parametrize(
     "extension,attribute,old,field,line,note",
     [
-        ("orm.timestamps", "timestamps.updated_at", "changed DateTime @default(now()) @timestamps.updated_at", "changed", '@@timestamps.updated_at("changed")', ""),
-        ("orm.timestamps", "timestamps.updated_at", 'updated_at DateTime @default(now()) @timestamps.updated_at(mode: "application")', "updated_at", '@@timestamps.updated_at(mode: "application")', ""),
-        ("orm.timestamps", "timestamps.updated_at", "editedAt DateTime @default(now()) @timestamps.updated_at", "editedAt", '@@timestamps.updated_at("edited_at", map: "editedAt")', ""),
-        ("orm.timestamps", "timestamps.updated_at", 'changed DateTime @default(now()) @map("_changed") @timestamps.updated_at(mode: "database")', "changed", '@@timestamps.updated_at("changed", map: "_changed", mode: "database")', ""),
-        ("orm.soft-delete", "soft_delete.deleted_at", "deleted_at DateTime? @soft_delete.deleted_at", "deleted_at", "@@soft_delete.deleted_at", ""),
-        ("orm.soft-delete", "soft_delete.deleted_at", 'removed DateTime? @soft_delete.deleted_at(mode: "database")', "removed", '@@soft_delete.deleted_at("removed", mode: "database")', ""),
-        ("orm.soft-delete", "soft_delete.deleted_at", "_deleted_at DateTime? @soft_delete.deleted_at", "_deleted_at", '@@soft_delete.deleted_at(map: "_deleted_at")', ""),
-        ("orm.soft-delete", "soft_delete.deleted_at", 'deleted_at DateTime? @map("_deleted_at") @soft_delete.deleted_at', "deleted_at", '@@soft_delete.deleted_at(map: "_deleted_at")', ""),
-        ("orm.locking", "locking.version", "version Int @default(0) @locking.version", "version", "@@locking.version", ""),
-        ("orm.locking", "locking.version", "rev Int @default(0) @locking.version", "rev", '@@locking.version("rev")', ""),
-        ("orm.locking", "locking.version", "version BigInt @default(0) @locking.version", "version", "@@locking.version", "; the added field has the type Int, not BigInt; change the type by hand"),
+        ("monorm.timestamps", "timestamps.updated_at", "changed DateTime @default(now()) @timestamps.updated_at", "changed", '@@timestamps.updated_at("changed")', ""),
+        ("monorm.timestamps", "timestamps.updated_at", 'updated_at DateTime @default(now()) @timestamps.updated_at(mode: "application")', "updated_at", '@@timestamps.updated_at(mode: "application")', ""),
+        ("monorm.timestamps", "timestamps.updated_at", "editedAt DateTime @default(now()) @timestamps.updated_at", "editedAt", '@@timestamps.updated_at("edited_at", map: "editedAt")', ""),
+        ("monorm.timestamps", "timestamps.updated_at", 'changed DateTime @default(now()) @map("_changed") @timestamps.updated_at(mode: "database")', "changed", '@@timestamps.updated_at("changed", map: "_changed", mode: "database")', ""),
+        ("monorm.soft-delete", "soft_delete.deleted_at", "deleted_at DateTime? @soft_delete.deleted_at", "deleted_at", "@@soft_delete.deleted_at", ""),
+        ("monorm.soft-delete", "soft_delete.deleted_at", 'removed DateTime? @soft_delete.deleted_at(mode: "database")', "removed", '@@soft_delete.deleted_at("removed", mode: "database")', ""),
+        ("monorm.soft-delete", "soft_delete.deleted_at", "_deleted_at DateTime? @soft_delete.deleted_at", "_deleted_at", '@@soft_delete.deleted_at(map: "_deleted_at")', ""),
+        ("monorm.soft-delete", "soft_delete.deleted_at", 'deleted_at DateTime? @map("_deleted_at") @soft_delete.deleted_at', "deleted_at", '@@soft_delete.deleted_at(map: "_deleted_at")', ""),
+        ("monorm.locking", "locking.version", "version Int @default(0) @locking.version", "version", "@@locking.version", ""),
+        ("monorm.locking", "locking.version", "rev Int @default(0) @locking.version", "rev", '@@locking.version("rev")', ""),
+        ("monorm.locking", "locking.version", "version BigInt @default(0) @locking.version", "version", "@@locking.version", "; the added field has the type Int, not BigInt; change the type by hand"),
     ],
 )
 def test_the_old_field_attribute_fails_with_the_replacement_line(extension, attribute, old, field, line, note):
     if not has_extension(extension):
         pytest.skip(f"requires {extension}")
     source = f"model Story {{\n  id Int @id\n  {old}\n}}\n"
-    with pytest.raises(orm.SchemaError) as error:
-        orm.loads(source, registry=orm.Registry())
+    with pytest.raises(monorm.SchemaError) as error:
+        monorm.loads(source, registry=monorm.Registry())
     assert str(error.value).endswith(
         f"@{attribute}: a field attribute is no longer supported; delete the field Story.{field} and write {line} in the model block{note}"
     )
@@ -830,8 +830,8 @@ def test_a_field_of_the_same_name_is_an_error_that_names_both(tracking):
     if not has_extension(tracking.extension):
         pytest.skip(f"requires {tracking.extension}")
     source = f'model Story {{\n  id Int @id\n  {tracking.custom} Int\n  {tracking.attribute}("{tracking.custom}")\n}}\n'
-    with pytest.raises(orm.SchemaError) as error:
-        orm.loads(source, registry=orm.Registry())
+    with pytest.raises(monorm.SchemaError) as error:
+        monorm.loads(source, registry=monorm.Registry())
     message = str(error.value)
     assert f"Story.{tracking.custom}" in message
     assert tracking.attribute.removeprefix("@@") in message and "already exists" in message
@@ -842,8 +842,8 @@ def test_a_field_on_the_same_column_is_an_error_that_names_both(tracking):
     if not has_extension(tracking.extension):
         pytest.skip(f"requires {tracking.extension}")
     source = f'model Story {{\n  id Int @id\n  taken Int @map("{tracking.default}")\n  {tracking.attribute}\n}}\n'
-    with pytest.raises(orm.SchemaError) as error:
-        orm.loads(source, registry=orm.Registry())
+    with pytest.raises(monorm.SchemaError) as error:
+        monorm.loads(source, registry=monorm.Registry())
     message = str(error.value)
     assert f"adds the field Story.{tracking.default}, but the field Story.taken already uses the column {tracking.default}" in message
 
@@ -872,21 +872,21 @@ model Grandchild {{
 """
 
 
-@requires("orm.inherit")
+@requires("monorm.inherit")
 @each_tracking
 def test_a_tracking_attribute_on_a_base_reaches_each_concrete_child(tracking):
     if not has_extension(tracking.extension):
         pytest.skip(f"requires {tracking.extension}")
-    models = orm.loads(inherited_schema(tracking.attribute), registry=orm.Registry())
+    models = monorm.loads(inherited_schema(tracking.attribute), registry=monorm.Registry())
     assert sorted(models) == ["Child", "Grandchild"]
     for name in models:
         assert tracking.default in models[name]._meta.fields
 
 
-@requires("orm.inherit")
-@requires("orm.timestamps")
-@requires("orm.soft-delete")
-@requires("orm.locking")
+@requires("monorm.inherit")
+@requires("monorm.timestamps")
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
 @pytest.mark.parametrize("name", ["Child", "Grandchild"])
 async def test_a_concrete_child_maintains_the_tracking_fields_of_its_base(name):
     attributes = '@@timestamps.updated_at("changed", mode: "application")\n  @@soft_delete.deleted_at(mode: "application")\n  @@locking.version'
@@ -917,7 +917,7 @@ model Doc {
 """
 
 
-@requires("orm.soft-delete")
+@requires("monorm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_an_upsert_onto_a_soft_deleted_row_changes_nothing(dialect):
     db, models = await connect(dialect, UPSERT_SOFT_DELETE)
@@ -935,7 +935,7 @@ async def test_an_upsert_onto_a_soft_deleted_row_changes_nothing(dialect):
         await db.close()
 
 
-@requires("orm.soft-delete")
+@requires("monorm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_query_set_bypass_lets_an_upsert_update_a_soft_deleted_row(dialect):
     db, models = await connect(dialect, UPSERT_SOFT_DELETE)
@@ -947,14 +947,14 @@ async def test_a_query_set_bypass_lets_an_upsert_update_a_soft_deleted_row(diale
         await docs.without_defaults("deleted").insert(id=1, title="b").on_conflict(Doc.id, update=True)
         (row,) = await docs.without_defaults().filter(Doc.id == 1)
         assert row.title == "b" and row.deleted is not None
-        with pytest.raises(orm.QueryError, match='unknown default "nope"'):
+        with pytest.raises(monorm.QueryError, match='unknown default "nope"'):
             await docs.without_defaults("nope").insert(id=2, title="c")
     finally:
         await db.drop_tables()
         await db.close()
 
 
-@requires("orm.soft-delete")
+@requires("monorm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("mode", ["application", "database"])
 async def test_add_restores_a_soft_deleted_link_and_inserts_the_missing_ones(dialect, mode):
@@ -993,11 +993,11 @@ model Doc {
 """
 
 
-@requires("orm.soft-delete")
-@requires("orm.query-defaults")
+@requires("monorm.soft-delete")
+@requires("monorm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_user_default_named_deleted_clashes_with_the_soft_delete_default(dialect):
-    with pytest.raises(Exception, match=r'default name is set by both orm\.soft-delete default "deleted" and orm\.query-defaults default "deleted"'):
+    with pytest.raises(Exception, match=r'default name is set by both monorm\.soft-delete default "deleted" and monorm\.query-defaults default "deleted"'):
         await connect(dialect, CLASHING_DEFAULT)
 
 
@@ -1017,7 +1017,7 @@ model Book {
 """
 
 
-@requires("orm.soft-delete")
+@requires("monorm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
 async def test_a_reference_to_a_soft_deleted_row_loads_none(dialect):
     db, models = await connect(dialect, REFERENCE_TO_SOFT_DELETED)

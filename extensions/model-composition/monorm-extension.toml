@@ -1,0 +1,23 @@
+id = "monorm.composition"
+version = "0.1.0"
+abi = "0.2"
+library = "monorm_composition"
+schema_contract = "5.0"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+capabilities = ["schema-transformations", "physical-schema"]
+
+[[passes]]
+id = "monorm.composition.lower"
+phase = "logical"
+effects = ["behavior.field_storage", "behavior.owner_links", "behavior.storage", "models.composition"]
+
+# `@@composition.model(parent: "Person", parentRef: "person", childRef: "employee")`
+[[attributes]]
+name = "composition.model"
+target = "model"
+[attributes.arguments]
+parent = { kind = "string", required = true }
+parentRef = { kind = "string", required = true }
+childRef = { kind = "string", required = true }

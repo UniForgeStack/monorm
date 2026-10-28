@@ -3,7 +3,7 @@
 The schema is written once, in a `.prisma` file, and every language uses it:
 
 ```
-schema.prisma ──▶ orm-core (Rust) ──▶ schema IR (JSON) ──▶ Python: orm.load() / generated models.py + .pyi
+schema.prisma ──▶ monorm-core (Rust) ──▶ schema IR (JSON) ──▶ Python: monorm.load() / generated models.py + .pyi
    ▲                 │                                └──▶ TypeScript: loads() / generated models.ts
 extension files      │
   postgres/*.toml    │
@@ -20,8 +20,8 @@ the mapping from the old `.orm` syntax, is in [`prisma-syntax.md`](prisma-syntax
 
 No Python, Rust or JS class describes the schema. The parser, the extension catalog,
 the migration generator and the code generators live in the binding-free `crates/core/` crate,
-so each language binding only loads the result. The `orm` command-line tool (`crates/cli/`,
-crate `orm-cli`) uses the same crate and needs no Python.
+so each language binding only loads the result. The `monorm` command-line tool (`crates/cli/`,
+crate `monorm-cli`) uses the same crate and needs no Python.
 
 | Path | What |
 |---|---|
@@ -29,9 +29,9 @@ crate `orm-cli`) uses the same crate and needs no Python.
 | `crates/core/src/ext.rs`, `crates/core/extensions/postgres/*.toml` | extension files and the catalog built from them |
 | `crates/core/src/migrate/` | snapshot model, diff, PostgreSQL / SQLite renderers, migration folders |
 | `crates/core/src/codegen/python.rs`, `typescript.rs` | `models.py` / `models.pyi` and `models.ts` generators |
-| `crates/cli/src/` | the `orm` CLI |
-| `languages/python/orm/model.py` | `orm.load()` / `orm.loads()` / `orm.define()`: model classes from the IR |
-| `languages/python/orm/migrations.py`, `__main__.py` | migration runner and `python -m orm` |
+| `crates/cli/src/` | the `monorm` CLI |
+| `languages/python/monorm/model.py` | `monorm.load()` / `monorm.loads()` / `monorm.define()`: model classes from the IR |
+| `languages/python/monorm/migrations.py`, `__main__.py` | migration runner and `python -m monorm` |
 
 ## SQLite
 
@@ -52,7 +52,7 @@ enum Status {
 
 Use `sqlite://:memory:` for an in-memory database or
 `sqlite:///absolute/path.db` for a persistent file. Load or generate the models
-from that SQLite schema, then pass the URL to Python's `orm.connect()` or
+from that SQLite schema, then pass the URL to Python's `monorm.connect()` or
 TypeScript's `connect()`. A registry accepts schemas for one dialect; connecting
 it to another dialect fails before queries run.
 
@@ -84,7 +84,7 @@ Rebuilds copy rows, apply table/column rename hints, preserve AUTOINCREMENT high
 water marks, recreate managed indexes/triggers, and validate foreign keys before
 commit. A failure rolls back the schema, data and migration record. Unmanaged
 indexes or triggers attached to a managed table stop the migration with
-`orm_unmanaged_index_or_trigger`; incorporate them into the schema or explicitly
+`monorm_unmanaged_index_or_trigger`; incorporate them into the schema or explicitly
 remove them before retrying. Review generated up/down SQL before applying it:
 dropped columns cannot recover their old values on downgrade. Avoid rebuilding
 large databases without planning for the copy cost.
@@ -119,8 +119,8 @@ model Post {
 Using it from Python:
 
 ```python
-models = orm.load("schema.prisma")       # compile at runtime; models["Post"] ...
-# or generate a module (typed, autocompletes):  python -m orm generate
+models = monorm.load("schema.prisma")       # compile at runtime; models["Post"] ...
+# or generate a module (typed, autocompletes):  python -m monorm generate
 from blog.models import Post, User
 ```
 
@@ -149,7 +149,7 @@ import "extensions/acme.toml" // an extension file (path relative to this file)
 
 datasource db {
   provider   = "postgresql"
-  url        = env("DATABASE_URL") // accepted and ignored: the URL comes from ORM_DATABASE_URL
+  url        = env("DATABASE_URL") // accepted and ignored: the URL comes from MONORM_DATABASE_URL
   extensions = [postgis(schema: "ext", version: "3.4"), uuid_ossp(map: "uuid-ossp")]
 }
 
@@ -205,7 +205,7 @@ dialect and extension configuration. Imported schemas cannot declare a datasourc
 or import extension definitions; put those settings and definitions in the main
 schema. Imported models can use the main schema's extension types. As usual,
 extension usage is inferred across the complete compiled schema, and the database
-URL comes from the connection API or `ORM_DATABASE_URL`.
+URL comes from the connection API or `MONORM_DATABASE_URL`.
 
 All imported models, enums and SQL functions compile together, with one migration
 history. Relations can reference models in another file directly. Model and enum
@@ -219,25 +219,25 @@ imports, including the same file through different paths, are errors.
 #### Installed app import
 
 `import "app:<name>"` imports the schema of an installed Python or npm package.
-`<name>` is the distribution name (`orm-auth` on PyPI and on npm), so one string works
+`<name>` is the distribution name (`monorm-auth` on PyPI and on npm), so one string works
 in a Python project and in a TypeScript project.
 
 ```prisma
-import "app:orm-auth" (prefix: "auth_")
+import "app:monorm-auth" (prefix: "auth_")
 ```
 
 * The app declares its schema in its package metadata. Without it, the import is an error that names the missing metadata. There is no default file name.
-  * Python: an entry point in the group `orm.apps`, named like the distribution. The value is `<package>:<schema file>`, for example
-    `orm-auth = "orm_auth:schema.prisma"` under `[project.entry-points."orm.apps"]` in `pyproject.toml`.
-    `pyproject.toml` accepts only this form and rejects a `/` path. A subpackage is `orm_auth.db:schema.prisma`.
-  * npm: `"orm": {"app": "./schema.prisma"}` in `package.json`.
-* Resolution happens when you run `orm generate`, `orm makemigrations` and `orm migrate`, and in `load(path)` and `Migrations(path)`. It reads package metadata and imports no app code.
+  * Python: an entry point in the group `monorm.apps`, named like the distribution. The value is `<package>:<schema file>`, for example
+    `monorm-auth = "monorm_auth:schema.prisma"` under `[project.entry-points."monorm.apps"]` in `pyproject.toml`.
+    `pyproject.toml` accepts only this form and rejects a `/` path. A subpackage is `monorm_auth.db:schema.prisma`.
+  * npm: `"monorm": {"app": "./schema.prisma"}` in `package.json`.
+* Resolution happens when you run `monorm generate`, `monorm makemigrations` and `monorm migrate`, and in `load(path)` and `Migrations(path)`. It reads package metadata and imports no app code.
   `loads(source)` has no file, so an app import in it is an error: use `load(path)` or generate the models.
   The command line finds the app, and the schema loader gets a map from the name to the file. It does not import the app package.
   * Python: `importlib.metadata` finds the entry point, and `importlib.util.find_spec` finds the package directory. It works for an editable install (`uv pip install -e`).
   * Node: from the directory of the importing schema (its real path), it goes up through `node_modules/<name>/package.json`. This resolves an app that only another app depends on under pnpm's strict layout.
-  * The standalone `orm` binary does not look for packages. Give it the file: `orm generate --app orm-auth=path/to/schema.prisma`. `--app` can repeat; the Python and Node commands add it themselves.
-* An app that is not installed is an error: ``import "app:orm-auth": not installed; install the `orm-auth` package``. There is no version lock.
+  * The standalone `monorm` binary does not look for packages. Give it the file: `monorm generate --app monorm-auth=path/to/schema.prisma`. `--app` can repeat; the Python and Node commands add it themselves.
+* An app that is not installed is an error: ``import "app:monorm-auth": not installed; install the `monorm-auth` package``. There is no version lock.
 * The rules of an imported schema stay the same: no `datasource`, no extension imports, one migration history, the prefix on table names.
 * An app schema can import another app. The second app is found from the first app's own package.
   Each file loads once, so an app that two schemas both import is a repeated import and an error (as for relative imports).
@@ -268,10 +268,10 @@ The package holds the code that works with them (model methods, query sets, help
 The package declares where its schema is, so `import "app:<name>"` needs no path.
 An app has no native code.
 The Python package and the npm package of an app each hold a copy of the schema file.
-Keep the copies equal. The tests of `orm-auth` check this.
-An app that uses `@@inherit.abstract` needs a build with the `orm.inherit` extension.
+Keep the copies equal. The tests of `monorm-auth` check this.
+An app that uses `@@inherit.abstract` needs a build with the `monorm.inherit` extension.
 
-The first app is [`orm-auth`](../apps/auth.md): users, roles, permissions and passwords.
+The first app is [`monorm-auth`](../apps/auth.md): users, roles, permissions and passwords.
 
 ### Fields
 
@@ -562,18 +562,18 @@ model User {
 * `@@query_set("UserQueries")` names a query set class. Codegen finds its module `queries`, as `Post.objects` uses it.
 * `@@model_methods("UserMethods")` names a class whose methods go on each instance of the model, for example `user.check_password(raw)`. Codegen finds its module `methods`.
 * Each takes one string, the class name. It is the same in Python and TypeScript.
-* Module lookup. The schema file is in the same package as its code. For `import "app:orm-auth"` the schema file is the resolved one in the installed package, so the lookup finds `orm_auth` and `orm-auth`, not your project.
+* Module lookup. The schema file is in the same package as its code. For `import "app:monorm-auth"` the schema file is the resolved one in the installed package, so the lookup finds `monorm_auth` and `monorm-auth`, not your project.
   * Python: codegen finds the import root above the schema file.
     The import root is the nearest directory that has a `pyproject.toml`, `setup.py` or `setup.cfg` (or `src/` under it, when the schema is there), or a `site-packages` / `dist-packages` directory.
-    The module is the dotted path from the import root to the schema directory, then `queries` or `methods`: `orm_auth.queries:UserQueries` and `orm_auth.methods:UserMethods`.
+    The module is the dotted path from the import root to the schema directory, then `queries` or `methods`: `monorm_auth.queries:UserQueries` and `monorm_auth.methods:UserMethods`.
     This also works for a namespace package (`acme.auth.queries:UserQueries` for `src/acme/auth/`) and for a directory without an `__init__.py`.
     A schema directly in the import root gives `queries:UserQueries`.
     With no import root, codegen fails and tells you to give the full path with `--query-set` / `--model-methods`.
-  * TypeScript, an installed package (the schema path has a `node_modules` directory): codegen reads `name` from the nearest `package.json`. It writes `orm-auth/queries.js#UserQueries` and `orm-auth/methods.js#UserMethods`.
+  * TypeScript, an installed package (the schema path has a `node_modules` directory): codegen reads `name` from the nearest `package.json`. It writes `monorm-auth/queries.js#UserQueries` and `monorm-auth/methods.js#UserMethods`.
     The `package.json` of the package must list `"./schema.prisma"`, `"./queries.js"` and `"./methods.js"` in `exports`.
   * TypeScript, your own project (the nearest `package.json` of the schema also holds the generated file), or no `package.json`: the import is relative to the generated models file (`./queries.js#UserQueries`).
     `generateTypescript(schema)` of the tooling addon assumes `models.ts` is next to the schema file.
-* A consumer replaces the schema class: `--query-set User=...` and `--model-methods User=...` (or `[tool.orm.query_sets]` / `[tool.orm.model_methods]`, `"orm": {"querySets"}` / `{"modelMethods"}`).
+* A consumer replaces the schema class: `--query-set User=...` and `--model-methods User=...` (or `[tool.monorm.query_sets]` / `[tool.monorm.model_methods]`, `"monorm": {"querySets"}` / `{"modelMethods"}`).
   The order is flag, then config, then the attribute.
 * The attributes create no DDL. Migrations ignore them. The model IR keeps both names.
 * A method name that is also a model member (a field, a relation, a member of the model or an extension member) is an error when the model is prepared, in both languages: `User.delete: model method collision`.
@@ -681,10 +681,10 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 
 | Attribute | Extension | Doc |
 |---|---|---|
-| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | orm-proxy | [proxy-models.md](../extensions/proxy-models.md) |
+| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | monorm-proxy | [proxy-models.md](../extensions/proxy-models.md) |
 | `@@query.defaults(filter:, fields:, related:, parent:, order:)`, `@@query.filter`, `@@query.fields`, `@@query.related`, `@@query.order`, `@@query.parent`, `@query.selectOut` | query-defaults | [selection-and-defaults.md](selection-and-defaults.md) |
-| `@@composition.model(parent:, parentRef:, childRef:)` | orm-composition | [model-composition.md](../extensions/model-composition.md) |
-| `@storage.file(storage:)` | orm-file-storage (package) | [file-storage.md](../extensions/file-storage.md) |
+| `@@composition.model(parent:, parentRef:, childRef:)` | monorm-composition | [model-composition.md](../extensions/model-composition.md) |
+| `@storage.file(storage:)` | monorm-file-storage (package) | [file-storage.md](../extensions/file-storage.md) |
 | `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic (package) | [generic-identities.md](generic-identities.md) |
 
 `@client_default`, enum subsets in proxies (`Status(ACTIVE)`) and `@@protected_write` are core syntax.
@@ -692,16 +692,16 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 ### Installed extension libraries
 
 An extension can also ship as a native library that the loader opens at run time, so the ORM needs no rebuild.
-The package has an `orm-extension.toml` with `abi` and `library` (fields: [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts)).
+The package has a `monorm-extension.toml` with `abi` and `library` (fields: [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts)).
 A schema selects a library by the namespace of an attribute it uses, or by `generator client { extensions = ["acme.outside"] }`.
 An extension that the schema does not use is not loaded and adds no stamp.
 
-* Python: an `orm.extensions` entry point named like the extension id; its value is the package that holds the manifest.
-* Node and Bun: a direct dependency whose `package.json` has `"orm": {"extension": "<id>"}`; the manifest is in the package root.
+* Python: a `monorm.extensions` entry point named like the extension id; its value is the package that holds the manifest.
+* Node and Bun: a direct dependency whose `package.json` has `"monorm": {"extension": "<id>"}`; the manifest is in the package root.
   The lookup starts at the project of the schema file, or at the working directory when there is no file (`loads(source)`).
   Python reads the interpreter environment.
-* The standalone `orm` binary does not look for packages: `orm generate typescript --extension acme.outside=path/to/orm-extension.toml --extension-module acme.outside=acme-outside`. Both flags can repeat; use the Python import name for Python generation. The Python and Node commands add them automatically.
-* `load(path)` and `loads(source)` resolve extensions the same way and import each selected package's runtime module, as generated models do. Definition loads no package native library or pass; changed or missing runtime manifest hashes emit `OrmStaleModelsWarning` and advise running `orm generate` ([runtime contract](../contracts/optional-packaging.md#installed-libraries)).
+* The standalone `monorm` binary does not look for packages: `monorm generate typescript --extension acme.outside=path/to/monorm-extension.toml --extension-module acme.outside=acme-outside`. Both flags can repeat; use the Python import name for Python generation. The Python and Node commands add them automatically.
+* `load(path)` and `loads(source)` resolve extensions the same way and import each selected package's runtime module, as generated models do. Definition loads no package native library or pass; changed or missing runtime manifest hashes emit `OrmStaleModelsWarning` and advise running `monorm generate` ([runtime contract](../contracts/optional-packaging.md#installed-libraries)).
 * The loader reads the id, versions and attribute names of every installed manifest, and reads the rest of a manifest only when the schema selects its package.
   A manifest that does not parse fails a schema only when that schema can need it: the schema selects it by id, or uses an attribute namespace that no other package owns.
 * The loader opens each library file once for each process and keeps it by its canonical path. A change to the file on disk has no effect until the process restarts.
@@ -711,53 +711,53 @@ An extension that the schema does not use is not loaded and adds no stamp.
 ## Code generation
 
 ```bash
-python -m orm generate                   # models.py + models.pyi next to the schema (or -o path)
-npx orm generate                         # models.ts
-orm generate python -o app/models.py     # the standalone binary: say which language
+python -m monorm generate                   # models.py + models.pyi next to the schema (or -o path)
+npx @ufstack/monorm generate                         # models.ts
+monorm generate python -o app/models.py     # the standalone binary: say which language
 ```
 
-`models.py` embeds the compiled IR and builds the classes with `orm.define()`, so no
+`models.py` embeds the compiled IR and builds the classes with `monorm.define()`, so no
 schema detail is restated in Python. `models.pyi` gives editors and type checkers the
 typed classes, relation paths (`User.posts.created_at` is `ColumnRef[datetime]`),
 insert / update `TypedDict`s and query sets (see [`python-api.md`](../api/python-api.md)).
 `languages/python/tests/test_migrations.py` and `languages/js/test/migrations.test.ts` check that the committed blog modules are up to date.
-Without generation, `orm.load("schema.prisma")` returns the same classes at runtime.
+Without generation, `monorm.load("schema.prisma")` returns the same classes at runtime.
 TypeScript: see [`typescript-api.md`](../api/typescript-api.md).
 
 ## Migrations
 
 ```bash
-python -m orm makemigrations [name]          # migrations/NNNN_name/{up.sql,down.sql,snapshot.json}
-python -m orm makemigrations --check         # exit 1 if the schema changed without a migration (CI)
-python -m orm makemigrations --empty data    # an empty migration for hand-written SQL or a data step
-python -m orm sqlmigrate 2 [--down]
-python -m orm migrate [target]               # apply pending migrations
-python -m orm rollback [--steps N | --to 0002_x | --to zero] [--force]
-python -m orm showmigrations
-python -m orm pull [-o schema.prisma] [--force]   # the schema file from a live database
-python -m orm baseline                       # mark the first migration applied (after pull)
-python -m orm fmt --native                   # convert supported SQL expressions offline
-python -m orm drift                          # exit 1 if the database differs from the last snapshot
+python -m monorm makemigrations [name]          # migrations/NNNN_name/{up.sql,down.sql,snapshot.json}
+python -m monorm makemigrations --check         # exit 1 if the schema changed without a migration (CI)
+python -m monorm makemigrations --empty data    # an empty migration for hand-written SQL or a data step
+python -m monorm sqlmigrate 2 [--down]
+python -m monorm migrate [target]               # apply pending migrations
+python -m monorm rollback [--steps N | --to 0002_x | --to zero] [--force]
+python -m monorm showmigrations
+python -m monorm pull [-o schema.prisma] [--force]   # the schema file from a live database
+python -m monorm baseline                       # mark the first migration applied (after pull)
+python -m monorm fmt --native                   # convert supported SQL expressions offline
+python -m monorm drift                          # exit 1 if the database differs from the last snapshot
 ```
 
-There is one command line, written in Rust (`crates/cli/`): `python -m orm`, `npx orm` and the
-standalone `orm` binary (`cargo install --path cli`) all run it, through the Python
+There is one command line, written in Rust (`crates/cli/`): `python -m monorm`, `npx @ufstack/monorm` and the
+standalone `monorm` binary (`cargo install --path cli`) all run it, through the Python
 extension, the Node addon or on their own, so they take the same arguments, write the
 same files and apply migrations the same way. A migration with a data step is the
 exception: only the host of its language applies it (see "Data migrations"). The bindings only change the defaults:
 the name in `--help`, the configuration file read first, and the language `generate`
 writes (the binary needs `python` / `typescript`, or an `-o` path that tells).
 
-Settings come from flags (`--schema`, `--dir`, `--url`), else `[tool.orm]` in
-`pyproject.toml` or the `"orm"` key of `package.json` (`schema`, `migrations`), and the
-URL from `ORM_DATABASE_URL`. Exit codes: 0 success, 1 failure (including
+Settings come from flags (`--schema`, `--dir`, `--url`), else `[tool.monorm]` in
+`pyproject.toml` or the `"monorm"` key of `package.json` (`schema`, `migrations`), and the
+URL from `MONORM_DATABASE_URL`. Exit codes: 0 success, 1 failure (including
 `makemigrations --check` finding changes and `drift` finding differences), 2 bad usage. This
 repository's `pyproject.toml` points at the blog example; its first migration is
 [`examples/blog/migrations/0001_initial`](../../examples/blog/migrations/0001_initial/up.sql).
 
 From Python: `Migrations("migrations", "schema.prisma")` (or a `Registry`) has
 `.plan()`, `.make(name)` and `.all()`. `Migrator(db, migrations)` has `.upgrade()`,
-`.downgrade()`, `.status()`, `.baseline()` and `.drift()`; `await orm.migrations.pull(db)`
+`.downgrade()`, `.status()`, `.baseline()` and `.drift()`; `await monorm.migrations.pull(db)`
 reads a live database.
 
 ### What the generator does
@@ -792,7 +792,7 @@ not a live database, so it works offline and gives the same files everywhere.
 
 ### Applying
 
-Each migration runs in one transaction together with its `orm_migrations` row (name,
+Each migration runs in one transaction together with its `monorm_migrations` row (name,
 SHA-256 of `up.sql`, time), under an advisory lock. A failing migration leaves the
 database at the previous one, and concurrent deploys don't apply one twice. The runner
 stops if an applied `up.sql` changed, if migrations were applied out of order, if one
@@ -812,7 +812,7 @@ async def run(db):
 ```
 
 The step runs after `up.sql`, in the same transaction and under the same advisory lock,
-before the migration's `orm_migrations` row. Queries on `db` inside it, and ORM queries
+before the migration's `monorm_migrations` row. Queries on `db` inside it, and ORM queries
 on that database, go into that transaction, so they see the new columns. A
 `db.transaction()` block in the step is a savepoint, and `db.on_commit()` callbacks run
 after the migration commits. An error rolls back the SQL, the data changes and the row,
@@ -827,13 +827,13 @@ existing column). There are no historical models. Use `db.execute` and `db.fetch
 data step; use model queries only in a step that you delete later. `data.py` and
 `data.ts` are outside the checksum, so a step can be rewritten after it ran.
 
-* Python applies `data.py`: `Migrator.upgrade()`, or `python -m orm migrate`, which then
+* Python applies `data.py`: `Migrator.upgrade()`, or `python -m monorm migrate`, which then
   runs through `Migrator` instead of the Rust runner. It imports the data modules of the
   pending migrations before it connects, so the models they import are in the default
   registry. Without a schema file, it connects with no models.
-* TypeScript applies `data.ts` the same way: `Migrator.upgrade()` or `npx orm migrate`.
+* TypeScript applies `data.ts` the same way: `Migrator.upgrade()` or `npx @ufstack/monorm migrate`.
   Node 22.18 and later strip the types of a `.ts` file; Bun runs it.
-* Each tool refuses the other's file, and the standalone `orm` binary refuses both,
+* Each tool refuses the other's file, and the standalone `monorm` binary refuses both,
   before it applies anything.
 * A data module is a single file: it cannot import a sibling file with a relative import.
   Put shared code in your package.
@@ -849,7 +849,7 @@ data step; use model queries only in a step that you delete later. `data.py` and
 
 ### Pull, baseline and drift: a live database under migrations
 
-`orm pull` reads the database the URL names and writes the schema file (`--schema`, or
+`monorm pull` reads the database the URL names and writes the schema file (`--schema`, or
 `-o FILE`; `--force` overwrites one). Postgres is read from `pg_catalog` for the current
 schema, SQLite from `sqlite_master` and its `PRAGMA`s. It reads tables, columns,
 defaults, comments, primary keys, unique, check, exclusion and foreign-key constraints,
@@ -894,20 +894,20 @@ The pulled schema starts a new migrations directory. Its text is the database's
 (`(views >= 0)`), so `makemigrations --check` against migrations that a schema file made
 reports changes.
 
-`orm baseline` writes the first migration from the schema when the directory has none.
-It records that migration in `orm_migrations` and does not run it. The next
+`monorm baseline` writes the first migration from the schema when the directory has none.
+It records that migration in `monorm_migrations` and does not run it. The next
 `makemigrations` then holds only new changes. Baseline fails if the database already has
 an applied migration. It warns when the database differs from the migration, or when it
 cannot compare them.
 
-`baseline` sets `baseline = true` on that row of `orm_migrations`. `rollback` refuses to
+`baseline` sets `baseline = true` on that row of `monorm_migrations`. `rollback` refuses to
 revert a baselined row, names it, and reverts nothing; `--force` (`downgrade(force=True)`,
 `downgrade({ force: true })`) reverts it, and its `down.sql` then drops the tables that
 were in the database before, with their rows. The column is added to an older
-`orm_migrations` table the first time a migration command runs. A binary from before this
+`monorm_migrations` table the first time a migration command runs. A binary from before this
 change ignores the marker and still reverts a baselined row.
 
-`orm drift` compares the database with the snapshot of the newest migration. It exits 1
+`monorm drift` compares the database with the snapshot of the newest migration. It exits 1
 when they differ and prints the steps that bring the database to the snapshot. A
 pending migration is part of the newest snapshot, so it shows as drift until it is
 applied. Rules, views and the other gaps above are listed as not compared.
@@ -915,7 +915,7 @@ applied. Rules, views and the other gaps above are listed as not compared.
 Postgres prints expressions in its own form (`CHECK ((views >= 0))`,
 `'x'::character varying`, `role = ANY (ARRAY[...])`), so the snapshot is never compared
 as text. Drift and `pull` run the snapshot's DDL in a shadow and read the shadow back
-the same way as the database. On Postgres the shadow is a schema `orm_shadow_<backend
+the same way as the database. On Postgres the shadow is a schema `monorm_shadow_<backend
 id>` in a transaction that is rolled back; on SQLite it is an in-memory database. The
 live schema is re-created in a second shadow too. An object that both shadows agree on
 counts as equal, because Postgres does not always print a parsed expression back the

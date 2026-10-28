@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use sea_query::Value;
 
 use crate::db::{BoxFuture, DbResult, Executor, RawRows, RowSet, Transaction};
-use orm_core::dialect::Dialect;
+use monorm_core::dialect::Dialect;
 
 /// One statement the database ran.
 #[derive(Debug, Clone)]

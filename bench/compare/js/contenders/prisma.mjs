@@ -191,8 +191,8 @@ export async function create(name = "prisma") {
         // adapter-pg names a statement only when `statementNameGenerator` is set (dist/index.mjs, `name:` in the query config); this runner sets none
         prepared_statements: "unnamed statements: the pg driver re-parses each call (adapter-pg without statementNameGenerator)",
         pool: POOL_SIZE,
-        insert_note: "bulk inserts use createManyAndReturn with select { id: true }: ids only, orm returns full rows",
-        upsert_note: "upsert-100 is 100 upserts in one $transaction: Prisma has no bulk upsert, orm and Django send one statement",
+        insert_note: "bulk inserts use createManyAndReturn with select { id: true }: ids only, monorm returns full rows",
+        upsert_note: "upsert-100 is 100 upserts in one $transaction: Prisma has no bulk upsert, monorm and Django send one statement",
         find_unique_note: "findUnique calls in one tick are batched by Prisma into one query; this runner issues them one at a time",
         update_note: "update-1 uses updateMany (no row read back); update() would add a SELECT",
       };

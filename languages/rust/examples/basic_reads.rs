@@ -3,10 +3,10 @@ mod models {
     include!(concat!(env!("OUT_DIR"), "/models.rs"));
 }
 use models::{Database, User};
-use orm_client::{Loaded, Unloaded};
+use monorm_client::{Loaded, Unloaded};
 #[tokio::main]
-async fn main() -> orm_client::Result<()> {
-    let url = std::env::var("ORM_DATABASE_URL").unwrap_or_else(|_| "sqlite://:memory:".into());
+async fn main() -> monorm_client::Result<()> {
+    let url = std::env::var("MONORM_DATABASE_URL").unwrap_or_else(|_| "sqlite://:memory:".into());
     let db = Database::connect(&url, 1).await?;
     db.set_default();
     let first: Option<User> = User::objects.first().await?;

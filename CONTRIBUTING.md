@@ -22,26 +22,28 @@ Run these from the repository root. Keep them green before you open a pull reque
 
 ```bash
 # Start PostgreSQL first (Linux: `service postgresql start`; macOS: your own server) with the test database above.
-uv venv .venv && . .venv/bin/activate && uv pip install -e '.[dev]' maturin   # the thin `orm` package (languages/python/)
+uv venv .venv && . .venv/bin/activate && uv pip install -e '.[dev]' maturin   # the thin `monorm` package (languages/python/)
 scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
 (cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
-cargo test -q && cargo clippy -q -p orm-core -p orm-engine -p orm-python -p orm-node -p orm-contracts -p orm-extension-package
-mypy --strict languages/python/orm && pyright languages/python/orm
+cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm-contracts -p monorm-extension-package
+mypy --strict languages/python/monorm && pyright languages/python/monorm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
 cd ../..
 uv pip install -e apps/auth/python
 python -m pytest -q apps/auth/python/tests
 python extensions/inherit/tests/public/python.py
+python extensions/query-defaults/tests/public/python.py
 (cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
+(cd languages/js && node ../../extensions/query-defaults/tests/public/node.mjs)
 (cd apps/auth/typescript && npm test && npm run test:bun)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
-cargo package -p orm-contracts      # the crate that extension authors get from crates.io
+cargo package -p monorm-contracts      # the crate that extension authors get from crates.io
 ```
 
-The commands install the thin `orm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.
+The commands install the thin `monorm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.
 If a command needs a different PostgreSQL than the default, set `ORM_TEST_DATABASE_URL` (and `ORM_RUST_TEST_POSTGRES_URL` for `cargo test`).
 
 ### Generated example models
@@ -49,9 +51,9 @@ If a command needs a different PostgreSQL than the default, set `ORM_TEST_DATABA
 After you change code generation, regenerate the example models. A test checks that they are current.
 
 ```bash
-cd examples/blog && python -m orm generate
-cargo run -q -p orm-cli -- --schema examples/blog/schema.prisma generate typescript
-cargo run -q -p orm-cli -- --schema examples/blog/schema.prisma generate typescript -o languages/js/test/blog/models.ts --import ../../src/index.js
+cd examples/blog && python -m monorm generate
+cargo run -q -p monorm-cli -- --schema examples/blog/schema.prisma generate typescript
+cargo run -q -p monorm-cli -- --schema examples/blog/schema.prisma generate typescript -o languages/js/test/blog/models.ts --import ../../src/index.js
 ```
 
 ## Pull requests

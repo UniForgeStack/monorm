@@ -27,17 +27,17 @@ use napi::sys;
 use sea_query::Value;
 
 use crate::js::{Js, V};
-use orm_core::ir::{ColType, ValueType};
-use orm_engine::db::Cell;
-use orm_engine::params::{array_type, null_of, Params};
-use orm_engine::{Error, Result};
+use monorm_core::ir::{ColType, ValueType};
+use monorm_engine::db::Cell;
+use monorm_engine::params::{array_type, null_of, Params};
+use monorm_engine::{Error, Result};
 
 const MAX_SAFE: f64 = 9007199254740991.0;
 
 /// The hidden property of a `Date` with the microseconds below its milliseconds.
-const MICROS: &str = "orm:micros";
+const MICROS: &str = "monorm:micros";
 /// The milliseconds of the `Date` when `MICROS` was set: the micros belong to that time only.
-const MICROS_MS: &str = "orm:micros-ms";
+const MICROS_MS: &str = "monorm:micros-ms";
 
 fn raw(e: napi::Error) -> Error {
     Error::value(e.reason.clone())

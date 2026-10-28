@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-import orm
+import monorm
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -53,16 +53,16 @@ model CShop {{
 
 @pytest.fixture(params=["postgres", "sqlite"])
 async def world(request):
-    registry = orm.Registry()
+    registry = monorm.Registry()
     sqlite = request.param == "sqlite"
     if sqlite:
-        classes = orm.loads(SQLITE + schema(True), registry=registry)
-        db = await orm.connect("sqlite://:memory:", registry=registry, default=False)
+        classes = monorm.loads(SQLITE + schema(True), registry=registry)
+        db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     else:
-        classes = orm.loads(schema(False), registry=registry)
+        classes = monorm.loads(schema(False), registry=registry)
         try:
-            db = await orm.connect(PG_URL, registry=registry, default=False, max_connections=2)
-        except orm.DatabaseError as e:
+            db = await monorm.connect(PG_URL, registry=registry, default=False, max_connections=2)
+        except monorm.DatabaseError as e:
             pytest.skip(f"Postgres not reachable at {PG_URL}: {e}")
     await db.drop_tables()
     await db.create_tables()

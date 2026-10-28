@@ -1,5 +1,5 @@
-use orm_engine::db::{DbError, ErrorKind};
-use orm_engine::Error;
+use monorm_engine::db::{DbError, ErrorKind};
+use monorm_engine::Error;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
@@ -38,7 +38,7 @@ create_exception!(
     _native,
     WriteProtected,
     PyException,
-    "An ORM write to a `@@protected_write` model outside `orm.allow_writes(...)`."
+    "An ORM write to a `@@protected_write` model outside `monorm.allow_writes(...)`."
 );
 
 pub fn db_err(e: DbError) -> PyErr {
@@ -92,7 +92,7 @@ pub fn engine_err(e: Error) -> PyErr {
         Error::Migration(m) => MigrationError::new_err(m),
         Error::Db(e) => db_err(e),
         Error::Value(m) => PyTypeError::new_err(m),
-        Error::WriteProtected(m) => WriteProtected::new_err(format!("{m} is write-protected (@@protected_write); write it inside orm.allow_writes({m})")),
+        Error::WriteProtected(m) => WriteProtected::new_err(format!("{m} is write-protected (@@protected_write); write it inside monorm.allow_writes({m})")),
         Error::Binding(e) => match e.downcast::<PyErr>() {
             Ok(e) => *e,
             Err(e) => PyTypeError::new_err(e.to_string()),

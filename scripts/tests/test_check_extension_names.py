@@ -19,7 +19,7 @@ class CheckExtensionNamesTest(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
         base = {
-            "extensions/x/orm-extension.toml": 'id = "acme.x"\nlibrary = "acme_x"\n[[attributes]]\nname = "x.tag"\n',
+            "extensions/x/monorm-extension.toml": 'id = "acme.x"\nlibrary = "acme_x"\n[[attributes]]\nname = "x.tag"\n',
             "crates/core/src/lib.rs": "fn main() {}\n",
         }
         for name, text in {**base, **files}.items():
@@ -55,7 +55,7 @@ class CheckExtensionNamesTest(unittest.TestCase):
         outside = 'id = "acme.out-side"\nlibrary = "out_lib"\n'
         for name in ("acme-out-side", "acme_out_side", "@acme/out-side", "out_lib"):
             root = self.tree({
-                "tests/outside-extension/orm-extension.toml": outside,
+                "tests/outside-extension/monorm-extension.toml": outside,
                 "crates/engine/src/lib.rs": f'const N: &str = "{name}";\n',
             })
             self.assertEqual(run(root).returncode, 1, name)

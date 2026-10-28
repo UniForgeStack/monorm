@@ -1,5 +1,5 @@
 //! Reading a live database into a [`DbSchema`], the model the migration generator
-//! diffs, for `orm pull` and drift detection.
+//! diffs, for `monorm pull` and drift detection.
 //!
 //! Postgres is read from `pg_catalog` for the current schema; SQLite from
 //! `sqlite_master` and its `PRAGMA`s. Expressions, defaults and types keep the
@@ -15,13 +15,13 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use orm_core::dialect::Dialect;
-use orm_core::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTiming};
-use orm_core::migrate::model::{
+use monorm_core::dialect::Dialect;
+use monorm_core::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTiming};
+use monorm_core::migrate::model::{
     Check, Column, DbSchema, EnumType, Exclusion, ExclusionElement, Extension, ForeignKey, Function, Index, IndexKey,
     PrimaryKey, Table, Trigger, Unique,
 };
-use orm_core::migrate::{diff, Op, Step};
+use monorm_core::migrate::{diff, Op, Step};
 
 use crate::db::Executor;
 use crate::error::{Error, Result};
@@ -430,7 +430,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
                 }
                 let partition_of = if t.partition {
                     match (t.parent, t.bound) {
-                        (Some(parent), Some(bound)) => Some(orm_core::migrate::model::PartitionOf { parent, bound }),
+                        (Some(parent), Some(bound)) => Some(monorm_core::migrate::model::PartitionOf { parent, bound }),
                         _ => { gaps.push(format!("{}: missing partition parent or bound", t.name)); None }
                     }
                 } else { None };
@@ -626,7 +626,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     for o in others {
         let n = o.named;
         gaps.push(match o.kind.as_str() {
-            "rule" => format!("rule {} on {}: rules are not supported, so a database made from this schema behaves differently (a rule can rewrite a statement, e.g. keep rows that a DELETE would remove): {}", n.name, n.table.unwrap_or_default(), orm_core::migrate::model::normalize_ws(&n.def.unwrap_or_default())),
+            "rule" => format!("rule {} on {}: rules are not supported, so a database made from this schema behaves differently (a rule can rewrite a statement, e.g. keep rows that a DELETE would remove): {}", n.name, n.table.unwrap_or_default(), monorm_core::migrate::model::normalize_ws(&n.def.unwrap_or_default())),
             "policy" => format!("row-level security policy {} on {}: policies are not supported", n.name, n.table.unwrap_or_default()),
             "sequence" => format!("sequence {}: a sequence not owned by a column is not supported", n.name),
             kind => format!("{kind} {}: domains, composite and range types are not supported", n.name),
@@ -689,21 +689,21 @@ struct LiteIndexColumn {
 }
 
 const LITE_TABLES: &str = "SELECT coalesce(json_group_array(json_object('name', name, 'sql', sql)), '[]') FROM \
-     (SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'orm_migrations' ORDER BY name)";
+     (SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'monorm_migrations' ORDER BY name)";
 const LITE_COLUMNS: &str = "SELECT coalesce(json_group_array(json_object('table', m.name, 'name', c.name, 'type', c.type, \
      'notnull', c.\"notnull\", 'default', c.dflt_value, 'pk', c.pk, 'hidden', c.hidden)), '[]') \
      FROM sqlite_master m, pragma_table_xinfo(m.name) c \
-     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'orm_migrations'";
+     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'monorm_migrations'";
 const LITE_FOREIGN_KEYS: &str = "SELECT coalesce(json_group_array(json_object('table', m.name, 'id', f.id, 'ref_table', f.\"table\", \
      'from', f.\"from\", 'to', f.\"to\", 'on_update', f.on_update, 'on_delete', f.on_delete)), '[]') \
      FROM sqlite_master m, pragma_foreign_key_list(m.name) f \
-     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'orm_migrations'";
+     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'monorm_migrations'";
 const LITE_INDEXES: &str = "SELECT coalesce(json_group_array(json_object('table', m.name, 'name', i.name, 'unique', i.\"unique\", \
      'origin', i.origin, 'sql', (SELECT sql FROM sqlite_master x WHERE x.type = 'index' AND x.name = i.name), \
      'columns', json((SELECT json_group_array(json_object('name', c.name, 'desc', c.\"desc\"))  \
                  FROM pragma_index_xinfo(i.name) c WHERE c.key = 1)))), '[]') \
      FROM sqlite_master m, pragma_index_list(m.name) i \
-     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'orm_migrations'";
+     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'monorm_migrations'";
 const LITE_OTHERS: &str = "SELECT coalesce(json_group_array(json_object('kind', type, 'name', name, 'table', tbl_name)), '[]') \
      FROM sqlite_master WHERE type IN ('view', 'trigger')";
 
@@ -960,7 +960,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
         if !pk.is_empty() {
             let name = named.iter().find(|(k, _, _)| k == "PRIMARY").map(|(_, n, _)| n.clone());
             t.primary_key = Some(PrimaryKey {
-                name: name.unwrap_or_else(|| orm_core::migrate::model::object_name(&[&t.name, "pkey"])),
+                name: name.unwrap_or_else(|| monorm_core::migrate::model::object_name(&[&t.name, "pkey"])),
                 columns: pk.into_iter().map(|(_, c)| c).collect(),
             });
         }
@@ -975,8 +975,8 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
         for (column, name, expr) in inline_checks {
             // Postgres' names for unnamed checks, with a number when one is taken
             let base = match &column {
-                Some(c) => orm_core::migrate::model::object_name(&[&t.name, c, "check"]),
-                None => orm_core::migrate::model::object_name(&[&t.name, "check"]),
+                Some(c) => monorm_core::migrate::model::object_name(&[&t.name, c, "check"]),
+                None => monorm_core::migrate::model::object_name(&[&t.name, "check"]),
             };
             let name = name.unwrap_or_else(|| {
                 let mut n = base.clone();
@@ -1010,7 +1010,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
             parts_name.extend(columns.iter().map(String::as_str));
             parts_name.push("fkey");
             t.foreign_keys.push(ForeignKey {
-                name: declared.map(|(_, n, _)| n.clone()).unwrap_or_else(|| orm_core::migrate::model::object_name(&parts_name)),
+                name: declared.map(|(_, n, _)| n.clone()).unwrap_or_else(|| monorm_core::migrate::model::object_name(&parts_name)),
                 ref_table: parts[0].ref_table.clone(),
                 ref_columns: parts.iter().enumerate().map(|(i, f)| f.to.clone().unwrap_or_else(|| parent_pk(i))).collect(),
                 columns,
@@ -1037,7 +1037,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
                     parts.extend(columns.iter().map(String::as_str));
                     parts.push("key");
                     t.uniques.push(Unique {
-                        name: declared.map(|(_, n, _)| n.clone()).unwrap_or_else(|| orm_core::migrate::model::object_name(&parts)),
+                        name: declared.map(|(_, n, _)| n.clone()).unwrap_or_else(|| monorm_core::migrate::model::object_name(&parts)),
                         columns,
                         nulls_not_distinct: false,
                         deferrable: None,
@@ -1074,7 +1074,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
 // ---------------------------------------------------------------------------------------
 
 /// The shadow schema's name; the backend id makes it unique per session.
-const SHADOW: &str = "orm_shadow_";
+const SHADOW: &str = "monorm_shadow_";
 
 /// `db` read back from a database: its DDL is run in a shadow (a Postgres schema
 /// in a transaction that is rolled back, or a new in-memory SQLite database) and the
@@ -1094,7 +1094,7 @@ pub async fn materialize(conn: &dyn Executor, db: &DbSchema) -> Result<Introspec
                      SET LOCAL search_path TO {SHADOW}{pid}, {path}; SET LOCAL check_function_bodies = off"
                 ))
                 .await?;
-                for sql in orm_core::migrate::create_statements(db) {
+                for sql in monorm_core::migrate::create_statements(db) {
                     tx.batch(sql).await.map_err(|e| Error::Migration(format!("the snapshot's DDL fails in a shadow schema: {e}")))?;
                 }
                 introspect(&*tx).await
@@ -1106,7 +1106,7 @@ pub async fn materialize(conn: &dyn Executor, db: &DbSchema) -> Result<Introspec
         Dialect::Sqlite => {
             let shadow = crate::db::connect("sqlite://:memory:", 1).await?;
             let run = async {
-                for sql in orm_core::migrate::sqlite::create_all(db, false) {
+                for sql in monorm_core::migrate::sqlite::create_all(db, false) {
                     shadow.batch(sql).await?;
                 }
                 introspect(&*shadow).await
@@ -1129,22 +1129,22 @@ pub fn differences(live: &DbSchema, target: &DbSchema) -> Vec<Step> {
     let ops = diff::diff(&a, &b, &Default::default()).expect("a diff of introspected schemas copies no column");
     let mut steps: Vec<Step> = if live.dialect == Dialect::Sqlite && !ops.is_empty() {
         // SQLite rebuilds tables: one step with SQLite's SQL that names every change
-        let sql = orm_core::migrate::sqlite::steps(&a, &b, &Default::default()).unwrap_or_default();
+        let sql = monorm_core::migrate::sqlite::steps(&a, &b, &Default::default()).unwrap_or_default();
         let warnings: Vec<String> = ops.iter().filter_map(|op| op.warning()).collect();
         vec![Step {
-            summary: ops.iter().map(orm_core::migrate::pg::summary).collect::<Vec<_>>().join("; "),
+            summary: ops.iter().map(monorm_core::migrate::pg::summary).collect::<Vec<_>>().join("; "),
             sql: sql.into_iter().map(|s| s.sql).collect::<Vec<_>>().join("\n"),
             warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
         }]
     } else {
         ops.iter()
-            .map(|op| Step { summary: orm_core::migrate::pg::summary(op), sql: orm_core::migrate::pg::render(op, false), warning: op.warning() })
+            .map(|op| Step { summary: monorm_core::migrate::pg::summary(op), sql: monorm_core::migrate::pg::render(op, false), warning: op.warning() })
             .collect()
     };
     for e in &target.extensions {
         if !live.extensions.iter().any(|x| x.name == e.name) {
             let op = Op::CreateExtension(e.clone());
-            steps.insert(0, Step { summary: orm_core::migrate::pg::summary(&op), sql: orm_core::migrate::pg::render(&op, false), warning: None });
+            steps.insert(0, Step { summary: monorm_core::migrate::pg::summary(&op), sql: monorm_core::migrate::pg::render(&op, false), warning: None });
         }
     }
     steps
@@ -1208,11 +1208,11 @@ pub struct Pull {
 /// The live database as a schema file, checked by creating it again in a shadow.
 pub async fn pull(conn: &dyn Executor) -> Result<Pull> {
     let live = introspect(conn).await?;
-    let pulled = orm_core::migrate::pull::pull(&live.schema, &live.gaps);
-    let (_, compiled) = orm_core::dsl::compile(&pulled.schema, None)
-        .and_then(orm_core::dsl::check)
+    let pulled = monorm_core::migrate::pull::pull(&live.schema, &live.gaps);
+    let (_, compiled) = monorm_core::dsl::compile(&pulled.schema, None)
+        .and_then(monorm_core::dsl::check)
         .map_err(|e| Error::Migration(format!("the pulled schema doesn't compile (a bug in pull): {e}")))?;
-    let snapshot = orm_core::migrate::snapshot(&compiled).map_err(Error::Migration)?;
+    let snapshot = monorm_core::migrate::snapshot(&compiled).map_err(Error::Migration)?;
     let (mut gaps, schema) = (pulled.gaps, pulled.schema);
     // the check needs CREATE and enough locks; the schema file does not
     let steps = match compare(conn, &snapshot).await {
@@ -1238,8 +1238,8 @@ pub struct Drift {
 
 /// Compares the live database with the snapshot of the newest migration in `dir`.
 pub async fn drift(conn: &dyn Executor, dir: &Path) -> Result<Drift> {
-    let list = orm_core::migrate::files::list(dir).map_err(Error::Migration)?;
-    let snapshot = orm_core::migrate::files::latest_snapshot(dir).map_err(Error::Migration)?;
+    let list = monorm_core::migrate::files::list(dir).map_err(Error::Migration)?;
+    let snapshot = monorm_core::migrate::files::latest_snapshot(dir).map_err(Error::Migration)?;
     if list.last().is_some() && snapshot.dialect != conn.dialect() {
         return Err(Error::Migration(format!("the migrations target {}, the connection uses {}", snapshot.dialect.name(), conn.dialect().name())));
     }
@@ -1259,7 +1259,7 @@ pub async fn compare(conn: &dyn Executor, target: &DbSchema) -> Result<(Vec<Step
         Ok(again) => adopt(&live.schema, &again.schema, &shadow),
         Err(_) => live.schema,
     };
-    orm_core::migrate::reconcile_introspection(&shadow, &mut live_schema);
+    monorm_core::migrate::reconcile_introspection(&shadow, &mut live_schema);
     Ok((differences(&live_schema, &shadow), live.gaps))
 }
 

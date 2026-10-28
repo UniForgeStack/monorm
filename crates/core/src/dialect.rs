@@ -1,2 +1,2 @@
-//! Shared dialect contracts, re-exported for `orm_core::dialect` callers.
-pub use orm_contracts::dialect::*;
+//! Shared dialect contracts, re-exported for `monorm_core::dialect` callers.
+pub use monorm_contracts::dialect::*;

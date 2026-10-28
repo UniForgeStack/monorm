@@ -29,13 +29,13 @@ use sea_query::{
 
 use crate::error::{query_err, Error, Result};
 use crate::params::Params;
-use orm_core::ir::{
+use monorm_core::ir::{
     Annotation, ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
     JsonKey, NestedStorage, Prefetch, RelKind, RelationIr, Select, SelectItem, Update, ValueType, When,
 };
-use orm_core::dialect::{Capabilities, Dialect, Target};
-use orm_core::schema::{Model, Schema};
-use orm_core::writes::{AssignValue, WriteKind as AssignKind};
+use monorm_core::dialect::{Capabilities, Dialect, Target};
+use monorm_core::schema::{Model, Schema};
+use monorm_core::writes::{AssignValue, WriteKind as AssignKind};
 
 mod nested;
 mod update;
@@ -53,7 +53,7 @@ pub struct JoinShape {
     pub model: usize,
     pub start: usize,
     pub pk_pos: usize,
-    pub shape: Option<orm_core::behavior::ResultShape>,
+    pub shape: Option<monorm_core::behavior::ResultShape>,
     /// A default filter was ANDed into this join's ON and no bypass removed it: a NULL
     /// object means "hidden by the filter", not a dangling key.
     pub filtered: bool,
@@ -72,7 +72,7 @@ pub struct AnnotationColumn {
 pub enum Output {
     /// Instances of `model` (its fields first), with `select_related` objects attached
     /// and one attribute per annotation, read from the column at its position.
-    Instances { model: usize, shape: Option<orm_core::behavior::ResultShape>, joins: Vec<JoinShape>, annotations: Vec<AnnotationColumn> },
+    Instances { model: usize, shape: Option<monorm_core::behavior::ResultShape>, joins: Vec<JoinShape>, annotations: Vec<AnnotationColumn> },
     /// `select(...)` rows: per item, `Some(width)` for an instance of `model` (taking
     /// that many columns) or `None` for one value.
     Rows { model: usize, items: Vec<Option<usize>> },
@@ -2771,8 +2771,8 @@ impl<'s> Planner<'s> {
 
     /// The output shape for public `names` plus private `extra` helpers; `None` keeps the
     /// whole-model row and its fast materialization path.
-    fn instance_shape(&self, model: usize, names: Option<&[String]>, extra: &[String]) -> Result<Option<orm_core::behavior::ResultShape>> {
-        use orm_core::behavior::{FieldId, ModelId, ResultField, ResultShape};
+    fn instance_shape(&self, model: usize, names: Option<&[String]>, extra: &[String]) -> Result<Option<monorm_core::behavior::ResultShape>> {
+        use monorm_core::behavior::{FieldId, ModelId, ResultField, ResultShape};
         let Some(names) = names else { return Ok(None) };
         let m = self.model(model);
         let mut positions = Vec::new();
@@ -3029,7 +3029,7 @@ impl<'s> Planner<'s> {
         }).collect()
     }
 
-    fn return_shape(&self, names: Option<&[String]>, without_defaults: &Bypass) -> Result<Option<orm_core::behavior::ResultShape>> {
+    fn return_shape(&self, names: Option<&[String]>, without_defaults: &Bypass) -> Result<Option<monorm_core::behavior::ResultShape>> {
         let names = names.or_else(|| active_fields(self.model(self.root), without_defaults));
         self.instance_shape(self.root, names, &[])
     }
@@ -3177,7 +3177,7 @@ impl<'s> Planner<'s> {
     }
 
     /// A delete of a model with a delete rewrite: `UPDATE ... SET <field> = <now> WHERE ... AND <guard>`.
-    fn delete_rewrite(&mut self, q: &Delete, rewrite: &orm_core::writes::PreparedDeleteRewrite) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
+    fn delete_rewrite(&mut self, q: &Delete, rewrite: &monorm_core::writes::PreparedDeleteRewrite) -> Result<(UpdateStatement, Option<ReturnColumns>)> {
         let root = self.model(self.root);
         crate::ownership::require_local_write(root)?;
         let field = &root.fields()[rewrite.field];
@@ -3363,7 +3363,7 @@ pub fn read_flags_json(schema: &Schema) -> serde_json::Value {
         "filtered": m.read_flags.filtered,
         "fields": m.read_flags.fields,
         "related": m.read_flags.related,
-        "indexes": orm_core::migrate::model::unique_index_names(m),
+        "indexes": monorm_core::migrate::model::unique_index_names(m),
     }))).collect::<serde_json::Map<_, _>>().into()
 }
 
@@ -3594,7 +3594,7 @@ fn no_lock(q: &Select, what: &str) -> Result<()> {
 }
 
 /// Whether `ix` is a unique btree index on exactly the plain fields `conflict`.
-fn indexes_conflict_columns(ix: &orm_core::ir::IndexIr, conflict: &[String]) -> bool {
+fn indexes_conflict_columns(ix: &monorm_core::ir::IndexIr, conflict: &[String]) -> bool {
     ix.unique
         && ix.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"))
         && ix.columns.len() == conflict.len()
@@ -3609,18 +3609,18 @@ fn indexes_conflict_columns(ix: &orm_core::ir::IndexIr, conflict: &[String]) -> 
 /// `Infer` uses the unique indexes on exactly these columns, `Indexes` the ones it names.
 /// A predicate is copied as written: SQLite rejects `active = 1` for `WHERE active`.
 fn conflict_predicate(
-    m: &orm_core::schema::Model,
+    m: &monorm_core::schema::Model,
     dialect: Dialect,
     conflict: &[String],
     target: &OnConflictTarget,
 ) -> Result<Option<String>> {
-    let named: Vec<(String, &orm_core::ir::IndexIr)> = m
+    let named: Vec<(String, &monorm_core::ir::IndexIr)> = m
         .ir
         .indexes
         .iter()
-        .filter_map(|ix| orm_core::migrate::model::index_name(m, ix).ok().map(|n| (n, ix)))
+        .filter_map(|ix| monorm_core::migrate::model::index_name(m, ix).ok().map(|n| (n, ix)))
         .collect();
-    let chosen: Vec<&orm_core::ir::IndexIr> = match target {
+    let chosen: Vec<&monorm_core::ir::IndexIr> = match target {
         OnConflictTarget::Infer => {
             let found: Vec<_> = named.iter().filter(|(_, ix)| indexes_conflict_columns(ix, conflict)).collect();
             // A plain unique index covers every row, including all partial candidates.
@@ -3643,7 +3643,7 @@ fn conflict_predicate(
             if dialect == Dialect::Sqlite && names.len() > 1 {
                 return Err(Error::query("on_conflict(index=[...]) on SQLite takes one index; it infers a partial index from one predicate"));
             }
-            let mut chosen: Vec<&orm_core::ir::IndexIr> = Vec::new();
+            let mut chosen: Vec<&monorm_core::ir::IndexIr> = Vec::new();
             for name in names {
                 let Some((_, ix)) = named.iter().find(|(n, _)| n == name) else {
                     let known: Vec<_> = named.iter().filter(|(_, ix)| ix.unique).map(|(n, _)| n.as_str()).collect();
@@ -3750,14 +3750,14 @@ pub fn plan_insert(
         // A request that sets the value in every row needs neither the scope value nor the hook.
         let mut expr_defaults: Vec<Option<SExpr>> = vec![None; cols.len()];
         let omitted = |i: usize| rows.iter().zip(&forced).any(|(row, mask)| row.get(i).is_some_and(Option::is_none) && !mask[i]);
-        if m.client_defaults.iter().any(|(_, d)| matches!(d, orm_core::client_default::ClientDefault::Expr(_) | orm_core::client_default::ClientDefault::Hook(_))) {
+        if m.client_defaults.iter().any(|(_, d)| matches!(d, monorm_core::client_default::ClientDefault::Expr(_) | monorm_core::client_default::ClientDefault::Hook(_))) {
             let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
             for (i, (slot, c)) in expr_defaults.iter_mut().zip(&cols).enumerate() {
                 if !omitted(i) { continue; }
                 let Some((position, default)) = m.client_defaults.iter().find(|(p, _)| m.fields()[*p].name == c.name) else { continue };
                 match default {
-                    orm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
-                    orm_core::client_default::ClientDefault::Hook(export) => {
+                    monorm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
+                    monorm_core::client_default::ClientDefault::Hook(export) => {
                         let e = crate::hooks::expression(m, *position, true, &crate::hooks::Contexts::new(params))?
                             .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, c.name)))?;
                         *slot = Some(planner.value(&e, Hint { ty: Some(c.value_type()), field: Some(c) })?);
@@ -3779,8 +3779,8 @@ pub fn plan_insert(
                     else if let Some(sql) = &c.default_sql { sql.clone() }
                     else if let Some(v) = &c.default {
                         match v {
-                            serde_json::Value::String(s) => orm_core::migrate::model::quote_literal(s),
-                            v if c.ty == ColType::Json => orm_core::migrate::model::quote_literal(&v.to_string()),
+                            serde_json::Value::String(s) => monorm_core::migrate::model::quote_literal(s),
+                            v if c.ty == ColType::Json => monorm_core::migrate::model::quote_literal(&v.to_string()),
                             v => v.to_string(),
                         }
                     } else { "NULL".to_owned() };
@@ -4000,12 +4000,12 @@ impl Positions {
     fn to_vec(&self) -> Vec<usize> { self.iter().collect() }
 }
 
-fn shape_positions(model: &Model, shape: Option<&orm_core::behavior::ResultShape>) -> Positions {
+fn shape_positions(model: &Model, shape: Option<&monorm_core::behavior::ResultShape>) -> Positions {
     match shape { Some(shape) => Positions::Shaped(shape.fields.iter().map(|f| f.field.position).collect()), None => Positions::All(model.fields().len()) }
 }
 
-pub type Returned = (usize, Vec<ValueType>, Option<orm_core::behavior::ResultShape>, Vec<crate::hooks::Computed>);
-pub type ReturnColumns = (Vec<ValueType>, Option<orm_core::behavior::ResultShape>);
+pub type Returned = (usize, Vec<ValueType>, Option<monorm_core::behavior::ResultShape>, Vec<crate::hooks::Computed>);
+pub type ReturnColumns = (Vec<ValueType>, Option<monorm_core::behavior::ResultShape>);
 
 /// Plans `op`, an update, without running it, and tells whether its filters pin one
 /// row: `and`-reachable `field == param` on every primary key field or on a unique field,
@@ -4014,7 +4014,7 @@ pub fn unique_row_update(schema: &Schema, target: Target, op: &Operation, params
     let Operation::Update(update) = op else { return Err(Error::query("unique_row_update takes an update")) };
     Planner::plan(schema, target, op, params)?;
     let model = schema.model(schema.model_idx(&update.model).map_err(query_err)?);
-    fn pins(e: &Expr, model: &orm_core::schema::Model, params: &dyn Params, out: &mut Vec<usize>) -> Result<()> {
+    fn pins(e: &Expr, model: &monorm_core::schema::Model, params: &dyn Params, out: &mut Vec<usize>) -> Result<()> {
         match e {
             Expr::And { items } => {
                 for item in items { pins(item, model, params, out)?; }
