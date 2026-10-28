@@ -13,7 +13,7 @@ type Error = Box<dyn std::error::Error>;
 
 const USAGE: &str = "usage:
   monorm-extension-package package <crate-dir> --out <dir> [--tsc <executable>] [--features <list>]
-  monorm-extension-package library <crate-dir> --out <dir> [--features <list>]
+  monorm-extension-package library <crate-dir> --out <dir> [--features <list>] [--zigbuild <target>]
   monorm-extension-package assemble <crate-dir> --libraries <dir> --out <dir> [--tsc <executable>]";
 
 /// Platform key, library file prefix and suffix. The keys are the keys of the native profiles.
@@ -42,6 +42,7 @@ struct Args {
     libraries: Option<PathBuf>,
     tsc: Option<String>,
     features: Option<String>,
+    zigbuild: Option<String>,
 }
 
 fn parse(args: impl Iterator<Item = String>) -> Result<Args, Error> {
@@ -54,6 +55,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, Error> {
             "--libraries" => parsed.libraries = Some(value()?.into()),
             "--tsc" => parsed.tsc = Some(value()?),
             "--features" => parsed.features = Some(value()?),
+            "--zigbuild" => parsed.zigbuild = Some(value()?),
             _ => return Err(format!("unknown argument {arg}; {USAGE}").into()),
         }
     }
@@ -95,12 +97,20 @@ fn require_plain(library: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn build_library(dir: &Path, features: Option<&str>) -> Result<PathBuf, Error> {
+/// `zigbuild` is a target such as `x86_64-unknown-linux-gnu.2.28`: it builds with `cargo zigbuild`, which sets the glibc floor.
+fn build_library(
+    dir: &Path,
+    features: Option<&str>,
+    zigbuild: Option<&str>,
+) -> Result<PathBuf, Error> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut build = Command::new(cargo);
+    match zigbuild {
+        Some(target) => build.args(["zigbuild", "--target", target]),
+        None => build.arg("build"),
+    };
     build
         .args([
-            "build",
             "--release",
             "--lib",
             "--message-format=json-render-diagnostics",
@@ -134,7 +144,7 @@ fn build_library(dir: &Path, features: Option<&str>) -> Result<PathBuf, Error> {
         })
 }
 
-/// `files` are `[source path, file name in the package]`; `tag` is `host` or `any`.
+/// `files` are `[source path, file name in the package]`; `tag` is `host` or `platforms`.
 fn write_packages(
     dir: &Path,
     out: &Path,
@@ -179,7 +189,7 @@ fn run() -> Result<(), Error> {
     let library = manifest.library.clone().unwrap();
     match mode.as_str() {
         "package" => {
-            let artifact = build_library(&dir, args.features.as_deref())?;
+            let artifact = build_library(&dir, args.features.as_deref(), None)?;
             let prefix = if cfg!(windows) { "" } else { "lib" };
             let name = library_file(
                 &library,
@@ -192,7 +202,7 @@ fn run() -> Result<(), Error> {
             let key = host_platform()?;
             let (_, prefix, suffix) = PLATFORMS.iter().find(|p| p.0 == key).unwrap();
             require_plain(&library)?;
-            let artifact = build_library(&dir, args.features.as_deref())?;
+            let artifact = build_library(&dir, args.features.as_deref(), args.zigbuild.as_deref())?;
             let target = out.join(key);
             std::fs::create_dir_all(&target)?;
             let target = target.join(library_file(&library, prefix, suffix));
@@ -216,7 +226,7 @@ fn run() -> Result<(), Error> {
                 }
                 files.push((source, name));
             }
-            write_packages(&dir, &out, &manifest, &files, "any", &tsc)
+            write_packages(&dir, &out, &manifest, &files, "platforms", &tsc)
         }
     }
 }

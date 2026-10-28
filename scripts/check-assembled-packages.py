@@ -14,13 +14,14 @@ import zipfile
 from pathlib import Path
 
 LIBRARIES = (".dylib", ".so", ".dll")
+TAG = "py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64"
 assembled, dist = Path(sys.argv[1]), Path(sys.argv[2])
 dist.mkdir(parents=True, exist_ok=True)
 summary = []
 for directory in sorted(p for p in assembled.iterdir() if p.is_dir()):
     wheel, = directory.glob("*.whl")
-    if not wheel.name.endswith("-py3-none-any.whl"):
-        raise SystemExit(f"{wheel.name}: the tag must be py3-none-any")
+    if not wheel.name.endswith(f"-{TAG}.whl"):
+        raise SystemExit(f"{wheel.name}: the tag must be {TAG}")
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         record = archive.read(next(n for n in names if n.endswith(".dist-info/RECORD"))).decode()

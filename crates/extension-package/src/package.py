@@ -68,10 +68,13 @@ with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporar
     ) if OWN else ""
     body = f"\n{README}" if OWN else ""
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\n{own}Requires-Python: >=3.11\n{requires}{body}")
-    # `any`: the wheel holds the libraries of all platforms, and the loader picks its own file.
-    tag = "py3-none-any" if config["tag"] == "any" else "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_")
-    purelib = "true" if config["tag"] == "any" else "false"
-    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: monorm-extension-package\nRoot-Is-Purelib: {purelib}\nTag: {tag}\n")
+    # `platforms`: one wheel holds the libraries of all 3 platforms, and the loader picks its own file.
+    tags = {
+        "platforms": "py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64",
+        "host": "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_"),
+    }
+    tag = tags[config["tag"]]
+    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: monorm-extension-package\nRoot-Is-Purelib: false\nTag: {tag}\n")
     (info / "entry_points.txt").write_text(f"[monorm.extensions]\n{ident} = {module}\n")
     records = []
     wheel = out / f"{module}-{version}-{tag}.whl"

@@ -152,7 +152,7 @@ monorm-extension-package assemble <crate-dir> --libraries <libraries>/<extension
 
 `library` builds the cdylib and copies it to `<out>/<platform>/`.
 It fails on a host with no platform key and lists the 3 keys.
-`assemble` writes `<dir>/<module>-<version>-py3-none-any.whl` and the npm package directory `<dir>/npm`.
+`assemble` writes `<dir>/<module>-<version>-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl` and the npm package directory `<dir>/npm`.
 It fails with the platform key when a library is missing.
 The npm `package.json` lists the 3 libraries in `files` and has no `os` or `cpu` field.
 `package` stays for local work: it builds the host library only and writes a wheel with a host platform tag.
@@ -162,8 +162,8 @@ The manifest `library` is a name without a file extension, for example `library 
 The file name is `lib<name>.dylib`, `lib<name>.so` or `<name>.dll`.
 `assemble` rejects a name with an extension, because three platforms cannot share it.
 
-The `py3-none-any` tag lets pip install the wheel on a platform with no library; the loader then fails with "cannot load".
-The Linux library links against the glibc of the CI runner (`ubuntu-24.04`).
+The compressed platform tag lets pip install the wheel on macOS arm64, Linux x86_64 with glibc 2.28 or newer, and Windows x64 only.
+The Linux library builds with `cargo zigbuild` for glibc 2.28 (`library --zigbuild x86_64-unknown-linux-gnu.2.28`), and `scripts/check-glibc.py` fails when a library needs a newer symbol version.
 `.github/workflows/extension-packages.yml` builds the libraries (`libraries`), assembles and checks the packages and records their sizes (`assemble`), and installs them on each platform and runs the main seam (`consumers`).
 It publishes nothing.
 
