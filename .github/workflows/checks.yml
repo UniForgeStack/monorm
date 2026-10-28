@@ -53,7 +53,7 @@ jobs:
       - run: python -m pytest -q
       - run: cargo test -q
       - run: cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm-contracts -p monorm-extension-package
-      - run: mypy --strict languages/python/orm && pyright languages/python/orm
+      - run: mypy --strict languages/python/monorm && pyright languages/python/monorm
       - run: npm install && npm run build:native && npm test && npm run test:bun && npm run typecheck
         working-directory: languages/js
       - run: uv pip install --python .venv/bin/python -e apps/auth/python

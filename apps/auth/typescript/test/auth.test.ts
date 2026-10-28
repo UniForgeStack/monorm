@@ -30,7 +30,7 @@ function each(name: string, body: (t: TestContext, auth: Auth) => Promise<void>)
 test("the schema copies of both packages match the source", () => {
   const source = readFileSync(join(PACKAGE, "../schema.prisma"), "utf8");
   assert.equal(readFileSync(join(PACKAGE, "schema.prisma"), "utf8"), source);
-  assert.equal(readFileSync(join(PACKAGE, "../python/orm_auth/schema.prisma"), "utf8"), source);
+  assert.equal(readFileSync(join(PACKAGE, "../python/monorm_auth/schema.prisma"), "utf8"), source);
 });
 
 each("the models get the methods and the query set", async (_t, auth) => {

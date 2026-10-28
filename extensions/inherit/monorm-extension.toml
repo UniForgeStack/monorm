@@ -35,7 +35,7 @@ required = true
 
 # The extension adds no members to a model; its language code is `model_for` / `modelFor`.
 [python]
-source = "python/orm_inherit"
+source = "python/monorm_inherit"
 query_set = "InheritQuerySet"
 instance = "InheritInstance"
 

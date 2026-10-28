@@ -75,9 +75,9 @@ See [`shared-behavior/README.md`](shared-behavior/README.md).
 From the repository root, with `CARGO_INCREMENTAL=0` and Cargo dependencies fetched (the builds are `--offline --locked`):
 
 ```bash
-.venv/bin/python bench/build-time-extensions/controls.py --out /tmp/orm-controls     # release builds of both sides
+.venv/bin/python bench/build-time-extensions/controls.py --out /tmp/monorm-controls     # release builds of both sides
 .venv/bin/python bench/build-time-extensions/run.py --native-profile \
-  --before /tmp/orm-controls --after /tmp/orm-controls --url <isolated-pg-url> --out <results-dir>
+  --before /tmp/monorm-controls --after /tmp/monorm-controls --url <isolated-pg-url> --out <results-dir>
 .venv/bin/python bench/build-time-extensions/report.py --native-profile --check --directory <results-dir>
 ```
 

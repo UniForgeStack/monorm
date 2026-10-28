@@ -31,7 +31,7 @@ export const DB: unique symbol = Symbol("monorm.db");
 export const INTERNAL: unique symbol = Symbol.for("monorm.internal");
 // The native artifact is fixed for the process; read its capabilities once.
 const capabilities: readonly string[] = (JSON.parse(native().nativeArtifact()) as { capabilities: string[] }).capabilities;
-// Adapter selection happens once. The import is static: a top-level await would stop a synchronous require() of any package that imports `orm`.
+// Adapter selection happens once. The import is static: a top-level await would stop a synchronous require() of any package that imports `monorm`.
 const referenceAdapter = capabilities.includes("reference-loading") ? references : undefined;
 
 export type IRField = {

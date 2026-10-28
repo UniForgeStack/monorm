@@ -1,1 +1,1 @@
-"""Static ORM native profile; load through orm."""
+"""Static monorm native profile; load through monorm."""

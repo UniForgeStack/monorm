@@ -13,7 +13,7 @@ spec.loader.exec_module(checker)
 def tree(tmp_path, extra, manifests):
     root = tmp_path
     members = ", ".join(f'"{name}"' for name in extra)
-    (root / "pyproject.toml").write_text(f'[project]\nname = "orm"\n[project.optional-dependencies]\nfull = [{members}]\n')
+    (root / "pyproject.toml").write_text(f'[project]\nname = "monorm"\n[project.optional-dependencies]\nfull = [{members}]\n')
     for directory, ident in manifests.items():
         (root / "extensions" / directory).mkdir(parents=True)
         (root / "extensions" / directory / "monorm-extension.toml").write_text(f'id = "{ident}"\nversion = "0.1.0"\n')

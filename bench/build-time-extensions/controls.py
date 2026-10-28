@@ -45,7 +45,7 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
                 "binaries": {
                     name: {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                     for name, path in [
-                        ("python", workspace / "languages/python/orm/_native.so"),
+                        ("python", workspace / "languages/python/monorm/_native.so"),
                         ("node", workspace / "languages/js/monorm.node"),
                     ]
                 },
@@ -97,7 +97,7 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
         # libraries were packaged. Rebuild that profile rather than treating
         # directory existence as a completed build.
         if (
-            not (extension / "languages/python/orm/_native.so").exists()
+            not (extension / "languages/python/monorm/_native.so").exists()
             or not (extension / "languages/js/monorm.node").exists()
         ):
             buildenv = dict(
@@ -130,13 +130,13 @@ for backend, provider in [("sqlite", "sqlite"), ("postgres", "postgresql")]:
         (workspace / "languages/python").mkdir(parents=True, exist_ok=True)
         (workspace / "languages/js").mkdir(parents=True, exist_ok=True)
         shutil.copytree(
-            root / "languages/python/orm",
-            workspace / "languages/python/orm",
+            root / "languages/python/monorm",
+            workspace / "languages/python/monorm",
             ignore=shutil.ignore_patterns("*.so", "__pycache__"),
             dirs_exist_ok=True,
         )
         suffix = "dylib" if sys.platform == "darwin" else "so"
-        py = workspace / "languages/python/orm/_native.so"
+        py = workspace / "languages/python/monorm/_native.so"
         if elapsed is not None:
             shutil.copy2(target / f"release/lib_native.{suffix}", py)
         shutil.copytree(root / "languages/js/dist", workspace / "languages/js/dist", dirs_exist_ok=True)

@@ -169,7 +169,7 @@ test("the CLI", () => {
   assert.equal(sql.code, 0);
   assert.ok(sql.out.includes('CREATE TABLE "books"'));
   assert.equal(run("nope").code, 2);
-  assert.match(run("--help").out, /^usage: npx @ufstack/monorm /);
+  assert.match(run("--help").out, /^usage: npx @ufstack\/monorm /);
   assert.equal(run("migrate").code, 2); // no database URL
   writeFileSync(join(dir, "package.json"), JSON.stringify({ monorm: { schema: "db/schema.prisma", migrations: "db/migrations" } }));
   assert.match(run("check").err, /db\/schema.prisma/);

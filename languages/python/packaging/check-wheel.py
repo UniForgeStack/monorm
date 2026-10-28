@@ -1,4 +1,4 @@
-"""Check native namespace separation and the absence of native payload in orm."""
+"""Check native namespace separation and the absence of native payload in monorm."""
 
 from pathlib import Path
 import sys

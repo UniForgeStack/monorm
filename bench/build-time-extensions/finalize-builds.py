@@ -37,7 +37,7 @@ def refresh_sources(workspace):
 def metadata(workspace, target, seconds):
     binaries = {}
     for name, path, library in [
-        ("python", workspace / "languages/python/orm/_native.so", "lib_native"),
+        ("python", workspace / "languages/python/monorm/_native.so", "lib_native"),
         ("node", workspace / "languages/js/monorm.node", "libmonorm_node"),
     ]:
         shutil.copy2(target / f"release/{library}.{suffix}", path)
@@ -146,7 +146,7 @@ for group in [args.only] if args.only else ["disabled", "controls"]:
                     check=True,
                 )
                 shutil.copy2(
-                    root / "target/release/orm-extension-allocation-probe",
+                    root / "target/release/monorm-extension-allocation-probe",
                     workspace / ("allocation-probe" if instrumented else "native-probe"),
                 )
     report["host_sources_sha256"] = {

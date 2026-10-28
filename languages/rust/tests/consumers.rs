@@ -5,7 +5,7 @@ fn generated_consumer_contracts() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dir = std::env::temp_dir().join(format!("monorm-rust-consumers-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("Cargo.toml"),format!("[package]\nname='monorm-consumer-probe'\nversion='0.0.0'\nedition='2021'\n[workspace]\n[dependencies]\norm-client={{path={:?}}}\n",root)).unwrap();
+    std::fs::write(dir.join("Cargo.toml"),format!("[package]\nname='monorm-consumer-probe'\nversion='0.0.0'\nedition='2021'\n[workspace]\n[dependencies]\nmonorm-client={{path={:?}}}\n",root)).unwrap();
     std::fs::write(
         dir.join("src/models.rs"),
         include_str!(concat!(env!("OUT_DIR"), "/models.rs")),

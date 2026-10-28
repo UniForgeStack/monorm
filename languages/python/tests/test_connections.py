@@ -218,7 +218,7 @@ async def test_session_lock_keeps_the_error_of_its_block_when_the_unlock_fails(d
         await db.execute(kill)
     # A failed unlock on a live connection closes it, so the server drops the lock.
     await db.execute(RLS_ROLE)
-    app = await monorm.connect("postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], default=False, max_connections=1)
+    app = await monorm.connect("postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], default=False, max_connections=1)
     try:
         async with app.lock(4242, session=True):
             await db.execute("REVOKE EXECUTE ON FUNCTION pg_advisory_unlock(bigint) FROM PUBLIC")
@@ -421,7 +421,7 @@ async def test_tenant_sets_app_tenant_for_row_level_security(db):
     await admin.execute(RLS)
     await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
     app = await monorm.connect(
-        "postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=1
+        "postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=1
     )
     try:
         assert await Note.objects.using(app).count() == 0  # no tenant: the policy hides every row
@@ -461,7 +461,7 @@ async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
     await admin.execute(RLS)
     await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
     app = await monorm.connect(
-        "postgres://orm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2
+        "postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2
     )
     try:
 

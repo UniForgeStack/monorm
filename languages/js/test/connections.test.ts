@@ -268,7 +268,7 @@ test('replicas answer reads outside a transaction; writes and transactions use t
   await assertBackends(url2, 0);
   // A replica that fails to open closes the pools opened before it.
   const before = await backends(url);
-  await assert.rejects(connect(db.url, { replicas: [url, url.replace(/\/[^/]*$/, '/orm_s6_missing')], default: false }));
+  await assert.rejects(connect(db.url, { replicas: [url, url.replace(/\/[^/]*$/, '/monorm_s6_missing')], default: false }));
   await assertBackends(url, before);
 });
 
@@ -281,7 +281,7 @@ test('db.tenant inside a transaction of another tenant throws', async () => {
   await admin.createTables();
   await admin.execute(RLS);
   await Note.objects.using(admin).insertMany([{ tenant: 'a', body: '1' }, { tenant: 'b', body: '2' }]);
-  const app = await connect(`postgres://orm_s6_app:app@${url.split('@')[1]}`, { registry, default: false, maxConnections: 2 });
+  const app = await connect(`postgres://monorm_s6_app:app@${url.split('@')[1]}`, { registry, default: false, maxConnections: 2 });
   const bodies = async () => (await Note.objects.using(app)).map((n: any) => n.body);
   const other = () => app.tenant('b', () => app.transaction(bodies));
   try {
@@ -384,7 +384,7 @@ test('db.tenant sets app.tenant in each transaction for row-level security', asy
   await admin.createTables();
   await admin.execute(RLS);
   await Note.objects.using(admin).insertMany([{ tenant: 'a', body: '1' }, { tenant: 'b', body: '2' }]);
-  const app = await connect(`postgres://orm_s6_app:app@${url.split('@')[1]}`, { registry, default: false, maxConnections: 1 });
+  const app = await connect(`postgres://monorm_s6_app:app@${url.split('@')[1]}`, { registry, default: false, maxConnections: 1 });
   try {
     assert.equal(await Note.objects.using(app).count(), 0);
     await app.tenant('a', async () => {

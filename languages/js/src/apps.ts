@@ -19,8 +19,8 @@ function schemaOf(name: string, from: string): string | undefined {
   for (let dir = from; ; dir = dirname(dir)) {
     const manifest = join(dir, "node_modules", name, "package.json");
     if (existsSync(manifest)) {
-      const orm = (JSON.parse(readFileSync(manifest, "utf8")) as { monorm?: { app?: unknown } }).monorm;
-      if (typeof orm?.app !== "string") {
+      const monorm = (JSON.parse(readFileSync(manifest, "utf8")) as { monorm?: { app?: unknown } }).monorm;
+      if (typeof monorm?.app !== "string") {
         throw new SchemaError(
           `import "app:${name}": the \`${name}\` package declares no schema; its package.json needs "monorm": {"app": "./schema.prisma"}`,
         );

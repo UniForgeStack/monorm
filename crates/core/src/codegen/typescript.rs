@@ -220,7 +220,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     let generic = |model: &str| super::declares_generic(ir, &query_sets, model);
     let query_type = |model: &str, spec: &str| query_set(model).map(|class| if generic(model) { format!("{class}<{spec}>") } else { class });
     let has_queries = |model: &str| query_set(model).is_some() || options.extensions.iter().any(|e| e.applies(ir, model));
-    let ext_base = options.ext_import.as_deref().unwrap_or("./orm-ext");
+    let ext_base = options.ext_import.as_deref().unwrap_or("./monorm-ext");
     // names: camelCase must stay unique and clear of the runtime's own
     for m in &schema.models {
         let mut seen = BTreeSet::new();

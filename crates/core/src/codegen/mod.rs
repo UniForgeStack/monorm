@@ -91,7 +91,7 @@ pub struct Options {
     pub extensions: Vec<ExtensionCode>,
     /// Where the generated models import the extension packages from: the dotted module of
     /// the extension directory in Python (`monorm_ext`), the relative specifier in TypeScript
-    /// (`./orm-ext`).
+    /// (`./monorm-ext`).
     pub ext_import: Option<String>,
 }
 
@@ -492,10 +492,10 @@ mod reference_tests {
         assert!(py.stub.contains("class _PostObjects(_ext0QuerySet[Post], PostQuerySet): ...") && py.stub.contains("objects: ClassVar[_PostObjects]"));
         assert!(py.stub.contains("objects: ClassVar[UserQuerySet]"));
         options.query_sets.insert("Post".into(), "app.queries:PostQueries".into());
-        options.ext_import = Some("app.orm_ext".into());
+        options.ext_import = Some("app.monorm_ext".into());
         let py = python::generate_with(&ir, &schema, "schema.prisma", &options).unwrap();
         assert!(py.stub.contains("from app.queries import PostQueries as _PostUserObjects"));
-        assert!(py.stub.contains("class _PostObjects(_PostUserObjects, _ext0QuerySet[Post], PostQuerySet): ...") && py.module.contains("from app.orm_ext import example_language"));
+        assert!(py.stub.contains("class _PostObjects(_PostUserObjects, _ext0QuerySet[Post], PostQuerySet): ...") && py.module.contains("from app.monorm_ext import example_language"));
         let mut bound_ext = ext.clone();
         bound_ext.members.bound_query_set = "TaggedBoundQuerySet".into();
         bound_ext.members.bound_query_set_members = vec!["tagged".into()];
@@ -511,14 +511,14 @@ mod reference_tests {
         ts_ext.members.bound_query_set = "taggedBoundQuerySet".into();
         let options = Options { extensions: vec![ts_ext], ..Options::default() };
         let ts = typescript::generate_with(&ir, &schema, "schema.prisma", "@ufstack/monorm", &options).unwrap();
-        assert!(ts.contains("import * as _e0 from \"./orm-ext/example-language/index.js\";"));
+        assert!(ts.contains("import * as _e0 from \"./monorm-ext/example-language/index.js\";"));
         assert!(ts.contains("export interface Post extends PostData, Instance<PostSpec>, _e0.TaggedInstance {"));
         assert!(ts.contains("export interface PostBaseSpec {") && ts.contains("export interface PostSpec extends PostBaseSpec {"));
         assert!(ts.contains("readonly queries: InstanceType<ReturnType<typeof _e0.taggedQuerySet<new (...args: any[]) => QuerySet<PostBaseSpec>>>>;"));
         assert!(ts.contains("export interface UserSpec {") && ts.contains("QueriesOf<PostSpec>"));
         assert!(ts.contains("readonly boundQueries: InstanceType<ReturnType<typeof _e0.taggedBoundQuerySet<new (...args: any[]) => BoundQuerySet<PostBaseSpec>>>>;"));
         assert!(ts.lines().find(|l| l.starts_with("import { define")).is_some_and(|l| l.contains("type BoundQuerySet")));
-        assert!(ts.contains("extensions: { \"example.language\": { module: _e0, hash: \"abc\", dir: new URL(\"./orm-ext/example-language/\", import.meta.url) } }, members: { \"Post\": [\"example.language\"] }"));
+        assert!(ts.contains("extensions: { \"example.language\": { module: _e0, hash: \"abc\", dir: new URL(\"./monorm-ext/example-language/\", import.meta.url) } }, members: { \"Post\": [\"example.language\"] }"));
     }
 
     /// `Post`, its proxy `Draft` and a proxy of that, `Final`, and an unrelated `Note`.

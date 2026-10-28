@@ -1,4 +1,4 @@
-"""Native engine (Rust, PyO3). Internal: use the ``orm`` package API instead."""
+"""Native engine (Rust, PyO3). Internal: use the ``monorm`` package API instead."""
 
 from collections.abc import Awaitable, Sequence
 from pathlib import Path

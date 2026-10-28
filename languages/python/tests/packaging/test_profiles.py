@@ -1,4 +1,4 @@
-"""Loader validation in isolation: avoid importing orm before selecting a profile."""
+"""Loader validation in isolation: avoid importing monorm before selecting a profile."""
 
 import importlib.util
 import json

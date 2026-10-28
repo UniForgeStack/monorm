@@ -103,7 +103,7 @@ let db=models::Database::connect(&url,1).await?;
                     no_change_check_seconds=incremental,
                     edited_check_seconds=incremental_edit,
                     release_seconds=release,
-                    binary_bytes=(TARGET / "release/orm-measured-consumer").stat().st_size,
+                    binary_bytes=(TARGET / "release/monorm-measured-consumer").stat().st_size,
                 )
             )
     (ROOT / "languages/rust/bench/selection-results.json").write_text(

@@ -1069,7 +1069,7 @@ program as `python -m monorm` and the standalone `monorm` binary, with the same 
 (`check`, `generate`, `makemigrations [--check]`, `sqlmigrate`, `migrate`, `rollback`,
 `showmigrations`, `pull`, `baseline`, `drift`; see [`schema.md`](../schema/schema.md#migrations)).
 Under `npx`, `generate` writes TypeScript and `package.json`'s `"@ufstack/monorm"` key is read first.
-The command line resolves `import "app:monorm-auth"` in a schema from `node_modules/orm-auth/package.json` (`"monorm": {"app": "./schema.prisma"}`),
+The command line resolves `import "app:monorm-auth"` in a schema from `node_modules/monorm-auth/package.json` (`"monorm": {"app": "./schema.prisma"}`),
 and passes it to the Rust loader as `--app monorm-auth=<file>`; the standalone binary takes that flag from you
 (see [`schema.md`](../schema/schema.md#installed-app-import)). Installed extension libraries go the same way, as `--extension <id>=<manifest>` (see [`schema.md`](../schema/schema.md#installed-extension-libraries)). `load(path)` and `Migrations` resolve an app the same way, from its package metadata, and import no app code.
 `Migrations` and `Migrator` are the programmatic API; they call the same Rust migrator

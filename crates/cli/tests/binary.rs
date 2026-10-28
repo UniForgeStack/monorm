@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 const SCHEMA: &str = "model Book {\n  id    BigInt @id @default(autoincrement())\n  title String\n}\n";
 
 fn monorm(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orm")).args(args).current_dir(dir).env_remove("MONORM_DATABASE_URL").output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_monorm")).args(args).current_dir(dir).env_remove("MONORM_DATABASE_URL").output().unwrap()
 }
 
 fn text(b: &[u8]) -> String {
@@ -76,7 +76,7 @@ fn schema_module_output_collisions_fail_before_writing() {
     assert!(!result.status.success());
     assert!(text(&result.stderr).contains("each schema in its own directory"));
     assert!(!dir.join("models.py").exists());
-    assert!(!dir.join("_orm_models.py").exists());
+    assert!(!dir.join("_monorm_models.py").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -161,15 +161,15 @@ fn app_flag_gives_the_loader_the_schema_of_an_app() {
 fn generate_python_writes_nothing_into_an_app_package() {
     let dir = std::env::temp_dir().join(format!("monorm-cli-app-gen-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("site/orm_auth")).unwrap();
+    std::fs::create_dir_all(dir.join("site/monorm_auth")).unwrap();
     std::fs::create_dir_all(dir.join("proj")).unwrap();
-    std::fs::write(dir.join("site/orm_auth/schema.prisma"), "model User {\n  id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("site/monorm_auth/schema.prisma"), "model User {\n  id Int @id\n}\n").unwrap();
     std::fs::write(dir.join("proj/schema.prisma"), "import \"app:monorm-auth\"\nmodel Post {\n  id Int @id\n}\n").unwrap();
-    let before = std::fs::read_dir(dir.join("site/orm_auth")).unwrap().count();
+    let before = std::fs::read_dir(dir.join("site/monorm_auth")).unwrap().count();
 
-    let out = monorm(&dir.join("proj"), &["--app", "monorm-auth=../site/orm_auth/schema.prisma", "generate", "python"]);
+    let out = monorm(&dir.join("proj"), &["--app", "monorm-auth=../site/monorm_auth/schema.prisma", "generate", "python"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
-    assert_eq!(std::fs::read_dir(dir.join("site/orm_auth")).unwrap().count(), before, "{}", text(&out.stdout));
+    assert_eq!(std::fs::read_dir(dir.join("site/monorm_auth")).unwrap().count(), before, "{}", text(&out.stdout));
     let module = std::fs::read_to_string(dir.join("proj/models.py")).unwrap();
     assert!(module.contains("\"User\",") && module.contains("\"Post\","), "{module}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -355,7 +355,7 @@ fn check_compares_extension_locks_and_python_facades() {
     std::fs::write(dir.join("multi/schema.prisma"), "import \"../schema.prisma\"\nmodel Other {\n id Int @id\n}\n").unwrap();
     let multi = monorm(&dir, &["generate", "python", "--schema", "multi/schema.prisma", "--extension", "acme.outside=monorm-extension.toml", "--extension-module", "acme.outside=acme_outside"]);
     assert!(multi.status.success(), "{}", text(&multi.stderr));
-    assert!(dir.join("multi/_orm_models.py").is_file());
+    assert!(dir.join("multi/_monorm_models.py").is_file());
     let current = monorm(&dir, &["check", "--schema", "multi/schema.prisma", "--extension", "acme.outside=monorm-extension.toml"]);
     assert!(current.status.success(), "{}", text(&current.stderr));
     std::fs::write(dir.join("monorm-extension.toml"), format!("{original}\n# changed\n")).unwrap();

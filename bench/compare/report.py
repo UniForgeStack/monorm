@@ -5,9 +5,9 @@
 A Summary block comes first, then one table per side. Every contender runs once per round in a fresh process,
 so the rounds are the independent units: a cell is the median of the per-round medians with a 95 percent
 cluster bootstrap interval (rounds resampled, not single timed calls). A speed-up compares round r of a
-contender with round r of `orm`, as contender time / orm time, takes the median of those paired values, and
+contender with round r of `monorm`, as contender time / monorm time, takes the median of those paired values, and
 gives a bootstrap interval of it. `2.31×` means `orm` is 2.31 times faster; below 1 reads `0.81× (slower)`.
-`pg` on TypeScript is the floor, not a contender: its column is the overhead orm / pg. `orm-all / orm` is the
+`pg` on TypeScript is the floor, not a contender: its column is the overhead monorm / pg. `monorm-all / monorm` is the
 extension cost. All times include the database round trip.
 Every number is measured. The header says whether the run is valid and whether the load check was overridden.
 """
@@ -97,7 +97,7 @@ def contenders_of(results: Result) -> list[str]:
 
 
 def case_speedups(results: Result, contender: str) -> dict[str, float]:
-    """Per case, the median paired speed-up of `orm` over `contender` (contender time / orm time)."""
+    """Per case, the median paired speed-up of `monorm` over `contender` (contender time / monorm time)."""
     out: dict[str, float] = {}
     for case, monorm_item in results.get("orm", {}).items():
         other = results.get(contender, {}).get(case)
@@ -119,11 +119,11 @@ def timing_table(title: str, results: Result) -> list[str]:
     names = list(results)
     if "orm" not in results:
         return [f"### {title}", "", "No `orm` results: no speed-up to show.", ""]
-    pairs = [(n, "orm", f"orm vs {n}", speedup) for n in contenders_of(results)]
+    pairs = [(n, "orm", f"monorm vs {n}", speedup) for n in contenders_of(results)]
     if FLOOR in results:
-        pairs.append(("orm", FLOOR, "orm / pg (overhead)", overhead))
+        pairs.append(("orm", FLOOR, "monorm / pg (overhead)", overhead))
     if "orm-all" in results:
-        pairs.append(("orm-all", "orm", "orm-all / orm (extension cost)", overhead))
+        pairs.append(("orm-all", "orm", "monorm-all / monorm (extension cost)", overhead))
     lines = [f"### {title}", ""]
     head = ["case"] + [f"{n} (ms)" for n in names] + [label for _, _, label, _ in pairs]
     lines += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
@@ -217,7 +217,7 @@ def cpu_table(results: Result) -> list[str]:
 
 
 STATIC_NOTES = [
-    "Prisma `upsert-100` runs 100 upserts in one `$transaction`: Prisma has no bulk upsert. orm and Django send one statement.",
+    "Prisma `upsert-100` runs 100 upserts in one `$transaction`: Prisma has no bulk upsert. monorm and Django send one statement.",
     "Django async `concurrent` runs each `aget` through thread-sensitive `sync_to_async`: the calls run one after another on one thread.",
     "psycopg prepares a statement after 5 executions of it. Django inlines LIMIT/OFFSET, so the read-N statements differ per page and are not prepared.",
     "Prisma batches `findUnique` calls of one tick into one query (recalled from the Prisma docs, not checked here), so its first reads in `concurrent` can become about one round trip.",
@@ -226,7 +226,7 @@ STATIC_NOTES = [
     "`pg` `join-to-one` uses an inner JOIN. `posts.author_id` is NOT NULL, so the rows equal the ORMs' joins.",
     "The JS `camelRow`/`data()` row conversion runs inside the timed operation: a user does the same work.",
     "Django `delete-100` (`QuerySet.delete()`) runs BEGIN, DELETE, COMMIT: 3 statements.",
-    "orm returns full rows from `bulk-insert-*`: `insertMany(...).returning()` has no key-only form. Prisma and Django return ids only or full instances as noted per contender below.",
+    "monorm returns full rows from `bulk-insert-*`: `insertMany(...).returning()` has no key-only form. Prisma and Django return ids only or full instances as noted per contender below.",
     "Warm-up: every case runs 50 untimed calls before the timed calls, the same count for every contender. Timed calls use iterations 1..N, the warm-up uses distinct iteration numbers.",
     "Contenders run one per process and round, in a rotating order, on a database reset before every process.",
 ]
@@ -273,7 +273,7 @@ def main() -> None:
     out += [f"All numbers are **measured** on this machine: {run.get('rounds', '?')} rounds x {run.get('iters', '?')} "
             "iterations per case (the warm-up calls are not timed), the contender order rotated every round, one fresh "
             "process per contender and round. Each cell is `median [95 percent cluster bootstrap interval]` of the per-round "
-            "medians; each speed-up is the median of the paired per-round values (contender time / orm time) with its interval.",
+            "medians; each speed-up is the median of the paired per-round values (contender time / monorm time) with its interval.",
             "",
             f"Load before: `{run.get('uptime_before', '?')}`  ",
             f"Load after: `{run.get('uptime_after', '?')}`", ""]
@@ -292,7 +292,7 @@ def main() -> None:
         envs.append(env)
         out += [versions(env), "",
                 "There is no `pg`-like floor contender on Python. `orm-all` is the `orm` build with every "
-                "extension; the `orm-all / orm` column is the extension cost.", ""]
+                "extension; the `monorm-all / monorm` column is the extension cost.", ""]
         out += timing_table("Time per operation", py)
         out += concurrent_table(py) + cpu_table(py)
     else:
@@ -302,7 +302,7 @@ def main() -> None:
     if node:
         env = json.loads((directory / "js" / "environment.json").read_text())
         envs.append(env)
-        out += [versions(env), "", "`pg` (prepared statements, no ORM work) is the floor: its column is the overhead orm / pg. The `orm-all / orm` column is the extension cost.", ""]
+        out += [versions(env), "", "`pg` (prepared statements, no ORM work) is the floor: its column is the overhead monorm / pg. The `monorm-all / monorm` column is the extension cost.", ""]
         out += timing_table("Time per operation", node)
         out += concurrent_table(node) + cpu_table(node)
     else:

@@ -19,12 +19,12 @@ Outside contributors: read [CONTRIBUTING.md](CONTRIBUTING.md). It has the same c
 
 ```bash
 service postgresql start          # the test database (postgres:postgres@localhost/orm_test)
-. .venv/bin/activate && uv pip install -e .   # the thin `orm` package (languages/python/)
+. .venv/bin/activate && uv pip install -e .   # the thin `monorm` package (languages/python/)
 scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
 (cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
 cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm-contracts -p monorm-extension-package
-mypy --strict languages/python/orm && pyright languages/python/orm
+mypy --strict languages/python/monorm && pyright languages/python/monorm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
 cd ../..

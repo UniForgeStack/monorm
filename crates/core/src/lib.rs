@@ -6,7 +6,7 @@
 //!                           └──(JSON)──▶ language bindings (Python today, JS next)
 //! ```
 //!
-//! Nothing here knows about Python, JS or a database driver: bindings and the `orm`
+//! Nothing here knows about Python, JS or a database driver: bindings and the `monorm`
 //! CLI are thin layers over these modules.
 
 pub mod codegen;

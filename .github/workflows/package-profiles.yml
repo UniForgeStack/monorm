@@ -41,7 +41,7 @@ jobs:
       - name: Record the native wheel size
         shell: bash
         run: |
-          for wheel in target/wheels/orm_native_${{ matrix.profile }}-*.whl; do
+          for wheel in target/wheels/monorm_native_${{ matrix.profile }}-*.whl; do
             echo "${{ matrix.os }} py${{ matrix.python }} $(basename "$wheel"): $(wc -c < "$wheel") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           done
       - run: python -m pip install --no-index --find-links target/wheels "monorm[${{ matrix.profile }}]"
@@ -118,7 +118,7 @@ jobs:
       - name: Record the native package size
         shell: bash
         run: |
-          for pack in target/npm-packs/orm-native-${{ matrix.profile }}-*.tgz; do
+          for pack in target/npm-packs/monorm-native-${{ matrix.profile }}-*.tgz; do
             echo "${{ matrix.os }} $(basename "$pack"): $(wc -c < "$pack") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           done
       - uses: actions/upload-artifact@v4

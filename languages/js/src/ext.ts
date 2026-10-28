@@ -1,4 +1,4 @@
-/** The host surface for extension language code, next to the public `orm` API. */
+/** The host surface for extension language code, next to the public `monorm` API. */
 import { DB, loadedValue as loadedOf, registry as defaultRegistry, type ModelMeta, type Registry } from "./model.js";
 import type { ModelSpec } from "./meta.js";
 import { QuerySet } from "./query.js";

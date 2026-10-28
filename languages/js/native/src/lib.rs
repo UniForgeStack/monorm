@@ -1,4 +1,4 @@
-//! Native engine behind the `orm` TypeScript package (Node, Bun).
+//! Native engine behind the `monorm` TypeScript package (Node, Bun).
 //!
 //! The same calls as the Python binding: the schema is sent once (`new Schema(json)`),
 //! then one IR document per operation, its literals in a separate array of JS values.

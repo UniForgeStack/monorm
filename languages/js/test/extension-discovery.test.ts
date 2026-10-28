@@ -33,8 +33,12 @@ function pkg(root: string, name: string, id: string | null, manifest: boolean = 
   const dir = join(root, "node_modules", name);
   write(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", ...(id ? { monorm: { extension: id } } : {}) }));
   if (id === "acme.outside") {
-    // The package imports `orm`, so the project needs it installed.
-    if (!existsSync(join(root, "node_modules", "orm"))) symlinkSync(process.cwd(), join(root, "node_modules", "orm"), "dir");
+    // The package imports `@ufstack/monorm`, so the project needs it installed.
+    const host = join(root, "node_modules", "@ufstack", "monorm");
+    if (!existsSync(host)) {
+      mkdirSync(dirname(host), { recursive: true });
+      symlinkSync(process.cwd(), host, "dir");
+    }
     const source = readFileSync(join(OUTSIDE, "typescript/index.ts"), "utf8");
     write(join(dir, "index.ts"), source);
     write(join(dir, "index.cjs"), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
@@ -114,7 +118,7 @@ function outsideLibrary(t: TestContext): string {
 
 test("an installed outside library lowers the schema through load(), loads() and the command line", { timeout: 300_000 }, async (t) => {
   const root = directory(t);
-  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
   write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
   const library = outsideLibrary(t);
   copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
@@ -208,7 +212,7 @@ test("an installed outside library lowers the schema through load(), loads() and
 
 test("an outside pass writes a two-table model that inserts, reads, updates and attaches", { timeout: 300_000 }, async (t) => {
   const root = directory(t);
-  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
   write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
   const library = outsideLibrary(t);
   copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
@@ -237,7 +241,7 @@ const GUARDED = 'datasource db { provider = "sqlite" }\nmodel Note {\n id Int @i
 
 test("hooks of an outside library: one error prefix, a caller value for a hook 4 field, and the unbound native schema", { timeout: 300_000 }, async (t) => {
   const root = directory(t);
-  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
   write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
   const library = outsideLibrary(t);
   copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
@@ -283,7 +287,7 @@ test("ESM-only and dual packages share runtime identity across generated models,
   const library = outsideLibrary(t);
   for (const format of ["ESM-only", "dual", "module-sync"]) {
     const root = directory(t);
-    const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+    const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
     const dir = dirname(manifest);
     write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
     copyFileSync(library, join(dir, library.slice(library.lastIndexOf("/") + 1)));
@@ -291,7 +295,7 @@ test("ESM-only and dual packages share runtime identity across generated models,
       "tagged() {", "runtimeIdentity() { return OutsideQuerySet; } tagged() {",
     );
     write(join(dir, "index.mjs"), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
-    // Bun cannot `require` the ESM `orm`, and this test never installs an adapter.
+    // Bun cannot `require` the ESM `@ufstack/monorm`, and this test never installs an adapter.
     const withoutOrm = source.replace(/^import \{ registerFieldAdapter.*$/m, 'import type { FieldAdapter, ModelMeta } from "@ufstack/monorm"; const registerFieldAdapter = (): never => { throw Error("not installed"); };');
     write(join(dir, "index.cjs"), ts.transpileModule(withoutOrm, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
     write(join(dir, "package.json"), JSON.stringify({ name: "acme-outside", type: "module", monorm: { extension: "acme.outside" },
@@ -323,7 +327,7 @@ test("ESM-only and dual packages share runtime identity across generated models,
 
 test("an outside view reads and writes through the row filter and warns with its own code", { timeout: 300_000 }, (t) => {
   const root = directory(t);
-  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/orm-extension.toml";
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
   write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
   const library = outsideLibrary(t);
   copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));

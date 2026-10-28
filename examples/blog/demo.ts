@@ -1,6 +1,6 @@
 /**
  * A tour of the TypeScript API, the counterpart of demo.py, on SQLite or PostgreSQL.
- * Build the `orm` package first (`cd languages/js && npm install && npm run build:native && npm run build`),
+ * Build the `monorm` package first (`cd languages/js && npm install && npm run build:native && npm run build`),
  * then from this directory:
  *
  *     npm install

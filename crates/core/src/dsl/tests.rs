@@ -1209,8 +1209,8 @@ fn app_imports_read_the_schema_an_installed_app_declares() {
     let dir = std::env::temp_dir().join(format!("monorm-app-imports-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     // a Python app (a package with __init__.py) that imports an npm-style app, as a project would see them
-    let auth = dir.join("site-packages/orm_auth");
-    let billing = dir.join("project/node_modules/orm-billing");
+    let auth = dir.join("site-packages/monorm_auth");
+    let billing = dir.join("project/node_modules/monorm-billing");
     std::fs::create_dir_all(&auth).unwrap();
     std::fs::create_dir_all(&billing).unwrap();
     std::fs::write(auth.join("__init__.py"), "").unwrap();

@@ -12,7 +12,7 @@ Generating a migration (the Rust core: ``crates/core/src/migrate``) diffs the sc
 the newest ``snapshot.json``, so it needs no database. The SQL is plain DDL and can be
 edited before it is applied. Applying and reverting (``crates/engine/src/migrate.rs``) records
 each migration with a checksum in the ``monorm_migrations`` table and refuses to continue
-if an applied file changed. Both are the same Rust code the ``orm`` command line and the
+if an applied file changed. Both are the same Rust code the ``monorm`` command line and the
 TypeScript package run, so every tool writes and applies the same files. A migration
 may also hold a data step (``data.py`` or ``data.ts``), which only its own host runs.
 

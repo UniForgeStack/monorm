@@ -22,7 +22,7 @@ class PackageTest(unittest.TestCase):
             wheel, = Path(tmp).glob("*.whl")
             self.assertIn("-py3-none-", wheel.name)
             with zipfile.ZipFile(wheel) as archive:
-                manifest = archive.read("acme_outside/orm-extension.toml")
+                manifest = archive.read("acme_outside/monorm-extension.toml")
                 digest = hashlib.sha256(manifest).hexdigest()
                 self.assertIn(digest, archive.read("acme_outside/__init__.py").decode())
                 self.assertIn('acme.outside = acme_outside', archive.read("acme_outside-0.1.0.dist-info/entry_points.txt").decode())

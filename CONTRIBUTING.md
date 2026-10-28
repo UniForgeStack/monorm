@@ -22,12 +22,12 @@ Run these from the repository root. Keep them green before you open a pull reque
 
 ```bash
 # Start PostgreSQL first (Linux: `service postgresql start`; macOS: your own server) with the test database above.
-uv venv .venv && . .venv/bin/activate && uv pip install -e '.[dev]' maturin   # the thin `orm` package (languages/python/)
+uv venv .venv && . .venv/bin/activate && uv pip install -e '.[dev]' maturin   # the thin `monorm` package (languages/python/)
 scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
 (cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
 cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm-contracts -p monorm-extension-package
-mypy --strict languages/python/orm && pyright languages/python/orm
+mypy --strict languages/python/monorm && pyright languages/python/monorm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
 cd ../..
@@ -41,7 +41,7 @@ python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scrip
 cargo package -p monorm-contracts      # the crate that extension authors get from crates.io
 ```
 
-The commands install the thin `orm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.
+The commands install the thin `monorm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.
 If a command needs a different PostgreSQL than the default, set `ORM_TEST_DATABASE_URL` (and `ORM_RUST_TEST_POSTGRES_URL` for `cargo test`).
 
 ### Generated example models

@@ -1,6 +1,6 @@
 # Guard patterns and allowed old-name sites for `rename.py --check`.
 # Every [[allow]] entry needs a reason and must match at least one hit, or --check fails.
-# An entry allows the whole line, so a line with a kept name also hides a renamable name on it.
+# An entry allows only the text it matches: another old name on the same line still counts.
 # Uppercase `ORM` and `ORMs` (the generic noun) never match a guard pattern, so prose keeps them.
 # Before the rename the tree has thousands of hits: read the guard through `--dry-run`, which applies the rules first.
 
@@ -11,11 +11,11 @@ pattern = '(^|/)orm(?:[-_.]|$)'
 
 [[guard]]
 id = "hyphen-prefix"
-pattern = '(?<![A-Za-z0-9_@/.-])orm-'
+pattern = '(?<![A-Za-z0-9_@.-])orm-'
 
 [[guard]]
 id = "underscore-prefix"
-pattern = '(?<![A-Za-z0-9_@/.-])orm_'
+pattern = '(?<![A-Za-z0-9_@.-])orm_'
 
 [[guard]]
 id = "old-npm-scope"
@@ -83,16 +83,6 @@ reason = "Local database names of the test and bench setup."
 glob = "crates/core/src/migrate/**"
 pattern = '\$orm(?:\{i\})?\$'
 reason = "Dollar-quote tag of generated SQL; any unused tag works, so the old text is harmless."
-
-[[allow]]
-glob = "crates/cli/src/lib.rs"
-pattern = 'let orm = '
-reason = "Local variable of a config reader; it is not a name users see."
-
-[[allow]]
-glob = "languages/js/src/apps.ts"
-pattern = 'const orm = |typeof orm\?\.app'
-reason = "Local variable of the app manifest reader."
 
 [[allow]]
 glob = "languages/js/package.json"

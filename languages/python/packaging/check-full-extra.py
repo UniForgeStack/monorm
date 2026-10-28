@@ -13,7 +13,7 @@ NATIVE = "monorm-native-tooling==0.1.0"
 
 def expected(root: Path) -> set[str]:
     members = {NATIVE}
-    for manifest in sorted((root / "extensions").glob("*/orm-extension.toml")):
+    for manifest in sorted((root / "extensions").glob("*/monorm-extension.toml")):
         data = tomllib.loads(manifest.read_text())
         if data["id"] in EXCLUDED:
             continue

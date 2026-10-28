@@ -1,4 +1,4 @@
-//! Native engine behind the `orm` Python package.
+//! Native engine behind the `monorm` Python package.
 //!
 //! Frontends send the schema once (`Schema(json)`) and then one IR document per
 //! operation. Every operation is one FFI crossing returning an awaitable; results come

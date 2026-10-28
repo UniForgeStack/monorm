@@ -86,7 +86,7 @@ def test_the_command_line_resolves_apps_before_it_runs_a_command(site: Path, tmp
     install(site, "monorm-billing", BILLING, None)
     assert main(["--schema", str(schema), "check"]) == 1
     assert "`monorm-billing` package declares no schema" in capfd.readouterr().err
-    (site / "monorm_billing-0.1.dist-info" / "entry_points.txt").write_text("[monorm.apps]\norm-billing = monorm_billing:schema.prisma\n")
+    (site / "monorm_billing-0.1.dist-info" / "entry_points.txt").write_text("[monorm.apps]\nmonorm-billing = monorm_billing:schema.prisma\n")
     assert main(["--schema", str(schema), "check"]) == 0
     assert "(3 models)" in capfd.readouterr().out
 

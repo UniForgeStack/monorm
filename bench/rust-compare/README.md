@@ -106,7 +106,7 @@ until pg_isready -h localhost -p 55432 -U postgres -d orm_bench; do sleep 1; don
 unset CARGO_PROFILE_RELEASE_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS
 cargo build --release --manifest-path bench/rust-compare/Cargo.toml --bins
 cd bench/rust-compare
-ORM_BENCH_SEA_FAST=1 ORM_BENCH_OUT=results-matched-local.json target/release/orm-rust-compare
+ORM_BENCH_SEA_FAST=1 ORM_BENCH_OUT=results-matched-local.json target/release/monorm-rust-compare
 ORM_BENCH_OUT=results-diagnose-local.json target/release/diagnose
 ```
 

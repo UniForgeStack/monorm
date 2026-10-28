@@ -93,7 +93,7 @@ build_python() {
   rm -rf "$BUILD/wheels" && mkdir -p "$BUILD/wheels"
   # The default profile of the shipped wheel: postgres, release.
   (cd "$ROOT/languages/python/packaging/postgres" && "$VENV/bin/maturin" build --release -q -i "$PY" -o "$BUILD/wheels")
-  uv pip install -q --python "$PY" --force-reinstall --no-deps "$BUILD"/wheels/orm_native_postgres-*.whl
+  uv pip install -q --python "$PY" --force-reinstall --no-deps "$BUILD"/wheels/monorm_native_postgres-*.whl
   uv pip install -q --python "$PY" --force-reinstall --no-deps "$ROOT"
 }
 
@@ -112,7 +112,7 @@ build_all() {
   uv pip install -q --python "$venv/bin/python" maturin==1.15.0 "psycopg[binary]==3.3.6" psycopg-pool==3.3.3 asgiref==3.12.1
   rm -rf "$ALL/wheels" && mkdir -p "$ALL/wheels"
   (cd "$ROOT/languages/python/packaging/tooling" && "$venv/bin/maturin" build --release -q -i "$venv/bin/python" -o "$ALL/wheels")
-  uv pip install -q --python "$venv/bin/python" --no-deps "$ALL"/wheels/orm_native_tooling-*.whl "$ROOT"
+  uv pip install -q --python "$venv/bin/python" --no-deps "$ALL"/wheels/monorm_native_tooling-*.whl "$ROOT"
   ORM_PACKAGE_PYTHON=$venv/bin/python "$ROOT/scripts/install-extension-packages.sh"
   (cd "$ROOT" && cargo build -q --release -p monorm-node --no-default-features --features profile-tooling)
   cp "$CARGO_TARGET_DIR/release/libmonorm_node.$DYLIB" "$ALL/monorm.node"

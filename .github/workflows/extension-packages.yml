@@ -71,7 +71,7 @@ jobs:
       - name: Build the library of each extension
         shell: bash
         run: |
-          for manifest in extensions/*/orm-extension.toml tests/outside-extension/orm-extension.toml; do
+          for manifest in extensions/*/monorm-extension.toml tests/outside-extension/monorm-extension.toml; do
             grep -q '^library' "$manifest" || continue
             dir=$(dirname "$manifest")
             cargo run -q -p monorm-extension-package -- library "$dir" --out "target/libraries/$(basename "$dir")"
@@ -105,7 +105,7 @@ jobs:
           path: target/libraries
       - name: Assemble one wheel and one npm package per extension
         run: |
-          for manifest in extensions/*/orm-extension.toml tests/outside-extension/orm-extension.toml; do
+          for manifest in extensions/*/monorm-extension.toml tests/outside-extension/monorm-extension.toml; do
             grep -q '^library' "$manifest" || continue
             dir=$(dirname "$manifest")
             name=$(basename "$dir")

@@ -4,7 +4,7 @@
  * and `python -m monorm` (`crates/cli/`). See `npx @ufstack/monorm --help`.
  *
  * The schema file and migrations directory come from `--schema` / `--dir`, or from the
- * `"@ufstack/monorm"` key of `package.json` (`{"schema": "schema.prisma", "migrations":
+ * `"monorm"` key of `package.json` (`{"schema": "schema.prisma", "migrations":
  * "migrations"}`). The database URL comes from `--url` or `MONORM_DATABASE_URL`.
  */
 

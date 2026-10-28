@@ -42,7 +42,7 @@
     }
   },
   "bin": {
-    "@ufstack/monorm": "./dist/src/cli.js"
+    "monorm": "./dist/src/cli.js"
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"

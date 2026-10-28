@@ -213,7 +213,7 @@ mod tests {
     fn python_installed_package_is_the_path_from_site_packages() {
         let root = dir("py-installed");
         touch(&root.join("pyproject.toml"), "");
-        let schema = root.join(".venv/lib/python3.14/site-packages/orm_auth/schema.prisma");
+        let schema = root.join(".venv/lib/python3.14/site-packages/monorm_auth/schema.prisma");
         assert_eq!(target(Language::Python, &schema, &root, Q, "UserQueries").unwrap(), "monorm_auth.queries:UserQueries");
     }
 
@@ -236,8 +236,8 @@ mod tests {
     fn typescript_reads_the_package_name() {
         let root = dir("ts-package");
         touch(&root.join("app/package.json"), r#"{"name":"app"}"#);
-        touch(&root.join("app/node_modules/orm-auth/package.json"), r#"{"name":"monorm-auth"}"#);
-        let schema = root.join("app/node_modules/orm-auth/schema.prisma");
+        touch(&root.join("app/node_modules/monorm-auth/package.json"), r#"{"name":"monorm-auth"}"#);
+        let schema = root.join("app/node_modules/monorm-auth/schema.prisma");
         assert_eq!(target(Language::TypeScript, &schema, &root.join("app/src"), Q, "UserQueries").unwrap(), "monorm-auth/queries.js#UserQueries");
         assert_eq!(target(Language::TypeScript, &schema, &root.join("app/src"), M, "UserMethods").unwrap(), "monorm-auth/methods.js#UserMethods");
     }

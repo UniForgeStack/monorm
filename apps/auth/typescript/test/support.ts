@@ -116,10 +116,9 @@ export class Auth {
 /** A connected `Auth` on empty tables, or `undefined` when the default Postgres is not reachable. */
 export async function makeAuth(provider: Provider, variant: Variant): Promise<Auth | undefined> {
   const dir = mkdtempSync(join(tmpdir(), "monorm-auth-"));
-  mkdirSync(join(dir, "node_modules"));
+  mkdirSync(join(dir, "node_modules", "@ufstack"), { recursive: true });
   symlinkSync(PACKAGE, join(dir, "node_modules", "@ufstack/monorm-auth"));
   // A fresh consumer declares pass packages directly, as package discovery requires.
-  mkdirSync(join(dir, "node_modules", "@ufstack"));
   const dependencies: Record<string, string> = { "@ufstack/monorm-auth": "0.1.0" };
   for (const name of ["timestamps", "soft-delete", "locking", "inherit"]) {
     symlinkSync(join(PACKAGE, "node_modules", "@ufstack", `monorm-${name}`), join(dir, "node_modules", "@ufstack", `monorm-${name}`));

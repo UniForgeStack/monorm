@@ -1,4 +1,4 @@
-"""The host surface for extension language code, next to the public ``orm`` API."""
+"""The host surface for extension language code, next to the public ``monorm`` API."""
 
 from __future__ import annotations
 

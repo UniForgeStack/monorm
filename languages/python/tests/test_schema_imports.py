@@ -76,9 +76,9 @@ model User {
             assert len(invoices) == 1 and invoices[0].user.id == 1
         finally:
             await db.close()
-        stub_import = "composed._orm_models" if external else ".._orm_models"
+        stub_import = "composed._monorm_models" if external else ".._monorm_models"
         assert f"from {stub_import} import Invoice as Invoice" in (billing / "models.pyi").read_text()
-        assert "from ._orm_models import User as User" in (package / "models.pyi").read_text()
+        assert "from ._monorm_models import User as User" in (package / "models.pyi").read_text()
         assert len(list(reg)) == 2
         if first == "main" and external:
             consumer = tmp_path / "check.py"
@@ -105,6 +105,6 @@ model User {
             if (
                 name in ("composed", "library")
                 or name.startswith(("composed.", "library."))
-                or name == f"_orm_schema:{package / '_orm_models.py'}"
+                or name == f"_monorm_schema:{package / '_monorm_models.py'}"
             ):
                 del sys.modules[name]

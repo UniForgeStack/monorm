@@ -13,7 +13,7 @@ import monorm
 from monorm import _native
 
 assert json.loads(_native.profile_metadata())["profile"] == "tooling"
-for requirement in metadata.requires("orm") or []:
+for requirement in metadata.requires("monorm") or []:
     name, _, rest = requirement.partition(";")
     if 'extra == "full"' not in rest:
         continue

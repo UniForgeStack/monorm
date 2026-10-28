@@ -51,7 +51,7 @@ class OrmContender(Contender):
             "capabilities": meta["capabilities"],
             "prepared_statements": "engine default: prepared once per connection and cached",
             "pool": POOL_SIZE,
-            "insert_note": "orm returns full rows: insert_many(...).returning() has no key-only form",
+            "insert_note": "monorm returns full rows: insert_many(...).returning() has no key-only form",
             "upsert_note": "on_conflict returns a row count, no RETURNING",
         }
 

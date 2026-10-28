@@ -53,11 +53,12 @@ test("an app that only another app depends on resolves in pnpm's strict layout",
   const dir = directory(t);
   const schema = write(join(dir, "schema.prisma"), PROJECT);
   const store = join(dir, "node_modules", ".pnpm");
-  const auth = pkg(join(store, "@ufstack/monorm-auth@1.0.0", "node_modules"), "@ufstack/monorm-auth", AUTH);
+  const auth = pkg(join(store, "@ufstack+monorm-auth@1.0.0", "node_modules"), "@ufstack/monorm-auth", AUTH);
   const billing = pkg(join(store, "monorm-billing@1.0.0", "node_modules"), "monorm-billing", BILLING);
   // the project sees only @ufstack/monorm-auth; @ufstack/monorm-auth sees monorm-billing as a sibling in its own store entry
+  mkdirSync(join(dir, "node_modules", "@ufstack"), { recursive: true });
   symlinkSync(dirname(auth), join(dir, "node_modules", "@ufstack/monorm-auth"));
-  symlinkSync(dirname(billing), join(store, "@ufstack/monorm-auth@1.0.0", "node_modules", "monorm-billing"));
+  symlinkSync(dirname(billing), join(store, "@ufstack+monorm-auth@1.0.0", "node_modules", "monorm-billing"));
   const apps = resolveApps(schema);
   assert.deepEqual(apps, { "@ufstack/monorm-auth": auth, "monorm-billing": billing });
   assert.deepEqual(tables(native().compileSchemaFile(schema, apps)), ["auth_b_invoice", "auth_user", "post"]);
@@ -66,14 +67,14 @@ test("an app that only another app depends on resolves in pnpm's strict layout",
 test("an app that is not installed is left for the loader to report", (t) => {
   const schema = write(join(directory(t), "schema.prisma"), PROJECT);
   assert.deepEqual(resolveApps(schema), {});
-  assert.throws(() => native().compileSchemaFile(schema, {}), /app:@ufstack/monorm-auth.*not installed.*install the `@ufstack/monorm-auth` package/s);
+  assert.throws(() => native().compileSchemaFile(schema, {}), /app:@ufstack\/monorm-auth.*not installed.*install the `@ufstack\/monorm-auth` package/s);
 });
 
 test("an app without schema metadata names the missing package.json key", (t) => {
   const dir = directory(t);
   const schema = write(join(dir, "schema.prisma"), PROJECT);
   pkg(join(dir, "node_modules"), "@ufstack/monorm-auth", AUTH, null);
-  assert.throws(() => resolveApps(schema), (e) => e instanceof SchemaError && /`@ufstack/monorm-auth` package declares no schema.*"monorm"/s.test(e.message));
+  assert.throws(() => resolveApps(schema), (e) => e instanceof SchemaError && /`@ufstack\/monorm-auth` package declares no schema.*"monorm"/s.test(e.message));
 });
 
 test("an app whose package.json names no file is an error", (t) => {
@@ -111,5 +112,5 @@ test("load resolves an installed app and loads names the way out", (t) => {
   pkg(join(dir, "node_modules"), "@ufstack/monorm-auth", AUTH);
   pkg(join(dir, "node_modules"), "monorm-billing", BILLING);
   assert.deepEqual(Object.keys(load(schema, { registry: new Registry() })).sort(), ["Invoice", "Post", "User"]);
-  assert.throws(() => loads(PROJECT, { registry: new Registry() }), /app:@ufstack/monorm-auth.*use `load\(path\)` or generate/s);
+  assert.throws(() => loads(PROJECT, { registry: new Registry() }), /app:@ufstack\/monorm-auth.*use `load\(path\)` or generate/s);
 });

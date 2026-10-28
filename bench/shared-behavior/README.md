@@ -58,12 +58,12 @@ extensions, and a writable `orm_test` database. Our existing isolated server ran
 on port 55439. Substitute your URL when invoking the runner.
 
 ```nu
-$env.UV_CACHE_DIR = '/tmp/orm-uv-cache'
+$env.UV_CACHE_DIR = '/tmp/monorm-uv-cache'
 ^uv pip install --python .venv/bin/python -e .
 with-env {VIRTUAL_ENV: ($env.PWD | path join .venv)} { cd languages/python/packaging/tooling; ^../../../../../.venv/bin/maturin develop --release }
 ^node languages/js/scripts/build-native.mjs --release
 ^npm --prefix languages/js run build
-^nu bench/shared-behavior/run.nu --url 'postgres://postgres:postgres@127.0.0.1:55439/orm_test' --out /tmp/orm-lock-results
+^nu bench/shared-behavior/run.nu --url 'postgres://postgres:postgres@127.0.0.1:55439/orm_test' --out /tmp/monorm-lock-results
 ```
 
 Wait for each build to finish successfully before running the next command.

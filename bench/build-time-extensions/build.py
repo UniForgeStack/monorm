@@ -68,7 +68,7 @@ for side in ["before", "after"]:
     )
     elapsed = time.perf_counter() - start
     suffix = ".dylib" if os.uname().sysname == "Darwin" else ".so"
-    py = dest / "languages/python/orm/_native.so"
+    py = dest / "languages/python/monorm/_native.so"
     node = dest / "languages/js/monorm.node"
     shutil.copy2(root / f"target/release/lib_native{suffix}", py)
     shutil.copy2(root / f"target/release/libmonorm_node{suffix}", node)

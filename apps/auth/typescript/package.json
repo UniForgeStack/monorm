@@ -1,7 +1,7 @@
 {
   "name": "@ufstack/monorm-auth",
   "version": "0.1.0",
-  "description": "Users, roles, permissions and passwords for the orm package: one schema, no native code",
+  "description": "Users, roles, permissions and passwords for the monorm package: one schema, no native code",
   "license": "MIT",
   "type": "module",
   "main": "./dist/src/index.js",

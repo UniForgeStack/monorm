@@ -700,7 +700,7 @@ from pathlib import Path as _Path
 import sys as _sys
 
 _path = (_Path(__file__).parent / {path}).resolve()
-_key = '_orm_schema:' + str(_path)
+_key = '_monorm_schema:' + str(_path)
 if _key not in _sys.modules:
     _spec = _util.spec_from_file_location(_key, _path)
     _module = _util.module_from_spec(_spec)

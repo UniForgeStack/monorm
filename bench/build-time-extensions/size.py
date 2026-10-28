@@ -1,10 +1,10 @@
-"""Attribute the machine-code growth between two native artifacts to orm modules.
+"""Attribute the machine-code growth between two native artifacts to monorm modules.
 
 usage: size.py BEFORE AFTER [ROWS] [DEPTH]
 
 Mach-O only (macOS `nm`). Each `__text` symbol is sized by the distance to the next
-symbol and charged to the first orm crate it names, so monomorphized serde code
-counts against the orm type it decodes. `monorm_core::ir` and `monorm_contracts::ir` are
+symbol and charged to the first monorm crate it names, so monomorphized serde code
+counts against the monorm type it decodes. `monorm_core::ir` and `monorm_contracts::ir` are
 one key, because the IR moved between the two crates.
 Only Rust v0 symbols are parsed, and only roughly: backrefs and `s<n>_` disambiguators
 can misname a key, and legacy `_ZN` symbols and the last symbol are not counted.

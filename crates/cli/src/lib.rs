@@ -20,7 +20,7 @@
 //! ```
 //!
 //! The schema file and the migrations directory come from `--schema` / `--dir`, else
-//! from `[tool.monorm]` in `pyproject.toml` or the `"@ufstack/monorm"` key of `package.json`
+//! from `[tool.monorm]` in `pyproject.toml` or the `"monorm"` key of `package.json`
 //! (`schema`, `migrations`), else `schema.prisma` and `migrations`. The database URL
 //! comes from `--url` or `MONORM_DATABASE_URL`. `generate` also reads the query-set classes
 //! from `[tool.monorm.query_sets]` (Python) or `"monorm": {"querySets": ...}` (TypeScript),
@@ -211,7 +211,7 @@ struct Config {
 fn pyproject() -> Option<Config> {
     let text = std::fs::read_to_string("pyproject.toml").ok()?;
     let doc: toml::Table = text.parse().ok()?;
-    let orm = doc.get("tool")?.get("monorm")?;
+    let monorm = doc.get("tool")?.get("monorm")?;
     let get = |k: &str| monorm.get(k).and_then(|v| v.as_str()).map(String::from);
     Some(Config { schema: get("schema"), migrations: get("migrations") })
 }
@@ -219,7 +219,7 @@ fn pyproject() -> Option<Config> {
 fn package_json() -> Option<Config> {
     let text = std::fs::read_to_string("package.json").ok()?;
     let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let orm = doc.get("monorm")?;
+    let monorm = doc.get("monorm")?;
     let get = |k: &str| monorm.get(k).and_then(|v| v.as_str()).map(String::from);
     Some(Config { schema: get("schema"), migrations: get("migrations") })
 }
@@ -535,7 +535,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                 write(&out.with_extension("pyi"), &g.stub)?;
                 println!("wrote {} and {}", out.display(), out.with_extension("pyi").display());
             } else {
-                let shared = out.with_file_name("_orm_models.py");
+                let shared = out.with_file_name("_monorm_models.py");
                 let shared_abs = absolute(&shared)?;
                 let mut files = vec![(shared.clone(), g.module), (shared.with_extension("pyi"), g.stub)];
                 let mut outputs = std::collections::HashSet::new();
@@ -546,7 +546,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                     if !outputs.insert(target_abs.clone()) {
                         return Err(Failure::Failed(format!("multiple schema modules would write {}; put each schema in its own directory", target.display())));
                     }
-                    let (relative, import) = module_paths(target_abs.parent().unwrap(), &shared_abs, "_orm_models")?;
+                    let (relative, import) = module_paths(target_abs.parent().unwrap(), &shared_abs, "_monorm_models")?;
                     let mut merged = dsl::SchemaUnit { path: unit.path.clone(), app: None, models: unit.models.clone(), enums: unit.enums.clone(), types: unit.types.clone() };
                     if index == 0 {
                         for app in project.units.iter().filter(|u| u.app.is_some()) {

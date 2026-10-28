@@ -633,7 +633,7 @@ async def test_column_from_a_dotted_path(clean):
     assert repr(monorm.column(Comment, "post.author.name")) == repr(Comment.post.author.name)
     names = await User.objects.filter(monorm.column(User, "posts.title").startswith("hi")).select(User.name).scalars()
     assert names == ["Alice"]
-    assert [p.title for p in await Post.objects.order_by(-orm.column(Post, "views"))][:1] == ["hit"]
+    assert [p.title for p in await Post.objects.order_by(-monorm.column(Post, "views"))][:1] == ["hit"]
     with pytest.raises(LookupError, match="Post has no relation 'nope'"):
         monorm.column(Post, "nope.title")
     with pytest.raises(LookupError, match="User has no field 'nope'"):

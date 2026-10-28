@@ -7,8 +7,8 @@ use std::{
 };
 
 const KEYS: [(&str, &str); 3] = [
-    ("darwin-arm64", "liborm_demo.dylib"),
-    ("linux-x64", "liborm_demo.so"),
+    ("darwin-arm64", "libmonorm_demo.dylib"),
+    ("linux-x64", "libmonorm_demo.so"),
     ("win32-x64", "monorm_demo.dll"),
 ];
 
@@ -64,7 +64,7 @@ fn libraries(root: &Path, skip: Option<&str>) -> PathBuf {
 }
 
 fn builder(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orm-extension-package"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_monorm-extension-package"));
     for arg in args {
         command.arg(arg.as_ref());
     }
@@ -188,7 +188,7 @@ fn assemble_names_the_missing_platform() {
 #[test]
 fn a_library_with_an_extension_cannot_be_assembled() {
     let root = scratch("extension");
-    let dir = crate_dir(&root, "liborm_demo.so");
+    let dir = crate_dir(&root, "libmonorm_demo.so");
     let output = assemble(&root, &dir, &libraries(&root, None));
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no file extension"));
@@ -241,7 +241,7 @@ fn library_copies_the_host_library_under_its_platform_key() {
     fs::remove_dir_all(root).unwrap();
 }
 
-const RUNTIMES: &str = "[python]\nsource = \"python\"\ndependencies = [\"opendal>=0.47,<0.48\", \"orm>=0.1,<0.2\"]\n[typescript]\nsource = \"typescript\"\ndependencies = { opendal = \"^0.47.0\", orm = \"^0.1.0\" }\nexports = { \"./model\" = \"model.js\" }\n";
+const RUNTIMES: &str = "[python]\nsource = \"python\"\ndependencies = [\"opendal>=0.47,<0.48\", \"monorm>=0.1,<0.2\"]\n[typescript]\nsource = \"typescript\"\ndependencies = { opendal = \"^0.47.0\", \"@ufstack/monorm\" = \"^0.1.0\" }\nexports = { \"./model\" = \"model.js\" }\n";
 
 /// A crate with runtime sources and `RUNTIMES` (or another tail) after the header keys.
 fn crate_with_runtimes(root: &Path, tail: &str) -> PathBuf {
@@ -266,9 +266,9 @@ fn dependencies_and_subpath_exports_reach_the_wheel_and_the_npm_package() {
     let wheel = root.join("out/acme_demo-0.1.0-py3-none-any.whl");
     let metadata = zip_reader(&wheel).read("acme_demo-0.1.0.dist-info/METADATA");
     let requires: Vec<_> = metadata.lines().filter(|l| l.starts_with("Requires-Dist: ")).collect();
-    assert_eq!(requires, ["Requires-Dist: opendal>=0.47,<0.48", "Requires-Dist: orm>=0.1,<0.2"]);
+    assert_eq!(requires, ["Requires-Dist: opendal>=0.47,<0.48", "Requires-Dist: monorm>=0.1,<0.2"]);
     let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
-    assert_eq!(package["dependencies"], serde_json::json!({"opendal": "^0.47.0", "orm": "^0.1.0"}));
+    assert_eq!(package["dependencies"], serde_json::json!({"opendal": "^0.47.0", "@ufstack/monorm": "^0.1.0"}));
     assert_eq!(package["exports"]["."]["default"], "./index.js");
     assert_eq!(package["exports"]["./model"], serde_json::json!({"types": "./model.d.ts", "default": "./model.js"}));
     fs::remove_dir_all(root).unwrap();
@@ -307,4 +307,19 @@ fn a_wrong_dependency_shape_or_export_is_an_error() {
         assert!(error.contains(message), "{tail}: {error}");
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn a_monorm_id_gives_the_ufstack_npm_name_and_a_monorm_dist() {
+    let root = scratch("namespace");
+    let dir = crate_dir(&root, "monorm_demo");
+    let manifest = dir.join("monorm-extension.toml");
+    let text = fs::read_to_string(&manifest).unwrap().replace("acme.demo", "monorm.demo");
+    fs::write(&manifest, text).unwrap();
+    let output = assemble(&root, &dir, &libraries(&root, None));
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(root.join("out/monorm_demo-0.1.0-py3-none-any.whl").is_file());
+    let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
+    assert_eq!(package["name"], "@ufstack/monorm-demo");
+    fs::remove_dir_all(root).unwrap();
 }

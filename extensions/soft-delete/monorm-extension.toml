@@ -40,7 +40,7 @@ target = "field"
 kind = "string"
 
 [python]
-source = "python/orm_soft_delete"
+source = "python/monorm_soft_delete"
 query_set = "SoftDeleteQuerySet"
 instance = "SoftDeleteInstance"
 bound_query_set = "SoftDeleteBoundQuerySet"

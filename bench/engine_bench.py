@@ -1,4 +1,4 @@
-"""End-to-end timings of the `orm` package on the blog models, for comparing engines.
+"""End-to-end timings of the `monorm` package on the blog models, for comparing engines.
 
     (cd languages/python/packaging/tooling && maturin develop --release)
     python bench/engine_bench.py [--url URL] [--rounds N] [--out results.json]

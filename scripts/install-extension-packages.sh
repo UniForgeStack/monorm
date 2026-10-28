@@ -17,7 +17,7 @@ for extension in timestamps soft-delete locking inherit query-defaults generic p
 done
 uv pip install --python "$PY" "$OUT"/*/*.whl
 # The package directories import monorm; resolve it through the checkout.
-mkdir -p "$ROOT/node_modules"
-ln -sfn ../languages/js "$ROOT/node_modules/@ufstack/monorm"
+mkdir -p "$ROOT/node_modules/@ufstack"
+ln -sfn ../../languages/js "$ROOT/node_modules/@ufstack/monorm"
 (cd "$ROOT/languages/js" && npm install --no-audit --no-fund)
 (cd "$ROOT/apps/auth/typescript" && npm install --no-audit --no-fund)

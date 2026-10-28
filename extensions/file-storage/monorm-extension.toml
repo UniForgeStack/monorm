@@ -20,7 +20,7 @@ phase = "behavior"
 effects = ["behavior.field_adapters"]
 
 [python]
-source = "integration/python/src/orm_file_storage"
+source = "integration/python/src/monorm_file_storage"
 dependencies = ["opendal>=0.47,<0.48"]
 [[python.field_adapters]]
 adapter = "file-storage.reference.v1"
