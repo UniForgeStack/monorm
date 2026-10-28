@@ -37,6 +37,8 @@ python extensions/inherit/tests/public/python.py
 (cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
 (cd apps/auth/typescript && npm test && npm run test:bun)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
+python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
+cargo package -p orm-contracts      # the crate that extension authors get from crates.io
 ```
 
 The commands install the thin `orm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.
