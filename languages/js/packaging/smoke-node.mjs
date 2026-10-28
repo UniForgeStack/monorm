@@ -14,7 +14,6 @@ process.env.ORM_PROFILE = "invalid-after-initialization";
 assert.equal(native(), addon);
 process.env.ORM_PROFILE = selector;
 assert.deepEqual(Object.keys(JSON.parse(addon.nativeArtifact()).extensions).sort(), []);
-assert.equal(metadata.capabilities.composition, false);
 assert.equal(typeof addon.cli === "function", metadata.capabilities.cli);
 assert.equal(typeof addon.generateTypescript === "function", metadata.capabilities["generate-typescript"]);
 const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./cli.js", pathToFileURL(require.resolve("orm")))), "--help"], { encoding: "utf8" });

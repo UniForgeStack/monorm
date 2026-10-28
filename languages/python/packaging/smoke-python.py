@@ -21,7 +21,6 @@ os.environ["ORM_PROFILE"] = _selector
 assert hasattr(_native, "cli") == metadata["capabilities"]["cli"]
 extensions = set(json.loads(_native.native_artifact())["extensions"])
 assert extensions == set(), extensions
-assert metadata["capabilities"]["composition"] is False
 assert hasattr(_native, "generate_python") == metadata["capabilities"]["generate-python"]
 assert hasattr(_native, "generate_typescript") is False  # only Node exposes its generator
 

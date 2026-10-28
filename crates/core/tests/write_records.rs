@@ -98,3 +98,34 @@ fn a_composed_chain_rejects_every_write_record() {
     let err = build(json!({"write_assignments": [own]})).err().unwrap();
     assert!(err.contains("write record from ext-a on Child.changed is not supported in a multi-table model's ownership chain"), "{err}");
 }
+
+#[test]
+fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
+    let model = |name: &str, table: &str, parent: Option<(&str, &str)>| {
+        let mut m = json!({"name": name, "table": table, "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}]});
+        if let Some((target, relation)) = parent {
+            m["relations"] = json!([{"name": relation, "kind": "one", "target": target, "from": "id", "to": "id", "foreign_key": true}]);
+        } else {
+            m["fields"].as_array_mut().unwrap().push(json!({"name": "changed", "column": "changed_at", "type": "date_time"}));
+        }
+        m
+    };
+    // The leaf comes first, so the walk needs two links to reach the root.
+    let physical = json!([model("Child", "children", Some(("Parent", "parent"))), model("Parent", "parents", Some(("Grand", "grand"))), model("Grand", "grands", None)]);
+    let mut logical = physical.clone();
+    for i in [0, 1] {
+        logical[i]["fields"].as_array_mut().unwrap().push(json!({"name": "changed", "column": "changed_at", "type": "date_time"}));
+    }
+    let build = |records: Value| {
+        let mut behavior = json!({"schema_contract": SCHEMA_CONTRACT, "storage": {"models": physical},
+            "field_storage": [{"model": "Parent", "field": "changed", "owner": "Grand", "column": "changed_at"}, {"model": "Child", "field": "changed", "owner": "Grand", "column": "changed_at"}],
+            "owner_links": [{"child": "Parent", "parent": "Grand", "child_key": "id", "parent_key": "id"}, {"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
+        behavior.as_object_mut().unwrap().extend(records.as_object().unwrap().clone());
+        Schema::from_ir(serde_json::from_value(json!({"models": logical, "behavior": behavior})).unwrap())
+    };
+    assert!(build(json!({})).is_ok());
+    let mut root = assign("changed", "now", json!(["update"]));
+    root["model"] = "Grand".into();
+    let err = build(json!({"write_assignments": [root]})).err().unwrap();
+    assert!(err.contains("model Child: a write record from ext-a on Grand.changed is not supported in a multi-table model's ownership chain"), "{err}");
+}
