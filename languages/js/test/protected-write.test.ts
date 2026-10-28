@@ -2,9 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { allowWrites, connect, loads, Registry, SchemaError, WriteProtected, type Database } from "../src/index.js";
-import { artifactCapabilities } from "./artifact-caps.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const capabilities = artifactCapabilities();
 const source = `datasource db {
   provider = "sqlite"
 }
@@ -108,7 +107,7 @@ test("@@protected_write creates no DDL and no snapshot change", () => {
     (e: Error) => e instanceof SchemaError && /@@protected_write takes no arguments/.test(e.message));
 });
 
-test("a proxy writes the table of its protected root", { skip: !capabilities.includes("proxy-models") }, async () => {
+test("a proxy writes the table of its protected root", { skip: !hasExtension("orm.proxy") }, async () => {
   const { models, db } = await blog(source + "model Draft {\n  @@proxy.of(Post)\n}\n");
   const { Post, Draft } = models;
   try {
@@ -118,7 +117,7 @@ test("a proxy writes the table of its protected root", { skip: !capabilities.inc
   } finally { await db.close(); }
 });
 
-test("a composed write also writes its protected parent", { skip: !capabilities.includes("model-composition") }, async () => {
+test("a composed write also writes its protected parent", { skip: !hasExtension("orm.composition") }, async () => {
   const { models, db } = await blog(`datasource db {
   provider = "sqlite"
 }

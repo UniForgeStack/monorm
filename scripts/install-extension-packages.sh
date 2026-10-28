@@ -12,7 +12,7 @@ if [ ! -x "$TSC" ]; then
   npm install --prefix "$tools" --no-audit --no-fund typescript@^5.9.0
   TSC=$tools/node_modules/.bin/tsc
 fi
-for extension in timestamps soft-delete locking inherit query-defaults generic file-storage; do
+for extension in timestamps soft-delete locking inherit query-defaults generic proxy model-composition file-storage; do
   cargo run -q --manifest-path "$ROOT/Cargo.toml" -p orm-extension-package -- package "$ROOT/extensions/$extension" --out "$OUT/$extension" --tsc "$TSC"
 done
 uv pip install --python "$PY" "$OUT"/*/*.whl

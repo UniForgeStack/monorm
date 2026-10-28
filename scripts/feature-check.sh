@@ -3,10 +3,9 @@
 #
 #   ORM_TEST_DATABASE_URL=postgres://... scripts/feature-check.sh [artifact...]
 #
-# Artifacts: proxy-models model-composition
-# all (default: every one). Each artifact selects only extension crates; the manifests turn on
-# the host Cargo features, so no cargo command here passes --features.
-# The timestamps, soft-delete, locking, inherit, query-defaults and generic packages are installed in every environment,
+# Artifacts: all (default). Each artifact selects only extension crates,
+# so no cargo command here passes --features. No extension crate is left, so `all` builds the bare host.
+# The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy, composition and file-storage packages are installed in every environment,
 # so the auth app (apps/auth) and the inherit and query-defaults public scripts run on every artifact.
 # Output, logs and the pass/fail matrix go to $ORM_FEATURE_CHECK_DIR (default target/feature-check).
 set -uo pipefail
@@ -19,7 +18,7 @@ export ORM_TEST_DATABASE_URL
 # Not CARGO_TARGET_DIR: sccache hashes every CARGO_* variable, and a per-checkout path would block cache hits.
 TARGET=$WORK/target
 mkdir -p "$WORK/.cargo" && printf '[build]\ntarget-dir = "%s"\n' "$TARGET" >"$WORK/.cargo/config.toml"
-ARTIFACTS=${*:-proxy-models model-composition all}
+ARTIFACTS=${*:-all}
 LOGS=$WORK/logs
 MATRIX=$WORK/matrix.txt
 case "$(uname -s)" in
@@ -30,12 +29,10 @@ esac
 # The dependency entry and expected capability of each extension crate.
 dependency() {
   case $1 in
-    proxy-models) echo '"proxy":{"package":"orm-proxy","path":"'"$ROOT"'/extensions/proxy"}' ;;
-    model-composition) echo '"composition":{"package":"orm-model-composition","path":"'"$ROOT"'/extensions/model-composition"}' ;;
     *) echo "unknown feature $1" >&2; return 1 ;;
   esac
 }
-FEATURES="proxy-models model-composition"
+FEATURES=""
 features_of() { if [ "$1" = all ]; then echo "$FEATURES"; else echo "$1"; fi; }
 
 # step ARTIFACT SUITE COMMAND...: run one suite, log it, and record PASS or FAIL.

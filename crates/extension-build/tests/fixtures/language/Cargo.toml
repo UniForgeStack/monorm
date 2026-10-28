@@ -12,7 +12,7 @@ orm-contracts = { path = "../../../../contracts" }
 id = "example.language"
 version = "1.0.0"
 host_contract = 1
-schema_contract = 4
+schema_contract = "5.0"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]

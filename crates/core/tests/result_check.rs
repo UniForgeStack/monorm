@@ -23,12 +23,3 @@ fn physical_enum_values_remain_representable_and_warnings_aggregate_without_valu
     assert!(!json.contains("old-private-value"));
     assert!(json.contains("expected_shape") && json.contains("Active") && json.contains("acme.shape"));
 }
-
-#[test]
-fn models_with_proxy_records_and_no_views_ask_for_a_new_generate() {
-    let ir = orm_contracts::ir::SchemaIr::from_json(r#"{"models":[{"name":"A","table":"a","fields":[{"name":"id","column":"id","type":"int"}],"primary_key":["id"]}],"behavior":{"proxy_models":[{"model":"A","parent":"A"}]}}"#).unwrap();
-    let Err(error) = orm_core::schema::Schema::from_ir(ir) else { panic!("accepted") };
-    // A build without the proxy capability rejects the records before the view check.
-    let expected = if cfg!(feature = "proxy-models") { "run `orm generate`" } else { "rebuild native artifact" };
-    assert!(error.contains(expected), "{error}");
-}

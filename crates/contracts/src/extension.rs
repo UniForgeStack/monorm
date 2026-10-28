@@ -7,22 +7,12 @@ pub use crate::version::ContractVersion;
 /// The static Rust API of an extension crate; a library has the C ABI instead.
 pub const HOST_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0);
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(4, 5);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
 /// The C ABI that `orm_contracts::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
 pub const HOST_CONTRACT: u32 = HOST_CONTRACT_VERSION.major as u32;
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
-/// The minor that an IR carries only when it uses a record that a 2.0 engine lacks (`hooks`, `extension_data`).
-/// Manifest-only keys (minor 2) never reach an IR, so this stays at the IR minor.
-pub const SCHEMA_CONTRACT_MINOR: u32 = 1;
-/// The minor that an IR carries when a field adapter record has `options`.
-pub const FIELD_ADAPTER_OPTIONS_MINOR: u32 = 3;
-/// The minor that an IR carries when it holds a record of slice 2c: a hook of point 5, 6 or 7, an `Expr` or
-/// `ExprHook` write assignment, or an `Expr` or `Hook` client default. An older engine fails to parse them.
-pub const EXPRESSION_RECORDS_MINOR: u32 = 4;
-/// The minor that an IR carries when it has a model view or a result check (3.5 records).
-pub const SCHEMA_CONTRACT_VIEWS_MINOR: u32 = 5;
 /// The version of `orm.ext` / `orm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
@@ -55,9 +45,6 @@ pub struct Declaration {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Requirements {
-    /// Same-table logical views, prepared by the selected proxy compiler.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub proxy_models: Vec<ProxyModel>,
     /// Models that read and write the table of another model, with an optional fixed row filter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_views: Vec<ModelView>,
@@ -190,16 +177,8 @@ impl Requirements {
             .chain(self.instance_guards.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
     }
 
-    /// Sets the minor of the contract when a record or a package runtime section that needs a newer minor is in use, so that an older engine reads every other IR.
-    pub fn stamp_minor(&mut self) {
-        if !self.hooks.is_empty() || !self.extension_data.is_empty() { self.schema_contract_minor = self.schema_contract_minor.max(SCHEMA_CONTRACT_MINOR); }
-        let has_adapter_runtime = self.packages.values().any(|p| p.language_members.values().any(|s| !s.field_adapters.is_empty()));
-        if has_adapter_runtime || self.field_adapters.iter().any(|a| !a.options.is_null()) { self.schema_contract_minor = self.schema_contract_minor.max(FIELD_ADAPTER_OPTIONS_MINOR); }
-        if !self.model_views.is_empty() || !self.result_checks.is_empty() { self.schema_contract_minor = self.schema_contract_minor.max(SCHEMA_CONTRACT_VIEWS_MINOR); }
-    }
-
     pub fn is_empty(&self) -> bool {
-        self.read_defaults.is_empty() && self.proxy_models.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
+        self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.extensions.is_empty() && self.packages.is_empty() && self.specializations.is_empty()
             && self.lowered_models.is_empty() && self.completed_passes.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.methods.is_empty() && self.field_adapters.is_empty()
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
@@ -330,56 +309,6 @@ pub struct ResultCheck {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed: Option<Vec<String>>,
     pub code: String,
-}
-
-/// Intended shape only. Physical encoding, enum representation and constraints
-/// remain on the storage owner. Only explicit partition ownership implies a predicate.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ProxyModel {
-    pub model: String,
-    pub parent: String,
-    /// Resolved root physical model identity, filled by lowering. Generic identity
-    /// manifests exclude `model` and refer to this concrete storage identity.
-    #[serde(default)]
-    pub storage_owner: String,
-    /// Resolved list-partition ownership; values use the physical enum encoding.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub partition: Option<ProxyPartition>,
-    #[serde(default)]
-    pub fields: Vec<ProxyField>,
-    /// `@@proxy.fields(include:|exclude:)`: which source fields and relations the view keeps.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection: Option<ProxySelection>,
-    /// Source fields and relations that are not part of the view, filled by lowering.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub omitted: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ProxyPartition {
-    pub table: String,
-    pub field: String,
-    pub values: Vec<serde_json::Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxySelection {
-    Include(Vec<String>),
-    Exclude(Vec<String>),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ProxyField {
-    pub field: String,
-    #[serde(default)]
-    pub non_null: bool,
-    /// Parent enum member names, not database labels. None means the whole enum.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subset: Option<Vec<String>>,
 }
 
 /// Setup contribution connecting a logical field to one physical owner.
@@ -867,9 +796,6 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
 pub fn check_requirements(ir: &SchemaIr, artifact: &Artifact) -> Result<(), String> {
     validate_field_adapters(ir)?;
     let r = &ir.behavior;
-    if !r.proxy_models.is_empty() && !artifact.capabilities.iter().any(|c| c == "proxy-models") {
-        return Err("proxy models require the compiled proxy-models capability; rebuild native artifact".into());
-    }
     if !r.is_empty() && r.schema_contract != artifact.schema_contract {
         return Err(format!("schema contract {} unavailable (artifact {}); rebuild native artifact", r.schema_contract, artifact.schema_contract));
     }
@@ -1101,11 +1027,7 @@ pub fn capture_storage(ir: &mut SchemaIr) -> Result<(), String> {
 pub const HOST_CAPABILITIES: &[&str] = &[
     "schema-transformations", "physical-schema", "native-string-values",
     "native-string-records", "native-string-results",
-    "model-composition", "proxy-models",
 ];
-
-/// Capabilities that a build selects as the host Cargo feature of the same name.
-pub const HOST_FEATURE_CAPABILITIES: &[&str] = &["model-composition", "proxy-models"];
 
 /// Combine one new declaration batch with an immutable definition context. Lowered
 /// declarations retain their phase state; new declarations are the only pass inputs.
@@ -1177,7 +1099,6 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.lowered_models.extend(n.lowered_models);
     c.lowered_models.sort(); c.lowered_models.dedup();
     c.declarations.extend(n.declarations);
-    c.proxy_models.extend(n.proxy_models);
     c.model_views.extend(n.model_views);
     c.result_checks.extend(n.result_checks);
     c.read_defaults.extend(n.read_defaults);
@@ -1498,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn a_language_section_of_adapters_needs_no_query_set_and_options_set_the_minor() {
+    fn a_language_section_of_adapters_needs_no_query_set() {
         let section: LanguageSection = serde_json::from_value(serde_json::json!({
             "field_adapters": [{"adapter": "a.b.v1", "install": "install", "value": "X", "module_functions": [{"name": "configure", "method": "configure", "stub": "(x: int) -> None"}]}],
         })).unwrap();
@@ -1506,17 +1427,13 @@ mod tests {
         assert!(serde_json::from_value::<LanguageSection>(serde_json::json!({"field_adapters": [{"adapter": "a", "install": "i", "value": "X", "extra": 1}]})).is_err());
         let mut ir = adapter_ir();
         ir.behavior.field_adapters.push(FieldAdapter { model: "Note".into(), field: "note".into(), adapter: "a.b.v1".into(), options: serde_json::Value::Null });
-        ir.behavior.stamp_minor();
-        assert_eq!(ir.behavior.schema_contract_minor, 0);
         assert!(!serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("options"));
         ir.behavior.field_adapters[0].options = serde_json::json!({"prefix": "x"});
-        ir.behavior.stamp_minor();
-        assert_eq!(ir.behavior.schema_contract_minor, FIELD_ADAPTER_OPTIONS_MINOR);
-        assert!(FIELD_ADAPTER_OPTIONS_MINOR as u16 <= SCHEMA_CONTRACT_VERSION.minor);
+        assert!(serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("options"));
     }
 
     fn hook_ir(binding: serde_json::Value) -> SchemaIr {
-        let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+        let ir: SchemaIr = serde_json::from_value(serde_json::json!({
             "models": [{"name": "User", "table": "users", "fields": [
                 {"name": "id", "column": "id", "type": "int", "primary_key": true},
                 {"name": "name", "column": "name", "type": "string"},
@@ -1525,12 +1442,11 @@ mod tests {
             ]}],
             "behavior": {"hooks": [binding]},
         })).unwrap();
-        ir.behavior.stamp_minor();
         ir
     }
     fn hook_manifest(exports: serde_json::Value) -> Manifest {
         serde_json::from_value(serde_json::json!({
-            "id": "acme.lib", "version": "1.0.0", "schema_contract": "4.1", "abi": "0.2", "library": "lib",
+            "id": "acme.lib", "version": "1.0.0", "schema_contract": "5.0", "abi": "0.2", "library": "lib",
             "languages": ["python"], "databases": ["sqlite"], "exports": exports,
         })).unwrap()
     }
@@ -1599,28 +1515,25 @@ mod tests {
     }
 
     #[test]
-    fn contract_2_1_records_set_the_minor_and_merge() {
+    fn a_newer_minor_is_refused_and_extension_data_merges() {
         let ir = hook_ir(binding(2, Some("name"), "acme.lib.check"));
-        assert_eq!(ir.behavior.schema_contract_minor, SCHEMA_CONTRACT_MINOR);
         assert!(!ir.behavior.is_empty());
         let json = serde_json::to_string(&ir).unwrap();
-        assert!(json.contains("\"schema_contract_minor\":1"), "{json}");
-        assert!(!serde_json::to_string(&SchemaIr::default()).unwrap().contains("schema_contract_minor"));
+        assert!(!json.contains("schema_contract_minor"), "{json}");
         let mut newer = SchemaIr::default();
         newer.behavior.schema_contract = SCHEMA_CONTRACT;
         newer.behavior.schema_contract_minor = SCHEMA_CONTRACT_VERSION.minor as u32 + 1;
         let error = check_requirements(&newer, &Artifact::default()).unwrap_err();
         assert!(error.contains(&format!("schema contract {}.{} is newer than this engine ({SCHEMA_CONTRACT_VERSION})", SCHEMA_CONTRACT_VERSION.major, SCHEMA_CONTRACT_VERSION.minor + 1)), "{error}");
-        let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir.behavior.stamp_minor(); ir };
+        let data = |id: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_data.insert(id.into(), serde_json::json!({"prefix": "x"})); ir };
         let merged = merge_definition(data("a"), data("b")).unwrap();
         assert_eq!(merged.behavior.extension_data.len(), 2);
-        assert_eq!(merged.behavior.schema_contract_minor, 1);
         let error = merge_definition(data("a"), data("a")).unwrap_err();
         assert!(error.contains("extension_data of a is declared twice"), "{error}");
     }
 
     #[test]
-    fn contract_3_4_records_set_the_minor_that_an_older_engine_refuses() {
+    fn expression_records_set_the_major_that_an_older_engine_refuses() {
         let stamped = |behavior: serde_json::Value, client_default: serde_json::Value| {
             let mut name = serde_json::json!({"name": "name", "column": "name", "type": "string"});
             if !client_default.is_null() { name["client_default"] = client_default; }
@@ -1628,7 +1541,6 @@ mod tests {
                 "models": [{"name": "User", "table": "users", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, name]}],
                 "behavior": behavior,
             })).unwrap();
-            ir.behavior.stamp_minor();
             ir.stamp_expression_records();
             ir
         };
@@ -1639,7 +1551,7 @@ mod tests {
         let none = serde_json::Value::Null;
         assert_eq!(minor(&stamped(serde_json::json!({}), none.clone())), 0);
         assert_eq!(minor(&stamped(assign(serde_json::json!("now")), none.clone())), 0);
-        assert_eq!(minor(&stamped(hooked(2), none.clone())), SCHEMA_CONTRACT_MINOR);
+        assert_eq!(stamped(hooked(2), none.clone()).behavior.schema_contract, 0);
         for (what, ir) in [
             ("an expression default", stamped(serde_json::json!({}), serde_json::json!({"expr": expr}))),
             ("a hook default", stamped(serde_json::json!({}), serde_json::json!({"hook": {"export": "acme.lib.x"}}))),
@@ -1649,8 +1561,7 @@ mod tests {
             ("a hook of point 6", stamped(hooked(6), none.clone())),
             ("a hook of point 7", stamped(hooked(7), none.clone())),
         ] {
-            assert_eq!((ir.behavior.schema_contract, minor(&ir)), (SCHEMA_CONTRACT, EXPRESSION_RECORDS_MINOR), "{what}");
-            assert!(serde_json::to_string(&ir).unwrap().contains(&format!("\"schema_contract_minor\":{EXPRESSION_RECORDS_MINOR}")), "{what}");
+            assert_eq!((ir.behavior.schema_contract, minor(&ir)), (SCHEMA_CONTRACT, 0), "{what}");
         }
     }
 
@@ -1730,22 +1641,16 @@ mod tests {
     }
 
     #[test]
-    fn view_and_check_records_set_the_minor_merge_and_count_as_behavior() {
+    fn view_and_check_records_merge_and_count_as_behavior() {
         let mut ir = SchemaIr::default();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.stamp_minor();
-        assert_eq!(ir.behavior.schema_contract_minor, 0);
         ir.behavior.model_views.push(ModelView { row_filter: Some(RowFilter { field: "kind".into(), values: vec!["a".into()] }), insert_table: Some("t_a".into()), ..view("V", "S", "S") });
         assert!(!ir.behavior.is_empty());
-        ir.behavior.stamp_minor();
-        assert_eq!(ir.behavior.schema_contract_minor, SCHEMA_CONTRACT_VIEWS_MINOR);
         let json = serde_json::to_string(&ir).unwrap();
-        assert!(json.contains("\"model_views\"") && json.contains("\"schema_contract_minor\":5") && !json.contains("result_checks"), "{json}");
+        assert!(json.contains("\"model_views\"") && !json.contains("schema_contract_minor") && !json.contains("result_checks"), "{json}");
         let mut checks = SchemaIr::default();
         checks.behavior.result_checks.push(ResultCheck { model: "V".into(), field: "n".into(), non_null: true, allowed: None, code: "acme.shape".into() });
         assert!(!checks.behavior.is_empty());
-        checks.behavior.stamp_minor();
-        assert_eq!(checks.behavior.schema_contract_minor, SCHEMA_CONTRACT_VIEWS_MINOR);
         let merged = merge_definition(ir, checks).unwrap();
         assert_eq!((merged.behavior.model_views.len(), merged.behavior.result_checks.len()), (1, 1));
         let error = check_requirements(&SchemaIr { behavior: Requirements { schema_contract: SCHEMA_CONTRACT, schema_contract_minor: SCHEMA_CONTRACT_VERSION.minor as u32 + 1, ..Requirements::default() }, ..SchemaIr::default() }, &Artifact::default()).unwrap_err();

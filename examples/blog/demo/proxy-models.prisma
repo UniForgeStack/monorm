@@ -1,4 +1,4 @@
-// Needs the proxy-models extension (orm-proxy).
+// Needs the orm-proxy package.
 
 enum Status {
   ACTIVE @map("active")

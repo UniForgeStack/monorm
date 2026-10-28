@@ -15,17 +15,17 @@ fn method_names(field: &str) -> Vec<String> {
         .collect()
 }
 
-/// A proxy writes the table of its storage owner, so its rows get the file fields of the owner.
-/// The copy is idempotent: a proxy field that has a record keeps it.
-fn copy_to_proxies(ir: &mut SchemaIr) -> Result<(), String> {
+/// A view writes the table of its root, so its rows get the file fields of the root.
+/// The copy is idempotent: a view field that has a record keeps it.
+fn copy_to_views(ir: &mut SchemaIr) -> Result<(), String> {
     let mut copies = Vec::new();
-    for proxy in &ir.behavior.proxy_models {
-        let Some(model) = ir.models.iter().find(|m| m.name == proxy.model) else { continue };
-        for owner in ir.behavior.field_adapters.iter().filter(|a| a.adapter == ADAPTER && a.model == proxy.storage_owner) {
+    for view in &ir.behavior.model_views {
+        let Some(model) = ir.models.iter().find(|m| m.name == view.model) else { continue };
+        for owner in ir.behavior.field_adapters.iter().filter(|a| a.adapter == ADAPTER && a.model == view.root) {
             if !model.fields.iter().any(|f| f.name == owner.field) { continue; }
-            if ir.behavior.field_adapters.iter().any(|a| a.model == proxy.model && a.field == owner.field) { continue; }
+            if ir.behavior.field_adapters.iter().any(|a| a.model == view.model && a.field == owner.field) { continue; }
             check_adapter_methods(ir, model, &method_names(&owner.field))?;
-            copies.push(FieldAdapter { model: proxy.model.clone(), ..owner.clone() });
+            copies.push(FieldAdapter { model: view.model.clone(), ..owner.clone() });
         }
     }
     ir.behavior.field_adapters.extend(copies);
@@ -70,7 +70,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
             || field.auto_increment
         {
             return Err(fail(
-                "file fields cannot have database defaults or be primary keys",
+                "file fields cannot be keys or have defaults",
             ));
         }
         let storage = declaration
@@ -99,7 +99,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         });
     }
     ir.behavior.field_adapters.extend(contributions);
-    copy_to_proxies(ir)?;
+    copy_to_views(ir)?;
     validate_field_adapters(ir)
 }
 
@@ -129,12 +129,12 @@ mod tests {
         assert_eq!(ir.behavior.field_adapters.len(), 1);
     }
     #[test]
-    fn a_proxy_gets_the_records_of_its_storage_owner_once() {
+    fn a_view_gets_the_records_of_its_root_once() {
         let mut ir = schema("json");
-        let mut proxy: orm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
-        proxy.name = "Draft".into();
-        ir.models.push(proxy);
-        ir.behavior.proxy_models.push(orm_contracts::extension::ProxyModel { model: "Draft".into(), parent: "Report".into(), storage_owner: "Report".into(), ..Default::default() });
+        let mut view: orm_contracts::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        view.name = "Draft".into();
+        ir.models.push(view);
+        ir.behavior.model_views.push(orm_contracts::extension::ModelView { model: "Draft".into(), source: "Report".into(), root: "Report".into(), row_filter: None, insert_table: None });
         lower(&mut ir).unwrap();
         ir.behavior.declarations[0].lowered = true;
         lower(&mut ir).unwrap();
@@ -159,7 +159,7 @@ mod tests {
             let mut ir = schema("json");
             let field = &mut ir.models[0].fields[1];
             match case { 0 => field.primary_key = true, 1 => field.default_now = true, _ => field.auto_increment = true }
-            assert!(lower(&mut ir).unwrap_err().contains("cannot have database defaults or be primary keys"));
+            assert!(lower(&mut ir).unwrap_err().contains("cannot be keys or have defaults"));
             assert!(ir.behavior.field_adapters.is_empty());
         }
     }

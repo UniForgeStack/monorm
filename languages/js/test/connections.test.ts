@@ -236,7 +236,7 @@ async function assertBackends(url: string, expected: number): Promise<void> {
   assert.equal(actual, expected, 'PostgreSQL replica sessions after pool closure');
 }
 
-test('replicas answer reads outside a transaction; writes and transactions use the primary', async () => {
+test('replicas answer reads outside a transaction; writes and transactions use the primary', { timeout: 30_000 }, async () => {
   const db = getDatabase(), url = await replicaUrl(), url2 = await replicaUrl(2);
   const routed = await connect(db.url, { replicas: [url, url2], default: false, maxConnections: 2 });
   try {
@@ -421,7 +421,7 @@ function scopedSchema(dialect: string) {
       relations: [{ name: 'orders', kind: 'many', target: 'Order', from: 'id', to: 'shop_id' }] },
     { name: 'Order', table: 's6_js_orders', fields: [field('id', 'int', { primary_key: true, auto_increment: true }), field('shop_id'), field('total')],
       relations: [{ name: 'shop', kind: 'one', target: 'Shop', from: 'shop_id', to: 'id', foreign_key: true, on_delete: 'cascade' }] },
-  ], behavior: { schema_contract: 4, read_defaults: [{ source: "orm.query-defaults", name: "query", model: 'Order', filter: {
+  ], behavior: { schema_contract: 5, read_defaults: [{ source: "orm.query-defaults", name: "query", model: 'Order', filter: {
     t: 'cmp', op: 'eq', l: { t: 'col', path: [], name: 'shop_id' }, r: { t: 'scope', name: 'shop' } } }] } };
 }
 

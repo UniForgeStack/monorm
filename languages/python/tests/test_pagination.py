@@ -10,7 +10,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import orm
-from orm import QueryError, _native, pagination
+from artifact_caps import has_extension
+from orm import QueryError, pagination
 
 SCHEMA = """
 datasource db {
@@ -361,10 +362,7 @@ model Named {
 """
 
 
-@pytest.mark.skipif(
-    "proxy-models" not in json.loads(_native.native_artifact())["capabilities"],
-    reason="requires selected proxy native artifact",
-)
+@pytest.mark.skipif(not has_extension("orm.proxy"), reason="requires the orm-proxy package")
 async def test_a_proxy_narrowed_order_column(postgres):
     models, db = await postgres(PROXY)
     User, Named = models["User"], models["Named"]

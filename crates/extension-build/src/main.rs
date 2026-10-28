@@ -255,7 +255,7 @@ fn main() -> Result<(), String> {
         let schema_inputs = config.output.join("schema-inputs.json");
         let mut command = Command::new("cargo");
         command.args(["run", "--quiet", "--locked", "--manifest-path"]).arg(config.output.join("Cargo.toml"))
-            .args(["-p", "orm-core", "--features", &std::iter::once("composition".to_owned()).chain(composition.host_features()).collect::<Vec<_>>().join(","), "--example", "orm_extension_normalize"]);
+            .args(["-p", "orm-core", "--features", "composition", "--example", "orm_extension_normalize"]);
         if config.offline { command.arg("--offline"); }
         command.arg("--").arg(base.join(&selected.schema)).arg(&normalized).arg(&schema_inputs)
             .env("ORM_CORE_COMPOSITION", config.output.join("composition.rs"));
@@ -283,8 +283,6 @@ fn main() -> Result<(), String> {
         fs::write(path, toml::to_string(&engine).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     }
     if !config.dependencies.is_empty() {
-        // Features are selected through manifests, never through build-script cfg tricks.
-        let selected = composition.host_features();
         for binding in &config.bindings {
             let path = config.output.join(binding_dir(binding)).join("Cargo.toml");
             let mut manifest: toml::Value = toml::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -294,10 +292,6 @@ fn main() -> Result<(), String> {
                 add_feature(&mut manifest, &["dependencies", "orm-engine", "features"], "composition")?;
             }
             add_feature(&mut manifest, &["dependencies", "orm-core", "features"], "composition")?;
-            for feature in &selected {
-                add_feature(&mut manifest, &["features", "default"], feature)?;
-                add_feature(&mut manifest, &["dependencies", "orm-core", "features"], feature)?;
-            }
             fs::write(path, toml::to_string(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         }
     }

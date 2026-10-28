@@ -1,6 +1,8 @@
+//! Shared-primary-key writes of the composition package on SQLite, and on PostgreSQL when `ORM_TEST_DATABASE_URL` is set.
+use orm_contracts::ir::SchemaIr;
 use orm_core::{
     dialect::{Dialect, Target},
-    dsl, migrate,
+    migrate,
     schema::Schema,
 };
 use orm_engine::{
@@ -9,20 +11,43 @@ use orm_engine::{
     exec::{self, Outcome},
     NoParams,
 };
+
+/// Person <- Employee <- Manager, and Person <- Customer, written the way the DSL lowers `@@composition.model`.
+fn composed(dialect: Dialect) -> SchemaIr {
+    let declare = |model: &str, parent: &str, parent_ref: &str, child_ref: &str| serde_json::json!({
+        "attribute": "composition.model", "model": model, "field": null, "positional": [],
+        "arguments": {"parent": parent, "parentRef": parent_ref, "childRef": child_ref},
+        "location": {"file": "composition.prisma", "line": 1, "column": 1}});
+    let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+        "models": [
+            {"name": "Person", "table": "person", "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": true, "auto_increment": true},
+                {"name": "name", "column": "name", "type": "string", "check": "name <> 'BADROOT'"}]},
+            {"name": "Employee", "table": "employee", "fields": [
+                {"name": "salary", "column": "salary", "type": "int", "check": "salary > 0"}]},
+            {"name": "Manager", "table": "manager", "fields": [
+                {"name": "level", "column": "level", "type": "int", "check": "level > 0"}]},
+            {"name": "Customer", "table": "customer", "fields": [
+                {"name": "points", "column": "points", "type": "int"}]}],
+        "dialect": dialect,
+        "behavior": {"declarations": [
+            declare("Employee", "Person", "person", "employee"),
+            declare("Manager", "Employee", "employee", "manager"),
+            declare("Customer", "Person", "person", "customer")]}})).unwrap();
+    orm_composition::lower(&mut ir).unwrap();
+    // The loader marks the declarations of a package pass lowered; the host then needs no manifest for them.
+    for declaration in &mut ir.behavior.declarations { declaration.lowered = true; }
+    ir.behavior.schema_contract = orm_contracts::extension::SCHEMA_CONTRACT;
+    ir.behavior.packages.insert("orm.composition".into(), orm_contracts::extension::PackageStamp { version: "0.1.0".into(), attributes: vec!["composition.model".into()], languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
+    ir
+}
 async fn check(url: &str) {
     let dialect = if url.starts_with("sqlite:") {
         Dialect::Sqlite
     } else {
         Dialect::Postgres
     };
-    let source = "datasource db { provider = \"sqlite\" }\nmodel Person {\n id Int @id @default(autoincrement())\n name String @check(\"name <> 'BADROOT'\")\n}\nmodel Employee {\n salary Int @check(\"salary > 0\")\n @@composition.model(parent: \"Person\", parentRef: \"person\", childRef: \"employee\")\n}\nmodel Manager {\n level Int @check(\"level > 0\")\n @@composition.model(parent: \"Employee\", parentRef: \"employee\", childRef: \"manager\")\n}";
-    let source = if dialect == Dialect::Postgres {
-        source.replace("\"sqlite\"", "\"postgresql\"")
-    } else {
-        source.into()
-    };
-    let source=format!("{source}\nmodel Customer {{\n points Int\n @@composition.model(parent: \"Person\", parentRef: \"person\", childRef: \"customer\")\n}}");
-    let ir = dsl::compile(&source, None).unwrap();
+    let ir = composed(dialect);
     let encoded=serde_json::to_string(&ir).unwrap();
     let schema = Schema::from_ir(ir).unwrap();
     // child, own fields and whether the root key fills itself, derived from the owner links and field storage
@@ -288,7 +313,8 @@ async fn check(url: &str) {
     }
     db.close().await;
 }
-fn main() {
+#[test]
+fn composed_models_write_read_and_roll_back_together() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         check("sqlite://:memory:").await;
         if let Ok(url) = std::env::var("ORM_TEST_DATABASE_URL") {

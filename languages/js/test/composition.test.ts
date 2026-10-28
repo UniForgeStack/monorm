@@ -1,10 +1,10 @@
-/** Model composition through the public API; needs an artifact with orm-model-composition selected. */
+/** Model composition through the public API; needs the @orm/composition package. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, IntegrityError, TransactionAborted, loads, Registry, statementInspection, type InspectedStatement } from "../src/index.js";
-import { artifactCapabilities, hasExtension } from "./artifact-caps.js";
+import { connect, IntegrityError, TransactionAborted, loads, Registry, scope, statementInspection, type InspectedStatement } from "../src/index.js";
+import { hasExtension } from "./artifact-caps.js";
 
-const enabled = (artifactCapabilities()).includes("model-composition");
+const enabled = hasExtension("orm.composition");
 const source = `
 model Person {
  id Int @id @default(autoincrement())
@@ -138,6 +138,7 @@ for (const [attribute, extension] of [
     const roleSource = `datasource db {\n provider = "sqlite"\n}
 model Person {
  id Int @id
+ name String
  @@map("composition06_node_role_people")
 }
 model Employee {
@@ -150,3 +151,40 @@ model Employee {
     assert.throws(() => loads(roleSource, { registry: new Registry() }), /not supported in a multi-table model's ownership chain/);
   });
 }
+
+const computedSource = `
+model Person {
+ id Int @id @default(autoincrement())
+ name String
+ @@map("composition_computed_node_people")
+}
+model Staff {
+ text String
+ start Int
+ end Int
+ shop_id Int
+ updated_by String?
+ first String
+ last String
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "staff")
+ @@outside.guard
+ @@map("composition_computed_node_staff")
+}
+`;
+
+test("a composed write returns the computed field", { skip: !enabled || !hasExtension("acme.outside") }, async () => {
+  const registry = new Registry();
+  const models = loads(`datasource db {\n provider = "sqlite"\n}\n${computedSource}`, { registry });
+  const Staff = models["Staff"] as unknown as { objects: { using(db: unknown): Objects }; id: { eq(value: unknown): unknown } };
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  await db.createTables();
+  try {
+    await scope({ shop: 1, user: "ann" }, async () => {
+      const row = await Staff.objects.using(db).insert({ name: "Ada", text: "t", start: 1, end: 2, first: "grace", last: "hopper" });
+      assert.equal(row["initials"], "GH");
+      const staff = Staff.objects.using(db).filter(Staff.id.eq(row["id"])) as unknown as { update(values: Row, options: { returning: true }): Promise<Row[]> };
+      const updated = await staff.update({ first: "mary", last: "shelley" }, { returning: true });
+      assert.deepEqual(updated.map((r) => r["initials"]), ["MS"]);
+    });
+  } finally { await db.close(); }
+});

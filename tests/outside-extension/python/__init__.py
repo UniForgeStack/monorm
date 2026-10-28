@@ -6,7 +6,7 @@ from orm import QuerySet
 from orm.adapters import Pending, register_field_adapter
 from orm.ext import ModelT
 
-MANIFEST_HASH = "406965360b710389985fc4e5a1c9f83c7a6d7b938247e88290c02bce5e185aae"
+MANIFEST_HASH = "feb1941ebdbd1c55d4a3233c741b85b89b714f1f8eb907fc24a43e0bab78afce"
 
 
 class OutsideQuerySet(QuerySet[ModelT]):

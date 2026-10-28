@@ -23,7 +23,7 @@ async function fixture(run, { protectedWrite = false } = {}) {
     models: [{ name: 'FileReport07', table: 'file_reports_07_node', fields: [
       { name: 'id', column: 'id', type: 'int', primary_key: true },
       { name: 'file', column: 'file', type: 'json', nullable: true }] }],
-    behavior: { schema_contract: 4,
+    behavior: { schema_contract: 5,
       field_adapters: [{ model: 'FileReport07', field: 'file', adapter: 'file-storage.reference.v1' }] },
   };
   ir.models[0].protected_write = protectedWrite;
@@ -143,6 +143,6 @@ test('a failed bulk insert keeps every upload and retries without one', () => fi
 }));
 
 test('models of the previous contract fail define', () => {
-  const ir = { models: [{ name: 'Old', table: 'old', fields: [{ name: 'id', column: 'id', type: 'int', primary_key: true }] }], behavior: { schema_contract: 3 } };
-  assert.throws(() => define(ir, { registry: new ModelRegistry() }), /schema contract 3 is older.*regenerate the models and rebuild/);
+  const ir = { models: [{ name: 'Old', table: 'old', fields: [{ name: 'id', column: 'id', type: 'int', primary_key: true }] }], behavior: { schema_contract: 4 } };
+  assert.throws(() => define(ir, { registry: new ModelRegistry() }), /schema contract 4 is older.*regenerate the models and rebuild/);
 });

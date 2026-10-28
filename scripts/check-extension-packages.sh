@@ -92,6 +92,30 @@ SCHEMA
   (cd "$consumer" && FILE_STORAGE_DATABASE_URL="$url" "$WORK/venv/bin/python" "$ROOT/extensions/file-storage/integration/tests/native_python.py")
   (cd "$consumer" && FILE_STORAGE_DATABASE_URL="$url" node --test file-storage.test.mjs)
   (cd "$consumer" && FILE_STORAGE_DATABASE_URL="$url" bun test file-storage.test.mjs)
+  # The proxy package: a proxy read through the installed package.
+  proxy=$consumer/proxy
+  mkdir -p "$proxy"
+  { printf 'datasource db { provider = "%s" }\n' "$dialect"; grep -v '^//' "$ROOT/examples/blog/demo/proxy-models.prisma"; } > "$proxy/schema.prisma"
+  (cd "$WORK/js" && "$WORK/venv/bin/python" -m orm --schema "$proxy/schema.prisma" generate python -o "$proxy/models.py")
+  (cd "$WORK/js" && node node_modules/orm/dist/src/cli.js --schema "$proxy/schema.prisma" generate typescript -o "$proxy/models.ts")
+  "$ROOT/languages/js/node_modules/.bin/tsc" "$proxy/models.ts" --outDir "$proxy" --module ESNext --target ES2022 --moduleResolution Bundler --skipLibCheck --noCheck
+  cp "$ROOT/scripts/tests/proxy_consumer.py" "$proxy/use.py"
+  cp "$ROOT/scripts/tests/proxy_consumer.mjs" "$proxy/use.mjs"
+  (cd "$proxy" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
+  (cd "$proxy" && ORM_DATABASE_URL="$url" node use.mjs)
+  (cd "$proxy" && ORM_DATABASE_URL="$url" bun use.mjs)
+  # The composition package: a composed insert through the installed package.
+  composition=$consumer/composition
+  mkdir -p "$composition"
+  { printf 'datasource db { provider = "%s" }\n' "$dialect"; grep -v '^//' "$ROOT/examples/blog/demo/model-composition.prisma"; } > "$composition/schema.prisma"
+  (cd "$WORK/js" && "$WORK/venv/bin/python" -m orm --schema "$composition/schema.prisma" generate python -o "$composition/models.py")
+  (cd "$WORK/js" && node node_modules/orm/dist/src/cli.js --schema "$composition/schema.prisma" generate typescript -o "$composition/models.ts")
+  "$ROOT/languages/js/node_modules/.bin/tsc" "$composition/models.ts" --outDir "$composition" --module ESNext --target ES2022 --moduleResolution Bundler --skipLibCheck --noCheck
+  cp "$ROOT/scripts/tests/composition_consumer.py" "$composition/use.py"
+  cp "$ROOT/scripts/tests/composition_consumer.mjs" "$composition/use.mjs"
+  (cd "$composition" && ORM_DATABASE_URL="$url" "$WORK/venv/bin/python" use.py)
+  (cd "$composition" && ORM_DATABASE_URL="$url" node use.mjs)
+  (cd "$composition" && ORM_DATABASE_URL="$url" bun use.mjs)
 done
 # Without their packages, `@@query.*` and `@storage.file` fail and neutral read defaults still work.
 uv venv --python "$PYTHON" "$WORK/bare-venv"

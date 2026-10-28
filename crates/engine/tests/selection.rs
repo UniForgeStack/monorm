@@ -8,7 +8,7 @@ fn schema(defaults: bool) -> serde_json::Value {
         {"name":"id","column":"id","type":"int","primary_key":true},
         {"name":"active","column":"active","type":"bool"}
     ]}]});
-    if defaults { schema["behavior"] = json!({"schema_contract":4,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"Selected","filter":{"t":"col","path":[],"name":"active"},"fields":["value"]}]}); }
+    if defaults { schema["behavior"] = json!({"schema_contract":5,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"Selected","filter":{"t":"col","path":[],"name":"active"},"fields":["value"]}]}); }
     schema
 }
 
@@ -89,7 +89,7 @@ fn a_many_to_many_path_applies_the_default_filter_of_the_join_model() {
         {"name":"PostTag","table":"post_tags","fields":[id,
             {"name":"post_id","column":"post_id","type":"big_int"}, {"name":"tag_id","column":"tag_id","type":"big_int"},
             {"name":"live","column":"live","type":"bool"}]}
-    ],"behavior":{"schema_contract":4,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"PostTag","filter":{"t":"col","path":[],"name":"live"}}]}});
+    ],"behavior":{"schema_contract":5,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"PostTag","filter":{"t":"col","path":[],"name":"live"}}]}});
     let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
     let target = Target::new(Dialect::Postgres);
     let filter = json!({"t":"cmp","op":"eq","l":{"t":"col","path":["tags"],"name":"name"},"r":{"t":"text","value":"b"}});
@@ -123,7 +123,7 @@ mod read_flags {
              "relations":[
                 {"name":"owner","kind":"one","target":"Owner","from":"owner_id","to":"id","foreign_key":true},
                 {"name":"plain","kind":"one","target":"Plain","from":"plain_id","to":"id","foreign_key":true}]}],
-            "behavior":{"schema_contract":4,"read_defaults":[
+            "behavior":{"schema_contract":5,"read_defaults":[
                 {"source":"orm.query-defaults","name":"query","model":"Owner","filter":{"t":"col","path":[],"name":"active"}},
                 {"source":"orm.query-defaults","name":"query","model":"Child","order":[{"field":"id","desc":true}]}]}});
         Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
@@ -207,7 +207,7 @@ mod unset_when_absent {
             {"name":"Child","table":"child","fields":[id, {"name":"owner_id","column":"owner_id","type":"int"}],
              "relations":[{"name":"owner","kind":"one","target":"Owner","from":"owner_id","to":"id","foreign_key":true}]}]});
         if filter_owner {
-            raw["behavior"] = json!({"schema_contract":4,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"Owner","filter":{"t":"col","path":[],"name":"active"}}]});
+            raw["behavior"] = json!({"schema_contract":5,"read_defaults":[{"source":"orm.query-defaults","name":"query","model":"Owner","filter":{"t":"col","path":[],"name":"active"}}]});
         }
         Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
     }
@@ -469,7 +469,7 @@ fn a_many_to_many_join_default_fails_closed_without_scope() {
         {"name":"PostTag","table":"post_tags","fields":[id,
             {"name":"post_id","column":"post_id","type":"big_int"}, {"name":"tag_id","column":"tag_id","type":"big_int"},
             {"name":"shop","column":"shop","type":"big_int"}]}
-    ],"behavior":{"schema_contract":4,"read_defaults":[{"source":"example.tenancy","name":"tenant","model":"PostTag",
+    ],"behavior":{"schema_contract":5,"read_defaults":[{"source":"example.tenancy","name":"tenant","model":"PostTag",
         "filter":{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"shop"},"r":{"t":"scope","name":"tenant"}}}]}});
     let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
     let target = Target::new(Dialect::Postgres);
@@ -496,7 +496,7 @@ fn scope_errors_identify_the_prepared_default_at_each_consumer() {
         {"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"id"},"r":{"t":"scope","name":"tenant"}},
         {"t":"is_null","item":{"t":"scope","name":"tenant"}}
     ]}});
-    raw["behavior"] = json!({"schema_contract":4,"read_defaults":[
+    raw["behavior"] = json!({"schema_contract":5,"read_defaults":[
         {"source":"example.tenancy","name":"tenant_guard","model":"Child","filter":scoped},
         {"source":"example.visibility","name":"visible","model":"Child","filter":{"t":"col","path":[],"name":"active"}},
         {"source":"example.other","name":"unrelated","model":"Selected","filter":scoped}
@@ -546,7 +546,7 @@ fn annotated(defaults: serde_json::Value) -> Schema {
                       {"name":"author","kind":"one","target":"Author","from":"author_id","to":"id","foreign_key":true}]},
         {"name":"Child","table":"child","fields":[id, {"name":"selected_id","column":"selected_id","type":"int"}]},
         {"name":"Author","table":"author","fields":[id, {"name":"name","column":"name","type":"text"}]}
-    ],"behavior":{"schema_contract":4,"read_defaults":defaults}});
+    ],"behavior":{"schema_contract":5,"read_defaults":defaults}});
     Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
 }
 
@@ -667,7 +667,7 @@ fn default_annotation_keeps_the_reported_order_equal_to_the_planned_order() {
 fn named_schema() -> Schema {
     let mut raw = schema(false);
     raw["models"][0]["fields"].as_array_mut().unwrap().push(json!({"name":"tenant","column":"tenant","type":"int"}));
-    raw["behavior"] = json!({"schema_contract":4,"read_defaults":[
+    raw["behavior"] = json!({"schema_contract":5,"read_defaults":[
         {"source":"example.active","name":"active","model":"Selected","filter":{"t":"col","path":[],"name":"active"}},
         {"source":"example.tenant","name":"tenant","model":"Selected","filter":{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"tenant"},"r":{"t":"int","value":7}}},
         {"source":"example.order","name":"ordered","model":"Selected","order":[{"field":"id","desc":true}],"fields":["value"]}

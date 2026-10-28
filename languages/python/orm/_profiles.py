@@ -13,7 +13,6 @@ PROFILES = {
     "sqlite": ("sqlite",),
     "combined": ("postgres", "sqlite"),
     "tooling": ("postgres", "sqlite"),
-    "full": ("postgres", "sqlite"),
     "custom": (),
 }
 
@@ -57,12 +56,12 @@ def validate(module: ModuleType, profile: str) -> None:
         ):
             raise ImportError("incompatible custom orm native artifact; rebuild for orm 0.1.0 ABI 1")
         return
-    tooling = profile in ("tooling", "full")
+    tooling = profile == "tooling"
     expected_capabilities = {
         "cli": tooling,
         "generate-python": tooling,
         "generate-typescript": tooling,
-        "composition": profile == "full",
+        "composition": False,
     }
     if (
         metadata.get("abi") != 1
@@ -85,7 +84,7 @@ def load() -> ModuleType:
         if len(available) != 1:
             raise ImportError(
                 f"orm needs one native profile; installed: {', '.join(available) or 'none'}. "
-                "Install orm[postgres], orm[sqlite], orm[combined], orm[tooling] or orm[full]. "
+                "Install orm[postgres], orm[sqlite], orm[combined] or orm[tooling]. "
                 "Set ORM_PROFILE when multiple profiles are installed; extras do not combine native code."
             )
         selected = available[0]

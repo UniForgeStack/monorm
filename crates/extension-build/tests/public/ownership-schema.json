@@ -10,7 +10,7 @@
       "relations":[{"name":"parent","kind":"one","target":"OwnerParent","from":"id","to":"id","foreign_key":true,"on_delete":"cascade"}]}
   ],
   "behavior": {
-    "schema_contract":4,
+    "schema_contract":5,
     "field_storage":[{"model":"OwnerChild","field":"name","owner":"OwnerParent","column":"name"}],
     "owner_links":[{"child":"OwnerChild","parent":"OwnerParent","child_key":"id","parent_key":"id"}]
   }

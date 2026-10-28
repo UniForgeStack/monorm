@@ -1,6 +1,6 @@
 """A proxy of a model inherits its root's extension members and its root's QuerySet class.
 
-Runs with an artifact that selects the proxy-models and soft-delete extensions.
+Runs with the orm-proxy and orm-soft-delete packages installed.
 Each `# E:` line of the typing use must fail and no other line may.
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from artifact_caps import artifact_capabilities, has_extension
+from artifact_caps import has_extension
 from orm.__main__ import main as cli
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -66,8 +66,8 @@ async def go(draft: PmDraft, post: PmPost) -> None:
 EXPECTED = {i for i, line in enumerate(USE.splitlines(), 1) if "# E:" in line}
 
 pytestmark = pytest.mark.skipif(
-    "proxy-models" not in artifact_capabilities() or not has_extension("orm.soft-delete"),
-    reason="requires a native artifact with the proxy-models and soft-delete extensions",
+    not has_extension("orm.proxy", "orm.soft-delete"),
+    reason="requires the orm-proxy and orm-soft-delete packages",
 )
 
 

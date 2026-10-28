@@ -17,7 +17,7 @@ BUILD = {"features": ["sqlite"], "rustc": "rustc 1.0.0", "target": "t", "profile
 
 
 def artifact(name, **overrides):
-    tooling = name in ("tooling", "full")
+    tooling = name == "tooling"
     metadata = {
         "abi": 1,
         "version": "0.1.0",
@@ -30,7 +30,7 @@ def artifact(name, **overrides):
             "cli": tooling,
             "generate-python": tooling,
             "generate-typescript": tooling,
-            "composition": name == "full",
+            "composition": False,
         },
     }
     metadata.update(overrides)
@@ -94,12 +94,11 @@ def test_incompatible_metadata(override):
         profiles.validate(artifact("sqlite", **override), "sqlite")
 
 
-def test_full_profile_is_tooling_with_composition():
-    profiles.validate(artifact("full"), "full")
-    for name in ("tooling", "full"):
-        other = "tooling" if name == "full" else "full"
-        with pytest.raises(ImportError, match="incompatible"):
-            profiles.validate(artifact(name), other)
+def test_tooling_profile_is_not_another_profile():
+    profiles.validate(artifact("tooling"), "tooling")
+    with pytest.raises(ImportError, match="incompatible"):
+        profiles.validate(artifact("tooling"), "combined")
+    assert "full" not in profiles.PROFILES
 
 
 def test_custom_profile_validates_actual_capabilities():

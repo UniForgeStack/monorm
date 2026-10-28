@@ -29,7 +29,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         ir = json.loads(orm._native.compile_schema("model FileReport07 {\n id Int @id\n file Json?\n}", None))
         ir["dialect"] = "sqlite" if self.url.startswith("sqlite:") else "postgres"
         ir["behavior"] = {
-            "schema_contract": 4,
+            "schema_contract": 5,
             "field_adapters": [{"model": "FileReport07", "field": "file", "adapter": "file-storage.reference.v1"}],
         }
         reg = orm.Registry()
@@ -207,7 +207,7 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
         )
         ir["dialect"] = "sqlite"
         ir["behavior"] = {
-            "schema_contract": 4,
+            "schema_contract": 5,
             "field_adapters": [{"model": "FileReport08", "field": "file", "adapter": "file-storage.reference.v1"}],
         }
         reg = orm.Registry()
@@ -241,9 +241,9 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
     async def test_models_of_the_previous_contract_fail_define(self):
         ir = {
             "models": [{"name": "Old", "table": "old", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": True}]}],
-            "behavior": {"schema_contract": 3},
+            "behavior": {"schema_contract": 4},
         }
-        with self.assertRaisesRegex(Exception, "schema contract 3 is older.*regenerate the models and rebuild"):
+        with self.assertRaisesRegex(Exception, "schema contract 4 is older.*regenerate the models and rebuild"):
             orm.define(ir, registry=orm.Registry())
 
 

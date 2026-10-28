@@ -91,7 +91,7 @@ fn neutral_contract_participates_in_empty_merge_and_rebuild_checks() {
     assert!(Requirements::default().is_empty());
     let only_defaults: Requirements = serde_json::from_value(json!({"read_defaults":[entry("a","one",json!({}))]})).unwrap();
     assert!(!only_defaults.is_empty());
-    assert_eq!(SCHEMA_CONTRACT, 4);
+    assert_eq!(SCHEMA_CONTRACT, 5);
     let mut second = raw(json!([entry("b","two",json!({}))]));
     second["models"] = json!([]);
     let merged = merge_definition(first, serde_json::from_value(second).unwrap()).unwrap();

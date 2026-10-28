@@ -569,7 +569,7 @@ def scoped_schema(dialect):
             },
         ],
         "behavior": {
-            "schema_contract": 4,
+            "schema_contract": 5,
             "read_defaults": [
                 {
                     "source": "orm.query-defaults",

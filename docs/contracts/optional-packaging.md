@@ -11,9 +11,8 @@ schemas, objects, pools and transactions cannot switch engines.
 | sqlite | SQLite | no | no | none | none |
 | combined | PostgreSQL + SQLite | no | no | none | none |
 | tooling | PostgreSQL + SQLite | yes | Python + TypeScript | none | none |
-| full | PostgreSQL + SQLite | yes | Python + TypeScript | none | two static first-party |
 
-Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]`, `orm[tooling]` or `orm[full]`.
+Python installs use `orm[postgres]`, `orm[sqlite]`, `orm[combined]` or `orm[tooling]`.
 These extras select complete distributions, not changes to an installed binary.
 Each native wheel owns a unique `orm_native_<profile>._native` namespace.
 Installing `orm[postgres,sqlite]` installs two engines, not a combined engine. Use
@@ -24,7 +23,7 @@ ambiguous install, an incompatible ABI or version, or an unexpected backend or a
 set. A change to the environment after initialization does not change the engine.
 
 Node installs use `orm` alongside `@orm/native-postgres`, `@orm/native-sqlite`,
-`@orm/native-combined`, `@orm/native-tooling` or `@orm/native-full`. Optional peers do not install every
+`@orm/native-combined` or `@orm/native-tooling`. Optional peers do not install every
 profile. Each selected profile's optional dependencies are **platform artifacts**,
 not additional database features. Supported prebuilt targets are darwin-arm64,
 linux-x64 (glibc) and win32-x64. Unsupported targets require a source build. The
@@ -39,7 +38,7 @@ export ORM_PROFILE=sqlite
 npm install orm @orm/native-sqlite
 ```
 
-`python -m orm` and `npx orm` require the tooling or the full profile.
+`python -m orm` and `npx orm` require the tooling profile.
 The standalone `orm` binary does not use a profile.
 All runtime profiles contain the migration and schema APIs.
 Each binding exposes a generator only when the build selects it.
@@ -53,30 +52,27 @@ npm install orm @orm/native-tooling
 npx orm generate typescript
 ```
 
-## The full profile
+## `orm[full]`
 
-The `full` profile is the `tooling` profile plus the two static first-party extensions:
-`orm.proxy` and the model-composition extension (`composition`).
-The timestamps, soft-delete, locking, inherit, query-defaults, generic and file-storage extensions are installable packages, not part of any profile; see [Installable packages](build-time-extensions.md#installable-packages).
-It has the generators because only the artifact that holds the extensions can write their `orm_ext/` files during `orm generate`.
+`orm[full]` has no code of its own.
+It installs the `tooling` native profile and the Python package of each first-party extension except file storage, each pinned to its manifest version.
+Each package is an installable package; see [Installable packages](build-time-extensions.md#installable-packages).
+A library loads only when the schema uses its extension.
 
 ```bash
-python -m pip install 'orm[full]'     # orm-native-full
-npm install orm @orm/native-full
-export ORM_PROFILE=full               # only when more than one profile is installed
+python -m pip install 'orm[full]'
 ```
 
-The build goes through `orm-extension-build`, never with hand-set host features.
-The inputs are `build.json` in `languages/python/packaging/full/` and in `languages/js/packaging/full/`.
-`python languages/python/packaging/build-full-wheel.py [wheel-dir]` builds the wheel.
-`node languages/js/packaging/build-node-profile.mjs full --release` builds the Node package.
-Both commands need `cargo`, `mypy` and `pyright` on `PATH`, and the wheel build needs `maturin`.
-Run `npm install` in `languages/js` first: the frontend type-checks the embedded TypeScript with its `tsc`.
-`profile_metadata()["build"]["features"]` lists the host features only (with `profile-full`).
-`native_artifact()["extensions"]` (`nativeArtifact().extensions` in Node) lists the compiled extensions.
-`profile_metadata()["capabilities"]["composition"]` is `true` for `full` only.
-The file-storage package stays separate.
-Add `orm-file-storage` (Python) or `@orm/file-storage` (Node) for file fields; it holds the extension and the runtime module.
+For Node there is no meta-package: discovery reads only the direct dependencies of the project `package.json`.
+Install the packages by name:
+
+```bash
+npm install orm @orm/native-tooling @orm/generic @orm/inherit @orm/locking @orm/composition \
+  @orm/proxy @orm/query-defaults @orm/soft-delete @orm/timestamps
+```
+
+`python languages/python/packaging/check-full-extra.py` keeps the extra equal to the manifests in `extensions/` minus the excluded list (file storage).
+Add `orm-file-storage` (Python) or `@orm/file-storage` (Node) for file fields.
 CI records the size of every native wheel and package in the job summary.
 There is no size limit.
 
@@ -91,12 +87,10 @@ including through an optional CLI dependency. `composition` selects the build-ti
 static extension host; extension contract/compiler logic belongs to the build-time
 extension system. It is distinct from model composition.
 
-Baseline native profiles do not claim optional reference-loading,
-proxy-models or model-composition support.
+Baseline native profiles do not claim optional reference-loading support.
 The tooling profile and the default binding builds add `reference-loading`.
-The two feature extensions come only from extension crates selected in
-`orm-extension-build`; do not pass their host features by hand (for example
-`maturin build --features proxy-models`). A marker package cannot add code to an
+A feature extension comes only from an extension crate selected in
+`orm-extension-build`; do not pass its host feature by hand. A marker package cannot add code to an
 already compiled engine. [Build-time extensions](build-time-extensions.md#select-feature-extensions)
 has the configuration, the build commands and the packaging step: the Python library
 goes into an `orm_native_custom` package (`ORM_PROFILE=custom`), and the Node library
@@ -158,8 +152,8 @@ exactly their selected adapters and dependencies. No query-time plugin discovery
 `languages/python/packaging/check-dependencies.py` audits isolated graphs for every binding/profile,
 including backend SQL-builder unification and absence of CLI/TLS/unused drivers.
 `languages/python/packaging/check-wheel.py` checks thin/native wheel payload separation.
-`smoke-python.py` and `smoke-node.mjs` check the compiled extension set: none, or the two static extensions for `full`.
-The `full` run also defines a schema with `@@proxy.of`.
+`smoke-python.py` and `smoke-node.mjs` check that no extension is compiled in.
+The `orm[full]` job installs the extra from local wheels and runs a smoke over one attribute of each member.
 `languages/js/packaging/check-node-install.mjs` packs and installs one native profile offline,
 checks the dependency lock and runs installed-package smoke tests. Python
 `languages/python/packaging/smoke-python.py` runs against fresh installed wheels. Set

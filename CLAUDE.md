@@ -41,19 +41,18 @@ scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Py
 ## Feature artifacts
 
 The checks above build no optional feature. `scripts/feature-check.sh` builds one
-artifact per feature extension (proxy-models, model-composition)
-and one with all of them through `orm-extension-build`;
-the extension manifests select the Cargo features, never a hand-set `--features`.
+artifact (`all`) through `orm-extension-build`;
+the build config names extension crates, never a hand-set `--features`.
 On each artifact it runs pytest, `npm test`, bun and `cargo test`, the query-defaults
 and inherit public scripts.
-The timestamps, soft-delete, locking, inherit, query-defaults, generic and file-storage packages are installed on every artifact.
+The timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy, composition and file-storage packages are installed on every artifact.
 Each artifact also runs the `apps/auth` Python, `npm test` and bun tests.
 CI runs it (`.github/workflows/feature-check.yml`). Run it before you commit a change
 to an extension crate, `crates/contracts/`, `crates/extension-build/` or feature-gated host code:
 
 ```bash
 PYTHON=python3.14 ORM_TEST_DATABASE_URL=postgres://postgres:postgres@localhost/orm_test \
-  scripts/feature-check.sh            # or name artifacts: scripts/feature-check.sh proxy-models all
+  scripts/feature-check.sh            # or name the artifact: scripts/feature-check.sh all
 ```
 
 It needs `uv`, `node`, `npm` and `bun`, and writes `target/feature-check/matrix.txt` and `logs/`.

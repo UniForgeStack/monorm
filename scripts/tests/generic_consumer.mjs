@@ -5,7 +5,6 @@ import { ContentType, Label, Photo, Video } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
 const stamp = locked.behavior.packages['orm.generic'];
 assert.equal((await import('@orm/generic')).manifestHash, stamp.manifest_hash);
-assert.ok(locked.behavior.schema_contract_minor >= 1);
 assert.deepEqual(Object.keys(locked.behavior.extension_data['orm.generic']).sort(), ['relations', 'reverse']);
 const db = await connect(process.env.ORM_DATABASE_URL);
 await db.dropTables();

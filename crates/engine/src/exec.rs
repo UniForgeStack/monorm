@@ -79,7 +79,7 @@ pub async fn run_in(conn: &dyn Executor, target: Target, plan: Plan, own_tx: boo
         Plan::Insert(s, returned) => {
             let (sql, args) = db::build(d, &s);
             match returned {
-                Some((model, types)) => Outcome::Rows { model, rows: conn.query(sql, args).await?, types, shape: None },
+                Some((model, types, computed)) => Outcome::Rows { model, rows: crate::hooks::compute(conn.query(sql, args).await?, &computed)?, types, shape: None },
                 None => Outcome::Affected(conn.execute(sql, args).await?),
             }
         }
@@ -164,7 +164,7 @@ async fn count_or_rows(
 ) -> Result<Outcome> {
     Ok(match returning {
         None => Outcome::Affected(conn.execute(sql, args).await?),
-        Some((model, types, shape)) => Outcome::Rows { model, rows: conn.query(sql, args).await?, types, shape },
+        Some((model, types, shape, computed)) => Outcome::Rows { model, rows: crate::hooks::compute(conn.query(sql, args).await?, &computed)?, types, shape },
     })
 }
 
@@ -359,6 +359,12 @@ pub fn index_target(indexes: Option<Vec<String>>) -> OnConflictTarget {
     indexes.map_or(OnConflictTarget::Infer, OnConflictTarget::Indexes)
 }
 
+/// The hook-computed fields (point 5) of rows that return every column of the model.
+pub(crate) fn all_computed(schema: &Schema, model: usize, params: &dyn Params) -> Result<Vec<crate::hooks::Computed>> {
+    let m = schema.model(model);
+    crate::hooks::computations(m, 0, &(0..m.fields().len()).collect::<Vec<_>>(), params)
+}
+
 /// `INSERT ... RETURNING` every column. `rows` hold a value per field (`None`: the
 /// column's default), converted by [`field_types`]. `without_defaults` names the read
 /// defaults an upsert's DO UPDATE condition skips (an unknown name is an error).
@@ -392,7 +398,7 @@ fn plan_insert_with(
 ) -> Result<Plan> {
     if crate::multi_table::is_multi_table(schema, model)? {
         if conflict.is_some() { return Err(Error::query("multi-table inserts do not support on_conflict")); }
-        return Ok(Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_insert(schema, target, model, fields, rows)?)));
+        return Ok(Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_insert(schema, target, model, fields, rows, params)?)));
     }
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let on_conflict = conflict.map(|c| match c {
@@ -401,7 +407,8 @@ fn plan_insert_with(
     });
     let (stmt, types): (InsertStatement, _) =
         plan::plan_insert(schema, target, model, fields, rows, on_conflict, params, returning, without_defaults)?;
-    Ok(Plan::Insert(stmt, returning.then_some((model_idx, types))))
+    let computed = if returning { all_computed(schema, model_idx, params)? } else { vec![] };
+    Ok(Plan::Insert(stmt, returning.then_some((model_idx, types, computed))))
 }
 
 /// `insert_many`'s plans: [`plan_insert`] for each batch of rows. A batch holds as many
@@ -586,7 +593,7 @@ pub async fn run_copy(conn: &dyn Executor, copy: BulkCopy) -> Result<u64> {
 pub struct UpdateMany {
     pub statements: Vec<(String, Vec<Value>)>,
     /// The model and column types of the returned rows, with `returning`.
-    pub returning: Option<(usize, Vec<ValueType>)>,
+    pub returning: Option<(usize, Vec<ValueType>, Vec<crate::hooks::Computed>)>,
 }
 
 /// Plans `update_many`: `rows` (aligned with `fields`, primary key first, converted by
@@ -628,7 +635,8 @@ pub fn plan_update_many(
     let (stmts, types) = plan::plan_update_many(schema, target, model, fields, &rows, chunk, filters, params, returning, without_defaults)?;
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let statements = stmts.iter().map(|s| db::build(target.dialect, s)).collect();
-    Ok((stmts, UpdateMany { statements, returning: types.map(|t| (model_idx, t)) }))
+    let computed = if types.is_some() { all_computed(schema, model_idx, params)? } else { vec![] };
+    Ok((stmts, UpdateMany { statements, returning: types.map(|t| (model_idx, t, computed)) }))
 }
 
 /// Runs `update_many`'s statements, in a transaction of their own when there are several
@@ -665,7 +673,7 @@ pub async fn run_update_many(conn: &dyn Executor, um: UpdateMany, own_tx: bool) 
     }
     Ok(match um.returning {
         None => Outcome::Affected(count),
-        Some((model, types)) => Outcome::Rows { model, rows: Box::new(ChainedRows::new(fetched)), types, shape: None },
+        Some((model, types, computed)) => Outcome::Rows { model, rows: crate::hooks::compute(Box::new(ChainedRows::new(fetched)), &computed)?, types, shape: None },
     })
 }
 

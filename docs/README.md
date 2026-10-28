@@ -23,8 +23,8 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 
 | Feature | Crate | Attributes | Doc |
 |---|---|---|---|
-| proxy-models | `extensions/proxy` (`orm-proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
-| model-composition | `extensions/model-composition/` (`orm-model-composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
+| proxy-models | `extensions/proxy` (`orm-proxy`, `@orm/proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
+| model-composition | `extensions/model-composition/` (`orm-composition`, `@orm/composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
 | file-storage | `extensions/file-storage` (`orm-file-storage`, `@orm/file-storage`) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
 | generic | `extensions/generic` (`orm-generic`, `@orm/generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
 | timestamps | `extensions/timestamps` (`orm-timestamps`) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |

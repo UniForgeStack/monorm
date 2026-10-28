@@ -7,14 +7,10 @@ from pathlib import Path
 
 import pytest
 import orm
-from orm import _native
-from artifact_caps import artifact_capabilities, has_extension
+from artifact_caps import has_extension
 
 SOURCE = Path(__file__).parents[3].joinpath("fixtures/proxy.prisma").read_text()
-pytestmark = pytest.mark.skipif(
-    "proxy-models" not in json.loads(_native.native_artifact())["capabilities"],
-    reason="requires selected proxy native artifact",
-)
+pytestmark = pytest.mark.skipif(not has_extension("orm.proxy"), reason="requires the orm-proxy package")
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
@@ -204,7 +200,7 @@ def test_proxy_field_rules_fail_at_definition():
         with pytest.raises(orm.SchemaError, match=re.escape(message)):
             orm.loads(source, registry=orm.Registry())
     with pytest.raises(
-        orm.SchemaError, match=re.escape("an enum subset Status(...) is only allowed on a field of a proxy model")
+        orm.SchemaError, match=re.escape("an enum subset Status(...) is only allowed on a field of a view model")
     ):
         orm.loads(
             "enum Status {\n  A\n  @@storage(text)\n}\nmodel M {\n  id Int @id\n  s Status(A)\n}",
@@ -226,14 +222,9 @@ model Draft {
 """
 
 
-def _has(*names):
-    caps = artifact_capabilities()
-    return all(n in caps for n in names)
-
-
 @pytest.mark.skipif(
-    not (_has("proxy-models") and has_extension("orm.soft-delete", "orm.locking")),
-    reason="requires proxy-models, soft-delete and locking",
+    not has_extension("orm.proxy", "orm.soft-delete", "orm.locking"),
+    reason="requires proxy, soft-delete and locking",
 )
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_a_proxy_takes_the_roles_of_its_root(dialect):
@@ -261,7 +252,7 @@ async def test_a_proxy_takes_the_roles_of_its_root(dialect):
         await db.close()
 
 
-@pytest.mark.skipif(not (_has("proxy-models") and has_extension("orm.soft-delete")), reason="requires proxy-models and soft-delete")
+@pytest.mark.skipif(not has_extension("orm.proxy", "orm.soft-delete"), reason="requires proxy and soft-delete")
 def test_a_proxy_must_keep_the_soft_delete_field():
     source = ROLES_SOURCE.replace("@@proxy.of(Doc)", '@@proxy.of(Doc)\n  @@proxy.fields(exclude: ["deleted"])')
     with pytest.raises(Exception, match="proxy must keep the soft-delete field deleted"):
