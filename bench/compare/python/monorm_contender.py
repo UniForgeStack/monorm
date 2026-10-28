@@ -27,7 +27,7 @@ from contender import POST, TAG, USER, Case, Contender
 from monorm import func
 
 
-class OrmContender(Contender):
+class MonormContender(Contender):
     def __init__(self, name: str = "orm") -> None:
         self.name = name
 

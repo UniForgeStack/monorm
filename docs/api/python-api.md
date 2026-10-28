@@ -24,7 +24,7 @@ composition, file fields, generic relations) have their own docs: see [README.md
 
 | Path | What |
 |---|---|
-| `languages/python/orm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](../schema/schema.md)), `_profiles.py` (native profile selection) |
+| `languages/python/monorm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](../schema/schema.md)), `_profiles.py` (native profile selection) |
 | `crates/core/` | Rust crate `monorm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `monorm` CLI (see [`schema.md`](../schema/schema.md)) |
 | `crates/engine/` | Rust crate `monorm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
 | `crates/cli/` | Rust crate `monorm-cli`: the `monorm` command line, run as the `monorm` binary, `python -m monorm` and `npx @ufstack/monorm` |
@@ -1478,9 +1478,9 @@ with monorm.debug.n_plus_one(threshold=5, fail=True):
   The pages of one ORM loop (`batches()`, `iterate()`, the chunks of `in_bulk()`) count as one query when they have one shape.
 * The call site is the line that awaits the query (`await qs`, `await p.customers.all()`).
   A query that `asyncio.gather()` or `create_task()` runs reports the line that started the event loop.
-* When the block ends, a shape that ran more than `threshold` times (default 5) raises `monorm.debug.NPlusOne` with `fail=True`, or gives an `monorm.debug.NPlusOneWarning`.
+* When the block ends, a shape that ran more than `threshold` times (default 5) raises `monorm.debug.NPlusOne` with `fail=True`, or gives a `monorm.debug.NPlusOneWarning`.
   The exception and the `with ... as report` value carry the report: each shape, its SQL, its count, the call site of its first query and the fix.
-* The report is an `monorm.debug.Report`: `.shapes` and `.repeated` hold `Shape(key, sql, count, site, fix)` values, and `.message()` gives the text above.
+* The report is a `monorm.debug.Report`: `.shapes` and `.repeated` hold `Shape(key, sql, count, site, fix)` values, and `.message()` gives the text above.
 * The fix is `load(...)` for a repeated instance `load(...)` and for a repeated unchanged to-many or many-to-many query (`await post.comments`, `await post.tags`).
 * The call site and the SQL text are captured only inside the scope.
   Outside it, each query pays one `ContextVar` read (about 15 ns, measured).

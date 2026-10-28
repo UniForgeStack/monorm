@@ -296,8 +296,8 @@ test("ESM-only and dual packages share runtime identity across generated models,
     );
     write(join(dir, "index.mjs"), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
     // Bun cannot `require` the ESM `@ufstack/monorm`, and this test never installs an adapter.
-    const withoutOrm = source.replace(/^import \{ registerFieldAdapter.*$/m, 'import type { FieldAdapter, ModelMeta } from "@ufstack/monorm"; const registerFieldAdapter = (): never => { throw Error("not installed"); };');
-    write(join(dir, "index.cjs"), ts.transpileModule(withoutOrm, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
+    const withoutMonorm = source.replace(/^import \{ registerFieldAdapter.*$/m, 'import type { FieldAdapter, ModelMeta } from "@ufstack/monorm"; const registerFieldAdapter = (): never => { throw Error("not installed"); };');
+    write(join(dir, "index.cjs"), ts.transpileModule(withoutMonorm, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
     write(join(dir, "package.json"), JSON.stringify({ name: "acme-outside", type: "module", monorm: { extension: "acme.outside" },
       exports: format === "ESM-only" ? "./index.mjs" : format === "dual"
         ? { import: "./index.mjs", require: "./index.cjs" }

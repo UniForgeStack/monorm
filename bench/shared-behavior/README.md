@@ -82,8 +82,8 @@ $env.ORM_TEST_DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:55439/orm_t
 ^.venv/bin/python -m pytest -q
 ^cargo test -q
 ^cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node
-^.venv/bin/mypy --strict languages/python/orm
-^.venv/bin/pyright languages/python/orm
+^.venv/bin/mypy --strict languages/python/monorm
+^.venv/bin/pyright languages/python/monorm
 ^npm --prefix js test
 ^npm --prefix js run test:bun
 ^npm --prefix js run typecheck

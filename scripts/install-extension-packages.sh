@@ -13,6 +13,8 @@ if [ ! -x "$TSC" ]; then
   TSC=$tools/node_modules/.bin/tsc
 fi
 for extension in timestamps soft-delete locking inherit query-defaults generic proxy model-composition file-storage; do
+  # A renamed package leaves its old wheel behind, and the install below globs every wheel.
+  rm -rf "$OUT/$extension"
   cargo run -q --manifest-path "$ROOT/Cargo.toml" -p monorm-extension-package -- package "$ROOT/extensions/$extension" --out "$OUT/$extension" --tsc "$TSC"
 done
 uv pip install --python "$PY" "$OUT"/*/*.whl

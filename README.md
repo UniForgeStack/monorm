@@ -16,7 +16,6 @@ Source: the geometric mean of 20 cases in one run on one machine, with the datab
 Method, limits and the cases where it is not faster: [Benchmarks](#benchmarks).
 
 The name is MonOrm.
-The packages, the import name and the commands are still `orm` until the rename.
 
 ## Example
 
@@ -144,7 +143,7 @@ Run the comparison yourself before you decide.
 
 Both API docs list what is not done yet: [Python](docs/api/python-api.md#not-done-yet) and [schema](docs/schema/schema.md#not-done-yet).
 The API is async only. There is no MySQL driver.
-The packages are not published, and the name `orm` changes to `monorm` in the rename.
+The packages are not published.
 
 ## Docs
 

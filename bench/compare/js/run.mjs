@@ -47,7 +47,7 @@ function pick(a) {
 const checkIterations = iters => [...new Set([0, 1, iters])].sort((x, y) => x - y);
 
 async function make(name) {
-  const base = name.startsWith("orm") ? "orm" : name;
+  const base = name.startsWith("orm") ? "monorm" : name;
   return (await import(`./contenders/${base}.mjs`)).create(name);
 }
 

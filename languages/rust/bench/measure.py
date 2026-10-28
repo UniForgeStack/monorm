@@ -64,7 +64,7 @@ tokio={{version="1",features=["rt-multi-thread","macros"]}}
             source.write_text("\n".join(models))
             generated = project / "src/models.rs"
             generation = run(
-                str(TARGET / "debug/orm"),
+                str(TARGET / "debug/monorm"),
                 "--schema",
                 str(source),
                 "generate",

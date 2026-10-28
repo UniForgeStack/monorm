@@ -20,7 +20,6 @@ Source, method and limits: [bench/RESULTS.md](https://github.com/UniForgeStack/m
 Run the comparison yourself before you decide.
 
 The name is MonOrm.
-The package, the import name and the commands are still `orm` until the rename.
 
 ## Quickstart
 

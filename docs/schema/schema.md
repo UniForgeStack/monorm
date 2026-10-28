@@ -30,8 +30,8 @@ crate `monorm-cli`) uses the same crate and needs no Python.
 | `crates/core/src/migrate/` | snapshot model, diff, PostgreSQL / SQLite renderers, migration folders |
 | `crates/core/src/codegen/python.rs`, `typescript.rs` | `models.py` / `models.pyi` and `models.ts` generators |
 | `crates/cli/src/` | the `monorm` CLI |
-| `languages/python/orm/model.py` | `monorm.load()` / `monorm.loads()` / `monorm.define()`: model classes from the IR |
-| `languages/python/orm/migrations.py`, `__main__.py` | migration runner and `python -m monorm` |
+| `languages/python/monorm/model.py` | `monorm.load()` / `monorm.loads()` / `monorm.define()`: model classes from the IR |
+| `languages/python/monorm/migrations.py`, `__main__.py` | migration runner and `python -m monorm` |
 
 ## SQLite
 
@@ -692,11 +692,11 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 ### Installed extension libraries
 
 An extension can also ship as a native library that the loader opens at run time, so the ORM needs no rebuild.
-The package has an `monorm-extension.toml` with `abi` and `library` (fields: [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts)).
+The package has a `monorm-extension.toml` with `abi` and `library` (fields: [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts)).
 A schema selects a library by the namespace of an attribute it uses, or by `generator client { extensions = ["acme.outside"] }`.
 An extension that the schema does not use is not loaded and adds no stamp.
 
-* Python: an `monorm.extensions` entry point named like the extension id; its value is the package that holds the manifest.
+* Python: a `monorm.extensions` entry point named like the extension id; its value is the package that holds the manifest.
 * Node and Bun: a direct dependency whose `package.json` has `"monorm": {"extension": "<id>"}`; the manifest is in the package root.
   The lookup starts at the project of the schema file, or at the working directory when there is no file (`loads(source)`).
   Python reads the interpreter environment.

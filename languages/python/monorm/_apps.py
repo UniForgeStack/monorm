@@ -28,7 +28,7 @@ def _schema_of(name: str) -> Path | None:
             return None
         raise SchemaError(
             f'import "app:{name}": the `{name}` package declares no schema; '
-            f'it needs an `monorm.apps` entry point named `{name}` whose value is `<package>:<schema file>`, such as `monorm_auth:schema.prisma`'
+            f'it needs a `monorm.apps` entry point named `{name}` whose value is `<package>:<schema file>`, such as `monorm_auth:schema.prisma`'
         )
     entry = matches[0]
     module, _, file = entry.value.partition(":")

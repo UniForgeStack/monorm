@@ -1,4 +1,4 @@
-"""Finds the installed extension packages: an `monorm.extensions` entry point named like the extension id.
+"""Finds the installed extension packages: a `monorm.extensions` entry point named like the extension id.
 
 The value is a module (`monorm_tracking`); its directory holds `monorm-extension.toml`.
 Discovery reads metadata; definition imports the selected runtime packages.

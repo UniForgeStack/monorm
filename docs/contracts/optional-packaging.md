@@ -376,7 +376,7 @@ Schema contract 4.0 holds these records. An engine of an older major refuses an 
 
 `monorm-extension-package package <crate dir> --out <dir>` builds one extension crate for the host platform.
 The `library` and `assemble` commands build one package for 3 platforms; see [Extension packages for 3 platforms](optional-packaging.md#extension-packages-for-3-platforms).
-The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and an `monorm-extension.toml` with `abi` and `library`.
+The crate has `crate-type = ["cdylib", "rlib"]`, the ABI macro and a `monorm-extension.toml` with `abi` and `library`.
 The tool writes a `py3-none-<platform>` Python wheel and an npm package directory.
 Each package holds the library, the manifest and the runtime module with `MANIFEST_HASH` (`manifestHash`), the SHA-256 of the manifest bytes.
 `scripts/install-extension-packages.sh` builds the timestamps, soft-delete, locking, inherit, query-defaults, generic, proxy and file-storage packages and installs them into `.venv` and `languages/js`.

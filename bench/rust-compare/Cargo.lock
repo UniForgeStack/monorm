@@ -1404,6 +1404,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1495,6 +1505,72 @@ dependencies = [
  "libc",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "monorm-contracts"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "monorm-core"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "libloading",
+ "monorm-contracts",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "monorm-engine"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "blake2",
+ "bytes",
+ "chrono",
+ "deadpool-postgres",
+ "monorm-contracts",
+ "monorm-core",
+ "rusqlite",
+ "rustls",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "uuid",
+ "webpki-roots",
+]
+
+[[package]]
+name = "monorm-rust-compare"
+version = "0.1.0"
+dependencies = [
+ "deadpool-postgres",
+ "diesel",
+ "diesel-async",
+ "futures-util",
+ "monorm-core",
+ "monorm-engine",
+ "sea-orm",
+ "sea-query",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]
@@ -1595,68 +1671,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "monorm-contracts"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "monorm-core"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "chrono",
- "monorm-contracts",
- "serde",
- "serde_json",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "monorm-engine"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "blake2",
- "bytes",
- "chrono",
- "deadpool-postgres",
- "monorm-core",
- "rusqlite",
- "rustls",
- "sea-query",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "uuid",
- "webpki-roots",
-]
-
-[[package]]
-name = "monorm-rust-compare"
-version = "0.1.0"
-dependencies = [
- "deadpool-postgres",
- "diesel",
- "diesel-async",
- "futures-util",
- "monorm-core",
- "monorm-engine",
- "sea-orm",
- "sea-query",
- "serde_json",
- "sqlx",
- "tokio",
- "tokio-postgres",
 ]
 
 [[package]]

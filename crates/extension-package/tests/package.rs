@@ -311,15 +311,37 @@ fn a_wrong_dependency_shape_or_export_is_an_error() {
 
 #[test]
 fn a_monorm_id_gives_the_ufstack_npm_name_and_a_monorm_dist() {
-    let root = scratch("namespace");
-    let dir = crate_dir(&root, "monorm_demo");
-    let manifest = dir.join("monorm-extension.toml");
-    let text = fs::read_to_string(&manifest).unwrap().replace("acme.demo", "monorm.demo");
-    fs::write(&manifest, text).unwrap();
-    let output = assemble(&root, &dir, &libraries(&root, None));
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(root.join("out/monorm_demo-0.1.0-py3-none-any.whl").is_file());
-    let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
-    assert_eq!(package["name"], "@ufstack/monorm-demo");
-    fs::remove_dir_all(root).unwrap();
+    // The id, then the npm name, the Python dist and the Python module that it gives.
+    let cases = [
+        ("monorm.inherit", "@ufstack/monorm-inherit", "monorm-inherit", "monorm_inherit"),
+        (
+            "monorm.query-defaults",
+            "@ufstack/monorm-query-defaults",
+            "monorm-query-defaults",
+            "monorm_query_defaults",
+        ),
+        (
+            "monorm.soft-delete",
+            "@ufstack/monorm-soft-delete",
+            "monorm-soft-delete",
+            "monorm_soft_delete",
+        ),
+        ("acme.demo", "@acme/demo", "acme-demo", "acme_demo"),
+    ];
+    for (index, (id, npm, dist, module)) in cases.into_iter().enumerate() {
+        let root = scratch(&format!("namespace{index}"));
+        let dir = crate_dir(&root, "monorm_demo");
+        let manifest = dir.join("monorm-extension.toml");
+        let text = fs::read_to_string(&manifest).unwrap().replace("acme.demo", id);
+        fs::write(&manifest, text).unwrap();
+        let output = assemble(&root, &dir, &libraries(&root, None));
+        assert!(output.status.success(), "{id}: {}", String::from_utf8_lossy(&output.stderr));
+        let mut wheel = zip_reader(&root.join(format!("out/{module}-0.1.0-py3-none-any.whl")));
+        let metadata = wheel.read(&format!("{module}-0.1.0.dist-info/METADATA"));
+        assert!(metadata.contains(&format!("Name: {dist}\n")), "{id}: {metadata}");
+        assert!(wheel.names().contains(&format!("{module}/py.typed")), "{id}");
+        let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
+        assert_eq!(package["name"], npm, "{id}");
+        fs::remove_dir_all(root).unwrap();
+    }
 }
