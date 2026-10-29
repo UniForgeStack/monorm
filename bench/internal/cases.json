@@ -1,0 +1,249 @@
+{
+ "note": "Shared by the Python, TypeScript and Rust runners. Values rotate per call. User ids 1..10 hold posts 1..1000 (100 each); user 11 is the insert sink.",
+ "cases": [
+  {
+   "name": "pk_get",
+   "inner": 100,
+   "values": [
+    {
+     "id": 1
+    },
+    {
+     "id": 138
+    },
+    {
+     "id": 275
+    },
+    {
+     "id": 412
+    },
+    {
+     "id": 549
+    },
+    {
+     "id": 686
+    },
+    {
+     "id": 823
+    },
+    {
+     "id": 960
+    },
+    {
+     "id": 97
+    },
+    {
+     "id": 234
+    }
+   ],
+   "sql": [
+    {
+     "text": "SELECT id, author_id, title, body, views, published, created_at FROM posts WHERE id = ?",
+     "args": [
+      "id"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "filter_order_50",
+   "inner": 50,
+   "values": [
+    {
+     "a": 1,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 2,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 3,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 4,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 5,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 6,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 7,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 8,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 9,
+     "min": 100,
+     "n": 50
+    },
+    {
+     "a": 10,
+     "min": 100,
+     "n": 50
+    }
+   ],
+   "sql": [
+    {
+     "text": "SELECT id, author_id, title, body, views, published, created_at FROM posts WHERE author_id = ? AND views >= ? ORDER BY id LIMIT ?",
+     "args": [
+      "a",
+      "min",
+      "n"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read_1000",
+   "inner": 5,
+   "values": [
+    {
+     "after": 0,
+     "n": 1000
+    }
+   ],
+   "sql": [
+    {
+     "text": "SELECT id, author_id, title, body, views, published, created_at FROM posts WHERE id > ? ORDER BY id LIMIT ?",
+     "args": [
+      "after",
+      "n"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "filtered_count",
+   "inner": 100,
+   "values": [
+    {
+     "min": 500
+    },
+    {
+     "min": 501
+    },
+    {
+     "min": 502
+    },
+    {
+     "min": 503
+    },
+    {
+     "min": 504
+    },
+    {
+     "min": 505
+    },
+    {
+     "min": 506
+    },
+    {
+     "min": 507
+    },
+    {
+     "min": 508
+    },
+    {
+     "min": 509
+    }
+   ],
+   "sql": [
+    {
+     "text": "SELECT COUNT(*) FROM posts WHERE views > ?",
+     "args": [
+      "min"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "insert_one",
+   "inner": 50,
+   "values": [
+    {
+     "author_id": 11,
+     "title": "bench",
+     "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+   ],
+   "sql": [
+    {
+     "text": "INSERT INTO posts (author_id, title, body, views, published, created_at) VALUES (?, ?, ?, 0, FALSE, CURRENT_TIMESTAMP) RETURNING id, author_id, title",
+     "args": [
+      "author_id",
+      "title",
+      "body"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "prefetch_posts",
+   "inner": 20,
+   "values": [
+    {
+     "id": 1
+    },
+    {
+     "id": 2
+    },
+    {
+     "id": 3
+    },
+    {
+     "id": 4
+    },
+    {
+     "id": 5
+    },
+    {
+     "id": 6
+    },
+    {
+     "id": 7
+    },
+    {
+     "id": 8
+    },
+    {
+     "id": 9
+    },
+    {
+     "id": 10
+    }
+   ],
+   "sql": [
+    {
+     "text": "SELECT id, email, name, created_at FROM users WHERE id = ?",
+     "args": [
+      "id"
+     ]
+    },
+    {
+     "text": "SELECT id, author_id, title, body, views, published, created_at FROM posts WHERE author_id IN (?)",
+     "args": [
+      "id"
+     ]
+    }
+   ]
+  }
+ ]
+}

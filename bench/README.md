@@ -14,6 +14,7 @@ Mark each number you report as measured (and say if the machine was loaded), est
 | [`compare/`](compare) | Our ORM against Django and SQLAlchemy (sync and async), Prisma 7, Drizzle and `pg` on one schema: 20 cases, equality check, release builds, `run.sh` and `report.py` | `monorm-all` row uses the `all` extension artifact |
 | [`shared-behavior/`](shared-behavior) | Paired A/B of `Database.lock` advisory locks: the earlier Python/TypeScript key hashing against the Rust helper, through the public API | Not applicable (core) |
 | [`build-time-extensions/`](build-time-extensions) | The cost gate of build-time extensions: handwritten built-in controls against generated extension code, Python and Node, PostgreSQL and SQLite; allocation and artifact-size probes | This is the extension benchmark |
+| [`internal/`](internal) | Where one monorm call spends its time: unprepared, `prepare()` and direct-IR calls in Python and TypeScript (Node) on six cases, with engine-only (Rust) and driver-only rows; PostgreSQL and SQLite; `run.sh` and `report.py` | Not applicable (core) |
 
 ## Disposable database
 

@@ -1,0 +1,30 @@
+// The User and Post models of examples/blog without its Postgres-only parts (enum, arrays, GIN index),
+// so one schema runs on both backends. `BACKEND` becomes `postgresql` or `sqlite` per run.
+
+datasource db {
+  provider = "BACKEND"
+}
+
+model User {
+  id         BigInt   @id @default(autoincrement())
+  email      String   @unique @db.VarChar(254)
+  name       String   @db.VarChar(100)
+  created_at DateTime @default(now())
+  posts      Post[]
+
+  @@map("users")
+}
+
+model Post {
+  id         BigInt   @id @default(autoincrement())
+  author_id  BigInt
+  title      String   @db.VarChar(200)
+  body       String   @db.Text
+  views      Int      @default(0)
+  published  Boolean  @default(false)
+  created_at DateTime @default(now())
+  author     User     @relation(fields: [author_id], references: [id], onDelete: Cascade)
+
+  @@index([author_id])
+  @@map("posts")
+}

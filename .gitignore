@@ -31,3 +31,8 @@ apps/auth/typescript/dist/
 /languages/python/monorm_*/
 languages/js/prebuilt/
 languages/js/extensions/
+
+# bench/internal: smoke and quick runs are local; a full run's results are committed
+bench/internal/results/*-quick/
+bench/internal/results/*-smoke/
+bench/internal/js/node_modules/

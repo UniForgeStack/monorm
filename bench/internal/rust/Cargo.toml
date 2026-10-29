@@ -1,0 +1,19 @@
+[package]
+name = "monorm-internal-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Its own workspace, like bench/rust-compare: the benchmark builds with the release profile below.
+[workspace]
+
+[dependencies]
+monorm-core = { path = "../../../crates/core" }
+monorm-engine = { path = "../../../crates/engine" }
+sea-query = "1.0"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

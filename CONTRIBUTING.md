@@ -42,6 +42,7 @@ cargo package -p monorm      # the crate that extension authors get from crates.
 python3 scripts/rename/rename.py --check   # no old project name in the tree
 python3 -m unittest scripts/tests/test_package_metadata.py   # publish metadata of every package
 python3 -m unittest scripts/tests/test_check_glibc.py scripts/tests/test_release_versions.py   # glibc floor check and release scripts
+MONORM_BENCH_SMOKE=1 python3 -m unittest scripts/tests/test_internal_bench.py   # bench/internal/run.sh --quick on SQLite: every case and path has a number, the equality check ran
 python3 scripts/release/versions.py check --allow-tbd   # every version site agrees with pyproject.toml
 ```
 

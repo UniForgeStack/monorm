@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 # Private on purpose: never published. Everything else under version control is published.
-PRIVATE = {"monorm-blog-example", "monorm-quickstart-example", "bench-compare-js"}
+PRIVATE = {"monorm-blog-example", "monorm-quickstart-example", "bench-compare-js", "monorm-internal-bench-js"}
 FIXTURES = ("scripts/tests/",)
 
 
