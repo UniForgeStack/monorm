@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.flush()
     if not hasattr(_native, "cli"):
         raise RuntimeError(
-            "CLI is unavailable in this runtime profile; install monorm[tooling] and set MONORM_PROFILE"
+            "CLI is unavailable in this build of monorm; build it with the `profile-tooling` feature"
         )
     args = sys.argv[1:] if argv is None else list(argv)
     try:

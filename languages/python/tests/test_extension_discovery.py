@@ -24,8 +24,8 @@ from monorm.migrations import Migrations
 MANIFEST = 'id = "acme.fixture"\nversion = "0.1.0"\nabi = "0.2"\nlibrary = "libfixture"\n'
 
 
-def install(site: Path, dist: str, entry: str | None, *, manifest: bool = True, ident: str | None = None) -> Path:
-    """A package `<dist>` with `monorm-extension.toml`, and a hand-written `.dist-info` that declares the entry point."""
+def install(site: Path, dist: str, entry: str | None, *, manifest: bool = True, ident: str | None = None, owner: str | None = None) -> Path:
+    """A package `<dist>` (its metadata names `owner` when given) with `monorm-extension.toml`, and a hand-written `.dist-info` that declares the entry point."""
     package = dist.replace("-", "_")
     (site / package).mkdir(parents=True)
     (site / package / "__init__.py").write_text("raise RuntimeError('an extension package must not be imported')\n")
@@ -33,7 +33,7 @@ def install(site: Path, dist: str, entry: str | None, *, manifest: bool = True, 
         (site / package / "monorm-extension.toml").write_text(MANIFEST)
     info = site / f"{package}-0.1.dist-info"
     info.mkdir()
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: 0.1\n")
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {owner or dist}\nVersion: 0.1\n")
     if entry is not None:
         (info / "entry_points.txt").write_text(f"[monorm.extensions]\n{ident or 'acme.fixture'} = {entry}\n")
     if ident == "acme.outside":
@@ -79,6 +79,18 @@ def test_two_packages_with_one_id_name_both_paths(site: Path) -> None:
         resolve_extensions()
     assert "installed twice" in str(error.value)
     assert str(first) in str(error.value) and str(second) in str(error.value)
+
+
+def test_an_outside_package_with_a_built_in_id_names_the_built_in_copy(site: Path) -> None:
+    built_in = install(site, "monorm-fixture", "monorm_fixture", ident="monorm.fixture", owner="monorm")
+    outside = install(site, "acme-fixture-two", "acme_fixture_two", ident="monorm.fixture")
+    with pytest.raises(SchemaError) as error:
+        resolve_extensions()
+    message = str(error.value)
+    assert "installed twice" in message and "`monorm.fixture`" in message
+    assert f"built into monorm: {built_in}" in message
+    assert f"acme-fixture-two: {outside}" in message
+    assert "uninstall acme-fixture-two" in message
 
 
 OUTSIDE = Path(__file__).resolve().parents[3] / "tests" / "outside-extension"
@@ -399,3 +411,12 @@ async def test_an_outside_view_reads_and_writes_through_the_row_filter_and_warns
         assert closed.note == "kept"
     finally:
         await db.close()
+
+
+def test_a_file_field_defines_a_model_although_file_storage_has_no_query_set():
+    pytest.importorskip("monorm_file_storage")
+    models = monorm.loads(
+        'datasource db { provider = "sqlite" }\nmodel Report {\n  id Int @id\n  file Json? @storage.file(storage: "reports")\n}\n',
+        registry=monorm.Registry(),
+    )
+    assert models["Report"].__name__ == "Report"

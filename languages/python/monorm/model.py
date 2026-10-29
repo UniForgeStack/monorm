@@ -603,11 +603,7 @@ def define(
         if module is not None:
             ns["__module__"] = module
         chain = chains.get(m["name"], [])
-        classes = (
-            [(getattr(extensions[i], r["query_set"]), getattr(extensions[i], r["instance"])) for i, r in chain]
-            if chain
-            else []
-        )
+        classes = [(getattr(extensions[i], r["query_set"]), getattr(extensions[i], r["instance"])) for i, r in chain if r.get("query_set")]
         if chain:
             _extensions.members(
                 m["name"],
@@ -630,7 +626,7 @@ def define(
             bound = tuple(
                 getattr(extensions[i], r["bound_query_set"])
                 for i, r in reversed(chain)
-                if r["bound_query_set"]
+                if r.get("query_set") and r["bound_query_set"]
             )
             use_extensions(cls, tuple(c[0] for c in reversed(classes)), bound)
         cls._meta.schema_ir = m

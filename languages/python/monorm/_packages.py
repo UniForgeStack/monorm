@@ -15,6 +15,7 @@ from types import ModuleType
 from ._native import SchemaError
 
 MANIFEST = "monorm-extension.toml"
+BUILT_IN = "monorm"
 
 
 def _manifest_of(entry: importlib.metadata.EntryPoint) -> Path:
@@ -31,17 +32,32 @@ def _manifest_of(entry: importlib.metadata.EntryPoint) -> Path:
     return path
 
 
+def _owner(entry: importlib.metadata.EntryPoint) -> str:
+    return entry.dist.name if entry.dist else "an unknown package"
+
+
+def _is_built_in(owner: str) -> bool:
+    return owner.lower().replace("_", "-") == BUILT_IN
+
+
 def resolve_extensions() -> dict[str, str]:
     """``{extension id: manifest file}`` of every installed extension package."""
-    found: dict[str, str] = {}
+    found: dict[str, tuple[str, str]] = {}
     for entry in importlib.metadata.entry_points(group="monorm.extensions"):
-        path = str(_manifest_of(entry))
-        if entry.name in found and found[entry.name] != path:
-            raise SchemaError(
-                f"extension `{entry.name}` is installed twice: {found[entry.name]} and {path}; uninstall one of the packages"
-            )
-        found[entry.name] = path
-    return found
+        copy = (str(_manifest_of(entry)), _owner(entry))
+        if entry.name in found and found[entry.name][0] != copy[0]:
+            raise SchemaError(_installed_twice(entry.name, found[entry.name], copy))
+        found[entry.name] = copy
+    return {ident: path for ident, (path, _) in found.items()}
+
+
+def _installed_twice(ident: str, first: tuple[str, str], second: tuple[str, str]) -> str:
+    """Each copy is ``(manifest file, owner package)``."""
+    if not any(_is_built_in(owner) for _, owner in (first, second)):
+        return f"extension `{ident}` is installed twice: {first[0]} and {second[0]}; uninstall one of the packages"
+    shown = " and ".join(f"{f'built into {BUILT_IN}' if _is_built_in(owner) else owner}: {path}" for path, owner in (first, second))
+    outside = [owner for _, owner in (first, second) if not _is_built_in(owner)]
+    return f"extension `{ident}` is installed twice: {shown}; uninstall {outside[0] if outside else 'one of the packages'}"
 
 
 def package_dirs() -> dict[str, str]:
