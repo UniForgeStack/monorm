@@ -36,6 +36,7 @@ python extensions/query-defaults/tests/public/python.py
 (cd languages/js && node ../../extensions/query-defaults/tests/public/node.mjs)
 (cd apps/auth/typescript && npm test && npm run test:bun)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
+scripts/check-unscoped-npm.sh        # the npm package monorm runs @ufstack/monorm and its CLI
 python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
 cargo package -p monorm-contracts      # the crate that extension authors get from crates.io
 python3 scripts/rename/rename.py --check   # no old project name in the tree
