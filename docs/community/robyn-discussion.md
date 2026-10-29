@@ -42,7 +42,7 @@ Safe wording: "carries Prisma's schema-first idea forward for Python", "the same
 - [ ] Replace each `<...>` placeholder below.
 - [ ] Run the Robyn example below against the released package, on SQLite and PostgreSQL. (It runs today against a local build with `monorm.loads`: `POST /users` and `GET /users` return the expected JSON.)
 - [ ] Write a short migration note for Prisma Client Python users (schema changes such as `cuid()`, the query API side by side) and link it from the post.
-- [ ] Make no speed claim against SQLAlchemy or Prisma. `bench/RESULTS.md` says that no current benchmark compares the Python API with Django, SQLAlchemy, Prisma or Drizzle. Add a claim only after such a benchmark is measured and recorded.
+- [ ] Cite speed only from the [2026-10-28 run](../../bench/RESULTS.md#speed-up-summary) (Python against Django and SQLAlchemy, TypeScript against Prisma and Drizzle; one run on one cloud VM), with its date, machine and the cases where `monorm` is not faster.
 - [ ] Check the OpenDAL and ArdiQ descriptions against their current READMEs. Do not repeat ArdiQ's benchmark numbers, which are its own measurements.
 
 ## The discussion post
