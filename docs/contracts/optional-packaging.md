@@ -56,7 +56,7 @@ Engine backend features are `postgres` and `sqlite`.
 Bindings forward selected backends without enabling dependency defaults.
 `cli` selects the CLI crate.
 `generate-python` and `generate-typescript` select generator modules independently, including through an optional CLI dependency.
-`reference-loading` selects the to-one cache adapter.
+`reference-loading` selects the to-one cache adapter ([reference-loading.md](reference-loading.md)).
 The released wheel and tarball use the default features.
 The `profile-*` features of the bindings stay for audits of a narrower build (`languages/python/packaging/check-dependencies.py`); they are not published.
 

@@ -16,8 +16,14 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | [python-api.md](api/python-api.md) | The Python API: models, queries, pagination, `select()`, subqueries, windows, CTEs, writes, connections, transactions, protected writes, locks, the N+1 finder, hooks, errors |
 | [typescript-api.md](api/typescript-api.md) | The TypeScript API, with the same sections |
 | [query-set-kinds.md](api/query-set-kinds.md) | The kinds of query set, and the methods each kind leaves out |
-| [async-reference-loading.md](api/async-reference-loading.md) | Explicit to-one loaders `load_<relation>()` / `load<Relation>()` (on by default in the bindings) |
 | [optional-packaging.md](contracts/optional-packaging.md) | One package per registry, outside extensions and exact source builds |
+
+## Guides and contracts
+
+| Doc | What |
+|---|---|
+| [loading-instances.md](guides/loading-instances.md) | `post.load(...)` on an instance: partial shapes, `reload`, `NotLoaded`, the reference cache and shared queries |
+| [reference-loading.md](contracts/reference-loading.md) | The `reference-loading` Cargo feature, hidden helper keys and the adapter rules |
 
 ## Feature extensions
 

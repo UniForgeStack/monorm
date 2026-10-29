@@ -63,9 +63,6 @@ writes one module with the compiled schema and a type for everything:
   `updateMany()` take. A composed model also gets `UserAttach`
   ([`model-composition.md`](../extensions/model-composition.md)). `UserData`, `UserFields`, `UserPath`,
   `UserSpec` and `UserModel` are the building blocks of these types.
-* `loadAuthor()` on an instance for each to-one relation `author` (with the default
-  `reference-loading` feature): `await post.loadAuthor({ reload })` reads and caches it
-  ([`async-reference-loading.md`](async-reference-loading.md)).
 * Enums are string literal unions (`Role = "member" | "editor" | "admin"`) with a value
   object of the same name (`Role.admin`).
 
@@ -407,6 +404,7 @@ objects without a prototype, get a message naming the expected target model.
   A reload does not clear a to-one cache, except a hasOne cache.
   `await post.load()` fills the scalar fields that are missing. Nested paths and filtered relation querysets
   work as on querysets, and collection values remain in `.cached`.
+* [loading-instances.md](../guides/loading-instances.md) has the cache and the shared queries.
 * `post.load()`, `post.update()` and `post.delete()` run through `post.qs()`: they apply no query default to the row itself, but a relation or aggregate they load keeps the defaults of its target.
 * `await of([bundle]).load(...items)` loads relations onto instances you already have, with the items of `load()`.
   A bound load of relations only runs no query for the objects themselves: the keys come from the instances, and every relation loads with an `IN` query.

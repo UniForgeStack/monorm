@@ -67,7 +67,6 @@ python examples/blog/demo.py sqlite://:memory:
   * a **query set class** `PostQuerySet` with `insert()`, `insert_many()`, `update()` and
     `update_many()` typed by those TypedDicts, since `objects`, `filter()` and the other
     builders return `Self`;
-  * a `load_<relation>()` method for each to-one relation ([`async-reference-loading.md`](async-reference-loading.md)).
 
 `monorm.define(schema, *, registry=None, module=None, required_capabilities=())` builds the
 classes from a compiled IR; `monorm.load(path)` and `monorm.loads(source)` compile a schema
@@ -455,6 +454,7 @@ It preserves loaded fields and skips loaded values. `reload=True` refreshes the
 requested values. `await post.load(reload=True)` with no items reads all scalar fields, so a partial object becomes full.
 `await post.load()` fills the scalar fields that are missing. Nested paths and
 filtered relation querysets work too. Collection values remain in `.cached`.
+The guide [loading-instances.md](../guides/loading-instances.md) has the cache and the shared queries.
 `post.load()`, `post.update()` and `post.delete()` run through `post.qs()`: they apply no query default to the row itself, but a relation or aggregate they load keeps the defaults of its target.
 
 **Instances you already have.** `await monorm.of(instances).load(*items)` loads relations onto them, as `load()` does for the rows of a query:
