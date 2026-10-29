@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build pass packages for this host and install them into the check environments.
+# Build the npm packages of the passes, and install the `monorm` wheel of this checkout (the Python side of the passes).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$ROOT/target/extension-packages
@@ -17,7 +17,9 @@ for extension in timestamps soft-delete locking inherit query-defaults generic p
   rm -rf "$OUT/$extension"
   cargo run -q --manifest-path "$ROOT/Cargo.toml" -p monorm-extension-package -- package "$ROOT/extensions/$extension" --out "$OUT/$extension" --tsc "$TSC"
 done
-uv pip install --python "$PY" "$OUT"/*/*.whl
+# The Python side of the extensions is part of the one `monorm` wheel: stage them and install it in place.
+"$PY" "$ROOT/languages/python/packaging/stage.py"
+(cd "$ROOT" && VIRTUAL_ENV=$("$PY" -c 'import sys; print(sys.prefix)') "$PY" -m maturin develop)
 # The package directories import monorm; resolve it through the checkout.
 mkdir -p "$ROOT/node_modules/@ufstack"
 ln -sfn ../../languages/js "$ROOT/node_modules/@ufstack/monorm"

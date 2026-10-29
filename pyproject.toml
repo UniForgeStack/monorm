@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
 
 [project]
 name = "monorm"
@@ -10,6 +10,8 @@ description = "Async Python ORM with a Rust core"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
+# The first-party extensions and the auth app run inside the wheel, so their dependencies are the wheel's.
+dependencies = ["argon2-cffi>=23.1", "opendal>=0.47,<0.48"]
 keywords = ["monorm", "async", "asyncio", "rust", "postgresql", "sqlite", "prisma", "migrations"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
@@ -30,30 +32,33 @@ Issues = "https://github.com/UniForgeStack/monorm/issues"
 Changelog = "https://github.com/UniForgeStack/monorm/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-postgres = ["monorm-native-postgres==0.1.0"]
-sqlite = ["monorm-native-sqlite==0.1.0"]
-combined = ["monorm-native-combined==0.1.0"]
-tooling = ["monorm-native-tooling==0.1.0"]
-full = [
-  "monorm-native-tooling==0.1.0",
-  "monorm-generic==0.1.0",
-  "monorm-inherit==0.1.0",
-  "monorm-locking==0.1.0",
-  "monorm-composition==0.1.0",
-  "monorm-proxy==0.1.0",
-  "monorm-query-defaults==0.1.0",
-  "monorm-soft-delete==0.1.0",
-  "monorm-timestamps==0.1.0",
-]
 otel = ["opentelemetry-api>=1.20"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.11", "pyright"]
 
-[tool.setuptools.packages.find]
-where = ["languages/python"]
-include = ["monorm*"]
+[project.entry-points."monorm.extensions"]
+"monorm.timestamps" = "monorm_timestamps"
+"monorm.soft-delete" = "monorm_soft_delete"
+"monorm.locking" = "monorm_locking"
+"monorm.inherit" = "monorm_inherit"
+"monorm.query-defaults" = "monorm_query_defaults"
+"monorm.generic" = "monorm_generic"
+"monorm.proxy" = "monorm_proxy"
+"monorm.composition" = "monorm_composition"
+"monorm.file-storage" = "monorm_file_storage"
 
-[tool.setuptools.package-data]
-monorm = ["py.typed", "*.pyi"]
+[project.entry-points."monorm.apps"]
+monorm-auth = "monorm_auth:schema.prisma"
+
+# One platform wheel: the tooling engine as `monorm._native`, plus the packages that
+# `languages/python/packaging/stage.py` writes (the libraries of the extensions are not in git).
+[tool.maturin]
+manifest-path = "languages/python/native/Cargo.toml"
+python-source = "languages/python"
+module-name = "monorm._native"
+no-default-features = true
+features = ["pyo3/extension-module", "profile-tooling"]
+python-packages = ["monorm_auth", "monorm_timestamps", "monorm_soft_delete", "monorm_locking", "monorm_inherit", "monorm_query_defaults", "monorm_generic", "monorm_proxy", "monorm_composition", "monorm_file_storage"]
+include = [{ path = "languages/python/monorm_*/**/*", format = "wheel" }]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

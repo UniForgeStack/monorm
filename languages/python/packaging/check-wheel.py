@@ -1,19 +1,34 @@
-"""Check native namespace separation and the absence of native payload in monorm."""
+"""Check the payload of the one `monorm` wheel: the engine, the library of each built-in extension, and auth.
 
-from pathlib import Path
+    python languages/python/packaging/check-wheel.py <wheel>
+"""
+
+import re
 import sys
+from pathlib import Path
 from zipfile import ZipFile
 
-wheels = Path(sys.argv[1])
-profile = sys.argv[2]
-thin = next(wheels.glob("monorm-*.whl"))
-with ZipFile(thin) as archive:
-    assert not any(name.endswith((".so", ".pyd", ".dylib", ".dll")) for name in archive.namelist())
-    assert "monorm/_native.py" in archive.namelist()
-    assert not any("monorm_native_" in name for name in archive.namelist())
-native = next(wheels.glob(f"monorm_native_{profile}-*.whl"))
-with ZipFile(native) as archive:
-    payload = [name for name in archive.namelist() if name.endswith((".so", ".pyd"))]
-    assert len(payload) == 1 and payload[0].startswith(f"monorm_native_{profile}/_native.")
-    assert not any(name.startswith("monorm/") for name in archive.namelist())
-print(f"wheel contents verified: {profile}")
+MODULES = (
+    "monorm_timestamps monorm_soft_delete monorm_locking monorm_inherit monorm_query_defaults "
+    "monorm_generic monorm_proxy monorm_composition monorm_file_storage"
+).split()
+LIBRARY = re.compile(r"[^/]*\.(so|pyd|dylib|dll)$")
+
+wheel = Path(sys.argv[1])
+assert re.fullmatch(r"monorm-[^-]+-.*(macosx|manylinux|win)[^-]*\.whl", wheel.name), f"{wheel.name} is not a platform wheel of monorm"
+with ZipFile(wheel) as archive:
+    names = archive.namelist()
+    libraries = [n for n in names if LIBRARY.search(n)]
+    engine = [n for n in libraries if n.startswith("monorm/_native.")]
+    assert len(engine) == 1, engine
+    assert "monorm/_native.py" not in names and "monorm/_profiles.py" not in names
+    for module in MODULES:
+        assert f"{module}/monorm-extension.toml" in names and f"{module}/__init__.py" in names, module
+        own = [n for n in libraries if n.startswith(f"{module}/")]
+        assert len(own) == 1 and "/" not in own[0][len(module) + 1 :], (module, own)
+    assert len(libraries) == 1 + len(MODULES), libraries
+    assert "monorm_auth/schema.prisma" in names and "monorm_auth/py.typed" in names
+    assert not any("monorm_native_" in n for n in names)
+    entry_points = next(archive.read(n).decode() for n in names if n.endswith(".dist-info/entry_points.txt"))
+    assert entry_points.count("monorm_") >= len(MODULES) + 1 and "[monorm.apps]" in entry_points
+print(f"wheel contents verified: {wheel.name}")

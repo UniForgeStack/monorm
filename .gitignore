@@ -26,3 +26,6 @@ build/
 .test-artifacts/
 apps/auth/typescript/dist/
 .DS_Store
+
+# Staged by languages/python/packaging/stage.py
+/languages/python/monorm_*/
