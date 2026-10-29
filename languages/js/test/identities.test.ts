@@ -90,9 +90,9 @@ test("a generic relation schema loads and round-trips", async () => {
 const genericHeader = `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\ntags Tag[] @generic.reverse\n@@map("generic_field_node_posts")\n}\nmodel Photo {\nid Int @id\n@@map("generic_field_node_photos")\n}\n`;
 
 test("a Generic field creates its pair, its index and the reverse field", async () => {
-  // A package compiles into a schema only when the schema uses its namespace, so a bare `Generic` type gets the plain error.
+  // A package compiles into a schema only when the schema uses its namespace, so a bare `Generic` type gets the plain error with a package hint.
   const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null, resolveExtensions());
-  assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && !e.message.includes("needs @"));
+  assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && e.message.includes("Generic comes from the generic-relation extension package"));
   const dir = mkdtempSync(join(scratch, "generic-field-"));
   const path = join(dir, "schema.prisma");
   try {
