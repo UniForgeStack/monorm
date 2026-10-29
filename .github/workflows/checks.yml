@@ -49,6 +49,9 @@ jobs:
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python languages/python/packaging/stage.py
       - run: maturin develop
+      # The extension-package tests compile TypeScript with languages/js/node_modules/.bin/tsc.
+      - run: npm install
+        working-directory: languages/js
       - run: python -m pytest -q
       - run: cargo test -q
       - run: cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm -p monorm-extension-package
