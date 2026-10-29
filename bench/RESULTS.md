@@ -84,7 +84,7 @@ Build times (measured): build-python-wheel 202s, build-node-addon 193s, build-al
 `bench/compare`: the public Python and TypeScript APIs of `monorm` against Django 6.1.2 and SQLAlchemy 2.1.6 (sync and async), Prisma 7.10.1, Drizzle 0.45.4 and raw `pg` 8.23.1 (the floor), on one shared schema and seed. The run (`bench/compare/run.sh`, no flags) used release builds at `d428e01`: 20 rounds × 20 timed iterations, 50 untimed warm-up calls per case, one fresh process per contender and round, rotated order.
 Results directory: [`compare/results/2026-10-28-d428e01/`](compare/results/2026-10-28-d428e01/summary.md) (`summary.md`, raw JSON per contender, `run.json`, `environment.json`, logs).
 
-Machine (from `environment.json`): cloud VM `vm`, Linux 6.18.44 x86_64, PostgreSQL 16.15 over TCP on localhost. CPython 3.14.6, Node v22.22.0, Bun 1.4.4. The CPU model, core count and RAM are not in this run's `environment.json`.
+Machine (from `environment.json`): cloud VM `vm`, Linux 6.18.44 x86_64, PostgreSQL 16.15 over TCP on localhost. CPython 3.14.6, Node v22.22.0, Bun 1.4.4. The CPU model, core count and RAM are not in this run's `environment.json`. The VM comes from the same cloud service as the 2026-10-21 run, so it probably has the same Intel Xeon 2.80GHz, 4 cores and 16 GB (owner's statement, not recorded).
 `run.json` marks the run valid (date 2026-10-28, load at start 1.00 and at end 1.13). The 1-minute load before each round was 1.14 to 1.97 (limit 2). The machine is a shared cloud VM: treat differences whose interval overlaps 1.00 as no difference.
 
 The text and tables below are copied from `summary.md` unchanged (headings one level lower); all numbers are measured.
