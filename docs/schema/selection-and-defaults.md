@@ -26,12 +26,12 @@ filters or reference loading. Column expressions and writes remain usable for
 excluded fields. Insert requirements remain unchanged.
 A bare relation path beside columns of that relation (`load(Book.author, Book.author.bio)`) loads the related model's default selection united with those columns.
 
-`only()` is in the core. Schema query defaults need the `monorm-query-defaults` package.
+`only()` is in the core. Schema query defaults need the `monorm.query-defaults` extension.
 
-**Enable:** install `monorm-query-defaults` (Python) or `@ufstack/monorm-query-defaults` (npm).
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
 
-The `monorm-query-defaults` package supports schema policies:
+The `monorm.query-defaults` extension supports schema policies:
 
 ```prisma
 model User {

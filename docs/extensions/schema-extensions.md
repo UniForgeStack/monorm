@@ -1,15 +1,15 @@
 # Column-role extensions: `updated_at`, soft delete, optimistic locking
 
-Three extension packages give a column a role that the ORM keeps on writes.
+Three built-in extensions give a column a role that the ORM keeps on writes.
 Each one is a crate in `extensions/`; the host has no code for the roles, and the crate pushes neutral write records.
-Install its Python package or its npm package (`monorm-timestamps`, `monorm-soft-delete`, `monorm-locking`; `@ufstack/monorm-timestamps`, `@ufstack/monorm-soft-delete`, `@ufstack/monorm-locking`).
+They come with the `monorm` Python wheel and the `monorm` npm package (`monorm/extensions/timestamps`, `monorm/extensions/soft-delete`, `monorm/extensions/locking`); there is nothing else to install.
 `monorm-extension-package package <crate dir> --out <dir>` builds them for the host platform (see `optional-packaging.md`).
 
 | Crate | Extension id | Attribute |
 |---|---|---|
-| `monorm-timestamps` (`extensions/timestamps`) | `monorm.timestamps` | `@@timestamps.updated_at(name, map:, mode:, upsert:)` |
-| `monorm-soft-delete` (`extensions/soft-delete`) | `monorm.soft-delete` | `@@soft_delete.deleted_at(name, map:, mode:)` |
-| `monorm-locking` (`extensions/locking`) | `monorm.locking` | `@@locking.version(name, map:, upsert:)` |
+| `extensions/timestamps` | `monorm.timestamps` | `@@timestamps.updated_at(name, map:, mode:, upsert:)` |
+| `extensions/soft-delete` | `monorm.soft-delete` | `@@soft_delete.deleted_at(name, map:, mode:)` |
+| `extensions/locking` | `monorm.locking` | `@@locking.version(name, map:, upsert:)` |
 
 The model attribute adds the column and gives it the role.
 The optional first argument is the snake_case field name; the default is `updated_at`, `deleted_at` or `version`.
@@ -81,7 +81,7 @@ model Book {
   One field for each model.
 * `delete()` on a query set or an instance sends `UPDATE ... SET deleted_at = <now> WHERE ... AND deleted_at IS NULL`, never `DELETE`.
   The count and `RETURNING` are the rows that the call soft-deleted; rows that are already soft-deleted do not count.
-* The members below come from the soft-delete extension's generated code (`monorm_soft_delete`, `@ufstack/monorm-soft-delete`).
+* The members below come from the soft-delete extension's generated code (`monorm_soft_delete`, `monorm/extensions/soft-delete`).
   A model gets them when it declares `@@soft_delete.deleted_at`; other models, and proxy models, do not.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.

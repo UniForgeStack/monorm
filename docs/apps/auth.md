@@ -1,30 +1,29 @@
 # The auth app
 
-`monorm-auth` gives your project users, roles, permissions and passwords.
-It is one schema and one small package for each language.
+The auth app gives your project users, roles, permissions and passwords.
+It is one schema and one small module for each language.
 It has no native code.
-The Python package is `monorm-auth` (import `monorm_auth`).
-The npm package is `monorm-auth`.
+It comes with the `monorm` package of each registry: the Python module is `monorm_auth`, and the npm module is `monorm/auth`.
 
-The app needs the `monorm.inherit` extension.
-Use a build that has it, for example `monorm[full]`.
+The app needs the `monorm.inherit` extension, which is built into the same package.
 See [inherit.md](../extensions/inherit.md).
 
 ## Install and import
 
 ```sh
-uv pip install monorm-auth      # Python
-npm install @ufstack/monorm-auth # TypeScript
+pip install monorm      # Python: import monorm_auth
+npm install monorm      # TypeScript: import ... from "monorm/auth"
 ```
 
 Import the schema in your main schema file:
 
 ```prisma
-import "app:monorm-auth" (prefix: "auth_")
+import "app:<name>" (prefix: "auth_")
 ```
 
 The tables are `auth_user`, `auth_role`, `auth_permission`, `auth_rolepermission`, `auth_user_roles` and `auth_user_permissions`.
 The prefix is optional.
+`<name>` is `monorm-auth` in a Python project and `auth` in a TypeScript project.
 See [Installed app import](../schema/schema.md#installed-app-import) for how the import resolves.
 Run `monorm generate` and `monorm makemigrations` as usual.
 
@@ -50,7 +49,7 @@ The methods, `with_perm` and the permission rules are the same in both ways.
 Add the fields that you need in a model that overrides `User`:
 
 ```prisma
-import "app:monorm-auth" (prefix: "auth_")
+import "app:<name>" (prefix: "auth_")
 
 model MyUser {
   bio String?
@@ -142,7 +141,7 @@ await sync_permissions([Post, Comment], "blog")
 ```
 
 ```ts
-import { syncPermissions } from "monorm-auth";
+import { syncPermissions } from "monorm/auth";
 
 await syncPermissions([Post, Comment], "blog");
 ```

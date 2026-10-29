@@ -69,24 +69,52 @@ Thank you to the projects below. We claim only what we took from each.
 
 ## Quickstart
 
-Nothing is published to a registry yet. From `v0.1.0` the install commands are:
+Nothing is published to a registry yet. From `v0.1.0` there is one package for each registry:
 
 ```bash
-pip install "monorm[postgres]"                                # or [sqlite]; `python -m monorm generate`
-npm i @ufstack/monorm @ufstack/monorm-native-postgres         # `npx @ufstack/monorm generate`
+pip install monorm      # the engine, every built-in extension and the auth app; `python -m monorm generate`
+npm install monorm      # the same for Node and Bun; `npx monorm generate`
+cargo add monorm        # the contracts library for authors of outside extensions (the crate has no binary)
 ```
+
+The `monorm` command line comes with the Python and npm packages.
+`cargo install monorm` installs nothing, because the crate is a library.
+Both packages hold PostgreSQL and SQLite. They build for 3 platforms: Linux x86-64, macOS arm64 and Windows x86-64.
+An extension that is not built in is a separate package that you install next to `monorm` ([optional-packaging.md](docs/contracts/optional-packaging.md)).
 
 Until then, build from source:
 
 ```bash
 uv venv .venv && . .venv/bin/activate
-uv pip install -e '.[dev]' maturin
-(cd languages/python/packaging/tooling && maturin develop)   # the native library
-python examples/quickstart/quickstart.py                      # Python 3.11 or later
+uv pip install maturin
+python languages/python/packaging/stage.py   # the extension libraries of this platform
+maturin develop                              # the one monorm package
+python examples/quickstart/quickstart.py     # Python 3.11 or later
 
-cd languages/js && npm install && npm run build:native && npm run build
+cd languages/js && npm install && npm run assemble
 cd ../../examples/quickstart && npm install && node quickstart.ts   # Node 23.6 or later
 ```
+
+### Upgrade from the split packages
+
+Before `v0.1.0` the project had a thin `monorm` package, a native package for each profile and one package for each extension.
+Remove them, then install `monorm`:
+
+```bash
+pip uninstall monorm-native-postgres monorm-native-sqlite monorm-native-combined monorm-native-tooling \
+  monorm-timestamps monorm-soft-delete monorm-locking monorm-inherit monorm-query-defaults \
+  monorm-generic monorm-proxy monorm-composition monorm-file-storage monorm-auth
+pip install monorm
+npm uninstall @ufstack/monorm @ufstack/monorm-native-postgres @ufstack/monorm-native-sqlite @ufstack/monorm-native-combined @ufstack/monorm-native-tooling @ufstack/monorm-auth \
+  @ufstack/monorm-timestamps @ufstack/monorm-soft-delete @ufstack/monorm-locking @ufstack/monorm-inherit @ufstack/monorm-query-defaults \
+  @ufstack/monorm-generic @ufstack/monorm-proxy @ufstack/monorm-composition @ufstack/monorm-file-storage
+npm install monorm
+```
+
+The `monorm[postgres]` and `monorm[sqlite]` extras are gone: the wheel has both drivers.
+Two copies of one extension id stop the load with the error "installed twice", which names the package to uninstall.
+In a schema, `import "app:monorm-auth"` is the Python name of the auth app and `import "app:auth"` is the Node name.
+Change the imports in your code from `@ufstack/monorm` to `monorm` and from `@ufstack/monorm-<name>` to `monorm/extensions/<name>`.
 
 You need `uv`, Rust (`cargo`), and Node 20.19+ or 22.12+ (or Bun) for the TypeScript package.
 
@@ -99,10 +127,10 @@ You need `uv`, Rust (`cargo`), and Node 20.19+ or 22.12+ (or Bun) for the TypeSc
 | TypeScript API with the same sections | [typescript-api.md](docs/api/typescript-api.md) |
 | Migrations from the schema | [schema.md](docs/schema/schema.md) |
 | Protected writes, cursor pagination, the N+1 finder (`monorm.debug`) | [python-api.md](docs/api/python-api.md) |
-| Native profiles (`postgres`, `sqlite`, `combined`, `tooling`) | [optional-packaging.md](docs/contracts/optional-packaging.md) |
-| Auth app (`monorm-auth`) | [auth.md](docs/apps/auth.md) |
+| Packaging: one package for each registry, outside extension packages | [optional-packaging.md](docs/contracts/optional-packaging.md) |
+| Auth app (in the `monorm` package) | [auth.md](docs/apps/auth.md) |
 
-Build-time extensions are Rust crates that you select when you build the native library:
+Build-time extensions are Rust crates. The `monorm` package has these built in:
 proxy models, query defaults, model composition, file storage, generic relations, timestamps, soft delete, locking and inheritance.
 See the [extension index](docs/README.md#feature-extensions).
 
@@ -114,7 +142,7 @@ See the [extension index](docs/README.md#feature-extensions).
 | Python | 3.11 to 3.14 |
 | TypeScript | Node 20.19+ or 22.12+, and Bun |
 | Rust | **Coming soon.** A typed read client is in [`languages/rust/`](languages/rust/README.md) and is not published. |
-| CI | Linux, macOS and Windows (package profiles); Linux with PostgreSQL 18 (feature check) |
+| CI | Linux, macOS and Windows (package builds); Linux with PostgreSQL 18 (feature check) |
 
 ## Benchmarks
 

@@ -24,12 +24,12 @@ composition, file fields, generic relations) have their own docs: see [README.md
 
 | Path | What |
 |---|---|
-| `languages/python/monorm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](../schema/schema.md)), `_profiles.py` (native profile selection) |
+| `languages/python/monorm/` | Python package: `expr.py` (expressions, `func`, `outer` / `exists`, windows → IR), `fields.py` (descriptors), `model.py`, `query.py` (QuerySet, `load()`), `select.py` (`select()`, `Row`), `cte.py` (CTEs), `write.py` (insert / update / delete statements), `pagination.py` (`Page`), `db.py` (connections, transactions, locks), `protection.py` (`allow_writes`), `debug.py` / `testing.py` (N+1 finder, pytest plugin), `hooks.py` (package hooks), `composition.py` (`attach`), `_references.py` (reference loaders), `migrations.py` / `__main__.py` (migrations, CLI: [`schema.md`](../schema/schema.md)) |
 | `crates/core/` | Rust crate `monorm-core`, no binding code: schema language, IR (`ir.rs`), extensions, migrations, code generation, the `monorm` CLI (see [`schema.md`](../schema/schema.md)) |
 | `crates/engine/` | Rust crate `monorm-engine`, shared by both bindings: `plan.rs` (IR → sea-query statements), `db/` (drivers: `mod.rs` traits, `postgres.rs`, `sqlite.rs`), `exec.rs` (running plans, prefetch, `update_many`), `migrate.rs` (applying migrations), `params.rs` (the values a binding passes in) |
-| `crates/cli/` | Rust crate `monorm-cli`: the `monorm` command line, run as the `monorm` binary, `python -m monorm` and `npx @ufstack/monorm` |
-| `languages/python/native/` | Rust crate `monorm-python` (PyO3) on top of `monorm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `monorm_native_<profile>._native`; `monorm._native` forwards to the selected profile |
-| `languages/python/packaging/` | native profiles: `postgres`, `sqlite`, `combined`, `tooling` (both drivers, CLI and code generation): [`optional-packaging.md`](../contracts/optional-packaging.md) |
+| `crates/cli/` | Rust crate `monorm-cli`: the `monorm` command line, run as the `monorm` binary, `python -m monorm` and `npx monorm` |
+| `languages/python/native/` | Rust crate `monorm-python` (PyO3) on top of `monorm-engine`: `build.rs` (rows → instances and `Row`s), `convert.rs` (Python ↔ values), `errors.rs`, `lib.rs`. It is packaged as `monorm._native` in the one `monorm` wheel |
+| `languages/python/packaging/` | `stage.py` (the nine extension libraries), the wheel checks and the smoke scripts: [`optional-packaging.md`](../contracts/optional-packaging.md) |
 | `languages/js/`, `languages/js/native/` | The TypeScript package on the same engine: [`typescript-api.md`](typescript-api.md) |
 | `examples/blog/` | `schema.prisma`, the `models.py` / `models.pyi` generated from it, its migrations, `demo.py` |
 | `languages/python/tests/` | SQL shape tests (no DB), Postgres end-to-end tests, mypy + pyright stub checks |
@@ -39,14 +39,13 @@ Python 3.11 or newer (`select()` rows are typed with `TypeVarTuple`).
 ```bash
 uv venv .venv && . .venv/bin/activate
 uv pip install maturin pytest pytest-asyncio mypy pyright
-uv pip install -e .        # the thin monorm package
-(cd languages/python/packaging/tooling && maturin develop)   # native tooling profile; --release for benchmarks
+python languages/python/packaging/stage.py   # the extension libraries of this platform
+maturin develop            # the one monorm package: engine, built-in extensions, auth; --release for benchmarks
 python -m pytest           # needs Postgres; ORM_TEST_DATABASE_URL overrides the default URL
 python examples/blog/demo.py sqlite://:memory:
 ```
 
-`monorm` needs exactly one native profile: install `monorm[postgres]`, `monorm[sqlite]`,
-`monorm[combined]` or `monorm[tooling]`. Set `MONORM_PROFILE` when more than one is installed.
+`pip install monorm` is the whole package: one engine with PostgreSQL and SQLite, the built-in extensions and the auth app.
 
 ## Models: the generated module
 
@@ -1708,11 +1707,11 @@ Rust took these from ~2.3 / ~4.3 ms
 
 ```
 planner ──sea-query statement──▶ db::build(dialect) ──(SQL, [Value])──▶ Driver ──▶ database
-   └── checks monorm_contracts::dialect::Capabilities
+   └── checks monorm::dialect::Capabilities
 ```
 
 * **SQL building is per dialect.** The dialects are PostgreSQL and SQLite.
-  `monorm_contracts::dialect` (re-exported as `monorm_core::dialect`) lists what each dialect
+  `monorm::dialect` (re-exported as `monorm_core::dialect`) lists what each dialect
   can do (`RETURNING`, `ON CONFLICT`, `ILIKE`, row-lock flavours, `DISTINCT ON`,
   `UPDATE ... FROM (VALUES ...)`, savepoints, `max_params`). The planner
   checks it, so a query needing a missing feature raises `QueryError` naming it (or is

@@ -30,12 +30,12 @@ removed when the container stops. See [the exact Rust run steps](rust-compare/RE
 ## engine_bench.py
 
 ```bash
-(cd languages/python/packaging/tooling && maturin develop --release)
+python languages/python/packaging/stage.py && maturin develop --release
 python bench/engine_bench.py --url postgres://postgres:postgres@localhost/orm_bench [--rounds 15] [--out results.json]
 ```
 
 It drops and creates the blog tables in that database.
-With the extension packages: install them with `scripts/install-extension-packages.sh`, then run the same command.
+The one wheel holds the built-in extensions, so the same command covers them.
 
 ## aggregates_pagination.py
 
@@ -60,7 +60,7 @@ See [`rust-compare/README.md`](rust-compare/README.md).
 
 ## shared-behavior
 
-Needs the release native library (`maturin develop --release` in `languages/python/packaging/tooling`, `node languages/js/scripts/build-native.mjs --release`, `npm --prefix languages/js run build`), Nushell, and an isolated `orm_test` database.
+Needs the release native library (`python languages/python/packaging/stage.py && maturin develop --release`, `node languages/js/scripts/build-native.mjs --release`, `npm --prefix languages/js run build`), Nushell, and an isolated `orm_test` database.
 
 ```nu
 nu bench/shared-behavior/run.nu --url postgres://postgres:postgres@127.0.0.1:5432/orm_test --out bench/shared-behavior/results

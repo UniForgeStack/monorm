@@ -1,6 +1,6 @@
 # File-field binding preparation
 
-`python/` and `typescript/` are the runtime sources of the `monorm-file-storage` and `@ufstack/monorm-file-storage` packages.
+`python/` and `typescript/` are the runtime sources of the file-storage modules of the one `monorm` wheel (`monorm_file_storage`) and the one `monorm` npm package (`monorm/extensions/file-storage`).
 They depend on `opendal`, not on the project's storage library. They keep the Reference
 codec v1, `Upload`, the `Registry` (storage name to OpenDAL operator), `max_size` while
 streaming and the upload error with the candidate reference. They do not import ORM

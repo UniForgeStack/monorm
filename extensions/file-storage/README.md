@@ -82,7 +82,7 @@ We use OpenDAL in both languages. We will consider `object_store` when it has a 
 ## Tests
 
 - `cargo test -p monorm-file-storage` tests the extension crate.
-- `scripts/install-extension-packages.sh` builds and installs the package.
+- `python languages/python/packaging/stage.py && maturin develop` builds and installs the one `monorm` wheel.
   Then run the Python unit tests with `python -m unittest discover -s extensions/file-storage/integration/python/tests`.
 - End to end: `integration/tests/native_python.py` and `native_node.mjs` (Node and Bun) run on the installed package, on SQLite and PostgreSQL.
-- `scripts/check-extension-packages.sh` runs all of them in fresh Python, Node and Bun consumers, and checks the error without the package (`tests/public/disabled.py`, `disabled.mjs`).
+- `scripts/check-extension-packages.sh` runs all of them in fresh Python, Node and Bun consumers that install the one `monorm` wheel and the one `monorm` npm package.

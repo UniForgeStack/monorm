@@ -219,8 +219,8 @@ imports, including the same file through different paths, are errors.
 #### Installed app import
 
 `import "app:<name>"` imports the schema of an installed Python or npm package.
-`<name>` is the distribution name (`monorm-auth` on PyPI and on npm), so one string works
-in a Python project and in a TypeScript project.
+`<name>` is the entry point name in Python (`monorm-auth` for the auth app of the `monorm` wheel) and the bundled name or the package name in Node (`auth` for the auth app of the `monorm` package).
+The Python and Node names of the auth app differ, so one schema file does not serve both languages.
 
 ```prisma
 import "app:monorm-auth" (prefix: "auth_")
@@ -237,7 +237,7 @@ import "app:monorm-auth" (prefix: "auth_")
   * Python: `importlib.metadata` finds the entry point, and `importlib.util.find_spec` finds the package directory. It works for an editable install (`uv pip install -e`).
   * Node: from the directory of the importing schema (its real path), it goes up through `node_modules/<name>/package.json`. This resolves an app that only another app depends on under pnpm's strict layout.
   * The standalone `monorm` binary does not look for packages. Give it the file: `monorm generate --app monorm-auth=path/to/schema.prisma`. `--app` can repeat; the Python and Node commands add it themselves.
-* An app that is not installed is an error: ``import "app:monorm-auth": not installed; install the `monorm-auth` package``. There is no version lock.
+* An app that is not installed is an error: ``import "app:acme-app": not installed; install the `acme-app` package``. There is no version lock.
 * The rules of an imported schema stay the same: no `datasource`, no extension imports, one migration history, the prefix on table names.
 * An app schema can import another app. The second app is found from the first app's own package.
   Each file loads once, so an app that two schemas both import is a repeated import and an error (as for relative imports).
@@ -562,14 +562,14 @@ model User {
 * `@@query_set("UserQueries")` names a query set class. Codegen finds its module `queries`, as `Post.objects` uses it.
 * `@@model_methods("UserMethods")` names a class whose methods go on each instance of the model, for example `user.check_password(raw)`. Codegen finds its module `methods`.
 * Each takes one string, the class name. It is the same in Python and TypeScript.
-* Module lookup. The schema file is in the same package as its code. For `import "app:monorm-auth"` the schema file is the resolved one in the installed package, so the lookup finds `monorm_auth` and `monorm-auth`, not your project.
+* Module lookup. The schema file is in the same package as its code. For `import "app:monorm-auth"` the schema file is the resolved one in the installed package, so the lookup finds `monorm_auth` and `monorm/auth`, not your project.
   * Python: codegen finds the import root above the schema file.
     The import root is the nearest directory that has a `pyproject.toml`, `setup.py` or `setup.cfg` (or `src/` under it, when the schema is there), or a `site-packages` / `dist-packages` directory.
     The module is the dotted path from the import root to the schema directory, then `queries` or `methods`: `monorm_auth.queries:UserQueries` and `monorm_auth.methods:UserMethods`.
     This also works for a namespace package (`acme.auth.queries:UserQueries` for `src/acme/auth/`) and for a directory without an `__init__.py`.
     A schema directly in the import root gives `queries:UserQueries`.
     With no import root, codegen fails and tells you to give the full path with `--query-set` / `--model-methods`.
-  * TypeScript, an installed package (the schema path has a `node_modules` directory): codegen reads `name` from the nearest `package.json`. It writes `monorm-auth/queries.js#UserQueries` and `monorm-auth/methods.js#UserMethods`.
+  * TypeScript, an installed package (the schema path has a `node_modules` directory): codegen reads `name` from the nearest `package.json`. It writes `monorm/auth/queries.js#UserQueries` and `monorm/auth/methods.js#UserMethods`.
     The `package.json` of the package must list `"./schema.prisma"`, `"./queries.js"` and `"./methods.js"` in `exports`.
   * TypeScript, your own project (the nearest `package.json` of the schema also holds the generated file), or no `package.json`: the import is relative to the generated models file (`./queries.js#UserQueries`).
     `generateTypescript(schema)` of the tooling addon assumes `models.ts` is next to the schema file.
@@ -681,11 +681,11 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 
 | Attribute | Extension | Doc |
 |---|---|---|
-| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | monorm-proxy | [proxy-models.md](../extensions/proxy-models.md) |
+| `@@proxy.of(Model)`, `@@proxy.fields(include: [...] \| exclude: [...])` | proxy | [proxy-models.md](../extensions/proxy-models.md) |
 | `@@query.defaults(filter:, fields:, related:, parent:, order:)`, `@@query.filter`, `@@query.fields`, `@@query.related`, `@@query.order`, `@@query.parent`, `@query.selectOut` | query-defaults | [selection-and-defaults.md](selection-and-defaults.md) |
-| `@@composition.model(parent:, parentRef:, childRef:)` | monorm-composition | [model-composition.md](../extensions/model-composition.md) |
-| `@storage.file(storage:)` | monorm-file-storage (package) | [file-storage.md](../extensions/file-storage.md) |
-| `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic (package) | [generic-identities.md](generic-identities.md) |
+| `@@composition.model(parent:, parentRef:, childRef:)` | model-composition | [model-composition.md](../extensions/model-composition.md) |
+| `@storage.file(storage:)` | file-storage | [file-storage.md](../extensions/file-storage.md) |
+| `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic | [generic-identities.md](generic-identities.md) |
 
 `@client_default`, enum subsets in proxies (`Status(ACTIVE)`) and `@@protected_write` are core syntax.
 
@@ -712,7 +712,7 @@ An extension that the schema does not use is not loaded and adds no stamp.
 
 ```bash
 python -m monorm generate                   # models.py + models.pyi next to the schema (or -o path)
-npx @ufstack/monorm generate                         # models.ts
+npx monorm generate                         # models.ts
 monorm generate python -o app/models.py     # the standalone binary: say which language
 ```
 
@@ -740,7 +740,7 @@ python -m monorm fmt --native                   # convert supported SQL expressi
 python -m monorm drift                          # exit 1 if the database differs from the last snapshot
 ```
 
-There is one command line, written in Rust (`crates/cli/`): `python -m monorm`, `npx @ufstack/monorm` and the
+There is one command line, written in Rust (`crates/cli/`): `python -m monorm`, `npx monorm` and the
 standalone `monorm` binary (`cargo install --path cli`) all run it, through the Python
 extension, the Node addon or on their own, so they take the same arguments, write the
 same files and apply migrations the same way. A migration with a data step is the
@@ -831,7 +831,7 @@ data step; use model queries only in a step that you delete later. `data.py` and
   runs through `Migrator` instead of the Rust runner. It imports the data modules of the
   pending migrations before it connects, so the models they import are in the default
   registry. Without a schema file, it connects with no models.
-* TypeScript applies `data.ts` the same way: `Migrator.upgrade()` or `npx @ufstack/monorm migrate`.
+* TypeScript applies `data.ts` the same way: `Migrator.upgrade()` or `npx monorm migrate`.
   Node 22.18 and later strip the types of a `.ts` file; Bun runs it.
 * Each tool refuses the other's file, and the standalone `monorm` binary refuses both,
   before it applies anything.

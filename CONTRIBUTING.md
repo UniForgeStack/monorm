@@ -22,26 +22,23 @@ Run these from the repository root. Keep them green before you open a pull reque
 
 ```bash
 # Start PostgreSQL first (Linux: `service postgresql start`; macOS: your own server) with the test database above.
-uv venv .venv && . .venv/bin/activate && uv pip install -e '.[dev]' maturin   # the thin `monorm` package (languages/python/)
-scripts/install-extension-packages.sh        # Python and npm pass packages, required by tracking/auth tests
-(cd languages/python/packaging/tooling && maturin develop)   # the tooling native profile
+uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' mypy pyright   # the wheel builder and the test tools
+python languages/python/packaging/stage.py   # the extension libraries of this platform, for the one wheel
+maturin develop                   # the one `monorm` package: engine, built-in extensions and auth
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
-cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm-contracts -p monorm-extension-package
+cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm -p monorm-extension-package
 mypy --strict languages/python/monorm && pyright languages/python/monorm
 cd languages/js && npm install && npm run build:native   # the TypeScript package (languages/js/), Node addon
 npm test && npm run test:bun && npm run typecheck
 cd ../..
-uv pip install -e apps/auth/python
 python -m pytest -q apps/auth/python/tests
 python extensions/inherit/tests/public/python.py
 python extensions/query-defaults/tests/public/python.py
 (cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
 (cd languages/js && node ../../extensions/query-defaults/tests/public/node.mjs)
-(cd apps/auth/typescript && npm test && npm run test:bun)
-scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; fresh Python, Node and Bun consumers; PostgreSQL and SQLite
-scripts/check-unscoped-npm.sh        # the npm package monorm runs @ufstack/monorm and its CLI
+scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; builds the one wheel and the one tarball and installs them in fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
-cargo package -p monorm-contracts      # the crate that extension authors get from crates.io
+cargo package -p monorm      # the crate that extension authors get from crates.io
 python3 scripts/rename/rename.py --check   # no old project name in the tree
 python3 -m unittest scripts/tests/test_package_metadata.py   # publish metadata of every package
 python3 -m unittest scripts/tests/test_check_glibc.py scripts/tests/test_release_versions.py   # glibc floor check and release scripts

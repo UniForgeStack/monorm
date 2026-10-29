@@ -4,7 +4,7 @@ A composed model stores its own fields in its own table and gets the fields of i
 The child primary key is also a foreign key to the parent.
 One parent row can have more than one child: a person can be an employee and a customer at the same time.
 
-**Enable:** install the `monorm-composition` package (`@ufstack/monorm-composition` for Node; source in `extensions/model-composition/`).
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package. The source is in `extensions/model-composition/`.
 Its id is `monorm.composition`. Run `monorm generate` again for models that a build with the old id `composition` generated.
 
 ## Schema

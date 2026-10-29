@@ -1,11 +1,11 @@
 # Same-table proxy models
 
-The `monorm-proxy` package (`@ufstack/monorm-proxy` for Node) supplies proxy models.
+The `monorm.proxy` extension (`monorm/extensions/proxy` on npm) supplies proxy models.
 A proxy is a different logical view of one physical model.
-Default filters and default selection come from the `monorm-query-defaults` package
+Default filters and default selection come from the `monorm.query-defaults` extension
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
-**Enable:** install the `monorm-proxy` package (`extensions/proxy`).
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package. The source is in `extensions/proxy`.
 See [optional-packaging.md](../contracts/optional-packaging.md#installable-packages).
 
 ```prisma

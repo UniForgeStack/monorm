@@ -4,8 +4,7 @@ The `monorm.inherit` extension (crate `monorm-inherit`, `extensions/inherit`) le
 It has no host feature and no capability.
 Its pass runs in the `declaration` phase, so the host and the other extensions see only ordinary models.
 
-**Enable:** install the `monorm-inherit` Python package or the `@ufstack/monorm-inherit` npm package.
-The packages come from `scripts/install-extension-packages.sh`, which uses `monorm-extension-package`; see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package; see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
 
 ## Schema
 
@@ -100,7 +99,7 @@ A hand-written `through:` relation on `User` and its join model follow the child
 
 ## Get the active model
 
-`model_for("User")` (Python, `monorm_inherit`) and `modelFor("User")` (TypeScript, `@ufstack/monorm-inherit`) return `MyUser`.
+`model_for("User")` (Python, `monorm_inherit`) and `modelFor("User")` (TypeScript, `monorm/extensions/inherit`) return `MyUser`.
 They return the name's own model when nothing overrides it.
 The Python function returns `Any`; the TypeScript function returns the registered model without a static type.
 

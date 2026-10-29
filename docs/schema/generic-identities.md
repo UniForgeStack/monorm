@@ -43,7 +43,7 @@ enables generic relation behavior by itself.
 
 ## Generic relation compiler contribution
 
-The installed `monorm-generic` package (`@ufstack/monorm-generic` for npm) declares these namespaced attributes.
+The built-in `monorm.generic` extension declares these namespaced attributes.
 The field form declares a generic relation as one field of the reserved type `Generic`:
 
 ```prisma
@@ -102,7 +102,7 @@ for paired nulls and the allowed discriminator subset, plus forward/reverse setu
 metadata. It contributes no conventional multi-target foreign key. Database checks
 preserve pair validity for external scalar writes without promising target existence.
 
-**Enable:** install `monorm-generic` (Python) or `@ufstack/monorm-generic` (npm). No build is needed.
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package. No build is needed.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
 Its relation and reverse records live in `behavior.extension_data["monorm.generic"]`, and the host has no generic code or capability.
 Models generated for schema contract 2 fail to load with an instruction to regenerate them.

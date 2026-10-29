@@ -17,21 +17,21 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | [typescript-api.md](api/typescript-api.md) | The TypeScript API, with the same sections |
 | [query-set-kinds.md](api/query-set-kinds.md) | The kinds of query set, and the methods each kind leaves out |
 | [async-reference-loading.md](api/async-reference-loading.md) | Explicit to-one loaders `load_<relation>()` / `load<Relation>()` (on by default in the bindings) |
-| [optional-packaging.md](contracts/optional-packaging.md) | Native profiles (`postgres`, `sqlite`, `combined`, `tooling`) and exact source builds |
+| [optional-packaging.md](contracts/optional-packaging.md) | One package per registry, outside extensions and exact source builds |
 
 ## Feature extensions
 
 | Feature | Crate | Attributes | Doc |
 |---|---|---|---|
-| proxy-models | `extensions/proxy` (`monorm-proxy`, `@ufstack/monorm-proxy`) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
-| model-composition | `extensions/model-composition/` (`monorm-composition`, `@ufstack/monorm-composition`) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
-| file-storage | `extensions/file-storage` (`monorm-file-storage`, `@ufstack/monorm-file-storage`) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
-| generic | `extensions/generic` (`monorm-generic`, `@ufstack/monorm-generic`) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
-| timestamps | `extensions/timestamps` (`monorm-timestamps`) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| soft-delete | `extensions/soft-delete` (`monorm-soft-delete`) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| locking | `extensions/locking` (`monorm-locking`) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| inherit | `extensions/inherit` (`monorm-inherit`) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
-| query-defaults | `extensions/query-defaults/` (`monorm-query-defaults`) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
+| proxy-models | `extensions/proxy` (`monorm/extensions/proxy` on npm) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
+| model-composition | `extensions/model-composition/` (`monorm/extensions/model-composition` on npm) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
+| file-storage | `extensions/file-storage` (`monorm/extensions/file-storage` on npm) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
+| generic | `extensions/generic` (`monorm/extensions/generic` on npm) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
+| timestamps | `extensions/timestamps` (`monorm/extensions/timestamps` on npm) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| soft-delete | `extensions/soft-delete` (`monorm/extensions/soft-delete` on npm) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| locking | `extensions/locking` (`monorm/extensions/locking` on npm) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| inherit | `extensions/inherit` (`monorm/extensions/inherit` on npm) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
+| query-defaults | `extensions/query-defaults/` (`monorm/extensions/query-defaults` on npm) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 
 [optional-packaging.md](contracts/optional-packaging.md#installable-packages) shows how to install them.
 The same doc describes the extension contract: manifests, passes, hooks.
@@ -43,7 +43,7 @@ An app is a schema that you import with `import "app:<name>"`, and a package for
 
 | App | What |
 |---|---|
-| [auth.md](apps/auth.md) | `monorm-auth`: users, roles, permissions and passwords |
+| [auth.md](apps/auth.md) | The auth app: users, roles, permissions and passwords |
 
 ## Performance
 

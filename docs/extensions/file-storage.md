@@ -4,7 +4,7 @@ A file field is a nullable `Json` column that holds a storage reference.
 The ORM uploads `Upload` values before the SQL statement and reads the column back as a `Reference`.
 The files live in an [OpenDAL](https://opendal.apache.org/) service (local directory, S3 and others) that the application configures.
 
-**Enable:** install the package `monorm-file-storage` (Python) or `@ufstack/monorm-file-storage` (Node).
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package.
 It has the `monorm.file-storage` extension and the runtime module, and it installs `opendal`.
 Without the package, `monorm generate` rejects `@storage.file` with a namespace error.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).

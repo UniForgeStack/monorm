@@ -38,7 +38,7 @@ The 2026-10-21 run (`c9bbf7c`, no SQLAlchemy or Drizzle) is superseded and stays
 
 From [`bench/compare/README.md`](../bench/compare/README.md#read-the-numbers-with-care):
 
-- The `monorm` wheel must be a release build with the postgres profile. A debug tooling build (the dev venv) runs, but its timings are not valid.
+- The `monorm` wheel must be a release build (`maturin build --release`). A debug build (the dev venv) runs, but its timings are not valid.
 - Django has no async `atomic()`. The `tx-5` case on `django-async` runs a sync function through `sync_to_async`. Django async calls also serialize on one thread.
 - The sync ORM cannot run in an event loop. The `django-sync` process runs without one; its `concurrent` case uses 50 threads.
 - The CPU split is the time to build the query and to render its SQL (`.sql()` of `monorm` inlines values, `str(queryset.query)` of Django does too). The decode time is not reachable in either library and is not measured. Treat the split as approximate.

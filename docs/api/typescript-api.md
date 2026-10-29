@@ -1,6 +1,6 @@
 # TypeScript API
 
-The `@ufstack/monorm` package in `languages/js/` is the TypeScript counterpart of the Python package. It uses the
+The `monorm` package in `languages/js/` is the TypeScript counterpart of the Python package. It uses the
 same schema file, the same Rust engine (`crates/engine/`, via the N-API addon in `languages/js/native`),
 the same SQL and the same migrations. Its types are meant to catch as much as possible at
 compile time: a column of the wrong model, a value of the wrong type, a relation that
@@ -8,7 +8,7 @@ wasn't loaded, a missing `param()` value, or an `outer()` reference with no encl
 query all fail to type-check.
 
 ```ts
-import { connect, exists, func, outer } from "@ufstack/monorm";
+import { connect, exists, func, outer } from "monorm";
 import { Post, User } from "./models.js";
 
 await connect("postgres://postgres:postgres@localhost/orm_test");
@@ -50,7 +50,7 @@ npm run typecheck           # tsc over the package, the typing checks and the ex
 
 ## Models: the generated module
 
-`npx @ufstack/monorm generate [-o models.ts] [--import @ufstack/monorm]` (or `monorm generate typescript ...`)
+`npx monorm generate [-o models.ts] [--import monorm]` (or `monorm generate typescript ...`)
 writes one module with the compiled schema and a type for everything:
 
 * `User`: the row type (an instance). Its fields are read-only and camelCase
@@ -75,7 +75,7 @@ Scalar types follow Prisma's choices:
 |---|---|
 | `Int`, `Float` | `number` |
 | `BigInt` | `bigint` (filters also take a `number`) |
-| `Decimal` | `Decimal` from decimal.js, re-exported by `@ufstack/monorm` (filters also take a `number` or a string) |
+| `Decimal` | `Decimal` from decimal.js, re-exported by `monorm` (filters also take a `number` or a string) |
 | `DateTime` | `Date`, with millisecond precision; the microseconds below it stay in a hidden property (see below) |
 | `Date` | `Date` at 00:00 UTC |
 | `Json` | `JsonValue` |
@@ -97,7 +97,7 @@ Named filters (Django's custom managers) go in a subclass of `QuerySet`, in your
 
 ```ts
 // queries.ts
-import { QuerySet } from "@ufstack/monorm";
+import { QuerySet } from "monorm";
 import { Post, type PostSpec } from "./models.js";
 
 export class PostQueries extends QuerySet<PostSpec> {
@@ -114,7 +114,7 @@ export class PostQueries extends QuerySet<PostSpec> {
 Generate the models with the class, as `specifier#Export` (the specifier is relative to `models.ts`):
 
 ```bash
-npx @ufstack/monorm generate --query-set Post=./queries.js#PostQueries
+npx monorm generate --query-set Post=./queries.js#PostQueries
 ```
 
 or in `package.json`: `"monorm": { "querySets": { "Post": "./queries.js#PostQueries" } }`.
@@ -124,11 +124,11 @@ as its optional third argument:
 
 ```ts
 const source = addon.generateTypescript(
-  "schema.prisma", "@ufstack/monorm", { Post: "./queries.js#PostQueries" }
+  "schema.prisma", "monorm", { Post: "./queries.js#PostQueries" }
 );
 ```
 
-The second argument selects the runtime import (default `"@ufstack/monorm"`). Omitting the
+The second argument selects the runtime import (default `"monorm"`). Omitting the
 mapping, passing `null`, or passing `{}` keeps the default query-set classes.
 This native call uses only the supplied mapping; it does not read the CLI configuration.
 
@@ -150,7 +150,7 @@ Then `Post.objects` is a `PostQueries`, and the methods chain with every builder
 
 ## Model methods
 
-`@@model_methods("UserMethods")` in the schema, or `--model-methods User=monorm-auth/methods.js#UserMethods`, puts the methods of a class on every `User` row:
+`@@model_methods("UserMethods")` in the schema, or `--model-methods User=monorm/auth/methods.js#UserMethods`, puts the methods of a class on every `User` row:
 
 ```ts
 // methods.ts
@@ -171,7 +171,7 @@ export class UserMethods {
 * A method name that is a field, a relation, or a member of the row (for example `delete`) throws `TypeError: User.delete: model method collision`.
   A class passed directly is checked at the call. A function that returns the class is checked on the first row, not when the model is prepared: the function must stay lazy for the import cycle.
   A methods class may override `toString`. `valueOf` and the other members of the row still collide.
-* `@@query_set("UserQueries")` in the schema names the query set class of the section above. For an installed schema (a `node_modules` path), codegen reads `name` from the nearest `package.json` and writes `monorm-auth/queries.js#UserQueries`.
+* `@@query_set("UserQueries")` in the schema names the query set class of the section above. For an installed schema (a `node_modules` path), codegen reads `name` from the nearest `package.json` and writes `monorm/auth/queries.js#UserQueries`.
   A schema in your own project (its `package.json` also holds `models.ts`) or outside a package gives `./queries.js#UserQueries`, relative to `models.ts`. `generateTypescript(schema)` assumes `models.ts` is next to the schema file.
   An installed package must list `"./schema.prisma"`, `"./queries.js"` and `"./methods.js"` in `exports`.
 
@@ -896,7 +896,7 @@ The ORM never loads a relation by itself, so an N+1 comes from explicit code: an
 `debug.nPlusOne` finds it:
 
 ```ts
-import { debug } from "@ufstack/monorm";
+import { debug } from "monorm";
 
 await debug.nPlusOne(async () => {
   for (const c of customers) await c.load(Customer.person);
@@ -989,14 +989,14 @@ const off = db.onQuery((e: QueryEvent) => {
 * Each call to `onQuery` is one registration, also for the same function.
   Its remove function takes out that registration, and a second call to it does nothing.
 
-`await instrument(db, { tracer })` from `@ufstack/monorm/otel` gives each statement a client span with the same name, attributes and status as in Python, and resolves to a function that stops the spans.
+`await instrument(db, { tracer })` from `monorm/otel` gives each statement a client span with the same name, attributes and status as in Python, and resolves to a function that stops the spans.
 `db.execute(sql)` spans have no `db.query.text`, because its SQL can hold literal values; `instrument(db, { rawSql: true })` keeps it.
 Without `tracer`, it loads `@opentelemetry/api` (an optional peer dependency) and uses `trace.getTracer("monorm")`.
 
 ### Hooks for packages
 
 A package that changes writes and reads from outside the ORM (for example
-`@ufstack/monorm-file-storage`) uses these public methods, not internal names:
+`monorm/extensions/file-storage`) uses these public methods, not internal names:
 
 * `qs.prepareInsert(values)` checks one insert as `insert()` does (required fields,
   conversion, native planning) without SQL or I/O. `prepared.execute(values?)` inserts it.
@@ -1064,14 +1064,15 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
 
 ## Migrations and the CLI
 
-`npx @ufstack/monorm` is the one `monorm` command line (Rust, `crates/cli/`), run through the addon: the same
+`npx monorm` is the one `monorm` command line (Rust, `crates/cli/`), run through the addon: the same
 program as `python -m monorm` and the standalone `monorm` binary, with the same commands
 (`check`, `generate`, `makemigrations [--check]`, `sqlmigrate`, `migrate`, `rollback`,
 `showmigrations`, `pull`, `baseline`, `drift`; see [`schema.md`](../schema/schema.md#migrations)).
-Under `npx`, `generate` writes TypeScript and `package.json`'s `"@ufstack/monorm"` key is read first.
-The command line resolves `import "app:monorm-auth"` in a schema from `node_modules/monorm-auth/package.json` (`"monorm": {"app": "./schema.prisma"}`),
-and passes it to the Rust loader as `--app monorm-auth=<file>`; the standalone binary takes that flag from you
-(see [`schema.md`](../schema/schema.md#installed-app-import)). Installed extension libraries go the same way, as `--extension <id>=<manifest>` (see [`schema.md`](../schema/schema.md#installed-extension-libraries)). `load(path)` and `Migrations` resolve an app the same way, from its package metadata, and import no app code.
+Under `npx`, `generate` writes TypeScript and `package.json`'s `"monorm"` key is read first.
+The command line resolves `import "app:<name>"` in a schema from `node_modules/<name>/package.json` (`"monorm": {"app": "./schema.prisma"}`)
+and passes it to the Rust loader as `--app <name>=<file>`; the standalone binary takes that flag from you
+(see [`schema.md`](../schema/schema.md#installed-app-import)).
+The app `auth` comes with the `monorm` package and needs no install. Installed extension libraries go the same way, as `--extension <id>=<manifest>` (see [`schema.md`](../schema/schema.md#installed-extension-libraries)). `load(path)` and `Migrations` resolve an app the same way, from its package metadata, and import no app code.
 `Migrations` and `Migrator` are the programmatic API; they call the same Rust migrator
 (`crates/engine/src/migrate.rs`). `await pull(db)` reads a live database into a `Pulled`
 (`schema`, `gaps`, `differences`, `write(path)`), `migrator.baseline()` marks the first
@@ -1079,7 +1080,7 @@ migration applied and does not run it, and `migrator.drift()` gives the `Drift`
 (`migration`, `steps`, `gaps`) between the database and the newest snapshot
 (see [`schema.md`](../schema/schema.md#pull-baseline-and-drift-a-live-database-under-migrations)). A migration
 may hold a `data.ts` with `export async function run(db)`, run by `migrator.upgrade()` and
-`npx @ufstack/monorm migrate` in the migration's transaction (see [`schema.md`](../schema/schema.md#data-migrations)).
+`npx monorm migrate` in the migration's transaction (see [`schema.md`](../schema/schema.md#data-migrations)).
 ```ts
 const migrations = new Migrations("migrations", registry);   // or a schema path or source
 migrations.all(); migrations.plan(); migrations.make("add_tags");   // null when nothing changed

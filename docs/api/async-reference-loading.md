@@ -36,9 +36,9 @@ other scalar fields. For several owners, `of(instances).load(...items)` batches
 relation loading.
 
 The `reference-loading` Cargo feature enables the to-one cache adapter and shared
-in-progress queries for simple reference loads. The Python and Node bindings,
-the CLI and the tooling profile enable it. Baseline profiles support instance
-`.load(...)` through the ordinary relation prefetch planner, but do not import
+in-progress queries for simple reference loads. The Python and Node bindings
+and the CLI enable it. A build without the feature supports instance
+`.load(...)` through the ordinary relation prefetch planner, but does not import
 this adapter. Generated modules still record their required capabilities.
 
 Simple reference loads use ordinary target queries and the database of the owner instance.
