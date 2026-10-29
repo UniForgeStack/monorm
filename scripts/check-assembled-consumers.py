@@ -16,28 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 dist, dialects = Path(sys.argv[1]).resolve(), sys.argv[2].split(",")
 TSC = ROOT / "languages/js/node_modules/typescript/bin/tsc"
-SCHEMA = """datasource db {{ provider = "{dialect}" }}
-model Base {{
-  id Int @id
-  @@inherit.abstract
-  @@timestamps.updated_at("changed", mode: "application")
-  @@soft_delete.deleted_at("deleted", mode: "application")
-  @@locking.version("version")
-}}
-model Note {{
-  text String
-  start Int
-  end Int
-  shop_id Int
-  updated_by String?
-  note Json? @outside.wrapped("w:")
-  @@inherit.extends(Base)
-  @@outside.tag("installed")
-  @@query.filter("positive", "id > 0")
-  @@outside.guard
-  @@map("pkg1d_seam_notes")
-}}
-"""
+SCHEMA = (ROOT / "scripts/tests/package_consumer.prisma").read_text()
 
 
 def run(*command, cwd=None, env=None):
@@ -83,7 +62,7 @@ bun = tool("bun")
 for dialect in dialects:
     consumer = js / dialect
     consumer.mkdir()
-    (consumer / "schema.prisma").write_text(SCHEMA.format(dialect=dialect))
+    (consumer / "schema.prisma").write_text(SCHEMA.replace("__DIALECT__", dialect))
     models_py, models_ts = consumer / "models.py", consumer / "models.ts"
     run(python, "-m", "monorm", "--schema", consumer / "schema.prisma", "generate", "python", "-o", models_py, cwd=js)
     run(node, "node_modules/@ufstack/monorm/dist/src/cli.js", "--schema", consumer / "schema.prisma", "generate", "typescript", "-o", models_ts, cwd=js)

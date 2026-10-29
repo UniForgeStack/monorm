@@ -34,38 +34,7 @@ cp -R "$ROOT/extensions/file-storage/fixtures" "$WORK/js/file-storage/fixtures"
 for dialect in postgres sqlite; do
   consumer=$WORK/js/$dialect
   mkdir -p "$consumer"
-  cat > "$consumer/schema.prisma" <<SCHEMA
-datasource db { provider = "$dialect" }
-model Base {
-  id Int @id
-  @@inherit.abstract
-  @@timestamps.updated_at("changed", mode: "application")
-  @@soft_delete.deleted_at("deleted", mode: "application")
-  @@locking.version("version")
-}
-model Note {
-  text String
-  start Int
-  end Int
-  shop_id Int
-  updated_by String?
-  note Json? @outside.wrapped("w:")
-  first String @default("")
-  last String @default("")
-  slug String?
-  stamp String?
-  editor String?
-  region String?
-  owner String?
-  touched_by String?
-  secret String
-  @@inherit.extends(Base)
-  @@outside.tag("installed")
-  @@query.filter("positive", "id > 0")
-  @@outside.guard
-  @@map("pkg1d_seam_notes")
-}
-SCHEMA
+  sed "s/__DIALECT__/$dialect/" "$ROOT/scripts/tests/package_consumer.prisma" > "$consumer/schema.prisma"
   (cd "$WORK/js" && "$WORK/venv/bin/python" -m monorm --schema "$consumer/schema.prisma" generate python -o "$consumer/models.py")
   (cd "$WORK/js" && node node_modules/@ufstack/monorm/dist/src/cli.js --schema "$consumer/schema.prisma" generate typescript -o "$consumer/models.ts")
   "$ROOT/languages/js/node_modules/.bin/tsc" "$consumer/models.ts" --outDir "$consumer" --module ESNext --target ES2022 --moduleResolution Bundler --skipLibCheck --noCheck
