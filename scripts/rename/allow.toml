@@ -107,3 +107,8 @@ reason = "The contender keys `orm` and `orm-all` name the recorded results; rena
 glob = "docs/**"
 pattern = '`\.orm`|\.orm syntax|\.orm` file'
 reason = "The old `.orm` schema file syntax, named as history in the Prisma-syntax notes."
+
+[[allow]]
+glob = "bench/compare/js/run.mjs"
+pattern = '"orm-artifact"'
+reason = "The bench flag `--orm-artifact` that run.sh and the owner's VM runs pass (d428e01); the Python runner keeps the same name."

@@ -11,7 +11,7 @@ Both languages get the same queries, the same migrations and generated, typed mo
 > Other people should not use it in production yet, or do so at their own risk.
 > Evaluate it against your own app before you rely on it.
 
-**About 2× faster end to end than Django (async), up to 4.2×.**
+**About 1.97× faster end to end than Django (async), up to 3.55×.**
 Source: the geometric mean of 20 cases in one run on one machine, with the database round trip included ([results](bench/RESULTS.md#speed-up-summary)).
 Method, limits and the cases where it is not faster: [Benchmarks](#benchmarks).
 
@@ -118,30 +118,32 @@ See the [extension index](docs/README.md#feature-extensions).
 
 ## Benchmarks
 
-Measured in one run (`c9bbf7c`, 2026-10-21) on a shared cloud VM: Intel Xeon 2.80GHz, 4 cores, 16 GB, PostgreSQL 16.15.
-Contenders: Django 6.1.2 (sync and async), Prisma 7.10.1 and `pg` 8.23.1.
+Measured in one run (`d428e01`, 2026-10-28) on a shared cloud VM (`vm`, Linux 6.18.44 x86_64) with PostgreSQL 16.15.
+Contenders: Django 6.1.2 (sync and async), SQLAlchemy 2.1.6 (sync and async, asyncpg), Prisma 7.10.1, Drizzle 0.45.4 and `pg` 8.23.1.
 "N× faster" is the contender median time divided by the `monorm` median time.
-Every number is end to end: it includes the database round trip.
+Every number is measured and end to end: it includes the database round trip.
 
-| Case | Python vs Django async | Node vs Prisma |
-|---|---|---|
-| `read-pk` | 1.6× faster | 2.0× faster |
-| `read-1000` | 3.0× faster | 1.6× faster |
-| `prefetch-to-many` | 3.3× faster | 1.7× faster |
-| `m2m` | 4.2× faster | 2.2× faster |
-| `bulk-insert-1000` | 1.9× faster | 4.3× faster |
-| `concurrent` | 2.7× faster | 1.5× faster |
-| `tx-5` | 1.1× faster (level) | 1.4× faster |
-| Geometric mean of 20 cases | 1.95× faster | 1.77× faster |
+| Case | Python vs Django async | Python vs SQLAlchemy async | Node vs Prisma | Node vs Drizzle |
+|---|---|---|---|---|
+| `read-pk` | 2.31× faster | 2.72× faster | 2.30× faster | 1.56× faster |
+| `read-1000` | 3.26× faster | 2.77× faster | 1.96× faster | 1.43× faster |
+| `prefetch-to-many` | 3.20× faster | 2.64× faster | 1.87× faster | 3.63× faster |
+| `m2m` | 3.55× faster | 2.62× faster | 2.40× faster | 3.95× faster |
+| `bulk-insert-1000` | 1.87× faster | 13.23× faster | 4.47× faster | 2.11× faster |
+| `concurrent` | 3.32× faster | 2.77× faster | 1.59× faster | 1.78× faster |
+| `tx-5` | 1.10× faster (level) | 1.19× faster | 1.40× faster | 0.97× (slower, level) |
+| Geometric mean of 20 cases | 1.97× faster | 2.56× faster | 1.90× faster | 1.50× faster |
 
-- The Python work alone (build the query and make the SQL, no database) is about 4.9× faster than Django async. This number is approximate.
-- `monorm` is not always faster.
-  On Node `projection-1000`, Prisma is 1.4× faster than `monorm`.
-  Node `delete-100` (0.91×) and Python `tx-5` (1.1×) are level.
-  Against Django sync, Python is level on `tx-5` (0.95×) and `insert-1` (1.01×).
-- Against Django sync, the Python geometric mean is 1.57× faster.
-- It is one run on a shared VM with a load near the limit. Treat a difference whose interval overlaps 1.00 as no difference.
-- SQLAlchemy and Drizzle are not in this run yet. Django async has no async `atomic()`, which affects `tx-5`.
+- The Python work alone (build the query and make the SQL, no database) is 4.39× faster than Django async (geometric mean of 10 cases). This number is approximate.
+- Level or slower cases: a case is level when the interval of its speed-up includes 1.00.
+  - Python vs Django async: `tx-5` (1.10×, level).
+  - Python vs Django sync: `insert-1` (1.07×), `bulk-update-100` (1.10×) and `tx-5` (1.03×) are level.
+  - Python vs SQLAlchemy sync: `tx-5` is 0.92× (slower, level). Against SQLAlchemy async, no case is level.
+  - Node vs Prisma: `bulk-update-100` (1.08×) and `delete-100` (1.03×) are level.
+  - Node vs Drizzle: `projection-1000` (1.01×), `filter` (1.11×), `update-1` (1.08×), `bulk-update-100` (0.99×, slower), `delete-100` (1.05×) and `tx-5` (0.97×, slower) are level.
+- Bun has only 3 cases (`read-pk`, `read-1000`, `bulk-insert-1000`): 2.48× faster than Prisma and 1.46× faster than Drizzle (geometric means), none level.
+- Against Django sync the Python geometric mean is 1.59× faster, against SQLAlchemy sync 2.25×.
+- It is one run on a shared VM. Treat a difference whose interval overlaps 1.00 as no difference. Django async has no async `atomic()`, which affects `tx-5`.
 
 Full tables, the method and the raw data: [`bench/RESULTS.md`](bench/RESULTS.md#speed-up-summary) and [`bench/compare/README.md`](bench/compare/README.md).
 Run the comparison yourself before you decide.
