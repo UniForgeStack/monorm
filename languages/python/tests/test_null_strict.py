@@ -223,3 +223,24 @@ def test_a_negated_like_on_a_nullable_column_raises():
             build()
     assert Reading.objects.filter(~Reading.name.like("a%").or_null()).sql()
     assert Reading.objects.filter(~Reading.name.contains("a").and_not_null()).sql()
+
+
+def test_a_comparison_with_no_null_rule_builds_no_value_key(monkeypatch):
+    from monorm import expr
+
+    keys = []
+    monkeypatch.setattr(expr, "_ckey", lambda e: keys.append(e) or "")
+    Post.objects.get(Post.id == 1)
+    Post.objects.filter(Post.published, Post.views > 500)
+    assert keys == []
+
+
+def test_a_nested_column_keeps_its_own_value_key():
+    import monorm
+    from monorm import expr
+
+    schema = "type Address { city String }\nmodel Shop { id Int @id\n address Address? @storage(json) }"
+    shop = monorm.loads(schema, registry=monorm.Registry())["Shop"]
+    ref = shop.address.city
+    assert expr._ckey(ref) == repr(ref) and expr._ckey(shop.address) == repr(shop.address)
+    assert expr._ckey(ref) != expr._ckey(shop.address)
