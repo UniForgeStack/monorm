@@ -27,7 +27,7 @@ Each kind leaves out the methods that do not fit its result.
 | Relation query set | running alone, writes, `select()`, `paginate()`, `lock()` | It is only an item for `load()`; use `Post.objects` for a standalone query. |
 | `RelatedSet` | `.label()`, `.as_prefetch()` | These belong to `load()` items. |
 | `Prepared` | every builder (`filter()`, `load()`, `order_by()`, slices), writes, `select()`, `paginate()`, `lock()`, `batches()`, `async for` | The query is fixed when it is built; only the `param()` values change. Writes send their rows without an IR, so there is nothing to prepare. |
-| `BoundQuerySet` | `order_by()`, slices, `[n]`, `first()`, `get()`, `paginate()`, `select()`, `group_by()`, `distinct()`, `join()`, `cte()`, `union()` | Its result is the bound objects, at most one row per object, matched by primary key, in input order. |
+| `BoundQuerySet` | `order_by()`, slices, `[n]`, `first()`, `get()`, `paginate()`, `select()`, `group_by()`, `distinct()`, `cte()`, `from_()`, `union()` | Its result is the bound objects, at most one row per object, matched by primary key, in input order. |
 
 The rule for a `BoundQuerySet`: a method is allowed when the query still gives at most one row per bound object.
-`filter()`, `exclude()`, `load()` (fields, relations, labeled aggregates), `lock()`, `using()`, `without_defaults()`, `update()`, `delete()`, `count()` and `exists()` keep that rule.
+`filter()`, `exclude()`, `load()` (fields, relations, labeled expressions), `join(cte)` (a primary key that comes back twice raises `QueryError` when the objects are read), `lock()`, `using()`, `without_defaults()`, `update()`, `delete()`, `count()` and `exists()` keep that rule.

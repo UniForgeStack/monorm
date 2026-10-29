@@ -1,4 +1,4 @@
-/** `load()` takes a labeled relation aggregate; the label becomes an attribute of each row. */
+/** `load()` takes a labeled expression of the row; the label becomes an attribute of each instance. */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -30,8 +30,8 @@ const nComments = () => func.count(Post.comments).label("n");
 async function seed() {
   const [alice] = (await User.objects.insertMany([{ email: "a@example.com", name: "Alice" }]).returning()) as [User];
   const [p1] = (await Post.objects.insertMany([
-    { author: alice, title: "p1", body: "" },
-    { author: alice, title: "p2", body: "" },
+    { author: alice, title: "p1", body: "", views: 10 },
+    { author: alice, title: "p2", body: "", views: 20 },
   ]).returning()) as [Post, Post];
   await Comment.objects.insertMany([
     { post: p1, body: "x" },
@@ -95,9 +95,75 @@ test("an aggregate over a filtered relation", async () => {
   assert.deepEqual(posts.map((p) => Number(p.n)), [1, 0]);
 });
 
-test("load rejects a non-aggregate", () => {
-  assert.throws(() => Post.objects.load(Post.id.label("x") as Dynamic), { name: "TypeError", message: /relation aggregates with a label/ });
-  assert.throws(() => Post.objects.load(func.count().label("x") as Dynamic), { name: "TypeError", message: /relation aggregates with a label/ });
+test("load takes any labeled expression of the row", async () => {
+  await seed();
+  const posts = await Post.objects.load(Post.views.mul(2).label("doubleViews")).orderBy(Post.title).all();
+  assert.deepEqual(posts.map((p) => [p.title, Number(p.doubleViews)]), [["p1", 20], ["p2", 40]]);
+});
+
+test("a window expression keeps one row per instance", async () => {
+  await seed();
+  const posts = await Post.objects.load(func.count().over({ partitionBy: Post.authorId }).label("authorPosts")).orderBy(Post.title).all();
+  assert.deepEqual(posts.map((p) => Number(p.authorPosts)), [2, 2]);
+});
+
+test("load rejects an aggregate that merges rows", async () => {
+  await seed();
+  const merging = () => Post.objects.load(func.count().label("x") as Dynamic);
+  assert.throws(() => merging().sql(), { name: "QueryError", message: /merges rows/ });
+  await assert.rejects(() => merging().all(), QueryError);
+});
+
+test("a bound load takes a labeled expression", async () => {
+  const { alice } = await seed();
+  const posts = await Post.objects.filter(Post.authorId.eq(alice.id)).all();
+  const got = await Post.objects.of(posts).load(Post.views.mul(2).label("doubleViews"));
+  assert.deepEqual(got.map((p) => [p.title, Number(p.doubleViews)]).sort(), [["p1", 20], ["p2", 40]]);
+  assert.throws(() => Post.objects.of(posts).load(Post.views.mul(2).label("title")), { name: "QueryError", message: /is a field, relation or member/ });
+});
+
+const totals = () => Post.objects.select({ authorId: Post.authorId, views: func.sum(Post.views) }).groupBy(Post.authorId).cte("totals");
+
+async function seedViews() {
+  const [a, b, c] = (await User.objects.insertMany([
+    { email: "a@example.com", name: "Alice" }, { email: "b@example.com", name: "Bob" }, { email: "c@example.com", name: "Carol" },
+  ]).returning()) as [User, User, User];
+  await Post.objects.insertMany([
+    { author: a, title: "a1", body: "", views: 100 }, { author: a, title: "a2", body: "", views: 50 },
+    { author: b, title: "b1", body: "", views: 10 },
+  ]);
+  return { a, b, c };
+}
+
+test("join filters and annotates a bound set", async () => {
+  const { a, b, c } = await seedViews();
+  const t = totals();
+  const users = await User.objects.of([a, b, c]).join(t, t.c.authorId.eq(User.id)).filter(t.c.views.gt(100)).load(t.c.views.label("totalViews"));
+  assert.deepEqual(users.map((u) => [u.name, Number(u.totalViews)]), [["Alice", 150]]);
+});
+
+test("join annotates a query set", async () => {
+  await seedViews();
+  const t = totals();
+  const users = await User.objects.join(t, t.c.authorId.eq(User.id)).load(t.c.views.label("totalViews")).orderBy(User.name).all();
+  assert.deepEqual(users.map((u) => [u.name, Number(u.totalViews)]), [["Alice", 150], ["Bob", 10]]);
+});
+
+test("a join that matches an object twice raises a QueryError that names it", async () => {
+  const { a, b } = await seedViews();
+  const posts = Post.objects.select({ authorId: Post.authorId, title: Post.title }).cte("posts_of");
+  await assert.rejects(
+    async () => await User.objects.of([a, b]).join(posts, posts.c.authorId.eq(User.id)),
+    { name: "QueryError", message: /join\(posts_of\) returned User .* more than once/ },
+  );
+});
+
+test("an outer join gives null for an object without a match", async () => {
+  const { a, c } = await seedViews();
+  const t = totals();
+  const users = await User.objects.of([a, c]).join(t, t.c.authorId.eq(User.id), { outer: true }).load(t.c.views.label("totalViews"));
+  const byName = Object.fromEntries(users.map((u) => [u.name, u.totalViews === null ? null : Number(u.totalViews)]));
+  assert.deepEqual(byName, { Alice: 150, Carol: null });
 });
 
 test("load rejects an expression without a label", () => {

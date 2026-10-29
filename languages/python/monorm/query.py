@@ -215,7 +215,7 @@ def _prefetch_ir(model: type[Model], items: Iterable[tuple[tuple[str, ...], _Pre
     return out
 
 
-# What load() takes: a column, a relation path, a relation query set (``User.posts.objects``) or a labeled relation aggregate.
+# What load() takes: a column, a relation path, a relation query set (``User.posts.objects``) or a labeled expression.
 _LoadItem: TypeAlias = "ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]"
 
 
@@ -540,9 +540,12 @@ class QuerySet(Generic[M]):
         attribute ``.label(name)`` (``[n].label(name)``: one row or ``None``).
         ``.as_prefetch()`` loads a to-one relation by ``IN (...)`` query instead of a join.
 
-        A labeled relation aggregate (``func.count(Post.comments).label("n")``) sets the attribute
-        ``n`` on each object, from a correlated subquery in the same statement. The label must not
-        be a field, relation or member of the model, nor another label of the same ``load()``.
+        A labeled expression of the row sets the attribute on each object: a relation aggregate
+        (``func.count(Post.comments).label("n")``, a correlated subquery in the same statement),
+        arithmetic (``(Post.views * 2).label("double")``), a window function that keeps one row per
+        object (``func.count().over(partition_by=Post.author_id).label("author_posts")``) or a
+        column of a joined CTE (``join()``). An aggregate that merges rows is an error.
+        The label must not be a field, relation or member of the model, nor another label of the same ``load()``.
 
         Relation query sets run only inside ``load()``; standalone reads and writes
         raise ``TypeError``. Label a filtered, ordered or sliced set when also loading
@@ -566,14 +569,10 @@ class QuerySet(Generic[M]):
                 raise TypeError("a one-row query in load() needs .label(name)")
             elif isinstance(item, Labeled):
                 inner = item._inner
-                if not isinstance(inner, Func) or inner._rel is None:
-                    raise TypeError("load() takes relation aggregates with a label; use select() for other expressions")
-                self._check_path(inner._rel)
+                if isinstance(inner, Func) and inner._rel is not None:
+                    self._check_path(inner._rel)
             elif isinstance(item, Expression) and not isinstance(item, (ColumnRef, RelationPath)):
-                raise TypeError(
-                    f"load() needs a label on {item!r}: {item!r}.label(name); "
-                    "load() takes relation aggregates with a label, use select() for other expressions"
-                )
+                raise TypeError(f"load() needs a label on {item!r}: {item!r}.label(name)")
             elif isinstance(item, RelationPath):
                 self._check_path(item)
             elif isinstance(item, ColumnRef) and item._root is self._model:
@@ -1757,6 +1756,11 @@ class BoundQuerySet(Generic[M]):
     def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
         return self._clone(self._qs.load(*items))
 
+    def join(self, cte: Cte, on: ConditionLike, *, outer: bool = False) -> Self:
+        """``QuerySet.join()`` for a read: filter and annotate the objects by a CTE (``load(cte.c.x.label(...))``).
+        A key that comes back twice raises ``QueryError``; with ``outer``, an unmatched object gets ``None``."""
+        return self._clone(self._qs.join(cte, on, outer=outer))
+
     def lock(self, exclusive: bool = True, *, nowait: bool = False, skip_locked: bool = False) -> Self:
         return self._clone(self._qs.lock(exclusive, nowait=nowait, skip_locked=skip_locked))
 
@@ -1817,7 +1821,7 @@ class BoundQuerySet(Generic[M]):
         loads = self._qs._loads
         own = any((isinstance(i, ColumnRef) and not i._path) or isinstance(i, Labeled) for i in loads)
         relation_only = bool(loads) and not own
-        if relation_only and not self._qs._filters and self._qs._lock is None:
+        if relation_only and not self._qs._filters and self._qs._lock is None and not self._qs._joins:
             await prefetch(
                 self._objs,
                 *cast("tuple[Any, ...]", loads),
@@ -1829,7 +1833,11 @@ class BoundQuerySet(Generic[M]):
         for query in self._read_queries():
             if relation_only:
                 query = query._clone(_loads=(), _model_fields=tuple(f.name for f in self._qs._model._meta.key))
-            fresh.update((row.pk, row) for row in await query._fetch())
+            for row in await query._fetch():
+                if row.pk in fresh:
+                    names = ", ".join(cte.name for cte, _, _ in self._qs._joins)
+                    raise QueryError(f"join({names}) returned {self._qs._model.__name__} {row.pk!r} more than once; a bound read keeps one row per object")
+                fresh[row.pk] = row
         matched = [o for o in self._objs if o.pk in fresh]
         for o in matched:
             merge(o, fresh[o.pk], True)

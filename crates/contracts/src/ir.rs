@@ -1134,7 +1134,7 @@ pub struct Select {
     pub annotations: Vec<Annotation>,
 }
 
-/// A labeled relation aggregate of `load()`: `name` is the attribute of the object.
+/// A labeled expression of `load()`: `name` is the attribute of the object.
 #[derive(Deserialize, Debug, Clone)]
 pub struct Annotation {
     pub name: String,

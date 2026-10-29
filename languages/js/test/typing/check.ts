@@ -154,6 +154,10 @@ export async function loading() {
   same<(typeof best)[number]["best"], Post | null>();
   const second = await User.objects.load(User.posts.objects.at(1).label("second"));
   same<(typeof second)[number]["second"], Post | null>();
+  const doubled = await Post.objects.load(Post.views.mul(2).label("doubleViews")).all();
+  same<(typeof doubled)[number]["doubleViews"], number>();
+  // @ts-expect-error the label is not an attribute of a query set that did not load it
+  void (await Post.objects.all())[0]!.doubleViews;
   // @ts-expect-error label no longer accepts one options
   User.posts.objects.label("old", { one: true });
   // @ts-expect-error a one-row query still belongs to its original relation root

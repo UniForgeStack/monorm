@@ -2924,7 +2924,7 @@ impl<'s> Planner<'s> {
                 stmt.join_lateral(JoinType::LeftJoin, sub, Alias::new(&group.alias), SExpr::cust("TRUE"));
             }
         }
-        if q.order.iter().any(|o| has_window(&o.expr)) && q.lock.is_some() {
+        if (q.order.iter().any(|o| has_window(&o.expr)) || q.annotations.iter().any(|a| has_window(&a.expr))) && q.lock.is_some() {
             return Err(Error::query("lock() can't be used with window functions"));
         }
         if let Some(lock) = q.lock {
@@ -2946,15 +2946,30 @@ impl<'s> Planner<'s> {
         self.plan_lateral(q, &items, false);
         let mut out = Vec::with_capacity(q.annotations.len());
         for a in &q.annotations {
-            if !matches!(&a.expr, Expr::Func { rel: Some(_), .. }) {
-                return Err(Error::query(format!("annotation {} must be a relation aggregate", a.name)));
-            }
             self.join_paths(&a.expr, "load()")?;
+            let base = self.scope().path.clone();
+            if has_local_aggregate(&Cut { schema: self.schema, model: self.scope().model, base: &base }, &a.expr) {
+                return Err(Error::query(format!("annotation {} is an aggregate that merges rows; use a window (over()) or a relation aggregate", a.name)));
+            }
             types.push(self.expr_type(&a.expr)?);
+            self.allow_window = true;
             self.lateral_open = true;
             let e = self.value(&a.expr, Hint::default());
+            self.allow_window = false;
             self.lateral_open = false;
-            stmt.expr(e?);
+            let mut e = e?;
+            let read_sql = match &a.expr {
+                Expr::Col { path, name, sub, .. } if sub.is_empty() => {
+                    let m = self.walk(self.root, path)?;
+                    self.model(m).field(name).ok().and_then(|f| f.read_sql.as_ref())
+                }
+                Expr::CteCol { cte, name } => self.model(self.model_idx(cte)?).field(name).map_err(query_err)?.read_sql.as_ref(),
+                _ => None,
+            };
+            if let Some(t) = read_sql {
+                e = SExpr::cust_with_expr(t.replace("{}", "$1"), e);
+            }
+            stmt.expr(e);
             out.push(AnnotationColumn { name: a.name.clone(), pos: types.len() - 1 });
         }
         Ok(out)

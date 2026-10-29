@@ -215,11 +215,11 @@ export type Narrow<R, M extends ModelSpec, N> = [N] extends [never]
 export type InstanceLoaded<M extends ModelSpec, R, C extends readonly unknown[]> =
   R & LoadAll<C> & Pick<M["data"], Extract<RootNames<C>, keyof M["data"]>>;
 
-/** What `load()` takes: a column, a relation path or a relation query set of model `M`. */
-export type LoadItem<M extends ModelSpec> =
+/** What `load()` takes: a column, a relation path, a relation query set or a labeled expression of model `M` (and of the joined CTEs `S`). */
+export type LoadItem<M extends ModelSpec, S extends string = never> =
   | Column<unknown, M["name"] | Many, string, readonly Hop[]>
   | RelationPath<ModelSpec, M["name"] | Many, readonly Hop[]>
-  | Labeled<unknown, string, M["name"] | Many, unknown>
+  | Labeled<unknown, string, M["name"] | Many | S, unknown>
   // Compare relation metadata only; result modifiers do not change load eligibility.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `any`, not a contextual type the label literal would widen to
   | Pick<QuerySet<any, any, string, any, never, Via<any, any, any, M["name"] | Many>>, "~qs" | "meta" | "state">;
@@ -685,11 +685,16 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * a path or column through that relation, or put the columns in the set's own `.load()`.
    * A bare path gives the normal selection united with the columns named beside it.
    *
+   * A labeled expression of the row sets the attribute on each object: a relation aggregate
+   * (`func.count(Post.comments).label("n")`), arithmetic (`Post.views.mul(2).label("double")`), a
+   * window function that keeps one row per object (`func.count().over({ partitionBy: Post.authorId }).label("authorPosts")`)
+   * or a column of a joined CTE (`join()`). An aggregate that merges rows is an error.
+   *
    * Calls add up. `load()` without items gives full instances again (it bypasses a
    * default selection).
    */
   load(): PreserveRequired<this, QuerySetOf<M, R & M["row"], S, P, X, V>>;
-  load<const C extends readonly LoadItem<M>[]>(...items: C): PreserveRequired<this, QuerySetOf<M, Narrow<R, M, RootNames<C>> & LoadAll<C>, S, P & LoadParams<C>, X, V>>;
+  load<const C extends readonly LoadItem<M, S>[]>(...items: C): PreserveRequired<this, QuerySetOf<M, Narrow<R, M, RootNames<C>> & LoadAll<C>, S, P & LoadParams<C>, X, V>>;
   load(...items: readonly LoadEntry[]): unknown {
     const loads = this.state.loads ?? [];
     if (!items.length) {
@@ -700,10 +705,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     for (const item of items) {
       if (item instanceof Labeled) {
         const inner = item.expr;
-        if (!(inner instanceof Func) || !inner.rel) {
-          throw new TypeError("load() takes relation aggregates with a label; use select() for other expressions");
-        }
-        this.checkPath(inner.rel);
+        if (inner instanceof Func && inner.rel) this.checkPath(inner.rel);
       } else if (item instanceof Expression && !(item instanceof Column)) {
         throw new TypeError(`load() needs a label for an expression: ${String(item)}.label(name)`);
       } else if (item instanceof QuerySet) {
@@ -733,7 +735,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return this.clone({ modelFields, related: d.related, relatedFields: d.relatedFields, prefetch: d.prefetch });
   }
 
-  /** @internal The labeled aggregates of `load()`. */
+  /** @internal The labeled expressions of `load()`. */
   annotations(): Labeled<unknown>[] {
     return (this.state.loads ?? []).filter((i): i is Labeled<unknown> => i instanceof Labeled);
   }

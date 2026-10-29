@@ -4,6 +4,7 @@ import { resolve, type Database } from "./db.js";
 import { QueryError } from "./errors.js";
 import { merge } from "./loading.js";
 import { DB, INTERNAL, fieldValue, invalidateReference, type Instance, type ModelMeta, type Row } from "./model.js";
+import type { Cte } from "./cte.js";
 import { prefetch, registerBound, QuerySet, type Allowed, type LoadAll, type LoadItem, type LockOptions, type Narrow, type RootNames } from "./query.js";
 import type { QueryInspection } from "./inspection.js";
 import { key } from "./value-key.js";
@@ -13,13 +14,13 @@ import { slot, type ModelSpec } from "./meta.js";
  * A composite key takes half, as its OR of ANDs is two levels deep per key and SQLite stops at depth 1000. */
 const BOUND_KEY_CHUNK = 500;
 
-type Cond<M extends ModelSpec> = Expression<boolean | null, Allowed<M["name"]>, unknown>;
+type Cond<S extends string> = Expression<boolean | null, Allowed<S>, unknown>;
 
 /** The methods that a model's bound-safe extension mixins add, from `M["boundQueries"]`. */
 export type BoundQueriesOf<M extends ModelSpec> = M extends { readonly boundQueries: infer Q } ? Omit<Q, keyof BoundQuerySet<ModelSpec, unknown>> : {};
 
 /** A bound query set of `M` with the members of its extensions: what the builder methods give. */
-export type BoundQuerySetOf<M extends ModelSpec, R = Instance<M>> = BoundQuerySet<M, R> & BoundQueriesOf<M>;
+export type BoundQuerySetOf<M extends ModelSpec, R = Instance<M>, S extends string = M["name"]> = BoundQuerySet<M, R, S> & BoundQueriesOf<M>;
 
 /**
  * A query set filtered to the primary keys of objects you hold. `await` fills each matched
@@ -33,8 +34,8 @@ export type BoundQuerySetOf<M extends ModelSpec, R = Instance<M>> = BoundQuerySe
  *
  * It has no ordering, slicing or one-row methods: the result is the objects you gave.
  */
-export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements PromiseLike<R[]> {
-  declare readonly "~bound"?: [M, R];
+export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends string = M["name"]> implements PromiseLike<R[]> {
+  declare readonly "~bound"?: [M, R, S];
 
   /** @internal */
   constructor(
@@ -55,37 +56,49 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
   }
 
   /** Keep the objects whose row also matches all `conditions`. */
-  filter(...conditions: readonly Cond<M>[]): BoundQuerySetOf<M, R> {
+  filter(...conditions: readonly Cond<S>[]): BoundQuerySetOf<M, R, S> {
     return this.next((this.inner.filter as (...c: unknown[]) => QuerySet<ModelSpec>)(...conditions));
   }
 
   /** Drop the objects whose row matches all `conditions`. */
-  exclude(...conditions: readonly Cond<M>[]): BoundQuerySetOf<M, R> {
+  exclude(...conditions: readonly Cond<S>[]): BoundQuerySetOf<M, R, S> {
     return this.next((this.inner.exclude as (...c: unknown[]) => QuerySet<ModelSpec>)(...conditions));
   }
 
   /** Columns and relations to read, as {@link QuerySet.load}; the objects keep the fields not named. */
-  load<const C extends readonly LoadItem<M>[]>(...items: C): BoundQuerySetOf<M, Narrow<R, M, RootNames<C>> & LoadAll<C>> {
+  load<const C extends readonly LoadItem<M, S>[]>(...items: C): BoundQuerySetOf<M, Narrow<R, M, RootNames<C>> & LoadAll<C>, S> {
     return this.next((this.inner.load as (...i: unknown[]) => QuerySet<ModelSpec>)(...items), [...this.items, ...items] as never);
   }
 
+  /**
+   * `QuerySet.join()` for a read: filter and annotate the objects by a CTE (`load(cte.c.x.label(...))`).
+   * A key that comes back twice throws `QueryError`; with `outer`, an unmatched object gets `null`.
+   */
+  join<N extends string, C, const On extends Expression<boolean | null, Allowed<S | N>, unknown>>(
+    cte: Cte<N, C, ModelSpec | null>,
+    on: On,
+    options: { readonly outer?: boolean } = {},
+  ): BoundQuerySetOf<M, R, S | N> {
+    return this.next((this.inner.join as (c: unknown, o: unknown, opt: unknown) => QuerySet<ModelSpec>)(cte, on, options));
+  }
+
   /** `FOR UPDATE` (or `FOR SHARE`) on the rows read. */
-  lock(options?: LockOptions): BoundQuerySetOf<M, R> {
+  lock(options?: LockOptions): BoundQuerySetOf<M, R, S> {
     return this.next((this.inner.lock as (o?: LockOptions) => QuerySet<ModelSpec>)(options));
   }
 
   /** Read from `db` instead of the database of the objects. */
-  using(db?: Database | "primary"): BoundQuerySetOf<M, R> {
+  using(db?: Database | "primary"): BoundQuerySetOf<M, R, S> {
     return this.next(this.inner.using(db === "primary" ? this.database().primary : db));
   }
 
   /** Skip the model's query defaults (all, or the named ones). */
-  withoutDefaults(...names: string[]): BoundQuerySetOf<M, R> {
+  withoutDefaults(...names: string[]): BoundQuerySetOf<M, R, S> {
     return this.next((this.inner.withoutDefaults as (...n: string[]) => QuerySet<ModelSpec>)(...names));
   }
 
   /** Skip the relations that `load()` and the model's defaults would add. */
-  withoutRelated(): BoundQuerySetOf<M, R> {
+  withoutRelated(): BoundQuerySetOf<M, R, S> {
     return this.next(this.inner.withoutRelated());
   }
 
@@ -207,16 +220,24 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>> implements Prom
     const loads = st.loads ?? [];
     const relationOnly = loads.length > 0 && !loads.some((i) => i instanceof Labeled || (i instanceof Column && !i.path.length));
     // no root column to read: the keys come from the objects
-    if (relationOnly && !st.filters.length && st.lock === undefined) {
+    if (relationOnly && !st.filters.length && st.lock === undefined && !st.joins.length) {
       await prefetch(objs, ...this.items, { using: db, withoutDefaults: st.withoutDefaults });
       return [...objs] as R[];
     }
     const keys = meta.key.map((f) => f.ir);
     const rows: Row[] = [];
+    const seen = new Set<string>();
     for (let qs of this.readQueries()) {
       // a filter or a lock reads the key fields only, so a partial object keeps its shape
       if (relationOnly) qs = (qs as unknown as { clone(c: object): QuerySet<ModelSpec> }).clone({ loads: [] }).derived().onlyFields(keys);
-      rows.push(...await (qs as unknown as { fetch(): Promise<Row[]> }).fetch());
+      for (const row of await (qs as unknown as { fetch(): Promise<Row[]> }).fetch()) {
+        const id = rowKey(meta, row);
+        if (seen.has(id)) {
+          throw new QueryError(`join(${st.joins.map(([cte]) => cte.name).join(", ")}) returned ${meta.name} ${JSON.stringify(row["pk"], (_, v) => typeof v === "bigint" ? String(v) : v)} more than once; a bound read keeps one row per object`);
+        }
+        seen.add(id);
+        rows.push(row);
+      }
     }
     const matched = this.fill(rows);
     if (relationOnly) await prefetch(matched as object[], ...this.items, { using: db, withoutDefaults: st.withoutDefaults });

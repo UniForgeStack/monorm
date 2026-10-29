@@ -182,7 +182,7 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
   /** @internal Phantom: the value type, scopes and params of the expression. */
   declare readonly "~types"?: [T, S, P];
 
-  /** Names a relation aggregate for `load()`: `load(func.count(Post.comments).label("nComments"))` gives `post.nComments`. */
+  /** Names an expression for `load()`: `load(func.count(Post.comments).label("nComments"))` gives `post.nComments`. */
   label<const N extends string>(name: N): Labeled<T, N, S, P> {
     if (typeof name !== "string" || !/^[A-Za-z$][\w$]*$/.test(name)) {
       throw new TypeError(`label ${JSON.stringify(name)} must be an identifier not starting with '_'`);
@@ -881,7 +881,7 @@ export function exists<X extends string, P>(query: ExistsQuery<X, P>): Condition
 
 // -- functions --------------------------------------------------------------------------------
 
-/** A relation aggregate with a name, for `load()`; build it with `expression.label(name)`. */
+/** An expression with a name, for `load()`; build it with `expression.label(name)`. */
 export class Labeled<T, N extends string = string, S extends string = never, P = {}> extends Node {
   /** @internal Phantom: the value type, the attribute name, scopes and params. */
   declare readonly "~labeled"?: [T, N, S, P];

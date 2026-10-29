@@ -104,11 +104,26 @@ fn a_prefetch_annotation_is_inside_the_row_number_query() {
 }
 
 #[test]
-fn an_annotation_must_be_a_relation_aggregate() {
-    for expr in [json!({"t":"col","path":[],"name":"title"}), json!({"t":"func","name":"count","args":[{"t":"col","path":[],"name":"id"}]})] {
-        let e = plan(json!({"op":"select","model":"Post","annotations":[{"name":"x","expr":expr}]}), Dialect::Postgres).err().expect("error");
-        assert!(e.contains("annotation x must be a relation aggregate"), "{e}");
-    }
+fn an_annotation_may_not_merge_rows() {
+    let expr = json!({"t":"func","name":"count","args":[{"t":"col","path":[],"name":"id"}]});
+    let e = plan(json!({"op":"select","model":"Post","annotations":[{"name":"x","expr":expr}]}), Dialect::Postgres).err().expect("error");
+    assert!(e.contains("annotation x is an aggregate"), "{e}");
+}
+
+#[test]
+fn an_annotation_may_be_any_row_expression() {
+    let title = json!({"t":"col","path":[],"name":"title"});
+    let p = plan(json!({"op":"select","model":"Post","annotations":[{"name":"x","expr":title}]}), Dialect::Postgres).unwrap();
+    assert_eq!(annotations(&p), [("x".to_owned(), 3)]);
+}
+
+#[test]
+fn a_window_annotation_keeps_one_row_per_instance() {
+    let window = json!({"t":"window","func":{"t":"func","name":"count","args":[]},"partition_by":[{"t":"col","path":[],"name":"author_id"}]});
+    let p = plan(json!({"op":"select","model":"Post","annotations":[{"name":"x","expr":window}]}), Dialect::Postgres).unwrap();
+    assert!(sql(&p, Dialect::Postgres).contains("OVER (PARTITION BY"), "{}", sql(&p, Dialect::Postgres));
+    let locked = plan(json!({"op":"select","model":"Post","lock":{"mode":"update"},"annotations":[{"name":"x","expr":window}]}), Dialect::Postgres);
+    assert!(locked.err().expect("error").contains("lock() can't be used with window functions"));
 }
 
 #[test]

@@ -5,7 +5,7 @@ from blog.models import Comment, Post, User
 from pathlib import Path
 
 import monorm
-from monorm import func
+from monorm import QueryError, func
 
 SQLITE_SOURCE = Path(__file__).resolve().parents[3].joinpath("examples/sqlite/schema.prisma").read_text()
 
@@ -14,10 +14,10 @@ def n_comments():
     return func.count(Post.comments).label("n")
 
 
-async def seed():
+async def seed(views=(0, 0)):
     (alice,) = await User.objects.insert_many([{"email": "a@example.com", "name": "Alice"}]).returning()
     p1, p2 = await Post.objects.insert_many(
-        [{"author": alice, "title": "p1", "body": ""}, {"author": alice, "title": "p2", "body": ""}]
+        [{"author": alice, "title": "p1", "body": "", "views": views[0]}, {"author": alice, "title": "p2", "body": "", "views": views[1]}]
     ).returning()
     await Comment.objects.insert_many([{"post": p1, "body": "x"}, {"post": p1, "body": "y"}])
     return alice, p1, p2
@@ -92,11 +92,113 @@ async def test_aggregate_over_a_filtered_relation(clean):
     assert [p.n for p in posts] == [1, 0]
 
 
-def test_load_rejects_a_non_aggregate():
-    with pytest.raises(TypeError, match="relation aggregates with a label"):
-        Post.objects.load(Post.id.label("x"))
-    with pytest.raises(TypeError, match="relation aggregates with a label"):
-        Post.objects.load(func.count().label("x"))
+async def test_load_takes_a_labeled_expression(clean):
+    alice, p1, p2 = await seed(views=(4, 0))
+    posts = await Post.objects.load((Post.views * 2).label("double_views"), Post.id.label("same_id")).order_by(Post.title)
+    assert [(p.title, p.double_views, p.same_id) for p in posts] == [("p1", 8, p1.id), ("p2", 0, p2.id)]
+    assert [p.body for p in posts] == ["", ""]
+
+
+async def test_load_takes_a_window_expression_with_one_row_per_instance(clean):
+    alice, p1, p2 = await seed()
+    (bob,) = await User.objects.insert_many([{"email": "b@example.com", "name": "Bob"}]).returning()
+    await Post.objects.insert_many([{"author": bob, "title": "p3", "body": ""}])
+    posts = await Post.objects.load(func.count().over(partition_by=Post.author_id).label("author_posts")).order_by(Post.title)
+    assert [(p.title, p.author_posts) for p in posts] == [("p1", 2), ("p2", 2), ("p3", 1)]
+
+
+def test_load_rejects_an_aggregate_that_merges_rows():
+    with pytest.raises(QueryError, match="annotation x is an aggregate"):
+        Post.objects.load(func.count().label("x")).sql()
+
+
+async def test_a_merging_aggregate_fails_when_run(clean):
+    await seed()
+    with pytest.raises(QueryError, match="annotation x is an aggregate"):
+        await Post.objects.load(func.count().label("x"))
+
+
+async def test_bound_load_takes_a_labeled_expression(clean):
+    alice, p1, p2 = await seed(views=(3, 0))
+    posts = await Post.objects.all()
+    result = await Post.objects.of(posts).load((Post.views + 1).label("next_views"))
+    assert sorted((p.title, p.next_views) for p in result) == [("p1", 4), ("p2", 1)]
+    again = await Post.objects.of(posts).load(func.count().over(partition_by=Post.author_id).label("same_author"))
+    assert [p.same_author for p in again] == [2, 2]
+    with pytest.raises(ValueError, match="is a field, relation or member"):
+        Post.objects.of(posts).load((Post.views * 2).label("views"))
+
+
+def test_a_labeled_expression_must_not_name_a_field():
+    with pytest.raises(ValueError, match="is a field, relation or member"):
+        Post.objects.load((Post.views * 2).label("title"))
+
+
+def totals_cte():
+    return Post.objects.select(Post.author_id, func.sum(Post.views).label("views")).group_by(Post.author_id).cte("totals")
+
+
+async def seed_views():
+    alice, p1, p2 = await seed(views=(80, 40))
+    bob, carol = await User.objects.insert_many(
+        [{"email": "b@example.com", "name": "Bob"}, {"email": "c@example.com", "name": "Carol"}]
+    ).returning()
+    await Post.objects.insert_many([{"author": bob, "title": "b1", "body": "", "views": 5}])
+    return alice, bob, carol
+
+
+async def test_join_a_cte_filters_and_annotates_instances(clean):
+    alice, bob, carol = await seed_views()
+    totals = totals_cte()
+    users = await User.objects.all()
+    result = await (
+        User.objects.of(users)
+        .join(totals, totals.c.author_id == User.id)
+        .filter(totals.c.views > 100)
+        .load(totals.c.views.label("total_views"))
+    )
+    assert [(u.name, u.total_views) for u in result] == [("Alice", 120)]
+
+
+async def test_join_a_cte_on_a_query_set_loads_the_column(clean):
+    await seed_views()
+    totals = totals_cte()
+    users = await User.objects.join(totals, totals.c.author_id == User.id).load(totals.c.views.label("total_views")).order_by(User.name)
+    assert [(u.name, u.total_views) for u in users] == [("Alice", 120), ("Bob", 5)]
+
+
+async def test_a_bound_join_that_matches_twice_raises(clean):
+    await seed_views()
+    posts = Post.objects.select(Post.author_id, Post.views).cte("posts_of")
+    users = await User.objects.all()
+    with pytest.raises(QueryError, match=r"join\(posts_of\)"):
+        await User.objects.of(users).join(posts, posts.c.author_id == User.id).load(posts.c.views.label("v"))
+
+
+async def test_a_bound_outer_join_without_a_match_gives_none(clean):
+    await seed_views()
+    totals = totals_cte()
+    users = await User.objects.order_by(User.name).all()
+    result = await (
+        User.objects.of(users).join(totals, totals.c.author_id == User.id, outer=True).load(totals.c.views.label("total_views"))
+    )
+    assert {u.name: u.total_views for u in result} == {"Alice": 120, "Bob": 5, "Carol": None}
+
+
+async def test_a_bound_join_filters_the_relation_load_too(clean):
+    await seed_views()
+    totals = totals_cte()
+    users = await User.objects.all()
+    result = await User.objects.of(users).join(totals, totals.c.author_id == User.id).filter(totals.c.views > 100).load(User.posts)
+    assert [(u.name, len(u.posts.cached)) for u in result] == [("Alice", 2)]
+
+
+async def test_a_bound_join_cannot_write(clean):
+    await seed_views()
+    totals = totals_cte()
+    users = await User.objects.all()
+    with pytest.raises(QueryError, match="join"):
+        await User.objects.of(users).join(totals, totals.c.author_id == User.id).update(name="x")
 
 
 def test_load_rejects_an_expression_without_a_label():

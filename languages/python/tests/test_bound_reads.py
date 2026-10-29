@@ -268,7 +268,7 @@ def test_a_bound_query_set_has_no_shape_methods():
     del bound
     for name in (
         "order_by", "limit", "offset", "first", "last", "get", "paginate", "select", "values", "group_by",
-        "distinct", "join", "cte", "union", "insert", "insert_many", "get_or_insert", "in_bulk", "prepare",
+        "distinct", "cte", "union", "insert", "insert_many", "get_or_insert", "in_bulk", "prepare",
         "batches", "require", "label", "as_prefetch", "__getitem__", "__aiter__",
     ):  # fmt: skip
         assert not hasattr(monorm.BoundQuerySet, name), name

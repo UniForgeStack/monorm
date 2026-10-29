@@ -374,10 +374,15 @@ objects without a prototype, get a message naming the expected target model.
 
 ### Loading related objects
 
-`load(...)` takes columns, relation paths, relation query sets and labeled relation aggregates, with the rules of Python's `load()` (see [`python-api.md`](python-api.md)); calls add up.
+`load(...)` takes columns, relation paths, relation query sets and labeled expressions, with the rules of Python's `load()` (see [`python-api.md`](python-api.md)); calls add up.
 
-* `load(func.count(Post.comments).label("n"))` stores the aggregate in `post.n`, typed as the aggregate's value (`bigint` for `count`). `Expression.label(name)` takes an identifier that does not start with `_`.
-  A label that names a field, relation or member of the model, or is used twice, throws `QueryError`; a non-aggregate or an expression without a label throws `TypeError`.
+* `load(func.count(Post.comments).label("n"))` stores the expression in `post.n`, typed as its value (`bigint` for `count`); `load(Post.views.mul(2).label("doubleViews"))` works the same, and a window expression keeps one row per instance.
+  A window expression on a bound set runs over the given objects only.
+  `Expression.label(name)` takes an identifier that does not start with `_`.
+  A label that names a field, relation or member of the model, or is used twice, throws `QueryError`, as does an aggregate that merges rows; an expression without a label throws `TypeError`.
+* `join(cte, on, { outer })` on a query set or a bound set filters and annotates instances.
+  A bound set keeps one row per object: a primary key that comes back twice throws `QueryError` that names the join.
+  An `outer` join with no match gives `null`.
 
 * `load(Comment.post.author, Comment.author)` follows to-one relations with
   LEFT JOINs. The row type gains the loaded objects: `c.post.author.name` is a `string`,
