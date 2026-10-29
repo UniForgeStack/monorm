@@ -92,6 +92,8 @@ class VersionsTest(unittest.TestCase):
         self.assertIn("0.1.0-rc.1", (self.root / "languages/js/src/native.ts").read_text())
         package = json.loads((self.root / "languages/js/package.json").read_text())
         self.assertEqual(package["peerDependencies"]["@ufstack/monorm-native-sqlite"], "0.1.0-rc.1")
+        thin = json.loads((self.root / "languages/js/unscoped/package.json").read_text())
+        self.assertEqual((thin["version"], thin["dependencies"]["@ufstack/monorm"]), ("0.1.0-rc.1", "0.1.0-rc.1"))
         lock = json.loads((self.root / "languages/js/package-lock.json").read_text())
         self.assertEqual(lock["packages"][""]["version"], "0.1.0-rc.1")
         self.set("0.1.0")
@@ -181,9 +183,9 @@ def npm_dir(version: str = "0.1.0") -> Path:
 
 
 class PublishListsTest(unittest.TestCase):
-    def test_the_lists_have_15_pypi_projects_and_27_npm_names(self):
+    def test_the_lists_have_15_pypi_projects_and_28_npm_names(self):
         self.assertEqual(len(publish_lists.PYPI), 15)
-        self.assertEqual(len(publish_lists.NPM), 27)
+        self.assertEqual(len(publish_lists.NPM), 28)
 
     def test_a_complete_pypi_directory_passes(self):
         directory = pypi_dir()
@@ -271,12 +273,13 @@ class NpmPublishTest(unittest.TestCase):
         result = self.publish("real")
         self.assertEqual(result.returncode, 0, result.stderr)
         names = self.published()
-        self.assertEqual(len(names), 27)
+        self.assertEqual(len(names), 28)
         position = {name: i for i, name in enumerate(names)}
         for profile in publish_lists.PROFILES:
             for platform in publish_lists.PLATFORMS:
                 self.assertLess(position[f"@ufstack/monorm-native-{profile}-{platform}"], position[f"@ufstack/monorm-native-{profile}"])
             self.assertLess(position[f"@ufstack/monorm-native-{profile}"], position["@ufstack/monorm"])
+        self.assertLess(position["@ufstack/monorm"], position["monorm"])
         self.assertLess(position["@ufstack/monorm"], position["@ufstack/monorm-composition"])
         self.assertEqual(names[-1], "@ufstack/monorm-auth")
         self.assertIn("--provenance --access public", self.log.read_text())
@@ -284,7 +287,7 @@ class NpmPublishTest(unittest.TestCase):
     def test_dry_run_never_passes_provenance_and_always_dry_runs(self):
         self.assertEqual(self.publish("dry-run").returncode, 0)
         publishes = [l for l in self.log.read_text().splitlines() if l.startswith("publish ")]
-        self.assertEqual(len(publishes), 27)
+        self.assertEqual(len(publishes), 28)
         self.assertTrue(all("--dry-run" in l and "--provenance" not in l for l in publishes))
 
     def test_a_prerelease_gets_the_next_tag(self):
@@ -302,7 +305,7 @@ class NpmPublishTest(unittest.TestCase):
         result = self.publish("real", FAKE_NPM_UP="@ufstack/monorm-native-sqlite")
         self.assertEqual(result.returncode, 0, result.stderr)
         # The fake matches by prefix, so the profile and its 3 platform packages are all up.
-        self.assertEqual(len(self.published()), 27 - 4)
+        self.assertEqual(len(self.published()), 28 - 4)
         self.assertIn("skip @ufstack/monorm-native-sqlite@0.1.0", result.stdout)
 
     def test_a_failed_publish_stops_the_run(self):

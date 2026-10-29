@@ -25,7 +25,7 @@ class PackageMetadata(unittest.TestCase):
             if data["name"] in PRIVATE:
                 self.assertTrue(data.get("private"), where)
                 continue
-            self.assertTrue(data["name"].startswith("@ufstack/monorm"), where)
+            self.assertTrue(data["name"] == "monorm" or data["name"].startswith("@ufstack/monorm"), where)
             self.assertFalse(data.get("private"), where)
             self.assertEqual(data.get("license"), "MIT", where)
             self.assertTrue((data.get("repository") or {}).get("url"), where)

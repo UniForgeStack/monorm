@@ -1,14 +1,14 @@
 # Releasing monorm
 
 A `v*` tag runs `.github/workflows/release.yml`.
-The workflow publishes 15 PyPI projects, 27 npm packages and the crate `monorm-contracts`.
+The workflow publishes 15 PyPI projects, 28 npm packages and the crate `monorm-contracts`.
 A manual run (`workflow_dispatch`) publishes to TestPyPI and runs `npm publish --dry-run` and `cargo publish --dry-run`.
 The registries match the workflow file name `release.yml`, so every publish step stays in that file.
 
 ## Packages
 
 - PyPI, 15 projects: `monorm`, `monorm-auth`, `monorm-native-postgres`, `monorm-native-sqlite`, `monorm-native-combined`, `monorm-native-tooling`, and `monorm-<extension>` for composition, file-storage, generic, inherit, locking, proxy, query-defaults, soft-delete and timestamps.
-- npm, 27 packages: `@ufstack/monorm`, `@ufstack/monorm-auth`, the 9 `@ufstack/monorm-<extension>` packages, the 4 `@ufstack/monorm-native-<profile>` packages, and 12 `@ufstack/monorm-native-<profile>-<platform>` packages.
+- npm, 28 packages: `@ufstack/monorm`, the unscoped `monorm` (the same package: it depends on `@ufstack/monorm` at the same version and re-exports it), `@ufstack/monorm-auth`, the 9 `@ufstack/monorm-<extension>` packages, the 4 `@ufstack/monorm-native-<profile>` packages, and 12 `@ufstack/monorm-native-<profile>-<platform>` packages.
 - crates.io, 1 crate: `monorm-contracts`.
 - `scripts/release/publish-lists.py` holds these lists.
   The `collect` job fails if a file is missing or extra.
@@ -27,8 +27,8 @@ Common values: owner `UniForgeStack`, repository `monorm`, workflow `release.yml
 | 4 | Optional: tag ruleset for `v*` | Admin | only the owner creates `v*` tags |
 | 5 | Create 15 PyPI pending publishers | Owner | pypi.org → organization `ufstack` → Publishing; one per PyPI project name; the common values |
 | 6 | Create 15 TestPyPI pending publishers | Owner | test.pypi.org → Account → Publishing; the same values |
-| 7 | First npm publish | Owner, Admin | A granular token with read and write access to the scope `@ufstack` and a 7-day expiry. The Admin stores it as the secret `NPM_TOKEN` of the environment `release`. |
-| 8 | Create 27 npm trusted publishers | Owner | After v0.1.0: `npm trust github <package> --file release.yml --repo UniForgeStack/monorm --env release --allow-publish` for each package. This needs npm 11.15.0 or newer and 2FA. |
+| 7 | First npm publish | Owner, Admin | A granular token with read and write access to the scope `@ufstack` and to the new package `monorm` (a scope token does not cover an unscoped name), and a 7-day expiry. The Admin stores it as the secret `NPM_TOKEN` of the environment `release`. |
+| 8 | Create 28 npm trusted publishers | Owner | After v0.1.0: `npm trust github <package> --file release.yml --repo UniForgeStack/monorm --env release --allow-publish` for each package. This needs npm 11.15.0 or newer and 2FA. |
 | 9 | Remove the npm token | Owner, Admin | Delete the secret `NPM_TOKEN`, revoke the token, and set each package to "Require two-factor authentication and disallow tokens". |
 | 10 | First crates.io publish | Owner | Before the tag push, run `cargo publish -p monorm-contracts` from the release commit (the commit the tag will point to). The workflow then skips the version. |
 | 11 | crates.io trusted publisher | Owner | crates.io → `monorm-contracts` → Settings → Trusted Publishing; the common values |
@@ -67,7 +67,7 @@ The proof publishes only to TestPyPI.
    Run the workflow `Release` by dispatch from the branch.
    The workflow takes the version from `pyproject.toml` and accepts `## [0.1.0] - TBD` in the changelog.
 6. Approve the deployment of the environment `release`.
-7. Expected result: 15 projects at `0.1.0rc1` on TestPyPI, 27 `npm publish --dry-run` logs, and one `cargo publish --dry-run` log.
+7. Expected result: 15 projects at `0.1.0rc1` on TestPyPI, 28 `npm publish --dry-run` logs, and one `cargo publish --dry-run` log.
 8. In a fresh virtual environment on Linux and on macOS, run:
    `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ "monorm[postgres]==0.1.0rc1"`.
 9. A version on TestPyPI is permanent.

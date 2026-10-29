@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 VERSION = re.compile(r"(\d+\.\d+\.\d+)(?:rc(\d+)|-rc\.(\d+))?")
 TAG = re.compile(r"v(\d+\.\d+\.\d+(?:-rc\.\d+)?)")
 NATIVE = ("postgres", "sqlite", "combined", "tooling")
-DEPENDENCY_SECTIONS = ("peerDependencies", "optionalDependencies")
+DEPENDENCY_SECTIONS = ("dependencies", "peerDependencies", "optionalDependencies")
 VERSION_LINE = r'^version = "([^"]+)"'
 # The crates whose version `set` changes; Cargo.lock holds each of them.
 VERSIONED_CRATES = ("monorm-contracts", "monorm-python", "monorm-node")
@@ -48,6 +48,7 @@ TEXT_SITES = [
 JSON_SITES = [
     "languages/js/package.json",
     "languages/js/package-lock.json",
+    "languages/js/unscoped/package.json",
     "apps/auth/typescript/package.json",
     "apps/auth/typescript/package-lock.json",
     *[f"languages/js/packaging/{p}/package.json" for p in NATIVE],

@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import re
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
@@ -12,6 +14,8 @@ spec = importlib.util.spec_from_file_location("monorm_profiles", Path(__file__).
 profiles = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profiles)
 
+# The semver form of the root pyproject version, so `versions.py set` needs no edit here.
+VERSION = re.sub(r"rc(\d+)$", r"-rc.\1", tomllib.loads((Path(__file__).parents[4] / "pyproject.toml").read_text())["project"]["version"])
 
 BUILD = {"features": ["sqlite"], "rustc": "rustc 1.0.0", "target": "t", "profile": "release", "revision": "r"}
 
@@ -20,7 +24,7 @@ def artifact(name, **overrides):
     tooling = name == "tooling"
     metadata = {
         "abi": 1,
-        "version": "0.1.0",
+        "version": VERSION,
         "language": "python",
         "profile": name,
         "backends": list(profiles.PROFILES[name]),
