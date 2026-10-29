@@ -19,7 +19,8 @@ uv pip install --python "$WORK/venv/bin/python" "$WORK/wheels"/*.whl "$ROOT/targ
 mkdir -p "$WORK/js" "$WORK/tarballs" "$WORK/native"
 printf "module.exports = require('./monorm.node');\n" > "$WORK/native/index.cjs"
 cp "$ROOT/languages/js/monorm.node" "$WORK/native/"
-printf '{"name":"@ufstack/monorm-native-tooling","version":"0.1.0","main":"index.cjs"}\n' > "$WORK/native/package.json"
+version=$(node -p 'require(process.argv[1]).version' "$ROOT/languages/js/package.json")
+printf '{"name":"@ufstack/monorm-native-tooling","version":"%s","main":"index.cjs"}\n' "$version" > "$WORK/native/package.json"
 for dir in "$ROOT/languages/js" "$WORK/native" "$ROOT/target/extension-packages"/*/npm "$WORK/outside/npm"; do
   (cd "$dir" && npm pack --pack-destination "$WORK/tarballs" --silent)
 done

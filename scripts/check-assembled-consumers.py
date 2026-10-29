@@ -69,7 +69,8 @@ native = work / "native"
 native.mkdir()
 (native / "index.cjs").write_text("module.exports = require('./monorm.node');\n")
 shutil.copy2(ROOT / "languages/js/monorm.node", native)
-(native / "package.json").write_text(json.dumps({"name": "@ufstack/monorm-native-tooling", "version": "0.1.0", "main": "index.cjs"}))
+version = json.loads((ROOT / "languages/js/package.json").read_text())["version"]  # the peer range of @ufstack/monorm names this version
+(native / "package.json").write_text(json.dumps({"name": "@ufstack/monorm-native-tooling", "version": version, "main": "index.cjs"}))
 tarballs = work / "tarballs"
 tarballs.mkdir()
 for directory in (ROOT / "languages/js", native):

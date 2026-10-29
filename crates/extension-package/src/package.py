@@ -19,8 +19,10 @@ manifest = config["manifest"]
 ident, version = manifest["id"], manifest["version"]
 if not re.fullmatch(r"[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+", ident):
     raise ValueError("extension id must be a dotted package name")
-if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
-    raise ValueError("package version must be major.minor.patch")
+if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?", version):
+    raise ValueError("package version must be major.minor.patch, or major.minor.patch-rc.N")
+# The manifest and the npm package use semver; the wheel uses the PEP 440 form of the same version.
+py_version = version.replace("-rc.", "rc")
 module = ident.replace(".", "_").replace("-", "_")
 dist = ident.replace(".", "-").replace("_", "-")
 scope, name = ident.split(".", 1)
@@ -59,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporar
     package = stage / module
     copy_runtime("python", package)
     (package / "py.typed").touch()
-    info = stage / f"{module}-{version}.dist-info"
+    info = stage / f"{module}-{py_version}.dist-info"
     info.mkdir()
     requires = "".join(f"Requires-Dist: {line}\n" for line in (manifest.get("python") or {}).get("dependencies", []))
     own = (
@@ -67,17 +69,20 @@ with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporar
         f"Project-URL: Repository, {REPOSITORY}\nProject-URL: Issues, {REPOSITORY}/issues\nDescription-Content-Type: text/markdown\n"
     ) if OWN else ""
     body = f"\n{README}" if OWN else ""
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\n{own}Requires-Python: >=3.11\n{requires}{body}")
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {py_version}\n{own}Requires-Python: >=3.11\n{requires}{body}")
     # `platforms`: one wheel holds the libraries of all 3 platforms, and the loader picks its own file.
     tags = {
         "platforms": "py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64",
         "host": "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_"),
     }
     tag = tags[config["tag"]]
-    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: monorm-extension-package\nRoot-Is-Purelib: false\nTag: {tag}\n")
+    # The file name holds the compressed tag; WHEEL lists each platform on its own line, as the wheel spec says.
+    python_abi, _, platforms = tag.rpartition("-")
+    wheel_tags = "".join(f"Tag: {python_abi}-{platform}\n" for platform in platforms.split("."))
+    (info / "WHEEL").write_text(f"Wheel-Version: 1.0\nGenerator: monorm-extension-package\nRoot-Is-Purelib: false\n{wheel_tags}")
     (info / "entry_points.txt").write_text(f"[monorm.extensions]\n{ident} = {module}\n")
     records = []
-    wheel = out / f"{module}-{version}-{tag}.whl"
+    wheel = out / f"{module}-{py_version}-{tag}.whl"
     with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(stage.rglob("*")):
             if not path.is_file():

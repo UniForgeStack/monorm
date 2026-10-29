@@ -146,7 +146,8 @@ fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
     );
     let wheel = root.join("out/acme_demo-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl");
     let (names, record, wheel_file) = wheel_names(&wheel);
-    assert!(wheel_file.contains("Tag: py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64"));
+    let tags: Vec<&str> = wheel_file.lines().filter(|line| line.starts_with("Tag: ")).collect();
+    assert_eq!(tags, ["Tag: py3-none-macosx_11_0_arm64", "Tag: py3-none-manylinux_2_28_x86_64", "Tag: py3-none-win_amd64"]);
     assert!(wheel_file.contains("Root-Is-Purelib: false"));
     for (_, name) in KEYS {
         assert!(names.contains(&format!("acme_demo/{name}")), "{names:?}");
@@ -169,6 +170,28 @@ fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
         assert!(root.join("out/npm").join(name).is_file());
     }
     assert!(package.get("os").is_none() && package.get("cpu").is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_release_candidate_is_semver_in_npm_and_pep_440_in_the_wheel() {
+    let root = scratch("candidate");
+    let dir = crate_dir(&root, "monorm_demo");
+    let manifest = dir.join("monorm-extension.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, text.replace("version = \"0.1.0\"", "version = \"0.1.0-rc.1\"")).unwrap();
+    let output = assemble(&root, &dir, &libraries(&root, None));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let wheel = root.join("out/acme_demo-0.1.0rc1-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl");
+    assert!(wheel.is_file());
+    let package: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap())
+            .unwrap();
+    assert_eq!(package["version"], "0.1.0-rc.1");
     fs::remove_dir_all(root).unwrap();
 }
 
