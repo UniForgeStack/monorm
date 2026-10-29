@@ -837,11 +837,16 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
     } else if let Some(attribute) = ctx.owned_types.get(name) {
         return err(*pos, format!("{what}: unknown type {name}; a {name} field needs @{attribute}(...) (namespace {}.*)", crate::behavior::attribute_namespace(attribute)));
     } else {
+        let hint = if name == "Generic" {
+            "; Generic comes from the generic-relation extension package (Python `monorm-generic`, npm `@ufstack/monorm-generic`) and needs @generic.relation(...)"
+        } else {
+            ""
+        };
         return err(
             *pos,
             format!(
                 "{what}: unknown type {name}; expected a model or BigInt, Int, Float, Boolean, String, DateTime, \
-                 Json, Decimal, an enum or Unsupported(\"<extension type>\")"
+                 Json, Decimal, an enum or Unsupported(\"<extension type>\"){hint}"
             ),
         );
     }

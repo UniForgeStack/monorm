@@ -240,6 +240,10 @@ fn errors_point_at_the_problem() {
     let b = "model B {\n  id BigInt @id\n}";
     let cases = [
         ("model A {\n  id BigInt @id\n  x Strng\n}".to_owned(), "<schema>:3:5: A.x: unknown type Strng"),
+        (
+            "model A {\n  id BigInt @id\n  target Generic?\n}".into(),
+            "unknown type Generic; expected a model or BigInt, Int, Float, Boolean, String, DateTime, Json, Decimal, an enum or Unsupported(\"<extension type>\"); Generic comes from the generic-relation extension package (Python `monorm-generic`, npm `@ufstack/monorm-generic`) and needs @generic.relation(...)",
+        ),
         ("model A {\n  id BigInt @id @prim\n}".into(), "unknown attribute @prim"),
         ("model A {\n  x Int\n}".into(), "model A has no @id field"),
         (format!("model A {{\n  id BigInt @id\n  b B @relation(fields: [b_id], references: [id])\n}}\n{b}"), "no field b_id"),
@@ -798,7 +802,7 @@ fn a_manifest_attribute_owns_a_field_type_or_drops_a_field() {
     assert!(error.contains("unknown type Generic; a Generic field needs @generic.relation(...) (namespace generic.*)"), "{error}");
     // Without an owner, the type is plain unknown.
     let error = compile("model Tag {\n id Int @id\n target Generic?\n}", None).unwrap_err();
-    assert!(error.contains("unknown type Generic; expected a model or") && !error.contains("needs @"), "{error}");
+    assert!(error.contains("unknown type Generic; expected a model or") && !error.contains("a Generic field needs @"), "{error}");
     let error = compile("model Tag {\n id Int @id\n}\nmodel Post {\n id Int @id\n tags Tag[] @generic.reverse\n}", None).unwrap_err();
     assert!(error.contains("@generic.reverse: not compiled into this artifact and no installed extension owns it") && error.contains("(namespace @generic.*"), "{error}");
 }

@@ -18,6 +18,8 @@ SCANNED = [
     "languages/js/native",
 ]
 MANIFESTS = ["extensions/*/monorm-extension.toml", "tests/outside-extension/monorm-extension.toml"]
+# The one host line that tells a user which package supplies a bare `Generic` type.
+ALLOWED = [("crates/core/src/dsl/lower.rs", "Generic comes from the generic-relation extension package")]
 EDGE = "A-Za-z0-9_-"
 TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*mod\s")
 
@@ -82,7 +84,9 @@ def scan(root: Path, names: set[str], features: set[str]) -> list[str]:
                 text = TEST_MODULE.split(text, 1)[0]
             lines = list(enumerate(text.splitlines(), 1))
             for number, line in lines:
-                if any(p.search(line) for p in full_patterns):
+                if any(p.search(line) for p in full_patterns) and not any(
+                    str(relative) == f and needle in line for f, needle in ALLOWED
+                ):
                     hits.append(f"{relative}:{number}: {line.strip()}")
             if path.name == "Cargo.toml":
                 for number, line in feature_lines(text):
