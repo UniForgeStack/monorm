@@ -1,5 +1,5 @@
 id = "monorm.file-storage"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 abi = "0.2"
 library = "monorm_file_storage"
 schema_contract = "5.0"

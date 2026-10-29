@@ -1,6 +1,6 @@
 {
   "name": "monorm",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "TypeScript ORM with a Rust core: the same engine and schema as the Python package",
   "license": "MIT",
   "author": "mh-alahdadi <mhalah15@gmail.com> (https://github.com/mh-alahdadi)",
