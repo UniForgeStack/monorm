@@ -92,6 +92,9 @@ jobs:
       - name: Build and pack the auth npm package
         run: npm install --no-audit --no-fund && npm run build && npm pack --pack-destination ../../../dist/npm
         working-directory: apps/auth/typescript
+      - name: Pack the unscoped monorm package
+        run: npm pack --pack-destination ../../../dist/npm
+        working-directory: languages/js/unscoped
       - name: Check the files against the package lists
         run: |
           version='${{ needs.version.outputs.version }}'

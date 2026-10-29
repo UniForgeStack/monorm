@@ -41,6 +41,10 @@
     "./otel": {
       "types": "./dist/src/otel.d.ts",
       "default": "./dist/src/otel.js"
+    },
+    "./cli": {
+      "types": "./dist/src/cli.d.ts",
+      "default": "./dist/src/cli.js"
     }
   },
   "bin": {

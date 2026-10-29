@@ -28,7 +28,7 @@ PYPI = {
     **{f"monorm-{e}": ("wheel",) for e in EXTENSIONS},
 }
 NPM = sorted(
-    ["@ufstack/monorm", "@ufstack/monorm-auth"]
+    ["monorm", "@ufstack/monorm", "@ufstack/monorm-auth"]
     + [f"@ufstack/monorm-native-{p}" for p in PROFILES]
     + [f"@ufstack/monorm-native-{p}-{o}" for p in PROFILES for o in PLATFORMS]
     + [f"@ufstack/monorm-{e}" for e in EXTENSIONS]

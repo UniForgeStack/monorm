@@ -7,13 +7,14 @@ import { join } from "node:path";
 
 const NPM = process.env.NPM_BIN ?? "npm";
 
-// Platform packages first, then the profiles (they depend on the platforms), then the core, then the packages that peer on the core.
+// Platform packages first, then the profiles (they depend on the platforms), then the core, then the unscoped alias, then the packages that peer on the core.
 function rank(name) {
   if (/^@ufstack\/monorm-native-[a-z]+-(darwin|linux|win32)-/.test(name)) return 0;
   if (name.startsWith("@ufstack/monorm-native-")) return 1;
   if (name === "@ufstack/monorm") return 2;
-  if (name === "@ufstack/monorm-auth") return 4;
-  return 3;
+  if (name === "monorm") return 3;
+  if (name === "@ufstack/monorm-auth") return 5;
+  return 4;
 }
 
 export function readPackage(tgz) {

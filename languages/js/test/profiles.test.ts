@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { test } from "node:test";
 
+// The version of this package, so `versions.py set` needs no edit here.
+const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
 const nativeUrl = new URL("../src/native.js", import.meta.url).href;
 test("native profiles reject invalid selections and compatibility before use", () => {
   const artifacts = fileURLToPath(new URL("../../target/", import.meta.url));
@@ -12,7 +14,7 @@ test("native profiles reject invalid selections and compatibility before use", (
   const directory = mkdtempSync(join(artifacts, "monorm-profile-"));
   const path = join(directory, "mock.cjs");
   const build = { features: ["sqlite"], rustc: "rustc 1.0.0", target: "t", profile: "release", revision: "r" };
-  const metadata = { abi: 1, version: "0.1.0", language: "node", profile: "sqlite", backends: ["sqlite"], adapters: [], build,
+  const metadata = { abi: 1, version, language: "node", profile: "sqlite", backends: ["sqlite"], adapters: [], build,
     capabilities: { cli: false, "generate-python": false, "generate-typescript": false } };
   const run = (profile: string) => execFileSync(process.execPath,
     ["--input-type=module", "-e", `const { native } = await import(${JSON.stringify(nativeUrl)}); native();`],
