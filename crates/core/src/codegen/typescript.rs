@@ -199,7 +199,7 @@ fn related_ref(schema: &Schema, r: &RelationIr) -> Result<String, String> {
 
 /// Generates `models.ts` for `ir` (already validated as `schema`). `source` names the
 /// schema file in the header comment; `runtime` is the module the runtime is imported
-/// from (`"@ufstack/monorm"`).
+/// from (`"monorm"`).
 pub fn generate(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str) -> Result<String, String> {
     generate_with(ir, schema, source, runtime, &super::Options::default())
 }

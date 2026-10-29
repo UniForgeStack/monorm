@@ -45,9 +45,9 @@ dependencies = { opendal = "^0.49.0" }
 exports = { "./decoder" = "decoder.js", "./model" = "model.js" }
 [[typescript.field_adapters]]
 adapter = "file-storage.reference.v1"
-module = "@ufstack/monorm-file-storage/model"
+module = "monorm/extensions/file-storage/model"
 install = "install"
-imports = ['import type { Reference, Registry as StorageRegistry, Upload } from "@ufstack/monorm-file-storage";']
+imports = ['import type { Reference, Registry as StorageRegistry, Upload } from "monorm/extensions/file-storage";']
 value = "Reference"
 input = "Reference | Upload"
 members = [

@@ -1,6 +1,6 @@
 /** `UserQueries`: the query set of every user model (`@@query_set("UserQueries")`). */
 
-import { QuerySet, and, or, type Condition, type ModelSpec } from "@ufstack/monorm";
+import { QuerySet, and, or, type Condition, type ModelSpec } from "../index.js";
 
 import { splitPerm } from "./permissions.js";
 

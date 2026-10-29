@@ -1,7 +1,7 @@
-import { registry as defaultRegistry } from "@ufstack/monorm";
-import type { ModelClass, ModelSpec, QuerySet, Registry } from "@ufstack/monorm";
-import { behaviorValue } from "@ufstack/monorm/ext";
-import type { QuerySetCtor } from "@ufstack/monorm/ext";
+import { registry as defaultRegistry } from "monorm";
+import type { ModelClass, ModelSpec, QuerySet, Registry } from "monorm";
+import { behaviorValue } from "monorm/ext";
+import type { QuerySetCtor } from "monorm/ext";
 
 /** No members: the extension changes the schema, not the query set. */
 export function inheritQuerySet<B extends QuerySetCtor>(Base: B) {

@@ -1,7 +1,8 @@
-// Builds the Rust addon (languages/js/native) and copies it next to package.json as monorm.node.
-//   node scripts/build-native.mjs [--release]
+// Builds the Rust addon (languages/js/native) for this platform and writes it twice:
+// prebuilt/<platform>/monorm.node (where the published package keeps it) and monorm.node (a source checkout).
+//   node scripts/build-native.mjs [--release] [--profile tooling]
 import { execFileSync } from "node:child_process";
-import { copyFileSync } from "node:fs";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,5 +17,9 @@ if ((profileIndex >= 0 && !["postgres", "sqlite", "combined", "tooling"].include
 const release = process.argv.includes("--release");
 execFileSync("cargo", ["build", "-p", "monorm-node", ...(release ? ["--release"] : []), ...(profile || features ? ["--no-default-features", "--features", profile ? `profile-${profile}` : features] : [])], { cwd: root, stdio: "inherit" });
 const lib = { darwin: "libmonorm_node.dylib", win32: "monorm_node.dll" }[process.platform] ?? "libmonorm_node.so";
-copyFileSync(join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), release ? "release" : "debug", lib), join(here, "..", "monorm.node"));
-console.log("wrote monorm.node");
+const built = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), release ? "release" : "debug", lib);
+const platform = `${process.platform}-${process.arch}`;
+mkdirSync(join(here, "..", "prebuilt", platform), { recursive: true });
+copyFileSync(built, join(here, "..", "prebuilt", platform, "monorm.node"));
+copyFileSync(built, join(here, "..", "monorm.node"));
+console.log(`wrote prebuilt/${platform}/monorm.node and monorm.node`);

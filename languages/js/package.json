@@ -1,5 +1,5 @@
 {
-  "name": "@ufstack/monorm",
+  "name": "monorm",
   "version": "0.1.0",
   "description": "TypeScript ORM with a Rust core: the same engine and schema as the Python package",
   "license": "MIT",
@@ -45,7 +45,65 @@
     "./cli": {
       "types": "./dist/src/cli.d.ts",
       "default": "./dist/src/cli.js"
-    }
+    },
+    "./extensions/timestamps": {
+      "types": "./extensions/timestamps/index.d.ts",
+      "default": "./extensions/timestamps/index.js"
+    },
+    "./extensions/soft-delete": {
+      "types": "./extensions/soft-delete/index.d.ts",
+      "default": "./extensions/soft-delete/index.js"
+    },
+    "./extensions/locking": {
+      "types": "./extensions/locking/index.d.ts",
+      "default": "./extensions/locking/index.js"
+    },
+    "./extensions/inherit": {
+      "types": "./extensions/inherit/index.d.ts",
+      "default": "./extensions/inherit/index.js"
+    },
+    "./extensions/query-defaults": {
+      "types": "./extensions/query-defaults/index.d.ts",
+      "default": "./extensions/query-defaults/index.js"
+    },
+    "./extensions/generic": {
+      "types": "./extensions/generic/index.d.ts",
+      "default": "./extensions/generic/index.js"
+    },
+    "./extensions/proxy": {
+      "types": "./extensions/proxy/index.d.ts",
+      "default": "./extensions/proxy/index.js"
+    },
+    "./extensions/model-composition": {
+      "types": "./extensions/model-composition/index.d.ts",
+      "default": "./extensions/model-composition/index.js"
+    },
+    "./extensions/file-storage": {
+      "types": "./extensions/file-storage/index.d.ts",
+      "default": "./extensions/file-storage/index.js"
+    },
+    "./extensions/file-storage/decoder": {
+      "types": "./extensions/file-storage/decoder.d.ts",
+      "default": "./extensions/file-storage/decoder.js"
+    },
+    "./extensions/file-storage/model": {
+      "types": "./extensions/file-storage/model.d.ts",
+      "default": "./extensions/file-storage/model.js"
+    },
+    "./auth": {
+      "types": "./dist/src/auth/index.d.ts",
+      "default": "./dist/src/auth/index.js"
+    },
+    "./auth/queries.js": {
+      "types": "./dist/src/auth/queries.d.ts",
+      "default": "./dist/src/auth/queries.js"
+    },
+    "./auth/methods.js": {
+      "types": "./dist/src/auth/methods.d.ts",
+      "default": "./dist/src/auth/methods.js"
+    },
+    "./auth/schema.prisma": "./auth/schema.prisma",
+    "./package.json": "./package.json"
   },
   "bin": {
     "monorm": "./dist/src/cli.js"
@@ -53,55 +111,54 @@
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
+  "monorm": {
+    "bundled": {
+      "extensions": {
+        "monorm.timestamps": "extensions/timestamps",
+        "monorm.soft-delete": "extensions/soft-delete",
+        "monorm.locking": "extensions/locking",
+        "monorm.inherit": "extensions/inherit",
+        "monorm.query-defaults": "extensions/query-defaults",
+        "monorm.generic": "extensions/generic",
+        "monorm.proxy": "extensions/proxy",
+        "monorm.composition": "extensions/model-composition",
+        "monorm.file-storage": "extensions/file-storage"
+      },
+      "apps": {
+        "auth": "auth/schema.prisma"
+      }
+    }
+  },
   "scripts": {
     "build:native": "node scripts/build-native.mjs",
+    "assemble": "node scripts/assemble-bundle.mjs",
     "build": "rm -rf dist && tsc -p tsconfig.json",
+    "prepack": "npm run build && node scripts/assemble-bundle.mjs --check",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/typing/tsconfig.json --noEmit",
     "test": "npm run build && node --expose-gc --test --test-concurrency=1 \"dist/test/**/*.test.js\"",
     "test:bun": "npm run build && bun test --timeout 300000 ./dist/test/"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.0.0",
     "decimal.js": "^10.4.3",
-    "import-meta-resolve": "^4.2.0"
+    "import-meta-resolve": "^4.2.0",
+    "opendal": "^0.49.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.9.0",
-    "@ufstack/monorm-timestamps": "file:../../target/extension-packages/timestamps/npm",
-    "@ufstack/monorm-soft-delete": "file:../../target/extension-packages/soft-delete/npm",
-    "@ufstack/monorm-locking": "file:../../target/extension-packages/locking/npm",
-    "@ufstack/monorm-inherit": "file:../../target/extension-packages/inherit/npm",
-    "@ufstack/monorm-query-defaults": "file:../../target/extension-packages/query-defaults/npm",
-    "@ufstack/monorm-generic": "file:../../target/extension-packages/generic/npm",
-    "@ufstack/monorm-proxy": "file:../../target/extension-packages/proxy/npm",
-    "@ufstack/monorm-composition": "file:../../target/extension-packages/model-composition/npm",
-    "@ufstack/monorm-file-storage": "file:../../target/extension-packages/file-storage/npm",
-    "opendal": "^0.49.0"
+    "typescript": "^5.9.0"
   },
   "files": [
     "dist/src",
+    "prebuilt",
+    "extensions",
+    "auth",
     "README.md"
   ],
   "peerDependencies": {
-    "@ufstack/monorm-native-postgres": "0.1.0",
-    "@ufstack/monorm-native-sqlite": "0.1.0",
-    "@ufstack/monorm-native-combined": "0.1.0",
-    "@ufstack/monorm-native-tooling": "0.1.0",
     "@opentelemetry/api": "^1.0.0"
   },
   "peerDependenciesMeta": {
-    "@ufstack/monorm-native-postgres": {
-      "optional": true
-    },
-    "@ufstack/monorm-native-sqlite": {
-      "optional": true
-    },
-    "@ufstack/monorm-native-combined": {
-      "optional": true
-    },
-    "@ufstack/monorm-native-tooling": {
-      "optional": true
-    },
     "@opentelemetry/api": {
       "optional": true
     }

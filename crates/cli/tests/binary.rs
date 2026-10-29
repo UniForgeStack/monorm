@@ -1,5 +1,5 @@
 //! The standalone `monorm` binary. The commands themselves are tested through
-//! `python -m monorm` (languages/python/tests/test_migrations.py) and `npx @ufstack/monorm` (languages/js/test/migrations.test.ts),
+//! `python -m monorm` (languages/python/tests/test_migrations.py) and `npx monorm` (languages/js/test/migrations.test.ts),
 //! which run the same code; this checks what is specific to the binary.
 
 use std::path::Path;

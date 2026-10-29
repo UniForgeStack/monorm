@@ -1,5 +1,5 @@
 /** Selected model setup, shared by generated and runtime-defined hosts. */
-import { Pending, registerFieldAdapter, type FieldAdapter, type ModelMeta } from "@ufstack/monorm";
+import { Pending, registerFieldAdapter, type FieldAdapter, type ModelMeta } from "monorm";
 import { FileField, FileFieldError, Reference, Registry, Upload } from "./index.js";
 import { prepareDecoder } from "./decoder.js";
 

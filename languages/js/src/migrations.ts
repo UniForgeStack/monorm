@@ -181,7 +181,7 @@ export function hasDataSteps(directory: string): boolean {
   return call(() => native().listMigrations(directory)).some(([, path]) => existsSync(join(path!, "data.ts")));
 }
 
-/** @internal `npx @ufstack/monorm migrate` for a directory with data steps: applies with
+/** @internal `npx monorm migrate` for a directory with data steps: applies with
  * `Migrator.upgrade()`. The data modules are imported first, so the models they import
  * are in the default registry when the database connects. */
 export async function migrateCommand(schema: string, directory: string, url: string, target: string | null): Promise<number> {

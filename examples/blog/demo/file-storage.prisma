@@ -1,4 +1,4 @@
-// Needs the `monorm-file-storage` (Python) or `@ufstack/monorm-file-storage` (Node) package.
+// Needs the `monorm-file-storage` (Python) or `monorm/extensions/file-storage` (Node) package.
 
 model Report {
   id   Int   @id

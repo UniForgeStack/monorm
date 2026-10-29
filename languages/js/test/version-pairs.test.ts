@@ -53,9 +53,9 @@ async function open(dialect: string): Promise<[Database, Models, string[]]> {
 async function openGenerated(schema: string): Promise<[Database, Models, string[]]> {
   const root = scratch("monorm-version-pairs-");
   writeFileSync(join(root, "schema.prisma"), 'datasource db { provider = "sqlite" }\n' + schema);
-  assert.equal(await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "@ufstack/monorm"]), 0);
+  assert.equal(await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "monorm"]), 0);
   const src = join(import.meta.dirname, "..", "src");
-  const imports: Record<string, string> = { '"@ufstack/monorm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"@ufstack/monorm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
+  const imports: Record<string, string> = { '"monorm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"monorm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
   const emit = (from: string, to: string) => {
     mkdirSync(to, { recursive: true });
     for (const name of readdirSync(from).filter((n) => n.endsWith(".ts") && !n.endsWith(".d.ts"))) {
@@ -71,7 +71,7 @@ async function openGenerated(schema: string): Promise<[Database, Models, string[
   const source = readFileSync(file, "utf8");
   const isolated = source.replace(/define\(SCHEMA(\)|, \{)/, (_, tail: string) => `define(SCHEMA, { registry: __registry${tail === ")" ? " })" : ","}`);
   assert.notEqual(isolated, source);
-  writeFileSync(file, `import { Registry as __Registry } from ${imports['"@ufstack/monorm"']};\nexport const __registry = new __Registry();\n${isolated}`);
+  writeFileSync(file, `import { Registry as __Registry } from ${imports['"monorm"']};\nexport const __registry = new __Registry();\n${isolated}`);
   const { __registry: registry, ...models } = (await import(pathToFileURL(file).href)) as Models;
   const db = await connect("sqlite://:memory:", { registry, default: false });
   await db.createTables();

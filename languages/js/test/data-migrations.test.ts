@@ -80,10 +80,10 @@ test("a data step runs in the migration's transaction", async () => {
   await assert.rejects(migrator.upgrade(), MigrationError);
 });
 
-// `npx @ufstack/monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
+// `npx monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
 
-test("npx @ufstack/monorm migrate runs data steps", () => {
+test("npx monorm migrate runs data steps", () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const sqlite = 'datasource db {\n  provider = "sqlite"\n}\n';
   const schema = join(dir, "schema.prisma");
@@ -214,7 +214,7 @@ test("concurrent upgrades run a data step once", async () => {
   assert.deepEqual(await db.fetchText("SELECT count(*) FROM author"), [["1"]]);
 });
 
-test("npx @ufstack/monorm migrate needs no schema file and skips applied data steps", () => {
+test("npx monorm migrate needs no schema file and skips applied data steps", () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);
@@ -234,7 +234,7 @@ test("npx @ufstack/monorm migrate needs no schema file and skips applied data st
   assert.deepEqual(done.stdout.trim().split("\n"), ["Applied 0003_new"]);
 });
 
-test("npx @ufstack/monorm migrate with a data step and no database is a usage error", () => {
+test("npx monorm migrate with a data step and no database is a usage error", () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);

@@ -29,3 +29,5 @@ apps/auth/typescript/dist/
 
 # Staged by languages/python/packaging/stage.py
 /languages/python/monorm_*/
+languages/js/prebuilt/
+languages/js/extensions/

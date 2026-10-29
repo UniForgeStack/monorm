@@ -90,11 +90,6 @@ pattern = '^\s*"orm",$'
 reason = "npm search keyword: the generic term for the kind of library."
 
 [[allow]]
-glob = "languages/js/unscoped/package.json"
-pattern = '^\s*"orm",$'
-reason = "npm search keyword of the unscoped package, as in languages/js/package.json."
-
-[[allow]]
 glob = "bench/compare/**"
 pattern = 'sqlalchemy\.orm\b'
 reason = "The SQLAlchemy module `sqlalchemy.orm`."

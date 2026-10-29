@@ -1,5 +1,5 @@
 /** A report producer independent of ORM models and SQL transactions. */
-import type { Reference, Registry } from "@ufstack/monorm-file-storage";
+import type { Reference, Registry } from "monorm/extensions/file-storage";
 
 export async function generateReport(registry: Registry): Promise<Reference> {
   return registry.upload("reports", new TextEncoder().encode("product,total\nexample,42\n"), {

@@ -5,10 +5,10 @@
     "rootDir": "../../../../..",
     "noUnusedLocals": false,
     "paths": {
-      "@ufstack/monorm": [
+      "monorm": [
         "../../src/index.ts"
       ],
-      "@ufstack/monorm/ext": [
+      "monorm/ext": [
         "../../src/ext.ts"
       ]
     }

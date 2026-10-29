@@ -6,7 +6,7 @@
  * (`monorm generate typescript`), which types everything:
  *
  * ```ts
- * import { connect } from "@ufstack/monorm";
+ * import { connect } from "monorm";
  * import { User } from "./models.js";
  *
  * await connect("postgres://...");

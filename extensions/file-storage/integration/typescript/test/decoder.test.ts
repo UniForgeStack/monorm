@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Reference } from "@ufstack/monorm-file-storage";
-import { FileField } from "@ufstack/monorm-file-storage";
-import { prepareDecoder } from "@ufstack/monorm-file-storage/decoder";
+import { Reference } from "monorm/extensions/file-storage";
+import { FileField } from "monorm/extensions/file-storage";
+import { prepareDecoder } from "monorm/extensions/file-storage/decoder";
 
 test("public slots only, null loaded, omitted absent", () => {
   const fields = new Map([["file", new FileField("file", "reports", true)], ["hidden", new FileField("hidden", "reports")]]);

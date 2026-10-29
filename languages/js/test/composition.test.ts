@@ -1,4 +1,4 @@
-/** Model composition through the public API; needs the @ufstack/monorm-composition package. */
+/** Model composition through the public API; needs the monorm/extensions/model-composition package. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, IntegrityError, TransactionAborted, loads, Registry, scope, statementInspection, type InspectedStatement } from "../src/index.js";
