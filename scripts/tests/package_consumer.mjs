@@ -10,7 +10,8 @@ const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA:
 assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'monorm.inherit', 'monorm.locking', 'monorm.query-defaults', 'monorm.soft-delete', 'monorm.timestamps']);
 for (const [id, stamp] of Object.entries(locked.behavior.packages)) {
   const [scope, name] = id.split('.');
-  assert.equal((await import(`@${scope}/${name}`)).manifestHash, stamp.manifest_hash);
+  const pkg = scope === 'monorm' ? `@ufstack/monorm-${name}` : `@${scope}/${name}`;
+  assert.equal((await import(pkg)).manifestHash, stamp.manifest_hash);
 }
 // The lock stores an expression default as a record: `region` from a hook that generate evaluated, `owner` still a hook.
 const defaults = Object.fromEntries(locked.models.find((m) => m.name === 'Note').fields.map((f) => [f.name, f.client_default]));

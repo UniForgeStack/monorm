@@ -50,6 +50,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.11", "pyright"]
 
 [tool.setuptools.packages.find]
 where = ["languages/python"]
+include = ["monorm*"]
 
 [tool.setuptools.package-data]
 monorm = ["py.typed", "*.pyi"]
