@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { checkPassword, makePassword, needsUpdate } from "../src/index.js";
+import { checkPassword, makePassword, needsUpdate } from "../../src/auth/index.js";
 import { VECTORS } from "./support.js";
 
 test("makePassword gives an argon2id hash with a new salt each time", () => {

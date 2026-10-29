@@ -19,7 +19,7 @@ model Tag {
   id Int @id
 }
 `;
-const USE = `import { of } from "@ufstack/monorm";
+const USE = `import { of } from "monorm";
 import { Post, Tag } from "./models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -55,7 +55,7 @@ const EXPECTED = USE.split("\n").flatMap((line, i) => (line.includes("// E:") ? 
 test("the generated soft-delete members type-check on the soft-delete model only", { skip: !hasExtension("monorm.soft-delete") }, async () => {
   const root = scratch("monorm-sd-typing-");
   writeFileSync(join(root, "schema.prisma"), SCHEMA);
-  const exit = await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "@ufstack/monorm"]);
+  const exit = await cli(["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "monorm"]);
   assert.equal(exit, 0);
   writeFileSync(join(root, "package.json"), '{"type":"module"}');
   writeFileSync(join(root, "use.ts"), USE);
@@ -74,7 +74,7 @@ test("the generated soft-delete members type-check on the soft-delete model only
     noEmit: true,
     skipLibCheck: true,
     baseUrl: root,
-    paths: { "@ufstack/monorm": [join(src, "index.ts")], "@ufstack/monorm/ext": [join(src, "ext.ts")] },
+    paths: { "monorm": [join(src, "index.ts")], "monorm/ext": [join(src, "ext.ts")], "monorm/extensions/*": [join(pkg, "extensions", "*", "index.d.ts")] },
   };
   const program = ts.createProgram([join(root, "use.ts")], options);
   const errors = ts.getPreEmitDiagnostics(program).filter((d) => d.category === ts.DiagnosticCategory.Error);

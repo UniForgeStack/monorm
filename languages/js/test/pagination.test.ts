@@ -303,7 +303,7 @@ const proxies = hasExtension("monorm.proxy");
 
 test("a proxy narrowed order column: postgres", async (t) => {
   if (!proxies) {
-    t.skip("needs the monorm-proxy package");
+    t.skip("needs the proxy extension");
     return;
   }
   const { db, models } = await postgres(`

@@ -1,13 +1,13 @@
 /** The test harness: models loaded from a consumer schema that imports the app. */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Database, Registry, connect, load, useModelMethods, useQuerySet } from "@ufstack/monorm";
+import { Database, Registry, connect, load, useModelMethods, useQuerySet } from "../../src/index.js";
 
-import { UserMethods, UserQueries } from "../src/index.js";
-import type { AnyModel } from "../src/permissions.js";
+import { UserMethods, UserQueries } from "../../src/auth/index.js";
+import type { AnyModel } from "../../src/auth/permissions.js";
 
 export type Rows = Record<string, any>;
 
@@ -16,13 +16,13 @@ let root = dirname(fileURLToPath(import.meta.url));
 while (!existsSync(join(root, "package.json"))) root = dirname(root);
 export const PACKAGE = root;
 
-export const VECTORS = JSON.parse(readFileSync(join(PACKAGE, "../fixtures/hashes.json"), "utf8")) as {
+export const VECTORS = JSON.parse(readFileSync(join(PACKAGE, "../../apps/auth/fixtures/hashes.json"), "utf8")) as {
   pbkdf2: { raw: string; encoded: string; valid: boolean }[];
   argon2id: { raw: string; encoded: string; valid: boolean; needs_update: boolean }[];
 };
 
 const POSTGRES_URL = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
-const HEADER = (provider: string): string => `datasource db {\n  provider = "${provider}"\n}\nimport "app:@ufstack/monorm-auth" (prefix: "auth_")\n`;
+const HEADER = (provider: string): string => `datasource db {\n  provider = "${provider}"\n}\nimport "app:auth" (prefix: "auth_")\n`;
 
 export const PROVIDERS = ["sqlite", "postgres"] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -116,15 +116,8 @@ export class Auth {
 /** A connected `Auth` on empty tables, or `undefined` when the default Postgres is not reachable. */
 export async function makeAuth(provider: Provider, variant: Variant): Promise<Auth | undefined> {
   const dir = mkdtempSync(join(tmpdir(), "monorm-auth-"));
-  mkdirSync(join(dir, "node_modules", "@ufstack"), { recursive: true });
-  symlinkSync(PACKAGE, join(dir, "node_modules", "@ufstack/monorm-auth"));
-  // A fresh consumer declares pass packages directly, as package discovery requires.
-  const dependencies: Record<string, string> = { "@ufstack/monorm-auth": "0.1.0" };
-  for (const name of ["timestamps", "soft-delete", "locking", "inherit"]) {
-    symlinkSync(join(PACKAGE, "node_modules", "@ufstack", `monorm-${name}`), join(dir, "node_modules", "@ufstack", `monorm-${name}`));
-    dependencies[`@ufstack/monorm-${name}`] = "0.1.0";
-  }
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies }));
+  // The consumer declares nothing: the built-in extensions and the auth app come with `monorm`.
+  writeFileSync(join(dir, "package.json"), "{}");
   const schema = join(dir, "schema.prisma");
   writeFileSync(schema, HEADER(provider) + variant.schema);
   const registry = new Registry();

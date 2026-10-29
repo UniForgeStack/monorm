@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * `npx @ufstack/monorm`: the `monorm` command line, the same Rust code as the standalone `monorm` binary
- * and `python -m monorm` (`crates/cli/`). See `npx @ufstack/monorm --help`.
+ * `npx monorm`: the `monorm` command line, the same Rust code as the standalone `monorm` binary
+ * and `python -m monorm` (`crates/cli/`). See `npx monorm --help`.
  *
  * The schema file and migrations directory come from `--schema` / `--dir`, or from the
  * `"monorm"` key of `package.json` (`{"schema": "schema.prisma", "migrations":
@@ -20,7 +20,7 @@ import { native } from "./native.js";
 /** Runs the command line; gives the exit code. Output goes to stdout / stderr. */
 export async function main(rawArgv: readonly string[]): Promise<number> {
   const addon = native();
-  if (typeof addon.cli !== "function") throw new Error("CLI unavailable; install @ufstack/monorm-native-tooling and set MONORM_PROFILE");
+  if (typeof addon.cli !== "function") throw new Error("CLI unavailable; the native library does not include the command line (rebuild it with the tooling feature)");
   const argv = [...rawArgv];
   try {
     const schema = addon.cliSchema(argv);

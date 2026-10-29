@@ -1,4 +1,4 @@
-// `@@query.defaults` from the schema language to a query; needs the `@ufstack/monorm-query-defaults` package.
+// `@@query.defaults` from the schema language to a query; needs the `query-defaults` extension (run `npm run assemble` in languages/js).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { connect, loads, NotLoaded, Registry, scope } from '../../../../languages/js/dist/src/index.js';
@@ -7,7 +7,7 @@ import { resolveExtensions } from '../../../../languages/js/dist/src/packages.js
 const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.url), 'utf8');
 // Packages are discovered from the consumer's working directory.
 process.chdir(new URL('../../../../languages/js/', import.meta.url).pathname);
-assert.ok('monorm.query-defaults' in resolveExtensions(), 'install the @ufstack/monorm-query-defaults package');
+assert.ok('monorm.query-defaults' in resolveExtensions(), 'run `npm run assemble` in languages/js');
 
 async function run(provider, url) {
   const registry = new Registry();

@@ -10,7 +10,7 @@ pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;
-/// The version of `monorm.ext` / `@ufstack/monorm/ext`, the host module that extension language code imports.
+/// The version of `monorm.ext` / `monorm/ext`, the host module that extension language code imports.
 pub const LANGUAGE_CONTRACT: u32 = 1;
 /// The languages that an extension can ship code for, as the manifest names them.
 pub const LANGUAGES: [&str; 2] = ["python", "typescript"];

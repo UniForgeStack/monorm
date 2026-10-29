@@ -3,9 +3,9 @@ import { pbkdf2Sync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { boundMeta } from "@ufstack/monorm/ext";
+import { boundMeta } from "../../src/ext.js";
 
-import { UserMethods, UserQueries, authenticate, checkPassword, makePassword, needsUpdate, syncPermissions } from "../src/index.js";
+import { UserMethods, UserQueries, authenticate, checkPassword, makePassword, needsUpdate, syncPermissions } from "../../src/auth/index.js";
 import { Auth, PACKAGE, PROVIDERS, VARIANTS, makeAuth, type Provider, type Rows } from "./support.js";
 
 const django = (raw: string): string => `pbkdf2_sha256$600000$salt$${pbkdf2Sync(raw, "salt", 600000, 32, "sha256").toString("base64")}`;
@@ -28,9 +28,9 @@ function each(name: string, body: (t: TestContext, auth: Auth) => Promise<void>)
 }
 
 test("the schema copies of both packages match the source", () => {
-  const source = readFileSync(join(PACKAGE, "../schema.prisma"), "utf8");
-  assert.equal(readFileSync(join(PACKAGE, "schema.prisma"), "utf8"), source);
-  assert.equal(readFileSync(join(PACKAGE, "../python/monorm_auth/schema.prisma"), "utf8"), source);
+  const source = readFileSync(join(PACKAGE, "../../apps/auth/schema.prisma"), "utf8");
+  assert.equal(readFileSync(join(PACKAGE, "auth/schema.prisma"), "utf8"), source);
+  assert.equal(readFileSync(join(PACKAGE, "../../apps/auth/python/monorm_auth/schema.prisma"), "utf8"), source);
 });
 
 each("the models get the methods and the query set", async (_t, auth) => {

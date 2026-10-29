@@ -68,7 +68,7 @@ async function defaultTracer(): Promise<Tracer> {
   try {
     api = (await import(name)) as typeof api;
   } catch (e) {
-    throw new Error("@ufstack/monorm/otel needs @opentelemetry/api: npm install @opentelemetry/api", { cause: e });
+    throw new Error("monorm/otel needs @opentelemetry/api: npm install @opentelemetry/api", { cause: e });
   }
   return api.trace.getTracer("monorm");
 }

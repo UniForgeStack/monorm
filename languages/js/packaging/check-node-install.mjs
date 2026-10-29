@@ -1,24 +1,55 @@
-import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// Packs `monorm`, installs the tarball in a fresh Node project and a fresh Bun project, and runs smoke-node.mjs in each.
+//   node languages/js/packaging/check-node-install.mjs
+// `npm pack` runs `prepack`: it builds `dist/` and checks that `npm run assemble` filled the package.
+// Set ORM_TEST_DATABASE_URL to run the PostgreSQL query too. Set MONORM_PACK_PLATFORMS=all to demand all 3 platforms.
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const profile = process.argv[2];
-if (!["postgres", "sqlite", "combined", "tooling"].includes(profile)) throw new Error("expected named profile");
-const packs = join(root, "target", "npm-packs"), install = join(root, "target", "node-installs", profile);
-mkdirSync(packs, { recursive: true }); mkdirSync(install, { recursive: true });
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const pkgRoot = resolve(here, "..");
+const root = resolve(pkgRoot, "..", "..");
+const packs = join(root, "target", "npm-packs");
 const env = { ...process.env, npm_config_cache: join(root, "target", "npm-cache") };
-const artifacts = [join(root, "languages", "js", "node_modules", "decimal.js"), join(root, "languages", "js"), join(root, "languages", "js", "packaging", profile), join(root, "target", "node-profiles", `${profile}-${process.platform}-${process.arch}`)].map(cwd => {
-  const packed = JSON.parse(execFileSync(npm, ["pack", "--ignore-scripts", "--json", "--pack-destination", packs], { cwd, env, encoding: "utf8" }))[0];
-  if (cwd === join(root, "languages", "js") && packed.files.some(file => file.path.endsWith(".node"))) throw new Error("thin package contains native addon");
-  return join(packs, packed.filename);
-});
-writeFileSync(join(install, "package.json"), JSON.stringify({ private: true, type: "module" }));
-execFileSync(npm, ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", ...artifacts], { cwd: install, env, stdio: "inherit" });
-const lock = JSON.parse(readFileSync(join(install, "package-lock.json"), "utf8"));
-for (const name of Object.keys(lock.packages)) {
-  if (name.includes("node_modules/@ufstack/monorm-native-") && !name.startsWith(`node_modules/@ufstack/monorm-native-${profile}`)) throw new Error(`unselected native dependency ${name}`);
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+mkdirSync(packs, { recursive: true });
+
+const packed = JSON.parse(execFileSync(npm, ["pack", "--json", "--pack-destination", packs], { cwd: pkgRoot, env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }))[0];
+const tarball = join(packs, packed.filename);
+console.log(`${packed.filename}: ${packed.size} bytes packed, ${packed.unpackedSize} unpacked, ${packed.files.length} files`);
+const names = packed.files.map((file) => file.path);
+for (const gone of ["unscoped/", "packaging/", "native/src/", "test/"]) {
+  if (names.some((name) => name.startsWith(gone))) throw new Error(`the tarball holds ${gone}`);
 }
-copyFileSync(join(root, "languages", "js", "packaging", "smoke-node.mjs"), join(install, "smoke.mjs"));
-execFileSync(process.execPath, [join(install, "smoke.mjs")], { cwd: install, env: { ...env, MONORM_PROFILE: profile }, stdio: "inherit" });
+for (const needed of ["dist/src/index.js", "dist/src/auth/index.js", "auth/schema.prisma", "extensions/locking/monorm-extension.toml", "extensions/file-storage/model.js"]) {
+  if (!names.includes(needed)) throw new Error(`the tarball lacks ${needed}`);
+}
+if (!names.some((name) => /^prebuilt\/[^/]+\/monorm\.node$/.test(name))) throw new Error("the tarball holds no native addon");
+
+const consumers = [
+  { runtime: process.execPath, name: "node", install: (dir) => execFileSync(npm, ["install", "--no-audit", "--no-fund", tarball], { cwd: dir, env, stdio: "inherit" }) },
+  { runtime: "bun", name: "bun", install: (dir) => execFileSync("bun", ["add", tarball], { cwd: dir, env, stdio: "inherit" }) },
+];
+for (const { runtime, name, install } of consumers) {
+  if (name === "bun" && spawnSync("bun", ["--version"], { stdio: "ignore" }).status !== 0) {
+    if (process.env.CI) throw new Error("bun is not installed");
+    console.warn("skip bun: not installed");
+    continue;
+  }
+  const dir = join(root, "target", "node-installs", `monorm-${name}`);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ private: true, type: "module" }));
+  install(dir);
+  copyFileSync(join(here, "smoke-node.mjs"), join(dir, "smoke.mjs"));
+  execFileSync(runtime, ["smoke.mjs"], { cwd: dir, env, stdio: "inherit" });
+  // Delete every extension library: a schema without an extension attribute must load without them.
+  const extensions = join(dir, "node_modules", "monorm", "extensions");
+  for (const short of readdirSync(extensions)) {
+    for (const file of readdirSync(join(extensions, short))) {
+      if (/\.(dylib|so|dll)$/.test(file)) rmSync(join(extensions, short, file));
+    }
+  }
+  execFileSync(runtime, ["smoke.mjs", "plain"], { cwd: dir, env, stdio: "inherit" });
+}

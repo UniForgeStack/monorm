@@ -1,7 +1,7 @@
-import type { ModelSpec, QuerySet } from "@ufstack/monorm";
-import { and, or, VersionConflict } from "@ufstack/monorm";
-import { behaviorField, behaviorRecords, boundAtomic, boundFresh, boundGroups, boundGuarded, boundMeta, loadedValue } from "@ufstack/monorm/ext";
-import type { BoundQuerySetCtor, QuerySetCtor } from "@ufstack/monorm/ext";
+import type { ModelSpec, QuerySet } from "monorm";
+import { and, or, VersionConflict } from "monorm";
+import { behaviorField, behaviorRecords, boundAtomic, boundFresh, boundGroups, boundGuarded, boundMeta, loadedValue } from "monorm/ext";
+import type { BoundQuerySetCtor, QuerySetCtor } from "monorm/ext";
 
 type Row = Record<string, unknown>;
 type Version = ReturnType<typeof behaviorField>;

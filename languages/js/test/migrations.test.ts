@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DATABASE_URL } from "./helpers.js";
 
-// `npx @ufstack/monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
+// `npx monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
 
 function cli(args: string[], cwd?: string): { code: number; out: string; err: string } {
@@ -136,10 +136,10 @@ test("migrations from a schema file", () => {
 test("the generated models are current", async () => {
   const { native } = await import("../src/native.js");
   const schema = join(ROOT, "examples/blog/schema.prisma");
-  assert.deepEqual(readFileSync(join(ROOT, "examples/blog/models.ts"), "utf8"), native().generateTypescript(schema, "@ufstack/monorm"), "run `monorm generate typescript`");
+  assert.deepEqual(readFileSync(join(ROOT, "examples/blog/models.ts"), "utf8"), native().generateTypescript(schema, "monorm"), "run `monorm generate typescript`");
   assert.deepEqual(readFileSync(join(ROOT, "languages/js/test/blog/models.ts"), "utf8"), native().generateTypescript(schema, "../../src/index.js"));
   const nestedSchema = join(ROOT, "examples/nested/schema.prisma");
-  assert.deepEqual(readFileSync(join(ROOT, "examples/nested/models.ts"), "utf8"), native().generateTypescript(nestedSchema, "@ufstack/monorm"), "run `monorm generate typescript` in examples/nested");
+  assert.deepEqual(readFileSync(join(ROOT, "examples/nested/models.ts"), "utf8"), native().generateTypescript(nestedSchema, "monorm"), "run `monorm generate typescript` in examples/nested");
   assert.deepEqual(readFileSync(join(ROOT, "languages/js/test/nested/models.ts"), "utf8"), native().generateTypescript(nestedSchema, "../../src/index.js"));
   const out = join(tmp(), "models.ts");
   const sets = ["--query-set", "Post=./queries.js#PostQueries", "--query-set", "Tag=./queries.js#TagQueries"];
@@ -154,7 +154,7 @@ test("the CLI", () => {
   assert.equal(run("check").code, 0);
   assert.equal(run("generate", "-o", "app/models.ts").code, 0);
   assert.ok(readFileSync(join(dir, "app/models.ts"), "utf8").includes("export interface BookSpec"));
-  assert.equal(run("generate").code, 0); // TypeScript by default under npx @ufstack/monorm
+  assert.equal(run("generate").code, 0); // TypeScript by default under npx monorm
   assert.ok(existsSync(join(dir, "models.ts")));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ monorm: { querySets: { Author: "./queries.js#AuthorQueries" } } }));
   assert.equal(run("generate", "-o", "q/models.ts").code, 0);
@@ -169,7 +169,7 @@ test("the CLI", () => {
   assert.equal(sql.code, 0);
   assert.ok(sql.out.includes('CREATE TABLE "books"'));
   assert.equal(run("nope").code, 2);
-  assert.match(run("--help").out, /^usage: npx @ufstack\/monorm /);
+  assert.match(run("--help").out, /^usage: npx monorm /);
   assert.equal(run("migrate").code, 2); // no database URL
   writeFileSync(join(dir, "package.json"), JSON.stringify({ monorm: { schema: "db/schema.prisma", migrations: "db/migrations" } }));
   assert.match(run("check").err, /db\/schema.prisma/);

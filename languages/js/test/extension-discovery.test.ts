@@ -12,7 +12,7 @@ import { connect, define, IntegrityError, load, loads, QueryError, Registry, Sch
 import { native } from "../src/native.js";
 import { resolveExtensions } from "../src/packages.js";
 
-// `npx @ufstack/monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
+// `npx monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
 const MANIFEST = 'id = "acme.fixture"\nversion = "0.1.0"\nabi = "0.2"\nlibrary = "libfixture"\n';
 
@@ -33,8 +33,8 @@ function pkg(root: string, name: string, id: string | null, manifest: boolean = 
   const dir = join(root, "node_modules", name);
   write(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", ...(id ? { monorm: { extension: id } } : {}) }));
   if (id === "acme.outside") {
-    // The package imports `@ufstack/monorm`, so the project needs it installed.
-    const host = join(root, "node_modules", "@ufstack", "monorm");
+    // The package imports `monorm`, so the project needs it installed.
+    const host = join(root, "node_modules", "monorm");
     if (!existsSync(host)) {
       mkdirSync(dirname(host), { recursive: true });
       symlinkSync(process.cwd(), host, "dir");
@@ -47,6 +47,11 @@ function pkg(root: string, name: string, id: string | null, manifest: boolean = 
   return manifest ? write(join(dir, "monorm-extension.toml"), MANIFEST) : dir;
 }
 
+/** The discovered extensions that are not bundled with `monorm`. */
+function outside(found: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(found).filter(([id]) => !id.startsWith("monorm.")));
+}
+
 function project(root: string, dependencies: Record<string, string>, key = "dependencies"): void {
   write(join(root, "package.json"), JSON.stringify({ name: "app", [key]: dependencies }));
 }
@@ -56,16 +61,16 @@ test("a direct dependency with an extension id resolves to its manifest", (t) =>
   const manifest = pkg(root, "acme-fixture", "acme.fixture");
   pkg(root, "left-pad", null);
   project(root, { "acme-fixture": "1.0.0", "left-pad": "1.0.0" });
-  assert.deepEqual(resolveExtensions(join(root, "schema.prisma")), { "acme.fixture": manifest });
+  assert.deepEqual(outside(resolveExtensions(join(root, "schema.prisma"))), { "acme.fixture": manifest });
 });
 
 test("devDependencies and optionalDependencies count, and a subdirectory finds the project", (t) => {
   const root = directory(t);
   const manifest = pkg(root, "acme-fixture", "acme.fixture");
   project(root, { "acme-fixture": "1.0.0" }, "devDependencies");
-  assert.deepEqual(resolveExtensions(join(root, "src", "deep", "schema.prisma")), { "acme.fixture": manifest });
+  assert.deepEqual(outside(resolveExtensions(join(root, "src", "deep", "schema.prisma"))), { "acme.fixture": manifest });
   project(root, { "acme-fixture": "1.0.0" }, "optionalDependencies");
-  assert.deepEqual(resolveExtensions(join(root, "schema.prisma")), { "acme.fixture": manifest });
+  assert.deepEqual(outside(resolveExtensions(join(root, "schema.prisma"))), { "acme.fixture": manifest });
 });
 
 test("without a schema file the project is the one of the working directory", (t) => {
@@ -75,18 +80,18 @@ test("without a schema file the project is the one of the working directory", (t
   const cwd = process.cwd();
   process.chdir(root);
   t.after(() => process.chdir(cwd));
-  assert.deepEqual(resolveExtensions(), { "acme.fixture": manifest });
+  assert.deepEqual(outside(resolveExtensions()), { "acme.fixture": manifest });
 });
 
 test("a package that only another package depends on is not an extension of the project", (t) => {
   const root = directory(t);
   pkg(root, "acme-fixture", "acme.fixture");
   project(root, {});
-  assert.deepEqual(resolveExtensions(join(root, "schema.prisma")), {});
+  assert.deepEqual(outside(resolveExtensions(join(root, "schema.prisma"))), {});
 });
 
 test("no package.json means no extensions", (t) => {
-  assert.deepEqual(resolveExtensions(join(directory(t), "schema.prisma")), {});
+  assert.deepEqual(outside(resolveExtensions(join(directory(t), "schema.prisma"))), {});
 });
 
 test("a package without a manifest file names the package", (t) => {
@@ -102,6 +107,27 @@ test("two packages with one id name both paths", (t) => {
   const second = pkg(root, "acme-two", "acme.fixture");
   project(root, { "acme-one": "1.0.0", "acme-two": "1.0.0" });
   assert.throws(() => resolveExtensions(join(root, "schema.prisma")), (e: unknown) => e instanceof SchemaError && e.message.includes("installed twice") && e.message.includes(first) && e.message.includes(second));
+});
+
+test("the extensions bundled with monorm need no dependency", (t) => {
+  const root = directory(t);
+  project(root, {});
+  const found = resolveExtensions(join(root, "schema.prisma"));
+  assert.deepEqual(Object.keys(found).sort(), [
+    "monorm.composition", "monorm.file-storage", "monorm.generic", "monorm.inherit", "monorm.locking",
+    "monorm.proxy", "monorm.query-defaults", "monorm.soft-delete", "monorm.timestamps",
+  ]);
+  for (const manifest of Object.values(found)) assert.ok(existsSync(manifest), manifest);
+  assert.deepEqual(resolveExtensions(join(directory(t), "schema.prisma")), found);
+});
+
+test("an outside package with a bundled id fails and names the bundled copy", (t) => {
+  const root = directory(t);
+  const bundled = resolveExtensions(join(root, "schema.prisma"))["monorm.locking"];
+  const clash = pkg(root, "acme-locking", "monorm.locking");
+  project(root, { "acme-locking": "1.0.0" });
+  assert.throws(() => resolveExtensions(join(root, "schema.prisma")), (e: unknown) => e instanceof SchemaError
+    && e.message.includes("installed twice") && e.message.includes(`${bundled} (bundled with monorm)`) && e.message.includes(clash) && e.message.includes("acme-locking"));
 });
 
 const OUTSIDE = resolve(process.cwd(), "../../tests/outside-extension");
@@ -295,8 +321,8 @@ test("ESM-only and dual packages share runtime identity across generated models,
       "tagged() {", "runtimeIdentity() { return OutsideQuerySet; } tagged() {",
     );
     write(join(dir, "index.mjs"), ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
-    // Bun cannot `require` the ESM `@ufstack/monorm`, and this test never installs an adapter.
-    const withoutMonorm = source.replace(/^import \{ registerFieldAdapter.*$/m, 'import type { FieldAdapter, ModelMeta } from "@ufstack/monorm"; const registerFieldAdapter = (): never => { throw Error("not installed"); };');
+    // Bun cannot `require` the ESM `monorm`, and this test never installs an adapter.
+    const withoutMonorm = source.replace(/^import \{ registerFieldAdapter.*$/m, 'import type { FieldAdapter, ModelMeta } from "monorm"; const registerFieldAdapter = (): never => { throw Error("not installed"); };');
     write(join(dir, "index.cjs"), ts.transpileModule(withoutMonorm, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
     write(join(dir, "package.json"), JSON.stringify({ name: "acme-outside", type: "module", monorm: { extension: "acme.outside" },
       exports: format === "ESM-only" ? "./index.mjs" : format === "dual"

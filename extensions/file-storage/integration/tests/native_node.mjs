@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from '@ufstack/monorm';
-import { Reference, Registry, Upload, FileField, FileFieldError } from '@ufstack/monorm-file-storage';
-import { installModel } from '@ufstack/monorm-file-storage/model';
+import { AdapterWriteError, FieldAdapterError, allowWrites, connect, define, Registry as ModelRegistry, WriteProtected } from 'monorm';
+import { Reference, Registry, Upload, FileField, FileFieldError } from 'monorm/extensions/file-storage';
+import { installModel } from 'monorm/extensions/file-storage/model';
 import { Operator } from 'opendal';
 
 class CountingRegistry extends Registry {

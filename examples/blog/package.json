@@ -6,7 +6,7 @@
     "demo": "tsx demo.ts"
   },
   "dependencies": {
-    "@ufstack/monorm": "file:../../languages/js"
+    "monorm": "file:../../languages/js"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

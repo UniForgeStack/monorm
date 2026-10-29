@@ -1,6 +1,6 @@
-import type { BoundQuerySet, InspectedStatement, ModelSpec, QuerySet } from "@ufstack/monorm";
-import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatement } from "@ufstack/monorm/ext";
-import type { BoundQuerySetCtor, QuerySetCtor } from "@ufstack/monorm/ext";
+import type { BoundQuerySet, InspectedStatement, ModelSpec, QuerySet } from "monorm";
+import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatement } from "monorm/ext";
+import type { BoundQuerySetCtor, QuerySetCtor } from "monorm/ext";
 
 type AnyQuerySet = QuerySet<ModelSpec>;
 type Deleted = ReturnType<typeof behaviorField>;

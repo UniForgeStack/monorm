@@ -2,7 +2,8 @@
  * Finds the schema of each installed app that a schema imports with `import "app:<name>"`.
  *
  * Build time only (`monorm generate`, `monorm migrate`): generated models embed the compiled schema.
- * An app declares its schema in its `package.json`: `"monorm": {"app": "./schema.prisma"}`.
+ * The apps bundled with `monorm` (`auth`) need no installation. Any other app declares its schema in
+ * its `package.json`: `"monorm": {"app": "./schema.prisma"}`.
  * Resolution is the one of Node (`node_modules` from the importing schema's real directory), so an
  * app that only another app depends on resolves under npm, pnpm and bun.
  */
@@ -10,12 +11,15 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { bundledApp } from "./builtin.js";
 import { SchemaError } from "./errors.js";
 
 const IMPORT = /^\s*import\s+"([^"]+)"/gm;
 
 /** The schema file of app `name` as seen from directory `from`; undefined when no such package is installed. */
 function schemaOf(name: string, from: string): string | undefined {
+  const own = bundledApp(name);
+  if (own !== undefined) return own;
   for (let dir = from; ; dir = dirname(dir)) {
     const manifest = join(dir, "node_modules", name, "package.json");
     if (existsSync(manifest)) {

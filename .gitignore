@@ -26,3 +26,5 @@ build/
 .test-artifacts/
 apps/auth/typescript/dist/
 .DS_Store
+languages/js/prebuilt/
+languages/js/extensions/

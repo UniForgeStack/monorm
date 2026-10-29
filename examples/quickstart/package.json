@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": { "demo": "tsx quickstart.ts" },
-  "dependencies": { "@ufstack/monorm": "file:../../languages/js" },
+  "dependencies": { "monorm": "file:../../languages/js" },
   "devDependencies": { "tsx": "^4.19.0" }
 }

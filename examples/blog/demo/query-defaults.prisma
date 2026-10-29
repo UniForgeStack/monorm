@@ -1,4 +1,4 @@
-// Needs the monorm-query-defaults package.
+// Needs the query-defaults extension (bundled with the npm package monorm).
 
 model Article {
   id         Int      @id @default(autoincrement())

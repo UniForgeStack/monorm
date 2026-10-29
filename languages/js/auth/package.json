@@ -1,0 +1,6 @@
+{
+  "name": "monorm/auth",
+  "private": true,
+  "type": "module",
+  "description": "Marks the directory of the built-in auth app: schema.prisma sits here, and the generator imports its query and method classes from monorm/auth."
+}

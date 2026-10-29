@@ -2,7 +2,7 @@
 //!
 //! * the `monorm` binary (`src/main.rs`),
 //! * `python -m monorm`, through the Python extension (`languages/python/native`),
-//! * `npx @ufstack/monorm` / `bunx @ufstack/monorm`, through the Node addon (`languages/js/native`).
+//! * `npx monorm` / `bunx monorm`, through the Node addon (`languages/js/native`).
 //!
 //! ```text
 //! monorm [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>
@@ -27,7 +27,7 @@
 //! and the model-methods classes from `[tool.monorm.model_methods]` or `"monorm": {"modelMethods": ...}`.
 //!
 //! `--app NAME=PATH` (repeatable) gives the schema file of an installed app for `import "app:NAME"`;
-//! `python -m monorm` and `npx @ufstack/monorm` add it for the apps they find.
+//! `python -m monorm` and `npx monorm` add it for the apps they find.
 //! `--extension ID=MANIFEST` (repeatable) gives the `monorm-extension.toml` of an installed extension package;
 //! they add it for the extensions they find. The schema selects the extensions it uses.
 //!
@@ -51,7 +51,7 @@ pub enum Host {
     Binary,
     /// `python -m monorm`.
     Python,
-    /// `npx @ufstack/monorm`.
+    /// `npx monorm`.
     Node,
 }
 
@@ -60,7 +60,7 @@ impl Host {
         match self {
             Host::Binary => "monorm",
             Host::Python => "python -m monorm",
-            Host::Node => "npx @ufstack/monorm",
+            Host::Node => "npx monorm",
         }
     }
 
@@ -574,7 +574,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
                 options.ext_import = Some(codegen::lookup::relative(&absolute(out.parent().unwrap_or(Path::new(".")))?, &absolute(&ext_dir)?));
             }
             write_extensions(&options, "typescript", &ext_dir)?;
-            let runtime = args.opt(&["--import"]).unwrap_or("@ufstack/monorm");
+            let runtime = args.opt(&["--import"]).unwrap_or("monorm");
             write(&out, &codegen::typescript::generate_with(&ir, &compiled, &source, runtime, &options).map_err(Failure::Failed)?)?;
             println!("wrote {}", out.display());
         }

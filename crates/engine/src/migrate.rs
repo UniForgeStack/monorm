@@ -285,7 +285,7 @@ pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
 pub async fn upgrade(conn: &dyn Executor, dir: &Path, target: Option<&str>) -> Result<Vec<Migration>> {
     let todo = pending(conn, dir, target).await?;
     if let Some((m, file)) = todo.iter().find_map(|m| m.data_file().map(|f| (m, f))) {
-        let tool = if file == "data.py" { "python -m monorm migrate (or Migrator.upgrade())" } else { "npx @ufstack/monorm migrate (or Migrator.upgrade())" };
+        let tool = if file == "data.py" { "python -m monorm migrate (or Migrator.upgrade())" } else { "npx monorm migrate (or Migrator.upgrade())" };
         return Err(Error::Migration(format!("{} has a data step ({file}); apply it with {tool}", m.name)));
     }
     let mut done = vec![];

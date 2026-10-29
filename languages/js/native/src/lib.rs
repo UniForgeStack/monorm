@@ -1216,7 +1216,7 @@ pub fn compile_schema(env: &Env, source: String, path: Option<String>, extension
     compiled(env, project)
 }
 
-/// `npx @ufstack/monorm`: the `monorm` command line (`monorm_cli`). Resolves to the exit code; output
+/// `npx monorm`: the `monorm` command line (`monorm_cli`). Resolves to the exit code; output
 /// goes to the process's stdout / stderr.
 #[cfg(feature = "cli")]
 #[napi]
@@ -1231,7 +1231,7 @@ pub fn cli_schema(argv: Vec<String>) -> String {
     monorm_cli::schema_path(&argv, monorm_cli::Host::Node).to_string_lossy().into_owned()
 }
 
-/// For `npx @ufstack/monorm migrate`: `[schema, dir, url, target]` as the CLI resolves them (null
+/// For `npx monorm migrate`: `[schema, dir, url, target]` as the CLI resolves them (null
 /// entries for a missing URL or target), or null for any other command line.
 #[cfg(feature = "cli")]
 #[napi]
@@ -1296,7 +1296,7 @@ pub fn generate_typescript(
     };
     let out_dir = p.parent().unwrap_or(std::path::Path::new("."));
     options.with_schema_classes(&ir, &project.units, monorm_core::codegen::lookup::Language::TypeScript, out_dir).map_err(schema_err)?;
-    monorm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("@ufstack/monorm"), &options).map_err(schema_err)
+    monorm_core::codegen::typescript::generate_with(&ir, &schema, &source, runtime.as_deref().unwrap_or("monorm"), &options).map_err(schema_err)
 }
 
 /// Static packaging compatibility metadata (separate from extension manifests).

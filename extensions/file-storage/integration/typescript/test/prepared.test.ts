@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, realpath, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Pending } from "@ufstack/monorm";
+import { Pending } from "monorm";
 import { Operator } from "opendal";
-import { Registry, Reference, Upload, FileField, FileFieldError, FileNotLoaded, MissingFile } from "@ufstack/monorm-file-storage";
-import { FileAdapter } from "@ufstack/monorm-file-storage/model";
+import { Registry, Reference, Upload, FileField, FileFieldError, FileNotLoaded, MissingFile } from "monorm/extensions/file-storage";
+import { FileAdapter } from "monorm/extensions/file-storage/model";
 
 async function environment(run: (registry: Registry, field: FileField, root: string) => Promise<void>) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "file-write-")));

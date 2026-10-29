@@ -1,7 +1,7 @@
 /**
- * Finds the installed extension packages: the direct dependencies of the project's `package.json`
- * whose own `package.json` has `"monorm": {"extension": "<id>"}`. The manifest is `monorm-extension.toml`
- * in the package root. Discovery reads metadata; definition imports the selected runtime packages.
+ * Finds the installed extensions. The ones bundled with `monorm` come first; then the direct dependencies
+ * of the project's `package.json` whose own `package.json` has `"monorm": {"extension": "<id>"}`.
+ * The manifest is `monorm-extension.toml` in the package root. Discovery reads metadata; definition imports the selected runtime modules.
  */
 
 import { createRequire } from "node:module";
@@ -10,6 +10,7 @@ import { moduleResolve } from "import-meta-resolve";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { bundledExtensions, packageRoot } from "./builtin.js";
 import { SchemaError } from "./errors.js";
 
 const MANIFEST = "monorm-extension.toml";
@@ -44,15 +45,20 @@ function installedRoot(name: string, from: string): string | undefined {
 }
 
 /**
- * Installed extensions that the project of `schema` depends on directly.
+ * The extensions bundled with `monorm`, then the installed ones that the project of `schema` depends on directly.
  * Without a schema file, the project is the one of the working directory.
  */
 function discover(schema?: string): Record<string, InstalledPackage> {
+  const found: Record<string, InstalledPackage> = {};
+  const bundled = new Set<string>();
+  for (const { id, manifest, specifier } of Object.values(bundledExtensions())) {
+    found[id] = { manifest, name: specifier, root: packageRoot };
+    bundled.add(id);
+  }
   const root = projectRoot(schema === undefined ? process.cwd() : dirname(resolve(schema)));
-  if (root === undefined) return {};
+  if (root === undefined) return found;
   const project = readJson(join(root, "package.json"));
   const names = new Set(DEPENDENCY_KEYS.flatMap((key) => Object.keys(project[key] ?? {})));
-  const found: Record<string, InstalledPackage> = {};
   for (const name of [...names].sort()) {
     const dir = installedRoot(name, root);
     if (dir === undefined) continue;
@@ -62,7 +68,8 @@ function discover(schema?: string): Record<string, InstalledPackage> {
     const manifest = join(dir, MANIFEST);
     if (!existsSync(manifest)) throw new SchemaError(`the package \`${name}\` declares extension \`${id}\` but has no ${MANIFEST} file in ${dir}`);
     if (id in found && found[id]?.manifest !== manifest) {
-      throw new SchemaError(`extension \`${id}\` is installed twice: ${found[id]?.manifest} and ${manifest}; uninstall one of the packages`);
+      const first = `${found[id]?.manifest}${bundled.has(id) ? " (bundled with monorm)" : ""}`;
+      throw new SchemaError(`extension \`${id}\` is installed twice: ${first} and ${manifest}; uninstall ${bundled.has(id) ? `the package \`${name}\`` : "one of the packages"}`);
     }
     found[id] = { manifest, name, root };
   }
