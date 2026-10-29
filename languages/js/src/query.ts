@@ -49,7 +49,7 @@ import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Inst
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
-import { after, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
+import { after, checkPaging, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
 import { active as debugging, internalLoop, relationLoad } from "./debug.js";
 import type { Cte, CteColumnsOf, CteSelf } from "./cte.js";
@@ -569,7 +569,8 @@ const EMPTY: QueryState = {
   joins: [],
 };
 
-function checkRunnable(meta: ModelMeta, state: QueryState): void {
+/** @internal */
+export function checkRunnable(meta: ModelMeta, state: QueryState): void {
   if (state.lock) {
     const db = resolve(state.db);
     if (db.tx() === null) {
@@ -1223,12 +1224,16 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `EXPLAIN QUERY PLAN`, each step indented under its parent, and has no `analyze`.
    */
   async explain(options: { readonly analyze?: boolean } = {}): Promise<string> {
-    const analyze = options.analyze ?? false;
+    const bound: unknown[] = [];
+    return this.explainIr(this.selectIr("select", bound), bound, options.analyze ?? false);
+  }
+
+  /** @internal */
+  explainIr(ir: IR, bound: unknown[], analyze: boolean): Promise<string> {
     if (analyze && this.state.lock) {
       throw new QueryError("explain({ analyze: true }) would run the query and take its row locks; drop lock() to explain it");
     }
-    const bound: unknown[] = [];
-    const [json, params] = withScope(JSON.stringify(this.selectIr("select", bound)), bound);
+    const [json, params] = withScope(JSON.stringify(ir), bound);
     const db = this.db();
     const engine = db.reader();
     return db.send((tx, trace) => engine.explain(json, params, analyze, tx, trace));
@@ -1327,13 +1332,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    */
   async paginate(options: PageOptions, ...check: Runnable<P, X>): Promise<Page<R>> {
     void check;
-    const forward = options.first !== undefined;
-    if (forward === (options.last !== undefined)) throw new TypeError("paginate() takes first or last");
-    if ((forward && options.before != null) || (!forward && options.after != null)) {
-      throw new TypeError("paginate() takes first with after, or last with before");
-    }
-    const size = forward ? options.first : options.last;
-    if (!Number.isInteger(size) || size! < 1) throw new RangeError("a page size is an integer of at least 1");
+    const { size, forward } = checkPaging(options);
     if (this.state.limit !== undefined || this.state.offset !== undefined) {
       throw new QueryError("paginate() can't be used on a sliced query set");
     }
@@ -1344,9 +1343,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     for (const [f] of keys) if (!helpers.includes(f.ir)) helpers.push(f.ir);
     const cursor = (forward ? options.after : options.before) ?? null;
     const filters = cursor === null ? this.state.filters : [...this.state.filters, after(this.meta, order, decodeCursor(this.meta, cursor, fp, keys))];
-    const fetched = (await this.clone({ modelHelpers: helpers, filters, order, limit: size! + 1, offset: undefined }).fetch()) as R[];
-    const more = fetched.length > size!;
-    const items = forward ? fetched.slice(0, size!) : fetched.slice(0, size!).reverse();
+    const fetched = (await this.clone({ modelHelpers: helpers, filters, order, limit: size + 1, offset: undefined }).fetch()) as R[];
+    const more = fetched.length > size;
+    const items = forward ? fetched.slice(0, size) : fetched.slice(0, size).reverse();
     return {
       items,
       hasNext: forward ? more : cursor !== null,
@@ -1907,10 +1906,18 @@ export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends 
   }
 }
 
+/** @internal What a `PreparedOneRowQuery` needs from the prepared read under it. */
+export interface PreparedRows<P> {
+  readonly params: ReadonlySet<string>;
+  all(...values: Values<P>): Promise<unknown[]>;
+  inspect(...values: Values<P>): QueryInspection;
+  sql(...values: Values<P>): string;
+}
+
 /** A one-row query compiled by `OneRowQuery.prepare()`. */
 export class PreparedOneRowQuery<T, P> {
   /** @internal */
-  constructor(private readonly prepared: Prepared<ModelSpec, unknown, P>, private readonly pick: (rows: unknown[]) => unknown) {}
+  constructor(private readonly prepared: PreparedRows<P>, private readonly pick: (rows: unknown[]) => unknown) {}
 
   /** The names of the values each call takes. */
   get params(): ReadonlySet<string> {
@@ -2094,7 +2101,8 @@ function modelOf(x: unknown): boolean {
 
 /** One statement of a prepared query: its IR JSON and parameters, with the `param()`
  * slots to fill per call. */
-class Compiled {
+/** @internal */
+export class Compiled {
   readonly json: string;
   readonly params: unknown[];
   readonly slots: [number, string, ((v: unknown) => unknown) | undefined][];
@@ -2133,7 +2141,8 @@ class Compiled {
   }
 }
 
-type Values<P> = [keyof P] extends [never] ? [values?: Record<string, never>] : [values: { readonly [K in keyof P]: P[K] }];
+/** @internal */
+export type Values<P> = [keyof P] extends [never] ? [values?: Record<string, never>] : [values: { readonly [K in keyof P]: P[K] }];
 
 /**
  * A query compiled by `QuerySet.prepare()`. Each call skips building the query (the

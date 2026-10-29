@@ -569,3 +569,32 @@ export async function boundReads() {
     for await (const _ of bound) void _;
   }
 }
+
+export async function selectReads() {
+  const byViews = Post.objects.filter(Post.views.gt(param("min"))).select({ t: Post.title, v: Post.views }).orderBy(Post.title);
+  type Row = { t: string; v: number };
+  const prepared = byViews.prepare();
+  same<Awaited<ReturnType<typeof prepared.all>>, Row[]>();
+  same<Awaited<ReturnType<typeof prepared.first>>, Row | null>();
+  same<Awaited<ReturnType<typeof prepared.count>>, number>();
+  same<Awaited<ReturnType<ReturnType<typeof prepared.require>["first"]>>, Row>();
+  await prepared.all({ min: 1 });
+  // @ts-expect-error the values name the params
+  await prepared.all({ nope: 1 });
+  // @ts-expect-error a prepared select needs its values
+  await prepared.all();
+  // @ts-expect-error a select with param() can't run without prepare()
+  await byViews.count();
+  const plain = Post.objects.select({ t: Post.title, n: func.count() }).groupBy(Post.title);
+  same<Awaited<ReturnType<typeof plain.count>>, number>();
+  same<Awaited<ReturnType<typeof plain.exists>>, boolean>();
+  same<Awaited<ReturnType<typeof plain.first>>, { t: string; n: bigint } | null>();
+  same<Awaited<ReturnType<ReturnType<typeof plain.require>["last"]>>, { t: string; n: bigint }>();
+  same<Awaited<ReturnType<typeof plain.paginate>>, Page<{ t: string; n: bigint }>>();
+  // @ts-expect-error a select has no lock()
+  plain.lock();
+  const one = Post.objects.select({ t: Post.title }).orderBy(Post.title).at(param("n")).prepare();
+  await one.run({ n: 1 });
+  // @ts-expect-error scalar() needs one column
+  await Post.objects.select({ t: Post.title, v: Post.views }).prepare().scalar();
+}

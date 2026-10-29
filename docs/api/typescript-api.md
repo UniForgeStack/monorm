@@ -624,6 +624,21 @@ Other `Select` methods:
   `.all()`, `.get()`, `.first()`, awaiting the selection, `.scalar()` and `.scalars()`.
   NULL column values are valid results, so a required scalar can still return `null`.
   `scalar()` and `scalars()` type-check only for one column.
+* `await sel.count()`: `SELECT count(*) FROM (<select>)`, so groups, `having()`, `distinct()` and
+  slices decide the rows counted. `await sel.exists()` is `SELECT EXISTS (<select>)`.
+* `sel.prepare()`: a `PreparedSelect` with `.all(values)`, `.first(values)`, `.get(values)`,
+  `.scalar(values)`, `.scalars(values)`, `.count(values)`, `.exists(values)` and `.require()`.
+  `sel.first().prepare()` and the other one-row queries work too (`.run(values)`).
+* `await sel.explain()`, `sel.join(cte, on, { outer })` and `sel.from(cte)`. The columns of a CTE
+  (`cte.c.n`) work in `groupBy()`, `having()` and `orderBy()`; to select them, call `join()` on the
+  query set before `select()`.
+* `first()`, `get()`, `last()` and `at(n)` are lazy one-row queries (`at(-1)` is `last()`).
+  `last()` and `at(n)` need `orderBy()` on a grouped or distinct select (else `TypeError`).
+* `paginate()`, `batches()` and `iterate()`: the order must be unique. The `groupBy()` columns (or the
+  `distinct(on)` columns) are added to the key; otherwise the primary key is. Every key column must be a
+  column of the model itself and in the select list. `distinct()` without columns, and aggregate order
+  terms, are rejected; `paginate({ last })` over a `distinct(on)` with more order terms is rejected.
+* There is no `lock()`: to lock rows, use `QuerySet.lock()` with `load()`.
 
 ## Subqueries
 

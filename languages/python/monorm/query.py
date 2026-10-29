@@ -1067,14 +1067,17 @@ class QuerySet(Generic[M]):
         ``EXPLAIN QUERY PLAN``, each step indented under its parent, and has no
         ``analyze``.
         """
+        params: list[Any] = []
+        return await self._explain_ir(self._select_ir("select", params), params, analyze)
+
+    async def _explain_ir(self, ir: dict[str, Any], params: list[Any], analyze: bool) -> str:
         from .db import _with_scope, resolve
 
         if analyze and self._lock is not None:
             raise QueryError(
                 "explain(analyze=True) would run the query and take its row locks; drop lock() to explain it"
             )
-        params: list[Any] = []
-        op, params = _with_scope(json.dumps(self._select_ir("select", params)), params)
+        op, params = _with_scope(json.dumps(ir), params)
         db = resolve(self._db)
         engine, tx = db._reader(), db._tx()
         plan: str = await db._call(lambda t: engine.explain(op, params, analyze, tx, t))
@@ -1167,18 +1170,11 @@ class QuerySet(Generic[M]):
         of the model itself, and a nullable one needs ``nulls=``. ``load()`` and
         query defaults apply to each page.
         """
-        if (first is None) == (last is None):
-            raise TypeError("paginate() takes first= or last=")
-        if (first is not None and before is not None) or (last is not None and after is not None):
-            raise TypeError("paginate() takes first= with after=, or last= with before=")
-        size = first if first is not None else last
-        if not isinstance(size, int) or isinstance(size, bool) or size < 1:
-            raise ValueError("a page size is an integer of at least 1")
+        size, forward = pagination.check_paging(first, after, last, before)
         if self._limit is not None or self._offset is not None:
             raise QueryError("paginate() can't be used on a sliced query set")
         keys = pagination.keyset(self._model, self._default_order())
         fp = pagination.fingerprint(self._model, keys)
-        forward = first is not None
         order = [o if forward else o.reversed() for _, o in keys]
         helpers = (*self._model_helpers, *(f.name for f, _ in keys if f.name not in self._model_helpers))
         qs = self._clone(_model_helpers=helpers)
@@ -1190,12 +1186,16 @@ class QuerySet(Generic[M]):
         rows = await qs.order_by(*order)[: size + 1]._fetch()
         more = len(rows) > size
         rows = rows[:size] if forward else rows[:size][::-1]
+
+        def cursor_of(obj: M) -> str:
+            return pagination.encode_cursor(fp, keys, [obj._field_value(f.name) for f, _ in keys])
+
         return Page(
             rows,
             has_next=more if forward else cursor is not None,
             has_previous=cursor is not None if forward else more,
-            next_cursor=pagination.encode_cursor(fp, keys, rows[-1]) if rows else None,
-            previous_cursor=pagination.encode_cursor(fp, keys, rows[0]) if rows else None,
+            next_cursor=cursor_of(rows[-1]) if rows else None,
+            previous_cursor=cursor_of(rows[0]) if rows else None,
         )
 
     def first(self) -> OneRowQuery[M | None]:
@@ -1482,7 +1482,7 @@ class _Compiled:
 class OneRowQuery(Coroutine[Any, Any, T_co]):
     """A lazy one-row read. Each await runs afresh; tasks drive one inner coroutine."""
 
-    def __init__(self, qs: QuerySet[Any], *, unique: bool = False) -> None:
+    def __init__(self, qs: Any, *, unique: bool = False) -> None:
         self._qs = qs
         self._unique = unique
         self._coroutine: Coroutine[Any, Any, T_co] | None = None
@@ -1491,7 +1491,7 @@ class OneRowQuery(Coroutine[Any, Any, T_co]):
         """Load one related row per parent into ``name`` (or None when absent)."""
         if self._unique:
             raise TypeError("get() can't be loaded per parent; use [0].label(name)")
-        return self._qs.label(name)._clone(_one=True)
+        return cast("QuerySet[Any]", self._qs.label(name)._clone(_one=True))
 
     def __repr__(self) -> str:
         return f"<OneRowQuery {self._qs!r}>"
@@ -1528,16 +1528,16 @@ class OneRowQuery(Coroutine[Any, Any, T_co]):
         return PreparedOneRowQuery(self, self._qs.prepare())
 
     def inspect(self) -> QueryInspection:
-        return self._qs.inspect()
+        return cast(QueryInspection, self._qs.inspect())
 
     def sql(self) -> str:
-        return self._qs.sql()
+        return cast(str, self._qs.sql())
 
 
 class PreparedOneRowQuery(Generic[T_co]):
     """A compiled one-row query whose calls bind parameters and return one row."""
 
-    def __init__(self, query: OneRowQuery[T_co], prepared: Prepared[Any]) -> None:
+    def __init__(self, query: OneRowQuery[T_co], prepared: Any) -> None:
         self._query = query
         self._prepared = prepared
 
@@ -1545,10 +1545,10 @@ class PreparedOneRowQuery(Generic[T_co]):
         return self._query._result(await self._prepared.all(**values))
 
     def inspect(self, **values: Any) -> QueryInspection:
-        return self._prepared.inspect(**values)
+        return cast(QueryInspection, self._prepared.inspect(**values))
 
     def sql(self, **values: Any) -> str:
-        return self._prepared.sql(**values)
+        return cast(str, self._prepared.sql(**values))
 
 
 class Prepared(Generic[M]):

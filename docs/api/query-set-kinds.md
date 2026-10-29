@@ -11,9 +11,9 @@ Each kind leaves out the methods that do not fit its result.
 | Relation query set | `User.posts.objects` (class path) | no: `TypeError` outside `load()` | A `load()` item: filter, order, slice, `.label()`, `.as_prefetch()`. |
 | `RelatedSet` / `ManyRelatedSet` | `u.posts` | yes | The rows of one parent. `insert()` fills the key; `add()` / `remove()` for many-to-many. |
 | `BoundQuerySet` | `post.qs()`, `monorm.of(posts)` | yes | Fills the same objects in place. |
-| `Select` (not a query set) | `qs.select(...)` | yes | `Row`s, `group_by()`, `having()`, `distinct()`. |
+| `Select` (not a query set) | `qs.select(...)` | yes | `Row`s, `group_by()`, `having()`, `distinct()`, `count()`, `exists()`, `prepare()`, `explain()`, `join(cte)`, `from_(cte)` (TypeScript `from(cte)`), `paginate()`, `iterate()`, `batches()`. Its `first()`, `last()`, `get()` and `[n]` (TypeScript `at(n)`) are one-row queries. |
 | One-row query (not a query set) | `first()`, `last()`, `get()`, `qs[n]`, `qs.at(n)` | yes, when awaited | One row or `None`. No query runs until it is awaited; it also works in `load()`, `prepare()` and `inspect()`. |
-| `Prepared` (not a query set) | `qs.prepare()` | yes, per call with values | A read that is built once; each call binds the `monorm.param()` values. Python: `await p(**values)`, `.get()`, `.first()`, `.count()`, `.exists()`, `.require()`. TypeScript: `.all(values)` and the same methods. |
+| `Prepared` / `PreparedSelect` (not query sets) | `qs.prepare()`, `select.prepare()` | yes, per call with values | A read that is built once; each call binds the `monorm.param()` values. Python: `await p(**values)`, `.get()`, `.first()`, `.count()`, `.exists()`, `.require()`; a `PreparedSelect` also has `.scalar()` and `.scalars()`. TypeScript: `.all(values)` and the same methods. |
 | `PreparedOneRowQuery` (not a query set) | `qs.first().prepare()` and the other one-row queries | yes, per call with values | One row or `None` per call. Python: `await p(**values)`; TypeScript: `.run(values)`. |
 
 ## What each kind leaves out
@@ -21,9 +21,8 @@ Each kind leaves out the methods that do not fit its result.
 | Kind | Leaves out | Why |
 |---|---|---|
 | `QuerySet` | `group_by()`, `having()`, `distinct()` | They change what a row means, so the result must be `Row`s: use `select()`. |
-| `Select` | `count()`, `exists()`, `lock()`, `prepare()`, `explain()`, `join(cte)` | Gaps, not a design choice. A grouped report can not be counted or prepared today. |
-| `Select` | `last()`, `paginate()`, `[n]` | No unique order exists over groups. |
-| `Select` | `from_()`, `iterate()`, `batches()` | Not built. |
+| `Select` | `lock()` | A select returns computed rows, not objects: to lock, use `QuerySet.lock()` with `load()`. |
+| `Select` | `paginate()` over an aggregate or non-root order term, over `distinct()` without columns, over a slice | The cursor reads the order columns from the rows, so they must be columns of the model itself, in the select list. |
 | Relation query set | running alone, writes, `select()`, `paginate()`, `lock()` | It is only an item for `load()`; use `Post.objects` for a standalone query. |
 | `RelatedSet` | `.label()`, `.as_prefetch()` | These belong to `load()` items. |
 | `Prepared` | every builder (`filter()`, `load()`, `order_by()`, slices), writes, `select()`, `paginate()`, `lock()`, `batches()`, `async for` | The query is fixed when it is built; only the `param()` values change. Writes send their rows without an IR, so there is nothing to prepare. |

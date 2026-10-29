@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from .fields import Field
     from .model import Model
 
-M = TypeVar("M", bound="Model")
+T = TypeVar("T")
 
 __all__ = ["Page"]
 
@@ -32,8 +32,8 @@ __all__ = ["Page"]
 _CURSOR_TYPES = {"big_int", "int", "float", "bool", "string", "text", "date_time", "date", "uuid", "decimal"}
 
 
-class Page(Generic[M]):
-    """One page of :meth:`QuerySet.paginate`.
+class Page(Generic[T]):
+    """One page of :meth:`QuerySet.paginate` or :meth:`Select.paginate` (its items are rows).
 
     ``next_cursor`` is the cursor of the last item and ``previous_cursor`` that of the
     first; both are ``None`` on an empty page. ``paginate(first=n, after=page.next_cursor)``
@@ -43,7 +43,7 @@ class Page(Generic[M]):
     __slots__ = ("items", "has_next", "has_previous", "next_cursor", "previous_cursor")
 
     def __init__(
-        self, items: list[M], has_next: bool, has_previous: bool, next_cursor: str | None, previous_cursor: str | None
+        self, items: list[T], has_next: bool, has_previous: bool, next_cursor: str | None, previous_cursor: str | None
     ) -> None:
         self.items = items
         self.has_next = has_next
@@ -63,8 +63,21 @@ def stored_nullable(model: type[Model], f: Field[Any]) -> bool:
     return f.nullable or f.name in model._meta.narrowed
 
 
-def keyset(model: type[Model], order: tuple[Ordering, ...]) -> list[Key]:
-    """The order columns of a page, with the primary key last when the order is not unique."""
+def check_paging(first: int | None, after: str | None, last: int | None, before: str | None) -> tuple[int, bool]:
+    """The page size and whether it reads forward, for the arguments of ``paginate()``."""
+    if (first is None) == (last is None):
+        raise TypeError("paginate() takes first= or last=")
+    if (first is not None and before is not None) or (last is not None and after is not None):
+        raise TypeError("paginate() takes first= with after=, or last= with before=")
+    size = first if first is not None else last
+    if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+        raise ValueError("a page size is an integer of at least 1")
+    return size, first is not None
+
+
+def keyset(model: type[Model], order: tuple[Ordering, ...], *, add_key: bool = True) -> list[Key]:
+    """The order columns of a page, with the primary key last when the order is not unique
+    (unless ``add_key`` is false: the caller's order is unique by its group keys)."""
     keys: list[Key] = []
     for o in order:
         e = o.expr
@@ -81,7 +94,7 @@ def keyset(model: type[Model], order: tuple[Ordering, ...]) -> list[Key]:
             )
         keys.append((f, o))
     names = {f.name for f, _ in keys}
-    if not (
+    if add_key and not (
         names.issuperset(model._meta.key_names) or any(f.unique and not stored_nullable(model, f) for f, _ in keys)
     ):
         keys += [(r._field, Ordering(r, desc=False)) for r in model._meta.key_refs() if r._field.name not in names]
@@ -152,9 +165,9 @@ def _decode(f: Field[Any], nullable: bool, v: Any) -> Any:
     raise QueryError("invalid cursor")
 
 
-def encode_cursor(fp: str, keys: list[Key], obj: Model) -> str:
-    values = [_encode(f, obj._field_value(f.name)) for f, _ in keys]
-    raw = json.dumps({"o": fp, "v": values}, separators=(",", ":")).encode()
+def encode_cursor(fp: str, keys: list[Key], values: list[Any]) -> str:
+    """The cursor of a row, from its values of the ``keys`` columns."""
+    raw = json.dumps({"o": fp, "v": [_encode(f, v) for (f, _), v in zip(keys, values)]}, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 

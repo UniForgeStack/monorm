@@ -843,6 +843,23 @@ applies to `.first()`, `.all()`, awaiting the selection, `.scalar()` and `.scala
 A row containing NULL values is still a result: a required scalar may return `None`
 when its row exists but its column is NULL.
 
+A `Select` also has:
+
+* `await sel.count()`: `SELECT count(*) FROM (<select>)`, so groups, `having()`, `distinct()` and
+  slices decide the rows counted. `await sel.exists()` is `SELECT EXISTS (<select>)`.
+* `sel.prepare()`: a `PreparedSelect` with `await p(**values)`, `.first()`, `.get()`, `.scalar()`,
+  `.scalars()`, `.count()`, `.exists()` and `.require()`. `sel.first().prepare()` and the other
+  one-row queries work too.
+* `await sel.explain()`, `sel.join(cte, on)` and `sel.from_(cte)`. The columns of a CTE (`cte.c.n`) work
+  in the select list, `group_by()`, `having()` and `order_by()`.
+* `first()`, `get()`, `last()` and `sel[n]` are lazy one-row queries. `last()`, `sel[n]` and `sel[-1]` need
+  `order_by()` on a grouped or distinct select (else `TypeError`).
+* `paginate()`, `batches()` and `iterate()`: the order must be unique. The `group_by()` columns (or the
+  `distinct(on)` columns) are added to the key; otherwise the primary key is. Every key column must be a
+  column of the model itself and in the select list. `distinct()` without columns, and aggregate order
+  terms, are rejected; `paginate(last=...)` over a `distinct(on)` with more order terms is rejected.
+* There is no `lock()`: to lock rows, use `QuerySet.lock()` with `load()`.
+
 | Django | here |
 |---|---|
 | `values("id", "title")` / `values_list(...)` | `select(Post.id, Post.title)` |

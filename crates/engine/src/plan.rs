@@ -2985,9 +2985,24 @@ impl<'s> Planner<'s> {
         Ok(inner)
     }
 
+    /// The inner statement of `count()` / `exists()` over `select(...)` columns: the select
+    /// itself, so groups, `HAVING`, `DISTINCT` and slices decide the rows counted. Its order
+    /// only matters under a slice.
+    fn columns_inner(&mut self, q: &Select) -> Result<SelectStatement> {
+        if q.limit.is_some() || q.offset.is_some() || q.order.is_empty() {
+            return Ok(self.build_select(q)?.stmt);
+        }
+        Ok(self.build_select(&Select { order: vec![], ..q.clone() })?.stmt)
+    }
+
     pub fn count(&mut self, q: &Select) -> Result<SelectStatement> {
         no_lock(q, "count")?;
         let mut stmt = Query::select();
+        if q.columns.is_some() {
+            let inner = self.columns_inner(q)?;
+            stmt.expr(SExpr::cust("COUNT(*)")).from_subquery(inner, Alias::new("counted"));
+            return Ok(stmt);
+        }
         if q.limit.is_some() || q.offset.is_some() {
             let inner = self.sliced_inner(q)?;
             stmt.expr(SExpr::cust("COUNT(*)")).from_subquery(inner, Alias::new("sliced"));
@@ -3003,7 +3018,7 @@ impl<'s> Planner<'s> {
 
     pub fn exists(&mut self, q: &Select) -> Result<SelectStatement> {
         no_lock(q, "exists")?;
-        let mut inner = self.sliced_inner(q)?;
+        let mut inner = if q.columns.is_some() { self.columns_inner(q)? } else { self.sliced_inner(q)? };
         if q.limit.is_none() {
             inner.limit(1);
         }

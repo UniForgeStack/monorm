@@ -39,8 +39,8 @@ export function storedNullable(meta: ModelMeta, f: FieldMeta): boolean {
 // Column types with a cursor value; JSON, arrays and enums have none.
 const CURSOR_TYPES = new Set(["big_int", "int", "float", "bool", "string", "text", "date_time", "date", "uuid", "decimal"]);
 
-/** @internal The order columns of a page, with the primary key last when the order is not unique. */
-export function keyset(meta: ModelMeta, order: readonly Ordering<string, unknown>[]): Key[] {
+/** @internal The order columns of a page, with the primary key last when the order is not unique and `addKey` is set. */
+export function keyset(meta: ModelMeta, order: readonly Ordering<string, unknown>[], addKey = true): Key[] {
   const keys: Key[] = order.map((o) => {
     const e = o.expr;
     if (!(e instanceof Column) || e.path.length || e.root !== meta) {
@@ -57,7 +57,7 @@ export function keyset(meta: ModelMeta, order: readonly Ordering<string, unknown
     return [f, o] as const;
   });
   const covered = (f: FieldMeta) => keys.some(([k]) => k === f);
-  if (!meta.key.every(covered) && !keys.some(([f]) => f.unique && !storedNullable(meta, f))) {
+  if (addKey && !meta.key.every(covered) && !keys.some(([f]) => f.unique && !storedNullable(meta, f))) {
     for (const f of meta.key) if (!covered(f)) keys.push([f, meta.column(f).asc()]);
   }
   return keys;
@@ -175,8 +175,24 @@ function decode(f: FieldMeta, nullable: boolean, v: unknown): unknown {
 
 /** @internal */
 export function encodeCursor(fp: string, keys: readonly Key[], row: object): string {
-  const values = keys.map(([f]) => encode(f, fieldValue(row, f.name)));
-  return Buffer.from(JSON.stringify({ o: fp, v: values })).toString("base64url");
+  return encodeValues(fp, keys, keys.map(([f]) => fieldValue(row, f.name)));
+}
+
+/** @internal The cursor of the key values `values`, one per key. */
+export function encodeValues(fp: string, keys: readonly Key[], values: readonly unknown[]): string {
+  return Buffer.from(JSON.stringify({ o: fp, v: keys.map(([f], i) => encode(f, values[i])) })).toString("base64url");
+}
+
+/** @internal The size and direction of a `paginate()` call; throws on a bad combination. */
+export function checkPaging(options: PageOptions): { size: number; forward: boolean } {
+  const forward = options.first !== undefined;
+  if (forward === (options.last !== undefined)) throw new TypeError("paginate() takes first or last");
+  if ((forward && options.before != null) || (!forward && options.after != null)) {
+    throw new TypeError("paginate() takes first with after, or last with before");
+  }
+  const size = (forward ? options.first : options.last) as number;
+  if (!Number.isInteger(size) || size < 1) throw new RangeError("a page size is an integer of at least 1");
+  return { size, forward };
 }
 
 /** @internal */

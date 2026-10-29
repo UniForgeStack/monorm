@@ -475,7 +475,7 @@ const NULL_PRESERVING = new Set([
   "lower", "upper", "length", "concat", "trim", "ltrim", "rtrim", "replace", "substr", "strpos", "cardinality",
   "abs", "to_tsvector", "to_tsquery", "plainto_tsquery", "websearch_to_tsquery", "ts_rank",
 ]); // prettier-ignore
-const AGGREGATES = new Set(["count", "sum", "avg", "min", "max", "array_agg"]);
+export const AGGREGATES = new Set(["count", "sum", "avg", "min", "max", "array_agg"]);
 
 /**
  * Whether the ORM cannot prove `node` non-null: the one rule behind the strict null rule and the
