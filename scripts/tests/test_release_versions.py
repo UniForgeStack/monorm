@@ -302,7 +302,7 @@ try:
 except ImportError:
     yaml = None
 
-PUBLISH_JOBS = {"publish-crates", "publish-pypi", "publish-npm"}
+PUBLISH_JOBS = {"publish-pypi", "publish-npm"}
 
 
 @unittest.skipUnless(yaml, "needs PyYAML")
@@ -311,7 +311,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.text = (ROOT / ".github/workflows/release.yml").read_text()
         self.jobs = yaml.safe_load(self.text)["jobs"]
 
-    def test_only_the_three_publish_jobs_hold_id_token(self):
+    def test_only_the_publish_jobs_hold_id_token(self):
         holders = {n for n, j in self.jobs.items() if "id-token" in j.get("permissions", {})}
         self.assertEqual(holders, PUBLISH_JOBS)
         for name in PUBLISH_JOBS:
@@ -336,12 +336,12 @@ class ReleaseWorkflowTest(unittest.TestCase):
         for secret in ("PYPI_API_TOKEN", "TEST_PYPI_API_TOKEN"):
             self.assertNotIn(secret, self.text)
 
-    def test_npm_and_crates_io_keep_their_token_fallback(self):
+    def test_npm_keeps_its_token_fallback(self):
         self.assertIn("secrets.NPM_TOKEN", self.text)
-        self.assertIn("secrets.CARGO_REGISTRY_TOKEN", self.text)
 
-    def test_the_crate_is_monorm_and_the_old_split_is_gone(self):
-        self.assertIn("-p monorm", self.text)
+    def test_nothing_goes_to_crates_io_and_the_old_split_is_gone(self):
+        self.assertNotIn("cargo publish", self.text)
+        self.assertNotIn("CARGO_REGISTRY_TOKEN", self.text)
         self.assertNotIn("monorm-contracts", self.text)
         self.assertNotIn("split-pypi", self.text)
 

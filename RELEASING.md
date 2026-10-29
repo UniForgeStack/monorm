@@ -1,8 +1,9 @@
 # Releasing monorm
 
 A `v*` tag runs `.github/workflows/release.yml`.
-The workflow publishes one PyPI project, one npm package and one crate.
-A manual run (`workflow_dispatch`) publishes to TestPyPI and runs `npm publish --dry-run` and `cargo publish --dry-run`.
+The workflow publishes one PyPI project and one npm package.
+A manual run (`workflow_dispatch`) publishes to TestPyPI and runs `npm publish --dry-run`.
+crates.io comes later, when the Rust API is ready. The crate `monorm` (the directory `crates/contracts`) is ready for it, and `cargo package -p monorm` checks it.
 The registries match the workflow file name `release.yml`, so every publish step stays in that file.
 
 ## Packages
@@ -10,16 +11,15 @@ The registries match the workflow file name `release.yml`, so every publish step
 - PyPI, 1 project: `monorm`, 12 wheels (Linux x86-64, macOS arm64 and Windows x86-64, for CPython 3.11 to 3.14). It has no sdist, because an sdist would lack the extension libraries and the auth app.
   The wheel holds the engine (`monorm._native`), the 9 built-in extension libraries of its platform and the auth app (`monorm_auth`).
 - npm, 1 package: `monorm`, one tarball with the addon and the extension libraries of the 3 platforms (`prebuilt/<platform>/` and `extensions/<name>/`), the CLI and the auth app.
-- crates.io, 1 crate: `monorm` (the directory `crates/contracts`). It is the contracts library for authors of outside extensions and has no binary.
 - `scripts/release/publish-lists.py` holds these lists.
   The `collect` job fails if a file is missing or extra, and records the size of each file in the job summary.
-- The jobs: `version`, `builds` (`package-builds.yml`), `extensions` (`extension-packages.yml`), `collect`, then `publish-crates`, `publish-pypi` and `publish-npm`, then `contracts-consumer` and `release-notes`.
+- The jobs: `version`, `builds` (`package-builds.yml`), `extensions` (`extension-packages.yml`), `collect`, then `publish-pypi` and `publish-npm`, then `release-notes`.
 
 ## Owner setup
 
 Common values: owner `UniForgeStack`, repository `monorm`, workflow `release.yml`, environment `release`.
 "Admin" needs admin rights on `UniForgeStack/monorm`.
-"Owner" needs the registry account (npm and PyPI organization `ufstack`, and the crates.io account).
+"Owner" needs the registry account (npm and PyPI organization `ufstack`).
 
 | # | Step | Who | Values |
 |---|---|---|---|
@@ -32,9 +32,6 @@ Common values: owner `UniForgeStack`, repository `monorm`, workflow `release.yml
 | 7 | First npm publish | Owner, Admin | A granular token with read and write access to the new package `monorm` (a scope token does not cover an unscoped name), and a 7-day expiry. The Admin stores it as the secret `NPM_TOKEN` of the environment `release`. |
 | 8 | Create the npm trusted publisher | Owner | After v0.1.0: `npm trust github monorm --file release.yml --repo UniForgeStack/monorm --env release --allow-publish`. This needs npm 11.15.0 or newer and 2FA. |
 | 9 | Remove the npm token | Owner, Admin | Delete the secret `NPM_TOKEN`, revoke the token, and set the package to "Require two-factor authentication and disallow tokens". |
-| 10 | First crates.io publish | Owner | Before the tag push, run `cargo publish -p monorm` from the release commit (the commit the tag will point to). The workflow then skips the version. |
-| 11 | crates.io trusted publisher | Owner | crates.io → `monorm` → Settings → Trusted Publishing; the common values |
-| 12 | Optional: "Trusted Publishing only" | Owner | After step 11, in the crates.io settings of `monorm` |
 
 Keep these points in mind:
 - PyPI has one trusted publisher and no token, so the first upload of `monorm` also uses trusted publishing (a pending publisher).
@@ -48,8 +45,6 @@ Keep these points in mind:
   Delete it and create it again.
 - The npm token step is a fallback.
   Without the secret `NPM_TOKEN`, npm uses the trusted publisher.
-- The crates.io token step is a fallback too.
-  Before the trusted publisher exists, the `crates-io-auth-action` step fails, and the secret `CARGO_REGISTRY_TOKEN` of the environment `release` takes over.
 - Trusted publishing on npm needs npm 11.5.1 or newer and Node 22.14.0 or newer.
   The `publish-npm` job installs `npm@>=11.5.1`, and the install fails if no such version exists.
 
@@ -71,7 +66,7 @@ The proof publishes only to TestPyPI.
    Run the workflow `Release` by dispatch from the branch.
    The workflow takes the version from `pyproject.toml` and accepts `## [0.1.0] - TBD` in the changelog.
 6. Approve the deployment of the environment `release`.
-7. Expected result: `monorm` at `0.1.0rc1` on TestPyPI with 12 wheels, one `npm publish --dry-run` log, and one `cargo publish --dry-run` log.
+7. Expected result: `monorm` at `0.1.0rc1` on TestPyPI with 12 wheels and one `npm publish --dry-run` log.
 8. In a fresh virtual environment on Linux and on macOS, run:
    `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ monorm==0.1.0rc1`.
    Then run `python -m monorm --help` and a `generate` on a schema that uses one built-in extension.
@@ -83,21 +78,21 @@ The proof publishes only to TestPyPI.
 1. Run `python3 scripts/release/versions.py set 0.1.0`.
    Replace `TBD` in the `## [0.1.0]` heading of `CHANGELOG.md` with the date.
    Commit these files on `main`.
-2. Do owner-setup steps 5, 7 and 10.
+2. Do owner-setup steps 5 and 7.
 3. Push the tag `v0.1.0`.
    The workflow reads the version with `versions.py tag`, which rejects a tag in the PEP 440 form, such as `v0.1.0rc1`.
    Then it runs `versions.py check 0.1.0`, which rejects `TBD`.
 4. Approve the deployment of the environment `release`.
-   The three publish jobs wait for the same approval.
+   The two publish jobs wait for the same approval.
 5. The job `release-notes` creates the GitHub Release from the `CHANGELOG.md` section.
    It sets "prerelease" while the major version is 0.
-6. After the first release, do owner-setup steps 8, 9, 11 and 12.
+6. After the first release, do owner-setup steps 8 and 9.
 
 ## Rerun rules
 
-- A published version is permanent on PyPI, npm and crates.io.
+- A published version is permanent on PyPI and npm.
   The registries refuse a second upload of the same version, even after a deletion.
-- Each publish step skips a version that is already on the registry: PyPI with `skip-existing`, npm with `npm view`, crates.io with the crates.io API.
+- Each publish step skips a version that is already on the registry: PyPI with `skip-existing`, npm with `npm view`.
 - If a publish job fails before it finishes, use "Re-run failed jobs".
   The rerun publishes only what is missing.
 - If a published file is wrong, do not rerun.
@@ -113,7 +108,6 @@ The proof publishes only to TestPyPI.
 python3 -m unittest scripts/tests/test_release_versions.py scripts/tests/test_package_metadata.py scripts/tests/test_check_glibc.py
 python3 scripts/release/versions.py check --allow-tbd
 cargo package -p monorm
-cargo publish --dry-run -p monorm
 ```
 
 `scripts/check-glibc.py` runs in the Linux legs of `package-builds.yml`.

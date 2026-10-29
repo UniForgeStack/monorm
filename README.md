@@ -1,5 +1,11 @@
 # MonOrm
 
+[![PyPI](https://img.shields.io/pypi/v/monorm)](https://pypi.org/project/monorm/)
+[![Python](https://img.shields.io/pypi/pyversions/monorm)](https://pypi.org/project/monorm/)
+[![npm](https://img.shields.io/npm/v/monorm)](https://www.npmjs.com/package/monorm)
+[![Checks](https://github.com/UniForgeStack/monorm/actions/workflows/checks.yml/badge.svg)](https://github.com/UniForgeStack/monorm/actions/workflows/checks.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 An async ORM for Python and TypeScript with one Rust core.
 You write the schema once in Prisma syntax.
 The Rust core plans the SQL and runs it on PostgreSQL or SQLite.
@@ -7,7 +13,7 @@ Both languages get the same queries, the same migrations and generated, typed mo
 
 > **Under active development.**
 > It works today, and the author runs it in production.
-> It is version 0.1.0 and not published yet.
+> It is version 0.1.0: install it with `pip install monorm` or `npm install monorm`.
 > Other people should not use it in production yet, or do so at their own risk.
 > Evaluate it against your own app before you rely on it.
 
@@ -69,20 +75,18 @@ Thank you to the projects below. We claim only what we took from each.
 
 ## Quickstart
 
-Nothing is published to a registry yet. From `v0.1.0` there is one package for each registry:
+There is one package for each registry:
 
 ```bash
 pip install monorm      # the engine, every built-in extension and the auth app; `python -m monorm generate`
 npm install monorm      # the same for Node and Bun; `npx monorm generate`
-cargo add monorm        # the contracts library for authors of outside extensions (the crate has no binary)
 ```
 
 The `monorm` command line comes with the Python and npm packages.
-`cargo install monorm` installs nothing, because the crate is a library.
 Both packages hold PostgreSQL and SQLite. They build for 3 platforms: Linux x86-64, macOS arm64 and Windows x86-64.
 An extension that is not built in is a separate package that you install next to `monorm` ([optional-packaging.md](docs/contracts/optional-packaging.md)).
 
-Until then, build from source:
+To build from source:
 
 ```bash
 uv venv .venv && . .venv/bin/activate
@@ -180,7 +184,7 @@ Run the comparison yourself before you decide.
 
 Both API docs list what is not done yet: [Python](docs/api/python-api.md#not-done-yet) and [schema](docs/schema/schema.md#not-done-yet).
 The API is async only. There is no MySQL driver.
-The packages are not published.
+The crate on crates.io comes later.
 
 ## Docs
 

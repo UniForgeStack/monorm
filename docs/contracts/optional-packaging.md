@@ -14,12 +14,11 @@ The 3 platforms are `darwin-arm64`, `linux-x64` (glibc 2.28 or newer) and `win32
 Another platform needs a source build.
 The engine has both PostgreSQL and SQLite, the migration and schema APIs, and both code generators.
 The wheel and the tarball hold the command line: `python -m monorm`, `npx monorm` and the `monorm` command.
-`cargo install monorm` installs nothing, because the crate has no binary. Use `cargo add monorm`.
+The crate `monorm` (the directory `crates/contracts`) is not on crates.io yet. An outside extension takes it as a git or path dependency until then.
 
 ```bash
 pip install monorm
 npm install monorm
-cargo add monorm      # in the crate of an outside extension
 ```
 
 ## The built-in extensions
