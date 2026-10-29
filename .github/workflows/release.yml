@@ -22,11 +22,11 @@ jobs:
       - id: version
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then
-            version=${GITHUB_REF_NAME#v}
+            version=$(python3 scripts/release/versions.py tag "$GITHUB_REF_NAME")
             target=real
             flags=()
           else
-            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+            version=$(python3 scripts/release/versions.py show)
             target=test
             flags=(--allow-tbd)
           fi
@@ -69,18 +69,19 @@ jobs:
       - name: Gather the PyPI files
         run: |
           mkdir -p dist/pypi dist/npm
-          # Every wheels-* artifact holds the same thin monorm wheel, so merge-multiple keeps one copy.
           cp target/release-wheels/*.whl target/release-assembled/*.whl dist/pypi/
           rm -f dist/pypi/acme_outside-*.whl
-          # The two pure Python projects also ship an sdist.
-          uv build --sdist --out-dir dist/pypi .
+          # Every wheels-* artifact holds a thin monorm wheel, and merge-multiple keeps one of them at random.
+          rm -f dist/pypi/monorm-*.whl
+          # The two pure Python projects are built here, wheel and sdist.
+          uv build --out-dir dist/pypi .
           uv build --out-dir dist/pypi apps/auth/python
       - name: Gather the npm files
         run: |
           cp target/release-npm/*.tgz target/release-assembled/*.tgz dist/npm/
           # decimal.js is a test dependency of check-node-install.mjs, and acme-outside is a test package.
           rm -f dist/npm/decimal.js-*.tgz dist/npm/acme-outside-*.tgz
-      - name: Build the auth npm package
+      - name: Build the TypeScript package and the extension packages
         run: |
           npm ci --ignore-scripts
           npx tsc -p tsconfig.json
@@ -88,7 +89,8 @@ jobs:
             cargo run -q -p monorm-extension-package -- package "../../extensions/$extension" --out "../../target/extension-packages/$extension" --tsc "$PWD/node_modules/.bin/tsc"
           done
         working-directory: languages/js
-      - run: npm install --no-audit --no-fund && npm run build && npm pack --pack-destination ../../../dist/npm
+      - name: Build and pack the auth npm package
+        run: npm install --no-audit --no-fund && npm run build && npm pack --pack-destination ../../../dist/npm
         working-directory: apps/auth/typescript
       - name: Check the files against the package lists
         run: |
@@ -192,18 +194,19 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm 11.5.1 or newer.
-      - run: |
-          npm install -g npm@latest
-          node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); if (a < 11 || (a === 11 && (b < 5 || (b === 5 && c < 1)))) { console.error("npm " + process.argv[1] + " is older than 11.5.1"); process.exit(1); }' "$(npm --version)"
+      # Trusted publishing needs npm 11.5.1 or newer; the install fails when no such version exists.
+      - run: npm install -g 'npm@>=11.5.1'
       - uses: actions/download-artifact@v4
         with:
           name: release-npm
           path: dist/npm
       # Without the NPM_TOKEN secret, npm uses the trusted publisher of each package.
-      - run: node scripts/release/npm-publish.mjs dist/npm --mode ${{ needs.version.outputs.target == 'real' && 'real' || 'dry-run' }}
+      # An empty secret keeps the placeholder token that setup-node wrote, so the OIDC path stays open.
+      - run: |
+          export NODE_AUTH_TOKEN="${NPM_TOKEN:-$NODE_AUTH_TOKEN}"
+          node scripts/release/npm-publish.mjs dist/npm --mode ${{ needs.version.outputs.target == 'real' && 'real' || 'dry-run' }}
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
   contracts-consumer:
     if: needs.version.outputs.target == 'real'
     needs: [version, publish-crates]
@@ -234,6 +237,5 @@ jobs:
           awk -v v="## [$version]" 'index($0, v) == 1 { found = 1; next } /^## \[/ { found = 0 } found' CHANGELOG.md > notes.md
           flags=(--verify-tag)
           if [ -s notes.md ]; then flags+=(--notes-file notes.md); else flags+=(--generate-notes); fi
-          # A 0.x version is a prerelease.
           case "$version" in 0.*|*-*) flags+=(--prerelease);; esac
           gh release create "v$version" "${flags[@]}"

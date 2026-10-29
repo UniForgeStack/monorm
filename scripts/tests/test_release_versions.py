@@ -25,28 +25,45 @@ def run(script: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(RELEASE / script), *args], capture_output=True, text=True)
 
 
+def copy_sites(root: Path):
+    paths = [path for pattern, *_ in versions.TEXT_SITES for path in ROOT.glob(pattern)]
+    for path in [*paths, *(ROOT / name for name in versions.JSON_SITES)]:
+        target = root / path.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+
+
+def snapshot(root: Path) -> dict[Path, bytes]:
+    return {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
 class VersionsTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
-        for pattern, *_ in versions.TEXT_SITES:
-            for path in ROOT.glob(pattern):
-                self.copy(path)
-        for name in versions.JSON_SITES:
-            self.copy(ROOT / name)
+        copy_sites(self.root)
         (self.root / "CHANGELOG.md").write_text(CHANGELOG)
+        # The copy is pinned, so these tests hold on a tree at any version, such as the rc branch.
+        self.set("0.1.0")
 
-    def copy(self, path: Path):
-        target = self.root / path.relative_to(ROOT)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+    def set(self, version: str):
+        result = run("versions.py", "set", version, "--root", str(self.root))
+        self.assertEqual(result.returncode, 0, result.stderr)
 
-    def check(self, version: str, *flags: str):
-        return run("versions.py", "check", version, "--root", str(self.root), *flags)
+    def check(self, *args: str):
+        return run("versions.py", "check", *args, "--root", str(self.root))
 
-    def test_the_tree_is_at_0_1_0(self):
-        result = self.check("0.1.0", "--allow-tbd")
+    def test_the_real_tree_agrees_with_its_own_version(self):
+        result = run("versions.py", "check", "--allow-tbd")
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_set_to_the_tree_version_changes_no_byte_of_the_real_files(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        copy_sites(root)
+        before = snapshot(root)
+        self.assertEqual(run("versions.py", "set", versions.tree_version(root), "--root", str(root)).returncode, 0)
+        self.assertEqual(before, snapshot(root))
 
     def test_a_tbd_date_passes_only_with_allow_tbd(self):
         self.assertEqual(self.check("0.1.0").returncode, 1)
@@ -66,8 +83,8 @@ class VersionsTest(unittest.TestCase):
         self.assertIn("extensions/inherit/monorm-extension.toml: 0.1.1", result.stdout)
 
     def test_set_writes_each_form_and_set_back_restores_every_file(self):
-        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
-        self.assertEqual(run("versions.py", "set", "0.1.0rc1", "--root", str(self.root)).returncode, 0)
+        before = snapshot(self.root)
+        self.set("0.1.0rc1")
         self.assertEqual(self.check("0.1.0-rc.1").returncode, 0, "a release candidate needs no changelog heading")
         self.assertIn('version = "0.1.0rc1"', (self.root / "pyproject.toml").read_text())
         self.assertIn('"monorm-native-postgres==0.1.0rc1"', (self.root / "pyproject.toml").read_text())
@@ -77,8 +94,60 @@ class VersionsTest(unittest.TestCase):
         self.assertEqual(package["peerDependencies"]["@ufstack/monorm-native-sqlite"], "0.1.0-rc.1")
         lock = json.loads((self.root / "languages/js/package-lock.json").read_text())
         self.assertEqual(lock["packages"][""]["version"], "0.1.0-rc.1")
-        self.assertEqual(run("versions.py", "set", "0.1.0", "--root", str(self.root)).returncode, 0)
-        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+        self.set("0.1.0")
+        self.assertEqual(before, snapshot(self.root))
+
+    def test_set_writes_the_cargo_lock_entries_and_the_lock_links(self):
+        self.set("0.1.0rc1")
+        cargo = (self.root / "Cargo.lock").read_text()
+        for crate in ("monorm-contracts", "monorm-node", "monorm-python"):
+            self.assertIn(f'name = "{crate}"\nversion = "0.1.0-rc.1"', cargo)
+        self.assertIn('name = "monorm-contracts"\nversion = "0.1.0-rc.1"', (self.root / "tests/outside-extension/Cargo.lock").read_text())
+        js = json.loads((self.root / "languages/js/package-lock.json").read_text())["packages"]
+        self.assertEqual(js["../../target/extension-packages/inherit/npm"]["version"], "0.1.0-rc.1")
+        auth = json.loads((self.root / "apps/auth/typescript/package-lock.json").read_text())["packages"]
+        self.assertEqual(auth["../../../languages/js"]["version"], "0.1.0-rc.1")
+        self.assertEqual(auth["../../../languages/js"]["peerDependencies"]["@ufstack/monorm-native-tooling"], "0.1.0-rc.1")
+        self.assertEqual(self.check("0.1.0-rc.1").returncode, 0)
+
+    def test_a_stale_cargo_lock_entry_fails_and_is_named(self):
+        path = self.root / "Cargo.lock"
+        path.write_text(path.read_text().replace('name = "monorm-node"\nversion = "0.1.0"', 'name = "monorm-node"\nversion = "0.1.1"'))
+        result = self.check("0.1.0", "--allow-tbd")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Cargo.lock: 0.1.1", result.stdout)
+
+    def test_a_stale_lock_link_entry_fails_and_is_named(self):
+        path = self.root / "languages/js/package-lock.json"
+        data = json.loads(path.read_text())
+        data["packages"]["../../target/extension-packages/inherit/npm"]["version"] = "0.1.1"
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        result = self.check("0.1.0", "--allow-tbd")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("languages/js/package-lock.json: 0.1.1", result.stdout)
+
+    def test_check_without_a_version_takes_the_one_in_pyproject(self):
+        self.set("0.1.0rc1")
+        self.assertEqual(self.check().returncode, 0)
+        path = self.root / "extensions/inherit/monorm-extension.toml"
+        path.write_text(path.read_text().replace('version = "0.1.0-rc.1"', 'version = "0.1.0"', 1))
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("extensions/inherit/monorm-extension.toml: 0.1.0 (want 0.1.0-rc.1)", result.stdout)
+
+    def test_show_prints_the_semver_form_of_the_tree_version(self):
+        self.assertEqual(run("versions.py", "show", "--root", str(self.root)).stdout, "0.1.0\n")
+        self.set("0.1.0rc1")
+        self.assertEqual(run("versions.py", "show", "--root", str(self.root)).stdout, "0.1.0-rc.1\n")
+
+    def test_tag_accepts_the_semver_forms_only(self):
+        for tag, version in (("v0.1.0", "0.1.0"), ("v0.1.0-rc.1", "0.1.0-rc.1")):
+            result = run("versions.py", "tag", tag)
+            self.assertEqual((result.returncode, result.stdout), (0, f"{version}\n"))
+        for tag in ("v0.1.0rc1", "0.1.0", "v1.0", "v0.1.0-beta"):
+            result = run("versions.py", "tag", tag)
+            self.assertEqual(result.returncode, 1, tag)
+            self.assertIn("use v0.1.0 or v0.1.0-rc.1", result.stderr)
 
     def test_a_bad_version_is_an_error(self):
         self.assertNotEqual(run("versions.py", "set", "1.0", "--root", str(self.root)).returncode, 0)
@@ -218,6 +287,17 @@ class NpmPublishTest(unittest.TestCase):
         self.assertEqual(len(publishes), 27)
         self.assertTrue(all("--dry-run" in l and "--provenance" not in l for l in publishes))
 
+    def test_a_prerelease_gets_the_next_tag(self):
+        self.dir = npm_dir("0.1.0-rc.1")
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.assertEqual(self.publish("dry-run").returncode, 0)
+        publishes = [l for l in self.log.read_text().splitlines() if l.startswith("publish ")]
+        self.assertTrue(all("--tag next" in l for l in publishes))
+
+    def test_a_release_gets_no_tag(self):
+        self.assertEqual(self.publish("dry-run").returncode, 0)
+        self.assertNotIn("--tag", self.log.read_text())
+
     def test_a_version_that_is_up_is_skipped(self):
         result = self.publish("real", FAKE_NPM_UP="@ufstack/monorm-native-sqlite")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -259,6 +339,20 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_a_publish_job_waits_for_the_collected_files(self):
         for name in ("publish-crates", "publish-pypi", "publish-npm"):
             self.assertIn("collect", self.jobs[name]["needs"])
+
+    def run_text(self, job, **key):
+        (field, value), = key.items()
+        return next(s["run"] for s in self.jobs[job]["steps"] if s.get(field) == value)
+
+    def test_the_version_step_reads_the_tag_and_the_tree_through_versions_py(self):
+        text = self.run_text("version", id="version")
+        self.assertIn("versions.py tag", text)
+        self.assertIn("versions.py show", text)
+
+    def test_the_collect_job_builds_the_thin_monorm_files_itself(self):
+        text = self.run_text("collect", name="Gather the PyPI files")
+        self.assertIn("rm -f dist/pypi/monorm-*.whl", text)
+        self.assertIn("uv build --out-dir dist/pypi .", text)
 
 
 if __name__ == "__main__":

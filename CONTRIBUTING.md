@@ -43,6 +43,8 @@ python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scrip
 cargo package -p monorm-contracts      # the crate that extension authors get from crates.io
 python3 scripts/rename/rename.py --check   # no old project name in the tree
 python3 -m unittest scripts/tests/test_package_metadata.py   # publish metadata of every package
+python3 -m unittest scripts/tests/test_check_glibc.py scripts/tests/test_release_versions.py   # glibc floor check and release scripts
+python3 scripts/release/versions.py check --allow-tbd   # every version site agrees with pyproject.toml
 ```
 
 The commands install the thin `monorm` package, build the native libraries and run Python, Rust and TypeScript tests with type checks.

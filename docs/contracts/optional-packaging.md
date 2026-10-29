@@ -145,7 +145,7 @@ Two commands build them:
 
 ```bash
 # on each platform
-monorm-extension-package library <crate-dir> --out <libraries>/<extension>
+monorm-extension-package library <crate-dir> --out <libraries>/<extension> [--zigbuild <target>]
 # once, with the three results in <libraries>/<extension>/<platform>/
 monorm-extension-package assemble <crate-dir> --libraries <libraries>/<extension> --out <dir> [--tsc <exe>]
 ```

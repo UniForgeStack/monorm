@@ -45,6 +45,8 @@ function main(args) {
       continue;
     }
     const flags = mode === "real" ? ["--provenance", "--access", "public"] : ["--dry-run", "--access", "public"];
+    // npm refuses a prerelease version without a dist-tag.
+    if (pack.version.includes("-")) flags.push("--tag", "next");
     console.log(`publish ${pack.name}@${pack.version} (${mode})`);
     const result = spawnSync(NPM, ["publish", pack.tgz, ...flags], { stdio: "inherit" });
     if (result.status !== 0) {
