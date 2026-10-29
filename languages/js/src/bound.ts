@@ -102,8 +102,10 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
     return this.next(this.inner.withoutRelated());
   }
 
-  /** How many of the objects' rows match. */
+  /** How many of the objects' rows match. With a `join()` it reads the keys, to apply the
+   * one-row-per-object rule of a read; otherwise it is `COUNT(*)` per chunk. */
   async count(): Promise<number> {
+    if (this.inner.state.joins.length) return (await this.fetchRows(true)).length;
     let total = 0;
     for (const qs of this.readQueries()) total += (await qs.count()) as number;
     return total;
@@ -111,11 +113,12 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
 
   /** Whether at least one of the objects' rows matches. */
   async exists(): Promise<boolean> {
+    if (this.inner.state.joins.length) return (await this.fetchRows(true)).length > 0;
     for (const qs of this.readQueries()) if (await qs.exists()) return true;
     return false;
   }
 
-  /** The SQL of the first statement of the root read. */
+  /** The SQL of the first statement of the root read. It can't show the one-row-per-object check of a `join()`, which looks at the rows. */
   sql(): string {
     return this.readQueries()[0]!.sql();
   }
@@ -213,6 +216,28 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
     return db;
   }
 
+  /** The rows of the read by key. A join that returns a key twice throws: a bound read keeps one row per object. */
+  private async fetchRows(keysOnly: boolean): Promise<Row[]> {
+    const { meta } = this;
+    const st = this.inner.state;
+    const keys = meta.key.map((f) => f.ir);
+    const rows: Row[] = [];
+    const seen = new Set<string>();
+    for (let qs of this.readQueries()) {
+      // a filter or a lock reads the key fields only, so a partial object keeps its shape
+      if (keysOnly) qs = (qs as unknown as { clone(c: object): QuerySet<ModelSpec> }).clone({ loads: [] }).derived().onlyFields(keys);
+      for (const row of await (qs as unknown as { fetch(): Promise<Row[]> }).fetch()) {
+        const id = rowKey(meta, row);
+        if (seen.has(id)) {
+          throw new QueryError(`join(${st.joins.map(([cte]) => cte.name).join(", ")}) returned ${meta.name} ${JSON.stringify(row["pk"], (_, v) => typeof v === "bigint" ? String(v) : v)} more than once; a bound read keeps one row per object`);
+        }
+        seen.add(id);
+        rows.push(row);
+      }
+    }
+    return rows;
+  }
+
   private async run(): Promise<R[]> {
     const { meta, objs } = this;
     const st = this.inner.state;
@@ -224,21 +249,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
       await prefetch(objs, ...this.items, { using: db, withoutDefaults: st.withoutDefaults });
       return [...objs] as R[];
     }
-    const keys = meta.key.map((f) => f.ir);
-    const rows: Row[] = [];
-    const seen = new Set<string>();
-    for (let qs of this.readQueries()) {
-      // a filter or a lock reads the key fields only, so a partial object keeps its shape
-      if (relationOnly) qs = (qs as unknown as { clone(c: object): QuerySet<ModelSpec> }).clone({ loads: [] }).derived().onlyFields(keys);
-      for (const row of await (qs as unknown as { fetch(): Promise<Row[]> }).fetch()) {
-        const id = rowKey(meta, row);
-        if (seen.has(id)) {
-          throw new QueryError(`join(${st.joins.map(([cte]) => cte.name).join(", ")}) returned ${meta.name} ${JSON.stringify(row["pk"], (_, v) => typeof v === "bigint" ? String(v) : v)} more than once; a bound read keeps one row per object`);
-        }
-        seen.add(id);
-        rows.push(row);
-      }
-    }
+    const rows = await this.fetchRows(relationOnly);
     const matched = this.fill(rows);
     if (relationOnly) await prefetch(matched as object[], ...this.items, { using: db, withoutDefaults: st.withoutDefaults });
     return matched;

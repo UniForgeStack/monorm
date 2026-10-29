@@ -175,6 +175,30 @@ async def test_a_bound_join_that_matches_twice_raises(clean):
         await User.objects.of(users).join(posts, posts.c.author_id == User.id).load(posts.c.views.label("v"))
 
 
+async def test_a_bound_join_that_matches_twice_raises_on_count_and_exists_too(clean):
+    await seed_views()
+    posts = Post.objects.select(Post.author_id, Post.views).cte("posts_of")
+    users = await User.objects.all()
+    bound = User.objects.of(users).join(posts, posts.c.author_id == User.id)
+    with pytest.raises(QueryError, match=r"join\(posts_of\)"):
+        await bound.count()
+    with pytest.raises(QueryError, match=r"join\(posts_of\)"):
+        await bound.exists()
+
+
+async def test_a_bound_join_counts_each_object_once(clean):
+    await seed_views()
+    totals = totals_cte()
+    users = await User.objects.all()
+    inner = User.objects.of(users).join(totals, totals.c.author_id == User.id)
+    assert await inner.count() == 2
+    assert await inner.filter(totals.c.views > 100).count() == 1
+    assert await inner.filter(totals.c.views > 1000).exists() is False
+    assert await inner.exists() is True
+    outer = User.objects.of(users).join(totals, totals.c.author_id == User.id, outer=True)
+    assert await outer.count() == 3
+
+
 async def test_a_bound_outer_join_without_a_match_gives_none(clean):
     await seed_views()
     totals = totals_cte()

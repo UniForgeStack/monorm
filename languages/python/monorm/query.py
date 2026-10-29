@@ -1815,6 +1815,19 @@ class BoundQuerySet(Generic[M]):
         size = IN_BULK_KEY_CHUNK if len(self._qs._model._meta.key) == 1 else IN_BULK_KEY_CHUNK // 2
         return [base.filter(self._condition(keys[i : i + size])) for i in range(0, len(keys), size)]
 
+    async def _fetch_rows(self, *, keys_only: bool) -> dict[Any, M]:
+        """The rows of the read by key. A join that returns a key twice raises: a bound read keeps one row per object."""
+        fresh: dict[Any, M] = {}
+        for query in self._read_queries():
+            if keys_only:
+                query = query._clone(_loads=(), _model_fields=tuple(f.name for f in self._qs._model._meta.key))
+            for row in await query._fetch():
+                if row.pk in fresh:
+                    names = ", ".join(cte.name for cte, _, _ in self._qs._joins)
+                    raise QueryError(f"join({names}) returned {self._qs._model.__name__} {row.pk!r} more than once; a bound read keeps one row per object")
+                fresh[row.pk] = row
+        return fresh
+
     async def _read(self) -> list[M]:
         from ._loading import merge
 
@@ -1829,15 +1842,7 @@ class BoundQuerySet(Generic[M]):
                 without_defaults=self._qs._without_defaults,
             )
             return list(self._objs)
-        fresh: dict[Any, M] = {}
-        for query in self._read_queries():
-            if relation_only:
-                query = query._clone(_loads=(), _model_fields=tuple(f.name for f in self._qs._model._meta.key))
-            for row in await query._fetch():
-                if row.pk in fresh:
-                    names = ", ".join(cte.name for cte, _, _ in self._qs._joins)
-                    raise QueryError(f"join({names}) returned {self._qs._model.__name__} {row.pk!r} more than once; a bound read keeps one row per object")
-                fresh[row.pk] = row
+        fresh = await self._fetch_rows(keys_only=relation_only)
         matched = [o for o in self._objs if o.pk in fresh]
         for o in matched:
             merge(o, fresh[o.pk], True)
@@ -1888,16 +1893,23 @@ class BoundQuerySet(Generic[M]):
         return await self._write(lambda qs: qs.delete().returning())
 
     async def count(self) -> int:
+        """The number of objects the read matches. With a ``join()`` it reads the keys, to apply
+        the one-row-per-object rule of a read; otherwise it is ``COUNT(*)`` per chunk."""
+        if self._qs._joins:
+            return len(await self._fetch_rows(keys_only=True))
         return sum([await query.count() for query in self._read_queries()])
 
     async def exists(self) -> bool:
+        """Whether the read matches an object; with a ``join()`` it applies the rule of :meth:`count`."""
+        if self._qs._joins:
+            return bool(await self._fetch_rows(keys_only=True))
         for query in self._read_queries():
             if await query.exists():
                 return True
         return False
 
     def sql(self) -> str:
-        """The SQL of the first statement of a read."""
+        """The SQL of the first statement of a read. It cannot show the one-row-per-object check of a ``join()``, which looks at the rows."""
         return self._read_queries()[0].sql()
 
     def inspect(self) -> QueryInspection:
