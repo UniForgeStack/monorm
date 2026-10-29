@@ -343,6 +343,13 @@ class ReleaseWorkflowTest(unittest.TestCase):
         for name in ("publish-crates", "publish-pypi", "publish-npm"):
             self.assertIn("collect", self.jobs[name]["needs"])
 
+    def test_only_the_pypi_deps_uploads_take_a_token_and_monorm_stays_on_its_publisher(self):
+        steps = {s["name"]: s.get("with", {}) for s in self.jobs["publish-pypi"]["steps"] if "name" in s}
+        self.assertEqual(steps["Upload the native, extension and auth files"]["password"], "${{ secrets.PYPI_API_TOKEN }}")
+        self.assertEqual(steps["Upload the native, extension and auth files to TestPyPI"]["password"], "${{ secrets.TEST_PYPI_API_TOKEN }}")
+        self.assertNotIn("password", steps["Upload monorm"])
+        self.assertNotIn("password", steps["Upload monorm to TestPyPI"])
+
     def run_text(self, job, **key):
         (field, value), = key.items()
         return next(s["run"] for s in self.jobs[job]["steps"] if s.get(field) == value)

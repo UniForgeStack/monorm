@@ -158,12 +158,15 @@ jobs:
           path: dist/pypi
       # The thin monorm goes last, so a failure before it leaves no monorm that points at a missing wheel.
       - run: python3 scripts/release/publish-lists.py split-pypi dist/pypi dist/split
+      # PyPI refuses a second pending publisher with the same values, so only monorm has one.
+      # The first upload of the other 14 projects uses this token; an empty secret means trusted publishing.
       - name: Upload the native, extension and auth files
         if: needs.version.outputs.target == 'real'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/split/deps
           skip-existing: true
+          password: ${{ secrets.PYPI_API_TOKEN }}
       - name: Upload monorm
         if: needs.version.outputs.target == 'real'
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -177,6 +180,7 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/split/deps
           skip-existing: true
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
       - name: Upload monorm to TestPyPI
         if: needs.version.outputs.target == 'test'
         uses: pypa/gh-action-pypi-publish@release/v1

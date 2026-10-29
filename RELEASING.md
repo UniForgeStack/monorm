@@ -25,16 +25,22 @@ Common values: owner `UniForgeStack`, repository `monorm`, workflow `release.yml
 | 2 | Add a required reviewer | Admin | the owner; leave "Prevent self-review" off, so the owner can approve their own tag |
 | 3 | Limit deployment branches and tags | Admin | "Selected branches and tags": tag `v*`, branch `main` and branch `release/*` (for the proof branch) |
 | 4 | Optional: tag ruleset for `v*` | Admin | only the owner creates `v*` tags |
-| 5 | Create 15 PyPI pending publishers | Owner | pypi.org → organization `ufstack` → Publishing; one per PyPI project name; the common values |
-| 6 | Create 15 TestPyPI pending publishers | Owner | test.pypi.org → Account → Publishing; the same values |
+| 5 | Create the PyPI pending publisher of `monorm` | Owner | pypi.org → organization `ufstack` → Publishing (or Account → Publishing while the organization is not approved); project name `monorm`; the common values |
+| 5a | First PyPI upload of the other 14 projects | Owner, Admin | A PyPI API token with the scope "Entire account". The Admin stores it as the secret `PYPI_API_TOKEN` of the environment `release`. |
+| 6 | Create the TestPyPI pending publisher of `monorm`, and the TestPyPI token | Owner, Admin | test.pypi.org → Account → Publishing; the same values. The token goes in the secret `TEST_PYPI_API_TOKEN`. |
 | 7 | First npm publish | Owner, Admin | A granular token with read and write access to the scope `@ufstack` and to the new package `monorm` (a scope token does not cover an unscoped name), and a 7-day expiry. The Admin stores it as the secret `NPM_TOKEN` of the environment `release`. |
 | 8 | Create 28 npm trusted publishers | Owner | After v0.1.0: `npm trust github <package> --file release.yml --repo UniForgeStack/monorm --env release --allow-publish` for each package. This needs npm 11.15.0 or newer and 2FA. |
 | 9 | Remove the npm token | Owner, Admin | Delete the secret `NPM_TOKEN`, revoke the token, and set each package to "Require two-factor authentication and disallow tokens". |
+| 9a | Remove the PyPI tokens | Owner, Admin | Add a trusted publisher with the common values on each of the 14 projects (project → Settings → Publishing). Then delete the secrets `PYPI_API_TOKEN` and `TEST_PYPI_API_TOKEN` and the tokens. |
 | 10 | First crates.io publish | Owner | Before the tag push, run `cargo publish -p monorm-contracts` from the release commit (the commit the tag will point to). The workflow then skips the version. |
 | 11 | crates.io trusted publisher | Owner | crates.io → `monorm-contracts` → Settings → Trusted Publishing; the common values |
 | 12 | Optional: "Trusted Publishing only" | Owner | After step 11, in the crates.io settings of `monorm-contracts` |
 
 Keep these points in mind:
+- PyPI refuses a pending publisher whose values match a pending publisher of a different project name.
+  All 15 projects share the common values, so only `monorm` has one.
+  The other 14 projects get their first upload through the token of step 5a.
+  Without the secret, the upload uses trusted publishing.
 - A PyPI pending publisher does not reserve the name.
   It becomes invalid if someone else registers the name first.
   Do steps 5 and 6 right before the first upload.
@@ -86,7 +92,7 @@ This is the one result that the CI of the branch cannot prove.
 1. Run `python3 scripts/release/versions.py set 0.1.0`.
    Replace `TBD` in the `## [0.1.0]` heading of `CHANGELOG.md` with the date.
    Commit these files on `main`.
-2. Do owner-setup steps 5, 7 and 10.
+2. Do owner-setup steps 5, 5a, 7 and 10.
 3. Push the tag `v0.1.0`.
    The workflow reads the version with `versions.py tag`, which rejects a tag in the PEP 440 form, such as `v0.1.0rc1`.
    Then it runs `versions.py check 0.1.0`, which rejects `TBD`.
@@ -94,7 +100,7 @@ This is the one result that the CI of the branch cannot prove.
    The three publish jobs wait for the same approval.
 5. The job `release-notes` creates the GitHub Release from the `CHANGELOG.md` section.
    It sets "prerelease" while the major version is 0.
-6. After the first release, do owner-setup steps 8, 9, 11 and 12.
+6. After the first release, do owner-setup steps 8, 9, 9a, 11 and 12.
 
 ## Rerun rules
 
