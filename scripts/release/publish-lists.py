@@ -1,38 +1,23 @@
 #!/usr/bin/env python3
-"""Check the release files against the exact package lists, and split the PyPI files.
+"""Check the release files against the exact package lists.
 
 usage: publish-lists.py check pypi|npm <dir> <version>
-       publish-lists.py split-pypi <dir> <out-dir>
 `<version>` is `0.1.0`, `0.1.0rc1` or `0.1.0-rc.1`.
-`split-pypi` moves the thin `monorm` files to `<out-dir>/monorm` and all other files to `<out-dir>/deps`.
+A release is one PyPI project (12 wheels, no sdist) and one npm package.
 """
 import json
 import re
-import shutil
 import sys
 import tarfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from versions import NATIVE as PROFILES, forms  # noqa: E402
+from versions import forms  # noqa: E402
 
-EXTENSIONS = ("composition", "file-storage", "generic", "inherit", "locking", "proxy", "query-defaults", "soft-delete", "timestamps")
-PLATFORMS = ("darwin-arm64", "linux-x64", "win32-x64")
-# Each native wheel exists for 3 operating systems and 4 Python versions.
-NATIVE_WHEELS = 12
-
-PYPI = {
-    "monorm": ("wheel", "sdist"),
-    "monorm-auth": ("wheel", "sdist"),
-    **{f"monorm-native-{p}": ("wheel",) * NATIVE_WHEELS for p in PROFILES},
-    **{f"monorm-{e}": ("wheel",) for e in EXTENSIONS},
-}
-NPM = sorted(
-    ["monorm", "@ufstack/monorm", "@ufstack/monorm-auth"]
-    + [f"@ufstack/monorm-native-{p}" for p in PROFILES]
-    + [f"@ufstack/monorm-native-{p}-{o}" for p in PROFILES for o in PLATFORMS]
-    + [f"@ufstack/monorm-{e}" for e in EXTENSIONS]
-)
+# The wheels of 3 operating systems and 4 Python versions. An sdist would lack the libraries and auth.
+WHEELS = 12
+PYPI = {"monorm": ("wheel",) * WHEELS}
+NPM = ["monorm"]
 
 
 def normalize(name: str) -> str:
@@ -93,22 +78,11 @@ def check_npm(directory: Path, version: str) -> list[str]:
     return problems
 
 
-def split_pypi(directory: Path, out: Path) -> None:
-    for path in sorted(directory.iterdir()):
-        target = out / ("monorm" if pypi_file(path)[0] == "monorm" else "deps")
-        target.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target / path.name)
-
-
 def main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[0] == "check" and argv[1] in ("pypi", "npm"):
         problems = (check_pypi if argv[1] == "pypi" else check_npm)(Path(argv[2]), argv[3])
-        count = len(PYPI) if argv[1] == "pypi" else len(NPM)
-        print("\n".join(problems) if problems else f"{argv[1]}: {count} packages, all present")
+        print("\n".join(problems) if problems else f"{argv[1]}: monorm, all files present")
         return 1 if problems else 0
-    if len(argv) == 3 and argv[0] == "split-pypi":
-        split_pypi(Path(argv[1]), Path(argv[2]))
-        return 0
     print(__doc__, file=sys.stderr)
     return 2
 

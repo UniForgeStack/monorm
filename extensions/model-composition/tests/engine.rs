@@ -1,5 +1,5 @@
 //! Shared-primary-key writes of the composition package on SQLite, and on PostgreSQL when `ORM_TEST_DATABASE_URL` is set.
-use monorm_contracts::ir::SchemaIr;
+use monorm::ir::SchemaIr;
 use monorm_core::{
     dialect::{Dialect, Target},
     migrate,
@@ -37,8 +37,8 @@ fn composed(dialect: Dialect) -> SchemaIr {
     monorm_composition::lower(&mut ir).unwrap();
     // The loader marks the declarations of a package pass lowered; the host then needs no manifest for them.
     for declaration in &mut ir.behavior.declarations { declaration.lowered = true; }
-    ir.behavior.schema_contract = monorm_contracts::extension::SCHEMA_CONTRACT;
-    ir.behavior.packages.insert("monorm.composition".into(), monorm_contracts::extension::PackageStamp { version: "0.1.0".into(), attributes: vec!["composition.model".into()], languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
+    ir.behavior.schema_contract = monorm::extension::SCHEMA_CONTRACT;
+    ir.behavior.packages.insert("monorm.composition".into(), monorm::extension::PackageStamp { version: "0.1.0".into(), attributes: vec!["composition.model".into()], languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
     ir
 }
 async fn check(url: &str) {

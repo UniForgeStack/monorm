@@ -1,6 +1,6 @@
 // `pass-only` builds no hook, no state and no `init`.
 #![cfg_attr(feature = "pass-only", allow(dead_code, unused_macros))]
-use monorm_contracts::{abi::{Arg, Context, Value}, extension::{capture_storage, Declaration, FieldStorage, ModelView, OwnerLink, ResultCheck, RowFilter}, ir::{ColType, FieldIr, ModelIr, OnDelete, RelKind, RelationIr, SchemaIr}};
+use monorm::{abi::{Arg, Context, Value}, extension::{capture_storage, Declaration, FieldStorage, ModelView, OwnerLink, ResultCheck, RowFilter}, ir::{ColType, FieldIr, ModelIr, OnDelete, RelKind, RelationIr, SchemaIr}};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const ATTRIBUTE: &str = "outside.tag";
@@ -107,14 +107,14 @@ const WRAPPED_ADAPTER: &str = "acme.outside.wrapped.v1";
 
 /// `@outside.wrapped("prefix")` adapts a Json field: the options of the adapter are the prefix.
 fn wrapped(ir: &mut SchemaIr) -> Result<(), String> {
-    use monorm_contracts::extension::FieldAdapter;
+    use monorm::extension::FieldAdapter;
     let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == WRAPPED).cloned().collect();
     for d in declarations {
         let field = d.field.clone().ok_or_else(|| format!("@{WRAPPED} on {}: it needs a field", d.model))?;
         let prefix = d.positional.first().and_then(|v| v.as_str()).ok_or_else(|| format!("{}.{field}: the prefix must be a string", d.model))?;
         ir.behavior.field_adapters.push(FieldAdapter { model: d.model, field, adapter: WRAPPED_ADAPTER.into(), options: serde_json::json!({"prefix": prefix}) });
     }
-    monorm_contracts::extension::validate_field_adapters(ir)
+    monorm::extension::validate_field_adapters(ir)
 }
 
 /// The warning code of the view check.
@@ -156,7 +156,7 @@ const SOURCE: &str = "acme.outside";
 /// `region` and `owner` (expression hooks as insert defaults), `secret` (sealed by hook 1, read back as the computed field `secret_plain`). `shop_id` and `updated_by` default to the request scope on insert.
 /// `touched_by` takes the request `user` on update through an expression assignment that reads the request scope.
 fn guard(ir: &mut SchemaIr) -> Result<(), String> {
-    use monorm_contracts::{extension::{HookBinding, ReadDefault}, ir::ClientDefaultIr, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
+    use monorm::{extension::{HookBinding, ReadDefault}, ir::ClientDefaultIr, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
     let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == GUARD).cloned().collect();
     for d in declarations {
         let model = d.model.clone();
@@ -182,7 +182,7 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
         if has_initials {
             let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
             for m in models.filter(|m| m.name == model) { m.fields.push(FieldIr::plain("initials", ColType::Text)); }
-            ir.behavior.result_fields.push(monorm_contracts::extension::ResultDeclaration { model: model.clone(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
+            ir.behavior.result_fields.push(monorm::extension::ResultDeclaration { model: model.clone(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
             ir.behavior.hooks.push(bind(5, Some("initials"), "acme.outside.initials", &["first", "last"], false));
         }
         let assign = |field: &str, value: AssignValue| WriteAssignment {
@@ -212,7 +212,7 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
         if has_secret {
             let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
             for m in models.filter(|m| m.name == model) { m.fields.push(FieldIr::plain("secret_plain", ColType::Text)); }
-            ir.behavior.result_fields.push(monorm_contracts::extension::ResultDeclaration { model: model.clone(), field: "secret_plain".into(), dependencies: vec!["secret".into()] });
+            ir.behavior.result_fields.push(monorm::extension::ResultDeclaration { model: model.clone(), field: "secret_plain".into(), dependencies: vec!["secret".into()] });
             ir.behavior.hooks.extend([
                 bind(1, Some("secret"), "acme.outside.seal", &[], false),
                 bind(5, Some("secret_plain"), "acme.outside.unseal", &["secret"], false),
@@ -319,7 +319,7 @@ fn add(_: &State, args: &[Arg], _: &Context) -> Result<Value, String> {
 
 macro_rules! export {
     ($($abi:tt)*) => {
-        monorm_contracts::extension! {
+        monorm::extension! {
             $($abi)*
             init = init;
             hooks {
@@ -348,8 +348,8 @@ export!(abi = (0, 3););
 /// The three symbols of a library from slice 1, written by hand: `extension!` always writes all six.
 #[cfg(feature = "pass-only")]
 mod slice_one {
-    use monorm_contracts::abi::{self, Buffer, PassFn};
-    use monorm_contracts::extension::ContractVersion;
+    use monorm::abi::{self, Buffer, PassFn};
+    use monorm::extension::ContractVersion;
 
     #[unsafe(no_mangle)]
     pub extern "C" fn monorm_ext_abi_version() -> u32 { ContractVersion::new(0, 1).to_bits() }

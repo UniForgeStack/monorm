@@ -45,18 +45,16 @@ jobs:
             ~/.cargo/git
             target
           key: checks-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python -e '.[dev]' pytest mypy pyright maturin
+      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest 'pytest-asyncio>=0.24' mypy pyright maturin
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-      - run: scripts/install-extension-packages.sh
+      - run: python languages/python/packaging/stage.py
       - run: maturin develop
-        working-directory: languages/python/packaging/tooling
       - run: python -m pytest -q
       - run: cargo test -q
-      - run: cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm-contracts -p monorm-extension-package
+      - run: cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm -p monorm-extension-package
       - run: mypy --strict languages/python/monorm && pyright languages/python/monorm
       - run: npm install && npm run build:native && npm test && npm run test:bun && npm run typecheck
         working-directory: languages/js
-      - run: uv pip install --python .venv/bin/python -e apps/auth/python
       - run: python -m pytest -q apps/auth/python/tests
       - run: python extensions/inherit/tests/public/python.py
       - run: python extensions/query-defaults/tests/public/python.py
@@ -64,5 +62,3 @@ jobs:
         working-directory: languages/js
       - run: node ../../extensions/query-defaults/tests/public/node.mjs
         working-directory: languages/js
-      - run: npm test && npm run test:bun
-        working-directory: apps/auth/typescript

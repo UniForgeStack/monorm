@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the assembled packages, pack the npm packages and record the sizes.
+"""Check the assembled outside extension package (`acme.outside`) and pack its npm package.
 
 usage: check-assembled-packages.py <assembled-dir> <dist-dir>
 `<assembled-dir>/<extension>/` holds the output of `monorm-extension-package assemble`.

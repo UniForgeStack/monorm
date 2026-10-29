@@ -16,6 +16,6 @@ export function artifactCapabilities(): string[] {
 export function hasExtension(...ids: string[]): boolean {
   const installed = resolveExtensions();
   for (const id of ids) if (["monorm.timestamps", "monorm.soft-delete", "monorm.locking", "monorm.inherit", "monorm.query-defaults", "monorm.generic", "monorm.proxy", "monorm.composition", "monorm.file-storage"].includes(id))
-    assert.ok(id in installed, `install ${id} with scripts/install-extension-packages.sh`);
+    assert.ok(id in installed, `install ${id} with npm run assemble`);
   return ids.every((id) => id in installed);
 }

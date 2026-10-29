@@ -92,7 +92,7 @@ const genericHeader = `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid
 test("a Generic field creates its pair, its index and the reverse field", async () => {
   // A package compiles into a schema only when the schema uses its namespace, so a bare `Generic` type gets the plain error with a package hint.
   const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null, resolveExtensions());
-  assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && e.message.includes("Generic comes from the generic-relation extension package"));
+  assert.throws(bare, (e: Error) => /unknown type Generic; expected a model or/.test(e.message) && e.message.includes("Generic belongs to the built-in generic extension and needs @generic.relation"));
   const dir = mkdtempSync(join(scratch, "generic-field-"));
   const path = join(dir, "schema.prisma");
   try {

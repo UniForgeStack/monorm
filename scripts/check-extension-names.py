@@ -18,8 +18,8 @@ SCANNED = [
     "languages/js/native",
 ]
 MANIFESTS = ["extensions/*/monorm-extension.toml", "tests/outside-extension/monorm-extension.toml"]
-# The one host line that tells a user which package supplies a bare `Generic` type.
-ALLOWED = [("crates/core/src/dsl/lower.rs", "Generic comes from the generic-relation extension package")]
+# The one host line that tells a user which extension supplies a bare `Generic` type.
+ALLOWED = [("crates/core/src/dsl/lower.rs", "Generic belongs to the built-in generic extension")]
 EDGE = "A-Za-z0-9_-"
 TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*mod\s")
 

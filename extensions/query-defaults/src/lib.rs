@@ -1,5 +1,5 @@
 //! Optional compiler for model query policies; execution uses prepared host IR.
-use monorm_contracts::{extension::{OrderKey, ReadDefault}, ir::{Nulls, SchemaIr}};
+use monorm::{extension::{OrderKey, ReadDefault}, ir::{Nulls, SchemaIr}};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
@@ -69,7 +69,7 @@ fn named_filters(ir: &SchemaIr, model: &str) -> Result<Vec<(String, String, Stri
 }
 
 /// `"-created_at nulls last"`: a field, `-` for descending, and an optional nulls position.
-fn order_key(model: &monorm_contracts::ir::ModelIr, source: &Value) -> Result<OrderKey, String> {
+fn order_key(model: &monorm::ir::ModelIr, source: &Value) -> Result<OrderKey, String> {
     let source = source.as_str().ok_or_else(|| format!("{}: an order column is a string such as \"-created_at\"", model.name))?;
     let mut words = source.split_whitespace();
     let first = words.next().ok_or_else(|| format!("{}: empty order column", model.name))?;
@@ -88,7 +88,7 @@ fn order_key(model: &monorm_contracts::ir::ModelIr, source: &Value) -> Result<Or
 
 /// A default order the model can run: its own fields, once each, an orderable type, and
 /// `nulls` on a column that can hold NULL. `source` is the model whose attribute set it.
-fn check_order(ir: &SchemaIr, model: &monorm_contracts::ir::ModelIr, order: &[OrderKey], source: &str) -> Result<(), String> {
+fn check_order(ir: &SchemaIr, model: &monorm::ir::ModelIr, order: &[OrderKey], source: &str) -> Result<(), String> {
     let name = &model.name;
     let from = if source == name { String::new() } else { format!(" (from the default order of {source}; give {name} its own @@query.order(...), or clear it with @@query.order())") };
     let narrowed = |field: &str| ir.behavior.result_checks.iter().any(|c| c.model == *name && c.field == field && c.non_null);
@@ -265,7 +265,7 @@ mod tests {
     /// Declared effect `query-defaults`: the prepared policies only.
     #[test]
     fn lowering_changes_only_read_defaults_once() {
-        let effects = monorm_contracts::extension::pass_effects(&ir(), lower).unwrap();
+        let effects = monorm::extension::pass_effects(&ir(), lower).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.read_defaults"]);
     }
     #[test]
@@ -535,4 +535,4 @@ mod tests {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-monorm_contracts::extension!(("query.defaults.lower", lower));
+monorm::extension!(("query.defaults.lower", lower));

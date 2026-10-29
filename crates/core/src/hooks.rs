@@ -2,8 +2,8 @@
 //! A library that `define()` opens (`HookRef::Abi`) fills a `HookPlan`.
 use crate::loader::{Hook, Library, State};
 use crate::schema::Model;
-use monorm_contracts::abi::{Arg, Context, Value};
-use monorm_contracts::extension::Requirements;
+use monorm::abi::{Arg, Context, Value};
+use monorm::extension::Requirements;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ pub enum HookRef {
 impl HookRef {
     /// A hook that is a function of this process, for tests that need a plan and no library on disk.
     #[cfg(feature = "testing")]
-    pub fn in_process(name: &str, call: monorm_contracts::abi::HookFn, reads_context: bool) -> Self {
+    pub fn in_process(name: &str, call: monorm::abi::HookFn, reads_context: bool) -> Self {
         let (state, hook) = crate::loader::in_process_hook(name, call);
         Self::Abi { state: Arc::new(state), hook, reads_context }
     }
@@ -191,7 +191,7 @@ pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requiremen
                 let field = &models[m].fields()[p];
                 let output = library.export(&binding.export).and_then(|e| e.point.zip(e.output));
                 match output {
-                    Some((4, ty)) if monorm_contracts::extension::same_value_type(ty, field.ty) => {}
+                    Some((4, ty)) if monorm::extension::same_value_type(ty, field.ty) => {}
                     Some((4, ty)) => return Err(format!("{at}: hook {} returns {ty:?}, but the field is {:?}; rebuild the package or fix the binding", binding.export, field.ty)),
                     _ => return Err(format!("{at}: hook {} is not a point-4 export with an output type; rebuild the package or fix the binding", binding.export)),
                 }
@@ -202,7 +202,7 @@ pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requiremen
                 let field = &models[m].fields()[p];
                 let output = library.export(&binding.export).and_then(|e| e.point.zip(e.output));
                 match output {
-                    Some((5, ty)) if monorm_contracts::extension::same_value_type(ty, field.ty) => {}
+                    Some((5, ty)) if monorm::extension::same_value_type(ty, field.ty) => {}
                     Some((5, ty)) => return Err(format!("{at}: hook {} returns {ty:?}, but the field is {:?}; rebuild the package or fix the binding", binding.export, field.ty)),
                     _ => return Err(format!("{at}: hook {} is not a point-5 export with an output type; rebuild the package or fix the binding", binding.export)),
                 }
@@ -213,7 +213,7 @@ pub fn bind(models: &mut [Model], index: &HashMap<String, usize>, r: &Requiremen
             (6 | 7, Some(f)) => {
                 let p = position(f)?;
                 let output = library.export(&binding.export).and_then(|e| e.point.zip(e.output));
-                if output != Some((binding.point, monorm_contracts::ir::ColType::Json)) {
+                if output != Some((binding.point, monorm::ir::ColType::Json)) {
                     return Err(format!("{at}: hook {} is not a point-{} export that returns json (query IR); rebuild the package or fix the binding", binding.export, binding.point));
                 }
                 if binding.point == 6 { plan.expr_assign.push((p, hook)) } else { plan.expr_default.push((p, hook)) }

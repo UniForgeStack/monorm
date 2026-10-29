@@ -4,9 +4,8 @@
     python examples/blog/demo.py postgres://postgres:postgres@localhost/orm_test
 
 The core section runs on every build. Each extension section runs when the native
-library has that extension, and prints how to get it otherwise. Install the extension packages
-with `scripts/install-extension-packages.sh`.
-The file-storage section also needs the `monorm-file-storage` package.
+library has that extension. The built-in extensions come with `pip install monorm`.
+The file-storage section also needs `opendal`.
 Each section creates its demo_* tables and drops them at the end.
 """
 
@@ -195,7 +194,7 @@ async def file_storage(db: monorm.Database, m: dict[str, Any]) -> None:
         from monorm_file_storage import FileField, Registry, Upload
         from monorm_file_storage.model import install_model
     except ImportError:
-        print("skipped: install the monorm-file-storage package (scripts/install-extension-packages.sh)")
+        print("skipped: install opendal, or run from a build that has the file-storage extension")
         return
     Report = m["Report"]
     with tempfile.TemporaryDirectory() as directory:

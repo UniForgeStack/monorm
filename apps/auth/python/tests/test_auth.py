@@ -23,7 +23,7 @@ def django_hash(raw: str) -> str:
 def test_the_schema_copies_of_both_packages_match_the_source() -> None:
     source = APP.joinpath("schema.prisma").read_text()
     assert APP.joinpath("python/monorm_auth/schema.prisma").read_text() == source
-    assert APP.joinpath("typescript/schema.prisma").read_text() == source
+    assert APP.joinpath("../../languages/js/auth/schema.prisma").read_text() == source
 
 
 async def test_the_models_get_the_methods_and_the_query_set(auth: Auth) -> None:

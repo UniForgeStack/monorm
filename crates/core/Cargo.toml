@@ -9,7 +9,7 @@ description = "Language-independent ORM core: schema language, IR, extensions, m
 name = "monorm_core"
 
 [dependencies]
-monorm-contracts = { path = "../contracts" }
+monorm = { path = "../contracts" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

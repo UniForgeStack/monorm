@@ -383,7 +383,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         for a in &m.field_adapters {
             let Some((_, u)) = adapters.of(&a.adapter) else { continue };
             for member in &u.runtime.members {
-                writeln!(body, "    {}", monorm_contracts::extension::expand_adapter_template(member, "python", &m.fields()[a.position].name)).unwrap();
+                writeln!(body, "    {}", monorm::extension::expand_adapter_template(member, "python", &m.fields()[a.position].name)).unwrap();
             }
         }
         let inherited = type_model_lines(type_models, name, false);

@@ -242,7 +242,7 @@ fn errors_point_at_the_problem() {
         ("model A {\n  id BigInt @id\n  x Strng\n}".to_owned(), "<schema>:3:5: A.x: unknown type Strng"),
         (
             "model A {\n  id BigInt @id\n  target Generic?\n}".into(),
-            "unknown type Generic; expected a model or BigInt, Int, Float, Boolean, String, DateTime, Json, Decimal, an enum or Unsupported(\"<extension type>\"); Generic comes from the generic-relation extension package (Python `monorm-generic`, npm `@ufstack/monorm-generic`) and needs @generic.relation(...)",
+            "unknown type Generic; expected a model or BigInt, Int, Float, Boolean, String, DateTime, Json, Decimal, an enum or Unsupported(\"<extension type>\"); Generic belongs to the built-in generic extension and needs @generic.relation(...)",
         ),
         ("model A {\n  id BigInt @id @prim\n}".into(), "unknown attribute @prim"),
         ("model A {\n  x Int\n}".into(), "model A has no @id field"),
@@ -1272,7 +1272,7 @@ fn model_mapping_records_explicitness_even_when_it_matches_the_default() {
     assert!(ir.models[0].mapped);
     assert!(!ir.models[1].mapped);
     let encoded = serde_json::to_string(&ir).unwrap();
-    let decoded: monorm_contracts::ir::SchemaIr = serde_json::from_str(&encoded).unwrap();
+    let decoded: monorm::ir::SchemaIr = serde_json::from_str(&encoded).unwrap();
     assert!(decoded.models[0].mapped);
 }
 

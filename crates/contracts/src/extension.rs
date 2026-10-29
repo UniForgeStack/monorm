@@ -6,7 +6,7 @@ pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
 pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
-/// The C ABI that `monorm_contracts::extension!` writes.
+/// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
 pub const SCHEMA_CONTRACT: u32 = SCHEMA_CONTRACT_VERSION.major as u32;

@@ -1,0 +1,2 @@
+datasource db { provider = "__DIALECT__" }
+import "app:__APP__" (prefix: "auth_")

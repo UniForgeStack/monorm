@@ -838,7 +838,7 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
         return err(*pos, format!("{what}: unknown type {name}; a {name} field needs @{attribute}(...) (namespace {}.*)", crate::behavior::attribute_namespace(attribute)));
     } else {
         let hint = if name == "Generic" {
-            "; Generic comes from the generic-relation extension package (Python `monorm-generic`, npm `@ufstack/monorm-generic`) and needs @generic.relation(...)"
+            "; Generic belongs to the built-in generic extension and needs @generic.relation(...)"
         } else {
             ""
         };

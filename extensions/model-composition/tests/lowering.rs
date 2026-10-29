@@ -1,4 +1,4 @@
-use monorm_contracts::ir::SchemaIr;
+use monorm::ir::SchemaIr;
 use serde_json::{json, Value};
 fn definition() -> Value {
     json!({"models":[
@@ -17,7 +17,7 @@ fn definition() -> Value {
 #[test]
 fn lowering_changes_only_storage_ownership_once() {
     let ir: SchemaIr = serde_json::from_value(definition()).unwrap();
-    let effects = monorm_contracts::extension::pass_effects(&ir, monorm_composition::lower).unwrap();
+    let effects = monorm::extension::pass_effects(&ir, monorm_composition::lower).unwrap();
     assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.field_storage", "behavior.owner_links", "behavior.storage", "models"]);
 }
 #[test]

@@ -291,7 +291,7 @@ class Migrator:
         ]
         for m in todo:
             if (m.path / "data.ts").is_file():
-                raise MigrationError(f"{m.name} has a data step (data.ts); apply it with npx @ufstack/monorm migrate")
+                raise MigrationError(f"{m.name} has a data step (data.ts); apply it with npx monorm migrate")
         return [(m, _data_step(m)) for m in todo]
 
     async def _upgrade(

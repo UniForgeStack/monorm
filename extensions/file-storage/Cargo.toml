@@ -6,7 +6,7 @@ publish = false
 description = "File storage field adapter for ORM: the installable package monorm.file-storage"
 
 [dependencies]
-monorm-contracts = { path = "../../crates/contracts" }
+monorm = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [lib]

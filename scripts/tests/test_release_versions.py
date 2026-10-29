@@ -87,29 +87,21 @@ class VersionsTest(unittest.TestCase):
         self.set("0.1.0rc1")
         self.assertEqual(self.check("0.1.0-rc.1").returncode, 0, "a release candidate needs no changelog heading")
         self.assertIn('version = "0.1.0rc1"', (self.root / "pyproject.toml").read_text())
-        self.assertIn('"monorm-native-postgres==0.1.0rc1"', (self.root / "pyproject.toml").read_text())
         self.assertIn('version = "0.1.0-rc.1"', (self.root / "extensions/inherit/monorm-extension.toml").read_text())
         self.assertIn("0.1.0-rc.1", (self.root / "languages/js/src/native.ts").read_text())
         package = json.loads((self.root / "languages/js/package.json").read_text())
-        self.assertEqual(package["peerDependencies"]["@ufstack/monorm-native-sqlite"], "0.1.0-rc.1")
-        thin = json.loads((self.root / "languages/js/unscoped/package.json").read_text())
-        self.assertEqual((thin["version"], thin["dependencies"]["@ufstack/monorm"]), ("0.1.0-rc.1", "0.1.0-rc.1"))
+        self.assertEqual(package["version"], "0.1.0-rc.1")
         lock = json.loads((self.root / "languages/js/package-lock.json").read_text())
         self.assertEqual(lock["packages"][""]["version"], "0.1.0-rc.1")
         self.set("0.1.0")
         self.assertEqual(before, snapshot(self.root))
 
-    def test_set_writes_the_cargo_lock_entries_and_the_lock_links(self):
+    def test_set_writes_the_cargo_lock_entries(self):
         self.set("0.1.0rc1")
         cargo = (self.root / "Cargo.lock").read_text()
-        for crate in ("monorm-contracts", "monorm-node", "monorm-python"):
+        for crate in versions.VERSIONED_CRATES:
             self.assertIn(f'name = "{crate}"\nversion = "0.1.0-rc.1"', cargo)
-        self.assertIn('name = "monorm-contracts"\nversion = "0.1.0-rc.1"', (self.root / "tests/outside-extension/Cargo.lock").read_text())
-        js = json.loads((self.root / "languages/js/package-lock.json").read_text())["packages"]
-        self.assertEqual(js["../../target/extension-packages/inherit/npm"]["version"], "0.1.0-rc.1")
-        auth = json.loads((self.root / "apps/auth/typescript/package-lock.json").read_text())["packages"]
-        self.assertEqual(auth["../../../languages/js"]["version"], "0.1.0-rc.1")
-        self.assertEqual(auth["../../../languages/js"]["peerDependencies"]["@ufstack/monorm-native-tooling"], "0.1.0-rc.1")
+        self.assertIn('name = "monorm"\nversion = "0.1.0-rc.1"', (self.root / "tests/outside-extension/Cargo.lock").read_text())
         self.assertEqual(self.check("0.1.0-rc.1").returncode, 0)
 
     def test_a_stale_cargo_lock_entry_fails_and_is_named(self):
@@ -119,10 +111,10 @@ class VersionsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("Cargo.lock: 0.1.1", result.stdout)
 
-    def test_a_stale_lock_link_entry_fails_and_is_named(self):
+    def test_a_stale_package_lock_version_fails_and_is_named(self):
         path = self.root / "languages/js/package-lock.json"
         data = json.loads(path.read_text())
-        data["packages"]["../../target/extension-packages/inherit/npm"]["version"] = "0.1.1"
+        data["packages"][""]["version"] = "0.1.1"
         path.write_text(json.dumps(data, indent=2) + "\n")
         result = self.check("0.1.0", "--allow-tbd")
         self.assertEqual(result.returncode, 1)
@@ -155,37 +147,35 @@ class VersionsTest(unittest.TestCase):
         self.assertNotEqual(run("versions.py", "set", "1.0", "--root", str(self.root)).returncode, 0)
 
 
-def touch_wheel(directory: Path, name: str, version: str, tag: str = "py3-none-any"):
+def touch_wheel(directory: Path, name: str, version: str, tag: str):
     (directory / f"{name}-{version}-{tag}.whl").write_bytes(b"")
 
 
 def pypi_dir(version: str = "0.1.0") -> Path:
     directory = Path(tempfile.mkdtemp())
-    for project, kinds in publish_lists.PYPI.items():
-        module = project.replace("-", "_")
-        for index, kind in enumerate(kinds):
-            if kind == "sdist":
-                (directory / f"{module}-{version}.tar.gz").write_bytes(b"")
-            else:
-                touch_wheel(directory, module, version, f"cp3{index}-cp3{index}-linux_x86_64" if "native" in project else "py3-none-any")
+    for index in range(publish_lists.WHEELS):
+        touch_wheel(directory, "monorm", version, f"cp3{index}-cp3{index}-linux_x86_64")
     return directory
+
+
+def tgz(directory: Path, file: str, name: str, version: str):
+    manifest = directory / "package.json"
+    manifest.write_text(json.dumps({"name": name, "version": version}))
+    with tarfile.open(directory / file, "w:gz") as tar:
+        tar.add(manifest, arcname="package/package.json")
+    manifest.unlink()
 
 
 def npm_dir(version: str = "0.1.0") -> Path:
     directory = Path(tempfile.mkdtemp())
-    for index, name in enumerate(publish_lists.NPM):
-        manifest = directory / "package.json"
-        manifest.write_text(json.dumps({"name": name, "version": version}))
-        with tarfile.open(directory / f"p{index}.tgz", "w:gz") as tar:
-            tar.add(manifest, arcname="package/package.json")
-        manifest.unlink()
+    tgz(directory, "monorm.tgz", "monorm", version)
     return directory
 
 
 class PublishListsTest(unittest.TestCase):
-    def test_the_lists_have_15_pypi_projects_and_28_npm_names(self):
-        self.assertEqual(len(publish_lists.PYPI), 15)
-        self.assertEqual(len(publish_lists.NPM), 28)
+    def test_a_release_is_12_wheels_of_one_pypi_project_and_one_npm_package(self):
+        self.assertEqual(publish_lists.PYPI, {"monorm": ("wheel",) * 12})
+        self.assertEqual(publish_lists.NPM, ["monorm"])
 
     def test_a_complete_pypi_directory_passes(self):
         directory = pypi_dir()
@@ -196,12 +186,29 @@ class PublishListsTest(unittest.TestCase):
     def test_a_missing_wheel_and_a_wrong_version_fail(self):
         directory = pypi_dir()
         self.addCleanup(shutil.rmtree, directory)
-        next(directory.glob("monorm_locking-*")).unlink()
-        touch_wheel(directory, "monorm_proxy", "0.2.0", "py3-none-any")
+        next(directory.glob("monorm-*")).unlink()
+        touch_wheel(directory, "monorm", "0.2.0", "py3-none-any")
         result = run("publish-lists.py", "check", "pypi", str(directory), "0.1.0")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("monorm-locking: files []", result.stdout)
-        self.assertIn("monorm_proxy-0.2.0", result.stdout)
+        self.assertIn("monorm-0.2.0", result.stdout)
+
+    def test_a_missing_wheel_alone_fails(self):
+        directory = pypi_dir()
+        self.addCleanup(shutil.rmtree, directory)
+        next(directory.glob("monorm-*")).unlink()
+        result = run("publish-lists.py", "check", "pypi", str(directory), "0.1.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("monorm: files", result.stdout)
+
+    def test_a_source_distribution_and_another_project_fail(self):
+        directory = pypi_dir()
+        self.addCleanup(shutil.rmtree, directory)
+        (directory / "monorm-0.1.0.tar.gz").write_bytes(b"")
+        touch_wheel(directory, "monorm_auth", "0.1.0", "py3-none-any")
+        result = run("publish-lists.py", "check", "pypi", str(directory), "0.1.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("monorm-auth: not a project of this release", result.stdout)
+        self.assertIn("monorm: files", result.stdout)
 
     def test_the_rc_version_uses_the_pep_440_form_for_pypi_and_semver_for_npm(self):
         pypi, npm = pypi_dir("0.1.0rc1"), npm_dir("0.1.0-rc.1")
@@ -213,23 +220,15 @@ class PublishListsTest(unittest.TestCase):
     def test_npm_rejects_an_extra_package_and_a_duplicate(self):
         directory = npm_dir()
         self.addCleanup(shutil.rmtree, directory)
-        shutil.copy(directory / "p0.tgz", directory / "copy.tgz")
-        extra = directory / "package.json"
-        extra.write_text(json.dumps({"name": "decimal.js", "version": "0.1.0"}))
-        with tarfile.open(directory / "decimal.tgz", "w:gz") as tar:
-            tar.add(extra, arcname="package/package.json")
+        shutil.copy(directory / "monorm.tgz", directory / "copy.tgz")
+        tgz(directory, "decimal.tgz", "decimal.js", "0.1.0")
         result = run("publish-lists.py", "check", "npm", str(directory), "0.1.0")
         self.assertEqual(result.returncode, 1)
         self.assertIn("decimal.js: not a package of this release", result.stdout)
         self.assertIn("2 files, want 1", result.stdout)
 
-    def test_split_puts_only_the_thin_monorm_files_apart(self):
-        directory, out = pypi_dir(), Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, directory)
-        self.addCleanup(shutil.rmtree, out)
-        self.assertEqual(run("publish-lists.py", "split-pypi", str(directory), str(out)).returncode, 0)
-        self.assertEqual(sorted(p.name for p in (out / "monorm").iterdir()), ["monorm-0.1.0-py3-none-any.whl", "monorm-0.1.0.tar.gz"])
-        self.assertEqual(len(list((out / "deps").iterdir())), len(list(directory.iterdir())) - 2)
+    def test_the_old_split_command_is_gone(self):
+        self.assertNotEqual(run("publish-lists.py", "split-pypi", "a", "b").returncode, 0)
 
 
 FAKE_NPM = """#!/bin/sh
@@ -261,57 +260,41 @@ class NpmPublishTest(unittest.TestCase):
             env={**os.environ, "NPM_BIN": str(self.fake), "FAKE_NPM_LOG": str(self.log), "FAKE_NPM_UP": "none", **env},
         )
 
-    def published(self) -> list[str]:
-        names = []
-        for line in self.log.read_text().splitlines():
-            if line.startswith("publish "):
-                with tarfile.open(line.split()[1]) as tar:
-                    names.append(json.load(tar.extractfile("package/package.json"))["name"])
-        return names
+    def publishes(self) -> list[str]:
+        return [line for line in self.log.read_text().splitlines() if line.startswith("publish ")]
 
-    def test_publishes_in_dependency_order_with_provenance(self):
+    def test_publishes_the_one_package_with_provenance(self):
         result = self.publish("real")
         self.assertEqual(result.returncode, 0, result.stderr)
-        names = self.published()
-        self.assertEqual(len(names), 28)
-        position = {name: i for i, name in enumerate(names)}
-        for profile in publish_lists.PROFILES:
-            for platform in publish_lists.PLATFORMS:
-                self.assertLess(position[f"@ufstack/monorm-native-{profile}-{platform}"], position[f"@ufstack/monorm-native-{profile}"])
-            self.assertLess(position[f"@ufstack/monorm-native-{profile}"], position["@ufstack/monorm"])
-        self.assertLess(position["@ufstack/monorm"], position["monorm"])
-        self.assertLess(position["@ufstack/monorm"], position["@ufstack/monorm-composition"])
-        self.assertEqual(names[-1], "@ufstack/monorm-auth")
+        self.assertEqual(len(self.publishes()), 1)
         self.assertIn("--provenance --access public", self.log.read_text())
 
     def test_dry_run_never_passes_provenance_and_always_dry_runs(self):
         self.assertEqual(self.publish("dry-run").returncode, 0)
-        publishes = [l for l in self.log.read_text().splitlines() if l.startswith("publish ")]
-        self.assertEqual(len(publishes), 28)
+        publishes = self.publishes()
+        self.assertEqual(len(publishes), 1)
         self.assertTrue(all("--dry-run" in l and "--provenance" not in l for l in publishes))
 
     def test_a_prerelease_gets_the_next_tag(self):
         self.dir = npm_dir("0.1.0-rc.1")
         self.addCleanup(shutil.rmtree, self.dir)
         self.assertEqual(self.publish("dry-run").returncode, 0)
-        publishes = [l for l in self.log.read_text().splitlines() if l.startswith("publish ")]
-        self.assertTrue(all("--tag next" in l for l in publishes))
+        self.assertTrue(all("--tag next" in l for l in self.publishes()))
 
     def test_a_release_gets_no_tag(self):
         self.assertEqual(self.publish("dry-run").returncode, 0)
         self.assertNotIn("--tag", self.log.read_text())
 
     def test_a_version_that_is_up_is_skipped(self):
-        result = self.publish("real", FAKE_NPM_UP="@ufstack/monorm-native-sqlite")
+        result = self.publish("real", FAKE_NPM_UP="monorm@0.1.0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        # The fake matches by prefix, so the profile and its 3 platform packages are all up.
-        self.assertEqual(len(self.published()), 28 - 4)
-        self.assertIn("skip @ufstack/monorm-native-sqlite@0.1.0", result.stdout)
+        self.assertEqual(self.publishes(), [])
+        self.assertIn("skip monorm@0.1.0", result.stdout)
 
     def test_a_failed_publish_stops_the_run(self):
         result = self.publish("real", FAKE_NPM_FAIL="1")
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(len(self.published()), 1)
+        self.assertIn("npm publish failed for monorm@0.1.0", result.stderr)
 
 
 try:
@@ -319,36 +302,48 @@ try:
 except ImportError:
     yaml = None
 
+PUBLISH_JOBS = {"publish-crates", "publish-pypi", "publish-npm"}
+
 
 @unittest.skipUnless(yaml, "needs PyYAML")
 class ReleaseWorkflowTest(unittest.TestCase):
     def setUp(self):
-        self.jobs = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]
+        self.text = (ROOT / ".github/workflows/release.yml").read_text()
+        self.jobs = yaml.safe_load(self.text)["jobs"]
 
     def test_only_the_three_publish_jobs_hold_id_token(self):
-        publish = {"publish-crates", "publish-pypi", "publish-npm"}
         holders = {n for n, j in self.jobs.items() if "id-token" in j.get("permissions", {})}
-        self.assertEqual(holders, publish)
-        for name in publish:
+        self.assertEqual(holders, PUBLISH_JOBS)
+        for name in PUBLISH_JOBS:
             self.assertEqual(self.jobs[name]["environment"], "release")
             self.assertEqual(self.jobs[name]["permissions"]["id-token"], "write")
 
     def test_the_build_workflows_are_reusable_and_a_tag_does_not_start_them(self):
-        for name in ("package-profiles.yml", "extension-packages.yml"):
+        for name in ("package-builds.yml", "extension-packages.yml"):
             triggers = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())[True]
             self.assertIn("workflow_call", triggers)
             self.assertNotIn("tags", triggers.get("push") or {})
 
     def test_a_publish_job_waits_for_the_collected_files(self):
-        for name in ("publish-crates", "publish-pypi", "publish-npm"):
+        for name in PUBLISH_JOBS:
             self.assertIn("collect", self.jobs[name]["needs"])
 
-    def test_only_the_pypi_deps_uploads_take_a_token_and_monorm_stays_on_its_publisher(self):
-        steps = {s["name"]: s.get("with", {}) for s in self.jobs["publish-pypi"]["steps"] if "name" in s}
-        self.assertEqual(steps["Upload the native, extension and auth files"]["password"], "${{ secrets.PYPI_API_TOKEN }}")
-        self.assertEqual(steps["Upload the native, extension and auth files to TestPyPI"]["password"], "${{ secrets.TEST_PYPI_API_TOKEN }}")
-        self.assertNotIn("password", steps["Upload monorm"])
-        self.assertNotIn("password", steps["Upload monorm to TestPyPI"])
+    def test_no_pypi_step_takes_a_token(self):
+        steps = [s for s in self.jobs["publish-pypi"]["steps"] if "pypi-publish" in s.get("uses", "")]
+        self.assertEqual(len(steps), 2)
+        for step in steps:
+            self.assertNotIn("password", step.get("with", {}))
+        for secret in ("PYPI_API_TOKEN", "TEST_PYPI_API_TOKEN"):
+            self.assertNotIn(secret, self.text)
+
+    def test_npm_and_crates_io_keep_their_token_fallback(self):
+        self.assertIn("secrets.NPM_TOKEN", self.text)
+        self.assertIn("secrets.CARGO_REGISTRY_TOKEN", self.text)
+
+    def test_the_crate_is_monorm_and_the_old_split_is_gone(self):
+        self.assertIn("-p monorm", self.text)
+        self.assertNotIn("monorm-contracts", self.text)
+        self.assertNotIn("split-pypi", self.text)
 
     def run_text(self, job, **key):
         (field, value), = key.items()
@@ -358,11 +353,6 @@ class ReleaseWorkflowTest(unittest.TestCase):
         text = self.run_text("version", id="version")
         self.assertIn("versions.py tag", text)
         self.assertIn("versions.py show", text)
-
-    def test_the_collect_job_builds_the_thin_monorm_files_itself(self):
-        text = self.run_text("collect", name="Gather the PyPI files")
-        self.assertIn("rm -f dist/pypi/monorm-*.whl", text)
-        self.assertIn("uv build --out-dir dist/pypi .", text)
 
 
 if __name__ == "__main__":

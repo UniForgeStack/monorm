@@ -16,7 +16,7 @@ const USAGE: &str = "usage:
   monorm-extension-package library <crate-dir> --out <dir> [--features <list>] [--zigbuild <target>]
   monorm-extension-package assemble <crate-dir> --libraries <dir> --out <dir> [--tsc <executable>]";
 
-/// Platform key, library file prefix and suffix. The keys are the keys of the native profiles.
+/// Platform key, library file prefix and suffix. The keys name the platform directories of the prebuilt libraries.
 const PLATFORMS: [(&str, &str, &str); 3] = [
     ("darwin-arm64", "lib", ".dylib"),
     ("linux-x64", "lib", ".so"),
@@ -62,9 +62,9 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Args, Error> {
     Ok(parsed)
 }
 
-fn read_manifest(dir: &Path) -> Result<monorm_contracts::extension::Manifest, Error> {
+fn read_manifest(dir: &Path) -> Result<monorm::extension::Manifest, Error> {
     let text = std::fs::read_to_string(dir.join("monorm-extension.toml"))?;
-    let manifest: monorm_contracts::extension::Manifest = toml::from_str(&text)?;
+    let manifest: monorm::extension::Manifest = toml::from_str(&text)?;
     manifest.check_contracts()?;
     if manifest.library.is_none() {
         return Err("a package needs `library`".into());
@@ -148,7 +148,7 @@ fn build_library(
 fn write_packages(
     dir: &Path,
     out: &Path,
-    manifest: &monorm_contracts::extension::Manifest,
+    manifest: &monorm::extension::Manifest,
     files: &[(PathBuf, String)],
     tag: &str,
     tsc: &str,

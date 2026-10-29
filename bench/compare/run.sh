@@ -91,10 +91,10 @@ build_python() {
     django==6.1.2 "psycopg[binary]==3.3.6" psycopg-pool==3.3.3 asgiref==3.12.1 \
     "sqlalchemy[asyncio]==2.1.6" asyncpg==0.32.0
   rm -rf "$BUILD/wheels" && mkdir -p "$BUILD/wheels"
-  # The default profile of the shipped wheel: postgres, release.
-  (cd "$ROOT/languages/python/packaging/postgres" && "$VENV/bin/maturin" build --release -q -i "$PY" -o "$BUILD/wheels")
-  uv pip install -q --python "$PY" --force-reinstall --no-deps "$BUILD"/wheels/monorm_native_postgres-*.whl
-  uv pip install -q --python "$PY" --force-reinstall --no-deps "$ROOT"
+  # The shipped wheel: the engine, the built-in extensions and auth, release.
+  "$PY" "$ROOT/languages/python/packaging/stage.py"
+  (cd "$ROOT" && "$VENV/bin/maturin" build --release -q -i "$PY" -o "$BUILD/wheels")
+  uv pip install -q --python "$PY" --force-reinstall --no-deps "$BUILD"/wheels/monorm-*.whl
 }
 
 build_node() {
@@ -104,16 +104,16 @@ build_node() {
   (cd "$HERE/js" && npm install --no-audit --no-fund -s && node make-prisma-schema.mjs && npx prisma generate >/dev/null)
 }
 
-# The `all` artifact: the tooling profile and the installed first-party extension packages, in release mode.
+# The `all` artifact: the one wheel with the built-in extensions, in release mode.
 build_all() {
   local venv=$ALL/venv
   rm -rf "$ALL" && mkdir -p "$ALL"
   uv venv -q -p "$PYTHON" "$venv"
   uv pip install -q --python "$venv/bin/python" maturin==1.15.0 "psycopg[binary]==3.3.6" psycopg-pool==3.3.3 asgiref==3.12.1
   rm -rf "$ALL/wheels" && mkdir -p "$ALL/wheels"
-  (cd "$ROOT/languages/python/packaging/tooling" && "$venv/bin/maturin" build --release -q -i "$venv/bin/python" -o "$ALL/wheels")
-  uv pip install -q --python "$venv/bin/python" --no-deps "$ALL"/wheels/monorm_native_tooling-*.whl "$ROOT"
-  ORM_PACKAGE_PYTHON=$venv/bin/python "$ROOT/scripts/install-extension-packages.sh"
+  "$venv/bin/python" "$ROOT/languages/python/packaging/stage.py"
+  (cd "$ROOT" && "$venv/bin/maturin" build --release -q -i "$venv/bin/python" -o "$ALL/wheels")
+  uv pip install -q --python "$venv/bin/python" --no-deps "$ALL"/wheels/monorm-*.whl
   (cd "$ROOT" && cargo build -q --release -p monorm-node --no-default-features --features profile-tooling)
   cp "$CARGO_TARGET_DIR/release/libmonorm_node.$DYLIB" "$ALL/monorm.node"
 }

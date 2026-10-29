@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { QueryError, connect, scope } from '@ufstack/monorm';
+import { QueryError, connect, scope } from 'monorm';
 import { Wrapped } from '@acme/outside';
 import { sum } from '@acme/outside/model';
 import { Note, configureOutside } from './models.js';
@@ -10,7 +10,7 @@ const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA:
 assert.deepEqual(Object.keys(locked.behavior.packages).sort(), ['acme.outside', 'monorm.inherit', 'monorm.locking', 'monorm.query-defaults', 'monorm.soft-delete', 'monorm.timestamps']);
 for (const [id, stamp] of Object.entries(locked.behavior.packages)) {
   const [scope, name] = id.split('.');
-  const pkg = scope === 'monorm' ? `@ufstack/monorm-${name}` : `@${scope}/${name}`;
+  const pkg = scope === 'monorm' ? `monorm/extensions/${name}` : `@${scope}/${name}`;
   assert.equal((await import(pkg)).manifestHash, stamp.manifest_hash);
 }
 // The lock stores an expression default as a record: `region` from a hook that generate evaluated, `owner` still a hook.

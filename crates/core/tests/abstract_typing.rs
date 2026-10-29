@@ -93,7 +93,7 @@ fn project(language: &str, queries: &str) -> (PathBuf, monorm_core::ir::SchemaIr
         "extended_by": ["User"]
     }]))
     .unwrap();
-    ir.behavior.schema_contract = monorm_contracts::extension::SCHEMA_CONTRACT;
+    ir.behavior.schema_contract = monorm::extension::SCHEMA_CONTRACT;
     ir.models[0].classes_from = Some("AbstractUser".into());
     let schema = monorm_core::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
     let options = Options {

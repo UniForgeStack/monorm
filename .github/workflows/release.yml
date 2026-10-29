@@ -33,77 +33,38 @@ jobs:
           python3 scripts/release/versions.py check "$version" "${flags[@]}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "target=$target" >> "$GITHUB_OUTPUT"
-  profiles:
+  builds:
     needs: version
-    uses: ./.github/workflows/package-profiles.yml
+    uses: ./.github/workflows/package-builds.yml
   extensions:
     needs: version
     uses: ./.github/workflows/extension-packages.yml
   collect:
-    needs: [version, profiles, extensions]
+    needs: [version, builds, extensions]
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: 0
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v6
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: actions/download-artifact@v4
         with:
           pattern: wheels-*
           merge-multiple: true
-          path: target/release-wheels
+          path: dist/pypi
       - uses: actions/download-artifact@v4
         with:
-          pattern: npm-*
-          merge-multiple: true
-          path: target/release-npm
-      - uses: actions/download-artifact@v4
-        with:
-          name: assembled-packages
-          path: target/release-assembled
-      - name: Gather the PyPI files
-        run: |
-          mkdir -p dist/pypi dist/npm
-          cp target/release-wheels/*.whl target/release-assembled/*.whl dist/pypi/
-          rm -f dist/pypi/acme_outside-*.whl
-          # Every wheels-* artifact holds a thin monorm wheel, and merge-multiple keeps one of them at random.
-          rm -f dist/pypi/monorm-*.whl
-          # The two pure Python projects are built here, wheel and sdist.
-          uv build --out-dir dist/pypi .
-          uv build --out-dir dist/pypi apps/auth/python
-      - name: Gather the npm files
-        run: |
-          cp target/release-npm/*.tgz target/release-assembled/*.tgz dist/npm/
-          # decimal.js is a test dependency of check-node-install.mjs, and acme-outside is a test package.
-          rm -f dist/npm/decimal.js-*.tgz dist/npm/acme-outside-*.tgz
-      - name: Build the TypeScript package and the extension packages
-        run: |
-          npm ci --ignore-scripts
-          npx tsc -p tsconfig.json
-          for extension in timestamps soft-delete locking inherit; do
-            cargo run -q -p monorm-extension-package -- package "../../extensions/$extension" --out "../../target/extension-packages/$extension" --tsc "$PWD/node_modules/.bin/tsc"
-          done
-        working-directory: languages/js
-      - name: Build and pack the auth npm package
-        run: npm install --no-audit --no-fund && npm run build && npm pack --pack-destination ../../../dist/npm
-        working-directory: apps/auth/typescript
-      - name: Pack the unscoped monorm package
-        run: npm pack --pack-destination ../../../dist/npm
-        working-directory: languages/js/unscoped
+          name: npm-package
+          path: dist/npm
       - name: Check the files against the package lists
         run: |
           version='${{ needs.version.outputs.version }}'
           python3 scripts/release/publish-lists.py check pypi dist/pypi "$version"
           python3 scripts/release/publish-lists.py check npm dist/npm "$version"
           uvx twine check --strict dist/pypi/*
-          for profile in postgres sqlite combined tooling; do
-            python3 languages/python/packaging/check-wheel.py target/release-wheels "$profile"
-          done
+          for wheel in dist/pypi/*.whl; do python3 languages/python/packaging/check-wheel.py "$wheel"; done
+      - name: Record the sizes
+        run: |
+          for file in dist/pypi/* dist/npm/*; do echo "$(basename "$file"): $(wc -c < "$file") bytes"; done | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: release-pypi
@@ -124,14 +85,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Dry run
         if: needs.version.outputs.target == 'test'
-        run: cargo publish --dry-run -p monorm-contracts
+        run: cargo publish --dry-run -p monorm
       - name: Look for the version on crates.io
         id: exists
         if: needs.version.outputs.target == 'real'
         run: |
-          if curl -sf -A 'monorm-release (https://github.com/UniForgeStack/monorm)' "https://crates.io/api/v1/crates/monorm-contracts/${{ needs.version.outputs.version }}" > /dev/null; then
+          if curl -sf -A 'monorm-release (https://github.com/UniForgeStack/monorm)' "https://crates.io/api/v1/crates/monorm/${{ needs.version.outputs.version }}" > /dev/null; then
             echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "monorm-contracts ${{ needs.version.outputs.version }} is already on crates.io; skip"
+            echo "monorm ${{ needs.version.outputs.version }} is already on crates.io; skip"
           fi
       # Before the trusted publisher exists on crates.io, this step fails and the CARGO_REGISTRY_TOKEN secret takes over.
       - uses: rust-lang/crates-io-auth-action@v1
@@ -140,7 +101,7 @@ jobs:
         continue-on-error: true
       - name: Publish
         if: needs.version.outputs.target == 'real' && steps.exists.outputs.published != 'true'
-        run: cargo publish -p monorm-contracts
+        run: cargo publish -p monorm
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
   publish-pypi:
@@ -156,37 +117,19 @@ jobs:
         with:
           name: release-pypi
           path: dist/pypi
-      # The thin monorm goes last, so a failure before it leaves no monorm that points at a missing wheel.
-      - run: python3 scripts/release/publish-lists.py split-pypi dist/pypi dist/split
-      # PyPI refuses a second pending publisher with the same values, so only monorm has one.
-      # The first upload of the other 14 projects uses this token; an empty secret means trusted publishing.
-      - name: Upload the native, extension and auth files
+      # PyPI has one trusted publisher: this workflow in the `release` environment. No token is used.
+      - name: Upload to PyPI
         if: needs.version.outputs.target == 'real'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/split/deps
+          packages-dir: dist/pypi
           skip-existing: true
-          password: ${{ secrets.PYPI_API_TOKEN }}
-      - name: Upload monorm
-        if: needs.version.outputs.target == 'real'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/split/monorm
-          skip-existing: true
-      - name: Upload the native, extension and auth files to TestPyPI
+      - name: Upload to TestPyPI
         if: needs.version.outputs.target == 'test'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist/split/deps
-          skip-existing: true
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
-      - name: Upload monorm to TestPyPI
-        if: needs.version.outputs.target == 'test'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist/split/monorm
+          packages-dir: dist/pypi
           skip-existing: true
   publish-npm:
     needs: [version, collect]
@@ -221,12 +164,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build an outside extension on the published monorm-contracts
+      - name: Build an outside extension on the published monorm crate
         run: |
           cp -r tests/outside-extension "$RUNNER_TEMP/outside"
           cd "$RUNNER_TEMP/outside"
           rm -rf target Cargo.lock
-          sed -i 's|^monorm-contracts = .*|monorm-contracts = "=${{ needs.version.outputs.version }}"|' Cargo.toml
+          sed -i 's|^monorm = .*|monorm = "=${{ needs.version.outputs.version }}"|' Cargo.toml
           cargo build
   release-notes:
     if: needs.version.outputs.target == 'real'

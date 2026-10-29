@@ -1,8 +1,8 @@
 """Stage the built-in extension packages and the auth app into `languages/python/`, so `maturin build` ships them in the `monorm` wheel.
 
 Each extension becomes a top-level package `<module>/` with its runtime source, `MANIFEST_HASH`, `monorm-extension.toml`
-and the library of this platform. The libraries come from `--libraries DIR` (laid out `<platform>/<file>`, as the
-`monorm-extension-package library` mode writes them) or are built here with `cargo`.
+and the library of this platform. The libraries come from `--libraries DIR` (laid out `<name>/<platform>/<file>` as `assemble-bundle.mjs --collect` writes them, or
+`<platform>/<file>` as the `monorm-extension-package library` mode writes them) or are built here with `cargo`.
 
     python languages/python/packaging/stage.py [--libraries DIR]
 """
@@ -68,7 +68,8 @@ def stage_extension(name: str, libraries: Path, key: str, prefix: str, suffix: s
     (destination / "py.typed").touch()
     (destination / "monorm-extension.toml").write_bytes(raw)
     file = library_file(manifest["library"], prefix, suffix)
-    shutil.copy2(libraries / key / file, destination / file)
+    base = libraries / name if (libraries / name).is_dir() else libraries
+    shutil.copy2(base / key / file, destination / file)
     return module
 
 

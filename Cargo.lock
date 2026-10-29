@@ -657,6 +657,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "monorm"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "monorm-cli"
 version = "0.1.0"
 dependencies = [
@@ -686,21 +696,11 @@ dependencies = [
 name = "monorm-composition"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "monorm-core",
  "monorm-engine",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "monorm-contracts"
-version = "0.1.0"
-dependencies = [
- "semver",
- "serde",
- "serde_json",
- "toml",
 ]
 
 [[package]]
@@ -710,7 +710,7 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "libloading",
- "monorm-contracts",
+ "monorm",
  "monorm-core",
  "serde",
  "serde_json",
@@ -728,7 +728,7 @@ dependencies = [
  "bytes",
  "chrono",
  "deadpool-postgres",
- "monorm-contracts",
+ "monorm",
  "monorm-core",
  "rusqlite",
  "rustls",
@@ -747,7 +747,7 @@ dependencies = [
 name = "monorm-extension-package"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "serde_json",
  "toml",
 ]
@@ -756,7 +756,7 @@ dependencies = [
 name = "monorm-file-storage"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "serde_json",
 ]
 
@@ -764,7 +764,7 @@ dependencies = [
 name = "monorm-generic"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "serde",
  "serde_json",
 ]
@@ -773,7 +773,7 @@ dependencies = [
 name = "monorm-inherit"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "monorm-core",
  "monorm-engine",
  "rusqlite",
@@ -786,7 +786,7 @@ dependencies = [
 name = "monorm-locking"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "serde_json",
 ]
 
@@ -811,7 +811,7 @@ dependencies = [
 name = "monorm-proxy"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "monorm-core",
  "serde",
  "serde_json",
@@ -837,7 +837,7 @@ dependencies = [
 name = "monorm-query-defaults"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "serde_json",
 ]
 
@@ -845,7 +845,7 @@ dependencies = [
 name = "monorm-soft-delete"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "monorm-core",
  "rusqlite",
  "serde_json",
@@ -855,7 +855,7 @@ dependencies = [
 name = "monorm-timestamps"
 version = "0.1.0"
 dependencies = [
- "monorm-contracts",
+ "monorm",
  "monorm-core",
  "rusqlite",
  "serde_json",

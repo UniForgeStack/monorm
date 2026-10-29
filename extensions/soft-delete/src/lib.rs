@@ -2,7 +2,7 @@
 //! soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too
 //! and the soft delete cascades to soft-delete children.
-use monorm_contracts::{dialect::Dialect, extension::ReadDefault, ir::{ColType, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{error, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
+use monorm::{dialect::Dialect, extension::ReadDefault, ir::{ColType, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{error, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "monorm.soft-delete";
@@ -197,7 +197,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use monorm_contracts::extension::Declaration;
+    use monorm::extension::Declaration;
 
     fn at(model: &str, line: u32, positional: serde_json::Value, arguments: serde_json::Value, field: Option<&str>) -> Declaration {
         serde_json::from_value(serde_json::json!({"attribute": "soft_delete.deleted_at", "model": model, "field": field, "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": line, "column": 3}})).unwrap()
@@ -233,7 +233,7 @@ mod tests {
     fn schema(dialect: &str, mode: &str) -> SchemaIr {
         let named = |model: &str, line: u32| at(model, line, serde_json::json!(["deleted"]), serde_json::json!({"mode": mode}), None);
         let mut ir = declared(dialect, vec![named("Author", 3), named("Book", 9)]);
-        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm::extension::capture_storage(&mut ir).unwrap();
         add_fields(&mut ir).unwrap();
         ir.behavior.storage = None;
         ir
@@ -241,13 +241,13 @@ mod tests {
 
     fn added(positional: serde_json::Value) -> Result<SchemaIr, String> {
         let mut ir = declared("postgres", vec![at("Author", 3, positional, serde_json::json!({}), None)]);
-        monorm_contracts::extension::capture_storage(&mut ir)?;
+        monorm::extension::capture_storage(&mut ir)?;
         add_fields(&mut ir)?;
         Ok(ir)
     }
 
     fn prepared(ir: &mut SchemaIr) -> Result<(), String> {
-        monorm_contracts::extension::capture_storage(ir)?;
+        monorm::extension::capture_storage(ir)?;
         prepare(ir)
     }
 
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn map_sets_the_column_of_the_deleted_at_field() {
         let mut ir = declared("postgres", vec![at("Author", 3, serde_json::json!([]), serde_json::json!({"map": "_deleted_at"}), None)]);
-        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm::extension::capture_storage(&mut ir).unwrap();
         add_fields(&mut ir).unwrap();
         for model in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
             let f = model.fields.last().unwrap();
@@ -291,7 +291,7 @@ mod tests {
         ];
         for (field, arguments, line) in cases {
             let mut ir = declared("postgres", vec![at("Author", 3, serde_json::json!([]), arguments, Some(field))]);
-            monorm_contracts::extension::capture_storage(&mut ir).unwrap();
+            monorm::extension::capture_storage(&mut ir).unwrap();
             let err = add_fields(&mut ir).unwrap_err();
             assert_eq!(err, format!("schema.prisma:3:3: @soft_delete.deleted_at: a field attribute is no longer supported; delete the field Author.{field} and write {line} in the model block"));
         }
@@ -301,16 +301,16 @@ mod tests {
     fn a_field_with_the_same_name_is_an_error_that_names_both() {
         let mut ir = declared("postgres", vec![at("Author", 3, serde_json::json!([]), serde_json::json!({}), None)]);
         ir.models[0].fields.push(FieldIr::plain("deleted_at", ColType::DateTime));
-        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm::extension::capture_storage(&mut ir).unwrap();
         let err = add_fields(&mut ir).unwrap_err();
         assert_eq!(err, "schema.prisma:3:3: @soft_delete.deleted_at: adds the field Author.deleted_at, which already exists; remove that field or name another field with @@soft_delete.deleted_at(\"other_name\")");
     }
 
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
-        let effects = monorm_contracts::extension::pass_effects(&schema("postgres", "database"), prepare).unwrap();
+        let effects = monorm::extension::pass_effects(&schema("postgres", "database"), prepare).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults", "behavior.storage", "models"]);
-        let effects = monorm_contracts::extension::pass_effects(&schema("postgres", "application"), prepare).unwrap();
+        let effects = monorm::extension::pass_effects(&schema("postgres", "application"), prepare).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.delete_rewrites", "behavior.read_defaults"]);
     }
 
@@ -338,12 +338,12 @@ mod tests {
     #[test]
     fn a_proxy_gets_the_delete_rewrite_of_its_root() {
         let mut ir = schema("postgres", "application");
-        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm::extension::capture_storage(&mut ir).unwrap();
         ir.behavior.lowered_models.push("AuthorView".into());
         let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
         view.name = "AuthorView".into();
         ir.models.push(view);
-        ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
+        ir.behavior.model_views.push(monorm::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
         prepared(&mut ir).unwrap();
         assert!(ir.behavior.delete_rewrites.iter().any(|d| d.model == "AuthorView" && d.field == "deleted"));
     }
@@ -359,19 +359,19 @@ mod tests {
     #[test]
     fn a_proxy_must_keep_the_soft_delete_field() {
         let mut ir = schema("postgres", "application");
-        monorm_contracts::extension::capture_storage(&mut ir).unwrap();
+        monorm::extension::capture_storage(&mut ir).unwrap();
         ir.behavior.lowered_models.push("AuthorView".into());
         let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
         view.name = "AuthorView".into();
         view.fields.retain(|f| f.name != "deleted");
         ir.models.push(view);
-        ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
+        ir.behavior.model_views.push(monorm::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
         assert_eq!(prepared(&mut ir).unwrap_err(), "AuthorView: proxy must keep the soft-delete field deleted");
     }
 
     #[test]
     fn a_leftover_filter_on_the_deleted_field_is_rejected() {
-        let declare = |attribute: &str, positional: serde_json::Value, arguments: serde_json::Value| serde_json::from_value::<monorm_contracts::extension::Declaration>(serde_json::json!({
+        let declare = |attribute: &str, positional: serde_json::Value, arguments: serde_json::Value| serde_json::from_value::<monorm::extension::Declaration>(serde_json::json!({
             "attribute": attribute, "model": "Author", "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 6, "column": 1}})).unwrap();
         for filter in ["deleted == null", "( deleted==null )", "deleted is null"] {
             for d in [declare("query.filter", serde_json::json!(["live", filter]), serde_json::json!({})), declare("query.defaults", serde_json::json!([]), serde_json::json!({"filter": filter}))] {
@@ -447,12 +447,12 @@ mod tests {
     fn proxies_inherit_soft_delete_role_without_duplicate_triggers() {
         for mode in ["application", "database"] {
             let mut ir = schema("postgres", mode);
-            monorm_contracts::extension::capture_storage(&mut ir).unwrap();
+            monorm::extension::capture_storage(&mut ir).unwrap();
             ir.behavior.lowered_models.push("AuthorView".into());
             let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
             view.name = "AuthorView".into();
             ir.models.push(view);
-            ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
+            ir.behavior.model_views.push(monorm::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
             prepared(&mut ir).unwrap();
             let rewrite = ir.behavior.delete_rewrites.iter().find(|d| d.model == "AuthorView").expect("proxy inherits root soft delete");
             assert_eq!(rewrite.field, "deleted");
@@ -490,4 +490,4 @@ mod tests {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-monorm_contracts::extension!(("monorm.soft-delete.fields", add_fields), ("monorm.soft-delete.prepare", prepare));
+monorm::extension!(("monorm.soft-delete.fields", add_fields), ("monorm.soft-delete.prepare", prepare));

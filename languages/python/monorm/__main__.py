@@ -1,5 +1,5 @@
 """``python -m monorm``: the ``monorm`` command line, the same Rust code as the standalone
-``monorm`` binary and ``npx @ufstack/monorm`` (``crates/cli/``). See ``python -m monorm --help``.
+``monorm`` binary and ``npx monorm`` (``crates/cli/``). See ``python -m monorm --help``.
 
     python -m monorm check
     python -m monorm generate [-o models.py] [--query-set Model=module:Class]  # models.py + .pyi

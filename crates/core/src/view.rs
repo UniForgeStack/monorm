@@ -1,6 +1,6 @@
 //! Model views: the fixed row filter and insert table of a view over a shared table.
 //! `define()` prepares one `Option` per model, so a plan reads no record list.
-use monorm_contracts::{extension::ModelView, ir::{ColType, EnumIr, FieldIr}};
+use monorm::{extension::ModelView, ir::{ColType, EnumIr, FieldIr}};
 use serde_json::Value;
 
 #[derive(Clone, Debug)]
@@ -51,7 +51,7 @@ fn literal(model: &str, field: &FieldIr, enums: &[EnumIr], value: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use monorm_contracts::extension::RowFilter;
+    use monorm::extension::RowFilter;
     use serde_json::json;
 
     fn fields() -> Vec<FieldIr> {

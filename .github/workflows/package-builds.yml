@@ -1,0 +1,208 @@
+name: Package builds
+# Builds the one `monorm` wheel (12 files), the one npm tarball and the outside extension packages, and installs them.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['**/Cargo.toml', 'Cargo.lock', 'crates/**', 'languages/**', 'extensions/**', 'apps/**', 'pyproject.toml', 'scripts/**', '.github/workflows/package-builds.yml']
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  # A wheel holds the libraries of one platform and the npm package holds all 3, so each platform builds its own.
+  libraries:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: 0
+      # The Linux libraries target glibc 2.28, so they load on RHEL 8 and Debian 10 and later.
+      MONORM_CARGO_TARGET: ${{ matrix.os == 'ubuntu-24.04' && 'x86_64-unknown-linux-gnu.2.28' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: runner.os == 'Linux'
+        run: python3 -m pip install --break-system-packages ziglang cargo-zigbuild
+      - run: npm ci --ignore-scripts
+        working-directory: languages/js
+      - name: Build the engine and the extension libraries of this platform
+        run: node languages/js/scripts/assemble-bundle.mjs --collect target/bundle
+      - name: Build the library of the outside extension
+        shell: bash
+        run: |
+          extra=()
+          if [ -n "$MONORM_CARGO_TARGET" ]; then extra=(--zigbuild "$MONORM_CARGO_TARGET"); fi
+          cargo run -q -p monorm-extension-package -- library tests/outside-extension --out target/bundle/outside-extension "${extra[@]}"
+      - if: runner.os == 'Linux'
+        run: python3 scripts/check-glibc.py target/bundle/*/linux-x64/*.so target/bundle/engine/linux-x64/monorm.node
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libraries-${{ matrix.os }}
+          path: target/bundle
+  python:
+    needs: libraries
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-latest]
+        python: ['3.11', '3.12', '3.13', '3.14']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'postgres:18' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: ${{ matrix.os == 'ubuntu-24.04' && 'postgres://postgres:postgres@localhost/orm_test' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install maturin
+      - if: runner.os == 'Linux'
+        run: python -m pip install ziglang
+      - uses: actions/download-artifact@v4
+        with:
+          name: libraries-${{ matrix.os }}
+          path: target/bundle
+      - run: python languages/python/packaging/check-dependencies.py
+      - run: python languages/python/packaging/stage.py --libraries target/bundle
+      - name: Build the wheel
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then flags="--zig --compatibility manylinux_2_28"; else flags="--compatibility pypi"; fi
+          maturin build --release $flags --interpreter python --out target/wheels
+      - run: python languages/python/packaging/check-wheel.py $(ls target/wheels/monorm-*.whl)
+        shell: bash
+      - if: runner.os == 'Linux'
+        run: python scripts/check-glibc.py target/wheels/monorm-*.whl
+      - name: Record the wheel size
+        shell: bash
+        run: |
+          for wheel in target/wheels/monorm-*.whl; do
+            echo "${{ matrix.os }} py${{ matrix.python }} $(basename "$wheel"): $(wc -c < "$wheel") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - run: python -m pip install target/wheels/monorm-*.whl
+        shell: bash
+      - run: python languages/python/packaging/smoke-python.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.python }}
+          path: target/wheels/*.whl
+  npm:
+    needs: libraries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: libraries-*
+          merge-multiple: true
+          path: target/bundle
+      - run: npm ci --ignore-scripts
+        working-directory: languages/js
+      - name: Assemble the package with the libraries of all 3 platforms
+        run: |
+          npm run assemble
+          node scripts/assemble-bundle.mjs --libraries ../../target/bundle
+        working-directory: languages/js
+      - name: Pack the package and install it in Node and Bun
+        run: node languages/js/packaging/check-node-install.mjs
+        env:
+          MONORM_PACK_PLATFORMS: all
+      - name: Assemble the outside extension
+        run: |
+          cargo run -q -p monorm-extension-package -- assemble tests/outside-extension --libraries target/bundle/outside-extension --out target/assembled/outside-extension --tsc "$PWD/languages/js/node_modules/.bin/tsc"
+          python3 scripts/check-assembled-packages.py target/assembled target/outside
+      - name: Record the tarball size
+        run: |
+          for pack in target/npm-packs/monorm-*.tgz; do
+            echo "$(basename "$pack"): $(wc -c < "$pack") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: target/npm-packs/monorm-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: outside-packages
+          path: target/outside
+  consumers:
+    needs: [python, npm]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            dialects: sqlite,postgres
+          - os: macos-14
+            dialects: sqlite
+          - os: windows-latest
+            dialects: sqlite
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'postgres:18' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: ${{ matrix.os == 'ubuntu-24.04' && 'postgres://postgres:postgres@localhost/orm_test' || '' }}
+      UV_PYTHON: '3.14'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci --ignore-scripts
+        working-directory: languages/js
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-3.14
+          path: target/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: target/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: outside-packages
+          path: target/dist
+      - name: Install the packages in fresh consumers
+        run: python scripts/check-assembled-consumers.py target/dist "${{ matrix.dialects }}"

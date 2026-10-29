@@ -1,6 +1,6 @@
 """End-to-end timings of the `monorm` package on the blog models, for comparing engines.
 
-    (cd languages/python/packaging/tooling && maturin develop --release)
+    python languages/python/packaging/stage.py && maturin develop --release
     python bench/engine_bench.py [--url URL] [--rounds N] [--out results.json]
 
 The URL must name a disposable database: the run drops and creates the blog tables.

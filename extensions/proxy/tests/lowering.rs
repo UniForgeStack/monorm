@@ -1,5 +1,5 @@
 use monorm_proxy::{models, ProxyField, ProxyModel, ProxySelection};
-use monorm_contracts::{extension::{ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
+use monorm::{extension::{ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, SchemaIr}};
 use monorm_proxy::lower_specs;
 use serde_json::json;
 
@@ -36,7 +36,7 @@ fn names(list: &[&str]) -> Vec<String> { list.iter().map(|n| n.to_string()).coll
 /// Redeclare a `User` field on a proxy, changed by `edit`.
 fn redeclare(ir: &mut SchemaIr, proxy: &str, field: &str, edit: impl FnOnce(&mut FieldIr)) {
     let mut declared = ir.models[0].fields.iter().find(|f| f.name == field).cloned()
-        .unwrap_or_else(|| FieldIr::plain(field, monorm_contracts::ir::ColType::Text));
+        .unwrap_or_else(|| FieldIr::plain(field, monorm::ir::ColType::Text));
     edit(&mut declared);
     ir.models.iter_mut().find(|m| m.name == proxy).unwrap().fields.push(declared);
 }

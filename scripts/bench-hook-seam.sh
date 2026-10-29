@@ -13,7 +13,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/bench-hook-seam-XXXXXX")
 build() { # source dir, venv dir
   uv venv --python "$PYTHON" "$2" >/dev/null
   uv pip install --python "$2/bin/python" maturin >/dev/null
-  (cd "$1" && . "$2/bin/activate" && uv pip install -e . >/dev/null && cd languages/python/packaging/sqlite && maturin develop --release >/dev/null)
+  (cd "$1" && . "$2/bin/activate" && python languages/python/packaging/stage.py >/dev/null && maturin develop --release >/dev/null)
 }
 build "$BASE" "$WORK/venv-base"
 build "$ROOT" "$WORK/venv-head"

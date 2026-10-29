@@ -18,5 +18,5 @@ def has_extension(*ids: str) -> bool:
     extensions = resolve_extensions()
     for ident in ids:
         if ident in {"monorm.timestamps", "monorm.soft-delete", "monorm.locking", "monorm.inherit", "monorm.query-defaults", "monorm.generic", "monorm.proxy", "monorm.composition", "monorm.file-storage"}:
-            assert ident in extensions, f"install the {ident} package with scripts/install-extension-packages.sh"
+            assert ident in extensions, f"install the {ident} package with `python languages/python/packaging/stage.py` and `maturin develop`"
     return all(i in extensions for i in ids)

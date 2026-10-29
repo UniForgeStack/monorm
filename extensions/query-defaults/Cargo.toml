@@ -6,7 +6,7 @@ publish = false
 description = "Optional @@query.* compiler for ORM: lowers model query policies to read defaults"
 
 [dependencies]
-monorm-contracts = { path = "../../crates/contracts" }
+monorm = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [lib]

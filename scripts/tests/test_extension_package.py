@@ -64,7 +64,7 @@ class PackageTest(unittest.TestCase):
             for line in ("License: MIT", "Project-URL: Repository, https://github.com/UniForgeStack/monorm", "Description-Content-Type: text/markdown"):
                 self.assertIn(line, metadata)
             package_json = json.loads((Path(tmp, "npm") / "package.json").read_text())
-            self.assertEqual(package_json["name"], "@ufstack/monorm-timestamps")
+            self.assertEqual(package_json["name"], "monorm-timestamps")
             self.assertEqual(package_json["license"], "MIT")
             self.assertEqual(package_json["publishConfig"], {"access": "public"})
             self.assertEqual(package_json["repository"]["directory"], "extensions/timestamps")

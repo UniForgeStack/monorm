@@ -1,5 +1,5 @@
 //! `HookPlan::finish` fills the lookup data of a plan and drops a plan that has no hook.
-use monorm_contracts::abi::{OrmArg, OrmContext, OrmValue, STATUS_OK};
+use monorm::abi::{OrmArg, OrmContext, OrmValue, STATUS_OK};
 use monorm_core::hooks::{HookPlan, HookRef, RecordHook};
 use std::ffi::c_void;
 

@@ -6,7 +6,7 @@ publish = false
 description = "Abstract models and model overrides for ORM schemas"
 
 [dependencies]
-monorm-contracts = { path = "../../crates/contracts" }
+monorm = { path = "../../crates/contracts" }
 serde = "1"
 serde_json = "1"
 

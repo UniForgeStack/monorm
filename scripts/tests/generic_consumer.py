@@ -1,4 +1,4 @@
-"""Runs against generated models that use the installed monorm-generic package."""
+"""Runs against generated models that use the built-in generic extension of the installed monorm wheel."""
 import asyncio
 import json
 import os

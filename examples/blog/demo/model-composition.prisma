@@ -1,4 +1,4 @@
-// Needs the monorm-composition package (@@composition.model).
+// Needs the built-in composition extension (@@composition.model).
 
 model Person {
   id   Int    @id @default(autoincrement())

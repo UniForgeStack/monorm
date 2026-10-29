@@ -1,7 +1,7 @@
 //! An extension built in its own workspace (`tests/outside-extension`) runs through the loader.
 //! Each ABI feature is one build; each installed package is a copy of a build with its own manifest.
-use monorm_contracts::abi::{Arg, Context, Value};
-use monorm_contracts::extension::{Declaration, HookBinding, Manifest, SourceLocation, SCHEMA_CONTRACT_VERSION};
+use monorm::abi::{Arg, Context, Value};
+use monorm::extension::{Declaration, HookBinding, Manifest, SourceLocation, SCHEMA_CONTRACT_VERSION};
 use monorm_core::dsl::{compile_file_with, Installed};
 use monorm_core::loader::{Library, Plan};
 use monorm_core::ir::{ClientDefaultIr, ColType, FieldIr, SchemaIr};
@@ -454,7 +454,7 @@ fn an_expression_record_stamps_no_minor_also_after_generate_removed_its_hook() {
     assert!(ir.behavior.hooks.is_empty(), "a hook that reads no context is evaluated at generate");
     let tag = ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap();
     assert!(matches!(tag.client_default, Some(ClientDefaultIr::Expr(_))), "{:?}", tag.client_default);
-    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (monorm_contracts::extension::SCHEMA_CONTRACT, 0));
+    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (monorm::extension::SCHEMA_CONTRACT, 0));
     let ir = lower_with(&plan, &HookBinding { reads_context: true, ..binding(7, "tag", "acme.outside.region") }).unwrap();
     assert_eq!((ir.behavior.hooks.len(), ir.behavior.schema_contract_minor), (1, 0));
 }
@@ -529,8 +529,8 @@ fn hooked(hooks: Vec<HookBinding>, data: serde_json::Value) -> SchemaIr {
     let mut ir = SchemaIr { models: vec![serde_json::from_value(post).unwrap()], ..SchemaIr::default() };
     ir.behavior.hooks = hooks;
     ir.behavior.extension_data.insert(ID.to_owned(), data);
-    ir.behavior.schema_contract = monorm_contracts::extension::SCHEMA_CONTRACT;
-    ir.behavior.packages.insert(ID.to_owned(), monorm_contracts::extension::PackageStamp { version: "0.1.0".into(), languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
+    ir.behavior.schema_contract = monorm::extension::SCHEMA_CONTRACT;
+    ir.behavior.packages.insert(ID.to_owned(), monorm::extension::PackageStamp { version: "0.1.0".into(), languages: vec!["python".into(), "typescript".into()], databases: vec!["postgres".into(), "sqlite".into()], ..Default::default() });
     ir
 }
 
@@ -610,9 +610,9 @@ fn actor_ir(binding_ok: bool) -> SchemaIr {
     let mut hook = binding(4, "tag", "acme.outside.actor");
     hook.reads_context = true;
     let mut ir = hooked(if binding_ok { vec![hook] } else { vec![] }, serde_json::Value::Null);
-    ir.behavior.write_assignments.push(monorm_contracts::writes::WriteAssignment {
-        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![monorm_contracts::writes::WriteKind::Update],
-        value: monorm_contracts::writes::AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: Default::default(),
+    ir.behavior.write_assignments.push(monorm::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![monorm::writes::WriteKind::Update],
+        value: monorm::writes::AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: Default::default(),
     });
     ir
 }
@@ -657,7 +657,7 @@ fn initials_ir(mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
         source: ID.into(), point: 5, model: "Person".into(), field: Some("initials".into()), export: "acme.outside.initials".into(),
         dependencies: vec!["first".into(), "last".into()], reads_context: false,
     });
-    ir.behavior.result_fields.push(monorm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
+    ir.behavior.result_fields.push(monorm::extension::ResultDeclaration { model: "Person".into(), field: "initials".into(), dependencies: vec!["first".into(), "last".into()] });
     mutate(&mut ir);
     ir
 }
@@ -700,7 +700,7 @@ fn a_point_five_binding_on_a_declared_result_field_lowers() {
 #[test]
 fn a_computed_field_that_depends_on_a_computed_field_fails() {
     let error = lower_initials(|ir| {
-        ir.behavior.result_fields.push(monorm_contracts::extension::ResultDeclaration { model: "Person".into(), field: "last".into(), dependencies: vec!["first".into()] });
+        ir.behavior.result_fields.push(monorm::extension::ResultDeclaration { model: "Person".into(), field: "last".into(), dependencies: vec!["first".into()] });
         ir.behavior.hooks.push(HookBinding {
             source: ID.into(), point: 5, model: "Person".into(), field: Some("last".into()), export: "acme.outside.initials".into(),
             dependencies: vec!["first".into()], reads_context: false,
@@ -723,14 +723,14 @@ fn a_point_five_binding_without_a_result_field_or_with_the_wrong_type_fails() {
 fn expression_ir(reads_context: bool, mutate: impl FnOnce(&mut SchemaIr)) -> SchemaIr {
     let (write, default) = if reads_context { ("acme.outside.editor", "acme.outside.owner") } else { ("acme.outside.label", "acme.outside.region") };
     let mut ir = hooked(vec![], serde_json::Value::Null);
-    let note = FieldIr { client_default: Some(monorm_contracts::ir::ClientDefaultIr::Hook { export: default.into() }), ..FieldIr::plain("note", ColType::Text) };
+    let note = FieldIr { client_default: Some(monorm::ir::ClientDefaultIr::Hook { export: default.into() }), ..FieldIr::plain("note", ColType::Text) };
     ir.models[0].fields.push(note);
     for (point, field, export) in [(6, "tag", write), (7, "note", default)] {
         ir.behavior.hooks.push(HookBinding { reads_context, ..binding(point, field, export) });
     }
-    ir.behavior.write_assignments.push(monorm_contracts::writes::WriteAssignment {
-        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![monorm_contracts::writes::WriteKind::Update],
-        value: monorm_contracts::writes::AssignValue::ExprHook { export: write.into() }, upsert: Default::default(),
+    ir.behavior.write_assignments.push(monorm::writes::WriteAssignment {
+        source: ID.into(), model: "Post".into(), field: "tag".into(), on: vec![monorm::writes::WriteKind::Update],
+        value: monorm::writes::AssignValue::ExprHook { export: write.into() }, upsert: Default::default(),
     });
     mutate(&mut ir);
     ir
@@ -755,7 +755,7 @@ fn lower_expressions(seed: SchemaIr) -> Result<SchemaIr, String> {
 
 #[test]
 fn an_expression_hook_that_reads_no_context_becomes_a_stored_expression_at_lowering() {
-    use monorm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    use monorm::{ir::ClientDefaultIr, writes::AssignValue};
     let ir = lower_expressions(expression_ir(false, |_| {})).unwrap();
     assert!(ir.behavior.hooks.is_empty(), "the bindings are gone: {:?}", ir.behavior.hooks);
     let guarded = serde_json::json!({"t": "text", "value": "guarded"});
@@ -769,7 +769,7 @@ fn an_expression_hook_that_reads_no_context_becomes_a_stored_expression_at_lower
 
 #[test]
 fn an_expression_hook_that_reads_the_context_stays_a_record_and_runs_on_each_statement() {
-    use monorm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+    use monorm::{ir::ClientDefaultIr, writes::AssignValue};
     let ir = lower_expressions(expression_ir(true, |_| {})).unwrap();
     assert_eq!(ir.behavior.hooks.len(), 2);
     assert!(matches!(ir.behavior.write_assignments[0].value, AssignValue::ExprHook { .. }));

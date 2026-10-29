@@ -21,37 +21,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = re.compile(r"(\d+\.\d+\.\d+)(?:rc(\d+)|-rc\.(\d+))?")
 TAG = re.compile(r"v(\d+\.\d+\.\d+(?:-rc\.\d+)?)")
-NATIVE = ("postgres", "sqlite", "combined", "tooling")
-DEPENDENCY_SECTIONS = ("dependencies", "peerDependencies", "optionalDependencies")
 VERSION_LINE = r'^version = "([^"]+)"'
 # The crates whose version `set` changes; Cargo.lock holds each of them.
-VERSIONED_CRATES = ("monorm-contracts", "monorm-python", "monorm-node")
+VERSIONED_CRATES = ("monorm", "monorm-python", "monorm-node")
 LOCK_ENTRY = r'^name = "{}"\nversion = "([^"]+)"'
 # (path or glob, form, pattern, expected matches per file)
 TEXT_SITES = [
     ("pyproject.toml", "py", VERSION_LINE, 1),
-    ("pyproject.toml", "py", r'"monorm-[a-z-]+==([^"]+)"', 13),
-    *[(f"languages/python/packaging/{p}/pyproject.toml", "py", VERSION_LINE, 1) for p in NATIVE],
-    ("apps/auth/python/pyproject.toml", "py", VERSION_LINE, 1),
     ("extensions/*/monorm-extension.toml", "semver", VERSION_LINE, 1),
     ("crates/contracts/Cargo.toml", "semver", VERSION_LINE, 1),
     ("languages/python/native/Cargo.toml", "semver", VERSION_LINE, 1),
     ("languages/js/native/Cargo.toml", "semver", VERSION_LINE, 1),
     *[("Cargo.lock", "semver", LOCK_ENTRY.format(crate), 1) for crate in VERSIONED_CRATES],
-    ("tests/outside-extension/Cargo.lock", "semver", LOCK_ENTRY.format("monorm-contracts"), 1),
-    ("languages/python/monorm/_profiles.py", "semver", r'get\("version"\) != "([^"]+)"', 1),
-    ("languages/python/monorm/_profiles.py", "semver", r"matching monorm (\d[^ ]*) packages", 1),
+    ("tests/outside-extension/Cargo.lock", "semver", LOCK_ENTRY.format("monorm"), 1),
     ("languages/js/src/native.ts", "semver", r'meta\.version !== "([^"]+)"', 1),
     ("languages/js/src/native.ts", "semver", r"matching monorm (\d[^ ]*) packages", 1),
-    ("languages/js/packaging/build-node-profile.mjs", "semver", r'version: "([^"]+)"', 1),
 ]
 JSON_SITES = [
     "languages/js/package.json",
     "languages/js/package-lock.json",
-    "languages/js/unscoped/package.json",
-    "apps/auth/typescript/package.json",
-    "apps/auth/typescript/package-lock.json",
-    *[f"languages/js/packaging/{p}/package.json" for p in NATIVE],
 ]
 
 
@@ -91,20 +79,14 @@ def text_files(root: Path):
 
 
 def json_slots(data: dict):
-    """Yield (container, key) for every version slot of a package.json or package-lock.json.
+    """Yield (container, key) for the version slot of a package.json or package-lock.json.
 
-    A lock file also holds the root package and the packages that `file:` dependencies link to (their paths start with `../`).
+    A lock file holds the root package twice: at the top and under `packages[""]`.
     """
-    nodes = [data]
-    for path, node in data.get("packages", {}).items():
-        if path == "" or (path.startswith("../") and node.get("name", "").startswith("@ufstack/monorm")):
-            nodes.append(node)
-    for node in nodes:
-        yield node, "version"
-        for section in DEPENDENCY_SECTIONS:
-            for name, value in node.get(section, {}).items():
-                if name.startswith("@ufstack/monorm") and value[:1].isdigit():
-                    yield node[section], name
+    yield data, "version"
+    root = data.get("packages", {}).get("")
+    if root is not None:
+        yield root, "version"
 
 
 def read_all(root: Path) -> list[tuple[str, str, str]]:

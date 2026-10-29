@@ -26,7 +26,7 @@ py_version = version.replace("-rc.", "rc")
 module = ident.replace(".", "_").replace("-", "_")
 dist = ident.replace(".", "-").replace("_", "-")
 scope, name = ident.split(".", 1)
-npm_name = f"@ufstack/monorm-{name}" if scope == "monorm" else f"@{scope}/{name}"
+npm_name = f"monorm-{name}" if scope == "monorm" else f"@{scope}/{name}"
 raw = (root / "monorm-extension.toml").read_bytes()
 digest = hashlib.sha256(raw).hexdigest()
 files = config["files"]

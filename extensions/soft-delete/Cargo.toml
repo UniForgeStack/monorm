@@ -6,7 +6,7 @@ publish = false
 description = "Selected soft-delete compiler for ORM: delete triggers or ORM-only soft deletes"
 
 [dependencies]
-monorm-contracts = { path = "../../crates/contracts" }
+monorm = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [dev-dependencies]

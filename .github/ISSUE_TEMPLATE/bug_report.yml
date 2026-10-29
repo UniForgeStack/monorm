@@ -23,11 +23,6 @@ body:
       placeholder: PostgreSQL 18.1, SQLite 3.46
     validations:
       required: true
-  - type: input
-    id: profile
-    attributes:
-      label: Native profile (`MONORM_PROFILE`)
-      placeholder: postgres, sqlite, combined or tooling
   - type: dropdown
     id: extensions
     attributes:

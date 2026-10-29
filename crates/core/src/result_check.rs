@@ -1,7 +1,7 @@
 //! Result checks: preparation resolves field positions once; operations check decoded
 //! physical values without any declaration lookup.
 use std::collections::BTreeMap;
-use monorm_contracts::{extension::ResultCheck, ir::{EnumIr, FieldIr, ValueType}};
+use monorm::{extension::ResultCheck, ir::{EnumIr, FieldIr, ValueType}};
 use serde::Serialize;
 use serde_json::Value;
 

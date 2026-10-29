@@ -1,5 +1,5 @@
 //! An override keeps the base table, so a migration adds or drops only the child's own columns.
-use monorm_contracts::{extension::capture_storage, ir::SchemaIr};
+use monorm::{extension::capture_storage, ir::SchemaIr};
 use monorm_core::migrate::{self, DbSchema, Step};
 use serde_json::{json, Value};
 

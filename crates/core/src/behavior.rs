@@ -1,5 +1,5 @@
 //! Behavioral extension setup. Database catalogs remain in `ext`.
-pub use monorm_contracts::extension::*;
+pub use monorm::extension::*;
 
 /// Every schema preparation checks the artifact; build it once per process.
 pub fn artifact() -> &'static Artifact {

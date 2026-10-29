@@ -265,7 +265,7 @@ fn library_copies_the_host_library_under_its_platform_key() {
     fs::remove_dir_all(root).unwrap();
 }
 
-const RUNTIMES: &str = "[python]\nsource = \"python\"\ndependencies = [\"opendal>=0.47,<0.48\", \"monorm>=0.1,<0.2\"]\n[typescript]\nsource = \"typescript\"\ndependencies = { opendal = \"^0.47.0\", \"@ufstack/monorm\" = \"^0.1.0\" }\nexports = { \"./model\" = \"model.js\" }\n";
+const RUNTIMES: &str = "[python]\nsource = \"python\"\ndependencies = [\"opendal>=0.47,<0.48\", \"monorm>=0.1,<0.2\"]\n[typescript]\nsource = \"typescript\"\ndependencies = { opendal = \"^0.47.0\", \"monorm\" = \"^0.1.0\" }\nexports = { \"./model\" = \"model.js\" }\n";
 
 /// A crate with runtime sources and `RUNTIMES` (or another tail) after the header keys.
 fn crate_with_runtimes(root: &Path, tail: &str) -> PathBuf {
@@ -292,7 +292,7 @@ fn dependencies_and_subpath_exports_reach_the_wheel_and_the_npm_package() {
     let requires: Vec<_> = metadata.lines().filter(|l| l.starts_with("Requires-Dist: ")).collect();
     assert_eq!(requires, ["Requires-Dist: opendal>=0.47,<0.48", "Requires-Dist: monorm>=0.1,<0.2"]);
     let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
-    assert_eq!(package["dependencies"], serde_json::json!({"opendal": "^0.47.0", "@ufstack/monorm": "^0.1.0"}));
+    assert_eq!(package["dependencies"], serde_json::json!({"opendal": "^0.47.0", "monorm": "^0.1.0"}));
     assert_eq!(package["exports"]["."]["default"], "./index.js");
     assert_eq!(package["exports"]["./model"], serde_json::json!({"types": "./model.d.ts", "default": "./model.js"}));
     fs::remove_dir_all(root).unwrap();
@@ -334,19 +334,19 @@ fn a_wrong_dependency_shape_or_export_is_an_error() {
 }
 
 #[test]
-fn a_monorm_id_gives_the_ufstack_npm_name_and_a_monorm_dist() {
+fn a_monorm_id_gives_the_unscoped_npm_name_and_a_monorm_dist() {
     // The id, then the npm name, the Python dist and the Python module that it gives.
     let cases = [
-        ("monorm.inherit", "@ufstack/monorm-inherit", "monorm-inherit", "monorm_inherit"),
+        ("monorm.inherit", "monorm-inherit", "monorm-inherit", "monorm_inherit"),
         (
             "monorm.query-defaults",
-            "@ufstack/monorm-query-defaults",
+            "monorm-query-defaults",
             "monorm-query-defaults",
             "monorm_query_defaults",
         ),
         (
             "monorm.soft-delete",
-            "@ufstack/monorm-soft-delete",
+            "monorm-soft-delete",
             "monorm-soft-delete",
             "monorm_soft_delete",
         ),

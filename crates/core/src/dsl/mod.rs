@@ -376,11 +376,11 @@ mod tests;
 /// Explicit allocation is separate from compilation and usable without a compiled
 /// extension that needs identities. A schema without extension declarations gets the full
 /// engine check before atomic publication; extension lowering waits for compilation.
-pub fn generate_identities(path: &Path, renames: &[(String, String)], restores: &[String]) -> Result<monorm_contracts::identity::IdentityManifest, String> {
+pub fn generate_identities(path: &Path, renames: &[(String, String)], restores: &[String]) -> Result<monorm::identity::IdentityManifest, String> {
     generate_identities_with(path, renames, restores, &Installed::new())
 }
 
-pub fn generate_identities_with(path: &Path, renames: &[(String, String)], restores: &[String], installed: &Installed) -> Result<monorm_contracts::identity::IdentityManifest, String> {
+pub fn generate_identities_with(path: &Path, renames: &[(String, String)], restores: &[String], installed: &Installed) -> Result<monorm::identity::IdentityManifest, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let project = compile_project_mode(&source, Some(path), Some((renames, restores)), installed)?;
     let manifest = project.ir.identities.clone().ok_or("missing generated identities")?;

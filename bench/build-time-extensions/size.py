@@ -4,7 +4,7 @@ usage: size.py BEFORE AFTER [ROWS] [DEPTH]
 
 Mach-O only (macOS `nm`). Each `__text` symbol is sized by the distance to the next
 symbol and charged to the first monorm crate it names, so monomorphized serde code
-counts against the monorm type it decodes. `monorm_core::ir` and `monorm_contracts::ir` are
+counts against the monorm type it decodes. `monorm_core::ir` and `monorm::ir` are
 one key, because the IR moved between the two crates.
 Only Rust v0 symbols are parsed, and only roughly: backrefs and `s<n>_` disambiguators
 can misname a key, and legacy `_ZN` symbols and the last symbol are not counted.
@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 
-CRATE = re.compile(r"C(?:s[0-9A-Za-z]*_)?\d+(monorm_contracts|monorm_core|monorm_engine|monorm_cli|__native|monorm_node)")
+CRATE = re.compile(r"C(?:s[0-9A-Za-z]*_)?\d+(monorm|monorm_core|monorm_engine|monorm_cli|__native|monorm_node)")
 
 
 def identifiers(symbol, position, count):
@@ -38,7 +38,7 @@ def attribute(path, depth):
         owner = CRATE.search(symbol)
         if owner:
             crate, modules = owner.group(1), identifiers(symbol, owner.end(), depth)
-            if crate in ("monorm_contracts", "monorm_core") and modules[:1] == ["ir"]:
+            if crate in ("monorm", "monorm_core") and modules[:1] == ["ir"]:
                 crate = "ir"
                 modules = modules[1:]
             key = "::".join([crate, *modules])

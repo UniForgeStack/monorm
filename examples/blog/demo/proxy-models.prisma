@@ -1,4 +1,4 @@
-// Needs the monorm-proxy package.
+// Needs the built-in proxy extension.
 
 enum Status {
   ACTIVE @map("active")

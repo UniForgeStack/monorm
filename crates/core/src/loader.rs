@@ -1,11 +1,11 @@
 //! Extensions that ship their passes as native libraries: select, check, load and run them.
 //! It names no extension. The passes of libraries and the passes compiled into the artifact run in one order.
 use sha2::{Digest, Sha256};
-use monorm_contracts::abi::{owns_bytes, AbiVersionFn, Arg, Buffer, Context, DropStateFn, FreeFn, HookFn, HooksFn, InitFn, OrmArg, OrmContext, OrmValue, RunPassFn, Value, STATUS_ERROR, STATUS_OK, STATUS_PANIC, SYMBOL_ABI_VERSION, SYMBOL_DROP_STATE, SYMBOL_FREE, SYMBOL_HOOKS, SYMBOL_INIT, SYMBOL_RUN_PASS};
-use monorm_contracts::extension::{attribute_namespace, PackageStamp, ABI_VERSION, SCHEMA_CONTRACT, SCHEMA_CONTRACT_VERSION};
-use monorm_contracts::ir::SchemaIr;
-use monorm_contracts::version::ContractVersion;
-use monorm_contracts::resolve::resolve;
+use monorm::abi::{owns_bytes, AbiVersionFn, Arg, Buffer, Context, DropStateFn, FreeFn, HookFn, HooksFn, InitFn, OrmArg, OrmContext, OrmValue, RunPassFn, Value, STATUS_ERROR, STATUS_OK, STATUS_PANIC, SYMBOL_ABI_VERSION, SYMBOL_DROP_STATE, SYMBOL_FREE, SYMBOL_HOOKS, SYMBOL_INIT, SYMBOL_RUN_PASS};
+use monorm::extension::{attribute_namespace, PackageStamp, ABI_VERSION, SCHEMA_CONTRACT, SCHEMA_CONTRACT_VERSION};
+use monorm::ir::SchemaIr;
+use monorm::version::ContractVersion;
+use monorm::resolve::resolve;
 use crate::behavior::{capture_storage, validate_declarations, validate_requirements, Manifest, Pass};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,7 +39,7 @@ impl HookSymbols {
 
 /// The error for a library that lacks `symbol` (a NUL-terminated name); `why` is empty or ends the clause that says why the library needs it.
 fn no_symbol(id: &str, path: &Path, symbol: &[u8], why: &str) -> String {
-    format!("extension {id}: {} has no `{}`{why}; build it with monorm_contracts::extension!", path.display(), String::from_utf8_lossy(&symbol[..symbol.len() - 1]))
+    format!("extension {id}: {} has no `{}`{why}; build it with monorm::extension!", path.display(), String::from_utf8_lossy(&symbol[..symbol.len() - 1]))
 }
 
 /// The error of a pass, an `init` or a hook (`what`) that ended with `status` and `text`.
@@ -221,7 +221,7 @@ impl Plan {
     /// Calls each expression hook (point 6 or 7) of a library that reads no context once, with `init` of its extension,
     /// and stores the expression in the record. `define()` then loads no library for the hook.
     fn evaluate_expression_hooks(&self, ir: &mut SchemaIr) -> Result<(), String> {
-        use monorm_contracts::{ir::ClientDefaultIr, writes::AssignValue};
+        use monorm::{ir::ClientDefaultIr, writes::AssignValue};
         let (once, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut ir.behavior.hooks).into_iter()
             .partition(|h| matches!(h.point, 6 | 7) && !h.reads_context && self.dynamic.iter().any(|d| d.manifest.id == h.source));
         ir.behavior.hooks = kept;
@@ -272,7 +272,7 @@ fn open(d: &Dynamic) -> Result<Arc<Native>, String> {
     }
     // SAFETY: loading a library runs its initializers; the user chose to install this extension.
     let library = unsafe { libloading::Library::new(&path) }.map_err(|e| format!("extension {id}: cannot load {}: {e}", path.display()))?;
-    // SAFETY: the symbol types are the ABI of monorm_contracts::abi; the ABI version is checked below before any other call.
+    // SAFETY: the symbol types are the ABI of monorm::abi; the ABI version is checked below before any other call.
     let (abi, run, free) = unsafe {
         let abi = *library.get::<AbiVersionFn>(SYMBOL_ABI_VERSION).map_err(|_| no_symbol(id, &path, SYMBOL_ABI_VERSION, ""))?;
         let run = *library.get::<RunPassFn>(SYMBOL_RUN_PASS).map_err(|_| no_symbol(id, &path, SYMBOL_RUN_PASS, ""))?;
@@ -307,7 +307,7 @@ impl Native {
 
     fn read_symbols(&self, id: &str, path: &Path) -> Result<HookSymbols, String> {
         let missing = |symbol: &[u8]| no_symbol(id, path, symbol, ", and the manifest declares exports");
-        // SAFETY: the symbol types are the ABI of monorm_contracts::abi; the ABI version was checked before this call.
+        // SAFETY: the symbol types are the ABI of monorm::abi; the ABI version was checked before this call.
         let (init, drop_state, table) = unsafe {
             let init = self.library.get::<InitFn>(SYMBOL_INIT).ok().map(|s| *s);
             let drop_state = self.library.get::<DropStateFn>(SYMBOL_DROP_STATE).ok().map(|s| *s);
@@ -359,7 +359,7 @@ impl Native {
 
 /// An opened library of a manifest that declares `exports`: its hooks and its state.
 #[derive(Clone)]
-pub struct Library { native: Arc<Native>, id: String, exports: Vec<monorm_contracts::extension::Export> }
+pub struct Library { native: Arc<Native>, id: String, exports: Vec<monorm::extension::Export> }
 
 /// The state that `monorm_ext_init` returned. Dropping it calls `monorm_ext_drop_state` once.
 pub struct State { native: Arc<Native>, id: String, raw: *mut c_void }
@@ -378,7 +378,7 @@ pub fn in_process_hook(name: &str, call: HookFn) -> (State, Hook) {
     unsafe extern "C" fn no_run(_: *const u8, _: usize, _: *const u8, _: usize, _: *mut Buffer) -> i32 { STATUS_OK }
     unsafe extern "C" fn free(ptr: *mut u8, len: usize) {
         // SAFETY: the hooks of the tests leak their buffers with `Value::leak`.
-        unsafe { monorm_contracts::abi::free(ptr, len) }
+        unsafe { monorm::abi::free(ptr, len) }
     }
     #[cfg(unix)]
     let library: libloading::Library = libloading::os::unix::Library::this().into();
@@ -390,7 +390,7 @@ pub fn in_process_hook(name: &str, call: HookFn) -> (State, Hook) {
     (State { native, id: "in-process".to_owned(), raw: std::ptr::null_mut() }, hook)
 }
 
-// SAFETY: a state is `Send + Sync` by the ABI (see `monorm_contracts::abi`): the host may call the hooks of one state
+// SAFETY: a state is `Send + Sync` by the ABI (see `monorm::abi`): the host may call the hooks of one state
 // from several threads at once and drop it on another thread. `raw` is the only field that is not `Send + Sync` by itself.
 unsafe impl Send for State {}
 // SAFETY: see `Send`.
@@ -417,7 +417,7 @@ pub fn open_package(id: &str, dir: &Path) -> Result<Library, String> {
 
 impl Library {
     /// The manifest entry of the export `id`.
-    pub fn export(&self, id: &str) -> Option<&monorm_contracts::extension::Export> { self.exports.iter().find(|e| e.id == id) }
+    pub fn export(&self, id: &str) -> Option<&monorm::extension::Export> { self.exports.iter().find(|e| e.id == id) }
 
     /// Calls `monorm_ext_init` with the JSON of the `extension_data` entry. A library without `init` gets no state.
     pub fn init(&self, data: &serde_json::Value) -> Result<State, String> {
@@ -499,7 +499,7 @@ impl Drop for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use monorm_contracts::abi::TAG_INT;
+    use monorm::abi::TAG_INT;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn install(dir: &Path, id: &str, body: &str) -> (String, PathBuf) {
@@ -535,7 +535,7 @@ mod tests {
 
     unsafe extern "C" fn real_free(ptr: *mut u8, len: usize) {
         // SAFETY: the tests give it only the buffers that `Value::leak` made.
-        unsafe { monorm_contracts::abi::free(ptr, len) }
+        unsafe { monorm::abi::free(ptr, len) }
     }
 
     /// A hook that writes `$value` to `out` and returns `$status`.
@@ -576,7 +576,7 @@ mod tests {
         unsafe extern "C" fn free(ptr: *mut u8, len: usize) {
             FREED.lock().unwrap().push(len);
             // SAFETY: `Value::leak` made the buffer.
-            unsafe { monorm_contracts::abi::free(ptr, len) }
+            unsafe { monorm::abi::free(ptr, len) }
         }
         let native = fake(free, &[("x.text", hook!(STATUS_OK, Value::Text("hello".into()).leak()))]);
         assert_eq!(call(&native, "x.text"), Ok(Value::Text("hello".into())));

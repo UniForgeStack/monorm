@@ -3,7 +3,7 @@
 use crate::db::{Cell, DbError, DbResult, RowSet};
 use crate::error::{Error, Result};
 use crate::params::Params;
-use monorm_contracts::abi::{Arg, Context, Value as Abi};
+use monorm::abi::{Arg, Context, Value as Abi};
 use monorm_core::{hooks::{HookPlan, HookRef}, ir::ValueType, schema::Model, writes::{AssignValue, WriteKind}};
 use sea_query::Value;
 use std::cell::OnceCell;

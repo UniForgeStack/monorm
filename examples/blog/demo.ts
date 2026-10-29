@@ -8,7 +8,7 @@
  *     node demo.ts postgres://postgres:postgres@localhost/orm_test
  *
  * The core section runs on every build. Each extension section runs when the native addon
- * has that extension, and prints how to get it otherwise. `scripts/install-extension-packages.sh` installs the extension packages into languages/js.
+ * has that extension, and prints how to get it otherwise. `npm install monorm` has the built-in extensions.
  *
  * The file-storage section also needs the `file-storage` extension (run `npm run assemble` in languages/js). Each section creates its demo_* tables and drops them.
  *

@@ -326,7 +326,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         for a in &m.field_adapters {
             let Some((_, u)) = adapters.of(&a.adapter) else { continue };
             for member in &u.runtime.members {
-                writeln!(body, "  {}", monorm_contracts::extension::expand_adapter_template(member, "typescript", &m.fields()[a.position].name)).unwrap();
+                writeln!(body, "  {}", monorm::extension::expand_adapter_template(member, "typescript", &m.fields()[a.position].name)).unwrap();
             }
         }
         for r in &m.ir.relations {

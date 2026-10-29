@@ -1,2 +1,2 @@
 //! Shared dialect contracts, re-exported for `monorm_core::dialect` callers.
-pub use monorm_contracts::dialect::*;
+pub use monorm::dialect::*;

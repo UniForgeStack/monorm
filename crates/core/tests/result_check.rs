@@ -1,4 +1,4 @@
-use monorm_contracts::{extension::ResultCheck, ir::{ColType, EnumIr, EnumStorage, EnumValueIr, FieldIr}};
+use monorm::{extension::ResultCheck, ir::{ColType, EnumIr, EnumStorage, EnumValueIr, FieldIr}};
 use monorm_core::result_check::{prepare, Category, EnumScalar, Warnings};
 use serde_json::json;
 

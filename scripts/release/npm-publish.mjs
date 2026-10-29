@@ -1,21 +1,11 @@
 #!/usr/bin/env node
-// Publish the npm packages of a release, in dependency order, and skip each version that is already up.
+// Publish the npm tarballs of a release and skip each version that is already up.
 // usage: npm-publish.mjs <dir-with-tgz> --mode real|dry-run
 import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const NPM = process.env.NPM_BIN ?? "npm";
-
-// Platform packages first, then the profiles (they depend on the platforms), then the core, then the unscoped alias, then the packages that peer on the core.
-function rank(name) {
-  if (/^@ufstack\/monorm-native-[a-z]+-(darwin|linux|win32)-/.test(name)) return 0;
-  if (name.startsWith("@ufstack/monorm-native-")) return 1;
-  if (name === "@ufstack/monorm") return 2;
-  if (name === "monorm") return 3;
-  if (name === "@ufstack/monorm-auth") return 5;
-  return 4;
-}
 
 export function readPackage(tgz) {
   const text = execFileSync("tar", ["-xzOf", tgz, "package/package.json"], { encoding: "utf8" });
@@ -24,8 +14,7 @@ export function readPackage(tgz) {
 }
 
 export function plan(dir) {
-  const packs = readdirSync(dir).filter((f) => f.endsWith(".tgz")).map((f) => readPackage(join(dir, f)));
-  return packs.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+  return readdirSync(dir).filter((f) => f.endsWith(".tgz")).sort().map((f) => readPackage(join(dir, f)));
 }
 
 function published({ name, version }) {

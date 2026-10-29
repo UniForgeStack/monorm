@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { connect } from '@ufstack/monorm';
+import { connect } from 'monorm';
 import { Account, ActiveAccount } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
 const stamp = locked.behavior.packages['monorm.proxy'];
-assert.equal((await import('@ufstack/monorm-proxy')).manifestHash, stamp.manifest_hash);
+assert.equal((await import('monorm/extensions/proxy')).manifestHash, stamp.manifest_hash);
 assert.ok(!('proxy_models' in locked.behavior));
 const db = await connect(process.env.MONORM_DATABASE_URL);
 await db.dropTables();

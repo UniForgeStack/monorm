@@ -1,7 +1,7 @@
 //! The types generated for extension language code, checked by mypy --strict, pyright and tsc:
 //! a member is accepted on a model that has the extension and rejected on a model without it.
 //! The first extension is the fixture of the extension build; the second composes with it.
-use monorm_contracts::extension::{Declaration, LanguageMembers, SourceLocation};
+use monorm::extension::{Declaration, LanguageMembers, SourceLocation};
 use monorm_core::codegen::{python, typescript, ExtensionCode, Options};
 use std::{fs, path::{Path, PathBuf}, process::Command};
 

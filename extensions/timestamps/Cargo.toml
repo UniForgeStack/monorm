@@ -6,7 +6,7 @@ publish = false
 description = "Selected @@timestamps.updated_at compiler for ORM: a row trigger or ORM-only updates"
 
 [dependencies]
-monorm-contracts = { path = "../../crates/contracts" }
+monorm = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [dev-dependencies]

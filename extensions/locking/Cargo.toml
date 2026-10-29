@@ -6,7 +6,7 @@ publish = false
 description = "Selected optimistic-locking compiler for ORM: a version field checked on instance writes"
 
 [dependencies]
-monorm-contracts = { path = "../../crates/contracts" }
+monorm = { path = "../../crates/contracts" }
 serde_json = "1"
 
 [lib]

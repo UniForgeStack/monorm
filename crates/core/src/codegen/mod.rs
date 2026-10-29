@@ -100,7 +100,7 @@ pub struct Options {
 pub struct ExtensionCode {
     /// Installed runtime module; no source files are copied for packaged extensions.
     pub runtime_module: Option<String>,
-    pub members: monorm_contracts::extension::LanguageMembers,
+    pub members: monorm::extension::LanguageMembers,
     /// The attributes of the extension; a model that declares one gets the members.
     pub attributes: Vec<String>,
     /// Path relative to the extension's source directory, with the content.
@@ -152,7 +152,7 @@ impl ExtensionCode {
 impl Options {
     /// Add the packages selected by the schema, using the binding's discovered import names.
     pub fn with_packages(&mut self, ir: &crate::ir::SchemaIr, language: &str, modules: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
-        fn visit<'a>(id: &'a String, packages: &'a std::collections::BTreeMap<String, monorm_contracts::extension::PackageStamp>, order: &mut Vec<&'a String>, visiting: &mut Vec<&'a String>) -> Result<(), String> {
+        fn visit<'a>(id: &'a String, packages: &'a std::collections::BTreeMap<String, monorm::extension::PackageStamp>, order: &mut Vec<&'a String>, visiting: &mut Vec<&'a String>) -> Result<(), String> {
             if order.contains(&id) { return Ok(()); }
             if visiting.contains(&id) { return Err(format!("cyclic packaged extension dependencies at {id}")); }
             visiting.push(id);
@@ -178,7 +178,7 @@ impl Options {
                 None if self_contained => None,
                 None => return Err(format!("extension {id}: missing runtime module; pass --extension-module ID=MODULE")),
             };
-            let mut members = monorm_contracts::extension::LanguageMembers { extension: id.clone(), version: package.version.clone(), language: language.into(), ..Default::default() };
+            let mut members = monorm::extension::LanguageMembers { extension: id.clone(), version: package.version.clone(), language: language.into(), ..Default::default() };
             if let Some(section) = section {
                 members.field_adapters = section.field_adapters.clone();
                 members.query_set = section.query_set.clone();
@@ -288,7 +288,7 @@ pub(super) struct Adapters<'a> {
 pub(super) struct AdapterUse<'a> {
     pub(super) id: &'a str,
     pub(super) extension: &'a ExtensionCode,
-    pub(super) runtime: &'a monorm_contracts::extension::AdapterRuntime,
+    pub(super) runtime: &'a monorm::extension::AdapterRuntime,
 }
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
@@ -319,7 +319,7 @@ impl<'a> Adapters<'a> {
                 return Err(format!("field adapter {} has a runtime entry in both {} and {}", record.adapter, extension.members.extension, other.members.extension));
             }
             if let Some(model) = ir.models.iter().find(|m| m.name == record.model) {
-                monorm_contracts::extension::check_adapter_methods(model, &runtime.method_names(language, &record.field))?;
+                monorm::extension::check_adapter_methods(model, &runtime.method_names(language, &record.field))?;
             }
             if !uses.iter().any(|u| u.id == record.adapter) {
                 uses.push(AdapterUse { id: &record.adapter, extension, runtime });
@@ -470,7 +470,7 @@ mod reference_tests {
         });
         ExtensionCode {
             runtime_module: None,
-            members: monorm_contracts::extension::LanguageMembers {
+            members: monorm::extension::LanguageMembers {
                 extension: "example.language".into(), version: "1.0.0".into(), language: "python".into(),
                 query_set: "TaggedQuerySet".into(), instance: "TaggedInstance".into(), hash: "abc".into(), query_set_members: vec!["tagged".into()], ..Default::default()
             },
@@ -526,13 +526,13 @@ mod reference_tests {
         let mut ir = crate::dsl::compile("model Post {\n id Int @id\n}\nmodel Draft {\n id Int @id\n}\nmodel Final {\n id Int @id\n}\nmodel Note {\n id Int @id\n}", None).unwrap();
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         for (model, parent) in [("Draft", "Post"), ("Final", "Draft")] {
-            ir.behavior.model_views.push(monorm_contracts::extension::ModelView { model: model.into(), source: parent.into(), root: "Post".into(), row_filter: None, insert_table: None });
+            ir.behavior.model_views.push(monorm::extension::ModelView { model: model.into(), source: parent.into(), root: "Post".into(), row_filter: None, insert_table: None });
         }
         (ir, schema)
     }
 
-    fn delete_rewrite(model: &str) -> monorm_contracts::writes::DeleteRewrite {
-        monorm_contracts::writes::DeleteRewrite { source: "example.language".into(), model: model.into(), field: "deleted".into(), guard: serde_json::Value::Null }
+    fn delete_rewrite(model: &str) -> monorm::writes::DeleteRewrite {
+        monorm::writes::DeleteRewrite { source: "example.language".into(), model: model.into(), field: "deleted".into(), guard: serde_json::Value::Null }
     }
 
     #[test]
@@ -653,7 +653,7 @@ mod reference_tests {
         ]))
         .unwrap();
         ir.models[0].classes_from = Some("AbstractUser".into());
-        ir.behavior.schema_contract = monorm_contracts::extension::SCHEMA_CONTRACT;
+        ir.behavior.schema_contract = monorm::extension::SCHEMA_CONTRACT;
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         (ir, schema)
     }
@@ -793,7 +793,7 @@ mod reference_tests {
     }
 
     fn adapter_extension(language: &str) -> ExtensionCode {
-        use monorm_contracts::extension::{AdapterRuntime, ModuleFunction};
+        use monorm::extension::{AdapterRuntime, ModuleFunction};
         let python = language == "python";
         let runtime = AdapterRuntime {
             adapter: TEST_ADAPTER.into(),
@@ -808,7 +808,7 @@ mod reference_tests {
         };
         ExtensionCode {
             runtime_module: None,
-            members: monorm_contracts::extension::LanguageMembers { extension: "acme.runtime".into(), version: "1.0.0".into(), language: language.into(), field_adapters: vec![runtime], ..Default::default() },
+            members: monorm::extension::LanguageMembers { extension: "acme.runtime".into(), version: "1.0.0".into(), language: language.into(), field_adapters: vec![runtime], ..Default::default() },
             attributes: vec![],
             files: vec![],
         }
@@ -878,7 +878,7 @@ mod reference_tests {
         for (language, field) in [("python", "file_url"), ("typescript", "fileUrl")] {
             let mut ir = crate::dsl::compile(&format!("model Report {{\n id Int @id\n file Json?\n {field} Int?\n}}"), None).unwrap();
             ir.behavior.schema_contract = crate::behavior::SCHEMA_CONTRACT;
-            ir.behavior.field_adapters.push(monorm_contracts::extension::FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
+            ir.behavior.field_adapters.push(monorm::extension::FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
             let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
             let options = Options { extensions: vec![adapter_extension(language)], ..Options::default() };
             let error = if language == "python" {

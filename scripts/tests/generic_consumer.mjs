@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { connect } from '@ufstack/monorm';
+import { connect } from 'monorm';
 import { ContentType, Label, Photo, Video } from './models.js';
 const locked = JSON.parse(readFileSync('models.ts', 'utf8').split('const SCHEMA: SchemaIR = ')[1].split(';\n')[0]);
 const stamp = locked.behavior.packages['monorm.generic'];
-assert.equal((await import('@ufstack/monorm-generic')).manifestHash, stamp.manifest_hash);
+assert.equal((await import('monorm/extensions/generic')).manifestHash, stamp.manifest_hash);
 assert.deepEqual(Object.keys(locked.behavior.extension_data['monorm.generic']).sort(), ['relations', 'reverse']);
 const db = await connect(process.env.MONORM_DATABASE_URL);
 await db.dropTables();

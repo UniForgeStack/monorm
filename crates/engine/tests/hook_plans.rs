@@ -1,5 +1,5 @@
 //! Hook plans at the write seams: a hook 4 on a value that the caller sets, copy loads and the request context.
-use monorm_contracts::abi::{Arg, OrmArg, OrmContext, OrmValue, Value as Abi, STATUS_OK};
+use monorm::abi::{Arg, OrmArg, OrmContext, OrmValue, Value as Abi, STATUS_OK};
 use monorm_core::{
     dialect::{Dialect, Target},
     hooks::{HookPlan, HookRef},

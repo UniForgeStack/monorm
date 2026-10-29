@@ -3,7 +3,7 @@
 //! narrowing nor client defaults change physical storage or imply predicates.
 //! Explicit partition ownership projects local objects and a permanent storage bound.
 use std::collections::{BTreeMap, BTreeSet};
-use monorm_contracts::{extension::{capture_storage, ModelView, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
+use monorm::{extension::{capture_storage, ModelView, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
 use serde::{Deserialize, Serialize};
 
 /// The id under which the pass keeps its records in `extension_data`.
@@ -357,7 +357,7 @@ fn copy<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) -> Result<
 }
 
 fn validate_default(field: &FieldIr, value: &serde_json::Value) -> Result<(), String> {
-    use monorm_contracts::ir::ColType;
+    use monorm::ir::ColType;
     // Shape violations, including null for a non-null view, are warning-only.
     // Validate encoding here; physical constraints remain database-enforced.
     if value.is_null() { return Ok(()); }
@@ -381,7 +381,7 @@ fn validate_default(field: &FieldIr, value: &serde_json::Value) -> Result<(), St
 
 #[cfg(test)]
 mod effects {
-    use monorm_contracts::{extension::pass_effects, ir::SchemaIr};
+    use monorm::{extension::pass_effects, ir::SchemaIr};
 
     /// Declared effect `monorm.proxy.logical-models`: the logical models, their contracts, and
     /// the storage snapshot, where a proxy shares its parent table instead of its own.
@@ -398,4 +398,4 @@ mod effects {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-monorm_contracts::extension!(("monorm.proxy.lower", lower));
+monorm::extension!(("monorm.proxy.lower", lower));

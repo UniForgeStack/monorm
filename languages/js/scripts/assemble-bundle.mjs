@@ -70,7 +70,8 @@ function checkExports(short, npm) {
 function collect(dir) {
   const tool = packager();
   mkdirSync(dir, { recursive: true });
-  for (const short of shorts) run(tool, ["library", join(repo, "extensions", short), "--out", join(dir, short)]);
+  const zig = process.env.MONORM_CARGO_TARGET ? ["--zigbuild", process.env.MONORM_CARGO_TARGET] : [];
+  for (const short of shorts) run(tool, ["library", join(repo, "extensions", short), "--out", join(dir, short), ...zig]);
   run("node", [join(here, "build-native.mjs"), "--release", "--profile", "tooling"]);
   mkdirSync(join(dir, "engine", host), { recursive: true });
   cpSync(join(pkgRoot, "monorm.node"), join(dir, "engine", host, "monorm.node"));

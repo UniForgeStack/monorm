@@ -370,13 +370,13 @@ pub unsafe fn free(ptr: *mut u8, len: usize) {
 /// Write the exports of ABI 0.2. Call it once, at the root of a `cdylib` crate:
 ///
 /// ```
-/// use monorm_contracts::abi::{Arg, Context, Value};
-/// use monorm_contracts::ir::SchemaIr;
+/// use monorm::abi::{Arg, Context, Value};
+/// use monorm::ir::SchemaIr;
 /// struct State(String);
 /// fn init(data: &serde_json::Value) -> Result<State, String> { Ok(State(data.to_string())) }
 /// fn hook(state: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Text(state.0.clone())) }
 /// fn pass(_: &mut SchemaIr) -> Result<(), String> { Ok(()) }
-/// monorm_contracts::extension! {
+/// monorm::extension! {
 ///     init = init;                  // optional: fn(&serde_json::Value) -> Result<S, String>
 ///     hooks { "my.hook" => hook };  // optional: fn(&S, &[Arg], &Context) -> Result<Value, String>
 ///     ("my.pass", pass)             // fn(&mut SchemaIr) -> Result<(), String>
@@ -390,35 +390,35 @@ pub unsafe fn free(ptr: *mut u8, len: usize) {
 /// Each hook takes the state that `init` returns, and that state is `Send + Sync`. A hook of another state is a compile error:
 ///
 /// ```compile_fail,E0308
-/// use monorm_contracts::abi::{Arg, Context, Value};
+/// use monorm::abi::{Arg, Context, Value};
 /// struct State;
 /// fn hook(_: &State, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
-/// monorm_contracts::extension! { hooks { "x.hook" => hook }; }
+/// monorm::extension! { hooks { "x.hook" => hook }; }
 /// ```
 ///
 /// ```compile_fail,E0308
-/// use monorm_contracts::abi::{Arg, Context, Value};
+/// use monorm::abi::{Arg, Context, Value};
 /// struct State;
 /// struct Other;
 /// fn init(_: &serde_json::Value) -> Result<State, String> { Ok(State) }
 /// fn hook(_: &Other, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
-/// monorm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
+/// monorm::extension! { init = init; hooks { "x.hook" => hook }; }
 /// ```
 ///
 /// The host calls the hooks of one state from several threads, so a state that is not `Send + Sync` is a compile error:
 ///
 /// ```compile_fail,E0277
-/// use monorm_contracts::abi::{Arg, Context, Value};
+/// use monorm::abi::{Arg, Context, Value};
 /// use std::rc::Rc;
 /// fn init(_: &serde_json::Value) -> Result<Rc<u8>, String> { Ok(Rc::new(0)) }
 /// fn hook(_: &Rc<u8>, _: &[Arg], _: &Context) -> Result<Value, String> { Ok(Value::Null) }
-/// monorm_contracts::extension! { init = init; hooks { "x.hook" => hook }; }
+/// monorm::extension! { init = init; hooks { "x.hook" => hook }; }
 /// ```
 ///
 /// An input that matches no form is a compile error that lists the forms:
 ///
 /// ```compile_fail
-/// monorm_contracts::extension! { hooks "x.hook" => hook }
+/// monorm::extension! { hooks "x.hook" => hook }
 /// ```
 #[macro_export]
 macro_rules! extension {

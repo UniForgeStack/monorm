@@ -1,5 +1,5 @@
 //! Abstract models and model overrides. The pass runs first, so later passes see ordinary models.
-use monorm_contracts::{
+use monorm::{
     extension::{capture_storage, Declaration},
     ir::*,
 };
@@ -528,4 +528,4 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-monorm_contracts::extension!(("monorm.inherit.expand", expand));
+monorm::extension!(("monorm.inherit.expand", expand));

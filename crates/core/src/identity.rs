@@ -1,5 +1,5 @@
 //! ContentType synthesis and explicit identity generation. Ordinary compilation is read-only.
-pub use monorm_contracts::identity::*;
+pub use monorm::identity::*;
 use std::{collections::{BTreeSet, HashMap}, path::{Path, PathBuf}};
 use crate::ir::{EnumIr, EnumStorage, EnumValueIr, SchemaIr};
 
@@ -311,7 +311,7 @@ mod integration_tests {
         let mut ir = ir("sqlite");
         let mut view = serde_json::to_value(&ir.models[0]).unwrap(); view["name"] = "PublicPost".into();
         ir.models.push(serde_json::from_value(view).unwrap());
-        ir.behavior.model_views.push(monorm_contracts::extension::ModelView {
+        ir.behavior.model_views.push(monorm::extension::ModelView {
             model: "PublicPost".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None,
         });
         validate(&ir, &[]).unwrap();

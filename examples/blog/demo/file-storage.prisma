@@ -1,4 +1,4 @@
-// Needs the `monorm-file-storage` (Python) or `monorm/extensions/file-storage` (Node) package.
+// Needs the built-in file-storage extension: `pip install monorm`, or `npm install monorm` and `monorm/extensions/file-storage`.
 
 model Report {
   id   Int   @id
