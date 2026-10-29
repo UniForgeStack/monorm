@@ -238,6 +238,7 @@ class FsTests(unittest.IsolatedAsyncioTestCase):
                 await registry.signed_url(reference)
 
 
+@unittest.skipIf(sys.platform == "win32", "the resource module is POSIX only")
 class MemoryUsageTest(unittest.TestCase):
     def test_streaming_64_mib_keeps_the_peak_rss_low(self):
         # Python allocation tracing cannot see OpenDAL's Rust allocations, so measure the process peak RSS.
