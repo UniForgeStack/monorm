@@ -8,23 +8,23 @@ import tomllib
 from pathlib import Path
 
 EXCLUDED = {"monorm.file-storage", "file-storage"}  # file storage stays out of monorm[full]; the bare id is the id before it is renamed
-NATIVE = "monorm-native-tooling==0.1.0"
 
 
-def expected(root: Path) -> set[str]:
-    members = {NATIVE}
+def expected(root: Path, version: str) -> set[str]:
+    members = {f"monorm-native-tooling=={version}"}
     for manifest in sorted((root / "extensions").glob("*/monorm-extension.toml")):
         data = tomllib.loads(manifest.read_text())
         if data["id"] in EXCLUDED:
             continue
         dist = data["id"].replace(".", "-").replace("_", "-")
-        members.add(f"{dist}=={data['version']}")
+        members.add(f"{dist}=={data['version'].replace('-rc.', 'rc')}")  # manifests hold semver; pins hold PEP 440
     return members
 
 
 def check(root: Path) -> list[str]:
-    declared = set(tomllib.loads((root / "pyproject.toml").read_text())["project"]["optional-dependencies"]["full"])
-    wanted = expected(root)
+    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    declared = set(project["optional-dependencies"]["full"])
+    wanted = expected(root, project["version"])
     return [f"missing from monorm[full]: {name}" for name in sorted(wanted - declared)] + [
         f"not a first-party member of monorm[full]: {name}" for name in sorted(declared - wanted)
     ]

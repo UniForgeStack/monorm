@@ -1,9 +1,10 @@
 # Changelog
 
 All notable changes are listed here, in the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
-No release is published yet, so every entry is under Unreleased.
 
 ## [Unreleased]
+
+## [0.1.0] - TBD
 
 - Renamed from `orm` to `monorm`: PyPI `monorm`, `monorm-native-<profile>`, `monorm-auth`, `monorm-file-storage`; npm `@ufstack/monorm`, `@ufstack/monorm-native-<profile>`, `@ufstack/monorm-auth`, `@ufstack/monorm-file-storage`; Rust `monorm-contracts`. The CLI is `monorm` and the Python module is `monorm`.
 - Async Python and TypeScript APIs on one Rust core: queries, relation loading with `load()`, transactions, locks and protected writes.

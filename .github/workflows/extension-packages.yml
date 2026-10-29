@@ -1,6 +1,7 @@
 name: Extension packages
 on:
   workflow_dispatch:
+  workflow_call:
   pull_request:
   push:
     branches: [main]
@@ -68,14 +69,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: python3 -m pip install --break-system-packages ziglang cargo-zigbuild
+      # The Linux library targets glibc 2.28, the floor of the extension wheel tag.
       - name: Build the library of each extension
         shell: bash
         run: |
+          extra=()
+          if [ "$RUNNER_OS" = Linux ]; then extra=(--zigbuild x86_64-unknown-linux-gnu.2.28); fi
           for manifest in extensions/*/monorm-extension.toml tests/outside-extension/monorm-extension.toml; do
             grep -q '^library' "$manifest" || continue
             dir=$(dirname "$manifest")
-            cargo run -q -p monorm-extension-package -- library "$dir" --out "target/libraries/$(basename "$dir")"
+            cargo run -q -p monorm-extension-package -- library "$dir" --out "target/libraries/$(basename "$dir")" "${extra[@]}"
           done
+      - if: runner.os == 'Linux'
+        run: python3 scripts/check-glibc.py target/libraries/*/linux-x64/*.so
       - uses: actions/upload-artifact@v4
         with:
           name: libraries-${{ matrix.os }}

@@ -1,0 +1,241 @@
+name: Release
+# A `v*` tag publishes to PyPI, npm and crates.io. A manual run publishes to TestPyPI and dry-runs npm and cargo.
+# The registries match this file name in the trusted publisher, so every publish step stays in this file.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      target: ${{ steps.version.outputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 -m unittest scripts/tests/test_release_versions.py
+      - id: version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            version=$(python3 scripts/release/versions.py tag "$GITHUB_REF_NAME")
+            target=real
+            flags=()
+          else
+            version=$(python3 scripts/release/versions.py show)
+            target=test
+            flags=(--allow-tbd)
+          fi
+          python3 scripts/release/versions.py check "$version" "${flags[@]}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+  profiles:
+    needs: version
+    uses: ./.github/workflows/package-profiles.yml
+  extensions:
+    needs: version
+    uses: ./.github/workflows/extension-packages.yml
+  collect:
+    needs: [version, profiles, extensions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: target/release-wheels
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-*
+          merge-multiple: true
+          path: target/release-npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: assembled-packages
+          path: target/release-assembled
+      - name: Gather the PyPI files
+        run: |
+          mkdir -p dist/pypi dist/npm
+          cp target/release-wheels/*.whl target/release-assembled/*.whl dist/pypi/
+          rm -f dist/pypi/acme_outside-*.whl
+          # Every wheels-* artifact holds a thin monorm wheel, and merge-multiple keeps one of them at random.
+          rm -f dist/pypi/monorm-*.whl
+          # The two pure Python projects are built here, wheel and sdist.
+          uv build --out-dir dist/pypi .
+          uv build --out-dir dist/pypi apps/auth/python
+      - name: Gather the npm files
+        run: |
+          cp target/release-npm/*.tgz target/release-assembled/*.tgz dist/npm/
+          # decimal.js is a test dependency of check-node-install.mjs, and acme-outside is a test package.
+          rm -f dist/npm/decimal.js-*.tgz dist/npm/acme-outside-*.tgz
+      - name: Build the TypeScript package and the extension packages
+        run: |
+          npm ci --ignore-scripts
+          npx tsc -p tsconfig.json
+          for extension in timestamps soft-delete locking inherit; do
+            cargo run -q -p monorm-extension-package -- package "../../extensions/$extension" --out "../../target/extension-packages/$extension" --tsc "$PWD/node_modules/.bin/tsc"
+          done
+        working-directory: languages/js
+      - name: Build and pack the auth npm package
+        run: npm install --no-audit --no-fund && npm run build && npm pack --pack-destination ../../../dist/npm
+        working-directory: apps/auth/typescript
+      - name: Check the files against the package lists
+        run: |
+          version='${{ needs.version.outputs.version }}'
+          python3 scripts/release/publish-lists.py check pypi dist/pypi "$version"
+          python3 scripts/release/publish-lists.py check npm dist/npm "$version"
+          uvx twine check --strict dist/pypi/*
+          for profile in postgres sqlite combined tooling; do
+            python3 languages/python/packaging/check-wheel.py target/release-wheels "$profile"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-pypi
+          path: dist/pypi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-npm
+          path: dist/npm
+  publish-crates:
+    needs: [version, collect]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Dry run
+        if: needs.version.outputs.target == 'test'
+        run: cargo publish --dry-run -p monorm-contracts
+      - name: Look for the version on crates.io
+        id: exists
+        if: needs.version.outputs.target == 'real'
+        run: |
+          if curl -sf -A 'monorm-release (https://github.com/UniForgeStack/monorm)' "https://crates.io/api/v1/crates/monorm-contracts/${{ needs.version.outputs.version }}" > /dev/null; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "monorm-contracts ${{ needs.version.outputs.version }} is already on crates.io; skip"
+          fi
+      # Before the trusted publisher exists on crates.io, this step fails and the CARGO_REGISTRY_TOKEN secret takes over.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+        if: needs.version.outputs.target == 'real' && steps.exists.outputs.published != 'true'
+        continue-on-error: true
+      - name: Publish
+        if: needs.version.outputs.target == 'real' && steps.exists.outputs.published != 'true'
+        run: cargo publish -p monorm-contracts
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+  publish-pypi:
+    needs: [version, collect]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-pypi
+          path: dist/pypi
+      # The thin monorm goes last, so a failure before it leaves no monorm that points at a missing wheel.
+      - run: python3 scripts/release/publish-lists.py split-pypi dist/pypi dist/split
+      - name: Upload the native, extension and auth files
+        if: needs.version.outputs.target == 'real'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/split/deps
+          skip-existing: true
+      - name: Upload monorm
+        if: needs.version.outputs.target == 'real'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/split/monorm
+          skip-existing: true
+      - name: Upload the native, extension and auth files to TestPyPI
+        if: needs.version.outputs.target == 'test'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/split/deps
+          skip-existing: true
+      - name: Upload monorm to TestPyPI
+        if: needs.version.outputs.target == 'test'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/split/monorm
+          skip-existing: true
+  publish-npm:
+    needs: [version, collect]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or newer; the install fails when no such version exists.
+      - run: npm install -g 'npm@>=11.5.1'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-npm
+          path: dist/npm
+      # Without the NPM_TOKEN secret, npm uses the trusted publisher of each package.
+      # An empty secret keeps the placeholder token that setup-node wrote, so the OIDC path stays open.
+      - run: |
+          export NODE_AUTH_TOKEN="${NPM_TOKEN:-$NODE_AUTH_TOKEN}"
+          node scripts/release/npm-publish.mjs dist/npm --mode ${{ needs.version.outputs.target == 'real' && 'real' || 'dry-run' }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+  contracts-consumer:
+    if: needs.version.outputs.target == 'real'
+    needs: [version, publish-crates]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build an outside extension on the published monorm-contracts
+        run: |
+          cp -r tests/outside-extension "$RUNNER_TEMP/outside"
+          cd "$RUNNER_TEMP/outside"
+          rm -rf target Cargo.lock
+          sed -i 's|^monorm-contracts = .*|monorm-contracts = "=${{ needs.version.outputs.version }}"|' Cargo.toml
+          cargo build
+  release-notes:
+    if: needs.version.outputs.target == 'real'
+    needs: [version, publish-crates, publish-pypi, publish-npm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version='${{ needs.version.outputs.version }}'
+          awk -v v="## [$version]" 'index($0, v) == 1 { found = 1; next } /^## \[/ { found = 0 } found' CHANGELOG.md > notes.md
+          flags=(--verify-tag)
+          if [ -s notes.md ]; then flags+=(--notes-file notes.md); else flags+=(--generate-notes); fi
+          case "$version" in 0.*|*-*) flags+=(--prerelease);; esac
+          gh release create "v$version" "${flags[@]}"

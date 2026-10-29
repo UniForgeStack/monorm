@@ -2,6 +2,7 @@
 name = "monorm-extension-package"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Build host-platform Python and npm packages for ORM pass extensions"
 
 [dependencies]
