@@ -610,11 +610,12 @@ class ColumnRef(Expression[T]):
         never SQL negation; write ``0 - Post.views`` for that."""
         return self.desc()
 
-    def __repr__(self) -> str:
+    def _text(self, *, keyed: bool) -> str:
         text = ".".join((self._root.__name__, *self._path, self._field.name))
-        if _KEYING.get():
-            text += "".join(f"#{id(a)}" for a in self._alias if a is not None)
-        return text
+        return (text + "".join(f"#{id(a)}" for a in self._alias if a is not None)) if keyed else text
+
+    def __repr__(self) -> str:
+        return self._text(keyed=_KEYING.get())
 
 
 class Excluded(Expression[T]):
@@ -1559,6 +1560,8 @@ def _leaf_columns(node: Node) -> list[ColumnRef[Any]]:
     ``outer()`` read their own scope."""
     if isinstance(node, ColumnRef):
         return [node]
+    if isinstance(node, Literal):
+        return []
     children: Sequence[Node] = ()
     if isinstance(node, Func):
         children = () if node._name in _AGGREGATES else node._args
@@ -1662,6 +1665,8 @@ def _is_negative(leaf: Condition) -> bool:
 
 def _ckey(e: object) -> str:
     """The identity of a value for the null rule: its ``repr()`` with the aliases of its columns."""
+    if type(e) is ColumnRef:  # a subclass (NestedRef) renders its own repr
+        return e._text(keyed=True)
     token = _KEYING.set(True)
     try:
         return repr(e)
@@ -1699,11 +1704,13 @@ def resolve_null_rule(condition: Condition, *, negated: bool = False, strict: bo
         # The rule of a ruled column inside a computed value applies to the whole value.
         ruled: dict[tuple[str, str], tuple[Node, NullRule]] = {}
         for value in _tested(leaf):
-            if _ckey(value) in handled:
-                continue
-            for c in _leaf_columns(value):
-                if c._rule:
-                    ruled.setdefault((_ckey(value), c._rule), (value, c._rule))
+            rules: list[NullRule] = [c._rule for c in _leaf_columns(value) if c._rule]
+            if not rules:
+                continue  # the common case: `_ckey` renders the value, so only a ruled value pays for it
+            key = _ckey(value)
+            if key not in handled:
+                for rule in rules:
+                    ruled.setdefault((key, rule), (value, rule))
         ruled_leaf = leaf
         for value, rule in ruled.values():
             keeps_null = rule == "or_null"
