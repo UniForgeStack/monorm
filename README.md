@@ -101,7 +101,7 @@ In MonOrm they are part of the ORM or a built-in extension:
 
 - **The schema language is Prisma's.** One `schema.prisma` file, with the editor tooling that already exists ([docs](docs/schema/prisma-syntax.md)).
 - **The model API is Django-style.** `Model.objects`, `filter()`, `load()` and migrations that come from the schema.
-- **Typed expressions** in the style of SQLAlchemy, and generated typed models.
+- **Typed expressions** in the style of SQLAlchemy, and generated typed models ([docs](docs/type-safety.md)).
 
 ### Inspired by
 

@@ -16,6 +16,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | [python-api.md](api/python-api.md) | The Python API: models, queries, pagination, `select()`, subqueries, windows, CTEs, writes, connections, transactions, protected writes, locks, the N+1 finder, hooks, errors |
 | [typescript-api.md](api/typescript-api.md) | The TypeScript API, with the same sections |
 | [query-set-kinds.md](api/query-set-kinds.md) | The kinds of query set, and the methods each kind leaves out |
+| [type-safety.md](type-safety.md) | What the type checker catches, compared with Django, SQLAlchemy and Prisma |
 | [optional-packaging.md](contracts/optional-packaging.md) | One package per registry, outside extensions and exact source builds |
 
 ## Guides and contracts
