@@ -1,0 +1,1652 @@
+From 305e34c603d30da49c802af58de7f1e02efb17ad Mon Sep 17 00:00:00 2001
+From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
+Date: Mon, 26 Oct 2026 23:54:57 +0330
+Subject: [PATCH 1/4] Add MonOrm contenders (Python asyncio and Node.js)
+
+_monorm/queries.py and _monorm/index.mjs run the 7 IMDBench queries
+with load() and the expression API, on the tables of the _postgres load.
+schema.prisma maps the models to those tables, and both languages read it.
+The MonOrm import is in one place per language (_orm.py, orm.mjs).
+MonOrm has no avg() in load(), split_part or random(): a select() gives the
+average ratings, setup uses replace, and ids are sampled in the host language.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ _monorm/.gitignore    |   1 +
+ _monorm/__init__.py   |   0
+ _monorm/_orm.py       |   3 +
+ _monorm/index.mjs     | 285 ++++++++++++++++++++++++++++++++++++++++++
+ _monorm/orm.mjs       |   2 +
+ _monorm/package.json  |  12 ++
+ _monorm/queries.py    | 279 +++++++++++++++++++++++++++++++++++++++++
+ _monorm/schema.prisma |  85 +++++++++++++
+ 8 files changed, 667 insertions(+)
+ create mode 100644 _monorm/.gitignore
+ create mode 100644 _monorm/__init__.py
+ create mode 100644 _monorm/_orm.py
+ create mode 100644 _monorm/index.mjs
+ create mode 100644 _monorm/orm.mjs
+ create mode 100644 _monorm/package.json
+ create mode 100644 _monorm/queries.py
+ create mode 100644 _monorm/schema.prisma
+
+diff --git a/_monorm/.gitignore b/_monorm/.gitignore
+new file mode 100644
+index 0000000..d8b83df
+--- /dev/null
++++ b/_monorm/.gitignore
+@@ -0,0 +1 @@
++package-lock.json
+diff --git a/_monorm/__init__.py b/_monorm/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/_monorm/_orm.py b/_monorm/_orm.py
+new file mode 100644
+index 0000000..af0f6c7
+--- /dev/null
++++ b/_monorm/_orm.py
+@@ -0,0 +1,3 @@
++"""The one place that names the MonOrm Python package."""
++import orm  # noqa: F401
++from orm import func  # noqa: F401
+diff --git a/_monorm/index.mjs b/_monorm/index.mjs
+new file mode 100644
+index 0000000..5034128
+--- /dev/null
++++ b/_monorm/index.mjs
+@@ -0,0 +1,285 @@
++import { readFileSync } from "node:fs";
++import { connect, func, loads } from "./orm.mjs";
++
++const INSERT_PREFIX = "insert_test__";
++
++const models = loads(readFileSync(new URL("./schema.prisma", import.meta.url), "utf8"));
++const { Movie, Person, User, Director, Actor, Review } = models;
++
++function fullName(p) {
++  return p.middleName ? `${p.firstName} ${p.middleName} ${p.lastName}` : `${p.firstName} ${p.lastName}`;
++}
++
++function person(p) {
++  return { id: p.id, full_name: fullName(p), image: p.image };
++}
++
++// NULLS LAST on list_order, then last name: the order the other contenders use.
++function ordered(rel, orderModel) {
++  return rel.objects
++    .orderBy(orderModel.listOrder.asc({ nulls: "last" }), orderModel.person.lastName)
++    .load(orderModel.person);
++}
++
++function shuffle(a) {
++  for (let i = a.length - 1; i > 0; i--) {
++    const j = Math.floor(Math.random() * (i + 1));
++    [a[i], a[j]] = [a[j], a[i]];
++  }
++  return a;
++}
++
++export class App {
++  constructor({ host, port, max }) {
++    // The default matches the database of the `_postgres` contenders; the env var points a local run elsewhere.
++    this.url =
++      process.env.IMDBENCH_MONORM_URL ||
++      `postgres://postgres_bench:edgedbbenchmark@${host}:${port}/postgres_bench`;
++    this.max = max;
++  }
++
++  async init() {
++    this.db = await connect(this.url, { maxConnections: this.max });
++  }
++
++  async close() {
++    await this.db.close();
++  }
++
++  getConnection(i) {
++    return this;
++  }
++
++  // load() takes no avg() over a relation column, so a select() gives the average per movie.
++  async avgRatings(ids) {
++    const out = new Map();
++    if (ids.length === 0) return out;
++    const rows = await Movie.objects
++      .filter(Movie.id.in(ids))
++      .select({ id: Movie.id, avg: func.avg(Movie.reviews.rating) });
++    for (const r of rows) out.set(r.id, r.avg === null ? null : Number(r.avg));
++    return out;
++  }
++
++  async userDetails(id) {
++    const user = await User.objects
++      .filter(User.id.eq(id))
++      .load(
++        User.reviews.objects.orderBy(Review.creationTime.desc()).limit(10).load(Review.movie).label("latest"),
++      )
++      .first();
++    const ratings = await this.avgRatings([...new Set(user.latest.map((r) => r.movie.id))]);
++    return JSON.stringify({
++      id: user.id,
++      name: user.name,
++      image: user.image,
++      latest_reviews: user.latest.map((r) => ({
++        id: r.id,
++        body: r.body,
++        rating: r.rating,
++        movie: {
++          id: r.movie.id,
++          image: r.movie.image,
++          title: r.movie.title,
++          avg_rating: ratings.get(r.movie.id),
++        },
++      })),
++    });
++  }
++
++  async movieDetails(id) {
++    const movie = await Movie.objects
++      .filter(Movie.id.eq(id))
++      .load(
++        ordered(Movie.directors, Director).label("dirs"),
++        ordered(Movie.cast, Actor).label("castList"),
++        Movie.reviews.objects.orderBy(Review.creationTime.desc()).load(Review.author).label("revs"),
++      )
++      .first();
++    const ratings = await this.avgRatings([id]);
++    return JSON.stringify({
++      id: movie.id,
++      image: movie.image,
++      title: movie.title,
++      year: movie.year,
++      description: movie.description,
++      avg_rating: ratings.get(id),
++      directors: movie.dirs.map((d) => person(d.person)),
++      cast: movie.castList.map((c) => person(c.person)),
++      reviews: movie.revs.map((r) => ({
++        id: r.id,
++        body: r.body,
++        rating: r.rating,
++        author: { id: r.author.id, name: r.author.name, image: r.author.image },
++      })),
++    });
++  }
++
++  async personDetails(id) {
++    const p = await Person.objects
++      .filter(Person.id.eq(id))
++      .load(
++        Person.actedIn.objects.orderBy(Actor.movie.year, Actor.movie.title).load(Actor.movie).label("acted"),
++        Person.directed.objects
++          .orderBy(Director.movie.year, Director.movie.title)
++          .load(Director.movie)
++          .label("dirs"),
++      )
++      .first();
++    const ids = [...new Set([...p.acted, ...p.dirs].map((r) => r.movie.id))];
++    const ratings = await this.avgRatings(ids);
++    const movies = (rels) =>
++      rels.map((r) => ({
++        id: r.movie.id,
++        image: r.movie.image,
++        title: r.movie.title,
++        year: r.movie.year,
++        avg_rating: ratings.get(r.movie.id),
++      }));
++    return JSON.stringify({
++      id: p.id,
++      image: p.image,
++      full_name: fullName(p),
++      bio: p.bio,
++      acted_in: movies(p.acted),
++      directed: movies(p.dirs),
++    });
++  }
++
++  async updateMovie(id) {
++    const [row] = await Movie.objects
++      .filter(Movie.id.eq(id))
++      .update({ title: func.concat(Movie.title, `---${String(id).slice(0, 8)}`) }, { returning: true });
++    return JSON.stringify({ id: row.id, title: row.title });
++  }
++
++  async insertUser(val) {
++    const num = Math.floor(Math.random() * 1_000_000);
++    const user = await User.objects.insert({ name: `${val}${num}`, image: `image_${val}${num}` });
++    return JSON.stringify({ id: user.id, name: user.name, image: user.image });
++  }
++
++  async insertMovie(val) {
++    const num = Math.floor(Math.random() * 1_000_000);
++    const movie = await Movie.objects.insert({
++      title: `${val.prefix}${num}`,
++      image: `${val.prefix}image${num}.jpeg`,
++      description: `${val.prefix}description${num}`,
++      year: num,
++    });
++    const people = await Person.objects.filter(Person.id.in(val.people.slice(0, 4))).orderBy(Person.id);
++    await Director.objects.insert({ personId: people[0].id, movieId: movie.id });
++    await Actor.objects.insertMany(people.slice(1, 4).map((p) => ({ personId: p.id, movieId: movie.id })));
++    return JSON.stringify({
++      id: movie.id,
++      image: movie.image,
++      title: movie.title,
++      year: movie.year,
++      description: movie.description,
++      directors: [person(people[0])],
++      cast: people.slice(1, 4).map(person),
++    });
++  }
++
++  async insertMoviePlus(val) {
++    const num = Math.floor(Math.random() * 1_000_000);
++    const mk = (first, last, n) => ({
++      firstName: `${val}${first}`,
++      middleName: "",
++      lastName: `${val}${last}`,
++      image: `${val}image${n}.jpeg`,
++      bio: "",
++    });
++    const [director, c0, c1] = await Person.objects
++      .insertMany([mk("Alice", "Director", num), mk("Billie", "Actor", num + 1), mk("Cameron", "Actor", num + 2)])
++      .returning();
++    const movie = await Movie.objects.insert({
++      title: `${val}${num}`,
++      image: `${val}image${num}.jpeg`,
++      description: `${val}description${num}`,
++      year: num,
++    });
++    await Director.objects.insert({ personId: director.id, movieId: movie.id });
++    await Actor.objects.insertMany([c0, c1].map((c) => ({ personId: c.id, movieId: movie.id })));
++    return JSON.stringify({
++      id: movie.id,
++      image: movie.image,
++      title: movie.title,
++      year: movie.year,
++      description: movie.description,
++      directors: [person(director)],
++      cast: [person(c0), person(c1)],
++    });
++  }
++
++  async benchQuery(query, id) {
++    switch (query) {
++      case "get_user":
++        return this.userDetails(id);
++      case "get_person":
++        return this.personDetails(id);
++      case "get_movie":
++        return this.movieDetails(id);
++      case "update_movie":
++        return this.updateMovie(id);
++      case "insert_user":
++        return this.insertUser(id);
++      case "insert_movie":
++        return this.insertMovie(id);
++      case "insert_movie_plus":
++        return this.insertMoviePlus(id);
++    }
++  }
++
++  async getIDs(n) {
++    // MonOrm has no func.random(), so the sample is drawn in JS.
++    const pick = (ids) => shuffle(ids).slice(0, n);
++    const [users, people, movies] = await Promise.all([
++      User.objects.select({ id: User.id }).scalars(),
++      Person.objects.select({ id: Person.id }).scalars(),
++      Movie.objects.select({ id: Movie.id }).scalars(),
++    ]);
++    const picked = { users: pick(users), people: pick(people), movies: pick(movies) };
++    return {
++      get_user: picked.users,
++      get_person: picked.people,
++      get_movie: picked.movies,
++      // re-use movie IDs for update tests
++      update_movie: picked.movies,
++      // generate a bunch of insert stubs to accommodate concurrent inserts
++      insert_user: Array(1000).fill(INSERT_PREFIX),
++      insert_movie: Array(1000).fill({ prefix: INSERT_PREFIX, people: picked.people.slice(0, 4) }),
++      insert_movie_plus: Array(1000).fill(INSERT_PREFIX),
++    };
++  }
++
++  async setup(query) {
++    if (query === "update_movie") {
++      // MonOrm has no split_part, so each suffixed title loses its own "---<id>" part.
++      const ids = await Movie.objects.filter(Movie.title.contains("---")).select({ id: Movie.id }).scalars();
++      await this.db.transaction(async () => {
++        for (const id of ids) {
++          await Movie.objects
++            .filter(Movie.id.eq(id))
++            .update({ title: func.replace(Movie.title, `---${String(id).slice(0, 8)}`, "") });
++        }
++      });
++    } else if (query === "insert_user") {
++      await User.objects.filter(User.name.startsWith(INSERT_PREFIX)).delete();
++    } else if (query === "insert_movie" || query === "insert_movie_plus") {
++      await this.db.transaction(async () => {
++        await Director.objects.filter(Director.movie.image.startsWith(INSERT_PREFIX)).delete();
++        await Actor.objects.filter(Actor.movie.image.startsWith(INSERT_PREFIX)).delete();
++        await Movie.objects.filter(Movie.image.startsWith(INSERT_PREFIX)).delete();
++        await Person.objects.filter(Person.image.startsWith(INSERT_PREFIX)).delete();
++      });
++    }
++  }
++
++  async cleanup(query) {
++    if (["update_movie", "insert_user", "insert_movie", "insert_movie_plus"].includes(query)) {
++      // The clean up is the same as setup for mutation benchmarks
++      await this.setup(query);
++    }
++  }
++}
+diff --git a/_monorm/orm.mjs b/_monorm/orm.mjs
+new file mode 100644
+index 0000000..47dfac5
+--- /dev/null
++++ b/_monorm/orm.mjs
+@@ -0,0 +1,2 @@
++// The one place that names the MonOrm JS package.
++export { camel, connect, func, loads } from "orm";
+diff --git a/_monorm/package.json b/_monorm/package.json
+new file mode 100644
+index 0000000..84c6b7e
+--- /dev/null
++++ b/_monorm/package.json
+@@ -0,0 +1,12 @@
++{
++  "name": "_monorm",
++  "version": "1.0.0",
++  "private": true,
++  "type": "module",
++  "engines": {
++    "node": ">=20"
++  },
++  "dependencies": {
++    "orm": "file:/Users/mha/projects/orm/languages/js"
++  }
++}
+diff --git a/_monorm/queries.py b/_monorm/queries.py
+new file mode 100644
+index 0000000..342b596
+--- /dev/null
++++ b/_monorm/queries.py
+@@ -0,0 +1,279 @@
++import asyncio
++import json
++import os
++import pathlib
++import random
++
++from _monorm._orm import func, orm
++
++ASYNC = True
++INSERT_PREFIX = "insert_test__"
++
++_models = orm.loads((pathlib.Path(__file__).parent / "schema.prisma").read_text())
++Movie, Person, User = _models["Movie"], _models["Person"], _models["User"]
++Director, Actor, Review = _models["Director"], _models["Actor"], _models["Review"]
++
++# One pool per process: the harness calls connect() and close() once per task.
++_pool = None
++_refs = 0
++
++
++def _url(ctx):
++    # The default matches the database of the `_postgres` contenders; the env var points a local run elsewhere.
++    return os.environ.get("IMDBENCH_MONORM_URL") or (
++        f"postgres://postgres_bench:edgedbbenchmark@{ctx.db_host}:{ctx.pg_port}/postgres_bench"
++    )
++
++
++async def connect(ctx):
++    global _pool, _refs
++    _refs += 1
++    try:
++        if _pool is None:
++            size = max(1, ctx.concurrency // ctx.async_split)
++            _pool = asyncio.ensure_future(orm.connect(_url(ctx), max_connections=size))
++        return await _pool
++    except BaseException:
++        _refs -= 1
++        _pool = None
++        raise
++
++
++async def close(ctx, db):
++    global _pool, _refs
++    _refs -= 1
++    if _refs <= 0 and _pool is not None:
++        pool, _pool, _refs = _pool, None, 0
++        await (await pool).close()
++
++
++def _full_name(p):
++    mid = f" {p.middle_name}" if p.middle_name else ""
++    return f"{p.first_name}{mid} {p.last_name}"
++
++
++def _person(p):
++    return {"id": p.id, "full_name": _full_name(p), "image": p.image}
++
++
++def _ordered(rel, order_model):
++    # NULLS LAST on list_order, then last name: the order the other contenders use.
++    return rel.objects.order_by(
++        order_model.list_order.asc(nulls="last"), order_model.person.last_name
++    ).load(order_model.person)
++
++
++async def _avg_ratings(ids):
++    # load() takes no avg() over a relation column, so a select() gives the average per movie.
++    if not ids:
++        return {}
++    rows = await Movie.objects.filter(Movie.id.in_(list(ids))).select(
++        Movie.id, func.avg(Movie.reviews.rating)
++    )
++    return {r[0]: (float(r[1]) if r[1] is not None else None) for r in rows}
++
++
++async def load_ids(ctx, db):
++    # MonOrm has no func.random(), so the sample is drawn in Python.
++    def pick(ids):
++        return random.sample(ids, min(ctx.number_of_ids, len(ids)))
++
++    users = pick(await User.objects.select(User.id).scalars())
++    movies = pick(await Movie.objects.select(Movie.id).scalars())
++    people = pick(await Person.objects.select(Person.id).scalars())
++    return dict(
++        get_user=users,
++        get_movie=movies,
++        get_person=people,
++        # re-use movie IDs for update tests
++        update_movie=movies,
++        # as many insert stubs as "concurrency" to accommodate concurrent inserts
++        insert_user=[INSERT_PREFIX] * ctx.concurrency,
++        insert_movie=[{"prefix": INSERT_PREFIX, "people": people[:4]}] * ctx.concurrency,
++        insert_movie_plus=[INSERT_PREFIX] * ctx.concurrency,
++    )
++
++
++async def get_user(db, id):
++    user = await User.objects.filter(User.id == id).load(
++        User.reviews.objects.order_by(-Review.creation_time)[:10].load(Review.movie).label("latest")
++    ).first()
++    ratings = await _avg_ratings({r.movie.id for r in user.latest})
++    return json.dumps(
++        {
++            "id": user.id,
++            "name": user.name,
++            "image": user.image,
++            "latest_reviews": [
++                {
++                    "id": r.id,
++                    "body": r.body,
++                    "rating": r.rating,
++                    "movie": {
++                        "id": r.movie.id,
++                        "image": r.movie.image,
++                        "title": r.movie.title,
++                        "avg_rating": ratings[r.movie.id],
++                    },
++                }
++                for r in user.latest
++            ],
++        }
++    )
++
++
++async def get_movie(db, id):
++    movie = await Movie.objects.filter(Movie.id == id).load(
++        _ordered(Movie.directors, Director).label("dirs"),
++        _ordered(Movie.cast, Actor).label("cast_l"),
++        Movie.reviews.objects.order_by(-Review.creation_time).load(Review.author).label("revs"),
++    ).first()
++    ratings = await _avg_ratings({id})
++    return json.dumps(
++        {
++            "id": movie.id,
++            "image": movie.image,
++            "title": movie.title,
++            "year": movie.year,
++            "description": movie.description,
++            "avg_rating": ratings[id],
++            "directors": [_person(d.person) for d in movie.dirs],
++            "cast": [_person(c.person) for c in movie.cast_l],
++            "reviews": [
++                {
++                    "id": r.id,
++                    "body": r.body,
++                    "rating": float(r.rating),
++                    "author": {"id": r.author.id, "name": r.author.name, "image": r.author.image},
++                }
++                for r in movie.revs
++            ],
++        }
++    )
++
++
++async def get_person(db, id):
++    person = await Person.objects.filter(Person.id == id).load(
++        Person.acted_in.objects.order_by(Actor.movie.year, Actor.movie.title).load(Actor.movie).label("acted"),
++        Person.directed.objects.order_by(Director.movie.year, Director.movie.title)
++        .load(Director.movie)
++        .label("dirs"),
++    ).first()
++    ratings = await _avg_ratings({r.movie.id for r in person.acted} | {r.movie.id for r in person.dirs})
++
++    def movies(rels):
++        return [
++            {
++                "id": r.movie.id,
++                "image": r.movie.image,
++                "title": r.movie.title,
++                "year": r.movie.year,
++                "avg_rating": ratings[r.movie.id],
++            }
++            for r in rels
++        ]
++
++    return json.dumps(
++        {
++            "id": person.id,
++            "image": person.image,
++            "full_name": _full_name(person),
++            "bio": person.bio,
++            "acted_in": movies(person.acted),
++            "directed": movies(person.dirs),
++        }
++    )
++
++
++async def update_movie(db, id):
++    rows = (
++        await Movie.objects.filter(Movie.id == id)
++        .update(title=func.concat(Movie.title, f"---{str(id)[:8]}"))
++        .returning()
++    )
++    return json.dumps({"id": rows[0].id, "title": rows[0].title})
++
++
++async def insert_user(db, val):
++    num = random.randrange(1_000_000)
++    user = await User.objects.insert(name=f"{val}{num}", image=f"image_{val}{num}")
++    return json.dumps({"id": user.id, "name": user.name, "image": user.image})
++
++
++async def insert_movie(db, val):
++    num = random.randrange(1_000_000)
++    movie = await Movie.objects.insert(
++        title=f'{val["prefix"]}{num}',
++        image=f'{val["prefix"]}image{num}.jpeg',
++        description=f'{val["prefix"]}description{num}',
++        year=num,
++    )
++    people = await Person.objects.filter(Person.id.in_(val["people"][0:4])).order_by(Person.id)
++    await Director.objects.insert(person_id=people[0].id, movie_id=movie.id)
++    await Actor.objects.insert_many([{"person_id": p.id, "movie_id": movie.id} for p in people[1:4]])
++    return json.dumps(
++        {
++            "id": movie.id,
++            "image": movie.image,
++            "title": movie.title,
++            "year": movie.year,
++            "description": movie.description,
++            "directors": [_person(people[0])],
++            "cast": [_person(p) for p in people[1:4]],
++        }
++    )
++
++
++async def insert_movie_plus(db, val):
++    num = random.randrange(1_000_000)
++
++    def person(first, last, n):
++        return dict(first_name=f"{val}{first}", middle_name="", last_name=f"{val}{last}",
++                    image=f"{val}image{n}.jpeg", bio="")
++
++    director, c0, c1 = await Person.objects.insert_many(
++        [person("Alice", "Director", num), person("Billie", "Actor", num + 1), person("Cameron", "Actor", num + 2)]
++    ).returning()
++    movie = await Movie.objects.insert(
++        title=f"{val}{num}",
++        image=f"{val}image{num}.jpeg",
++        description=f"{val}description{num}",
++        year=num,
++    )
++    await Director.objects.insert(person_id=director.id, movie_id=movie.id)
++    await Actor.objects.insert_many([{"person_id": c.id, "movie_id": movie.id} for c in (c0, c1)])
++    return json.dumps(
++        {
++            "id": movie.id,
++            "image": movie.image,
++            "title": movie.title,
++            "year": movie.year,
++            "description": movie.description,
++            "directors": [_person(director)],
++            "cast": [_person(c0), _person(c1)],
++        }
++    )
++
++
++async def setup(ctx, db, queryname):
++    if queryname == "update_movie":
++        # MonOrm has no split_part, so each suffixed title loses its own "---<id>" parts.
++        rows = await Movie.objects.filter(Movie.title.contains("---")).select(Movie.id)
++        async with db.transaction():
++            for (mid,) in rows:
++                await Movie.objects.filter(Movie.id == mid).update(
++                    title=func.replace(Movie.title, f"---{str(mid)[:8]}", "")
++                )
++    elif queryname == "insert_user":
++        await User.objects.filter(User.name.startswith(INSERT_PREFIX)).delete()
++    elif queryname in {"insert_movie", "insert_movie_plus"}:
++        async with db.transaction():
++            await Director.objects.filter(Director.movie.image.startswith(INSERT_PREFIX)).delete()
++            await Actor.objects.filter(Actor.movie.image.startswith(INSERT_PREFIX)).delete()
++            await Movie.objects.filter(Movie.image.startswith(INSERT_PREFIX)).delete()
++            await Person.objects.filter(Person.image.startswith(INSERT_PREFIX)).delete()
++
++
++async def cleanup(ctx, db, queryname):
++    if queryname in {"update_movie", "insert_user", "insert_movie", "insert_movie_plus"}:
++        await setup(ctx, db, queryname)
+diff --git a/_monorm/schema.prisma b/_monorm/schema.prisma
+new file mode 100644
+index 0000000..bcd6872
+--- /dev/null
++++ b/_monorm/schema.prisma
+@@ -0,0 +1,85 @@
++// The IMDBench Postgres schema (`_postgres/schema.sql`) for MonOrm.
++// It maps to the same tables as the `_postgres`, `_prisma` and `_drizzle` contenders,
++// so the same data load serves MonOrm. Python and JS read this one file.
++// The SQL functions `full_name()` and `avg_rating()` are not used: the queries build both.
++
++datasource db {
++  provider = "postgresql"
++}
++
++model Movie {
++  id          Int        @id @default(autoincrement())
++  image       String
++  title       String
++  year        Int
++  description String
++  directors   Director[]
++  cast        Actor[]
++  reviews     Review[]
++
++  @@map("movies")
++}
++
++model User {
++  id      Int      @id @default(autoincrement())
++  name    String
++  image   String
++  reviews Review[]
++
++  @@map("users")
++}
++
++model Person {
++  id          Int        @id @default(autoincrement())
++  first_name  String
++  middle_name String     @default("")
++  last_name   String
++  image       String
++  bio         String
++  acted_in    Actor[]
++  directed    Director[]
++
++  @@map("persons")
++}
++
++model Director {
++  id         Int    @id @default(autoincrement())
++  list_order Int?
++  person_id  Int
++  movie_id   Int
++  person     Person @relation(fields: [person_id], references: [id])
++  movie      Movie  @relation(fields: [movie_id], references: [id])
++
++  @@index([person_id])
++  @@index([movie_id])
++  @@map("directors")
++}
++
++model Actor {
++  id         Int    @id @default(autoincrement())
++  list_order Int?
++  person_id  Int
++  movie_id   Int
++  person     Person @relation(fields: [person_id], references: [id])
++  movie      Movie  @relation(fields: [movie_id], references: [id])
++
++  @@index([person_id])
++  @@index([movie_id])
++  @@map("actors")
++}
++
++model Review {
++  id            Int      @id @default(autoincrement())
++  body          String
++  rating        Int
++  creation_time DateTime
++  author_id     Int
++  movie_id      Int
++  author        User     @relation(fields: [author_id], references: [id])
++  movie         Movie    @relation(fields: [movie_id], references: [id])
++
++  @@index([author_id])
++  @@index([movie_id])
++  @@index([creation_time])
++  @@map("reviews")
++}
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 20952d87ba55272800545024e39d3f81d1b75b47 Mon Sep 17 00:00:00 2001
+From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
+Date: Mon, 26 Oct 2026 23:54:57 +0330
+Subject: [PATCH 2/4] Register the MonOrm contenders and document them
+
+_shared.py: monorm and monorm_js entries (import guarded when MonOrm is absent).
+jsbench.js: monorm_js choice, getApp branch and close call.
+Makefile: load-monorm target, and both names in run-js, run-py and run-orms.
+_monorm/README.md: install steps, run steps, notice of the changes to upstream
+files (LICENSE stays), and the differences from the other contenders.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ Makefile          | 14 ++++---
+ _monorm/README.md | 94 +++++++++++++++++++++++++++++++++++++++++++++++
+ _shared.py        | 13 +++++++
+ jsbench.js        | 12 ++++++
+ 4 files changed, 128 insertions(+), 5 deletions(-)
+ create mode 100644 _monorm/README.md
+
+diff --git a/Makefile b/Makefile
+index a904008..117fcfe 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4,7 +4,7 @@ SHELL = /bin/bash
+ 
+ .PHONY: all load new-dataset compile load-postgres-helpers
+ .PHONY:	stop-docker reset-postgres
+-.PHONY: load-mongodb load-edgedb load-django load-sqlalchemy load-postgres
++.PHONY: load-mongodb load-edgedb load-django load-sqlalchemy load-postgres load-monorm
+ .PHONY: load-typeorm load-sequelize load-prisma
+ .PHONY: load-graphql load-hasura load-postgraphile
+ .PHONY: run-js run-py run-orms run-graphql run-edgedb
+@@ -299,8 +299,12 @@ load-sequelize: $(BUILD)/dataset.json docker-postgres
+ load-drizzle: $(BUILD)/dataset.json load-postgres
+ 	cd _drizzle && npm i && npm run build
+ 
++# MonOrm reads the tables of load-postgres. See _monorm/README.md for the install steps.
++load-monorm: load-postgres
++	cd _monorm && npm install
++
+ load: load-mongodb load-edgedb load-django load-sqlalchemy load-postgres \
+-	  load-typeorm load-sequelize load-prisma load-graphql load-drizzle
++	  load-typeorm load-sequelize load-prisma load-graphql load-drizzle load-monorm
+ 
+ load-graphql: load-hasura load-postgraphile
+ 
+@@ -310,10 +314,10 @@ compile:
+ RUNNER = python bench.py --query insert_movie --query get_movie --query get_user --concurrency 1 --duration 10 --net-latency 1
+ 
+ run-js:
+-	$(RUNNER) --html docs/js.html --json docs/js.json typeorm sequelize prisma drizzle edgedb_js_qb
++	$(RUNNER) --html docs/js.html --json docs/js.json typeorm sequelize prisma drizzle monorm_js edgedb_js_qb
+ 
+ run-py:
+-	$(RUNNER) --html docs/py.html --json docs/py.json django sqlalchemy edgedb_py_sync
++	$(RUNNER) --html docs/py.html --json docs/py.json django sqlalchemy monorm edgedb_py_sync
+ 
+ run-sql:
+ 	$(RUNNER) --html docs/sql.html --json docs/sql.json edgedb_py_sync postgres_psycopg postgres_asyncpg postgres_pg postgres_pgx postgres_dart
+@@ -322,7 +326,7 @@ run-graphql:
+ 	$(RUNNER) --html docs/py.html --json docs/py.json postgres_hasura_go postgres_postgraphile_go edgedb_go_graphql
+ 
+ run-orms:
+-	$(RUNNER) --html docs/orms.html --json docs/orms.json typeorm sequelize prisma edgedb_js_qb django django_restfw mongodb sqlalchemy drizzle
++	$(RUNNER) --html docs/orms.html --json docs/orms.json typeorm sequelize prisma edgedb_js_qb django django_restfw mongodb sqlalchemy drizzle monorm monorm_js
+ 
+ run-edgedb:
+ 	$(RUNNER) --html docs/edgedb.html --json docs/edgedb.json edgedb_py_sync edgedb_py_json edgedb_py_json_async edgedb_go edgedb_go_json edgedb_go_graphql edgedb_go_http edgedb_js edgedb_js_json edgedb_js_qb edgedb_dart edgedb_dart_json
+diff --git a/_monorm/README.md b/_monorm/README.md
+new file mode 100644
+index 0000000..3279dd2
+--- /dev/null
++++ b/_monorm/README.md
+@@ -0,0 +1,94 @@
++# MonOrm contenders
++
++This folder holds two contenders for IMDBench: MonOrm (Python, asyncio) and MonOrm (Node.js).
++Both run the 7 IMDBench queries on the Postgres tables that `make load-postgres` creates.
++They read the models from one file, `schema.prisma`, which maps to the same tables (`@@map`).
++
++## Notice
++
++This folder is a change to IMDBench (`geldata/imdbench`, Apache-2.0).
++The `LICENSE` file of IMDBench stays as it is.
++Our changes to the upstream files:
++
++- `_shared.py`: the `monorm` and `monorm_js` entries.
++- `jsbench.js`: the `monorm_js` choice, its `getApp` branch and its close call.
++- `Makefile`: the `load-monorm` target and `monorm`, `monorm_js` in the `run-js`, `run-py` and `run-orms` lists.
++- New files: everything in `_monorm/`.
++
++No other contender changed.
++
++## Install
++
++MonOrm comes from the local repository `/Users/mha/projects/orm`.
++The Python import is only in `_orm.py`, and the JS import is only in `orm.mjs`.
++
++Python (3.12 or newer, in the IMDBench venv):
++
++```sh
++pip install -r requirements.txt greenlet
++cd /Users/mha/projects/orm/languages/python/packaging/postgres
++maturin build --release -i <venv>/bin/python -o /tmp/monorm-wheels
++pip install --no-deps /tmp/monorm-wheels/orm_native_postgres-*.whl
++pip install --no-deps /Users/mha/projects/orm
++```
++
++The native build takes several minutes.
++`greenlet` is not in `requirements.txt`, but the SQLAlchemy contender needs it.
++
++Node.js (version 20 or newer):
++
++```sh
++cd _monorm && npm install
++```
++
++`package.json` points to `file:/Users/mha/projects/orm/languages/js`.
++Build the Node addon there first (`npm install && npm run build:native`).
++Set `ORM_NATIVE=<path>/orm.node` to choose another addon file.
++
++## Run
++
++```sh
++make load-monorm
++python bench.py --query get_movie --query insert_movie monorm monorm_js
++```
++
++The connection URL is `postgres://postgres_bench:edgedbbenchmark@<host>:<port>/postgres_bench`, the database of the `_postgres` contenders.
++Set `IMDBENCH_MONORM_URL` to use another URL.
++
++## Differences from the other contenders
++
++- MonOrm cannot take `avg()` in `load()`, so a second `select()` gives the average rating per movie.
++- MonOrm has no `split_part` and no `random()`, so `setup` strips each title suffix with `replace`, and the ids are sampled in the host language.
++- The queries use the expression API only. No query uses raw SQL.
++
++## Check and local run
++
++`tools/` holds scripts for a small local run without Docker:
++
++- `gen_small_dataset.py` writes a small `dataset.json`.
++- `load_local.py` loads it into one local Postgres database (schema `public` for `_postgres`, schema `sa` for SQLAlchemy).
++- `local_patch/sitecustomize.py` points SQLAlchemy to that database (use it with `PYTHONPATH`).
++- `check_results.py` compares the MonOrm results with the SQLAlchemy and Prisma results for the same ids.
++
++```sh
++python _monorm/tools/gen_small_dataset.py
++(cd dataset && python cleandata.py)
++python _monorm/tools/load_local.py --port 55432 --database imdb_bench
++export PYTHONPATH=$PWD/_monorm/tools/local_patch
++export IMDBENCH_MONORM_URL=postgres://postgres:postgres@localhost:55432/imdb_bench
++export IMDBENCH_CHECK_URL=postgresql://postgres:postgres@localhost:55432/imdb_bench
++python _monorm/tools/check_results.py
++python bench_python.py -C 2 -D 2 --warmup-time 1 --pg-port 55432 monorm sqlalchemy_asyncio
++```
++
++The check prints `RESULT: PASS` when every query agrees.
++It writes test rows and removes them at the end.
++The new ids and the random numbers in names can differ by design.
++The SQLAlchemy `get_user` has no `ORDER BY`, so the check compares its reviews as a set.
++
++`jsbench.js` loads all JS contenders at start.
++For a Prisma and MonOrm JS run, install and build the other JS contenders first, as `make load` does.
++Prisma needs `DATABASE_URL` in the environment.
++The Prisma `insert_movie` and `insert_movie_plus` setup uses MySQL syntax and fails on Postgres.
++
++Timings from such a run are not valid for a comparison.
+diff --git a/_shared.py b/_shared.py
+index 5bae3ca..e7b6f7b 100644
+--- a/_shared.py
++++ b/_shared.py
+@@ -29,6 +29,13 @@ from _sqlalchemy import queries as sqlalchemy_queries
+ from _sqlalchemy import queries_asyncio as sqlalchemy_queries_asyncio
+ from _postgres import queries as postgres_queries
+ from _postgres import queries_psycopg as postgres_psycopg_queries
++try:
++    from _monorm import queries as monorm_queries
++except ModuleNotFoundError as e:
++    # MonOrm is a local install (see _monorm/README.md), so the other contenders must run without it.
++    if e.name != 'orm':
++        raise
++    monorm_queries = None
+ 
+ 
+ class impl(typing.NamedTuple):
+@@ -75,6 +82,9 @@ IMPLEMENTATIONS = {
+     'sqlalchemy_asyncio':
+         impl('python', 'SQLAlchemy (asyncio)', sqlalchemy_queries_asyncio),
+ 
++    'monorm':
++        impl('python', 'MonOrm (Python, asyncio)', monorm_queries),
++
+     'postgres_asyncpg':
+         impl('python', 'PostgreSQL (Python, asyncpg)', postgres_queries),
+ 
+@@ -124,6 +134,9 @@ IMPLEMENTATIONS = {
+     'drizzle':
+         impl('js', 'Drizzle', None),
+ 
++    'monorm_js':
++        impl('js', 'MonOrm (Node.js)', None),
++
+     'edgedb_dart':
+         impl('dart', 'EdgeDB (Dart)', None),
+ 
+diff --git a/jsbench.js b/jsbench.js
+index 443b707..e0a13de 100755
+--- a/jsbench.js
++++ b/jsbench.js
+@@ -86,6 +86,15 @@ async function getApp(args) {
+       pool: ncon,
+     });
+     await app.initPool();
++  } else if (args.orm == 'monorm_js') {
++    // MonOrm is an ES module, so it loads with a dynamic import.
++    const monormapp = await import('./_monorm/index.mjs');
++    app = new monormapp.App({
++      host: args.host,
++      port: args.port,
++      max: ncon,
++    });
++    await app.init();
+   } else {
+     throw new Error('Unexpected ORM: ' + orm);
+   }
+@@ -325,6 +334,7 @@ async function main() {
+       'prisma',
+       'prisma_untuned',
+       'drizzle',
++      'monorm_js',
+       'edgedb_js',
+       'edgedb_js_json',
+       'edgedb_js_qb',
+@@ -340,6 +350,8 @@ async function main() {
+   } finally {
+     if (args.orm == 'prisma_untuned' || args.orm == 'prisma') {
+       await app.$disconnect();
++    } else if (args.orm == 'monorm_js') {
++      await app.close();
+     }
+   }
+ }
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 61fecae70c6cad2ab44e121318bbfa654a1db496 Mon Sep 17 00:00:00 2001
+From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
+Date: Mon, 26 Oct 2026 23:54:57 +0330
+Subject: [PATCH 3/4] Add a result check and local run tools for MonOrm
+
+check_results.py compares MonOrm (Python and JS) with SQLAlchemy and Prisma
+for the same ids on all 7 queries and fails on any difference or leftover row.
+The other tools build a small dataset, load it into one local Postgres
+database (schema sa for SQLAlchemy), and point SQLAlchemy to it.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ _monorm/tools/check_results.py             | 282 +++++++++++++++++++++
+ _monorm/tools/gen_small_dataset.py         |  62 +++++
+ _monorm/tools/load_local.py                |  73 ++++++
+ _monorm/tools/local_patch/sitecustomize.py |  26 ++
+ _monorm/tools/node_results.mjs             |  55 ++++
+ 5 files changed, 498 insertions(+)
+ create mode 100644 _monorm/tools/check_results.py
+ create mode 100644 _monorm/tools/gen_small_dataset.py
+ create mode 100644 _monorm/tools/load_local.py
+ create mode 100644 _monorm/tools/local_patch/sitecustomize.py
+ create mode 100644 _monorm/tools/node_results.mjs
+
+diff --git a/_monorm/tools/check_results.py b/_monorm/tools/check_results.py
+new file mode 100644
+index 0000000..e828726
+--- /dev/null
++++ b/_monorm/tools/check_results.py
+@@ -0,0 +1,282 @@
++"""Compare the MonOrm results with the SQLAlchemy and Prisma results for the same ids.
++
++  PYTHONPATH=_monorm/tools/local_patch IMDBENCH_MONORM_URL=postgres://... venv/bin/python _monorm/tools/check_results.py
++
++IMDBench has no result check of its own.
++The script runs all 7 queries on the contenders and exits with 1 on the first mismatch it finds in any query.
++Ids, timings and random numbers in names are ignored; other numbers are compared as numbers.
++Run `load_local.py` first. The database must have no leftovers of an earlier run.
++"""
++import asyncio
++import json
++import math
++import os
++import pathlib
++import re
++import subprocess
++import sys
++import types
++
++import asyncpg
++
++ROOT = pathlib.Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT))
++
++DB_URL = os.environ.get("IMDBENCH_CHECK_URL", "postgresql://postgres:postgres@localhost:55432/imdb_bench")
++os.environ.setdefault("IMDBENCH_MONORM_URL", DB_URL.replace("postgresql://", "postgres://"))
++os.environ.setdefault("DATABASE_URL", DB_URL + "?schema=public&connection_limit=4")
++
++import _sqlalchemy.queries_asyncio as sa_q  # noqa: E402
++import _monorm.queries as mo_q  # noqa: E402
++
++CTX = types.SimpleNamespace(db_host="localhost", pg_port=55432, concurrency=4, async_split=1, number_of_ids=10)
++PREFIX = "insert_test__"
++READS = ["get_user", "get_movie", "get_person"]
++WRITES = ["update_movie", "insert_user", "insert_movie", "insert_movie_plus"]
++
++
++# Where each result field holds an id, so the ids of SQLAlchemy (other id space) map to the public ones.
++ID_KINDS = {
++    "get_user": ("user", {"latest_reviews": ("review", {"movie": ("movie", {})})}),
++    "get_movie": (
++        "movie",
++        {
++            "directors": ("person", {}),
++            "cast": ("person", {}),
++            "reviews": ("review", {"author": ("user", {})}),
++        },
++    ),
++    "get_person": ("person", {"acted_in": ("movie", {}), "directed": ("movie", {})}),
++    "update_movie": ("movie", {}),
++    # The new movie has no counterpart, so only its people map.
++    "insert_movie": (None, {"directors": ("person", {}), "cast": ("person", {})}),
++}
++
++
++def remap(node, spec, table):
++    kind, children = spec
++    if kind:
++        node["id"] = table[kind][node["id"]]
++    for field, child in children.items():
++        v = node[field]
++        for item in v if isinstance(v, list) else [v]:
++            remap(item, child, table)
++
++
++def close_enough(a, b):
++    if isinstance(a, bool) or isinstance(b, bool):
++        return a is b
++    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
++        return math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-9)
++    if isinstance(a, dict) and isinstance(b, dict):
++        return a.keys() == b.keys() and all(close_enough(a[k], b[k]) for k in a)
++    if isinstance(a, list) and isinstance(b, list):
++        return len(a) == len(b) and all(close_enough(x, y) for x, y in zip(a, b))
++    return a == b
++
++
++def same_user_unordered(a, b):
++    """The SQLAlchemy get_user has no ORDER BY, so it returns any 10 reviews of the user in table order.
++
++    Equal user fields and review count must hold. With fewer than 10 reviews the sets must be equal.
++    With 10 the SQLAlchemy set can be a cut of a longer list, so only the reviews in both sets must be equal.
++    """
++    ra, rb = {r["id"]: r for r in a["latest_reviews"]}, {r["id"]: r for r in b["latest_reviews"]}
++    head = lambda u: {k: v for k, v in u.items() if k != "latest_reviews"}
++    if not close_enough(head(a), head(b)) or len(ra) != len(rb):
++        return False
++    if len(ra) < 10:
++        return close_enough(ra, rb)
++    return all(close_enough(ra[i], rb[i]) for i in ra.keys() & rb.keys())
++
++
++def norm(query, value, skip_images=False):
++    """Drop what differs by design: new ids and the random numbers in names."""
++    if query == "update_movie":
++        # The suffix holds the movie id, and the id spaces differ.
++        return {
++            "title": re.sub(r"---\d+$", "", value["title"]),
++            "suffix_ok": value["title"].endswith(f"---{str(value['id'])[:8]}"),
++        }
++    if query in READS:
++        return value
++
++    def walk(v, top, key=None):
++        if isinstance(v, dict):
++            drop = {"id"} if top or query == "insert_movie_plus" else set()
++            if query == "insert_user" and skip_images:
++                drop.add("image")
++            return {k: walk(x, False, k) for k, x in v.items() if k not in drop}
++        if isinstance(v, list):
++            return [walk(x, False, key) for x in v]
++        if isinstance(v, str):
++            return re.sub(r"\d+", "#", v)
++        if key == "year":
++            return "#"
++        return v
++
++    return walk(value, True)
++
++
++async def run_python(mod, ids, updates, people):
++    conn = await mod.connect(CTX)
++    out = {}
++    try:
++        for q in READS:
++            out[q] = [{"arg": i, "result": json.loads(await getattr(mod, q)(conn, i))} for i in ids[q]]
++        out["update_movie"] = [
++            {"arg": u["id"], "result": json.loads(await mod.update_movie(conn, u["id"]))} for u in updates
++        ]
++        stubs = {
++            "insert_user": PREFIX,
++            "insert_movie": {"prefix": PREFIX, "people": people},
++            "insert_movie_plus": PREFIX,
++        }
++        for q, stub in stubs.items():
++            out[q] = [{"arg": None, "result": json.loads(await getattr(mod, q)(conn, stub))}]
++    finally:
++        await mod.close(CTX, conn)
++    return out
++
++
++async def reset():
++    conn = await mod_conn()
++    try:
++        for q in WRITES:
++            await mo_q.setup(CTX, conn, q)
++    finally:
++        await mo_q.close(CTX, conn)
++    await reset_sa()
++
++
++async def reset_sa():
++    # The SQLAlchemy contender has no setup for these queries and writes to schema `sa`.
++    c = await asyncpg.connect(DB_URL)
++    try:
++        async with c.transaction():
++            like = PREFIX + "%"
++            await c.execute("update sa.movie set title = regexp_replace(title, '---[0-9]+$', '') where title like '%---%'")
++            for tbl in ("directors", '"cast"'):
++                await c.execute(
++                    f"delete from sa.{tbl} where movie_id in (select id from sa.movie where image like $1)"
++                    f" or person_id in (select id from sa.person where image like $1)",
++                    like,
++                )
++            await c.execute("delete from sa.movie where image like $1", like)
++            await c.execute("delete from sa.person where image like $1", like)
++            await c.execute('delete from sa."user" where name like $1', like)
++    finally:
++        await c.close()
++
++
++async def mod_conn():
++    return await mo_q.connect(CTX)
++
++
++async def leftovers():
++    c = await asyncpg.connect(DB_URL)
++    try:
++        return {
++            "titles with suffix": await c.fetchval("select count(*) from movies where title like '%---%'"),
++            "test movies": await c.fetchval("select count(*) from movies where image like $1", PREFIX + "%"),
++            "test persons": await c.fetchval("select count(*) from persons where image like $1", PREFIX + "%"),
++            "test users": await c.fetchval("select count(*) from users where name like $1", PREFIX + "%"),
++            "sa titles with suffix": await c.fetchval("select count(*) from sa.movie where title like '%---%'"),
++            "sa test movies": await c.fetchval("select count(*) from sa.movie where image like $1", PREFIX + "%"),
++            "sa test persons": await c.fetchval("select count(*) from sa.person where image like $1", PREFIX + "%"),
++            "sa test users": await c.fetchval('select count(*) from sa."user" where name like $1', PREFIX + "%"),
++        }
++    finally:
++        await c.close()
++
++
++async def main():
++    pre = await leftovers()
++    if any(pre.values()):
++        sys.exit(f"The database has leftovers of an earlier run: {pre}")
++    c = await asyncpg.connect(DB_URL)
++    ids = {
++        "get_user": [r[0] for r in await c.fetch("select id from users order by id")],
++        "get_movie": [r[0] for r in await c.fetch("select id from movies order by id")],
++        "get_person": [r[0] for r in await c.fetch("select id from persons order by id")],
++    }
++    updates = [dict(r) for r in await c.fetch("select id, title from movies order by id limit 5")]
++    people = [r[0] for r in await c.fetch("select id from persons order by id limit 4")]
++    await c.close()
++
++    # The SQLAlchemy loader gives other ids, so the entities are paired by a unique natural key.
++    tables = {
++        "user": ("users", "image", '"user"'),
++        "movie": ("movies", "image", "movie"),
++        "person": ("persons", "image", "person"),
++        "review": ("reviews", "body", "review"),
++    }
++    pub2sa, sa2pub = {}, {}
++    c = await asyncpg.connect(DB_URL)
++    for kind, (pub_table, col, sa_table) in tables.items():
++        sa_by_key = {r["k"]: r["id"] for r in await c.fetch(f"select id, {col} as k from sa.{sa_table}")}
++        pub2sa[kind] = {r["id"]: sa_by_key[r["k"]] for r in await c.fetch(f"select id, {col} as k from {pub_table}")}
++        sa2pub[kind] = {v: k for k, v in pub2sa[kind].items()}
++    await c.close()
++    sa_ids = {
++        "get_user": [pub2sa["user"][i] for i in ids["get_user"]],
++        "get_movie": [pub2sa["movie"][i] for i in ids["get_movie"]],
++        "get_person": [pub2sa["person"][i] for i in ids["get_person"]],
++    }
++    sa_updates = [{"id": pub2sa["movie"][u["id"]]} for u in updates]
++    sa_people = [pub2sa["person"][i] for i in people]
++
++    results = {}
++    results["sqlalchemy"] = await run_python(sa_q, sa_ids, sa_updates, sa_people)
++    for q, entries in results["sqlalchemy"].items():
++        if q in ID_KINDS:
++            for e in entries:
++                # update_movie keeps its own id, because the title suffix holds it.
++                if q != "update_movie":
++                    remap(e["result"], ID_KINDS[q], sa2pub)
++    await reset()
++    results["monorm_py"] = await run_python(mo_q, ids, updates, people)
++    await reset()
++    proc = subprocess.run(
++        ["node", str(ROOT / "_monorm/tools/node_results.mjs")],
++        input=json.dumps({"reads": ids, "updates": updates, "people": people}),
++        capture_output=True, text=True, cwd=ROOT,
++    )
++    if proc.returncode:
++        sys.exit(f"node_results.mjs failed:\n{proc.stderr[-2000:]}")
++    results.update(json.loads(proc.stdout.strip().splitlines()[-1]))
++    await reset()
++
++    failed = 0
++    pairs = [("monorm_py", "sqlalchemy"), ("monorm_py", "prisma"), ("monorm_js", "monorm_py")]
++    print(f"{'query':<20}" + "".join(f"{a + ' vs ' + b:<30}" for a, b in pairs))
++    for q in READS + WRITES:
++        cells = []
++        for a, b in pairs:
++            ra, rb = results[a][q], results[b][q]
++            bad = 0
++            for x, y in zip(ra, rb):
++                # SQLAlchemy and MonOrm name the image of a new user alike; Prisma uses another pattern.
++                skip = q == "insert_user" and "prisma" in (a, b)
++                if q == "get_user" and "sqlalchemy" in (a, b):
++                    same = same_user_unordered(x["result"], y["result"])
++                else:
++                    same = close_enough(norm(q, x["result"], skip), norm(q, y["result"], skip))
++                if not same:
++                    bad += 1
++                    if bad == 1:
++                        print(f"MISMATCH {q} {a} vs {b} arg={x['arg']}\n  {a}: {json.dumps(x['result'])[:600]}\n  {b}: {json.dumps(y['result'])[:600]}")
++            if len(ra) != len(rb):
++                bad += 1
++            cells.append(f"{'ok' if not bad else 'FAIL'} ({len(ra) - bad}/{len(ra)})")
++            failed += bool(bad)
++        print(f"{q:<20}" + "".join(f"{c:<30}" for c in cells))
++
++    post = await leftovers()
++    print("leftovers after the run:", post)
++    failed += any(post.values())
++    print("RESULT:", "FAIL" if failed else "PASS")
++    sys.exit(1 if failed else 0)
++
++
++asyncio.run(main())
+diff --git a/_monorm/tools/gen_small_dataset.py b/_monorm/tools/gen_small_dataset.py
+new file mode 100644
+index 0000000..d2a79ba
+--- /dev/null
++++ b/_monorm/tools/gen_small_dataset.py
+@@ -0,0 +1,62 @@
++"""Write a small protodataset.json, for runs where `synth` is not installed.
++
++Run it, then run `dataset/cleandata.py` to get `dataset.json` as usual.
++"""
++import datetime
++import json
++import pathlib
++import random
++
++N_USERS, N_DIRECTORS, N_PEOPLE, N_MOVIES, N_REVIEWS = 60, 20, 150, 40, 400
++
++rnd = random.Random(1)
++build = pathlib.Path(__file__).resolve().parents[2] / 'dataset' / 'build'
++build.mkdir(exist_ok=True)
++
++
++def person(i):
++    return {
++        'id': i,
++        'first_name': f'First{i}',
++        'middle_name': f'Mid{i}' if i % 3 == 0 else None,
++        'last_name': f'Last{rnd.randrange(30)}',
++        'image': f'person{i}.jpeg',
++        'bio': f'Bio of person {i}',
++    }
++
++
++people = [person(i) for i in range(N_PEOPLE)]
++data = {
++    'user': [
++        {'id': i, 'name': f'User{i}', 'image': f'user{i}.jpeg'}
++        for i in range(N_USERS)
++    ],
++    'director': people[:N_DIRECTORS],
++    'person': people,
++    'movie': [
++        {
++            'id': i,
++            'image': f'movie{i}.jpeg',
++            'title': f'Movie {i}',
++            'year': 1980 + i % 40,
++            'description': f'Description of movie {i}',
++            'directors': rnd.sample(range(N_DIRECTORS), rnd.randint(1, 2)),
++            'cast': rnd.sample(range(N_DIRECTORS, N_PEOPLE), rnd.randint(3, 8)),
++        }
++        for i in range(N_MOVIES)
++    ],
++}
++t0 = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
++data['review'] = [
++    {
++        'id': i,
++        'body': f'Review {i}',
++        'rating': rnd.randint(1, 5),
++        # Distinct times keep the "latest reviews" order deterministic.
++        'creation_time': (t0 + datetime.timedelta(minutes=i)).isoformat(),
++        'author': rnd.randrange(N_USERS),
++        'movie': rnd.randrange(N_MOVIES),
++    }
++    for i in range(N_REVIEWS)
++]
++(build / 'protodataset.json').write_text(json.dumps(data))
+diff --git a/_monorm/tools/load_local.py b/_monorm/tools/load_local.py
+new file mode 100644
+index 0000000..c645cd3
+--- /dev/null
++++ b/_monorm/tools/load_local.py
+@@ -0,0 +1,73 @@
++"""Load dataset.json into a local Postgres without Docker.
++
++Reuses the `_postgres` and `_sqlalchemy` loaders unchanged and only
++redirects their hard-coded connection settings.
++
++  python _monorm/tools/load_local.py --port 55432 --database imdb_bench
++
++The tables of the `_postgres` contenders go to schema `public`.
++The tables of the `_sqlalchemy` contender go to schema `sa` of the same database,
++so one database serves all the contenders.
++"""
++import argparse
++import asyncio
++import pathlib
++import runpy
++import subprocess
++import sys
++
++import asyncpg
++import sqlalchemy as sa
++
++ROOT = pathlib.Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT))
++
++p = argparse.ArgumentParser()
++p.add_argument('--host', default='localhost')
++p.add_argument('--port', type=int, default=55432)
++p.add_argument('--superuser', default='postgres:postgres')
++p.add_argument('--database', required=True)
++p.add_argument('--dataset', default=str(ROOT / 'dataset/build/dataset.json'))
++args = p.parse_args()
++su, pw = args.superuser.split(':')
++base_url = f'postgresql://{su}:{pw}@{args.host}:{args.port}'
++
++
++def psql(db, *extra):
++    subprocess.run(
++        ['psql', f'{base_url}/{db}', '-v', 'ON_ERROR_STOP=1', '-q', *extra],
++        check=True, stdout=subprocess.DEVNULL)
++
++
++psql('postgres', '-c', f'DROP DATABASE IF EXISTS {args.database} WITH (FORCE)')
++psql('postgres', '-c', f'CREATE DATABASE {args.database}')
++psql(args.database, '-c', 'CREATE SCHEMA sa',
++     '-f', str(ROOT / '_postgres/schema.sql'))
++
++real_connect = asyncpg.connect
++
++
++def connect(*a, **kw):
++    kw.update(user=su, password=pw, database=args.database,
++              host=args.host, port=args.port)
++    return real_connect(*a, **kw)
++
++
++asyncpg.connect = connect
++sys.argv = ['loaddata.py', args.dataset]
++runpy.run_path(str(ROOT / '_postgres/loaddata.py'), run_name='__main__')
++asyncpg.connect = real_connect
++
++# The async_fallback dialect needs a current loop, and asyncio.run closed the last one.
++asyncio.set_event_loop(asyncio.new_event_loop())
++
++import _sqlalchemy.models as m  # noqa: E402
++from _sqlalchemy.loaddata import load_data  # noqa: E402
++
++engine = sa.create_engine(
++    f'postgresql+asyncpg://{su}:{pw}@{args.host}:{args.port}/{args.database}'
++    '?async_fallback=True',
++    connect_args={'server_settings': {'search_path': 'sa'}})
++# alembic's env.py has no URL for this host, so create the tables directly.
++m.Base.metadata.create_all(engine)
++load_data(args.dataset, engine)
+diff --git a/_monorm/tools/local_patch/sitecustomize.py b/_monorm/tools/local_patch/sitecustomize.py
+new file mode 100644
+index 0000000..f0b3d45
+--- /dev/null
++++ b/_monorm/tools/local_patch/sitecustomize.py
+@@ -0,0 +1,26 @@
++"""Point the SQLAlchemy contender at the local database `load_local.py` filled.
++
++That contender hard-codes its role and database name.
++Put this directory on PYTHONPATH: the spawned worker processes of
++bench_python.py then apply the patch too.
++
++  PYTHONPATH=_monorm/tools/local_patch python bench_python.py sqlalchemy_asyncio --pg-port 55432
++"""
++import os
++
++try:
++    import sqlalchemy.ext.asyncio as _sa_asyncio
++except ImportError:
++    _sa_asyncio = None
++
++if _sa_asyncio is not None:
++    _create = _sa_asyncio.create_async_engine
++
++    def _create_local(url, **kw):
++        host_port = str(url).split('@')[1].split('/')[0]
++        db = os.environ.get('IMDBENCH_LOCAL_DB', 'imdb_bench')
++        auth = os.environ.get('IMDBENCH_LOCAL_AUTH', 'postgres:postgres')
++        kw['connect_args'] = {'server_settings': {'search_path': 'sa'}}
++        return _create(f'postgresql+asyncpg://{auth}@{host_port}/{db}', **kw)
++
++    _sa_asyncio.create_async_engine = _create_local
+diff --git a/_monorm/tools/node_results.mjs b/_monorm/tools/node_results.mjs
+new file mode 100644
+index 0000000..154c577
+--- /dev/null
++++ b/_monorm/tools/node_results.mjs
+@@ -0,0 +1,55 @@
++// Runs the Prisma and MonOrm (Node.js) contenders on given ids and prints their parsed results.
++// Input on stdin: {reads, updates, people}. Output: {prisma, monorm_js}, each query -> [{arg, result}].
++import { readFileSync } from "node:fs";
++import { createRequire } from "node:module";
++import { fileURLToPath } from "node:url";
++import path from "node:path";
++
++const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
++const require = createRequire(path.join(root, "jsbench.js"));
++const input = JSON.parse(readFileSync(0, "utf8"));
++
++const { TunedApp } = require("./_prisma/index.js");
++const { App } = await import(path.join(root, "_monorm/index.mjs"));
++
++const monorm = new App({ max: 4 });
++await monorm.init();
++const prisma = new TunedApp();
++
++const MUTATIONS = ["update_movie", "insert_user", "insert_movie", "insert_movie_plus"];
++const resetAll = async () => {
++  for (const q of MUTATIONS) await monorm.setup(q);
++};
++
++async function runAll(app, mapUpdate) {
++  const out = {};
++  for (const q of ["get_user", "get_movie", "get_person"]) {
++    out[q] = [];
++    for (const id of input.reads[q]) out[q].push({ arg: id, result: JSON.parse(await app.benchQuery(q, id)) });
++  }
++  out.update_movie = [];
++  for (const u of input.updates) {
++    out.update_movie.push({ arg: u.id, result: JSON.parse(await app.benchQuery("update_movie", mapUpdate(u))) });
++  }
++  const stubs = {
++    insert_user: "insert_test__",
++    insert_movie: { prefix: "insert_test__", people: input.people },
++    insert_movie_plus: "insert_test__",
++  };
++  for (const [q, stub] of Object.entries(stubs)) {
++    out[q] = [{ arg: null, result: JSON.parse(await app.benchQuery(q, stub)) }];
++  }
++  return out;
++}
++
++await resetAll();
++const result = {};
++// Prisma sets the title it is given, and MonOrm appends a suffix to the title.
++result.prisma = await runAll(prisma, (u) => ({ id: u.id, title: u.title + "---" + u.id }));
++await resetAll();
++result.monorm_js = await runAll(monorm, (u) => u.id);
++await resetAll();
++
++await prisma.$disconnect();
++await monorm.close();
++console.log(JSON.stringify(result));
+-- 
+2.50.1 (Apple Git-155)
+
+
+From c960751f8b5401ce0ca99e3912b46db672b7f757 Mon Sep 17 00:00:00 2001
+From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
+Date: Fri, 30 Oct 2026 15:46:26 +0330
+Subject: [PATCH 4/4] Use the released MonOrm 0.1.1 packages
+
+Python: monorm from PyPI. JS: @ufstack/monorm under the alias monorm.
+---
+ _monorm/README.md    | 12 ++----------
+ _monorm/_orm.py      |  4 ++--
+ _monorm/orm.mjs      |  2 +-
+ _monorm/package.json |  2 +-
+ _shared.py           |  4 ++--
+ 5 files changed, 8 insertions(+), 16 deletions(-)
+
+diff --git a/_monorm/README.md b/_monorm/README.md
+index 3279dd2..07599ba 100644
+--- a/_monorm/README.md
++++ b/_monorm/README.md
+@@ -19,20 +19,16 @@ No other contender changed.
+ 
+ ## Install
+ 
+-MonOrm comes from the local repository `/Users/mha/projects/orm`.
++MonOrm 0.1.1 comes from PyPI (`monorm`) and npm (`@ufstack/monorm`, installed under the alias `monorm`).
+ The Python import is only in `_orm.py`, and the JS import is only in `orm.mjs`.
+ 
+ Python (3.12 or newer, in the IMDBench venv):
+ 
+ ```sh
+ pip install -r requirements.txt greenlet
+-cd /Users/mha/projects/orm/languages/python/packaging/postgres
+-maturin build --release -i <venv>/bin/python -o /tmp/monorm-wheels
+-pip install --no-deps /tmp/monorm-wheels/orm_native_postgres-*.whl
+-pip install --no-deps /Users/mha/projects/orm
++pip install monorm==0.1.1
+ ```
+ 
+-The native build takes several minutes.
+ `greenlet` is not in `requirements.txt`, but the SQLAlchemy contender needs it.
+ 
+ Node.js (version 20 or newer):
+@@ -41,10 +37,6 @@ Node.js (version 20 or newer):
+ cd _monorm && npm install
+ ```
+ 
+-`package.json` points to `file:/Users/mha/projects/orm/languages/js`.
+-Build the Node addon there first (`npm install && npm run build:native`).
+-Set `ORM_NATIVE=<path>/orm.node` to choose another addon file.
+-
+ ## Run
+ 
+ ```sh
+diff --git a/_monorm/_orm.py b/_monorm/_orm.py
+index af0f6c7..20caed0 100644
+--- a/_monorm/_orm.py
++++ b/_monorm/_orm.py
+@@ -1,3 +1,3 @@
+ """The one place that names the MonOrm Python package."""
+-import orm  # noqa: F401
+-from orm import func  # noqa: F401
++import monorm as orm  # noqa: F401
++from monorm import func  # noqa: F401
+diff --git a/_monorm/orm.mjs b/_monorm/orm.mjs
+index 47dfac5..9d9e14a 100644
+--- a/_monorm/orm.mjs
++++ b/_monorm/orm.mjs
+@@ -1,2 +1,2 @@
+ // The one place that names the MonOrm JS package.
+-export { camel, connect, func, loads } from "orm";
++export { camel, connect, func, loads } from "monorm";
+diff --git a/_monorm/package.json b/_monorm/package.json
+index 84c6b7e..b874d82 100644
+--- a/_monorm/package.json
++++ b/_monorm/package.json
+@@ -7,6 +7,6 @@
+     "node": ">=20"
+   },
+   "dependencies": {
+-    "orm": "file:/Users/mha/projects/orm/languages/js"
++    "monorm": "npm:@ufstack/monorm@0.1.1"
+   }
+ }
+diff --git a/_shared.py b/_shared.py
+index e7b6f7b..ae55ef2 100644
+--- a/_shared.py
++++ b/_shared.py
+@@ -32,8 +32,8 @@ from _postgres import queries_psycopg as postgres_psycopg_queries
+ try:
+     from _monorm import queries as monorm_queries
+ except ModuleNotFoundError as e:
+-    # MonOrm is a local install (see _monorm/README.md), so the other contenders must run without it.
+-    if e.name != 'orm':
++    # MonOrm is an optional install (see _monorm/README.md), so the other contenders must run without it.
++    if e.name != 'monorm':
+         raise
+     monorm_queries = None
+ 
+-- 
+2.50.1 (Apple Git-155)
+
