@@ -123,7 +123,7 @@ npm install monorm@npm:@ufstack/monorm      # the same for Node and Bun (the ali
 ```
 
 The `monorm` command line comes with the Python and npm packages.
-Both packages hold PostgreSQL and SQLite. They build for 3 platforms: Linux x86-64, macOS arm64 and Windows x86-64.
+Both packages hold PostgreSQL and SQLite. They build for 4 platforms: Linux x86-64, Linux arm64, macOS arm64 and Windows x86-64.
 An extension that is not built in is a separate package that you install next to `monorm` ([optional-packaging.md](docs/contracts/optional-packaging.md)).
 
 To build from source:

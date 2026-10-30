@@ -6,11 +6,11 @@ There are no native profiles, no extras and no per-extension packages.
 
 | Registry | Package | What it holds |
 | --- | --- | --- |
-| PyPI | `monorm` | 12 platform wheels (3 platforms × CPython 3.11 to 3.14). No sdist. |
-| npm | `monorm` | One tarball with the addon and the extension libraries of 3 platforms. |
+| PyPI | `monorm` | 16 platform wheels (4 platforms × CPython 3.11 to 3.14). No sdist. |
+| npm | `monorm` | One tarball with the addon and the extension libraries of 4 platforms. |
 | crates.io | `monorm` | The contracts library for authors of outside extensions. No binary. |
 
-The 3 platforms are `darwin-arm64`, `linux-x64` (glibc 2.28 or newer) and `win32-x64`.
+The 4 platforms are `darwin-arm64`, `linux-x64` and `linux-arm64` (glibc 2.28 or newer), and `win32-x64`.
 Another platform needs a source build.
 The engine has both PostgreSQL and SQLite, the migration and schema APIs, and both code generators.
 The wheel and the tarball hold the command line: `python -m monorm`, `npx monorm` and the `monorm` command.
@@ -28,7 +28,7 @@ Each one has a native library, a manifest and a runtime module.
 A library loads only when the schema uses its extension, so a schema with no extension attribute opens no library.
 
 - Python: `stage.py` writes the nine libraries of the platform into the package, and `[project.entry-points."monorm.extensions"]` in the root `pyproject.toml` lists them. The owner distribution `monorm` counts as built-in.
-- npm: `npm run assemble` in `languages/js` writes `extensions/<name>/` and `prebuilt/<platform>/`. The package exports `monorm/extensions/<name>`. Node finds the built-in extensions from `bundledExtensions()`.
+- npm: `npm run assemble` in `languages/js` writes `extensions/<name>/<platform>/` and `prebuilt/<platform>/`. The loader opens `<platform>/<file>` first, then the file next to the manifest. The package exports `monorm/extensions/<name>`. Node finds the built-in extensions from `bundledExtensions()`.
 - Auth: Python has the module `monorm_auth` and the app name `monorm-auth`. Node has `monorm/auth` and the app name `auth`. The two names differ, so one schema file does not serve both languages.
 
 ## Outside extensions
@@ -70,8 +70,8 @@ cd languages/js && npm install && npm run build:native && npm run assemble   # N
 ```
 
 `MONORM_NATIVE=<file>` makes Node load another addon file.
-`MONORM_CARGO_TARGET=<triple>[.<glibc>]` builds with `cargo zigbuild` for that target (the Linux release uses `x86_64-unknown-linux-gnu.2.28`).
-`stage.py --libraries <dir>` stages libraries that another job built, and `assemble-bundle.mjs --collect <dir>` gathers the libraries of 3 platforms for the tarball.
+`MONORM_CARGO_TARGET=<triple>[.<glibc>]` builds with `cargo zigbuild` for that target (the Linux release uses `x86_64-unknown-linux-gnu.2.28` and `aarch64-unknown-linux-gnu.2.28`).
+`stage.py --libraries <dir>` stages libraries that another job built, and `assemble-bundle.mjs --collect <dir>` gathers the libraries of 4 platforms for the tarball.
 `MONORM_PACK_PLATFORMS=all` makes a missing platform an error when you pack.
 
 ## Immutable adapter contract

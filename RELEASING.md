@@ -8,9 +8,9 @@ The registries match the workflow file name `release.yml`, so every publish step
 
 ## Packages
 
-- PyPI, 1 project: `monorm`, 12 wheels (Linux x86-64, macOS arm64 and Windows x86-64, for CPython 3.11 to 3.14). It has no sdist, because an sdist would lack the extension libraries and the auth app.
+- PyPI, 1 project: `monorm`, 16 wheels (Linux x86-64, Linux arm64, macOS arm64 and Windows x86-64, for CPython 3.11 to 3.14). It has no sdist, because an sdist would lack the extension libraries and the auth app.
   The wheel holds the engine (`monorm._native`), the 9 built-in extension libraries of its platform and the auth app (`monorm_auth`).
-- npm, 1 package: `monorm`, one tarball with the addon and the extension libraries of the 3 platforms (`prebuilt/<platform>/` and `extensions/<name>/`), the CLI and the auth app.
+- npm, 1 package: `monorm`, one tarball with the addon and the extension libraries of the 4 platforms (`prebuilt/<platform>/` and `extensions/<name>/<platform>/`), the CLI and the auth app.
 - `scripts/release/publish-lists.py` holds these lists.
   The `collect` job fails if a file is missing or extra, and records the size of each file in the job summary.
 - The jobs: `version`, `builds` (`package-builds.yml`), `extensions` (`extension-packages.yml`), `collect`, then `publish-pypi` and `publish-npm`, then `release-notes`.
@@ -66,7 +66,7 @@ The proof publishes only to TestPyPI.
    Run the workflow `Release` by dispatch from the branch.
    The workflow takes the version from `pyproject.toml` and accepts `## [0.1.0] - TBD` in the changelog.
 6. Approve the deployment of the environment `release`.
-7. Expected result: `monorm` at `0.1.0rc1` on TestPyPI with 12 wheels and one `npm publish --dry-run` log.
+7. Expected result: `monorm` at `0.1.0rc1` on TestPyPI with 16 wheels and one `npm publish --dry-run` log.
 8. In a fresh virtual environment on Linux and on macOS, run:
    `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ monorm==0.1.0rc1`.
    Then run `python -m monorm --help` and a `generate` on a schema that uses one built-in extension.
@@ -97,7 +97,7 @@ The proof publishes only to TestPyPI.
   The rerun publishes only what is missing.
 - If a published file is wrong, do not rerun.
   Make a new version (`0.1.1`) and a new tag.
-- PyPI takes the 12 wheels in one upload with `skip-existing`, so a rerun adds only the missing wheels.
+- PyPI takes the 16 wheels in one upload with `skip-existing`, so a rerun adds only the missing wheels.
   A wheel for one platform can exist before the others; pip then picks the wheels of the platforms that are up.
 - A TestPyPI run that fails halfway also needs only a rerun of the failed jobs.
   A run after a code change needs a new rc version.

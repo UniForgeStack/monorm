@@ -1,5 +1,5 @@
 name: Package builds
-# Builds the one `monorm` wheel (12 files), the one npm tarball and the outside extension packages, and installs them.
+# Builds the one `monorm` wheel (16 files), the one npm tarball and the outside extension packages, and installs them.
 on:
   workflow_dispatch:
   pull_request:
@@ -8,18 +8,26 @@ on:
 permissions:
   contents: read
 jobs:
-  # A wheel holds the libraries of one platform and the npm package holds all 3, so each platform builds its own.
+  # A wheel holds the libraries of one platform and the npm package holds all 4, so each platform builds its own.
+  # Linux arm64 builds on GitHub's native arm64 runner: the libraries run there, and no QEMU or cross linker is needed.
   libraries:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, windows-latest]
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu.2.28
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+            target: aarch64-unknown-linux-gnu.2.28
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: 0
       # The Linux libraries target glibc 2.28, so they load on RHEL 8 and Debian 10 and later.
-      MONORM_CARGO_TARGET: ${{ matrix.os == 'ubuntu-24.04' && 'x86_64-unknown-linux-gnu.2.28' || '' }}
+      MONORM_CARGO_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -32,14 +40,16 @@ jobs:
         working-directory: languages/js
       - name: Build the engine and the extension libraries of this platform
         run: node languages/js/scripts/assemble-bundle.mjs --collect target/bundle
+      # An outside package ships 3 platforms for now, so Linux arm64 has no library of it.
       - name: Build the library of the outside extension
+        if: matrix.platform != 'linux-arm64'
         shell: bash
         run: |
           extra=()
           if [ -n "$MONORM_CARGO_TARGET" ]; then extra=(--zigbuild "$MONORM_CARGO_TARGET"); fi
           cargo run -q -p monorm-extension-package -- library tests/outside-extension --out target/bundle/outside-extension "${extra[@]}"
       - if: runner.os == 'Linux'
-        run: python3 scripts/check-glibc.py target/bundle/*/linux-x64/*.so target/bundle/engine/linux-x64/monorm.node
+        run: python3 scripts/check-glibc.py target/bundle/*/${{ matrix.platform }}/*.so target/bundle/engine/${{ matrix.platform }}/monorm.node
       - uses: actions/upload-artifact@v4
         with:
           name: libraries-${{ matrix.os }}
@@ -49,20 +59,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, windows-latest]
         python: ['3.11', '3.12', '3.13', '3.14']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     services:
       postgres:
-        image: ${{ matrix.os == 'ubuntu-24.04' && 'postgres:18' || '' }}
+        image: ${{ startsWith(matrix.os, 'ubuntu') && 'postgres:18' || '' }}
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: orm_test
         ports: ['5432:5432']
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      ORM_TEST_DATABASE_URL: ${{ matrix.os == 'ubuntu-24.04' && 'postgres://postgres:postgres@localhost/orm_test' || '' }}
+      ORM_TEST_DATABASE_URL: ${{ startsWith(matrix.os, 'ubuntu') && 'postgres://postgres:postgres@localhost/orm_test' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -129,7 +139,7 @@ jobs:
           path: target/bundle
       - run: npm ci --ignore-scripts
         working-directory: languages/js
-      - name: Assemble the package with the libraries of all 3 platforms
+      - name: Assemble the package with the libraries of all 4 platforms
         run: |
           npm run assemble
           node scripts/assemble-bundle.mjs --libraries ../../target/bundle

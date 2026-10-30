@@ -3,7 +3,7 @@
 
 usage: publish-lists.py check pypi|npm <dir> <version>
 `<version>` is `0.1.0`, `0.1.0rc1` or `0.1.0-rc.1`.
-A release is one PyPI project (12 wheels, no sdist) and one npm package.
+A release is one PyPI project (16 wheels, no sdist) and one npm package.
 """
 import json
 import re
@@ -14,8 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from versions import forms  # noqa: E402
 
-# The wheels of 3 operating systems and 4 Python versions. An sdist would lack the libraries and auth.
-WHEELS = 12
+# The wheels of 4 platforms (Linux x86_64, Linux arm64, macOS arm64, Windows x64) and 4 Python versions. An sdist would lack the libraries and auth.
+WHEELS = 16
 PYPI = {"monorm": ("wheel",) * WHEELS}
 NPM = ["@ufstack/monorm"]
 

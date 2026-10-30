@@ -153,8 +153,9 @@ def touch_wheel(directory: Path, name: str, version: str, tag: str):
 
 def pypi_dir(version: str = "0.1.0") -> Path:
     directory = Path(tempfile.mkdtemp())
+    tags = ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64", "macosx_11_0_arm64", "win_amd64")
     for index in range(publish_lists.WHEELS):
-        touch_wheel(directory, "monorm", version, f"cp3{index}-cp3{index}-linux_x86_64")
+        touch_wheel(directory, "monorm", version, f"cp3{index // 4 + 11}-cp3{index // 4 + 11}-{tags[index % 4]}")
     return directory
 
 
@@ -173,8 +174,8 @@ def npm_dir(version: str = "0.1.0") -> Path:
 
 
 class PublishListsTest(unittest.TestCase):
-    def test_a_release_is_12_wheels_of_one_pypi_project_and_one_npm_package(self):
-        self.assertEqual(publish_lists.PYPI, {"monorm": ("wheel",) * 12})
+    def test_a_release_is_16_wheels_of_one_pypi_project_and_one_npm_package(self):
+        self.assertEqual(publish_lists.PYPI, {"monorm": ("wheel",) * 16})
         self.assertEqual(publish_lists.NPM, ["@ufstack/monorm"])
 
     def test_a_complete_pypi_directory_passes(self):
