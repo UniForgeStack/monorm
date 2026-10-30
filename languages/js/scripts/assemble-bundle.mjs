@@ -5,9 +5,9 @@
 //   node scripts/assemble-bundle.mjs --check              verify the package content (the `prepack` step)
 // `<name>` is `engine` or the directory name of a bundled extension. In place, the package holds
 // prebuilt/<platform>/monorm.node and extensions/<short>/{index.js, index.d.ts, monorm-extension.toml, <libraries>}.
-// A merged package keeps each extension library in extensions/<short>/<platform>/, because Linux x64 and arm64 share a file name;
+// A merged package keeps each extension library in extensions/<short>/<platform>/, because Linux x86-64 and arm64 share a file name;
 // the engine opens that file first, then the one next to the manifest (the in-place build).
-// `npm pack` works with one platform; set MONORM_PACK_PLATFORMS=all to make a missing platform an error.
+// `npm pack` works with one platform; set MONORM_PACK_PLATFORMS=all to make a missing platform, or a flat library, an error.
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +24,7 @@ const host = `${process.platform}-${process.arch}`;
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const run = (command, argv, options = {}) => execFileSync(command, argv, { cwd: repo, stdio: ["ignore", "inherit", "inherit"], ...options });
+const isLibrary = (file) => /\.(dylib|so|dll)$/.test(file);
 
 function packager() {
   run("cargo", ["build", "-q", "-p", "monorm-extension-package"]);
@@ -81,13 +82,19 @@ function collect(dir) {
 
 function merge(dir) {
   for (const name of ["engine", ...shorts]) {
+    let merged = false;
     for (const platform of PLATFORMS) {
       const from = join(dir, name, platform);
       if (!existsSync(from)) continue;
       const to = name === "engine" ? join(pkgRoot, "prebuilt", platform) : join(pkgRoot, "extensions", name, platform);
       mkdirSync(to, { recursive: true });
       cpSync(from, to, { recursive: true });
+      merged = true;
     }
+    if (name === "engine" || !merged) continue;
+    // The flat library is the host build of `npm run assemble`: it has no glibc floor, and `check-glibc` never sees it.
+    const own = join(pkgRoot, "extensions", name);
+    for (const file of readdirSync(own).filter(isLibrary)) rmSync(join(own, file));
   }
 }
 
@@ -111,9 +118,11 @@ function check() {
   if (process.env.MONORM_PACK_PLATFORMS === "all") {
     for (const short of shorts) {
       const dir = join(pkgRoot, "extensions", short);
-      const held = PLATFORMS.filter((platform) => existsSync(join(dir, platform)) && readdirSync(join(dir, platform)).some((file) => /\.(dylib|so|dll)$/.test(file)));
-      const lacking = PLATFORMS.filter((platform) => held.length > 0 && !held.includes(platform));
+      const held = PLATFORMS.filter((platform) => existsSync(join(dir, platform)) && readdirSync(join(dir, platform)).some(isLibrary));
+      const lacking = PLATFORMS.filter((platform) => !held.includes(platform));
       if (lacking.length > 0) throw new Error(`extensions/${short} lacks the library for: ${lacking.join(", ")}`);
+      const flat = readdirSync(dir).filter(isLibrary);
+      if (flat.length > 0) throw new Error(`extensions/${short} holds a flat library (${flat.join(", ")}) that no glibc check covers; \`--libraries\` removes it`);
     }
   }
   for (const [key, value] of Object.entries(pkg.exports)) {

@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from versions import forms  # noqa: E402
 
-# The wheels of 4 platforms (Linux x86_64, Linux arm64, macOS arm64, Windows x64) and 4 Python versions. An sdist would lack the libraries and auth.
+# The wheels of 4 platforms (Linux x86-64, Linux arm64, macOS arm64, Windows x86-64) and 4 Python versions. An sdist would lack the libraries and auth.
 WHEELS = 16
 PYPI = {"monorm": ("wheel",) * WHEELS}
 NPM = ["@ufstack/monorm"]

@@ -153,9 +153,12 @@ def touch_wheel(directory: Path, name: str, version: str, tag: str):
 
 def pypi_dir(version: str = "0.1.0") -> Path:
     directory = Path(tempfile.mkdtemp())
+    pythons = ("cp311", "cp312", "cp313", "cp314")
     tags = ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64", "macosx_11_0_arm64", "win_amd64")
-    for index in range(publish_lists.WHEELS):
-        touch_wheel(directory, "monorm", version, f"cp3{index // 4 + 11}-cp3{index // 4 + 11}-{tags[index % 4]}")
+    assert len(pythons) * len(tags) == publish_lists.WHEELS
+    for python in pythons:
+        for tag in tags:
+            touch_wheel(directory, "monorm", version, f"{python}-{python}-{tag}")
     return directory
 
 

@@ -4,6 +4,8 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
+- Linux arm64: a `manylinux_2_28_aarch64` wheel on PyPI and a `linux-arm64` addon in the npm package. The two Linux platforms need glibc 2.28 or newer. Outside extension packages do not ship arm64 yet.
+
 ## [0.1.1] - 2026-10-30
 
 - The npm package is `@ufstack/monorm`, because npm rejected the name `monorm`. Install it under the alias `monorm`: `npm install monorm@npm:@ufstack/monorm`. Imports stay `monorm`.

@@ -10,7 +10,8 @@ There are no native profiles, no extras and no per-extension packages.
 | npm | `monorm` | One tarball with the addon and the extension libraries of 4 platforms. |
 | crates.io | `monorm` | The contracts library for authors of outside extensions. No binary. |
 
-The 4 platforms are `darwin-arm64`, `linux-x64` and `linux-arm64` (glibc 2.28 or newer), and `win32-x64`.
+The 4 platforms are `darwin-arm64`, `linux-arm64`, `linux-x64` and `win32-x64`.
+The two Linux platforms need glibc 2.28 or newer.
 Another platform needs a source build.
 The engine has both PostgreSQL and SQLite, the migration and schema APIs, and both code generators.
 The wheel and the tarball hold the command line: `python -m monorm`, `npx monorm` and the `monorm` command.
@@ -28,7 +29,7 @@ Each one has a native library, a manifest and a runtime module.
 A library loads only when the schema uses its extension, so a schema with no extension attribute opens no library.
 
 - Python: `stage.py` writes the nine libraries of the platform into the package, and `[project.entry-points."monorm.extensions"]` in the root `pyproject.toml` lists them. The owner distribution `monorm` counts as built-in.
-- npm: `npm run assemble` in `languages/js` writes `extensions/<name>/<platform>/` and `prebuilt/<platform>/`. The loader opens `<platform>/<file>` first, then the file next to the manifest. The package exports `monorm/extensions/<name>`. Node finds the built-in extensions from `bundledExtensions()`.
+- npm: `npm run assemble` in `languages/js` writes the libraries of the host platform next to each manifest, in `extensions/<name>/`, and `prebuilt/<platform>/`. `assemble-bundle.mjs --libraries <dir>` adds `extensions/<name>/<platform>/` and `prebuilt/<platform>/` for the platforms that other jobs built, and removes the library next to the manifest. The loader opens `<platform>/<file>` first, then the file next to the manifest. The package exports `monorm/extensions/<name>`. Node finds the built-in extensions from `bundledExtensions()`.
 - Auth: Python has the module `monorm_auth` and the app name `monorm-auth`. Node has `monorm/auth` and the app name `auth`. The two names differ, so one schema file does not serve both languages.
 
 ## Outside extensions
@@ -130,7 +131,7 @@ The manifest `library` is a name without a file extension, for example `library 
 The file name is `lib<name>.dylib`, `lib<name>.so` or `<name>.dll`.
 `assemble` rejects a name with an extension, because three platforms cannot share it.
 
-The compressed platform tag lets pip install the wheel on macOS arm64, Linux x86_64 with glibc 2.28 or newer, and Windows x64 only.
+The compressed platform tag lets pip install the wheel on macOS arm64, Linux x86-64 with glibc 2.28 or newer, and Windows x86-64 only.
 The Linux library builds with `cargo zigbuild` for glibc 2.28 (`library --zigbuild x86_64-unknown-linux-gnu.2.28`).
 
 ## Extension contracts

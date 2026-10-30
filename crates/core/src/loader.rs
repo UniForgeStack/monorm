@@ -253,7 +253,7 @@ impl Plan {
     }
 }
 
-/// The platform keys of the bundled libraries; they match `process.platform-process.arch` and `monorm-extension-package`.
+/// The platform keys of the bundled libraries; they match `${process.platform}-${process.arch}` and `monorm-extension-package`.
 fn platform_key() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("darwin-arm64"),
@@ -273,7 +273,7 @@ fn library_path(d: &Dynamic) -> PathBuf {
 fn library_in(dir: &Path, name: &str, key: Option<&str>) -> PathBuf {
     let file = if Path::new(name).extension().is_some() { name.to_owned() }
         else { format!("{}{name}{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX) };
-    key.map(|key| dir.join(key).join(&file)).filter(|own| own.is_file()).unwrap_or_else(|| dir.join(file))
+    key.map(|key| dir.join(key).join(&file)).filter(|in_platform| in_platform.is_file()).unwrap_or_else(|| dir.join(file))
 }
 
 fn open(d: &Dynamic) -> Result<Arc<Native>, String> {
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn a_platform_directory_wins_over_the_file_next_to_the_manifest() {
-        let dir = std::env::temp_dir().join(format!("monorm-library-in-{}", std::process::id()));
+        let dir = scratch("library-in");
         std::fs::create_dir_all(dir.join("linux-arm64")).unwrap();
         let file = format!("{}x{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
         assert_eq!(library_in(&dir, "x", Some("linux-arm64")), dir.join(&file));
@@ -587,7 +587,7 @@ mod tests {
         assert_eq!(library_in(&dir, "x", Some("linux-x64")), dir.join(&file));
         assert_eq!(library_in(&dir, "x", None), dir.join(&file));
         assert_eq!(library_in(&dir, "x.bin", Some("linux-arm64")), dir.join("x.bin"));
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

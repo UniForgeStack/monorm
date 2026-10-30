@@ -1,7 +1,7 @@
 //! Package builder for pass extensions, independent of the static composition builder.
 //!
-//! `library` builds the cdylib on the host, `assemble` joins the libraries of the 3 platforms
-//! into one wheel and one npm package, and `package` does both for the host only.
+//! `library` builds the cdylib on the host, `assemble` joins the libraries of the 3 shipped
+//! platforms into one wheel and one npm package, and `package` does both for the host only.
 use std::{
     env,
     io::Write,
@@ -16,15 +16,14 @@ const USAGE: &str = "usage:
   monorm-extension-package library <crate-dir> --out <dir> [--features <list>] [--zigbuild <target>]
   monorm-extension-package assemble <crate-dir> --libraries <dir> --out <dir> [--tsc <executable>]";
 
-/// Platform key, library file prefix and suffix. The keys name the platform directories of the prebuilt libraries.
-const PLATFORMS: [(&str, &str, &str); 3] = [
-    ("darwin-arm64", "lib", ".dylib"),
-    ("linux-x64", "lib", ".so"),
-    ("win32-x64", "", ".dll"),
+/// Platform key, library file prefix and suffix, and whether an outside package ships the platform.
+/// The keys name the platform directories of the prebuilt libraries.
+const PLATFORMS: [(&str, &str, &str, bool); 4] = [
+    ("darwin-arm64", "lib", ".dylib", true),
+    ("linux-arm64", "lib", ".so", false),
+    ("linux-x64", "lib", ".so", true),
+    ("win32-x64", "", ".dll", true),
 ];
-
-/// `library` also builds this one, for the engine bundle; an outside package does not ship it yet.
-const LINUX_ARM64: (&str, &str, &str) = ("linux-arm64", "lib", ".so");
 
 fn host_platform() -> Result<&'static str, Error> {
     match (env::consts::OS, env::consts::ARCH) {
@@ -95,7 +94,8 @@ fn library_file(library: &str, prefix: &str, suffix: &str) -> String {
 fn require_plain(library: &str) -> Result<(), Error> {
     if Path::new(library).extension().is_some() {
         return Err(
-            "library must have no file extension; the 3 platforms need different file names".into(),
+            "library must have no file extension; the tool adds the prefix and suffix of each platform"
+                .into(),
         );
     }
     Ok(())
@@ -204,7 +204,7 @@ fn run() -> Result<(), Error> {
         }
         "library" => {
             let key = host_platform()?;
-            let (_, prefix, suffix) = PLATFORMS.iter().chain([&LINUX_ARM64]).find(|p| p.0 == key).unwrap();
+            let (_, prefix, suffix, _) = PLATFORMS.iter().find(|p| p.0 == key).unwrap();
             require_plain(&library)?;
             let artifact = build_library(&dir, args.features.as_deref(), args.zigbuild.as_deref())?;
             let target = out.join(key);
@@ -218,7 +218,7 @@ fn run() -> Result<(), Error> {
             let libraries = args.libraries.ok_or(USAGE)?;
             require_plain(&library)?;
             let mut files = Vec::new();
-            for (key, prefix, suffix) in PLATFORMS {
+            for (key, prefix, suffix, _) in PLATFORMS.into_iter().filter(|&(.., shipped)| shipped) {
                 let name = library_file(&library, prefix, suffix);
                 let source = libraries.join(key).join(&name);
                 if !source.is_file() {

@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   # A wheel holds the libraries of one platform and the npm package holds all 4, so each platform builds its own.
-  # Linux arm64 builds on GitHub's native arm64 runner: the libraries run there, and no QEMU or cross linker is needed.
+  # Linux arm64 builds on GitHub's native arm64 runner: the libraries run there, and the build needs no QEMU and no cross linker.
   libraries:
     strategy:
       fail-fast: false
@@ -40,7 +40,7 @@ jobs:
         working-directory: languages/js
       - name: Build the engine and the extension libraries of this platform
         run: node languages/js/scripts/assemble-bundle.mjs --collect target/bundle
-      # An outside package ships 3 platforms for now, so Linux arm64 has no library of it.
+      # `PLATFORMS` in `monorm-extension-package` does not ship Linux arm64 in an outside package, so that platform builds no library of it.
       - name: Build the library of the outside extension
         if: matrix.platform != 'linux-arm64'
         shell: bash
@@ -50,6 +50,16 @@ jobs:
           cargo run -q -p monorm-extension-package -- library tests/outside-extension --out target/bundle/outside-extension "${extra[@]}"
       - if: runner.os == 'Linux'
         run: python3 scripts/check-glibc.py target/bundle/*/${{ matrix.platform }}/*.so target/bundle/engine/${{ matrix.platform }}/monorm.node
+      # No later job runs Node on arm64, so this is the only load of the arm64 addon.
+      - name: Load the Node addon of this platform
+        if: matrix.platform == 'linux-arm64'
+        run: |
+          node -e '
+            const addon = require("./target/bundle/engine/${{ matrix.platform }}/monorm.node");
+            const profile = JSON.parse(addon.profileMetadata());
+            if (profile.language !== "node") throw new Error("not the Node addon: " + JSON.stringify(profile));
+            console.log(profile);
+          '
       - uses: actions/upload-artifact@v4
         with:
           name: libraries-${{ matrix.os }}
