@@ -26,6 +26,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | [loading-instances.md](guides/loading-instances.md) | `post.load(...)` on an instance: partial shapes, `reload`, `NotLoaded`, the reference cache and shared queries |
 | [from-prisma-client-python.md](guides/from-prisma-client-python.md) | Move from Prisma Client Python: the same `schema.prisma`, the schema changes, and the query API side by side |
 | [reference-loading.md](contracts/reference-loading.md) | The `reference-loading` Cargo feature, hidden helper keys and the adapter rules |
+| [language-bindings.md](contracts/language-bindings.md) | Add a language: what the engine owns, what a binding owns, the API contract and the steps |
 
 ## Feature extensions
 

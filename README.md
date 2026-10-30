@@ -67,6 +67,19 @@ MonOrm does the same for the database layer.
 The schema, the migrations, the query API and the behavior are the same in Python and TypeScript, because one Rust engine does the work for both.
 A team can keep one schema when it adds a second service in another language, or when it moves from one language to the other.
 
+The Rust core is not tied to Python and TypeScript.
+Any language that can call native code can get a MonOrm package with the same schema, migrations and query API.
+Contributors can add a language: see [language-bindings.md](docs/contracts/language-bindings.md).
+
+| Language | Status | Bridge |
+|---|---|---|
+| Python | Shipped (PyPI `monorm`) | PyO3 (`languages/python/native`) |
+| TypeScript (Node, Bun) | Shipped (npm `@ufstack/monorm`) | napi (`languages/js/native`) |
+| Rust | In the repo, not published (`monorm-client` has `publish = false`) | Direct use of `monorm-engine`, no bridge |
+| Go | Open for contributors | A C ABI library |
+| PHP | Open for contributors | A PHP extension (for example with the `ext-php-rs` crate) |
+| Java | Open for contributors | JNI (for example with the `jni` crate) |
+
 ### All of SQL, in the ORM
 
 An ORM should not stop you from doing what SQL can do.

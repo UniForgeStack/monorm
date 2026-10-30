@@ -3,6 +3,7 @@
 Thank you for your interest.
 The project is under active development and the API can change.
 Open an issue before you start a large change, so that we can agree on the design first.
+To add a language, read [docs/contracts/language-bindings.md](docs/contracts/language-bindings.md) first.
 
 ## Support
 
