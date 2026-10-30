@@ -4,7 +4,7 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
-## [0.1.0] - TBD
+## [0.1.0] - 2026-10-30
 
 - Renamed from `orm` to `monorm`. The CLI is `monorm` and the Python module is `monorm`.
 - Async Python and TypeScript APIs on one Rust core: queries, relation loading with `load()`, transactions, locks and protected writes.
