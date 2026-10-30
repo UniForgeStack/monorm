@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-latest]
         include:
           - os: ubuntu-24.04
             platform: linux-x64
@@ -69,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-latest]
         python: ['3.11', '3.12', '3.13', '3.14']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -183,7 +183,7 @@ jobs:
         include:
           - os: ubuntu-24.04
             dialects: sqlite,postgres
-          - os: macos-14
+          - os: macos-15
             dialects: sqlite
           - os: windows-latest
             dialects: sqlite
