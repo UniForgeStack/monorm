@@ -39,6 +39,7 @@ python extensions/query-defaults/tests/public/python.py
 (cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
 (cd languages/js && node ../../extensions/query-defaults/tests/public/node.mjs)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; builds the one wheel and the one tarball and installs them in fresh Python, Node and Bun consumers; PostgreSQL and SQLite
+scripts/check-init.sh  # needs the local `maturin develop` and `npm run assemble` builds, node and bun; `monorm init` on SQLite: a Python project runs, a TypeScript project runs on Node and Bun, `create-monorm` wraps it
 python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
 cargo package -p monorm      # the crate that extension authors get from crates.io
 python3 scripts/rename/rename.py --check   # no old project name in the tree

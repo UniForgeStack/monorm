@@ -47,6 +47,12 @@ python examples/blog/demo.py sqlite://:memory:
 
 `pip install monorm` is the whole package: one engine with PostgreSQL and SQLite, the built-in extensions and the auth app.
 
+To start a project, run `uvx monorm init my-app` (or `pipx run monorm init my-app`, or `python -m monorm init my-app` after `pip install monorm`).
+The command asks for the language, the tool, the database (SQLite or PostgreSQL) and the built-in extensions.
+Flags answer each question: `--lang python --tool uv --db sqlite --ext timestamps,locking --yes`.
+It writes `schema.prisma`, `main.py`, `pyproject.toml`, `.gitignore` and `README.md`, and prints the next commands, for example `uv run main.py`.
+It refuses a directory that is not empty.
+
 ## Models: the generated module
 
 `python -m monorm generate` turns `schema.prisma` into two files (see [`schema.md`](../schema/schema.md)):

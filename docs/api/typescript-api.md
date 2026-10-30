@@ -48,6 +48,14 @@ npm run typecheck           # tsc over the package, the typing checks and the ex
 
 `MONORM_NATIVE=/path/monorm.node` loads another addon, for example a dev build.
 
+To start a project, run `npm create monorm my-app` (or `bun create monorm my-app`).
+It runs `npx monorm init my-app --lang typescript` with the package manager of the caller.
+The command asks for the database (SQLite or PostgreSQL) and the built-in extensions.
+`create-monorm` sets the language and the tool, so it never asks for them.
+Flags answer each question: `--tool pnpm --db sqlite --ext timestamps,locking --yes`.
+It writes `schema.prisma`, `index.ts`, `package.json`, `.gitignore` and `README.md`, and prints the next commands, for example `npm install` and `npm start`.
+`npm start` runs `node index.ts`, which needs Node 22.18 or newer; with Bun, it runs `bun index.ts`.
+
 ## Models: the generated module
 
 `npx monorm generate [-o models.ts] [--import monorm]` (or `monorm generate typescript ...`)
