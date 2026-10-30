@@ -253,11 +253,27 @@ impl Plan {
     }
 }
 
+/// The platform keys of the bundled libraries; they match `process.platform-process.arch` and `monorm-extension-package`.
+fn platform_key() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("windows", "x86_64") => Some("win32-x64"),
+        _ => None,
+    }
+}
+
 fn library_path(d: &Dynamic) -> PathBuf {
-    let name = d.manifest.library.as_deref().unwrap_or_default();
+    library_in(&d.dir, d.manifest.library.as_deref().unwrap_or_default(), platform_key())
+}
+
+/// A package that holds several platforms (the npm tarball) keeps each library in `<platform>/`: Linux x86-64 and arm64 share a file name.
+/// A package of one platform keeps it next to the manifest.
+fn library_in(dir: &Path, name: &str, key: Option<&str>) -> PathBuf {
     let file = if Path::new(name).extension().is_some() { name.to_owned() }
         else { format!("{}{name}{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX) };
-    d.dir.join(file)
+    key.map(|key| dir.join(key).join(&file)).filter(|own| own.is_file()).unwrap_or_else(|| dir.join(file))
 }
 
 fn open(d: &Dynamic) -> Result<Arc<Native>, String> {
@@ -558,6 +574,20 @@ mod tests {
 
     fn call(native: &Arc<Native>, name: &str) -> Result<Value, String> {
         State { native: native.clone(), id: "x".into(), raw: std::ptr::null_mut() }.call(name, &[], &Context::default())
+    }
+
+    #[test]
+    fn a_platform_directory_wins_over_the_file_next_to_the_manifest() {
+        let dir = std::env::temp_dir().join(format!("monorm-library-in-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("linux-arm64")).unwrap();
+        let file = format!("{}x{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+        assert_eq!(library_in(&dir, "x", Some("linux-arm64")), dir.join(&file));
+        std::fs::write(dir.join("linux-arm64").join(&file), "").unwrap();
+        assert_eq!(library_in(&dir, "x", Some("linux-arm64")), dir.join("linux-arm64").join(&file));
+        assert_eq!(library_in(&dir, "x", Some("linux-x64")), dir.join(&file));
+        assert_eq!(library_in(&dir, "x", None), dir.join(&file));
+        assert_eq!(library_in(&dir, "x.bin", Some("linux-arm64")), dir.join("x.bin"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

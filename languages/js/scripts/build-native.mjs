@@ -1,7 +1,7 @@
 // Builds the Rust addon (languages/js/native) for this platform and writes it twice:
 // prebuilt/<platform>/monorm.node (where the published package keeps it) and monorm.node (a source checkout).
 //   node scripts/build-native.mjs [--release] [--profile tooling]
-// MONORM_CARGO_TARGET=<triple>[.<glibc>] builds with `cargo zigbuild` for that target (the Linux release uses x86_64-unknown-linux-gnu.2.28).
+// MONORM_CARGO_TARGET=<triple>[.<glibc>] builds with `cargo zigbuild` for that target (the Linux release uses x86_64-unknown-linux-gnu.2.28 and aarch64-unknown-linux-gnu.2.28).
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";

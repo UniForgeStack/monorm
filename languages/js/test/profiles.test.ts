@@ -40,9 +40,9 @@ test("the native loader rejects an incompatible artifact before use", () => {
 test("an unsupported platform names the bundled platforms and the source build", () => {
   const root = mkdtempSync(join(tmpdir(), "monorm-platform-"));
   try {
-    for (const platform of ["freebsd-x64", "linux-arm64"]) {
+    for (const platform of ["freebsd-x64", "linux-riscv64"]) {
       assert.throws(() => addonPath(platform, root), (e: unknown) => e instanceof Error
-        && ["darwin-arm64", "linux-x64", "win32-x64", platform, "MONORM_NATIVE"].every((word) => e.message.includes(word)));
+        && ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64", platform, "MONORM_NATIVE"].every((word) => e.message.includes(word)));
     }
     assert.throws(() => addonPath("linux-x64", root), /linux-x64 is missing.*MONORM_NATIVE/);
     mkdirSync(join(root, "prebuilt", "linux-x64"), { recursive: true });

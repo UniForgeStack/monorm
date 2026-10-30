@@ -5,6 +5,8 @@
 //   node scripts/assemble-bundle.mjs --check              verify the package content (the `prepack` step)
 // `<name>` is `engine` or the directory name of a bundled extension. In place, the package holds
 // prebuilt/<platform>/monorm.node and extensions/<short>/{index.js, index.d.ts, monorm-extension.toml, <libraries>}.
+// A merged package keeps each extension library in extensions/<short>/<platform>/, because Linux x64 and arm64 share a file name;
+// the engine opens that file first, then the one next to the manifest (the in-place build).
 // `npm pack` works with one platform; set MONORM_PACK_PLATFORMS=all to make a missing platform an error.
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -12,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLATFORMS = ["darwin-arm64", "linux-x64", "win32-x64"];
+const PLATFORMS = ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"];
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const repo = join(pkgRoot, "..", "..");
@@ -82,7 +84,7 @@ function merge(dir) {
     for (const platform of PLATFORMS) {
       const from = join(dir, name, platform);
       if (!existsSync(from)) continue;
-      const to = name === "engine" ? join(pkgRoot, "prebuilt", platform) : join(pkgRoot, "extensions", name);
+      const to = name === "engine" ? join(pkgRoot, "prebuilt", platform) : join(pkgRoot, "extensions", name, platform);
       mkdirSync(to, { recursive: true });
       cpSync(from, to, { recursive: true });
     }
@@ -108,8 +110,9 @@ function check() {
   }
   if (process.env.MONORM_PACK_PLATFORMS === "all") {
     for (const short of shorts) {
-      const suffixes = readdirSync(join(pkgRoot, "extensions", short)).map((file) => /\.(dylib|so|dll)$/.exec(file)?.[1]).filter(Boolean);
-      const lacking = ["dylib", "so", "dll"].filter((suffix) => suffixes.length > 0 && !suffixes.includes(suffix));
+      const dir = join(pkgRoot, "extensions", short);
+      const held = PLATFORMS.filter((platform) => existsSync(join(dir, platform)) && readdirSync(join(dir, platform)).some((file) => /\.(dylib|so|dll)$/.test(file)));
+      const lacking = PLATFORMS.filter((platform) => held.length > 0 && !held.includes(platform));
       if (lacking.length > 0) throw new Error(`extensions/${short} lacks the library for: ${lacking.join(", ")}`);
     }
   }

@@ -23,7 +23,7 @@ TARGET = ROOT / "languages" / "python"
 EXTENSIONS = ("timestamps", "soft-delete", "locking", "inherit", "query-defaults", "generic", "proxy", "model-composition", "file-storage")
 AUTH = ROOT / "apps" / "auth" / "python" / "monorm_auth"
 # Platform key, library file prefix and suffix; the keys match `monorm-extension-package`.
-PLATFORMS = {("Darwin", "arm64"): ("darwin-arm64", "lib", ".dylib"), ("Linux", "x86_64"): ("linux-x64", "lib", ".so"), ("Windows", "AMD64"): ("win32-x64", "", ".dll")}
+PLATFORMS = {("Darwin", "arm64"): ("darwin-arm64", "lib", ".dylib"), ("Linux", "x86_64"): ("linux-x64", "lib", ".so"), ("Linux", "aarch64"): ("linux-arm64", "lib", ".so"), ("Windows", "AMD64"): ("win32-x64", "", ".dll")}
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc")
 
 

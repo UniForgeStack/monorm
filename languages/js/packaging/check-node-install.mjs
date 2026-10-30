@@ -1,7 +1,7 @@
 // Packs `monorm`, installs the tarball in a fresh Node project and a fresh Bun project, and runs smoke-node.mjs in each.
 //   node languages/js/packaging/check-node-install.mjs
 // `npm pack` runs `prepack`: it builds `dist/` and checks that `npm run assemble` filled the package.
-// Set ORM_TEST_DATABASE_URL to run the PostgreSQL query too. Set MONORM_PACK_PLATFORMS=all to demand all 3 platforms.
+// Set ORM_TEST_DATABASE_URL to run the PostgreSQL query too. Set MONORM_PACK_PLATFORMS=all to demand all 4 platforms.
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -47,7 +47,7 @@ for (const { runtime, name, install } of consumers) {
   // Delete every extension library: a schema without an extension attribute must load without them.
   const extensions = join(dir, "node_modules", "monorm", "extensions");
   for (const short of readdirSync(extensions)) {
-    for (const file of readdirSync(join(extensions, short))) {
+    for (const file of readdirSync(join(extensions, short), { recursive: true })) {
       if (/\.(dylib|so|dll)$/.test(file)) rmSync(join(extensions, short, file));
     }
   }

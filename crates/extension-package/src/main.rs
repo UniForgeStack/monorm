@@ -23,10 +23,14 @@ const PLATFORMS: [(&str, &str, &str); 3] = [
     ("win32-x64", "", ".dll"),
 ];
 
+/// `library` also builds this one, for the engine bundle; an outside package does not ship it yet.
+const LINUX_ARM64: (&str, &str, &str) = ("linux-arm64", "lib", ".so");
+
 fn host_platform() -> Result<&'static str, Error> {
     match (env::consts::OS, env::consts::ARCH) {
         ("macos", "aarch64") => Ok("darwin-arm64"),
         ("linux", "x86_64") => Ok("linux-x64"),
+        ("linux", "aarch64") => Ok("linux-arm64"),
         ("windows", "x86_64") => Ok("win32-x64"),
         _ => Err(format!(
             "no platform key for this host; the keys are {}",
@@ -200,7 +204,7 @@ fn run() -> Result<(), Error> {
         }
         "library" => {
             let key = host_platform()?;
-            let (_, prefix, suffix) = PLATFORMS.iter().find(|p| p.0 == key).unwrap();
+            let (_, prefix, suffix) = PLATFORMS.iter().chain([&LINUX_ARM64]).find(|p| p.0 == key).unwrap();
             require_plain(&library)?;
             let artifact = build_library(&dir, args.features.as_deref(), args.zigbuild.as_deref())?;
             let target = out.join(key);

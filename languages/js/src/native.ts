@@ -207,7 +207,7 @@ interface Addon {
 }
 
 /** The platforms of the bundled libraries: `${process.platform}-${process.arch}`. */
-export const PLATFORMS = ["darwin-arm64", "linux-x64", "win32-x64"] as const;
+export const PLATFORMS = ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"] as const;
 
 /** The artifact's embedded Cargo features, rustc, target, profile and git revision. */
 function buildRecord(build: unknown): boolean {
