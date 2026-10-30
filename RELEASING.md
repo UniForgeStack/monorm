@@ -88,6 +88,16 @@ The proof publishes only to TestPyPI.
    It sets "prerelease" while the major version is 0.
 6. After the first release, do owner-setup steps 8 and 9.
 
+## Release order of `create-monorm`
+
+`create-monorm` has its own workflow (`create-monorm.yml`, manual run) and pins `@ufstack/monorm` at the same version.
+Its test runs `monorm init` from the registry package, so that package must exist first.
+
+1. Push the tag and let `release.yml` publish `@ufstack/monorm`.
+2. Check that `npm view @ufstack/monorm@<version>` finds the version.
+3. Run `create-monorm.yml` by dispatch.
+   Without step 1, `npm install` fails to find the pinned version.
+
 ## Rerun rules
 
 - A published version is permanent on PyPI and npm.

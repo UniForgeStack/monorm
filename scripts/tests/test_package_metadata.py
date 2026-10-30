@@ -22,8 +22,6 @@ class PackageMetadata(unittest.TestCase):
         for path in paths:
             data = json.loads(path.read_text())
             where = path.relative_to(ROOT).as_posix()
-            if where == "languages/js/create-monorm/template/package.json":
-                continue  # the user's new project that create-monorm writes, not a published package
             if data["name"] == "monorm/auth":
                 continue  # marks the auth app directory for code generation; it is not published on its own
             if data["name"] in PRIVATE:

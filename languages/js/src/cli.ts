@@ -22,6 +22,7 @@ export async function main(rawArgv: readonly string[]): Promise<number> {
   const addon = native();
   if (typeof addon.cli !== "function") throw new Error("CLI unavailable; the native library does not include the command line (rebuild it with the tooling feature)");
   const argv = [...rawArgv];
+  if (argv[0] === "init") return addon.cli(argv); // no schema, apps or extensions exist before init
   try {
     const schema = addon.cliSchema(argv);
     for (const [name, file] of Object.entries(resolveApps(schema))) argv.push("--app", `${name}=${file}`);

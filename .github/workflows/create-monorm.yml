@@ -21,7 +21,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       # Provenance needs npm 9.5 or newer; trusted publishing needs 11.5.1 or newer.
       - run: npm install -g 'npm@>=11.5.1'
-      - run: npm test
+      # The test runs `monorm init` from the registry package that this install fetches.
+      - run: npm install && npm test
+        env:
+          CREATE_MONORM_TEST_REGISTRY: "1"
       # Without the NPM_TOKEN secret, npm uses the trusted publisher of the package.
       # An empty secret keeps the placeholder token that setup-node wrote, so the OIDC path stays open.
       - run: |

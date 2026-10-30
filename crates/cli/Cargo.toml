@@ -1,6 +1,6 @@
 [package]
 name = "monorm-cli"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 publish = false
 description = "The `monorm` command line: one implementation, run as the `monorm` binary, `python -m monorm` and `npx monorm`."

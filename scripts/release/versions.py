@@ -23,20 +23,21 @@ VERSION = re.compile(r"(\d+\.\d+\.\d+)(?:rc(\d+)|-rc\.(\d+))?")
 TAG = re.compile(r"v(\d+\.\d+\.\d+(?:-rc\.\d+)?)")
 VERSION_LINE = r'^version = "([^"]+)"'
 # The crates whose version `set` changes; Cargo.lock holds each of them.
-VERSIONED_CRATES = ("monorm", "monorm-python", "monorm-node")
+VERSIONED_CRATES = ("monorm", "monorm-cli", "monorm-python", "monorm-node")
 LOCK_ENTRY = r'^name = "{}"\nversion = "([^"]+)"'
 # (path or glob, form, pattern, expected matches per file)
 TEXT_SITES = [
     ("pyproject.toml", "py", VERSION_LINE, 1),
     ("extensions/*/monorm-extension.toml", "semver", VERSION_LINE, 1),
     ("crates/contracts/Cargo.toml", "semver", VERSION_LINE, 1),
+    ("crates/cli/Cargo.toml", "semver", VERSION_LINE, 1),
     ("languages/python/native/Cargo.toml", "semver", VERSION_LINE, 1),
     ("languages/js/native/Cargo.toml", "semver", VERSION_LINE, 1),
     *[("Cargo.lock", "semver", LOCK_ENTRY.format(crate), 1) for crate in VERSIONED_CRATES],
     ("tests/outside-extension/Cargo.lock", "semver", LOCK_ENTRY.format("monorm"), 1),
     ("languages/js/src/native.ts", "semver", r'meta\.version !== "([^"]+)"', 1),
     ("languages/js/src/native.ts", "semver", r"matching monorm (\d[^ ]*) packages", 1),
-    ("languages/js/create-monorm/template/package.json", "semver", r'"npm:@ufstack/monorm@\^([^"]+)"', 1),
+    ("languages/js/create-monorm/package.json", "semver", r'"@ufstack/monorm": "([^"]+)"', 1),
 ]
 JSON_SITES = [
     "languages/js/package.json",

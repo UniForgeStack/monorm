@@ -11,6 +11,7 @@
     python -m monorm pull [-o schema.prisma] [--force]
     python -m monorm baseline
     python -m monorm drift
+    python -m monorm init [dir]                        # a starter project; also `uvx monorm init`
 
 The schema file and migrations directory come from ``--schema`` / ``--dir`` or from
 ``[tool.monorm]`` in ``pyproject.toml`` (``schema = "schema.prisma"``,
@@ -37,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
             "CLI is unavailable in this build of monorm; build it with the `profile-tooling` feature"
         )
     args = sys.argv[1:] if argv is None else list(argv)
+    if args[:1] == ["init"]:  # no schema, apps or extensions exist before init
+        return _native.cli(args)
     try:
         apps = resolve_apps(_native.cli_schema(args))
         extensions = resolve_extensions()
