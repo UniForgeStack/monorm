@@ -213,6 +213,7 @@ fn prefetched_js(js: Js, schema: &schema::Schema, fetched: &[Fetched]) -> napi::
         js.set(o, "unsetWhenAbsent", js.boolean(p.unset_when_absent)?)?;
         js.set(o, "keyPos", js.array_of(p.key_pos.iter().map(|&k| js.number(k as f64)))?)?;
         js.set(o, "childKeyPos", js.array_of(p.child_key_pos.iter().map(|&k| js.number(k as f64)))?)?;
+        js.set(o, "names", js.array_of(p.names.iter().map(|n| js.str(n)))?)?;
         js.set(o, "back", match &p.back {
             Some(b) => js.str(b)?,
             None => js.null()?,

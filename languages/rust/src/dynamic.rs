@@ -68,6 +68,7 @@ fn add(schema: &Schema, model: usize, q: &mut SelectionPlan, parts: &[&str]) -> 
             relation: relation.name.clone(),
             attr: None,
             one: false,
+            names: Vec::new(),
             query,
         });
         q.prefetch.len() - 1

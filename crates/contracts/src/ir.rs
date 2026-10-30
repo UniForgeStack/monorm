@@ -990,6 +990,9 @@ pub struct Prefetch {
     /// read with a limit of one per parent.
     #[serde(default)]
     pub one: bool,
+    /// The names of the `select(...)` columns, for bindings that build named rows.
+    #[serde(default)]
+    pub names: Vec<String>,
     #[serde(flatten)]
     pub query: Select,
 }

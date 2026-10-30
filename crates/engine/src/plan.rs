@@ -89,6 +89,8 @@ pub struct PrefetchPlan {
     pub key_type: Vec<ValueType>,
     /// Positions of the relation's `to` fields in the related rows.
     pub child_key_pos: Vec<usize>,
+    /// The names of the `select(...)` columns of the related rows.
+    pub names: Vec<String>,
     /// A default filter was ANDed into the fetch's WHERE and no bypass removed it.
     pub filtered: bool,
     /// A to-one that holds the key, with no filter and no label: no matching row leaves the
@@ -3464,8 +3466,17 @@ fn plan_prefetch(
             pm.ir.name, node.relation, cm.ir.name, node.query.model
         )));
     }
-    if node.query.columns.is_some() || node.query.lock.is_some() {
-        return Err(Error::query("a prefetch query can't select columns or lock rows"));
+    let selected = node.query.columns.is_some();
+    if node.query.lock.is_some() {
+        if selected {
+            return Err(Error::query("select() can't lock rows in a relation query set"));
+        }
+        if node.query.limit.is_some() || node.query.offset.is_some() || node.one {
+            return Err(Error::query("lock() can't be used with a slice of a relation query set: the slice numbers rows with a window function"));
+        }
+    }
+    if selected && (node.query.distinct || !node.query.distinct_on.is_empty()) {
+        return Err(Error::query("distinct() can't be used in a select() of a relation query set"));
     }
     if node.one && (rel.kind != RelKind::Many || node.attr.is_none()) {
         return Err(Error::query(format!("one-row loading needs a to-many relation and a label ({}.{})", pm.ir.name, node.relation)));
@@ -3484,6 +3495,12 @@ fn plan_prefetch(
     let pk_order: Vec<Order> = cm.key_fields().iter().map(|f| Order { expr: Expr::Col { path: vec![], name: f.name.clone(), sub: vec![], alias: vec![] }, desc: false, nulls: None }).collect();
     q.order = effective_order(schema, &q)?;
     let sliced = q.limit.is_some() || q.offset.is_some();
+    // an aggregate without group_by() still needs the parent key in its groups
+    let grouped = !q.group_by.is_empty()
+        || !q.having.is_empty()
+        || q.columns.iter().flatten().any(|c| {
+            matches!(c, SelectItem::Expr { expr, .. } if has_local_aggregate(&Cut { schema, model: child, base: &[] }, expr))
+        });
     let slice = match sliced {
         false => None,
         true => Some((
@@ -3494,9 +3511,11 @@ fn plan_prefetch(
     let mut window_order = vec![];
     if sliced {
         window_order = std::mem::take(&mut q.order);
-        window_order.extend(pk_order);
+        if !grouped {
+            window_order.extend(pk_order);
+        }
         (q.limit, q.offset) = (None, None);
-    } else if q.order.is_empty() {
+    } else if q.order.is_empty() && !grouped {
         q.order = pk_order;
     }
     let virt = derive_ctes(schema, target, &q.with, params)?;
@@ -3507,14 +3526,28 @@ fn plan_prefetch(
     let (mut key_field, mut key, mut child_key_pos) = (vec![], vec![], vec![]);
     match &rel.through {
         None => {
-            let Output::Instances { shape, .. } = &plan.output else { unreachable!() };
-            let positions = shape_positions(cm, shape.as_ref());
+            let positions = match &plan.output {
+                Output::Instances { shape, .. } => Some(shape_positions(cm, shape.as_ref())),
+                _ => None,
+            };
             for to in &rel.to {
                 let f = cm.field(to).map_err(query_err)?;
                 let pos = cm.field_pos(to).map_err(query_err)?;
-                key.push(col(p.root_alias(), &f.column));
+                let k = col(p.root_alias(), &f.column);
+                match &positions {
+                    Some(positions) => child_key_pos.push(positions.iter().position(|p| p == pos).ok_or_else(|| Error::query("missing prefetch key"))?),
+                    None => {
+                        // a select() row has no key field: select it after the items and group by it
+                        plan.stmt.expr_as(k.clone(), Alias::new(format!("_key{}", key.len())));
+                        plan.types.push(f.value_type());
+                        child_key_pos.push(plan.types.len() - 1);
+                        if grouped {
+                            plan.stmt.add_group_by([k.clone()]);
+                        }
+                    }
+                }
+                key.push(k);
                 key_field.push(f.clone());
-                child_key_pos.push(positions.iter().position(|p| p == pos).ok_or_else(|| Error::query("missing prefetch key"))?);
             }
         }
         Some(th) => {
@@ -3527,6 +3560,9 @@ fn plan_prefetch(
             let k = col(&jalias, &src.column);
             plan.stmt.expr_as(k.clone(), Alias::new("_key"));
             plan.types.push(src.value_type());
+            if selected && grouped {
+                plan.stmt.add_group_by([k.clone()]);
+            }
             key.push(k);
             key_field.push(src.clone());
             child_key_pos.push(plan.types.len() - 1);
@@ -3557,7 +3593,7 @@ fn plan_prefetch(
         plan.stmt.with_cte(w);
     }
     // has-many / has-one: the child's to-one relation back to the parent is set too
-    let back = (!rel.foreign_key && rel.through.is_none())
+    let back = (!selected && !rel.foreign_key && rel.through.is_none())
         .then(|| {
             cm.ir.relations.iter().find(|r| {
                 r.kind == RelKind::One
@@ -3575,6 +3611,7 @@ fn plan_prefetch(
         key_pos: rel.from.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
         key_type: rel.from.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
+        names: node.names.clone(),
         filtered: plan.filtered,
         unset_when_absent: rel.foreign_key && !plan.filtered && !many && node.attr.is_none(),
         back,

@@ -296,30 +296,39 @@ impl<'a, 'py> Builder<'a, 'py> {
             }
             Output::Rows { model, items } => {
                 let out = PyList::empty(self.py);
-                let mut values = Vec::with_capacity(items.len());
                 for r in 0..rows.len() {
-                    values.clear();
-                    let mut pos = 0;
-                    for item in items {
-                        match item {
-                            Some(width) => {
-                                values.push(self.instance(*model, None, rows, r, pos, types)?.obj.unbind());
-                                pos += width;
-                            }
-                            None => {
-                                values.push(self.cell(rows, r, pos, types[pos])?);
-                                pos += 1;
-                            }
-                        }
-                    }
-                    let t = PyTuple::new(self.py, values.drain(..))?;
-                    match row_cls {
-                        Some(cls) => out.append(cls.call1((t,))?)?,
-                        None => out.append(t)?,
-                    }
+                    out.append(self.row(*model, items, rows, r, types, row_cls)?)?;
                 }
                 Ok(out)
             }
+        }
+    }
+
+    /// The `Row` class of a `select(...)` with these column names.
+    fn row_class(&self, names: &[String]) -> PyResult<Bound<'py, PyAny>> {
+        self.py.import("monorm.select")?.getattr("row_class")?.call1((PyTuple::new(self.py, names)?,))
+    }
+
+    /// Row `r` of a `select(...)`: a tuple, or `row_cls(tuple)`.
+    fn row(&self, model: usize, items: &[Option<usize>], rows: &dyn RowSet, r: usize, types: &[ValueType], row_cls: Option<&Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>> {
+        let mut values = Vec::with_capacity(items.len());
+        let mut pos = 0;
+        for item in items {
+            match item {
+                Some(width) => {
+                    values.push(self.instance(model, None, rows, r, pos, types)?.obj.unbind());
+                    pos += width;
+                }
+                None => {
+                    values.push(self.cell(rows, r, pos, types[pos])?);
+                    pos += 1;
+                }
+            }
+        }
+        let t = PyTuple::new(self.py, values)?;
+        match row_cls {
+            Some(cls) => cls.call1((t,)),
+            None => Ok(t.into_any()),
         }
     }
 
@@ -349,24 +358,31 @@ impl<'a, 'py> Builder<'a, 'py> {
     fn attach(&self, parents: &[Instance<'py>], parent_rows: &dyn RowSet, f: &Fetched) -> PyResult<()> {
         let py = self.py;
         let p = &f.plan;
-        let Output::Instances { model, shape, joins, annotations } = &p.output else {
-            return Err(PyTypeError::new_err("prefetch rows must be instances"));
+        let objs: Vec<Bound<'py, PyAny>> = match &p.output {
+            Output::Instances { model, shape, joins, annotations } => {
+                let children = self.instances(*model, shape.as_ref(), joins, annotations, f.rows.as_ref(), &p.types)?;
+                for c in &f.children {
+                    self.attach(&children, f.rows.as_ref(), c)?;
+                }
+                children.into_iter().map(|c| c.obj).collect()
+            }
+            Output::Rows { model, items } => {
+                let cls = self.row_class(&p.names)?;
+                let objs = (0..f.rows.len()).map(|r| self.row(*model, items, f.rows.as_ref(), r, &p.types, Some(&cls))).collect::<PyResult<Vec<_>>>()?;
+                objs
+            }
         };
-        let children = self.instances(*model, shape.as_ref(), joins, annotations, f.rows.as_ref(), &p.types)?;
-        for c in &f.children {
-            self.attach(&children, f.rows.as_ref(), c)?;
-        }
         let key_types: Vec<ValueType> = p.child_key_pos.iter().map(|&c| p.types[c]).collect();
         let groups = PyDict::new(py);
-        for (i, c) in children.iter().enumerate() {
+        for (i, c) in objs.iter().enumerate() {
             let key = key_cell(py, f.rows.as_ref(), i, &p.child_key_pos, &key_types)?;
             if p.many {
                 match groups.get_item(&key)? {
-                    Some(list) => list.cast_into::<PyList>()?.append(&c.obj)?,
-                    None => groups.set_item(key, PyList::new(py, [&c.obj])?)?,
+                    Some(list) => list.cast_into::<PyList>()?.append(c)?,
+                    None => groups.set_item(key, PyList::new(py, [c])?)?,
                 }
             } else {
-                groups.set_item(key, &c.obj)?;
+                groups.set_item(key, c)?;
             }
         }
         let attr = PyString::intern(py, &p.attr);

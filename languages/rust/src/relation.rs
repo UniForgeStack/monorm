@@ -227,6 +227,7 @@ fn configure<P: Model>(q: &mut SelectionPlan, name: &str) {
         relation: name.into(),
         attr: None,
         one: false,
+        names: Vec::new(),
         query: Query::<P>::new().initialized().select,
     });
 }
@@ -302,6 +303,7 @@ impl<R, T: Model, C, K, B> Relation<R, T, C, K, B> {
             relation: self.name.into(),
             attr: None,
             one: false,
+            names: Vec::new(),
             query,
         });
     }
