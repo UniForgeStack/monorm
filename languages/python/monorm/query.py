@@ -198,10 +198,12 @@ def _prefetch_ir(model: type[Model], items: Iterable[tuple[tuple[str, ...], _Pre
     for node in _prefetch_tree(model, items).values():
         target = model._meta.relations[node.relation].target
         qs: QuerySet[Any] = node.qs if node.qs is not None else target.objects
-        if qs._lock is not None:
-            raise QueryError("a relation query set in load() can't lock rows")
         children = [(p.path._path, p) for p in qs._prefetch] + node.children
-        ir, ctx = qs._query_ir("select", params, prefetch=False)
+        if qs._rows is not None:
+            ir, ctx = qs._rows._clone(_qs=qs)._build(params, relation=True)
+            ir["names"] = list(qs._rows._names)
+        else:
+            ir, ctx = qs._query_ir("select", params, prefetch=False)
         if children:
             ir["prefetch"] = _prefetch_ir(target, children, params)
         ctx.finish(ir)
@@ -412,6 +414,7 @@ class QuerySet(Generic[M]):
         "_via",
         "_label",
         "_one",
+        "_rows",
         "_as_prefetch",
         "_lock",
         "_db",
@@ -446,6 +449,8 @@ class QuerySet(Generic[M]):
         self._via: RelationPath[Any] | None = None
         self._label: str | None = None
         self._one = False
+        # the labeled ``select(...)`` this relation query set came from: load() fills the label with its rows
+        self._rows: Select[Any] | None = None
         self._as_prefetch = False
         self._lock: dict[str, bool] | None = None
         self._db: Database | None = None
@@ -481,6 +486,7 @@ class QuerySet(Generic[M]):
         new._via = self._via
         new._label = self._label
         new._one = self._one
+        new._rows = self._rows
         new._as_prefetch = self._as_prefetch
         new._lock = self._lock
         new._db = self._db
@@ -516,7 +522,7 @@ class QuerySet(Generic[M]):
         loads = tuple(i for i in self._loads if not (_load_path(i)[:1] and _load_path(i)[0] in joined))
         return self._clone(_without_related=True, _loads=loads)._derived()
 
-    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
+    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Select[Unpack[tuple[Any, ...]]] | Labeled[Any]) -> Self:
         """Choose what the model instances carry::
 
             Post.objects.load(Post.title)                      # partial posts
@@ -525,6 +531,8 @@ class QuerySet(Generic[M]):
             User.objects.load(User.posts.comments)             # by IN (...) queries
             User.objects.load(User.posts.objects.filter(Post.published).order_by(Post.views.desc())[:3])
             User.objects.load(User.posts.objects[:3].label("top_posts"))
+            User.objects.lock().load(User.posts.objects.lock())     # locks the posts too
+            User.objects.load(User.posts.objects.select(Post.id, Post.title).label("titles"))   # lists of Rows
             Post.objects.load(func.count(Post.comments).label("n_comments"))   # post.n_comments
 
         A column of the model makes its instances partial: they hold the named fields
@@ -539,6 +547,10 @@ class QuerySet(Generic[M]):
         its own items with ``.load()``, and goes to the relation, or to the plain
         attribute ``.label(name)`` (``[n].label(name)``: one row or ``None``).
         ``.as_prefetch()`` loads a to-one relation by ``IN (...)`` query instead of a join.
+        ``.lock()`` on the set adds ``FOR UPDATE`` (or ``FOR SHARE``) to its ``IN (...)`` query and needs
+        a transaction; it can't go with a slice. ``.select(...).label(name)`` gives each object a list of
+        ``Row``s of the chosen columns (filters, ordering and slices work as on the set; ``group_by()``
+        groups per parent); it can't lock rows.
 
         A labeled expression of the row sets the attribute on each object: a relation aggregate
         (``func.count(Post.comments).label("n")``, a correlated subquery in the same statement),
@@ -558,6 +570,9 @@ class QuerySet(Generic[M]):
             loads = tuple(i for i in self._loads if not (isinstance(i, ColumnRef) and not i._path))
             return self._clone(_loads=loads, _model_fields=self._model._meta.field_names)._derived()
         own: list[str] = []
+        from .select import Select
+
+        items = tuple(item._relation_set() if isinstance(item, Select) else item for item in items)
         for item in items:
             if isinstance(item, QuerySet):
                 if item._via is None:
@@ -714,7 +729,9 @@ class QuerySet(Generic[M]):
 
         ``exclusive=True`` is ``FOR UPDATE`` (others can't lock, update or delete the
         rows), ``False`` is ``FOR SHARE`` (others can read-lock them too, but not change
-        them). Only this model's rows are locked, not rows joined by ``load()``.
+        them). Only this model's rows are locked, and rows of a relation query set given to ``load()``
+        (``load(Post.author.objects.lock())``); rows a ``load()`` joins stay unlocked.
+        A locked relation query set can't be sliced.
         Rows locked by another transaction are waited for, unless ``nowait`` (raise
         :class:`~monorm.LockNotAvailable`) or ``skip_locked`` (leave them out, e.g. for job
         queues). Must run inside ``db.transaction()``.
@@ -859,7 +876,6 @@ class QuerySet(Generic[M]):
         ``.scalars()`` / ``.scalar()`` one column's values."""
         from .select import Select
 
-        self._standalone()
         return Select(self, items)
 
     # -- batches --------------------------------------------------------------------------
@@ -1133,8 +1149,12 @@ class QuerySet(Generic[M]):
         objs: list[M] = await self._run(ir, params)
         return objs
 
+    def _locks(self) -> bool:
+        """Whether this query or a relation query set it loads locks rows."""
+        return self._lock is not None or any(p.queryset is not None and p.queryset._locks() for p in self._prefetch)
+
     def _check_lock(self) -> None:
-        if self._lock is not None:
+        if self._locks():
             from .db import resolve
 
             if resolve(self._db)._tx() is None:
@@ -1588,7 +1608,7 @@ class Prepared(Generic[M]):
         c = self._statement(kind)
         params = c.bind(values, self._names)
         qs = self._qs
-        if qs._lock is not None:
+        if qs._locks():
             qs._check_lock()
         db = resolve(qs._db)
         op, params = _with_scope(c.json, params)
@@ -1689,6 +1709,7 @@ async def prefetch(
         qs = qs.using(using)
     params: list[Any] = []
     ir = qs._select_ir("select", params)
+    qs._check_lock()
     meta = model._meta
     keys: list[str] = []
     for node in _prefetch_tree(model, ((p.path._path, p) for p in qs._prefetch)).values():
@@ -1753,7 +1774,7 @@ class BoundQuerySet(Generic[M]):
     def exclude(self, *conditions: ConditionLike) -> Self:
         return self._clone(self._qs.exclude(*conditions))
 
-    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Labeled[Any]) -> Self:
+    def load(self, *items: ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Select[Unpack[tuple[Any, ...]]] | Labeled[Any]) -> Self:
         return self._clone(self._qs.load(*items))
 
     def join(self, cte: Cte, on: ConditionLike, *, outer: bool = False) -> Self:

@@ -154,6 +154,10 @@ export async function loading() {
   same<(typeof best)[number]["best"], Post | null>();
   const second = await User.objects.load(User.posts.objects.at(1).label("second"));
   same<(typeof second)[number]["second"], Post | null>();
+  const titled = await User.objects.load(User.posts.objects.select({ id: Post.id, lower: func.lower(Post.title) }).label("titles")).all();
+  same<(typeof titled)[number]["titles"], readonly { id: bigint; lower: string }[]>();
+  // @ts-expect-error a select of a relation query set can't run alone
+  await User.posts.objects.select({ id: Post.id });
   const doubled = await Post.objects.load(Post.views.mul(2).label("doubleViews")).all();
   same<(typeof doubled)[number]["doubleViews"], number>();
   // @ts-expect-error the label is not an attribute of a query set that did not load it

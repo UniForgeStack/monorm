@@ -149,7 +149,7 @@ class Select(Generic[Unpack[Ts]]):
     every method returns a new ``Select``, and nothing runs until it is awaited. Awaiting
     the same ``Select`` again gives the same rows without querying again."""
 
-    __slots__ = ("_qs", "_items", "_names", "_group", "_having", "_distinct", "_distinct_on", "_result")
+    __slots__ = ("_qs", "_items", "_names", "_group", "_having", "_distinct", "_distinct_on", "_label", "_result")
 
     def __init__(self, qs: QuerySet[Any], items: tuple[Any, ...]) -> None:
         if not items:
@@ -174,6 +174,7 @@ class Select(Generic[Unpack[Ts]]):
         self._having: tuple[Any, ...] = ()
         self._distinct = False
         self._distinct_on: tuple[ColumnRef[Any], ...] = ()
+        self._label: str | None = None
         self._result: asyncio.Task[list[Any]] | None = None
 
     def _clone(self, **changes: Any) -> Self:
@@ -292,13 +293,40 @@ class Select(Generic[Unpack[Ts]]):
         row (by ``order_by``) of each distinct value."""
         return self._clone(_distinct=True, _distinct_on=on)
 
+    def label(self, name: str) -> Select[Unpack[Ts]]:
+        """For a select of a relation query set: ``User.objects.load(User.posts.objects.select(...).label("rows"))``
+        stores the rows (a list of ``Row``) in ``user.rows``."""
+        self._qs._bound("label")
+        if not isinstance(name, str) or not name.isidentifier() or name.startswith("_"):
+            raise ValueError(f"label {name!r} must be an identifier not starting with '_'")
+        return self._clone(_label=name)
+
+    def _relation_set(self) -> QuerySet[Any]:
+        """The labeled relation query set that ``load()`` takes in place of this select."""
+        if self._qs._via is None:
+            raise TypeError("load() takes a select of a relation query set such as User.posts.objects.select(...)")
+        if self._label is None:
+            raise TypeError("a select() in load() needs .label(name)")
+        if any(isinstance(item, NestedRef) for item in self._items):
+            raise TypeError("a select() in load() can't select a nested column")
+        return self._qs._clone(_label=self._label, _rows=self)
+
     # -- IR -------------------------------------------------------------------------------
 
     def _build(
-        self, params: list[Any], outer: IRContext | None = None, ctes: _Ctes | None = None, op: str = "select"
+        self,
+        params: list[Any],
+        outer: IRContext | None = None,
+        ctes: _Ctes | None = None,
+        op: str = "select",
+        *,
+        relation: bool = False,
     ) -> tuple[dict[str, Any], IRContext]:
-        self._qs._standalone()
-        ir, ctx = self._qs._query_ir(op, params, outer, ctes)
+        if relation:
+            ir, ctx = self._qs._query_ir(op, params, outer, ctes, prefetch=False)
+        else:
+            self._qs._standalone()
+            ir, ctx = self._qs._query_ir(op, params, outer, ctes)
         ir.pop("annotations", None)
         ir["columns"] = [
             {"t": "model"} if isinstance(item, type) else {"t": "expr", "expr": item._ir(ctx), "name": name}

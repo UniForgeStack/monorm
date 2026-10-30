@@ -129,7 +129,9 @@ def _primary(owner: Any) -> Any:
 async def load_instance(owner: Any, items: tuple[Any, ...], reload: bool) -> None:
     from .model import _peek, _reference_adapter
     from .query import QuerySet, prefetch
+    from .select import Select
 
+    items = tuple(item._relation_set() if isinstance(item, Select) else item for item in items)
     model = type(owner)
     # Validate the whole request before doing I/O, including relation query options.
     # Bare bypass on purpose: this only validates the request and runs no query.

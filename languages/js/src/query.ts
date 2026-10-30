@@ -196,11 +196,13 @@ type ItemLoad<I> =
       ? LoadOf<H>
       : I extends { readonly "~qs"?: [unknown, infer Row, unknown, unknown, unknown, infer V] }
         ? V extends Via<infer H, infer A, infer O> ? LoadOf<H, Row, A, O> : never
-        : never;
+        : I extends { readonly "~rel"?: [infer Row, unknown, infer V] }
+          ? V extends Via<infer H, infer A, infer O> ? LoadOf<H, Row, A, O> : never
+          : never;
 /** What `load(...C)` adds to a row for its relations. */
 export type LoadAll<C extends readonly unknown[]> = UnionToIntersection<{ [K in keyof C]: ItemLoad<C[K]> }[number]>;
 type LoadParams<C extends readonly unknown[]> = UnionToIntersection<
-  { [K in keyof C]: C[K] extends { readonly "~qs"?: [unknown, unknown, unknown, infer P, unknown, Via] } ? P : {} }[number]
+  { [K in keyof C]: C[K] extends { readonly "~qs"?: [unknown, unknown, unknown, infer P, unknown, Via] } ? P : C[K] extends { readonly "~rel"?: [unknown, infer P, Via] } ? P : {} }[number]
 >;
 /** The names of the root model's own columns among `C`. */
 export type RootNames<C extends readonly unknown[]> = { [K in keyof C]: C[K] extends Column<unknown, string, infer N, readonly []> ? N : never }[number];
@@ -222,7 +224,9 @@ export type LoadItem<M extends ModelSpec, S extends string = never> =
   | Labeled<unknown, string, M["name"] | Many | S, unknown>
   // Compare relation metadata only; result modifiers do not change load eligibility.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `any`, not a contextual type the label literal would widen to
-  | Pick<QuerySet<any, any, string, any, never, Via<any, any, any, M["name"] | Many>>, "~qs" | "meta" | "state">;
+  | Pick<QuerySet<any, any, string, any, never, Via<any, any, any, M["name"] | Many>>, "~qs" | "meta" | "state">
+  // A labeled `select()` of a relation query set: its rows go to the label.
+  | { readonly "~rel"?: [unknown, unknown, Via<any, string, any, M["name"] | Many>] };
 
 /** Columns of model `M` (the root of its queries). */
 export type OwnColumn<M extends ModelSpec> = Column<unknown, M["name"]>;
@@ -295,6 +299,16 @@ export interface PrefetchItem {
   readonly queryset: QuerySet<ModelSpec, unknown, string, unknown, never> | undefined;
   readonly toAttr: string | undefined;
   readonly one: boolean;
+}
+
+/** @internal A labeled `select()` of a relation query set, as `load()` takes it. */
+export interface RelationSelect {
+  relationSet(): QuerySet<ModelSpec, unknown, string, unknown, never>;
+}
+
+/** `Select` has no runtime import here (select.ts imports this module), so the method marks it. */
+function isRelationSelect(item: unknown): item is RelationSelect {
+  return typeof item === "object" && item !== null && typeof (item as { relationSet?: unknown }).relationSet === "function";
 }
 
 /** @internal */
@@ -477,14 +491,13 @@ function prefetchIr(
   for (const node of prefetchTree(meta, items).values()) {
     const target = meta.registry.get(meta.relationByIr.get(node.relation)!.target);
     const qs = node.qs ?? target.objects;
-    if (qs.state.lock) {
-      throw new QueryError("a relation query set in load() can't lock rows");
-    }
     const children: [string[], PrefetchItem][] = [
       ...qs.state.prefetch.map((p) => [[...p.path[PATH].path], p] as [string[], typeof p]),
       ...node.children,
     ];
-    const [ir, ctx] = qs.queryIr("select", params, undefined, undefined, false);
+    const rows = qs.state.rows;
+    const [ir, ctx] = rows ? rows.relationIr(params) : qs.queryIr("select", params, undefined, undefined, false);
+    if (rows) ir["names"] = rows.items.map(([name]) => name);
     if (children.length) {
       ir["prefetch"] = prefetchIr(target, children, params);
     }
@@ -545,6 +558,8 @@ export interface QueryState {
   /** A relation query set (`User.posts.objects`): its relation, label and strategy. */
   readonly via?: RelationPath<ModelSpec, string, readonly Hop[]>;
   readonly label?: string;
+  /** The labeled `select()` of a relation query set: `load()` gives each parent its rows. */
+  readonly rows?: Select<ModelSpec, object, string, unknown, string, unknown>;
   readonly one?: boolean;
   readonly asPrefetch?: boolean;
   readonly lock: { exclusive: boolean; nowait: boolean; skip_locked: boolean } | undefined;
@@ -569,9 +584,14 @@ const EMPTY: QueryState = {
   joins: [],
 };
 
+/** Whether the query or a relation query set it loads locks rows. */
+function locks(state: QueryState): boolean {
+  return state.lock !== undefined || state.prefetch.some((p) => p.queryset !== undefined && locks(p.queryset.state));
+}
+
 /** @internal */
 export function checkRunnable(meta: ModelMeta, state: QueryState): void {
-  if (state.lock) {
+  if (locks(state)) {
     const db = resolve(state.db);
     if (db.tx() === null) {
       throw new TransactionRequired(
@@ -696,14 +716,15 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    */
   load(): PreserveRequired<this, QuerySetOf<M, R & M["row"], S, P, X, V>>;
   load<const C extends readonly LoadItem<M, S>[]>(...items: C): PreserveRequired<this, QuerySetOf<M, Narrow<R, M, RootNames<C>> & LoadAll<C>, S, P & LoadParams<C>, X, V>>;
-  load(...items: readonly LoadEntry[]): unknown {
+  load(...items: readonly (LoadEntry | RelationSelect)[]): unknown {
     const loads = this.state.loads ?? [];
     if (!items.length) {
       const kept = loads.filter((i) => !(i instanceof Column && !i.path.length));
       return this.clone({ loads: kept, modelFields: this.meta.fieldList.map((f) => f.ir) }).derived();
     }
+    const entries = items.map((item) => (isRelationSelect(item) ? item.relationSet() : item));
     const own: string[] = [];
-    for (const item of items) {
+    for (const item of entries) {
       if (item instanceof Labeled) {
         const inner = item.expr;
         if (inner instanceof Func && inner.rel) this.checkPath(inner.rel);
@@ -724,7 +745,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       }
     }
     if (new Set(own).size !== own.length) throw new TypeError("duplicate model field");
-    return this.clone({ loads: [...loads, ...items] }).derived();
+    return this.clone({ loads: [...loads, ...entries] }).derived();
   }
 
   /** @internal `modelFields`, `related`, `relatedFields` and `prefetch` from `loads`. */
@@ -762,6 +783,11 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       throw new TypeError(`label ${JSON.stringify(name)} must be an identifier not starting with '_'`);
     }
     return this.clone({ label: name }) as never;
+  }
+
+  /** @internal This relation query set, giving the rows of `rows` under `label`. */
+  withRows(rows: Select<ModelSpec, object, string, unknown, string, unknown>, label: string): this {
+    return this.clone({ rows, label });
   }
 
   /** Loads this relation with an `IN (...)` query instead of a join; the rows are the same. */
@@ -920,8 +946,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   /**
    * Locks the rows this query reads until the transaction ends: `FOR UPDATE`, or
-   * `FOR SHARE` with `exclusive: false`. Only this model's rows are locked, not rows joined
-   * by `load()`. Must run inside `db.transaction()`.
+   * `FOR SHARE` with `exclusive: false`. Only this model's rows are locked, and the rows of a
+   * relation query set given to `load()` when it has its own `lock()`
+   * (`User.objects.lock().load(User.posts.objects.lock())`); rows a `load()` joins stay unlocked.
+   * A locked relation query set can't be sliced. Must run inside `db.transaction()`.
    */
   lock(options: LockOptions & ({ readonly nowait?: false } | { readonly skipLocked?: false }) = {}): PreserveRequired<this, QuerySetOf<M, R, S, P, X, V>> {
     const { exclusive = true, nowait = false, skipLocked = false } = options as LockOptions;
@@ -1002,8 +1030,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    */
   select<const I extends SelectItems<M, S>>(
     items: I,
-  ): PreserveRequired<this, Select<M, Simplify<SelectRow<I>>, S, P & ItemsParams<I>, X | ItemsOuter<I, S>, CteColumnsOf<I>>> {
-    this.assertStandalone();
+  ): PreserveRequired<this, Select<M, Simplify<SelectRow<I>>, S, P & ItemsParams<I>, X | ItemsOuter<I, S>, CteColumnsOf<I>, V>> {
     return makeSelect(this as never, items) as never;
   }
 
@@ -2594,6 +2621,7 @@ export async function prefetch(
     throw new TypeError("prefetch() loads relations; a column of the instances' own model has nothing to load");
   }
   const qs = (meta.objects as QuerySet<ModelSpec>).using(using).withPrefetch(derive(meta, loads, true).prefetch);
+  checkRunnable(meta, qs.state);
   const withoutDefaults = options?.withoutDefaults;
   const bypassed = withoutDefaults === true
     ? qs.withoutDefaults()

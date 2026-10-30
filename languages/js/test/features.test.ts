@@ -569,7 +569,7 @@ for (const operation of [
         case "insert": await qs.insert({} as never); break;
         case "insertMany": await qs.insertMany([]); break;
         case "copy": await qs.insertMany([], { copy: true }); break;
-        case "select": await qs.select({ id: Post.id }); break;
+        case "select": await (qs.select({ id: Post.id }) as unknown as Promise<unknown>); break;
         case "cte": qs.cte("bound"); break;
         case "subquery": await User.objects.filter(exists(qs)); break;
         case "explain": await qs.explain(); break;

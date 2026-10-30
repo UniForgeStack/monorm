@@ -134,10 +134,11 @@ export class Builder {
 
   /** Puts the related objects of `f` on `parents` (built from `parentRows`, in order). */
   private attach(meta: ModelMeta, parents: Obj[], parentRows: NativeRows, f: NativePrefetch): void {
-    const children = this.instances(f.output, f.rows);
-    const childMeta = this.meta(f.output.model);
+    const selected = !("joins" in f.output);
+    const children = "joins" in f.output ? this.instances(f.output, f.rows) : this.columns(f.output, f.rows, f.names);
+    const childMeta = selected ? undefined : this.meta((f.output as NativeInstances).model);
     for (const c of f.children) {
-      this.attach(childMeta, children, f.rows, c);
+      this.attach(childMeta!, children, f.rows, c);
     }
     const groups = new Map<unknown, Obj | Obj[]>();
     const cw = f.rows.width;
@@ -157,7 +158,7 @@ export class Builder {
     }
     // The relation itself (by its schema name), or a `toAttr` attribute.
     const rel = meta.relationByIr.get(f.attr);
-    const back = f.back === null ? undefined : childMeta.relationByIr.get(f.back)!.name;
+    const back = f.back === null || childMeta === undefined ? undefined : childMeta.relationByIr.get(f.back)!.name;
     const pw = parentRows.width;
     const parentCells = cellsOf(parentRows);
     for (let i = 0; i < parents.length; i++) {

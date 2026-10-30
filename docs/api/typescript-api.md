@@ -375,6 +375,7 @@ objects without a prototype, get a message naming the expected target model.
 ### Loading related objects
 
 `load(...)` takes columns, relation paths, relation query sets and labeled expressions, with the rules of Python's `load()` (see [`python-api.md`](python-api.md)); calls add up.
+A relation query set can lock (`load(User.posts.objects.lock())`) or select (`load(User.posts.objects.select({ id: Post.id }).label("titles"))`, typed as `readonly Row[]` per parent), with the rules of Python's `load()`.
 
 * `load(func.count(Post.comments).label("n"))` stores the expression in `post.n`, typed as its value (`bigint` for `count`); `load(Post.views.mul(2).label("doubleViews"))` works the same, and a window expression keeps one row per instance.
   A window expression on a bound set runs over the given objects only.

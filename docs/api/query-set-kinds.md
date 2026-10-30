@@ -8,7 +8,7 @@ Each kind leaves out the methods that do not fit its result.
 | Kind | Get it from | Runs alone | Use |
 |---|---|:---:|---|
 | `QuerySet` (or a custom subclass) | `Post.objects` | yes | Every normal read and write. |
-| Relation query set | `User.posts.objects` (class path) | no: `TypeError` outside `load()` | A `load()` item: filter, order, slice, `.label()`, `.as_prefetch()`. |
+| Relation query set | `User.posts.objects` (class path) | no: `TypeError` outside `load()` | A `load()` item: filter, order, slice, `lock()` (a locked `IN (...)` query), `select(...).label(name)` (a list of `Row`s per parent), `.label()`, `.as_prefetch()`. |
 | `RelatedSet` / `ManyRelatedSet` | `u.posts` | yes | The rows of one parent. `insert()` fills the key; `add()` / `remove()` for many-to-many. |
 | `BoundQuerySet` | `post.qs()`, `monorm.of(posts)` | yes | Fills the same objects in place. |
 | `Select` (not a query set) | `qs.select(...)` | yes | `Row`s, `group_by()`, `having()`, `distinct()`, `count()`, `exists()`, `prepare()`, `explain()`, `join(cte)`, `from_(cte)` (TypeScript `from(cte)`), `paginate()`, `iterate()`, `batches()`. Its `first()`, `last()`, `get()` and `[n]` (TypeScript `at(n)`) are one-row queries. |
@@ -23,7 +23,7 @@ Each kind leaves out the methods that do not fit its result.
 | `QuerySet` | `group_by()`, `having()`, `distinct()` | They change what a row means, so the result must be `Row`s: use `select()`. |
 | `Select` | `lock()` | A select returns computed rows, not objects: to lock, use `QuerySet.lock()` with `load()`. |
 | `Select` | `paginate()` over an aggregate or non-root order term, over `distinct()` without columns, over a slice | The cursor reads the order columns from the rows, so they must be columns of the model itself, in the select list. |
-| Relation query set | running alone, writes, `select()`, `paginate()`, `lock()` | It is only an item for `load()`; use `Post.objects` for a standalone query. |
+| Relation query set | running alone, writes, `paginate()`; `lock()` with a slice, `distinct()`, a nested model or `lock()` after `select()` | It is only an item for `load()`; use `Post.objects` for a standalone query. A locked set always reads by its own `IN (...)` query, never by join, and needs a transaction. `group_by()`, or an aggregate, adds the parent key to the groups. |
 | `RelatedSet` | `.label()`, `.as_prefetch()` | These belong to `load()` items. |
 | `Prepared` | every builder (`filter()`, `load()`, `order_by()`, slices), writes, `select()`, `paginate()`, `lock()`, `batches()`, `async for` | The query is fixed when it is built; only the `param()` values change. Writes send their rows without an IR, so there is nothing to prepare. |
 | `BoundQuerySet` | `order_by()`, slices, `[n]`, `first()`, `get()`, `paginate()`, `select()`, `group_by()`, `distinct()`, `cte()`, `from_()`, `union()` | Its result is the bound objects, at most one row per object, matched by primary key, in input order. |

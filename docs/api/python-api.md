@@ -418,6 +418,7 @@ SQL text client-side, so the limit doesn't apply to it.)
 
 `load()` takes columns, relation paths, relation query sets and labeled expressions; calls add up.
 
+* A relation query set can lock, `load(Post.author.objects.lock())`, or select, `load(User.posts.objects.select(Post.id, func.lower(Post.title)).label("titles"))`: each parent gets a list of `Row`s. A lock needs a transaction and can't have a slice. With `group_by()` the parent key joins the groups.
 * A labeled expression, `load(func.count(Post.comments).label("n"))` or `load((Post.views * 2).label("double_views"))`, stores the value in the attribute of each row (`n`, `double_views`), so `post.n` works. A window expression keeps one row per instance.
   On a bound set (`of(objects)`) it runs over the given objects only, because the key filter comes first.
   An aggregate that merges rows raises `QueryError`.

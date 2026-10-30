@@ -104,7 +104,9 @@ export async function loadInstance(
   invalidate?: (row: Row, name: string) => void,
 ): Promise<void> {
   const meta = metaOf(owner);
-  const requested = items.length ? items : meta.publicList.map((f) => meta.column(f));
+  const requested = items.length
+    ? items.map((i) => ((i as { relationSet?: () => QuerySet<ModelSpec> }).relationSet?.() ?? i) as LoadItem<ModelSpec>)
+    : meta.publicList.map((f) => meta.column(f));
   // Validate all arguments and relation query options before any I/O.
   // Bare bypass on purpose: this only validates the request and runs no query.
   const query = (meta.objects.withoutDefaults().load as (...items: readonly LoadItem<ModelSpec>[]) => QuerySet<ModelSpec>)(...requested);

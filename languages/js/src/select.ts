@@ -69,6 +69,7 @@ import {
   cachedRows,
   type ScopesOf,
   type UnionToIntersection,
+  type Via,
 } from "./query.js";
 import { makeCte, type Cte } from "./cte.js";
 
@@ -113,9 +114,11 @@ type OneColumn<R> = [OnlyValue<R>] extends [never] ? [error: "this needs a selec
  *
  * `C` is the columns a CTE made from it has.
  */
-export class Select<M extends ModelSpec, Row extends object, S extends string, P, X extends string, C = Row> {
+export class Select<M extends ModelSpec, Row extends object, S extends string, P, X extends string, C = Row, V = null> {
   /** @internal */
   declare readonly "~exists"?: [X, P];
+  /** @internal The rows, parameters and relation of a labeled select in `load()`. */
+  declare readonly "~rel"?: [Row, P, V];
   /** @internal */
   declare readonly "~column"?: [OnlyValue<Row>] extends [never] ? "not one column" : [OnlyValue<Row>, ResolveOuter<X>, P];
 
@@ -128,6 +131,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
       readonly having: readonly Node[];
       readonly distinct: boolean;
       readonly distinctOn: readonly Column<unknown, string>[];
+      readonly label?: string;
     } = { group: [], having: [], distinct: false, distinctOn: [] },
   ) {}
 
@@ -136,7 +140,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   }
 
   /** Like `with()`, typed as this select so that internal reads can use it. */
-  private derive(qs: QuerySet<M, unknown, string, unknown, string>): Select<M, Row, S, P, X, C> {
+  private derive(qs: QuerySet<M, unknown, string, unknown, string>): Select<M, Row, S, P, X, C, V> {
     return new Select(qs, this.items, this.state) as never;
   }
 
@@ -149,40 +153,40 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
 
   filter<const Cs extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: Cs
-  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C, V>> {
     return this.with(this.qs.filter(...(conditions as unknown as never[])) as never);
   }
 
   exclude<const Cs extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: Cs
-  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C, V>> {
     return this.with(this.qs.exclude(...(conditions as unknown as never[])) as never);
   }
 
   orderBy<const Cs extends readonly (Expression<unknown, AllowedOne<S>, unknown> | Ordering<AllowedOne<S>, unknown> | FieldOrder<M>)[]>(
     ...items: Cs
-  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C, V>> {
     return this.with(this.qs.orderBy(...(items as unknown as never[])) as never);
   }
 
-  limit<N extends string>(n: ParamRef<N>): PreserveRequired<this, Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C>>;
-  limit(n: number | null): PreserveRequired<this, Select<M, Row, S, P, X, C>>;
+  limit<N extends string>(n: ParamRef<N>): PreserveRequired<this, Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C, V>>;
+  limit(n: number | null): PreserveRequired<this, Select<M, Row, S, P, X, C, V>>;
   limit(n: number | null | ParamRef<string>): unknown {
     return this.with(this.qs.limit(n as never) as never);
   }
 
-  offset<N extends string>(n: ParamRef<N>): PreserveRequired<this, Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C>>;
-  offset(n: number | null): PreserveRequired<this, Select<M, Row, S, P, X, C>>;
+  offset<N extends string>(n: ParamRef<N>): PreserveRequired<this, Select<M, Row, S, P & ParamValues<N, number | bigint>, X, C, V>>;
+  offset(n: number | null): PreserveRequired<this, Select<M, Row, S, P, X, C, V>>;
   offset(n: number | null | ParamRef<string>): unknown {
     return this.with(this.qs.offset(n as never) as never);
   }
 
   /** Rows `start` to `end` (exclusive), like `Array.slice`. */
-  slice(start: number, end?: number): PreserveRequired<this, Select<M, Row, S, P, X, C>> {
+  slice(start: number, end?: number): PreserveRequired<this, Select<M, Row, S, P, X, C, V>> {
     return this.with(this.qs.slice(start, end) as never);
   }
 
-  using(db: Database | undefined): PreserveRequired<this, Select<M, Row, S, P, X, C>> {
+  using(db: Database | undefined): PreserveRequired<this, Select<M, Row, S, P, X, C, V>> {
     return this.with(this.qs.using(db) as never);
   }
 
@@ -190,7 +194,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
    * itself (`groupBy(Post)`) groups by its primary key. */
   groupBy<const Cs extends readonly (Expression<unknown, AllowedOne<S>, unknown> | ModelClass<M>)[]>(
     ...exprs: Cs
-  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C, V>> {
     const out = exprs.flatMap((e): Node[] => {
       const meta = modelMeta(e);
       if (meta) {
@@ -210,7 +214,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   /** Keep groups matching all `conditions`: `having(func.count().gt(2))`. */
   having<const Cs extends readonly Expression<boolean | null, Allowed<S>, unknown>[]>(
     ...conditions: Cs
-  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C>> {
+  ): PreserveRequired<this, Select<M, Row, S, P & ParamsOfAll<Cs>, X | OuterRefs<ScopesOf<Cs>, S>, C, V>> {
     if (!conditions.length) {
       return this as never;
     }
@@ -220,7 +224,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
 
   /** `SELECT DISTINCT`; with columns, Postgres' `DISTINCT ON (...)`: the first row (by
    * `orderBy`) of each distinct value. */
-  distinct(...on: readonly Column<unknown, S>[]): PreserveRequired<this, Select<M, Row, S, P, X, C>> {
+  distinct(...on: readonly Column<unknown, S>[]): PreserveRequired<this, Select<M, Row, S, P, X, C, V>> {
     return this.with(this.qs, { ...this.state, distinct: true, distinctOn: on });
   }
 
@@ -233,20 +237,54 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
     cte: Cte<N, Cc, ModelSpec | null>,
     on: On,
     options: { readonly outer?: boolean } = {},
-  ): PreserveRequired<this, Select<M, Row, S | N, P & ParamsOfAll<[On]>, X | OuterRefs<ScopesOf<[On]>, S | N>, C>> {
+  ): PreserveRequired<this, Select<M, Row, S | N, P & ParamsOfAll<[On]>, X | OuterRefs<ScopesOf<[On]>, S | N>, C, V>> {
     return this.with(this.qs.join(cte as never, on as never, options) as never);
   }
 
   /** Reads the rows from `cte` instead of the model's table, as {@link QuerySet.from}. */
-  from<N extends string>(cte: Cte<N, unknown, M>): PreserveRequired<this, Select<M, Row, S | N, P, X, C>> {
+  from<N extends string>(cte: Cte<N, unknown, M>): PreserveRequired<this, Select<M, Row, S | N, P, X, C, V>> {
     return this.with(this.qs.from(cte as never) as never);
+  }
+
+  /**
+   * Stores the rows in the plain attribute `name` of each parent. A select of a relation
+   * query set (`User.posts.objects.select(...)`) needs it to go to `load()`.
+   */
+  label<const A extends string>(
+    name: A,
+  ): PreserveRequired<this, Select<M, Row, S, P, X, C, V extends Via<infer H, string | undefined, infer O, infer S0> ? Via<H, A, O, S0> : never>> {
+    if (!this.qs.state.via) {
+      throw new TypeError(`label() applies to a select of a relation query set such as User.posts.objects.select(...), not ${this.qs.meta.name}.objects`);
+    }
+    if (typeof name !== "string" || !/^[A-Za-z$][\w$]*$/.test(name)) {
+      throw new TypeError(`label ${JSON.stringify(name)} must be an identifier not starting with '_'`);
+    }
+    return this.with(this.qs, { ...this.state, label: name });
+  }
+
+  /** @internal The relation query set that `load()` reads this labeled select through. */
+  relationSet(): QuerySet<ModelSpec, unknown, string, unknown, never> {
+    const label = this.state.label;
+    if (!this.qs.state.via) {
+      throw new TypeError(`load() takes a select of a relation query set such as ${this.qs.meta.name}.<relation>.objects.select(...), not ${this.qs.meta.name}.objects`);
+    }
+    if (label === undefined) throw new TypeError("a select() in load() needs .label(name)");
+    if (this.items.some(([, node]) => node instanceof NestedColumn)) {
+      throw new TypeError("a select() in load() can't select a nested model");
+    }
+    return this.qs.withRows(this as never, label) as never;
+  }
+
+  /** @internal The `IN (...)` query of a relation query set: no standalone check, no prefetch. */
+  relationIr(params: unknown[]): [IR, IRContext] {
+    return this.build(params, undefined, undefined, "select", true);
   }
 
   // -- IR -------------------------------------------------------------------------------------
 
-  private build(params: unknown[], outer?: IRContext, ctes?: Ctes, op = "select"): [IR, IRContext] {
-    this.qs.assertStandalone();
-    const [ir, ctx] = this.qs.queryIr(op, params, outer, ctes);
+  private build(params: unknown[], outer?: IRContext, ctes?: Ctes, op = "select", relation = false): [IR, IRContext] {
+    if (!relation) this.qs.assertStandalone();
+    const [ir, ctx] = this.qs.queryIr(op, params, outer, ctes, !relation);
     delete ir["annotations"];
     ir["columns"] = this.items.map(([name, node]) => (node === null ? { t: "model" } : { t: "expr", expr: node.ir(ctx), name }));
     if (this.state.group.length) {

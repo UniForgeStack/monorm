@@ -48,8 +48,10 @@ export interface NativePrefetch {
   readonly keyPos: readonly number[];
   readonly childKeyPos: readonly number[];
   readonly back: string | null;
+  /** The `select()` keys of the related rows (`output` is `NativeColumns`). */
+  readonly names: readonly string[];
   readonly rows: NativeRows;
-  readonly output: NativeInstances;
+  readonly output: NativeInstances | NativeColumns;
   readonly children: readonly NativePrefetch[];
 }
 
