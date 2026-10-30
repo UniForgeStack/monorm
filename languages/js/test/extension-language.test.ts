@@ -29,7 +29,7 @@ class AInstance { label() { return `a${String((this as never as { pk: unknown })
 const HASH = "0".repeat(64);
 
 // The lock stamp of a package; the members come from the real module.
-function record(extension: string, changes: { overrides?: string[]; dependencies?: Record<string, string> } = {}) {
+function record(extension: string, changes: { overrides?: string[]; dependencies?: Record<string, string>; fieldAdaptersOnly?: boolean } = {}) {
   return { extension, ...changes };
 }
 
@@ -40,7 +40,7 @@ function build(records: ReturnType<typeof record>[], extensions: Record<string, 
     ...ir.behavior,
     packages: Object.fromEntries(records.map((r) => [r.extension, {
       manifest_hash: HASH, version: "1.0.0", attributes: [], languages: ["typescript"], databases: ["postgres", "sqlite"], dependencies: r.dependencies,
-      language_members: { typescript: { query_set: "queries", instance: "Instance", overrides: r.overrides ?? [] } },
+      language_members: { typescript: r.fieldAdaptersOnly ? { overrides: [] } : { query_set: "queries", instance: "Instance", overrides: r.overrides ?? [] } },
     }])),
   };
   const withHash = Object.fromEntries(Object.entries(extensions).map(([id, e]) => [id, { module: { manifestHash: HASH, ...e.module } }]));
@@ -136,6 +136,14 @@ test("two extensions with one name collide unless overridden", () => {
   const records = [record("ext.a"), record("ext.b", { dependencies: { "ext.a": "*" } })];
   const extensions = { ...code(), "ext.b": other };
   assert.throws(() => build(records, extensions, { Post: ["ext.a", "ext.b"] }), /Post\.chain: extension ext\.b query set member collides with a member of extension ext\.a/);
+});
+
+test("an extension with only field adapters adds no query set or instance members", () => {
+  const records = [record("ext.files", { fieldAdaptersOnly: true }), record("ext.a")];
+  const extensions = { ...code(), "ext.files": { module: {} } };
+  const { Post } = build(records, extensions, { Post: ["ext.files", "ext.a"] }) as Record<string, any>;
+  assert.deepEqual(Post.objects.chain(), ["a"]);
+  assert.equal("label" in Post._meta.Row.prototype, true);
 });
 
 test("no extension changes nothing", () => {

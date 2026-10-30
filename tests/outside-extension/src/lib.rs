@@ -23,6 +23,15 @@ fn tag(ir: &mut SchemaIr) -> Result<(), String> {
     Ok(())
 }
 
+/// `@@outside.template` removes the model: it has no table.
+fn template(ir: &mut SchemaIr) -> Result<(), String> {
+    let templates: Vec<String> = ir.behavior.declarations.iter().filter(|d| d.attribute == "outside.template").map(|d| d.model.clone()).collect();
+    ir.models.retain(|m| !templates.contains(&m.name));
+    ir.behavior.declarations.retain(|d| !templates.contains(&d.model));
+    if let Some(storage) = ir.behavior.storage.as_mut() { storage.models.retain(|m| !templates.contains(&m.name)); }
+    Ok(())
+}
+
 fn link(name: &str, target: &str, key: &str, foreign_key: bool) -> RelationIr {
     RelationIr {
         name: name.into(), kind: RelKind::One, target: target.into(), from: vec![key.into()], to: vec![key.into()],
@@ -333,7 +342,8 @@ macro_rules! export {
             ("acme.outside.fields", fields),
             ("acme.outside.view", view),
             ("acme.outside.guard", guard),
-            ("acme.outside.wrapped", wrapped)
+            ("acme.outside.wrapped", wrapped),
+            ("acme.outside.template", template)
         }
     };
 }
@@ -358,7 +368,7 @@ mod slice_one {
     /// Called by the ORM loader with readable ranges and a writable `out`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn monorm_ext_run_pass(id: *const u8, id_len: usize, ir: *const u8, ir_len: usize, out: *mut Buffer) -> i32 {
-        let passes: &[(&str, PassFn)] = &[("acme.outside.base", super::base as PassFn), ("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.view", super::view as PassFn), ("acme.outside.guard", super::guard as PassFn), ("acme.outside.wrapped", super::wrapped as PassFn)];
+        let passes: &[(&str, PassFn)] = &[("acme.outside.base", super::base as PassFn), ("acme.outside.tag", super::tag as PassFn), ("acme.outside.fields", super::fields as PassFn), ("acme.outside.view", super::view as PassFn), ("acme.outside.guard", super::guard as PassFn), ("acme.outside.wrapped", super::wrapped as PassFn), ("acme.outside.template", super::template as PassFn)];
         // SAFETY: the loader passes the ranges and the `out` that `run_pass` documents.
         unsafe { abi::run_pass(passes, id, id_len, ir, ir_len, out) }
     }

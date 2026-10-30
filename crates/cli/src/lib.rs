@@ -6,6 +6,7 @@
 //!
 //! ```text
 //! monorm [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>
+//!   init [dir] [--lang L] [--tool T] [--db D] [--url URL] [--ext a,b] [--yes]   a starter project
 //!   check [-o FILE]                               compile the schema and check the package lock
 //!   compile [-o ir.json]                          the compiled schema (JSON IR)
 //!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
@@ -35,6 +36,7 @@
 //! (an invalid schema, a migration error, a database error, `makemigrations --check`
 //! finding changes, `drift` finding differences), 2 bad usage.
 
+mod init;
 mod package_lock;
 
 use std::path::{Path, PathBuf};
@@ -74,7 +76,7 @@ impl Host {
     }
 }
 
-const COMMANDS: &str = "  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check [-o FILE]                          compile the schema and check the package lock
+const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|npm|pnpm|yarn|bun] [--db sqlite|postgresql] [--url URL] [--ext a,b|all] [--yes]\n                                           write a starter project; it asks for what no flag answers\n  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check [-o FILE]                          compile the schema and check the package lock
   fmt --native                            convert supported SQL expressions offline
   compile [-o ir.json]                     print or write the compiled schema (JSON IR)
   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
@@ -101,6 +103,7 @@ fn usage(host: Host) -> String {
     format!("usage: {} [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>\n{COMMANDS}", host.prog())
 }
 
+#[derive(Debug)]
 enum Failure {
     /// Bad arguments: exit 2 with the usage.
     Usage(String),
@@ -127,8 +130,8 @@ struct Args {
     options: Vec<(String, Option<String>)>,
 }
 
-const FLAGS: [&str; 7] = ["--native", "--empty", "--check", "--down", "--force", "-h", "--help"];
-const VALUED: [&str; 17] = ["--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
+const FLAGS: [&str; 8] = ["--native", "--empty", "--check", "--down", "--force", "--yes", "-h", "--help"];
+const VALUED: [&str; 21] = ["--lang", "--tool", "--db", "--ext", "--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -168,7 +171,12 @@ impl Args {
     /// after the command.
     fn allow(&self, command: &str, options: &[&str], max: usize) -> Result<()> {
         let global = ["--schema", "--dir", "--url", "--app", "--extension", "--extension-module"];
-        if let Some((k, _)) = self.options.iter().find(|(k, _)| !global.contains(&k.as_str()) && !options.contains(&k.as_str())) {
+        self.allow_only(command, &[options, &global].concat(), max)
+    }
+
+    /// Like [`Args::allow`], without the global options: a command that reads no schema takes none of them.
+    fn allow_only(&self, command: &str, options: &[&str], max: usize) -> Result<()> {
+        if let Some((k, _)) = self.options.iter().find(|(k, _)| !options.contains(&k.as_str())) {
             return Err(Failure::Usage(format!("{command} doesn't take {k}")));
         }
         if self.positional.len() > max + 1 {
@@ -349,6 +357,14 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
     if args.flag("-h") || args.flag("--help") || command == "help" {
         println!("{}", usage(host));
         return Ok(0);
+    }
+    if command == "init" {
+        args.allow_only(command, &["--lang", "--tool", "--db", "--url", "--ext", "--yes"], 1)?;
+        let request = init::Request {
+            dir: args.arg(0), lang: args.opt(&["--lang"]), tool: args.opt(&["--tool"]), db: args.opt(&["--db"]),
+            url: args.opt(&["--url"]), ext: args.opt(&["--ext"]), yes: args.flag("--yes"),
+        };
+        return init::run(&request, host, &init::Env::current());
     }
     let cfg = config(host);
     let schema = PathBuf::from(args.opt(&["--schema"]).or(cfg.schema.as_deref()).unwrap_or("schema.prisma"));

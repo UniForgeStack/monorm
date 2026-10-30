@@ -88,9 +88,10 @@ pub fn validate(ir: &SchemaIr, manifests: &[crate::behavior::Manifest]) -> Resul
     Ok(())
 }
 
-/// The models that read the table of another model: the written views and the declarations of a `view_source` attribute.
+/// The models that own no stored identity: the written views, and the declarations of a `view_source` or `no_table` attribute.
+/// A generated manifest checks the schema before the extension passes run, so a `no_table` model is still in `ir.models` then.
 fn view_models<'a>(ir: &'a SchemaIr, manifests: &[crate::behavior::Manifest]) -> BTreeSet<&'a str> {
-    let sources: BTreeSet<_> = manifests.iter().flat_map(|m| &m.attributes).filter(|a| a.view_source).map(|a| a.name.as_str()).collect();
+    let sources: BTreeSet<_> = manifests.iter().flat_map(|m| &m.attributes).filter(|a| a.view_source || a.no_table).map(|a| a.name.as_str()).collect();
     ir.behavior.model_views.iter().map(|v| v.model.as_str())
         .chain(ir.behavior.declarations.iter().filter(|d| sources.contains(d.attribute.as_str())).map(|d| d.model.as_str())).collect()
 }

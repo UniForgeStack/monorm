@@ -51,6 +51,9 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             if a.view_source && a.target != AttributeTarget::Model {
                 return Err(format!("{}: attribute {} has `view_source`, which only a model attribute takes; set `target = \"model\"`", m.id, a.name));
             }
+            if a.no_table && a.target != AttributeTarget::Model {
+                return Err(format!("{}: attribute {} has `no_table`, which only a model attribute takes; set `target = \"model\"`", m.id, a.name));
+            }
             let Some(ty) = a.field_type.as_deref() else { continue };
             if ty.is_empty() || !ty.starts_with(|c: char| c.is_ascii_uppercase()) || !ty.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric()) {
                 return Err(format!("{}: attribute {} owns the type {ty:?}; a type name starts with an uppercase letter and has letters, digits and `_` only", m.id, a.name));
@@ -174,6 +177,9 @@ mod tests {
         assert!(resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "model", "view_source": true}))]).is_ok());
         let error = resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "field", "view_source": true}))]).unwrap_err();
         assert!(error.contains("acme.a") && error.contains("only a model attribute takes"), "{error}");
+        assert!(resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "model", "no_table": true}))]).is_ok());
+        let error = resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "field", "no_table": true}))]).unwrap_err();
+        assert!(error.contains("acme.a") && error.contains("`no_table`") && error.contains("only a model attribute takes"), "{error}");
     }
 
     #[test]

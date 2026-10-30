@@ -17,6 +17,7 @@ effects = ["models.inherit", "storage.inherit"]
 [[attributes]]
 name = "inherit.abstract"
 target = "model"
+no_table = true
 
 # `value`: one base is a bare name, `@@inherit.extends(A)`; a list is `@@inherit.extends([A, B])`. The pass checks both.
 [[attributes]]

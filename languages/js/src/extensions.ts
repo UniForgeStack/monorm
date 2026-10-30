@@ -81,6 +81,8 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
     if (code === undefined) throw new TypeError(`${meta.name}: extension ${id} is not in the generated extensions`);
     const record = packaged.get(id);
     if (record === undefined) throw new TypeError(`generated models use extension ${id}, which the schema lock does not have; run \`monorm generate\``);
+    // A field-adapter extension (`file-storage`) has no query set or instance class to mix in.
+    if (!record.query_set && !record.instance && !record.bound_query_set) continue;
     const overrides = new Set(record.overrides);
     const mixin = code.module[record.query_set];
     const instance = code.module[record.instance];

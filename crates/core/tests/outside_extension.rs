@@ -10,9 +10,9 @@ use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, proce
 const ID: &str = "acme.outside";
 /// The passes and attributes that the manifest of `tests/outside-extension` stamps on a lowered schema.
 /// The passes in the order the stamp lists them; `PASSES` is the order they run in.
-const DECLARED_PASSES: [&str; 6] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.wrapped", "acme.outside.base", "acme.outside.view"];
-const PASSES: [&str; 6] = ["acme.outside.fields", "acme.outside.wrapped", "acme.outside.tag", "acme.outside.guard", "acme.outside.base", "acme.outside.view"];
-const ATTRIBUTES: [&str; 7] = ["outside.tag", "outside.money", "outside.note", "outside.view", "outside.base", "outside.guard", "outside.wrapped"];
+const DECLARED_PASSES: [&str; 7] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.template", "acme.outside.wrapped", "acme.outside.base", "acme.outside.view"];
+const PASSES: [&str; 7] = ["acme.outside.fields", "acme.outside.template", "acme.outside.wrapped", "acme.outside.tag", "acme.outside.guard", "acme.outside.base", "acme.outside.view"];
+const ATTRIBUTES: [&str; 8] = ["outside.tag", "outside.money", "outside.note", "outside.view", "outside.base", "outside.guard", "outside.wrapped", "outside.template"];
 const SCHEMA: &str = "model Post {\n id Int @id\n @@outside.tag(\"blue\")\n}\n";
 
 struct Builds {
@@ -473,6 +473,18 @@ fn lowering_refuses_a_hook_that_the_manifest_of_the_library_does_not_allow() {
 }
 
 const FIELDS: &str = "model Order {\n id Int @id\n price Money @outside.money\n memo String @outside.note(\"remember\")\n}\n";
+
+#[test]
+fn a_no_table_attribute_keeps_its_model_out_of_the_identity_manifest() {
+    let manifest = installed("", "0.2");
+    let path = scratch("schema-no-table").join("schema.prisma");
+    fs::write(&path, "model Post {\n id Int @id\n}\nmodel Template {\n id Int @id\n @@outside.template\n}\nmodel Tag {\n id Int @id\n kind ContentType\n}\n").unwrap();
+    let _ = fs::remove_file(monorm_core::identity::manifest_path(&path));
+    let installed = Installed { extensions: [(ID.to_owned(), manifest)].into(), ..Installed::new() };
+    let identities = monorm_core::dsl::generate_identities_with(&path, &[], &[], &installed).unwrap();
+    let models: Vec<&str> = identities.active().map(|e| e.model.as_str()).collect();
+    assert_eq!(models, ["Post", "Tag"]);
+}
 
 #[test]
 fn an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model() {

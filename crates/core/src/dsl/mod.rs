@@ -255,6 +255,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
         return Err(crate::behavior::unowned_declaration_error(d));
     }
     let views = lower::view_models(manifests, &declarations);
+    let tableless = lower::tableless_models(manifests, &declarations);
     let path = crate::identity::manifest_path(origin);
     // A handwritten ContentType enum stays ordinary unless generation or an attribute that needs identities asks for them.
     let handwritten = items.iter().any(|i| matches!(i, syntax::Item::Enum(e) if e.name == "ContentType"));
@@ -266,7 +267,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
         }
         let manifest = if let Some((renames, restores)) = update {
             let prior = if path.exists() { crate::identity::read(&path)? } else { Default::default() };
-            let names = items.iter().filter_map(|i| if let syntax::Item::Model(m) = i { if views.contains(&m.name) { None } else { Some(m.name.clone()) } } else { None }).collect::<Vec<_>>();
+            let names = items.iter().filter_map(|i| if let syntax::Item::Model(m) = i { if views.contains(&m.name) || tableless.contains(&m.name) { None } else { Some(m.name.clone()) } } else { None }).collect::<Vec<_>>();
             crate::identity::reconcile(&prior, &names, renames, restores)?
         } else { crate::identity::read(&path)? };
         let e = crate::identity::content_type(&manifest)?;

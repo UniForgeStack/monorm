@@ -6,7 +6,7 @@ from monorm import QuerySet
 from monorm.adapters import Pending, register_field_adapter
 from monorm.ext import ModelT
 
-MANIFEST_HASH = "feb1941ebdbd1c55d4a3233c741b85b89b714f1f8eb907fc24a43e0bab78afce"
+MANIFEST_HASH = "c29639c3e3f2641f1d1040bb4a2dce575f912ea7e39e0368d327c74b4164f39c"
 
 
 class OutsideQuerySet(QuerySet[ModelT]):

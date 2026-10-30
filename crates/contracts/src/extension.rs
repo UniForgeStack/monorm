@@ -540,6 +540,9 @@ pub struct Attribute {
     /// A model attribute only: the model that declares it is a view of the model that its first positional argument names.
     #[serde(default, skip_serializing_if = "crate::ir::is_false")]
     pub view_source: bool,
+    /// A model attribute only: the model that declares it has no table, so it has no model identity.
+    #[serde(default, skip_serializing_if = "crate::ir::is_false")]
+    pub no_table: bool,
 }
 fn member_default() -> bool { true }
 fn is_true(b: &bool) -> bool { *b }

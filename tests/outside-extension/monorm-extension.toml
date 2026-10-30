@@ -106,6 +106,17 @@ target = "field"
 kind = "string"
 required = true
 
+# `@@outside.template` marks a model that has no table, so it gets no model identity.
+[[attributes]]
+name = "outside.template"
+target = "model"
+no_table = true
+
+[[passes]]
+id = "acme.outside.template"
+phase = "declaration"
+effects = ["models.template"]
+
 [[passes]]
 id = "acme.outside.wrapped"
 phase = "declaration"

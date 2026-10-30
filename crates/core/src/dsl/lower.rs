@@ -1896,6 +1896,11 @@ pub(super) fn view_models(manifests: &[crate::behavior::Manifest], declarations:
     declarations.iter().filter(|d| declared(manifests, &d.attribute, d.field.is_some()).is_some_and(|a| a.view_source)).map(|d| d.model.clone()).collect()
 }
 
+/// The models that declare a `no_table` attribute.
+pub(super) fn tableless_models(manifests: &[crate::behavior::Manifest], declarations: &[crate::behavior::Declaration]) -> HashSet<String> {
+    declarations.iter().filter(|d| declared(manifests, &d.attribute, d.field.is_some()).is_some_and(|a| a.no_table)).map(|d| d.model.clone()).collect()
+}
+
 /// The field entry of attribute `name` in the manifests.
 fn field_attribute<'m>(manifests: &'m [crate::behavior::Manifest], name: &str) -> Option<&'m crate::behavior::Attribute> {
     manifests.iter().flat_map(|m| &m.attributes).find(|d| d.name == name && d.target == crate::behavior::AttributeTarget::Field)

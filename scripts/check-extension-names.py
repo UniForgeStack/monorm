@@ -20,6 +20,8 @@ SCANNED = [
 MANIFESTS = ["extensions/*/monorm-extension.toml", "tests/outside-extension/monorm-extension.toml"]
 # The one host line that tells a user which extension supplies a bare `Generic` type.
 ALLOWED = [("crates/core/src/dsl/lower.rs", "Generic belongs to the built-in generic extension")]
+# `monorm init` offers the built-in extensions by name, so its catalog is the one host file that lists them.
+CATALOGS = {"crates/cli/src/init.rs"}
 EDGE = "A-Za-z0-9_-"
 TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*mod\s")
 
@@ -74,7 +76,7 @@ def scan(root: Path, names: set[str], features: set[str]) -> list[str]:
     for base in SCANNED:
         for path in sorted((root / base).rglob("*")):
             relative = path.relative_to(root)
-            if not path.is_file() or "tests" in relative.parts or path.name == "tests.rs":
+            if not path.is_file() or "tests" in relative.parts or path.name == "tests.rs" or str(relative) in CATALOGS:
                 continue
             if "target" in relative.parts or path.suffix not in {".rs", ".toml", ".py", ".json"}:
                 continue
