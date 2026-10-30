@@ -25,6 +25,7 @@ Alice [ 'Hello', 'Draft' ]
 ```
 
 `npm start` runs `node index.ts`, which needs Node 22.18 or newer (Node strips the types).
+With `bun create`, the project uses `bun install` and `bun start`, and `bun start` runs `bun index.ts`.
 Each run adds one more user to `dev.db`.
 
 ## What is MonOrm

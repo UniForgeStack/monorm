@@ -19,5 +19,9 @@ renameSync(join(dest, "_gitignore"), join(dest, ".gitignore"));
 const pkgPath = join(dest, "package.json");
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 pkg.name = basename(dest);
+// `bun create` runs this file under Node too, so the user agent is the only sign of Bun.
+const bun = (process.env.npm_config_user_agent ?? "").startsWith("bun/");
+if (bun) pkg.scripts.start = "bun index.ts";
 writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-console.log(`Created ${target}.\n\n  cd ${target}\n  npm install\n  npm start`);
+const tool = bun ? "bun" : "npm";
+console.log(`Created ${target}.\n\n  cd ${target}\n  ${tool} install\n  ${tool} start`);

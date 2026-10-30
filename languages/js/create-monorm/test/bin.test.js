@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 const bin = fileURLToPath(new URL("../bin.js", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "create-monorm-"));
 after(() => rmSync(root, { recursive: true, force: true }));
-const run = (...args) => spawnSync(process.execPath, [bin, ...args], { encoding: "utf8" });
+const run = (...args) => runAs("npm/10.0.0 node/v22.0.0", ...args);
+const runAs = (agent, ...args) =>
+  spawnSync(process.execPath, [bin, ...args], { encoding: "utf8", env: { ...process.env, npm_config_user_agent: agent } });
 
 test("copies the template, renames _gitignore and sets the package name", () => {
   const dest = join(root, "my-app");
@@ -21,6 +23,17 @@ test("copies the template, renames _gitignore and sets the package name", () => 
   const pkg = JSON.parse(readFileSync(join(dest, "package.json"), "utf8"));
   assert.equal(pkg.name, "my-app");
   assert.match(pkg.dependencies.monorm, /^npm:@ufstack\/monorm@\^\d+\.\d+\.\d+/);
+  assert.equal(pkg.scripts.start, "node index.ts");
+  assert.match(result.stdout, /npm install\n  npm start/);
+});
+
+test("uses Bun commands under bun create", () => {
+  const dest = join(root, "bun-app");
+  const result = runAs("bun/1.2.0 npm/? node/v24.0.0 darwin arm64", dest);
+  assert.equal(result.status, 0, result.stderr);
+  const pkg = JSON.parse(readFileSync(join(dest, "package.json"), "utf8"));
+  assert.equal(pkg.scripts.start, "bun index.ts");
+  assert.match(result.stdout, /bun install\n  bun start/);
 });
 
 test("refuses a directory that is not empty", () => {
