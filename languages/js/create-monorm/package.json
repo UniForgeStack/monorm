@@ -1,0 +1,42 @@
+{
+  "name": "create-monorm",
+  "version": "0.1.1",
+  "description": "Start a MonOrm project: npm create monorm <dir> or bun create monorm <dir>",
+  "license": "MIT",
+  "author": "mh-alahdadi <mhalah15@gmail.com> (https://github.com/mh-alahdadi)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UniForgeStack/monorm.git",
+    "directory": "languages/js/create-monorm"
+  },
+  "bugs": {
+    "url": "https://github.com/UniForgeStack/monorm/issues"
+  },
+  "homepage": "https://github.com/UniForgeStack/monorm#readme",
+  "keywords": [
+    "monorm",
+    "create",
+    "scaffold",
+    "orm",
+    "prisma"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "bin": {
+    "create-monorm": "bin.js"
+  },
+  "files": [
+    "bin.js",
+    "template",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

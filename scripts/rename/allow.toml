@@ -90,6 +90,11 @@ pattern = '^\s*"orm",$'
 reason = "npm search keyword: the generic term for the kind of library."
 
 [[allow]]
+glob = "languages/js/create-monorm/package.json"
+pattern = '^\s*"orm",$'
+reason = "npm search keyword: the generic term for the kind of library."
+
+[[allow]]
 glob = "bench/imdbench/monorm.patch"
 pattern = '.+'
 reason = "A git patch for the IMDBench repo: upstream code names its contender `orm`, and the old commits keep the old names."

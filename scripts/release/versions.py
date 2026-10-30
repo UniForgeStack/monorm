@@ -36,10 +36,12 @@ TEXT_SITES = [
     ("tests/outside-extension/Cargo.lock", "semver", LOCK_ENTRY.format("monorm"), 1),
     ("languages/js/src/native.ts", "semver", r'meta\.version !== "([^"]+)"', 1),
     ("languages/js/src/native.ts", "semver", r"matching monorm (\d[^ ]*) packages", 1),
+    ("languages/js/create-monorm/template/package.json", "semver", r'"npm:@ufstack/monorm@\^([^"]+)"', 1),
 ]
 JSON_SITES = [
     "languages/js/package.json",
     "languages/js/package-lock.json",
+    "languages/js/create-monorm/package.json",
 ]
 
 

@@ -27,6 +27,7 @@ cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-pytho
 mypy --strict languages/python/monorm && pyright languages/python/monorm
 cd languages/js && npm install && npm run assemble   # the TypeScript package (languages/js/): Node addon and built-in extension libraries
 npm test && npm run test:bun && npm run typecheck
+(cd create-monorm && npm test)   # the create-monorm package: bin.js into a temporary directory
 cd ../..
 python -m pytest -q apps/auth/python/tests
 python extensions/inherit/tests/public/python.py

@@ -58,6 +58,8 @@ jobs:
       - run: mypy --strict languages/python/monorm && pyright languages/python/monorm
       - run: npm install && npm run assemble && npm test && npm run test:bun && npm run typecheck
         working-directory: languages/js
+      - run: npm test
+        working-directory: languages/js/create-monorm
       - run: python -m pytest -q apps/auth/python/tests
       - run: python extensions/inherit/tests/public/python.py
       - run: python extensions/query-defaults/tests/public/python.py

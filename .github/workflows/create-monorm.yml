@@ -1,0 +1,31 @@
+name: Publish create-monorm
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: languages/js/create-monorm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Provenance needs npm 9.5 or newer; trusted publishing needs 11.5.1 or newer.
+      - run: npm install -g 'npm@>=11.5.1'
+      - run: npm test
+      # Without the NPM_TOKEN secret, npm uses the trusted publisher of the package.
+      # An empty secret keeps the placeholder token that setup-node wrote, so the OIDC path stays open.
+      - run: |
+          export NODE_AUTH_TOKEN="${NPM_TOKEN:-$NODE_AUTH_TOKEN}"
+          npm publish --provenance --access public
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
