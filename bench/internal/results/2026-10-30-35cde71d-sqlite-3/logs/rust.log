@@ -1,0 +1,6 @@
+rust sqlite pk_get: engine 45.5us
+rust sqlite filter_order_50: engine 160.7us
+rust sqlite read_1000: engine 1296.4us
+rust sqlite filtered_count: engine 82.5us
+rust sqlite insert_one: engine 951.0us
+rust sqlite prefetch_posts: engine 245.0us

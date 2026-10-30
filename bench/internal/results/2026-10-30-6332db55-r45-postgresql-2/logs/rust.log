@@ -1,0 +1,6 @@
+rust postgresql pk_get: engine 117.0us
+rust postgresql filter_order_50: engine 303.5us
+rust postgresql read_1000: engine 1364.2us
+rust postgresql filtered_count: engine 419.8us
+rust postgresql insert_one: engine 302.7us
+rust postgresql prefetch_posts: engine 395.0us

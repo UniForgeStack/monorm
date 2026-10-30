@@ -1,0 +1,8 @@
+(node:6804) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+typescript sqlite pk_get: unprepared 151.4us, prepared 126.8us, direct 122.5us, driver 9.2us
+typescript sqlite filter_order_50: unprepared 415.1us, prepared 319.4us, direct 300.4us, driver 128.2us
+typescript sqlite read_1000: unprepared 2267.8us, prepared 2193.1us, direct 2155.3us, driver 1808.9us
+typescript sqlite filtered_count: unprepared 158.5us, prepared 144.1us, direct 145.8us, driver 42.4us
+typescript sqlite insert_one: unprepared 1233.3us, prepared -, direct 1183.0us, driver 888.9us
+typescript sqlite prefetch_posts: unprepared 667.7us, prepared 584.3us, direct 540.0us, driver 210.2us

@@ -1,0 +1,6 @@
+typescript postgresql pk_get: unprepared 249.3us, prepared 206.5us, direct 182.4us, driver 182.9us
+typescript postgresql filter_order_50: unprepared 530.3us, prepared 465.9us, direct 416.4us, driver 379.9us
+typescript postgresql read_1000: unprepared 2733.6us, prepared 2862.9us, direct 2609.2us, driver 2965.1us
+typescript postgresql filtered_count: unprepared 287.8us, prepared 251.7us, direct 252.7us, driver 196.0us
+typescript postgresql insert_one: unprepared 543.0us, prepared -, direct 482.0us, driver 347.9us
+typescript postgresql prefetch_posts: unprepared 882.9us, prepared 754.5us, direct 782.2us, driver 623.4us

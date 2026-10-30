@@ -45,7 +45,6 @@ PYTHON=${PYTHON:-python3}
 # monorm needs Python 3.11 or newer
 "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "$PYTHON is older than 3.11: set PYTHON=/path/to/python3.11+" >&2; exit 1; }
 case "$(uname -s)" in Darwin) DYLIB=dylib ;; *) DYLIB=so ;; esac
-mkdir -p "$BUILD" "$OUT"
 
 URL=${ORM_BENCH_URL:-}
 if [ -z "$URL" ]; then

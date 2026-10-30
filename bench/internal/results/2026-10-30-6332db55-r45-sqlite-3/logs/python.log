@@ -1,0 +1,6 @@
+python sqlite pk_get: unprepared 327.9us, prepared 234.4us, direct 221.3us, driver 9.2us
+python sqlite filter_order_50: unprepared 732.2us, prepared 519.4us, direct 486.6us, driver 93.4us
+python sqlite read_1000: unprepared 2279.0us, prepared 1990.1us, direct 1960.7us, driver 1405.5us
+python sqlite filtered_count: unprepared 300.9us, prepared 266.5us, direct 249.3us, driver 50.1us
+python sqlite insert_one: unprepared 1555.4us, prepared -, direct 1468.3us, driver 955.6us
+python sqlite prefetch_posts: unprepared 971.5us, prepared 741.0us, direct 706.8us, driver 190.5us

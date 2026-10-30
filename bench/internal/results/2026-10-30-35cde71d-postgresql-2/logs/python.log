@@ -1,0 +1,6 @@
+python postgresql pk_get: unprepared 540.1us, prepared 319.3us, direct 310.0us, driver 138.9us
+python postgresql filter_order_50: unprepared 827.2us, prepared 662.7us, direct 520.7us, driver 311.6us
+python postgresql read_1000: unprepared 2532.4us, prepared 2400.6us, direct 2314.3us, driver 2128.8us
+python postgresql filtered_count: unprepared 621.9us, prepared 519.4us, direct 478.6us, driver 224.5us
+python postgresql insert_one: unprepared 868.4us, prepared -, direct 789.1us, driver 420.5us
+python postgresql prefetch_posts: unprepared 1176.0us, prepared 931.1us, direct 898.6us, driver 604.3us
