@@ -1,5 +1,5 @@
 id = "monorm.timestamps"
-version = "0.1.1"
+version = "0.1.2"
 abi = "0.2"
 library = "monorm_timestamps"
 schema_contract = "5.0"

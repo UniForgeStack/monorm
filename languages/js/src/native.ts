@@ -223,7 +223,7 @@ function validate(addon: Addon): void {
     abi: number; version: string; language: string; profile: string; backends: string[];
     capabilities: Record<string, boolean>; adapters: string[]; build: Record<string, unknown>;
   };
-  if (typeof meta !== "object" || meta === null || Array.isArray(meta) || meta.abi !== 1 || meta.version !== "0.1.1" || meta.language !== "node" ||
+  if (typeof meta !== "object" || meta === null || Array.isArray(meta) || meta.abi !== 1 || meta.version !== "0.1.2" || meta.language !== "node" ||
       !buildRecord(meta.build) ||
       !Array.isArray(meta.backends) || meta.backends.length === 0 ||
       new Set(meta.backends).size !== meta.backends.length || meta.backends.some(b => !["postgres", "sqlite"].includes(b)) ||
@@ -231,7 +231,7 @@ function validate(addon: Addon): void {
       Array.isArray(meta.capabilities) || Object.values(meta.capabilities).some(v => typeof v !== "boolean") ||
       !Array.isArray(meta.adapters) || meta.adapters.some(a => typeof a !== "string" || meta.capabilities[a] !== true) ||
       new Set(meta.adapters).size !== meta.adapters.length) {
-    throw new Error("incompatible monorm native artifact; rebuild or install matching monorm 0.1.1 packages");
+    throw new Error("incompatible monorm native artifact; rebuild or install matching monorm 0.1.2 packages");
   }
 }
 

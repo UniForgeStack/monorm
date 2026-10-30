@@ -3,5 +3,5 @@
   "private": true,
   "type": "module",
   "scripts": { "start": "node index.ts" },
-  "dependencies": { "monorm": "npm:@ufstack/monorm@^0.1.1" }
+  "dependencies": { "monorm": "npm:@ufstack/monorm@^0.1.2" }
 }

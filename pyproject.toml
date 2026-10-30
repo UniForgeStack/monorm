@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "monorm"
-version = "0.1.1"
+version = "0.1.2"
 authors = [{ name = "mh-alahdadi", email = "mhalah15@gmail.com" }]
 description = "Async Python ORM with a Rust core"
 readme = "README.md"
