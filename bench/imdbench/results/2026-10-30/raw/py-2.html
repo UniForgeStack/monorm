@@ -1,0 +1,1590 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <link
+      rel="stylesheet"
+      type="text/css"
+      href="https://cdnjs.cloudflare.com/ajax/libs/normalize/4.1.1/normalize.min.css"
+    />
+    <script src="https://d3js.org/d3.v3.js" charset="utf-8"></script>
+
+    <style>
+      code {
+        display: inline;
+      }
+      ul {
+        padding-left: 0px;
+      }
+      ul li {
+        padding: 2px 0px;
+      }
+      dt {
+        font-weight: bold;
+        margin: 5px 0px;
+      }
+      h2 {
+        text-align: center;
+        padding: 30px 0px;
+        margin: 30px 0px;
+        background-color: lightgrey;
+        border-radius: 8px;
+      }
+      h3 {
+        margin: 40px 0px 10px 0px;
+        text-align: center;
+      }
+      .bench-description {
+        font-style: italic;
+        text-align: center;
+        margin: 0px auto 40px auto;
+        max-width: 450px;
+      }
+      .chart-title {
+        font-family: monospace;
+        font-size: 13pt;
+        font-weight: bold;
+      }
+      svg {
+        background-color: rgb(245, 245, 245);
+        padding: 30px 0px 0px 10px;
+        border-radius: 8px;
+      }
+      .json-formatter-row {
+        font-family: monospace;
+      }
+      .json-formatter-row,
+      .json-formatter-row a,
+      .json-formatter-row a:hover {
+        color: black;
+        text-decoration: none;
+      }
+      .json-formatter-row .json-formatter-row {
+        margin-left: 1rem;
+      }
+      .json-formatter-row .json-formatter-children.json-formatter-empty {
+        opacity: 0.5;
+        margin-left: 1rem;
+      }
+      .json-formatter-row .json-formatter-children.json-formatter-empty:after {
+        display: none;
+      }
+      .json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-object:after {
+        content: 'No properties';
+      }
+      .json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-array:after {
+        content: '[]';
+      }
+      .json-formatter-row .json-formatter-string,
+      .json-formatter-row .json-formatter-stringifiable {
+        color: green;
+        white-space: pre;
+        word-wrap: break-word;
+      }
+      .json-formatter-row .json-formatter-number {
+        color: blue;
+      }
+      .json-formatter-row .json-formatter-boolean {
+        color: red;
+      }
+      .json-formatter-row .json-formatter-null {
+        color: #855a00;
+      }
+      .json-formatter-row .json-formatter-undefined {
+        color: #ca0b69;
+      }
+      .json-formatter-row .json-formatter-function {
+        color: #ff20ed;
+      }
+      .json-formatter-row .json-formatter-date {
+        background-color: rgba(0, 0, 0, 0.05);
+      }
+      .json-formatter-row .json-formatter-url {
+        text-decoration: underline;
+        color: blue;
+        cursor: pointer;
+      }
+      .json-formatter-row .json-formatter-bracket {
+        color: blue;
+      }
+      .json-formatter-row .json-formatter-key {
+        color: #00008b;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-row .json-formatter-toggler-link {
+        cursor: pointer;
+      }
+      .json-formatter-row .json-formatter-toggler {
+        line-height: 1.2rem;
+        font-size: 0.7rem;
+        vertical-align: middle;
+        opacity: 0.6;
+        cursor: pointer;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-row .json-formatter-toggler:after {
+        display: inline-block;
+        transition: transform 100ms ease-in;
+        content: '\25BA';
+      }
+      .json-formatter-row > a > .json-formatter-preview-text {
+        opacity: 0;
+        transition: opacity 0.15s ease-in;
+        font-style: italic;
+      }
+      .json-formatter-row:hover > a > .json-formatter-preview-text {
+        opacity: 0.6;
+      }
+      .json-formatter-row.json-formatter-open
+        > .json-formatter-toggler-link
+        .json-formatter-toggler:after {
+        transform: rotate(90deg);
+      }
+      .json-formatter-row.json-formatter-open > .json-formatter-children:after {
+        display: inline-block;
+      }
+      .json-formatter-row.json-formatter-open
+        > a
+        > .json-formatter-preview-text {
+        display: none;
+      }
+      .json-formatter-row.json-formatter-open.json-formatter-empty:after {
+        display: block;
+      }
+      .json-formatter-dark.json-formatter-row {
+        font-family: monospace;
+      }
+      .json-formatter-dark.json-formatter-row,
+      .json-formatter-dark.json-formatter-row a,
+      .json-formatter-dark.json-formatter-row a:hover {
+        color: white;
+        text-decoration: none;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-row {
+        margin-left: 1rem;
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty {
+        opacity: 0.5;
+        margin-left: 1rem;
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty:after {
+        display: none;
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-object:after {
+        content: 'No properties';
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-array:after {
+        content: '[]';
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-string,
+      .json-formatter-dark.json-formatter-row .json-formatter-stringifiable {
+        color: #31f031;
+        white-space: pre;
+        word-wrap: break-word;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-number {
+        color: #66c2ff;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-boolean {
+        color: #ec4242;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-null {
+        color: #eec97d;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-undefined {
+        color: #ef8fbe;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-function {
+        color: #fd48cb;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-date {
+        background-color: rgba(255, 255, 255, 0.05);
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-url {
+        text-decoration: underline;
+        color: #027bff;
+        cursor: pointer;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-bracket {
+        color: #9494ff;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-key {
+        color: #23a0db;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-toggler-link {
+        cursor: pointer;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-toggler {
+        line-height: 1.2rem;
+        font-size: 0.7rem;
+        vertical-align: middle;
+        opacity: 0.6;
+        cursor: pointer;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-toggler:after {
+        display: inline-block;
+        transition: transform 100ms ease-in;
+        content: '\25BA';
+      }
+      .json-formatter-dark.json-formatter-row
+        > a
+        > .json-formatter-preview-text {
+        opacity: 0;
+        transition: opacity 0.15s ease-in;
+        font-style: italic;
+      }
+      .json-formatter-dark.json-formatter-row:hover
+        > a
+        > .json-formatter-preview-text {
+        opacity: 0.6;
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open
+        > .json-formatter-toggler-link
+        .json-formatter-toggler:after {
+        transform: rotate(90deg);
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open
+        > .json-formatter-children:after {
+        display: inline-block;
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open
+        > a
+        > .json-formatter-preview-text {
+        display: none;
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open.json-formatter-empty:after {
+        display: block;
+      }
+    </style>
+
+    <script>
+      var helpers_1 = (function () {
+        let exports = {};
+        /*
+         * Escapes `"` charachters from string
+         */
+        function escapeString(str) {
+          return str.replace(/"/g, '\\"');
+        }
+        /*
+         * Determines if a value is an object
+         */
+        function isObject(value) {
+          var type = typeof value;
+          return !!value && type == 'object';
+        }
+        exports.isObject = isObject;
+        /*
+         * Gets constructor name of an object.
+         * From http://stackoverflow.com/a/332429
+         *
+         */
+        function getObjectName(object) {
+          if (object === undefined) {
+            return '';
+          }
+          if (object === null) {
+            return 'Object';
+          }
+          if (typeof object === 'object' && !object.constructor) {
+            return 'Object';
+          }
+          var funcNameRegex = /function ([^(]*)/;
+          var results = funcNameRegex.exec(object.constructor.toString());
+          if (results && results.length > 1) {
+            return results[1];
+          } else {
+            return '';
+          }
+        }
+        exports.getObjectName = getObjectName;
+        /*
+         * Generates inline preview for a JavaScript object based on a type and value
+         */
+        function getValuePreview(type, object, value) {
+          if (type === 'null' || type === 'undefined') {
+            return type;
+          }
+          if (type === 'string' || type === 'stringifiable') {
+            value = '"' + escapeString(value) + '"';
+          }
+          if (type === 'function') {
+            // Remove content of the function
+            return (
+              object
+                .toString()
+                .replace(/[\r\n]/g, '')
+                .replace(/\{.*\}/, '') + '{…}'
+            );
+          }
+          return value;
+        }
+        exports.getValuePreview = getValuePreview;
+        /*
+         * Generates inline preview for a JavaScript object
+         */
+        function getPreview(type, object) {
+          var value = '';
+          if (isObject(object)) {
+            value = getObjectName(object);
+            if (Array.isArray(object)) value += '[' + object.length + ']';
+          } else {
+            value = getValuePreview(type, object, object);
+          }
+          return value;
+        }
+        exports.getPreview = getPreview;
+        /*
+         * Generates a prefixed CSS class name
+         */
+        function cssClass(className) {
+          return 'json-formatter-' + className;
+        }
+        exports.cssClass = cssClass;
+        /*
+         * Creates a new DOM element wiht given type and class
+         * TODO: move me to helpers
+         */
+        function createElement(type, className, content) {
+          var el = document.createElement(type);
+          if (className) {
+            el.classList.add(cssClass(className));
+          }
+          if (content !== undefined) {
+            if (content instanceof Node) {
+              el.appendChild(content);
+            } else {
+              el.appendChild(document.createTextNode(String(content)));
+            }
+          }
+          return el;
+        }
+        exports.createElement = createElement;
+        return exports;
+      })();
+
+      var DATE_STRING_REGEX =
+        /(^\d{1,4}[\.|\\/|-]\d{1,2}[\.|\\/|-]\d{1,4})(\s*(?:0?[1-9]:[0-5]|1(?=[012])\d:[0-5])\d\s*[ap]m)?$/;
+      var PARTIAL_DATE_REGEX = /\d{2}:\d{2}:\d{2} GMT-\d{4}/;
+      var JSON_DATE_REGEX = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/;
+      // When toggleing, don't animated removal or addition of more than a few items
+      var MAX_ANIMATED_TOGGLE_ITEMS = 10;
+      var requestAnimationFrame =
+        window.requestAnimationFrame ||
+        function (cb) {
+          cb();
+          return 0;
+        };
+      var _defaultConfig = {
+        hoverPreviewEnabled: false,
+        hoverPreviewArrayCount: 100,
+        hoverPreviewFieldCount: 5,
+        animateOpen: true,
+        animateClose: true,
+        theme: null,
+        useToJSON: true,
+        sortPropertiesBy: null,
+      };
+      /**
+       * @class JSONFormatter
+       *
+       * JSONFormatter allows you to render JSON objects in HTML with a
+       * **collapsible** navigation.
+       */
+      var JSONFormatter = /** @class */ (function () {
+        /**
+         * @param {object} json The JSON object you want to render. It has to be an
+         * object or array. Do NOT pass raw JSON string.
+         *
+         * @param {number} [open=1] his number indicates up to how many levels the
+         * rendered tree should expand. Set it to `0` to make the whole tree collapsed
+         * or set it to `Infinity` to expand the tree deeply
+         *
+         * @param {object} [config=defaultConfig] -
+         *  defaultConfig = {
+         *   hoverPreviewEnabled: false,
+         *   hoverPreviewArrayCount: 100,
+         *   hoverPreviewFieldCount: 5
+         * }
+         *
+         * Available configurations:
+         *  #####Hover Preview
+         * * `hoverPreviewEnabled`:  enable preview on hover
+         * * `hoverPreviewArrayCount`: number of array items to show in preview Any
+         *    array larger than this number will be shown as `Array[XXX]` where `XXX`
+         *    is length of the array.
+         * * `hoverPreviewFieldCount`: number of object properties to show for object
+         *   preview. Any object with more properties that thin number will be
+         *   truncated.
+         *
+         * @param {string} [key=undefined] The key that this object in it's parent
+         * context
+         */
+        function JSONFormatter(json, open, config, key) {
+          if (open === void 0) {
+            open = 1;
+          }
+          if (config === void 0) {
+            config = _defaultConfig;
+          }
+          this.json = json;
+          this.open = open;
+          this.config = config;
+          this.key = key;
+          // Hold the open state after the toggler is used
+          this._isOpen = null;
+          // Setting default values for config object
+          if (this.config.hoverPreviewEnabled === undefined) {
+            this.config.hoverPreviewEnabled =
+              _defaultConfig.hoverPreviewEnabled;
+          }
+          if (this.config.hoverPreviewArrayCount === undefined) {
+            this.config.hoverPreviewArrayCount =
+              _defaultConfig.hoverPreviewArrayCount;
+          }
+          if (this.config.hoverPreviewFieldCount === undefined) {
+            this.config.hoverPreviewFieldCount =
+              _defaultConfig.hoverPreviewFieldCount;
+          }
+          if (this.config.useToJSON === undefined) {
+            this.config.useToJSON = _defaultConfig.useToJSON;
+          }
+        }
+        Object.defineProperty(JSONFormatter.prototype, 'isOpen', {
+          /*
+           * is formatter open?
+           */
+          get: function () {
+            if (this._isOpen !== null) {
+              return this._isOpen;
+            } else {
+              return this.open > 0;
+            }
+          },
+          /*
+           * set open state (from toggler)
+           */
+          set: function (value) {
+            this._isOpen = value;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isDate', {
+          /*
+           * is this a date string?
+           */
+          get: function () {
+            return (
+              this.json instanceof Date ||
+              (this.type === 'string' &&
+                (DATE_STRING_REGEX.test(this.json) ||
+                  JSON_DATE_REGEX.test(this.json) ||
+                  PARTIAL_DATE_REGEX.test(this.json)))
+            );
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isUrl', {
+          /*
+           * is this a URL string?
+           */
+          get: function () {
+            return this.type === 'string' && this.json.indexOf('http') === 0;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isArray', {
+          /*
+           * is this an array?
+           */
+          get: function () {
+            return Array.isArray(this.json);
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isObject', {
+          /*
+           * is this an object?
+           * Note: In this context arrays are object as well
+           */
+          get: function () {
+            return helpers_1.isObject(this.json);
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isEmptyObject', {
+          /*
+           * is this an empty object with no properties?
+           */
+          get: function () {
+            return !this.keys.length && !this.isArray;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isEmpty', {
+          /*
+           * is this an empty object or array?
+           */
+          get: function () {
+            return (
+              this.isEmptyObject ||
+              (this.keys && !this.keys.length && this.isArray)
+            );
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'useToJSON', {
+          /*
+           * does this has a `toJSON` method and is it configured to be used?
+           * This means that it has it's own renderer for JSON.stringify (Date, Mongo's ObjectID, etc.)
+           */
+          get: function () {
+            return this.config.useToJSON && this.type === 'stringifiable';
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'hasKey', {
+          /*
+           * did we recieve a key argument?
+           * This means that the formatter was called as a sub formatter of a parent formatter
+           */
+          get: function () {
+            return typeof this.key !== 'undefined';
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'constructorName', {
+          /*
+           * if this is an object, get constructor function name
+           */
+          get: function () {
+            return helpers_1.getObjectName(this.json);
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'type', {
+          /*
+           * get type of this value. Returns "null" for null objects
+           * Possible values: all JavaScript primitive types plus "array" and "null"
+           */
+          get: function () {
+            if (this.json === null) {
+              return 'null';
+            }
+            if (this.config.useToJSON && this.json && this.json['toJSON']) {
+              return 'stringifiable';
+            }
+            return typeof this.json;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'keys', {
+          /*
+           * get object keys
+           * If there is an empty key we pad it wit quotes to make it visible
+           */
+          get: function () {
+            if (this.isObject) {
+              var keys = Object.keys(this.json).map(function (key) {
+                return key ? key : '""';
+              });
+              return !this.isArray && this.config.sortPropertiesBy
+                ? keys.sort(this.config.sortPropertiesBy)
+                : keys;
+            } else {
+              return [];
+            }
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        /**
+         * Toggles `isOpen` state
+         *
+         */
+        JSONFormatter.prototype.toggleOpen = function () {
+          this.isOpen = !this.isOpen;
+          if (this.element) {
+            if (this.isOpen) {
+              this.appendChildren(this.config.animateOpen);
+            } else {
+              this.removeChildren(this.config.animateClose);
+            }
+            this.element.classList.toggle(helpers_1.cssClass('open'));
+          }
+        };
+        /**
+         * Open all children up to a certain depth.
+         * Allows actions such as expand all/collapse all
+         *
+         */
+        JSONFormatter.prototype.openAtDepth = function (depth) {
+          if (depth === void 0) {
+            depth = 1;
+          }
+          if (depth < 0) {
+            return;
+          }
+          this.open = depth;
+          this.isOpen = depth !== 0;
+          if (this.element) {
+            this.removeChildren(false);
+            if (depth === 0) {
+              this.element.classList.remove(helpers_1.cssClass('open'));
+            } else {
+              this.appendChildren(this.config.animateOpen);
+              this.element.classList.add(helpers_1.cssClass('open'));
+            }
+          }
+        };
+        /**
+         * Generates inline preview
+         *
+         * @returns {string}
+         */
+        JSONFormatter.prototype.getInlinepreview = function () {
+          var _this = this;
+          if (this.isArray) {
+            // if array length is greater then 100 it shows "Array[101]"
+            if (this.json.length > this.config.hoverPreviewArrayCount) {
+              return 'Array[' + this.json.length + ']';
+            } else {
+              return '[' + this.json.map(helpers_1.getPreview).join(', ') + ']';
+            }
+          } else {
+            var keys = this.keys;
+            // the first five keys (like Chrome Developer Tool)
+            var narrowKeys = keys.slice(0, this.config.hoverPreviewFieldCount);
+            // json value schematic information
+            var kvs = narrowKeys.map(function (key) {
+              return (
+                key + ':' + helpers_1.getPreview(_this.type, _this.json[key])
+              );
+            });
+            // if keys count greater then 5 then show ellipsis
+            var ellipsis =
+              keys.length >= this.config.hoverPreviewFieldCount ? '…' : '';
+            return '{' + kvs.join(', ') + ellipsis + '}';
+          }
+        };
+        /**
+         * Renders an HTML element and installs event listeners
+         *
+         * @returns {HTMLDivElement}
+         */
+        JSONFormatter.prototype.render = function () {
+          // construct the root element and assign it to this.element
+          this.element = helpers_1.createElement('div', 'row');
+          // construct the toggler link
+          var togglerLink = this.isObject
+            ? helpers_1.createElement('a', 'toggler-link')
+            : helpers_1.createElement('span');
+          // if this is an object we need a wrapper span (toggler)
+          if (this.isObject && !this.useToJSON) {
+            togglerLink.appendChild(helpers_1.createElement('span', 'toggler'));
+          }
+          // if this is child of a parent formatter we need to append the key
+          if (this.hasKey) {
+            togglerLink.appendChild(
+              helpers_1.createElement('span', 'key', this.key + ':')
+            );
+          }
+          // Value for objects and arrays
+          if (this.isObject && !this.useToJSON) {
+            // construct the value holder element
+            var value = helpers_1.createElement('span', 'value');
+            // we need a wrapper span for objects
+            var objectWrapperSpan = helpers_1.createElement('span');
+            // get constructor name and append it to wrapper span
+            var constructorName = helpers_1.createElement(
+              'span',
+              'constructor-name',
+              this.constructorName
+            );
+            objectWrapperSpan.appendChild(constructorName);
+            // if it's an array append the array specific elements like brackets and length
+            if (this.isArray) {
+              var arrayWrapperSpan = helpers_1.createElement('span');
+              arrayWrapperSpan.appendChild(
+                helpers_1.createElement('span', 'bracket', '[')
+              );
+              arrayWrapperSpan.appendChild(
+                helpers_1.createElement('span', 'number', this.json.length)
+              );
+              arrayWrapperSpan.appendChild(
+                helpers_1.createElement('span', 'bracket', ']')
+              );
+              objectWrapperSpan.appendChild(arrayWrapperSpan);
+            }
+            // append object wrapper span to toggler link
+            value.appendChild(objectWrapperSpan);
+            togglerLink.appendChild(value);
+            // Primitive values
+          } else {
+            // make a value holder element
+            var value = this.isUrl
+              ? helpers_1.createElement('a')
+              : helpers_1.createElement('span');
+            // add type and other type related CSS classes
+            value.classList.add(helpers_1.cssClass(this.type));
+            if (this.isDate) {
+              value.classList.add(helpers_1.cssClass('date'));
+            }
+            if (this.isUrl) {
+              value.classList.add(helpers_1.cssClass('url'));
+              value.setAttribute('href', this.json);
+            }
+            // Append value content to value element
+            var valuePreview = helpers_1.getValuePreview(
+              this.type,
+              this.json,
+              this.useToJSON ? this.json.toJSON() : this.json
+            );
+            value.appendChild(document.createTextNode(valuePreview));
+            // append the value element to toggler link
+            togglerLink.appendChild(value);
+          }
+          // if hover preview is enabled, append the inline preview element
+          if (this.isObject && this.config.hoverPreviewEnabled) {
+            var preview = helpers_1.createElement('span', 'preview-text');
+            preview.appendChild(
+              document.createTextNode(this.getInlinepreview())
+            );
+            togglerLink.appendChild(preview);
+          }
+          // construct a children element
+          var children = helpers_1.createElement('div', 'children');
+          // set CSS classes for children
+          if (this.isObject) {
+            children.classList.add(helpers_1.cssClass('object'));
+          }
+          if (this.isArray) {
+            children.classList.add(helpers_1.cssClass('array'));
+          }
+          if (this.isEmpty) {
+            children.classList.add(helpers_1.cssClass('empty'));
+          }
+          // set CSS classes for root element
+          if (this.config && this.config.theme) {
+            this.element.classList.add(helpers_1.cssClass(this.config.theme));
+          }
+          if (this.isOpen) {
+            this.element.classList.add(helpers_1.cssClass('open'));
+          }
+          // append toggler and children elements to root element
+          this.element.appendChild(togglerLink);
+          this.element.appendChild(children);
+          // if formatter is set to be open call appendChildren
+          if (this.isObject && this.isOpen) {
+            this.appendChildren();
+          }
+          // add event listener for toggling
+          if (this.isObject && !this.useToJSON) {
+            togglerLink.addEventListener('click', this.toggleOpen.bind(this));
+          }
+          return this.element;
+        };
+        /**
+         * Appends all the children to children element
+         * Animated option is used when user triggers this via a click
+         */
+        JSONFormatter.prototype.appendChildren = function (animated) {
+          var _this = this;
+          if (animated === void 0) {
+            animated = false;
+          }
+          var children = this.element.querySelector(
+            'div.' + helpers_1.cssClass('children')
+          );
+          if (!children || this.isEmpty) {
+            return;
+          }
+          if (animated) {
+            var index_1 = 0;
+            var addAChild_1 = function () {
+              var key = _this.keys[index_1];
+              var formatter = new JSONFormatter(
+                _this.json[key],
+                _this.open - 1,
+                _this.config,
+                key
+              );
+              children.appendChild(formatter.render());
+              index_1 += 1;
+              if (index_1 < _this.keys.length) {
+                if (index_1 > MAX_ANIMATED_TOGGLE_ITEMS) {
+                  addAChild_1();
+                } else {
+                  requestAnimationFrame(addAChild_1);
+                }
+              }
+            };
+            requestAnimationFrame(addAChild_1);
+          } else {
+            this.keys.forEach(function (key) {
+              var formatter = new JSONFormatter(
+                _this.json[key],
+                _this.open - 1,
+                _this.config,
+                key
+              );
+              children.appendChild(formatter.render());
+            });
+          }
+        };
+        /**
+         * Removes all the children from children element
+         * Animated option is used when user triggers this via a click
+         */
+        JSONFormatter.prototype.removeChildren = function (animated) {
+          if (animated === void 0) {
+            animated = false;
+          }
+          var childrenElement = this.element.querySelector(
+            'div.' + helpers_1.cssClass('children')
+          );
+          if (animated) {
+            var childrenRemoved_1 = 0;
+            var removeAChild_1 = function () {
+              if (childrenElement && childrenElement.children.length) {
+                childrenElement.removeChild(childrenElement.children[0]);
+                childrenRemoved_1 += 1;
+                if (childrenRemoved_1 > MAX_ANIMATED_TOGGLE_ITEMS) {
+                  removeAChild_1();
+                } else {
+                  requestAnimationFrame(removeAChild_1);
+                }
+              }
+            };
+            requestAnimationFrame(removeAChild_1);
+          } else {
+            if (childrenElement) {
+              childrenElement.innerHTML = '';
+            }
+          }
+        };
+        return JSONFormatter;
+      })();
+    </script>
+
+    <style>
+      html {
+        background-color: #ffffff;
+      }
+      body {
+        padding: 20px;
+      }
+      .chart .axis path,
+      .chart .axis line {
+        fill: none;
+        stroke: #999;
+        shape-rendering: crispEdges;
+      }
+      .chart .axis.x2 path,
+      .chart .axis.x2 line {
+        display: none;
+      }
+      .chart .axis text,
+      .chart .legend text {
+        font: 12pt sans-serif;
+        fill: #333;
+      }
+      .chart .axis.x path {
+        display: none;
+      }
+
+      .chart .axis text {
+        fill: #555;
+      }
+      .chart .axis line,
+      .chart .axis path {
+        stroke: #888;
+      }
+
+      .chart .focus line {
+        stroke: #900;
+      }
+      .chart .focus text {
+        fill: #900;
+        font: 12pt sans-serif;
+      }
+
+      .json-out {
+        white-space: pre;
+        max-height: 400px;
+        overflow: auto;
+        max-width: 70vw;
+        background: #f2fafa;
+        padding: 20px;
+        border-radius: 5px;
+      }
+    </style>
+
+    <script>
+      var DEFAULT_COLORS = ['#a9d4d6', '#83b1d4', '#6e8fdc'];
+
+      function _humanFileSize(bytes, si) {
+        var thresh = si ? 1000 : 1024;
+        if (Math.abs(bytes) < thresh) {
+          return bytes + ' B';
+        }
+        var units = si
+          ? ['kB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
+          : ['KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB'];
+        var u = -1;
+        do {
+          bytes /= thresh;
+          ++u;
+        } while (Math.abs(bytes) >= thresh && u < units.length - 1);
+        return bytes.toFixed(0) + ' ' + units[u];
+      }
+
+      function _drawLegend(chart, width, sizes) {
+        var legend = chart
+          .selectAll('legend')
+          .data(sizes)
+          .enter()
+          .append('g')
+          .attr('class', 'legend')
+          .attr('transform', 'translate(' + width + ', 20)');
+        legend
+          .append('circle')
+          .style('fill', function (d, i) {
+            return DEFAULT_COLORS[i];
+          })
+          .attr('cx', 0)
+          .attr('cy', function (d, i) {
+            return i * 20;
+          })
+          .attr('r', 5);
+        legend
+          .append('text')
+          .attr('x', 7)
+          .attr('y', function (d, i) {
+            return i * 20;
+          })
+          .attr('alignment-baseline', 'central')
+          .text(function (d) {
+            return d;
+          });
+      }
+
+      function _copyAndSortBenchmarks(benchmarks, options) {
+        var newBench = [];
+        Array.prototype.push.apply(newBench, benchmarks);
+        if (options.sort) {
+          newBench.sort(function (e1, e2) {
+            return d3.ascending(e1.qps, e2.qps);
+          });
+        }
+        return newBench;
+      }
+
+      function drawBars(elSelector, data, options) {
+        'use strict';
+        options = options || {};
+
+        // geometry
+
+        var fullWidth = options.width || 1000,
+          fullHeight = options.height || 370,
+          margin = {top: 10, right: 65, bottom: 55, left: 65},
+          width = fullWidth - margin.left - margin.right,
+          height = fullHeight - margin.top - margin.bottom,
+          benchmarks = _copyAndSortBenchmarks(data, options);
+
+        // data reshape
+
+        var maxRps = 0;
+        benchmarks.forEach(function (v) {
+          if (v.qps > maxRps) {
+            maxRps = v.qps;
+          }
+        });
+        var names = benchmarks.map(function (d) {
+          return d.implementation;
+        });
+
+        // charting
+
+        var color = d3.scale.ordinal().range(DEFAULT_COLORS);
+
+        var x0 = d3.scale
+          .ordinal()
+          .rangeRoundBands([0, width], 0.2)
+          .domain(names);
+
+        var y = d3.scale.linear().range([height, 0]).domain([0, maxRps]);
+
+        var xAxis = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[0];
+          });
+        var xAxis2 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[1];
+          });
+        var xAxis3 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[2];
+          });
+
+        var yAxis = d3.svg.axis().scale(y).orient('left');
+
+        var chart = d3
+          .select(elSelector)
+          .attr('viewBox', '0 0 ' + fullWidth + ' ' + fullHeight)
+          .append('g')
+          .attr(
+            'transform',
+            'translate(' + margin.left + ',' + margin.top + ')'
+          );
+
+        chart
+          .append('g')
+          .attr('class', 'x axis')
+          .attr('transform', 'translate(0,' + height + ')')
+          .call(xAxis);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 14) + ')')
+          .call(xAxis2);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 28) + ')')
+          .call(xAxis3);
+
+        chart
+          .append('g')
+          .attr('class', 'y axis')
+          .call(yAxis)
+          .append('text')
+          .attr('transform', 'rotate(-90)')
+          .attr('y', 6)
+          .attr('dy', '.71em')
+          .style('text-anchor', 'end')
+          .text('Throughput (iterations / sec)');
+
+        chart
+          .selectAll('rect')
+          .data(benchmarks)
+          .enter()
+          .append('rect')
+          .style('fill', function (d, i) {
+            return color(0);
+          })
+          .attr('width', x0.rangeBand())
+          .attr('x', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('y', function (d) {
+            return y(d.qps);
+          })
+          .attr('height', function (d) {
+            return height - y(d.qps);
+          })
+          .on('mouseover', function (d, i) {
+            focusRect.attr('y', y(d.qps) - 9);
+
+            focusLine.attr('y1', y(d.qps)).attr('y2', y(d.qps));
+
+            focusText
+              .attr('y', y(d.qps))
+              .text(d3.format('0,000')(Math.round(d.qps)));
+
+            focus.style('display', null);
+          })
+          .on('mouseout', function () {
+            focus.style('display', 'none');
+          });
+
+        var focus = chart
+          .append('g')
+          .attr('class', 'focus')
+          .style('display', 'none');
+        var focusRect = focus
+          .append('rect')
+          .attr('x', -margin.left)
+          .attr('width', margin.left - 6)
+          .attr('y', 0)
+          .attr('height', 18)
+          .attr('fill', 'rgba(255, 255, 255, 0.9)');
+        var focusLine = focus
+          .append('line')
+          .attr('x1', -6)
+          .attr('x2', width - 20)
+          .attr('y1', 0)
+          .attr('y2', 0)
+          .style('stroke-dasharray', '2,2');
+        var focusText = focus
+          .append('text')
+          .attr('y', 0)
+          .attr('x', -9)
+          .attr('text-anchor', 'end')
+          .attr('alignment-baseline', 'middle');
+      }
+
+      function drawLats(elSelector, data, options) {
+        'use strict';
+        options = options || {};
+
+        // geometry
+
+        var fullWidth = options.width || 1000,
+          fullHeight = options.height || 370,
+          margin = {top: 10, right: 65, bottom: 55, left: 65},
+          width = fullWidth - margin.left - margin.right,
+          height = fullHeight - margin.top - margin.bottom,
+          benchmarks = _copyAndSortBenchmarks(data, options);
+
+        // data reshape
+
+        var maxLat = 0;
+        benchmarks.forEach(function (v) {
+          if (v.latency_percentiles[4][1] > maxLat) {
+            maxLat = v.latency_percentiles[4][1];
+          }
+        });
+
+        var names = benchmarks.map(function (d) {
+          return d.implementation;
+        });
+
+        // charting
+
+        var color = d3.scale.ordinal().range(DEFAULT_COLORS);
+
+        var x0 = d3.scale
+          .ordinal()
+          .rangeRoundBands([0, width], 0.2)
+          .domain(names);
+
+        var y = d3.scale.linear().range([height, 0]).domain([0, maxLat]);
+
+        var xAxis = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[0];
+          });
+        var xAxis2 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[1];
+          });
+        var xAxis3 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[2];
+          });
+
+        var yAxis = d3.svg.axis().scale(y).orient('left');
+
+        var chart = d3
+          .select(elSelector)
+          .attr('viewBox', '0 0 ' + fullWidth + ' ' + fullHeight)
+          .append('g')
+          .attr(
+            'transform',
+            'translate(' + margin.left + ',' + margin.top + ')'
+          );
+
+        chart
+          .append('g')
+          .attr('class', 'x axis')
+          .attr('transform', 'translate(0,' + height + ')')
+          .call(xAxis);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 14) + ')')
+          .call(xAxis2);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 28) + ')')
+          .call(xAxis3);
+
+        chart
+          .append('g')
+          .attr('class', 'y axis')
+          .call(yAxis)
+          .append('text')
+          .attr('transform', 'rotate(-90)')
+          .attr('y', 6)
+          .attr('dy', '.71em')
+          .style('text-anchor', 'end')
+          .text('Latency (msec)');
+
+        var g = chart
+          .selectAll('rect')
+          .data(benchmarks)
+          .enter()
+          .append('g')
+          .attr('class', 'sub');
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_percentiles[4][1]);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[4][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand();
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          });
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_min);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_min);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand();
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          });
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_percentiles[1][1]);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[1][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand();
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          });
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_min);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[0][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          })
+          .style('stroke-dasharray', '2,2');
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_percentiles[4][1]);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[2][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          })
+          .style('stroke-dasharray', '2,2');
+
+        g.append('rect')
+          .attr('y', function (d) {
+            return y(d.latency_percentiles[2][1]);
+          })
+          .attr('x', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('width', x0.rangeBand())
+          .attr('height', function (d) {
+            return Math.abs(
+              y(d.latency_percentiles[2][1]) - y(d.latency_percentiles[0][1])
+            );
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          })
+          .style('fill', 'rgba(0, 0, 0, 0)');
+
+        g.append('rect')
+          .attr('y', 0)
+          .attr('height', height)
+          .attr('x', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('width', function (d) {
+            return x0.rangeBand();
+          })
+          .style('fill', 'rgba(0, 0, 0, 0)')
+          .on('mouseout', function (d, i) {
+            d3.select(this).style('fill', 'rgba(0, 0, 0, 0)');
+            focus.style('display', 'none');
+          })
+          .on('mouseover', function (d, i) {
+            d3.select(this).style('fill', 'rgba(0, 0, 0, 0.04)');
+
+            var yMedian = y(d.latency_percentiles[1][1]);
+
+            focus.style('display', null);
+
+            focusLine.attr('y1', yMedian).attr('y2', yMedian);
+
+            focusRect.attr('y', yMedian - 9);
+
+            focusLine.attr('y1', yMedian).attr('y2', yMedian);
+
+            focusText
+              .attr('y', yMedian)
+              .text(d3.format('.2f')(d.latency_percentiles[1][1]));
+          });
+
+        var focus = chart
+          .append('g')
+          .attr('class', 'focus')
+          .style('display', 'none');
+        var focusRect = focus
+          .append('rect')
+          .attr('x', -margin.left)
+          .attr('width', margin.left - 6)
+          .attr('y', 0)
+          .attr('height', 18)
+          .attr('fill', 'rgba(255, 255, 255, 0.9)');
+        var focusLine = focus
+          .append('line')
+          .attr('x1', -6)
+          .attr('x2', width - 20)
+          .attr('y1', 0)
+          .attr('y2', 0)
+          .style('stroke-dasharray', '2,2');
+        var focusText = focus
+          .append('text')
+          .attr('y', 0)
+          .attr('x', -9)
+          .attr('text-anchor', 'end')
+          .attr('alignment-baseline', 'middle');
+      }
+
+      function renderSamples(root_el, data) {
+        for (let bench of data) {
+          let inner = document.createElement('div');
+          let title = document.createElement('h5');
+          title.innerHTML = bench.implementation;
+          inner.appendChild(title);
+
+          let s_el = document.createElement('div');
+          let body = document.createElement('div');
+          for (let sample of bench.samples) {
+            let f = new JSONFormatter(JSON.parse(sample), 0);
+            body.appendChild(f.render());
+            body.appendChild(document.createElement('hr'));
+          }
+          body.classList.add('json-out');
+          s_el.appendChild(body);
+          inner.appendChild(s_el);
+
+          root_el.appendChild(inner);
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <p><em>Fri Oct 30 08:01:04 2026</em></p>
+
+    <h1>Benchmark Report</h1>
+
+    <p>
+      The results below were generating using the IMDBench benchmarking suite:
+      <a href="https://github.com/edgedb/imdbench" target="_blank"
+        >github.com/edgedb/imdbench</a
+      >.
+    </p>
+    <br /><br />
+
+    <dl>
+      <dt>Targets</dt>
+      <dd>
+        <ul>
+          
+          <li>Django ORM</li>
+          
+          <li>SQLAlchemy</li>
+          
+          <li>MonOrm (Python, asyncio)</li>
+          
+          <li>PostgreSQL (Python, asyncpg)</li>
+          
+        </ul>
+      </dd>
+      <dt>Test environment</dt>
+      <dd>
+        <code>Linux 6.18.44-fc-v185 (Ubuntu 24.04, x86_64) on Intel(R) Xeon(R) Processor @ 2.80GHz</code>
+      </dd>
+      <dt>Duration (per benchmark)</dt>
+      <dd>10 seconds</dd>
+      <dt>Concurrency</dt>
+      <dd>1 clients</dd>
+      <dt>Simulated client-to-database latency</dt>
+      <dd>~1ms</dd>
+    </dl>
+    <br />
+
+     
+    <h2>Overall Results</h2>
+
+    <p class="bench-description">
+      The charts below show the geometric average of all benchmark results.
+    </p>
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-mean" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-mean" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_mean = [{"implementation": "Django ORM", "duration": 10.0, "queries": 1010.68, "qps": 101.07, "latency_min": 7.232, "latency_mean": 9.874, "latency_max": 31.776, "latency_std": 2.128, "latency_cv": 21.55, "latency_percentiles": [[25, 8.683], [50, 9.425], [75, 10.26], [90, 11.988], [99, 18.204], [99.99, 31.784]]}, {"implementation": "SQLAlchemy", "duration": 10.0, "queries": 1931.49, "qps": 193.15, "latency_min": 3.36, "latency_mean": 5.152, "latency_max": 77.369, "latency_std": 2.89, "latency_cv": 56.1, "latency_percentiles": [[25, 4.248], [50, 4.69], [75, 5.338], [90, 6.602], [99, 11.224], [99.99, 77.379]]}, {"implementation": "MonOrm (Python, asyncio)", "duration": 10.0, "queries": 2615.89, "qps": 261.59, "latency_min": 2.139, "latency_mean": 3.8, "latency_max": 40.616, "latency_std": 1.931, "latency_cv": 50.82, "latency_percentiles": [[25, 3.018], [50, 3.397], [75, 3.974], [90, 5.11], [99, 9.541], [99.99, 40.621]]}, {"implementation": "PostgreSQL (Python, asyncpg)", "duration": 10.0, "queries": 10902.0, "qps": 1090.2, "latency_min": 0.552, "latency_mean": 0.905, "latency_max": 24.391, "latency_std": 0.536, "latency_cv": 59.2, "latency_percentiles": [[25, 0.729], [50, 0.818], [75, 0.928], [90, 1.106], [99, 2.777], [99.99, 16.551]]}];
+      drawBars('#bars-mean', DATA_mean, {sort: true});
+      drawLats('#lats-mean', DATA_mean, {sort: true});
+    </script>
+
+    
+    <h2>Individual benchmarks</h2>
+       
+    <h3>POST /movie (existing cast)</h3>
+    <p class="bench-description">Create a new movie record, linking existing directors and cast.</p>
+
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-insert_movie" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-insert_movie" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_insert_movie = [{"duration": 10, "queries": 554, "qps": 55.4, "latency_min": 12.3, "latency_mean": 18.059, "latency_max": 40.82, "latency_std": 3.642, "latency_cv": 20.17, "latency_percentiles": [[25, 15.785], [50, 17.325], [75, 19.09], [90, 22.792], [99, 32.149], [99.99, 40.829]], "samples": ["{\"id\": 232311, \"image\": \"insert_test__image332808.jpeg\", \"title\": \"insert_test__332808\", \"year\": 332808, \"description\": \"insert_test__description332808\", \"directors\": [{\"id\": 32733, \"full_name\": \"Granville Beier\", \"image\": \"pi034634836994.jpeg\"}], \"cast\": [{\"id\": 73165, \"full_name\": \"Karlie Jast\", \"image\": \"pf534024624320.jpeg\"}, {\"id\": 57997, \"full_name\": \"Alberta Schulist\", \"image\": \"pa144137414475.jpeg\"}, {\"id\": 74505, \"full_name\": \"Sammy Stroman\", \"image\": \"pe926135679361.jpeg\"}], \"avg_rating\": null, \"reviews\": []}"], "implementation": "Django ORM"}, {"duration": 10, "queries": 1218, "qps": 121.8, "latency_min": 4.77, "latency_mean": 8.181, "latency_max": 57.23, "latency_std": 2.736, "latency_cv": 33.45, "latency_percentiles": [[25, 6.67], [50, 7.584], [75, 8.896], [90, 11.052], [99, 16.436], [99.99, 57.238]], "samples": ["{\"id\": 233995, \"image\": \"insert_test__image587546.jpeg\", \"title\": \"insert_test__587546\", \"year\": 587546, \"description\": \"insert_test__description587546\", \"directors\": [{\"id\": 33676, \"full_name\": \"Kolby Leffler\", \"image\": \"ph012802814351.jpeg\"}], \"cast\": [{\"id\": 43161, \"full_name\": \"Marietta Reilly\", \"image\": \"pe091852746191.jpeg\"}, {\"id\": 49019, \"full_name\": \"Jayson O'Keefe\", \"image\": \"pj952524630177.jpeg\"}, {\"id\": 104214, \"full_name\": \"Casey Gutmann\", \"image\": \"pk171211481526.jpeg\"}]}"], "implementation": "SQLAlchemy"}, {"duration": 10, "queries": 2210, "qps": 221.0, "latency_min": 2.55, "latency_mean": 4.501, "latency_max": 140.24, "latency_std": 4.086, "latency_cv": 90.78, "latency_percentiles": [[25, 3.487], [50, 3.938], [75, 4.576], [90, 6.16], [99, 10.708], [99.99, 140.246]], "samples": ["{\"id\": 63836, \"image\": \"insert_test__image376182.jpeg\", \"title\": \"insert_test__376182\", \"year\": 376182, \"description\": \"insert_test__description376182\", \"directors\": [{\"id\": 3094, \"full_name\": \"Alden Marvin\", \"image\": \"pc283468434831.jpeg\"}], \"cast\": [{\"id\": 72253, \"full_name\": \"Tad Jacobson\", \"image\": \"pg617867544753.jpeg\"}, {\"id\": 80934, \"full_name\": \"Eugene Christiansen\", \"image\": \"pj690505062384.jpeg\"}, {\"id\": 102338, \"full_name\": \"Hattie Hoppe\", \"image\": \"pn187204763421.jpeg\"}]}"], "implementation": "MonOrm (Python, asyncio)"}, {"duration": 10, "queries": 10688, "qps": 1068.8, "latency_min": 0.55, "latency_mean": 0.923, "latency_max": 39.9, "latency_std": 0.671, "latency_cv": 72.65, "latency_percentiles": [[25, 0.742], [50, 0.837], [75, 0.958], [90, 1.134], [99, 2.746], [99.99, 22.229]], "samples": ["{\"id\": 70857, \"image\": \"insert_test__image798689.jpeg\", \"title\": \"insert_test__798689\", \"year\": 798689, \"description\": \"insert_test__description798689\", \"directors\": [{\"id\": 59757, \"full_name\": \"Kyler McKenzie\", \"image\": \"pz722598376476.jpeg\"}], \"cast\": [{\"id\": 23348, \"full_name\": \"Nona Braun\", \"image\": \"pm559917042377.jpeg\"}, {\"id\": 72164, \"full_name\": \"Gilda Beier\", \"image\": \"pv605035045276.jpeg\"}, {\"id\": 79701, \"full_name\": \"Moises Gibson\", \"image\": \"pp430452360058.jpeg\"}]}"], "implementation": "PostgreSQL (Python, asyncpg)"}];
+      drawBars('#bars-insert_movie', DATA_insert_movie, {sort: true});
+      drawLats('#lats-insert_movie', DATA_insert_movie, {sort: true});
+    </script>
+
+    
+    <h4>Sample Outputs</h4>
+
+    <div id="samples-insert_movie"></div>
+
+    <script>
+      renderSamples(document.getElementById('samples-insert_movie'), DATA_insert_movie);
+    </script>
+       
+    <h3>GET /movie/:id</h3>
+    <p class="bench-description">Get information about a given movie: title, year, directors, cast, recent reviews, and average review rating.</p>
+
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-get_movie" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-get_movie" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_get_movie = [{"duration": 10, "queries": 1398, "qps": 139.8, "latency_min": 5.33, "latency_mean": 7.13, "latency_max": 36.34, "latency_std": 1.765, "latency_cv": 24.75, "latency_percentiles": [[25, 6.26], [50, 6.737], [75, 7.374], [90, 8.468], [99, 13.84], [99.99, 36.347]], "samples": ["{\"id\": 224246, \"image\": \"mc136348367970.jpeg\", \"title\": \"incentivize seamless e-tailers\", \"year\": 1971, \"description\": \"incubate 24/365 infrastructures\", \"directors\": [{\"id\": 5112, \"full_name\": \"Hobart Cassin\", \"image\": \"po700924776456.jpeg\"}, {\"id\": 5113, \"full_name\": \"Makenna Schumm\", \"image\": \"pf050949681699.jpeg\"}], \"cast\": [{\"id\": 88935, \"full_name\": \"Thalia Nolan\", \"image\": \"ph675324180846.jpeg\"}, {\"id\": 88936, \"full_name\": \"Rosalee Rippin\", \"image\": \"pi249807062906.jpeg\"}, {\"id\": 88937, \"full_name\": \"Jairo Stiedemann\", \"image\": \"pv269174072109.jpeg\"}, {\"id\": 88938, \"full_name\": \"Tristin O'Kon\", \"image\": \"pf063513446027.jpeg\"}, {\"id\": 88939, \"full_name\": \"Elna Jacobson\", \"image\": \"pj634340550920.jpeg\"}, {\"id\": 88940, \"full_name\": \"Reina Quitzon\", \"image\": \"pm965916946509.jpeg\"}, {\"id\": 88941, \"full_name\": \"Hailey Zboncak\", \"image\": \"pz243246365197.jpeg\"}, {\"id\": 88942, \"full_name\": \"Dee Schumm\", \"image\": \"pw147512798125.jpeg\"}, {\"id\": 88943, \"full_name\": \"Kelsie Cronin\", \"image\": \"pp399663656157.jpeg\"}, {\"id\": 88944, \"full_name\": \"Dejon Leannon\", \"image\": \"pk743680203245.jpeg\"}, {\"id\": 88945, \"full_name\": \"Garfield Boyer\", \"image\": \"pk619983552543.jpeg\"}, {\"id\": 88946, \"full_name\": \"Lila Renner\", \"image\": \"pq777818531527.jpeg\"}, {\"id\": 88947, \"full_name\": \"Shaniya Yundt\", \"image\": \"pv805153477124.jpeg\"}, {\"id\": 88948, \"full_name\": \"Erling Angus Beier\", \"image\": \"po428832429559.jpeg\"}, {\"id\": 88949, \"full_name\": \"Kayden Collier\", \"image\": \"pg113442220183.jpeg\"}, {\"id\": 88950, \"full_name\": \"Pattie Muller\", \"image\": \"pu323645173724.jpeg\"}, {\"id\": 88951, \"full_name\": \"Rosalyn Littel\", \"image\": \"pi291081314182.jpeg\"}, {\"id\": 88952, \"full_name\": \"Regan Wisozk\", \"image\": \"pp722287276826.jpeg\"}, {\"id\": 88953, \"full_name\": \"Tyshawn McClure\", \"image\": \"pn890182454909.jpeg\"}, {\"id\": 88954, \"full_name\": \"Mateo Erdman\", \"image\": \"pb869579940557.jpeg\"}, {\"id\": 88955, \"full_name\": \"Arlie Wyman\", \"image\": \"pg467310289341.jpeg\"}, {\"id\": 88956, \"full_name\": \"Breanne Heathcote\", \"image\": \"pr076963141958.jpeg\"}, {\"id\": 88957, \"full_name\": \"Johnnie Kertzmann\", \"image\": \"pn889237221465.jpeg\"}, {\"id\": 88958, \"full_name\": \"Tyreek Jast\", \"image\": \"py710600463185.jpeg\"}, {\"id\": 88959, \"full_name\": \"Kyleigh Johns\", \"image\": \"pe940028998237.jpeg\"}], \"avg_rating\": 3.25, \"reviews\": [{\"id\": 499246, \"body\": \"recontextualize vertical ROI\", \"rating\": 2, \"author\": {\"id\": 174246, \"name\": \"casey_nulla\", \"image\": \"up780920472220.jpeg\"}}, {\"id\": 474246, \"body\": \"expedite granular users\", \"rating\": 3, \"author\": {\"id\": 149246, \"name\": \"dock_ipsum\", \"image\": \"uw814734703596.jpeg\"}}, {\"id\": 424246, \"body\": \"envisioneer extensible web-readiness\", \"rating\": 1, \"author\": {\"id\": 199246, \"name\": \"angel_sed\", \"image\": \"uo633843360318.jpeg\"}}, {\"id\": 599246, \"body\": \"engineer customized eyeballs\", \"rating\": 4, \"author\": {\"id\": 174246, \"name\": \"casey_nulla\", \"image\": \"up780920472220.jpeg\"}}, {\"id\": 299246, \"body\": \"synthesize plug-and-play supply-chains\", \"rating\": 1, \"author\": {\"id\": 174246, \"name\": \"casey_nulla\", \"image\": \"up780920472220.jpeg\"}}, {\"id\": 524246, \"body\": \"visualize bleeding-edge bandwidth\", \"rating\": 3, \"author\": {\"id\": 199246, \"name\": \"angel_sed\", \"image\": \"uo633843360318.jpeg\"}}, {\"id\": 324246, \"body\": \"evolve synergistic models\", \"rating\": 5, \"author\": {\"id\": 199246, \"name\": \"angel_sed\", \"image\": \"uo633843360318.jpeg\"}}, {\"id\": 349246, \"body\": \"architect end-to-end paradigms\", \"rating\": 1, \"author\": {\"id\": 124246, \"name\": \"rodolfo_numquam\", \"image\": \"um739599300775.jpeg\"}}, {\"id\": 549246, \"body\": \"embrace granular niches\", \"rating\": 4, \"author\": {\"id\": 124246, \"name\": \"rodolfo_numquam\", \"image\": \"um739599300775.jpeg\"}}, {\"id\": 574246, \"body\": \"envisioneer innovative eyeballs\", \"rating\": 5, \"author\": {\"id\": 149246, \"name\": \"dock_ipsum\", \"image\": \"uw814734703596.jpeg\"}}, {\"id\": 374246, \"body\": \"integrate B2B metrics\", \"rating\": 3, \"author\": {\"id\": 149246, \"name\": \"dock_ipsum\", \"image\": \"uw814734703596.jpeg\"}}, {\"id\": 724246, \"body\": \"deploy transparent action-items\", \"rating\": 3, \"author\": {\"id\": 199246, \"name\": \"angel_sed\", \"image\": \"uo633843360318.jpeg\"}}, {\"id\": 449246, \"body\": \"benchmark transparent systems\", \"rating\": 3, \"author\": {\"id\": 124246, \"name\": \"rodolfo_numquam\", \"image\": \"um739599300775.jpeg\"}}, {\"id\": 249246, \"body\": \"synthesize collaborative web-readiness\", \"rating\": 5, \"author\": {\"id\": 124246, \"name\": \"rodolfo_numquam\", \"image\": \"um739599300775.jpeg\"}}, {\"id\": 399246, \"body\": \"transition turn-key markets\", \"rating\": 5, \"author\": {\"id\": 174246, \"name\": \"casey_nulla\", \"image\": \"up780920472220.jpeg\"}}, {\"id\": 674246, \"body\": \"disintermediate bricks-and-clicks methodologies\", \"rating\": 5, \"author\": {\"id\": 149246, \"name\": \"dock_ipsum\", \"image\": \"uw814734703596.jpeg\"}}, {\"id\": 699246, \"body\": \"monetize bleeding-edge vortals\", \"rating\": 3, \"author\": {\"id\": 174246, \"name\": \"casey_nulla\", \"image\": \"up780920472220.jpeg\"}}, {\"id\": 624246, \"body\": \"innovate intuitive interfaces\", \"rating\": 3, \"author\": {\"id\": 199246, \"name\": \"angel_sed\", \"image\": \"uo633843360318.jpeg\"}}, {\"id\": 649246, \"body\": \"reintermediate value-added paradigms\", \"rating\": 3, \"author\": {\"id\": 124246, \"name\": \"rodolfo_numquam\", \"image\": \"um739599300775.jpeg\"}}, {\"id\": 274246, \"body\": \"empower end-to-end markets\", \"rating\": 3, \"author\": {\"id\": 149246, \"name\": \"dock_ipsum\", \"image\": \"uw814734703596.jpeg\"}}]}"], "implementation": "Django ORM"}, {"duration": 10, "queries": 1455, "qps": 145.5, "latency_min": 4.82, "latency_mean": 6.844, "latency_max": 32.95, "latency_std": 2.094, "latency_cv": 30.59, "latency_percentiles": [[25, 5.778], [50, 6.316], [75, 7.072], [90, 8.793], [99, 15.539], [99.99, 32.957]], "samples": ["{\"id\": 225156, \"image\": \"md540861168656.jpeg\", \"title\": \"drive viral eyeballs\", \"year\": 1986, \"description\": \"integrate global web-readiness\", \"avg_rating\": 3.35, \"directors\": [{\"id\": 6063, \"full_name\": \"Jacques Lind\", \"image\": \"pw564515022673.jpeg\"}], \"cast\": [{\"id\": 17502, \"full_name\": \"Tess Kulas\", \"image\": \"pc883808737226.jpeg\"}, {\"id\": 17503, \"full_name\": \"Gladys D'Amore\", \"image\": \"pw485143307339.jpeg\"}, {\"id\": 17504, \"full_name\": \"Gisselle Miller\", \"image\": \"pm919240428041.jpeg\"}, {\"id\": 17505, \"full_name\": \"Aliyah Beverly Graham\", \"image\": \"pu456591116102.jpeg\"}, {\"id\": 17506, \"full_name\": \"Leland Wintheiser\", \"image\": \"px755063857436.jpeg\"}, {\"id\": 17507, \"full_name\": \"Sheridan Williamson\", \"image\": \"pn899001684254.jpeg\"}, {\"id\": 17508, \"full_name\": \"Gerson Monahan\", \"image\": \"pe309064552836.jpeg\"}, {\"id\": 17509, \"full_name\": \"Boyd Harris\", \"image\": \"pd651946995351.jpeg\"}, {\"id\": 17510, \"full_name\": \"Valentin Bella Bruen\", \"image\": \"pb607773009750.jpeg\"}, {\"id\": 17511, \"full_name\": \"Cyrus Schmitt\", \"image\": \"pl202722655505.jpeg\"}, {\"id\": 17512, \"full_name\": \"Nathanial Streich\", \"image\": \"pg925030730321.jpeg\"}, {\"id\": 17513, \"full_name\": \"Precious Gutkowski\", \"image\": \"px018770575991.jpeg\"}, {\"id\": 17514, \"full_name\": \"Juvenal Dietrich\", \"image\": \"pt588842339343.jpeg\"}, {\"id\": 17515, \"full_name\": \"Kris Stehr\", \"image\": \"pf880453315798.jpeg\"}, {\"id\": 17516, \"full_name\": \"Easter Harvey\", \"image\": \"pf844171282491.jpeg\"}, {\"id\": 17517, \"full_name\": \"Bart Ziemann\", \"image\": \"pa604351576365.jpeg\"}, {\"id\": 17518, \"full_name\": \"Kelsi Davis\", \"image\": \"ps586123394511.jpeg\"}, {\"id\": 17519, \"full_name\": \"Bettye Von\", \"image\": \"pt071135289731.jpeg\"}, {\"id\": 17520, \"full_name\": \"Madaline Grady\", \"image\": \"pt953587538865.jpeg\"}, {\"id\": 17521, \"full_name\": \"Kyler Maggio\", \"image\": \"pv224496428791.jpeg\"}, {\"id\": 17522, \"full_name\": \"Benny Zemlak\", \"image\": \"pw308957769870.jpeg\"}, {\"id\": 17523, \"full_name\": \"Braden Cummerata\", \"image\": \"px035434520134.jpeg\"}, {\"id\": 17524, \"full_name\": \"Travis Kemmer\", \"image\": \"pa412326049799.jpeg\"}, {\"id\": 17525, \"full_name\": \"Ole Mueller\", \"image\": \"pu989494981106.jpeg\"}, {\"id\": 17526, \"full_name\": \"Ramon Hirthe\", \"image\": \"pu301652531336.jpeg\"}, {\"id\": 17527, \"full_name\": \"Gia Nicolas\", \"image\": \"pi539884498925.jpeg\"}, {\"id\": 17528, \"full_name\": \"Deja Marks\", \"image\": \"pz220943270451.jpeg\"}, {\"id\": 17529, \"full_name\": \"Nels Borer\", \"image\": \"pj148672976735.jpeg\"}, {\"id\": 17530, \"full_name\": \"Hanna O'Connell\", \"image\": \"pu896940441088.jpeg\"}, {\"id\": 17531, \"full_name\": \"Greyson A. Prosacco\", \"image\": \"pb586695105517.jpeg\"}, {\"id\": 17532, \"full_name\": \"Marjory Greenfelder\", \"image\": \"pq203585901090.jpeg\"}, {\"id\": 17533, \"full_name\": \"Jewel Kemmer\", \"image\": \"pw320062496627.jpeg\"}, {\"id\": 17534, \"full_name\": \"Meagan Batz\", \"image\": \"pn595729314059.jpeg\"}, {\"id\": 17535, \"full_name\": \"Luther Bernier\", \"image\": \"pj301567721056.jpeg\"}, {\"id\": 17536, \"full_name\": \"Emmet O'Keefe\", \"image\": \"pe580019631067.jpeg\"}, {\"id\": 17537, \"full_name\": \"Griffin Swift\", \"image\": \"pr657851618114.jpeg\"}, {\"id\": 17538, \"full_name\": \"Dorian Hammes\", \"image\": \"pu837417686365.jpeg\"}, {\"id\": 17539, \"full_name\": \"Howard Aurelio Sawayn\", \"image\": \"pm249400379226.jpeg\"}, {\"id\": 17540, \"full_name\": \"Amir O'Reilly\", \"image\": \"pi567808806836.jpeg\"}, {\"id\": 17541, \"full_name\": \"Hipolito Schamberger\", \"image\": \"pp035703314226.jpeg\"}, {\"id\": 17542, \"full_name\": \"Carlos O'Hara\", \"image\": \"pc055771955854.jpeg\"}, {\"id\": 17543, \"full_name\": \"Stanton Pollich\", \"image\": \"pp045518592311.jpeg\"}, {\"id\": 17544, \"full_name\": \"Clement Krajcik\", \"image\": \"pr573143074979.jpeg\"}, {\"id\": 17545, \"full_name\": \"Marion Ziemann\", \"image\": \"pq774980759070.jpeg\"}, {\"id\": 17546, \"full_name\": \"Leslie Lind\", \"image\": \"pc340039118458.jpeg\"}], \"reviews\": [{\"id\": 400156, \"body\": \"integrate front-end infomediaries\", \"rating\": 4.0, \"author\": {\"id\": 175156, \"name\": \"lisa_aut\", \"image\": \"uz403516944909.jpeg\"}}, {\"id\": 550156, \"body\": \"evolve cutting-edge bandwidth\", \"rating\": 2.0, \"author\": {\"id\": 125156, \"name\": \"brandi_autem\", \"image\": \"uz409019971817.jpeg\"}}, {\"id\": 300156, \"body\": \"expedite plug-and-play convergence\", \"rating\": 4.0, \"author\": {\"id\": 175156, \"name\": \"lisa_aut\", \"image\": \"uz403516944909.jpeg\"}}, {\"id\": 475156, \"body\": \"extend bricks-and-clicks technologies\", \"rating\": 3.0, \"author\": {\"id\": 150156, \"name\": \"melisa_dolor\", \"image\": \"uo587083759223.jpeg\"}}, {\"id\": 275156, \"body\": \"harness intuitive platforms\", \"rating\": 4.0, \"author\": {\"id\": 150156, \"name\": \"melisa_dolor\", \"image\": \"uo587083759223.jpeg\"}}, {\"id\": 700156, \"body\": \"empower turn-key experiences\", \"rating\": 4.0, \"author\": {\"id\": 175156, \"name\": \"lisa_aut\", \"image\": \"uz403516944909.jpeg\"}}, {\"id\": 425156, \"body\": \"transform revolutionary solutions\", \"rating\": 4.0, \"author\": {\"id\": 200156, \"name\": \"ryder_dignissimos\", \"image\": \"uk676455592711.jpeg\"}}, {\"id\": 675156, \"body\": \"reinvent vertical markets\", \"rating\": 3.0, \"author\": {\"id\": 150156, \"name\": \"melisa_dolor\", \"image\": \"uo587083759223.jpeg\"}}, {\"id\": 250156, \"body\": \"reintermediate collaborative infomediaries\", \"rating\": 2.0, \"author\": {\"id\": 125156, \"name\": \"brandi_autem\", \"image\": \"uz409019971817.jpeg\"}}, {\"id\": 525156, \"body\": \"redefine dot-com e-tailers\", \"rating\": 5.0, \"author\": {\"id\": 200156, \"name\": \"ryder_dignissimos\", \"image\": \"uk676455592711.jpeg\"}}, {\"id\": 625156, \"body\": \"target one-to-one bandwidth\", \"rating\": 4.0, \"author\": {\"id\": 200156, \"name\": \"ryder_dignissimos\", \"image\": \"uk676455592711.jpeg\"}}, {\"id\": 725156, \"body\": \"facilitate next-generation infomediaries\", \"rating\": 4.0, \"author\": {\"id\": 200156, \"name\": \"ryder_dignissimos\", \"image\": \"uk676455592711.jpeg\"}}, {\"id\": 375156, \"body\": \"cultivate B2B e-business\", \"rating\": 5.0, \"author\": {\"id\": 150156, \"name\": \"melisa_dolor\", \"image\": \"uo587083759223.jpeg\"}}, {\"id\": 650156, \"body\": \"synthesize 24/7 e-commerce\", \"rating\": 3.0, \"author\": {\"id\": 125156, \"name\": \"brandi_autem\", \"image\": \"uz409019971817.jpeg\"}}, {\"id\": 600156, \"body\": \"brand one-to-one functionalities\", \"rating\": 2.0, \"author\": {\"id\": 175156, \"name\": \"lisa_aut\", \"image\": \"uz403516944909.jpeg\"}}, {\"id\": 350156, \"body\": \"transition turn-key infrastructures\", \"rating\": 4.0, \"author\": {\"id\": 125156, \"name\": \"brandi_autem\", \"image\": \"uz409019971817.jpeg\"}}, {\"id\": 575156, \"body\": \"integrate out-of-the-box web services\", \"rating\": 0.0, \"author\": {\"id\": 150156, \"name\": \"melisa_dolor\", \"image\": \"uo587083759223.jpeg\"}}, {\"id\": 325156, \"body\": \"mesh viral web-readiness\", \"rating\": 2.0, \"author\": {\"id\": 200156, \"name\": \"ryder_dignissimos\", \"image\": \"uk676455592711.jpeg\"}}, {\"id\": 450156, \"body\": \"generate back-end partnerships\", \"rating\": 5.0, \"author\": {\"id\": 125156, \"name\": \"brandi_autem\", \"image\": \"uz409019971817.jpeg\"}}, {\"id\": 500156, \"body\": \"disintermediate e-business interfaces\", \"rating\": 3.0, \"author\": {\"id\": 175156, \"name\": \"lisa_aut\", \"image\": \"uz403516944909.jpeg\"}}]}"], "implementation": "SQLAlchemy"}, {"duration": 10, "queries": 2087, "qps": 208.7, "latency_min": 2.54, "latency_mean": 4.766, "latency_max": 35.47, "latency_std": 1.781, "latency_cv": 37.37, "latency_percentiles": [[25, 3.822], [50, 4.321], [75, 5.152], [90, 6.509], [99, 11.563], [99.99, 35.476]], "samples": ["{\"id\": 22104, \"image\": \"ms830551565365.jpeg\", \"title\": \"incubate global partnerships\", \"year\": 1966, \"description\": \"innovate dot-com platforms\", \"avg_rating\": 3.35, \"directors\": [{\"id\": 2146, \"full_name\": \"Elyse Cartwright\", \"image\": \"po630273436062.jpeg\"}], \"cast\": [{\"id\": 11211, \"full_name\": \"Jaqueline Grant\", \"image\": \"pr954897928489.jpeg\"}, {\"id\": 11210, \"full_name\": \"Roger Turcotte\", \"image\": \"pi299509174646.jpeg\"}, {\"id\": 11208, \"full_name\": \"Noble Dorthy Carter\", \"image\": \"pz183917813566.jpeg\"}, {\"id\": 11207, \"full_name\": \"Miguel Gaylord\", \"image\": \"pu401787705253.jpeg\"}, {\"id\": 11212, \"full_name\": \"River O'Connell\", \"image\": \"pl804550387512.jpeg\"}, {\"id\": 11205, \"full_name\": \"Lenore Fay\", \"image\": \"pu694935290276.jpeg\"}, {\"id\": 11209, \"full_name\": \"Dell Koepp\", \"image\": \"pr524011590749.jpeg\"}, {\"id\": 11206, \"full_name\": \"Coy Eliane Leffler\", \"image\": \"pu419691574917.jpeg\"}, {\"id\": 11220, \"full_name\": \"Eli Hettinger\", \"image\": \"px565515619661.jpeg\"}, {\"id\": 11221, \"full_name\": \"Guillermo Botsford\", \"image\": \"pu076246461540.jpeg\"}, {\"id\": 11222, \"full_name\": \"Frederik Halvorson\", \"image\": \"pt495959194663.jpeg\"}, {\"id\": 11223, \"full_name\": \"Buford Lakin\", \"image\": \"pf576361464543.jpeg\"}, {\"id\": 11230, \"full_name\": \"Gordon Nolan\", \"image\": \"pv739368523996.jpeg\"}, {\"id\": 11235, \"full_name\": \"Dorothea Flatley\", \"image\": \"pr811868607386.jpeg\"}, {\"id\": 11237, \"full_name\": \"Marley Dimitri Labadie\", \"image\": \"pl400644561610.jpeg\"}, {\"id\": 11234, \"full_name\": \"Carmen Schimmel\", \"image\": \"pf943550732997.jpeg\"}, {\"id\": 11236, \"full_name\": \"Desiree V. O'Reilly\", \"image\": \"pv755258434897.jpeg\"}, {\"id\": 11231, \"full_name\": \"Malcolm Crooks\", \"image\": \"pv357109955578.jpeg\"}, {\"id\": 11229, \"full_name\": \"Rigoberto Vandervort\", \"image\": \"pl328125851628.jpeg\"}, {\"id\": 11232, \"full_name\": \"Madaline Althea Robel\", \"image\": \"pj164367410084.jpeg\"}, {\"id\": 11233, \"full_name\": \"Jaydon Kris\", \"image\": \"pz930448194153.jpeg\"}, {\"id\": 11228, \"full_name\": \"Ilene Durgan\", \"image\": \"pf260905216560.jpeg\"}, {\"id\": 11239, \"full_name\": \"Bridget Stoltenberg\", \"image\": \"pd904516200203.jpeg\"}, {\"id\": 11238, \"full_name\": \"Pansy Zemlak\", \"image\": \"pv205178357070.jpeg\"}, {\"id\": 11243, \"full_name\": \"Kylie Bins\", \"image\": \"pc387149102816.jpeg\"}, {\"id\": 11244, \"full_name\": \"Brook Satterfield\", \"image\": \"po080825547259.jpeg\"}, {\"id\": 11249, \"full_name\": \"Reuben Jacobs\", \"image\": \"py166324124574.jpeg\"}, {\"id\": 11248, \"full_name\": \"Carson Hansen\", \"image\": \"pp667003530357.jpeg\"}, {\"id\": 11253, \"full_name\": \"Clifton Koepp\", \"image\": \"pr270636723701.jpeg\"}, {\"id\": 11242, \"full_name\": \"Eloisa Volkman\", \"image\": \"ps633675270436.jpeg\"}, {\"id\": 11252, \"full_name\": \"Kaylie Muller\", \"image\": \"pv141363860565.jpeg\"}, {\"id\": 11241, \"full_name\": \"German Lakin\", \"image\": \"ph751060572565.jpeg\"}, {\"id\": 11245, \"full_name\": \"Vernie Grant\", \"image\": \"pe588719656157.jpeg\"}, {\"id\": 11246, \"full_name\": \"Darrin Effertz\", \"image\": \"pu533563763139.jpeg\"}, {\"id\": 11251, \"full_name\": \"Cassandre D'Amore\", \"image\": \"pw184001495617.jpeg\"}, {\"id\": 11254, \"full_name\": \"Beryl Hintz\", \"image\": \"pa975815513235.jpeg\"}, {\"id\": 11258, \"full_name\": \"Alberta Carter\", \"image\": \"pj981133499960.jpeg\"}, {\"id\": 11256, \"full_name\": \"Elinore Kassulke\", \"image\": \"ps052470346832.jpeg\"}, {\"id\": 11240, \"full_name\": \"Kaya Stracke\", \"image\": \"pn710076439320.jpeg\"}], \"reviews\": [{\"id\": 97103, \"body\": \"seize end-to-end vortals\", \"rating\": 5.0, \"author\": {\"id\": 97104, \"name\": \"bettye_a\", \"image\": \"un513068778313.jpeg\"}}, {\"id\": 447100, \"body\": \"innovate dynamic paradigms\", \"rating\": 4.0, \"author\": {\"id\": 47104, \"name\": \"deangelo_dolorem\", \"image\": \"ut701215904932.jpeg\"}}, {\"id\": 172109, \"body\": \"empower turn-key communities\", \"rating\": 4.0, \"author\": {\"id\": 72105, \"name\": \"elna_fuga\", \"image\": \"uf223889246720.jpeg\"}}, {\"id\": 272110, \"body\": \"iterate user-centric vortals\", \"rating\": 5.0, \"author\": {\"id\": 72105, \"name\": \"elna_fuga\", \"image\": \"uf223889246720.jpeg\"}}, {\"id\": 397106, \"body\": \"synthesize compelling e-tailers\", \"rating\": 3.0, \"author\": {\"id\": 97104, \"name\": \"bettye_a\", \"image\": \"un513068778313.jpeg\"}}, {\"id\": 497099, \"body\": \"whiteboard best-of-breed solutions\", \"rating\": 2.0, \"author\": {\"id\": 97104, \"name\": \"bettye_a\", \"image\": \"un513068778313.jpeg\"}}, {\"id\": 197094, \"body\": \"generate strategic e-commerce\", \"rating\": 5.0, \"author\": {\"id\": 97104, \"name\": \"bettye_a\", \"image\": \"un513068778313.jpeg\"}}, {\"id\": 22119, \"body\": \"extend scalable eyeballs\", \"rating\": 1.0, \"author\": {\"id\": 22105, \"name\": \"jarrett_nesciunt\", \"image\": \"up287312142165.jpeg\"}}, {\"id\": 122103, \"body\": \"utilize revolutionary partnerships\", \"rating\": 2.0, \"author\": {\"id\": 22105, \"name\": \"jarrett_nesciunt\", \"image\": \"up287312142165.jpeg\"}}, {\"id\": 297104, \"body\": \"incubate seamless systems\", \"rating\": 3.0, \"author\": {\"id\": 97104, \"name\": \"bettye_a\", \"image\": \"un513068778313.jpeg\"}}, {\"id\": 147101, \"body\": \"orchestrate impactful niches\", \"rating\": 4.0, \"author\": {\"id\": 47104, \"name\": \"deangelo_dolorem\", \"image\": \"ut701215904932.jpeg\"}}, {\"id\": 347104, \"body\": \"leverage cross-platform e-tailers\", \"rating\": 3.0, \"author\": {\"id\": 47104, \"name\": \"deangelo_dolorem\", \"image\": \"ut701215904932.jpeg\"}}, {\"id\": 47104, \"body\": \"implement cross-media platforms\", \"rating\": 3.0, \"author\": {\"id\": 47104, \"name\": \"deangelo_dolorem\", \"image\": \"ut701215904932.jpeg\"}}, {\"id\": 222106, \"body\": \"seize mission-critical e-business\", \"rating\": 3.0, \"author\": {\"id\": 22105, \"name\": \"jarrett_nesciunt\", \"image\": \"up287312142165.jpeg\"}}, {\"id\": 322106, \"body\": \"transform dynamic vortals\", \"rating\": 4.0, \"author\": {\"id\": 22105, \"name\": \"jarrett_nesciunt\", \"image\": \"up287312142165.jpeg\"}}, {\"id\": 72099, \"body\": \"embrace cross-platform e-business\", \"rating\": 1.0, \"author\": {\"id\": 72105, \"name\": \"elna_fuga\", \"image\": \"uf223889246720.jpeg\"}}, {\"id\": 422110, \"body\": \"integrate impactful paradigms\", \"rating\": 5.0, \"author\": {\"id\": 22105, \"name\": \"jarrett_nesciunt\", \"image\": \"up287312142165.jpeg\"}}, {\"id\": 472106, \"body\": \"expedite open-source e-business\", \"rating\": 2.0, \"author\": {\"id\": 72105, \"name\": \"elna_fuga\", \"image\": \"uf223889246720.jpeg\"}}, {\"id\": 247103, \"body\": \"reinvent rich convergence\", \"rating\": 5.0, \"author\": {\"id\": 47104, \"name\": \"deangelo_dolorem\", \"image\": \"ut701215904932.jpeg\"}}, {\"id\": 372102, \"body\": \"incentivize robust functionalities\", \"rating\": 3.0, \"author\": {\"id\": 72105, \"name\": \"elna_fuga\", \"image\": \"uf223889246720.jpeg\"}}]}"], "implementation": "MonOrm (Python, asyncio)"}, {"duration": 10, "queries": 8961, "qps": 896.1, "latency_min": 0.68, "latency_mean": 1.103, "latency_max": 17.13, "latency_std": 0.535, "latency_cv": 48.51, "latency_percentiles": [[25, 0.905], [50, 0.999], [75, 1.124], [90, 1.331], [99, 3.33], [99.99, 17.122]], "samples": ["{\"id\": 13082, \"image\": \"mc983502650775.jpeg\", \"title\": \"scale leading-edge action-items\", \"year\": 1998, \"description\": \"e-enable mission-critical eyeballs\", \"avg_rating\": 3.2, \"directors\": [{\"id\": 6714, \"full_name\": \"Marcos Legros\", \"image\": \"pg049745979649.jpeg\"}], \"cast\": [{\"id\": 23906, \"full_name\": \"Zoey Boyer\", \"image\": \"pp276982830125.jpeg\"}, {\"id\": 23920, \"full_name\": \"Hiram Buckridge\", \"image\": \"ph064272395040.jpeg\"}, {\"id\": 23912, \"full_name\": \"Isaiah Conn\", \"image\": \"px213795740480.jpeg\"}, {\"id\": 23904, \"full_name\": \"Wava Cummerata\", \"image\": \"pz708700773291.jpeg\"}, {\"id\": 23914, \"full_name\": \"Rowland Dooley\", \"image\": \"pn986433832094.jpeg\"}, {\"id\": 23909, \"full_name\": \"Zander Goldner\", \"image\": \"pn380792078279.jpeg\"}, {\"id\": 23921, \"full_name\": \"Florine Heidenreich\", \"image\": \"pb023647813322.jpeg\"}, {\"id\": 23903, \"full_name\": \"Corrine Nitzsche\", \"image\": \"pt434315967303.jpeg\"}, {\"id\": 23924, \"full_name\": \"Yesenia Schmeler\", \"image\": \"pw455081751101.jpeg\"}, {\"id\": 23916, \"full_name\": \"Evan Stark\", \"image\": \"pl022964401304.jpeg\"}, {\"id\": 23917, \"full_name\": \"Brain Modesta Ullrich\", \"image\": \"pf960977443511.jpeg\"}, {\"id\": 23905, \"full_name\": \"Garnett Wiegand\", \"image\": \"pr640306115939.jpeg\"}], \"reviews\": [{\"id\": 213071, \"body\": \"engineer transparent relationships\", \"rating\": 4, \"author\": {\"id\": 13078, \"name\": \"alta_tempore\", \"image\": \"ut563638584064.jpeg\"}}, {\"id\": 263082, \"body\": \"envisioneer vertical channels\", \"rating\": 2, \"author\": {\"id\": 63074, \"name\": \"granville_dolores\", \"image\": \"un731224000781.jpeg\"}}, {\"id\": 138083, \"body\": \"reintermediate real-time portals\", \"rating\": 5, \"author\": {\"id\": 38081, \"name\": \"deborah_numquam\", \"image\": \"uw615139977152.jpeg\"}}, {\"id\": 463080, \"body\": \"harness leading-edge schemas\", \"rating\": 3, \"author\": {\"id\": 63074, \"name\": \"granville_dolores\", \"image\": \"un731224000781.jpeg\"}}, {\"id\": 113083, \"body\": \"grow real-time ROI\", \"rating\": 3, \"author\": {\"id\": 13078, \"name\": \"alta_tempore\", \"image\": \"ut563638584064.jpeg\"}}, {\"id\": 88077, \"body\": \"strategize turn-key niches\", \"rating\": 5, \"author\": {\"id\": 88081, \"name\": \"nona_ut\", \"image\": \"ue371072089164.jpeg\"}}, {\"id\": 313082, \"body\": \"engage 24/365 infrastructures\", \"rating\": 5, \"author\": {\"id\": 13078, \"name\": \"alta_tempore\", \"image\": \"ut563638584064.jpeg\"}}, {\"id\": 438083, \"body\": \"enable global users\", \"rating\": 5, \"author\": {\"id\": 38081, \"name\": \"deborah_numquam\", \"image\": \"uw615139977152.jpeg\"}}, {\"id\": 188089, \"body\": \"deploy e-business web services\", \"rating\": 5, \"author\": {\"id\": 88081, \"name\": \"nona_ut\", \"image\": \"ue371072089164.jpeg\"}}, {\"id\": 338081, \"body\": \"deploy customized infrastructures\", \"rating\": 2, \"author\": {\"id\": 38081, \"name\": \"deborah_numquam\", \"image\": \"uw615139977152.jpeg\"}}, {\"id\": 38090, \"body\": \"embrace plug-and-play metrics\", \"rating\": 2, \"author\": {\"id\": 38081, \"name\": \"deborah_numquam\", \"image\": \"uw615139977152.jpeg\"}}, {\"id\": 288082, \"body\": \"integrate rich networks\", \"rating\": 3, \"author\": {\"id\": 88081, \"name\": \"nona_ut\", \"image\": \"ue371072089164.jpeg\"}}, {\"id\": 238080, \"body\": \"generate cross-platform relationships\", \"rating\": 4, \"author\": {\"id\": 38081, \"name\": \"deborah_numquam\", \"image\": \"uw615139977152.jpeg\"}}, {\"id\": 63081, \"body\": \"cultivate e-business e-business\", \"rating\": 2, \"author\": {\"id\": 63074, \"name\": \"granville_dolores\", \"image\": \"un731224000781.jpeg\"}}, {\"id\": 413078, \"body\": \"synergize plug-and-play synergies\", \"rating\": 1, \"author\": {\"id\": 13078, \"name\": \"alta_tempore\", \"image\": \"ut563638584064.jpeg\"}}, {\"id\": 13089, \"body\": \"empower leading-edge schemas\", \"rating\": 3, \"author\": {\"id\": 13078, \"name\": \"alta_tempore\", \"image\": \"ut563638584064.jpeg\"}}, {\"id\": 488083, \"body\": \"recontextualize killer metrics\", \"rating\": 1, \"author\": {\"id\": 88081, \"name\": \"nona_ut\", \"image\": \"ue371072089164.jpeg\"}}, {\"id\": 163080, \"body\": \"streamline web-enabled supply-chains\", \"rating\": 3, \"author\": {\"id\": 63074, \"name\": \"granville_dolores\", \"image\": \"un731224000781.jpeg\"}}, {\"id\": 363077, \"body\": \"strategize proactive partnerships\", \"rating\": 3, \"author\": {\"id\": 63074, \"name\": \"granville_dolores\", \"image\": \"un731224000781.jpeg\"}}, {\"id\": 388084, \"body\": \"recontextualize world-class metrics\", \"rating\": 3, \"author\": {\"id\": 88081, \"name\": \"nona_ut\", \"image\": \"ue371072089164.jpeg\"}}]}"], "implementation": "PostgreSQL (Python, asyncpg)"}];
+      drawBars('#bars-get_movie', DATA_get_movie, {sort: true});
+      drawLats('#lats-get_movie', DATA_get_movie, {sort: true});
+    </script>
+
+    
+    <h4>Sample Outputs</h4>
+
+    <div id="samples-get_movie"></div>
+
+    <script>
+      renderSamples(document.getElementById('samples-get_movie'), DATA_get_movie);
+    </script>
+       
+    <h3>GET /user/:id</h3>
+    <p class="bench-description">Get information about a given user: name and a sample of the latest movie reviews this user authored.</p>
+
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-get_user" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-get_user" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_get_user = [{"duration": 10, "queries": 1333, "qps": 133.3, "latency_min": 5.77, "latency_mean": 7.477, "latency_max": 21.63, "latency_std": 1.499, "latency_cv": 20.05, "latency_percentiles": [[25, 6.625], [50, 7.173], [75, 7.673], [90, 8.927], [99, 13.557], [99.99, 21.637]], "samples": ["{\"id\": 160749, \"name\": \"marjory_voluptates\", \"image\": \"un113802278424.jpeg\", \"latest_reviews\": [{\"id\": 685749, \"body\": \"utilize customized e-services\", \"rating\": 3, \"movie\": {\"id\": 210749, \"image\": \"mu437291899581.jpeg\", \"title\": \"harness global e-tailers\", \"avg_rating\": 3.7}}, {\"id\": 385749, \"body\": \"disintermediate back-end technologies\", \"rating\": 4, \"movie\": {\"id\": 210749, \"image\": \"mu437291899581.jpeg\", \"title\": \"harness global e-tailers\", \"avg_rating\": 3.7}}, {\"id\": 285749, \"body\": \"incubate dot-com experiences\", \"rating\": 2, \"movie\": {\"id\": 210749, \"image\": \"mu437291899581.jpeg\", \"title\": \"harness global e-tailers\", \"avg_rating\": 3.7}}, {\"id\": 485749, \"body\": \"enhance sexy infomediaries\", \"rating\": 5, \"movie\": {\"id\": 210749, \"image\": \"mu437291899581.jpeg\", \"title\": \"harness global e-tailers\", \"avg_rating\": 3.7}}, {\"id\": 585749, \"body\": \"benchmark enterprise e-commerce\", \"rating\": 2, \"movie\": {\"id\": 210749, \"image\": \"mu437291899581.jpeg\", \"title\": \"harness global e-tailers\", \"avg_rating\": 3.7}}]}"], "implementation": "Django ORM"}, {"duration": 10, "queries": 4066, "qps": 406.6, "latency_min": 1.65, "latency_mean": 2.442, "latency_max": 245.6, "latency_std": 4.213, "latency_cv": 172.54, "latency_percentiles": [[25, 1.989], [50, 2.154], [75, 2.417], [90, 2.961], [99, 5.537], [99.99, 245.602]], "samples": ["{\"id\": 188865, \"name\": \"shany_saepe\", \"image\": \"ui030378709228.jpeg\", \"latest_reviews\": [{\"id\": 313865, \"body\": \"synthesize 24/365 partnerships\", \"rating\": 3, \"movie\": {\"id\": 213865, \"image\": \"mn453080988725.jpeg\", \"title\": \"maximize dot-com systems\", \"avg_rating\": 3.0}}, {\"id\": 413865, \"body\": \"streamline killer functionalities\", \"rating\": 0, \"movie\": {\"id\": 213865, \"image\": \"mn453080988725.jpeg\", \"title\": \"maximize dot-com systems\", \"avg_rating\": 3.0}}, {\"id\": 513865, \"body\": \"deliver viral applications\", \"rating\": 2, \"movie\": {\"id\": 213865, \"image\": \"mn453080988725.jpeg\", \"title\": \"maximize dot-com systems\", \"avg_rating\": 3.0}}, {\"id\": 613865, \"body\": \"brand collaborative web-readiness\", \"rating\": 3, \"movie\": {\"id\": 213865, \"image\": \"mn453080988725.jpeg\", \"title\": \"maximize dot-com systems\", \"avg_rating\": 3.0}}, {\"id\": 713865, \"body\": \"repurpose front-end eyeballs\", \"rating\": 5, \"movie\": {\"id\": 213865, \"image\": \"mn453080988725.jpeg\", \"title\": \"maximize dot-com systems\", \"avg_rating\": 3.0}}]}"], "implementation": "SQLAlchemy"}, {"duration": 10, "queries": 3881, "qps": 388.1, "latency_min": 1.51, "latency_mean": 2.558, "latency_max": 13.47, "latency_std": 0.989, "latency_cv": 38.69, "latency_percentiles": [[25, 2.063], [50, 2.304], [75, 2.662], [90, 3.327], [99, 7.014], [99.99, 13.472]], "samples": ["{\"id\": 10590, \"name\": \"jerrold_sequi\", \"image\": \"us437682941908.jpeg\", \"latest_reviews\": [{\"id\": 410584, \"body\": \"transform viral methodologies\", \"rating\": 2, \"movie\": {\"id\": 10582, \"image\": \"mz876387382312.jpeg\", \"title\": \"brand user-centric schemas\", \"avg_rating\": 2.7}}, {\"id\": 10581, \"body\": \"e-enable viral supply-chains\", \"rating\": 4, \"movie\": {\"id\": 10582, \"image\": \"mz876387382312.jpeg\", \"title\": \"brand user-centric schemas\", \"avg_rating\": 2.7}}, {\"id\": 310580, \"body\": \"maximize back-end e-tailers\", \"rating\": 4, \"movie\": {\"id\": 10582, \"image\": \"mz876387382312.jpeg\", \"title\": \"brand user-centric schemas\", \"avg_rating\": 2.7}}, {\"id\": 210597, \"body\": \"visualize next-generation e-services\", \"rating\": 1, \"movie\": {\"id\": 10582, \"image\": \"mz876387382312.jpeg\", \"title\": \"brand user-centric schemas\", \"avg_rating\": 2.7}}, {\"id\": 110594, \"body\": \"engage intuitive niches\", \"rating\": 3, \"movie\": {\"id\": 10582, \"image\": \"mz876387382312.jpeg\", \"title\": \"brand user-centric schemas\", \"avg_rating\": 2.7}}]}"], "implementation": "MonOrm (Python, asyncio)"}, {"duration": 10, "queries": 13529, "qps": 1352.9, "latency_min": 0.45, "latency_mean": 0.727, "latency_max": 21.23, "latency_std": 0.428, "latency_cv": 58.88, "latency_percentiles": [[25, 0.577], [50, 0.655], [75, 0.743], [90, 0.896], [99, 2.342], [99.99, 11.913]], "samples": ["{\"id\": 80241, \"name\": \"vito_harum\", \"image\": \"um879442117952.jpeg\", \"latest_reviews\": [{\"id\": 180248, \"body\": \"visualize clicks-and-mortar e-services\", \"rating\": 2, \"movie\": {\"id\": 5253, \"image\": \"mu460703399129.jpeg\", \"title\": \"synthesize innovative infomediaries\", \"avg_rating\": 3.05}}, {\"id\": 80238, \"body\": \"leverage 24/7 interfaces\", \"rating\": 5, \"movie\": {\"id\": 5253, \"image\": \"mu460703399129.jpeg\", \"title\": \"synthesize innovative infomediaries\", \"avg_rating\": 3.05}}, {\"id\": 280247, \"body\": \"evolve strategic users\", \"rating\": 3, \"movie\": {\"id\": 5253, \"image\": \"mu460703399129.jpeg\", \"title\": \"synthesize innovative infomediaries\", \"avg_rating\": 3.05}}, {\"id\": 480243, \"body\": \"architect 24/365 experiences\", \"rating\": 3, \"movie\": {\"id\": 5253, \"image\": \"mu460703399129.jpeg\", \"title\": \"synthesize innovative infomediaries\", \"avg_rating\": 3.05}}, {\"id\": 380246, \"body\": \"engineer 24/7 markets\", \"rating\": 3, \"movie\": {\"id\": 5253, \"image\": \"mu460703399129.jpeg\", \"title\": \"synthesize innovative infomediaries\", \"avg_rating\": 3.05}}]}"], "implementation": "PostgreSQL (Python, asyncpg)"}];
+      drawBars('#bars-get_user', DATA_get_user, {sort: true});
+      drawLats('#lats-get_user', DATA_get_user, {sort: true});
+    </script>
+
+    
+    <h4>Sample Outputs</h4>
+
+    <div id="samples-get_user"></div>
+
+    <script>
+      renderSamples(document.getElementById('samples-get_user'), DATA_get_user);
+    </script>
+     
+  </body>
+</html>

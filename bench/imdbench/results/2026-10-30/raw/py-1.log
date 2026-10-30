@@ -1,0 +1,91 @@
+============ Python ============
+concurrency:	1
+warmup time:	5 seconds
+duration:	10 seconds
+queries:	insert_movie, get_movie, get_user
+benchmarks:	django, sqlalchemy, monorm, postgres_asyncpg
+
+== django : insert_movie ==
+queries:	544
+qps:		54 q/s
+min latency:	12.98ms
+avg latency:	18.38ms
+max latency:	62.55ms
+
+== django : get_movie ==
+queries:	1386
+qps:		138 q/s
+min latency:	5.21ms
+avg latency:	7.19ms
+max latency:	107.39ms
+
+== django : get_user ==
+queries:	1283
+qps:		128 q/s
+min latency:	5.80ms
+avg latency:	7.77ms
+max latency:	38.36ms
+
+== sqlalchemy : insert_movie ==
+queries:	1267
+qps:		126 q/s
+min latency:	4.84ms
+avg latency:	7.87ms
+max latency:	67.04ms
+
+== sqlalchemy : get_movie ==
+queries:	1648
+qps:		164 q/s
+min latency:	4.55ms
+avg latency:	6.04ms
+max latency:	37.12ms
+
+== sqlalchemy : get_user ==
+queries:	4324
+qps:		432 q/s
+min latency:	1.61ms
+avg latency:	2.30ms
+max latency:	33.57ms
+
+== monorm : insert_movie ==
+queries:	2590
+qps:		259 q/s
+min latency:	2.42ms
+avg latency:	3.84ms
+max latency:	30.98ms
+
+== monorm : get_movie ==
+queries:	2325
+qps:		232 q/s
+min latency:	2.61ms
+avg latency:	4.28ms
+max latency:	24.21ms
+
+== monorm : get_user ==
+queries:	4222
+qps:		422 q/s
+min latency:	1.54ms
+avg latency:	2.35ms
+max latency:	17.03ms
+
+== postgres_asyncpg : insert_movie ==
+queries:	10055
+qps:		1005 q/s
+min latency:	0.58ms
+avg latency:	0.98ms
+max latency:	95.04ms
+
+== postgres_asyncpg : get_movie ==
+queries:	8889
+qps:		888 q/s
+min latency:	0.66ms
+avg latency:	1.11ms
+max latency:	14.72ms
+
+== postgres_asyncpg : get_user ==
+queries:	14536
+qps:		1453 q/s
+min latency:	0.44ms
+avg latency:	0.68ms
+max latency:	30.43ms
+

@@ -1,0 +1,1590 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <link
+      rel="stylesheet"
+      type="text/css"
+      href="https://cdnjs.cloudflare.com/ajax/libs/normalize/4.1.1/normalize.min.css"
+    />
+    <script src="https://d3js.org/d3.v3.js" charset="utf-8"></script>
+
+    <style>
+      code {
+        display: inline;
+      }
+      ul {
+        padding-left: 0px;
+      }
+      ul li {
+        padding: 2px 0px;
+      }
+      dt {
+        font-weight: bold;
+        margin: 5px 0px;
+      }
+      h2 {
+        text-align: center;
+        padding: 30px 0px;
+        margin: 30px 0px;
+        background-color: lightgrey;
+        border-radius: 8px;
+      }
+      h3 {
+        margin: 40px 0px 10px 0px;
+        text-align: center;
+      }
+      .bench-description {
+        font-style: italic;
+        text-align: center;
+        margin: 0px auto 40px auto;
+        max-width: 450px;
+      }
+      .chart-title {
+        font-family: monospace;
+        font-size: 13pt;
+        font-weight: bold;
+      }
+      svg {
+        background-color: rgb(245, 245, 245);
+        padding: 30px 0px 0px 10px;
+        border-radius: 8px;
+      }
+      .json-formatter-row {
+        font-family: monospace;
+      }
+      .json-formatter-row,
+      .json-formatter-row a,
+      .json-formatter-row a:hover {
+        color: black;
+        text-decoration: none;
+      }
+      .json-formatter-row .json-formatter-row {
+        margin-left: 1rem;
+      }
+      .json-formatter-row .json-formatter-children.json-formatter-empty {
+        opacity: 0.5;
+        margin-left: 1rem;
+      }
+      .json-formatter-row .json-formatter-children.json-formatter-empty:after {
+        display: none;
+      }
+      .json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-object:after {
+        content: 'No properties';
+      }
+      .json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-array:after {
+        content: '[]';
+      }
+      .json-formatter-row .json-formatter-string,
+      .json-formatter-row .json-formatter-stringifiable {
+        color: green;
+        white-space: pre;
+        word-wrap: break-word;
+      }
+      .json-formatter-row .json-formatter-number {
+        color: blue;
+      }
+      .json-formatter-row .json-formatter-boolean {
+        color: red;
+      }
+      .json-formatter-row .json-formatter-null {
+        color: #855a00;
+      }
+      .json-formatter-row .json-formatter-undefined {
+        color: #ca0b69;
+      }
+      .json-formatter-row .json-formatter-function {
+        color: #ff20ed;
+      }
+      .json-formatter-row .json-formatter-date {
+        background-color: rgba(0, 0, 0, 0.05);
+      }
+      .json-formatter-row .json-formatter-url {
+        text-decoration: underline;
+        color: blue;
+        cursor: pointer;
+      }
+      .json-formatter-row .json-formatter-bracket {
+        color: blue;
+      }
+      .json-formatter-row .json-formatter-key {
+        color: #00008b;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-row .json-formatter-toggler-link {
+        cursor: pointer;
+      }
+      .json-formatter-row .json-formatter-toggler {
+        line-height: 1.2rem;
+        font-size: 0.7rem;
+        vertical-align: middle;
+        opacity: 0.6;
+        cursor: pointer;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-row .json-formatter-toggler:after {
+        display: inline-block;
+        transition: transform 100ms ease-in;
+        content: '\25BA';
+      }
+      .json-formatter-row > a > .json-formatter-preview-text {
+        opacity: 0;
+        transition: opacity 0.15s ease-in;
+        font-style: italic;
+      }
+      .json-formatter-row:hover > a > .json-formatter-preview-text {
+        opacity: 0.6;
+      }
+      .json-formatter-row.json-formatter-open
+        > .json-formatter-toggler-link
+        .json-formatter-toggler:after {
+        transform: rotate(90deg);
+      }
+      .json-formatter-row.json-formatter-open > .json-formatter-children:after {
+        display: inline-block;
+      }
+      .json-formatter-row.json-formatter-open
+        > a
+        > .json-formatter-preview-text {
+        display: none;
+      }
+      .json-formatter-row.json-formatter-open.json-formatter-empty:after {
+        display: block;
+      }
+      .json-formatter-dark.json-formatter-row {
+        font-family: monospace;
+      }
+      .json-formatter-dark.json-formatter-row,
+      .json-formatter-dark.json-formatter-row a,
+      .json-formatter-dark.json-formatter-row a:hover {
+        color: white;
+        text-decoration: none;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-row {
+        margin-left: 1rem;
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty {
+        opacity: 0.5;
+        margin-left: 1rem;
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty:after {
+        display: none;
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-object:after {
+        content: 'No properties';
+      }
+      .json-formatter-dark.json-formatter-row
+        .json-formatter-children.json-formatter-empty.json-formatter-array:after {
+        content: '[]';
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-string,
+      .json-formatter-dark.json-formatter-row .json-formatter-stringifiable {
+        color: #31f031;
+        white-space: pre;
+        word-wrap: break-word;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-number {
+        color: #66c2ff;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-boolean {
+        color: #ec4242;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-null {
+        color: #eec97d;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-undefined {
+        color: #ef8fbe;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-function {
+        color: #fd48cb;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-date {
+        background-color: rgba(255, 255, 255, 0.05);
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-url {
+        text-decoration: underline;
+        color: #027bff;
+        cursor: pointer;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-bracket {
+        color: #9494ff;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-key {
+        color: #23a0db;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-toggler-link {
+        cursor: pointer;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-toggler {
+        line-height: 1.2rem;
+        font-size: 0.7rem;
+        vertical-align: middle;
+        opacity: 0.6;
+        cursor: pointer;
+        padding-right: 0.2rem;
+      }
+      .json-formatter-dark.json-formatter-row .json-formatter-toggler:after {
+        display: inline-block;
+        transition: transform 100ms ease-in;
+        content: '\25BA';
+      }
+      .json-formatter-dark.json-formatter-row
+        > a
+        > .json-formatter-preview-text {
+        opacity: 0;
+        transition: opacity 0.15s ease-in;
+        font-style: italic;
+      }
+      .json-formatter-dark.json-formatter-row:hover
+        > a
+        > .json-formatter-preview-text {
+        opacity: 0.6;
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open
+        > .json-formatter-toggler-link
+        .json-formatter-toggler:after {
+        transform: rotate(90deg);
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open
+        > .json-formatter-children:after {
+        display: inline-block;
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open
+        > a
+        > .json-formatter-preview-text {
+        display: none;
+      }
+      .json-formatter-dark.json-formatter-row.json-formatter-open.json-formatter-empty:after {
+        display: block;
+      }
+    </style>
+
+    <script>
+      var helpers_1 = (function () {
+        let exports = {};
+        /*
+         * Escapes `"` charachters from string
+         */
+        function escapeString(str) {
+          return str.replace(/"/g, '\\"');
+        }
+        /*
+         * Determines if a value is an object
+         */
+        function isObject(value) {
+          var type = typeof value;
+          return !!value && type == 'object';
+        }
+        exports.isObject = isObject;
+        /*
+         * Gets constructor name of an object.
+         * From http://stackoverflow.com/a/332429
+         *
+         */
+        function getObjectName(object) {
+          if (object === undefined) {
+            return '';
+          }
+          if (object === null) {
+            return 'Object';
+          }
+          if (typeof object === 'object' && !object.constructor) {
+            return 'Object';
+          }
+          var funcNameRegex = /function ([^(]*)/;
+          var results = funcNameRegex.exec(object.constructor.toString());
+          if (results && results.length > 1) {
+            return results[1];
+          } else {
+            return '';
+          }
+        }
+        exports.getObjectName = getObjectName;
+        /*
+         * Generates inline preview for a JavaScript object based on a type and value
+         */
+        function getValuePreview(type, object, value) {
+          if (type === 'null' || type === 'undefined') {
+            return type;
+          }
+          if (type === 'string' || type === 'stringifiable') {
+            value = '"' + escapeString(value) + '"';
+          }
+          if (type === 'function') {
+            // Remove content of the function
+            return (
+              object
+                .toString()
+                .replace(/[\r\n]/g, '')
+                .replace(/\{.*\}/, '') + '{…}'
+            );
+          }
+          return value;
+        }
+        exports.getValuePreview = getValuePreview;
+        /*
+         * Generates inline preview for a JavaScript object
+         */
+        function getPreview(type, object) {
+          var value = '';
+          if (isObject(object)) {
+            value = getObjectName(object);
+            if (Array.isArray(object)) value += '[' + object.length + ']';
+          } else {
+            value = getValuePreview(type, object, object);
+          }
+          return value;
+        }
+        exports.getPreview = getPreview;
+        /*
+         * Generates a prefixed CSS class name
+         */
+        function cssClass(className) {
+          return 'json-formatter-' + className;
+        }
+        exports.cssClass = cssClass;
+        /*
+         * Creates a new DOM element wiht given type and class
+         * TODO: move me to helpers
+         */
+        function createElement(type, className, content) {
+          var el = document.createElement(type);
+          if (className) {
+            el.classList.add(cssClass(className));
+          }
+          if (content !== undefined) {
+            if (content instanceof Node) {
+              el.appendChild(content);
+            } else {
+              el.appendChild(document.createTextNode(String(content)));
+            }
+          }
+          return el;
+        }
+        exports.createElement = createElement;
+        return exports;
+      })();
+
+      var DATE_STRING_REGEX =
+        /(^\d{1,4}[\.|\\/|-]\d{1,2}[\.|\\/|-]\d{1,4})(\s*(?:0?[1-9]:[0-5]|1(?=[012])\d:[0-5])\d\s*[ap]m)?$/;
+      var PARTIAL_DATE_REGEX = /\d{2}:\d{2}:\d{2} GMT-\d{4}/;
+      var JSON_DATE_REGEX = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/;
+      // When toggleing, don't animated removal or addition of more than a few items
+      var MAX_ANIMATED_TOGGLE_ITEMS = 10;
+      var requestAnimationFrame =
+        window.requestAnimationFrame ||
+        function (cb) {
+          cb();
+          return 0;
+        };
+      var _defaultConfig = {
+        hoverPreviewEnabled: false,
+        hoverPreviewArrayCount: 100,
+        hoverPreviewFieldCount: 5,
+        animateOpen: true,
+        animateClose: true,
+        theme: null,
+        useToJSON: true,
+        sortPropertiesBy: null,
+      };
+      /**
+       * @class JSONFormatter
+       *
+       * JSONFormatter allows you to render JSON objects in HTML with a
+       * **collapsible** navigation.
+       */
+      var JSONFormatter = /** @class */ (function () {
+        /**
+         * @param {object} json The JSON object you want to render. It has to be an
+         * object or array. Do NOT pass raw JSON string.
+         *
+         * @param {number} [open=1] his number indicates up to how many levels the
+         * rendered tree should expand. Set it to `0` to make the whole tree collapsed
+         * or set it to `Infinity` to expand the tree deeply
+         *
+         * @param {object} [config=defaultConfig] -
+         *  defaultConfig = {
+         *   hoverPreviewEnabled: false,
+         *   hoverPreviewArrayCount: 100,
+         *   hoverPreviewFieldCount: 5
+         * }
+         *
+         * Available configurations:
+         *  #####Hover Preview
+         * * `hoverPreviewEnabled`:  enable preview on hover
+         * * `hoverPreviewArrayCount`: number of array items to show in preview Any
+         *    array larger than this number will be shown as `Array[XXX]` where `XXX`
+         *    is length of the array.
+         * * `hoverPreviewFieldCount`: number of object properties to show for object
+         *   preview. Any object with more properties that thin number will be
+         *   truncated.
+         *
+         * @param {string} [key=undefined] The key that this object in it's parent
+         * context
+         */
+        function JSONFormatter(json, open, config, key) {
+          if (open === void 0) {
+            open = 1;
+          }
+          if (config === void 0) {
+            config = _defaultConfig;
+          }
+          this.json = json;
+          this.open = open;
+          this.config = config;
+          this.key = key;
+          // Hold the open state after the toggler is used
+          this._isOpen = null;
+          // Setting default values for config object
+          if (this.config.hoverPreviewEnabled === undefined) {
+            this.config.hoverPreviewEnabled =
+              _defaultConfig.hoverPreviewEnabled;
+          }
+          if (this.config.hoverPreviewArrayCount === undefined) {
+            this.config.hoverPreviewArrayCount =
+              _defaultConfig.hoverPreviewArrayCount;
+          }
+          if (this.config.hoverPreviewFieldCount === undefined) {
+            this.config.hoverPreviewFieldCount =
+              _defaultConfig.hoverPreviewFieldCount;
+          }
+          if (this.config.useToJSON === undefined) {
+            this.config.useToJSON = _defaultConfig.useToJSON;
+          }
+        }
+        Object.defineProperty(JSONFormatter.prototype, 'isOpen', {
+          /*
+           * is formatter open?
+           */
+          get: function () {
+            if (this._isOpen !== null) {
+              return this._isOpen;
+            } else {
+              return this.open > 0;
+            }
+          },
+          /*
+           * set open state (from toggler)
+           */
+          set: function (value) {
+            this._isOpen = value;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isDate', {
+          /*
+           * is this a date string?
+           */
+          get: function () {
+            return (
+              this.json instanceof Date ||
+              (this.type === 'string' &&
+                (DATE_STRING_REGEX.test(this.json) ||
+                  JSON_DATE_REGEX.test(this.json) ||
+                  PARTIAL_DATE_REGEX.test(this.json)))
+            );
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isUrl', {
+          /*
+           * is this a URL string?
+           */
+          get: function () {
+            return this.type === 'string' && this.json.indexOf('http') === 0;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isArray', {
+          /*
+           * is this an array?
+           */
+          get: function () {
+            return Array.isArray(this.json);
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isObject', {
+          /*
+           * is this an object?
+           * Note: In this context arrays are object as well
+           */
+          get: function () {
+            return helpers_1.isObject(this.json);
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isEmptyObject', {
+          /*
+           * is this an empty object with no properties?
+           */
+          get: function () {
+            return !this.keys.length && !this.isArray;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'isEmpty', {
+          /*
+           * is this an empty object or array?
+           */
+          get: function () {
+            return (
+              this.isEmptyObject ||
+              (this.keys && !this.keys.length && this.isArray)
+            );
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'useToJSON', {
+          /*
+           * does this has a `toJSON` method and is it configured to be used?
+           * This means that it has it's own renderer for JSON.stringify (Date, Mongo's ObjectID, etc.)
+           */
+          get: function () {
+            return this.config.useToJSON && this.type === 'stringifiable';
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'hasKey', {
+          /*
+           * did we recieve a key argument?
+           * This means that the formatter was called as a sub formatter of a parent formatter
+           */
+          get: function () {
+            return typeof this.key !== 'undefined';
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'constructorName', {
+          /*
+           * if this is an object, get constructor function name
+           */
+          get: function () {
+            return helpers_1.getObjectName(this.json);
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'type', {
+          /*
+           * get type of this value. Returns "null" for null objects
+           * Possible values: all JavaScript primitive types plus "array" and "null"
+           */
+          get: function () {
+            if (this.json === null) {
+              return 'null';
+            }
+            if (this.config.useToJSON && this.json && this.json['toJSON']) {
+              return 'stringifiable';
+            }
+            return typeof this.json;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        Object.defineProperty(JSONFormatter.prototype, 'keys', {
+          /*
+           * get object keys
+           * If there is an empty key we pad it wit quotes to make it visible
+           */
+          get: function () {
+            if (this.isObject) {
+              var keys = Object.keys(this.json).map(function (key) {
+                return key ? key : '""';
+              });
+              return !this.isArray && this.config.sortPropertiesBy
+                ? keys.sort(this.config.sortPropertiesBy)
+                : keys;
+            } else {
+              return [];
+            }
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        /**
+         * Toggles `isOpen` state
+         *
+         */
+        JSONFormatter.prototype.toggleOpen = function () {
+          this.isOpen = !this.isOpen;
+          if (this.element) {
+            if (this.isOpen) {
+              this.appendChildren(this.config.animateOpen);
+            } else {
+              this.removeChildren(this.config.animateClose);
+            }
+            this.element.classList.toggle(helpers_1.cssClass('open'));
+          }
+        };
+        /**
+         * Open all children up to a certain depth.
+         * Allows actions such as expand all/collapse all
+         *
+         */
+        JSONFormatter.prototype.openAtDepth = function (depth) {
+          if (depth === void 0) {
+            depth = 1;
+          }
+          if (depth < 0) {
+            return;
+          }
+          this.open = depth;
+          this.isOpen = depth !== 0;
+          if (this.element) {
+            this.removeChildren(false);
+            if (depth === 0) {
+              this.element.classList.remove(helpers_1.cssClass('open'));
+            } else {
+              this.appendChildren(this.config.animateOpen);
+              this.element.classList.add(helpers_1.cssClass('open'));
+            }
+          }
+        };
+        /**
+         * Generates inline preview
+         *
+         * @returns {string}
+         */
+        JSONFormatter.prototype.getInlinepreview = function () {
+          var _this = this;
+          if (this.isArray) {
+            // if array length is greater then 100 it shows "Array[101]"
+            if (this.json.length > this.config.hoverPreviewArrayCount) {
+              return 'Array[' + this.json.length + ']';
+            } else {
+              return '[' + this.json.map(helpers_1.getPreview).join(', ') + ']';
+            }
+          } else {
+            var keys = this.keys;
+            // the first five keys (like Chrome Developer Tool)
+            var narrowKeys = keys.slice(0, this.config.hoverPreviewFieldCount);
+            // json value schematic information
+            var kvs = narrowKeys.map(function (key) {
+              return (
+                key + ':' + helpers_1.getPreview(_this.type, _this.json[key])
+              );
+            });
+            // if keys count greater then 5 then show ellipsis
+            var ellipsis =
+              keys.length >= this.config.hoverPreviewFieldCount ? '…' : '';
+            return '{' + kvs.join(', ') + ellipsis + '}';
+          }
+        };
+        /**
+         * Renders an HTML element and installs event listeners
+         *
+         * @returns {HTMLDivElement}
+         */
+        JSONFormatter.prototype.render = function () {
+          // construct the root element and assign it to this.element
+          this.element = helpers_1.createElement('div', 'row');
+          // construct the toggler link
+          var togglerLink = this.isObject
+            ? helpers_1.createElement('a', 'toggler-link')
+            : helpers_1.createElement('span');
+          // if this is an object we need a wrapper span (toggler)
+          if (this.isObject && !this.useToJSON) {
+            togglerLink.appendChild(helpers_1.createElement('span', 'toggler'));
+          }
+          // if this is child of a parent formatter we need to append the key
+          if (this.hasKey) {
+            togglerLink.appendChild(
+              helpers_1.createElement('span', 'key', this.key + ':')
+            );
+          }
+          // Value for objects and arrays
+          if (this.isObject && !this.useToJSON) {
+            // construct the value holder element
+            var value = helpers_1.createElement('span', 'value');
+            // we need a wrapper span for objects
+            var objectWrapperSpan = helpers_1.createElement('span');
+            // get constructor name and append it to wrapper span
+            var constructorName = helpers_1.createElement(
+              'span',
+              'constructor-name',
+              this.constructorName
+            );
+            objectWrapperSpan.appendChild(constructorName);
+            // if it's an array append the array specific elements like brackets and length
+            if (this.isArray) {
+              var arrayWrapperSpan = helpers_1.createElement('span');
+              arrayWrapperSpan.appendChild(
+                helpers_1.createElement('span', 'bracket', '[')
+              );
+              arrayWrapperSpan.appendChild(
+                helpers_1.createElement('span', 'number', this.json.length)
+              );
+              arrayWrapperSpan.appendChild(
+                helpers_1.createElement('span', 'bracket', ']')
+              );
+              objectWrapperSpan.appendChild(arrayWrapperSpan);
+            }
+            // append object wrapper span to toggler link
+            value.appendChild(objectWrapperSpan);
+            togglerLink.appendChild(value);
+            // Primitive values
+          } else {
+            // make a value holder element
+            var value = this.isUrl
+              ? helpers_1.createElement('a')
+              : helpers_1.createElement('span');
+            // add type and other type related CSS classes
+            value.classList.add(helpers_1.cssClass(this.type));
+            if (this.isDate) {
+              value.classList.add(helpers_1.cssClass('date'));
+            }
+            if (this.isUrl) {
+              value.classList.add(helpers_1.cssClass('url'));
+              value.setAttribute('href', this.json);
+            }
+            // Append value content to value element
+            var valuePreview = helpers_1.getValuePreview(
+              this.type,
+              this.json,
+              this.useToJSON ? this.json.toJSON() : this.json
+            );
+            value.appendChild(document.createTextNode(valuePreview));
+            // append the value element to toggler link
+            togglerLink.appendChild(value);
+          }
+          // if hover preview is enabled, append the inline preview element
+          if (this.isObject && this.config.hoverPreviewEnabled) {
+            var preview = helpers_1.createElement('span', 'preview-text');
+            preview.appendChild(
+              document.createTextNode(this.getInlinepreview())
+            );
+            togglerLink.appendChild(preview);
+          }
+          // construct a children element
+          var children = helpers_1.createElement('div', 'children');
+          // set CSS classes for children
+          if (this.isObject) {
+            children.classList.add(helpers_1.cssClass('object'));
+          }
+          if (this.isArray) {
+            children.classList.add(helpers_1.cssClass('array'));
+          }
+          if (this.isEmpty) {
+            children.classList.add(helpers_1.cssClass('empty'));
+          }
+          // set CSS classes for root element
+          if (this.config && this.config.theme) {
+            this.element.classList.add(helpers_1.cssClass(this.config.theme));
+          }
+          if (this.isOpen) {
+            this.element.classList.add(helpers_1.cssClass('open'));
+          }
+          // append toggler and children elements to root element
+          this.element.appendChild(togglerLink);
+          this.element.appendChild(children);
+          // if formatter is set to be open call appendChildren
+          if (this.isObject && this.isOpen) {
+            this.appendChildren();
+          }
+          // add event listener for toggling
+          if (this.isObject && !this.useToJSON) {
+            togglerLink.addEventListener('click', this.toggleOpen.bind(this));
+          }
+          return this.element;
+        };
+        /**
+         * Appends all the children to children element
+         * Animated option is used when user triggers this via a click
+         */
+        JSONFormatter.prototype.appendChildren = function (animated) {
+          var _this = this;
+          if (animated === void 0) {
+            animated = false;
+          }
+          var children = this.element.querySelector(
+            'div.' + helpers_1.cssClass('children')
+          );
+          if (!children || this.isEmpty) {
+            return;
+          }
+          if (animated) {
+            var index_1 = 0;
+            var addAChild_1 = function () {
+              var key = _this.keys[index_1];
+              var formatter = new JSONFormatter(
+                _this.json[key],
+                _this.open - 1,
+                _this.config,
+                key
+              );
+              children.appendChild(formatter.render());
+              index_1 += 1;
+              if (index_1 < _this.keys.length) {
+                if (index_1 > MAX_ANIMATED_TOGGLE_ITEMS) {
+                  addAChild_1();
+                } else {
+                  requestAnimationFrame(addAChild_1);
+                }
+              }
+            };
+            requestAnimationFrame(addAChild_1);
+          } else {
+            this.keys.forEach(function (key) {
+              var formatter = new JSONFormatter(
+                _this.json[key],
+                _this.open - 1,
+                _this.config,
+                key
+              );
+              children.appendChild(formatter.render());
+            });
+          }
+        };
+        /**
+         * Removes all the children from children element
+         * Animated option is used when user triggers this via a click
+         */
+        JSONFormatter.prototype.removeChildren = function (animated) {
+          if (animated === void 0) {
+            animated = false;
+          }
+          var childrenElement = this.element.querySelector(
+            'div.' + helpers_1.cssClass('children')
+          );
+          if (animated) {
+            var childrenRemoved_1 = 0;
+            var removeAChild_1 = function () {
+              if (childrenElement && childrenElement.children.length) {
+                childrenElement.removeChild(childrenElement.children[0]);
+                childrenRemoved_1 += 1;
+                if (childrenRemoved_1 > MAX_ANIMATED_TOGGLE_ITEMS) {
+                  removeAChild_1();
+                } else {
+                  requestAnimationFrame(removeAChild_1);
+                }
+              }
+            };
+            requestAnimationFrame(removeAChild_1);
+          } else {
+            if (childrenElement) {
+              childrenElement.innerHTML = '';
+            }
+          }
+        };
+        return JSONFormatter;
+      })();
+    </script>
+
+    <style>
+      html {
+        background-color: #ffffff;
+      }
+      body {
+        padding: 20px;
+      }
+      .chart .axis path,
+      .chart .axis line {
+        fill: none;
+        stroke: #999;
+        shape-rendering: crispEdges;
+      }
+      .chart .axis.x2 path,
+      .chart .axis.x2 line {
+        display: none;
+      }
+      .chart .axis text,
+      .chart .legend text {
+        font: 12pt sans-serif;
+        fill: #333;
+      }
+      .chart .axis.x path {
+        display: none;
+      }
+
+      .chart .axis text {
+        fill: #555;
+      }
+      .chart .axis line,
+      .chart .axis path {
+        stroke: #888;
+      }
+
+      .chart .focus line {
+        stroke: #900;
+      }
+      .chart .focus text {
+        fill: #900;
+        font: 12pt sans-serif;
+      }
+
+      .json-out {
+        white-space: pre;
+        max-height: 400px;
+        overflow: auto;
+        max-width: 70vw;
+        background: #f2fafa;
+        padding: 20px;
+        border-radius: 5px;
+      }
+    </style>
+
+    <script>
+      var DEFAULT_COLORS = ['#a9d4d6', '#83b1d4', '#6e8fdc'];
+
+      function _humanFileSize(bytes, si) {
+        var thresh = si ? 1000 : 1024;
+        if (Math.abs(bytes) < thresh) {
+          return bytes + ' B';
+        }
+        var units = si
+          ? ['kB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
+          : ['KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB'];
+        var u = -1;
+        do {
+          bytes /= thresh;
+          ++u;
+        } while (Math.abs(bytes) >= thresh && u < units.length - 1);
+        return bytes.toFixed(0) + ' ' + units[u];
+      }
+
+      function _drawLegend(chart, width, sizes) {
+        var legend = chart
+          .selectAll('legend')
+          .data(sizes)
+          .enter()
+          .append('g')
+          .attr('class', 'legend')
+          .attr('transform', 'translate(' + width + ', 20)');
+        legend
+          .append('circle')
+          .style('fill', function (d, i) {
+            return DEFAULT_COLORS[i];
+          })
+          .attr('cx', 0)
+          .attr('cy', function (d, i) {
+            return i * 20;
+          })
+          .attr('r', 5);
+        legend
+          .append('text')
+          .attr('x', 7)
+          .attr('y', function (d, i) {
+            return i * 20;
+          })
+          .attr('alignment-baseline', 'central')
+          .text(function (d) {
+            return d;
+          });
+      }
+
+      function _copyAndSortBenchmarks(benchmarks, options) {
+        var newBench = [];
+        Array.prototype.push.apply(newBench, benchmarks);
+        if (options.sort) {
+          newBench.sort(function (e1, e2) {
+            return d3.ascending(e1.qps, e2.qps);
+          });
+        }
+        return newBench;
+      }
+
+      function drawBars(elSelector, data, options) {
+        'use strict';
+        options = options || {};
+
+        // geometry
+
+        var fullWidth = options.width || 1000,
+          fullHeight = options.height || 370,
+          margin = {top: 10, right: 65, bottom: 55, left: 65},
+          width = fullWidth - margin.left - margin.right,
+          height = fullHeight - margin.top - margin.bottom,
+          benchmarks = _copyAndSortBenchmarks(data, options);
+
+        // data reshape
+
+        var maxRps = 0;
+        benchmarks.forEach(function (v) {
+          if (v.qps > maxRps) {
+            maxRps = v.qps;
+          }
+        });
+        var names = benchmarks.map(function (d) {
+          return d.implementation;
+        });
+
+        // charting
+
+        var color = d3.scale.ordinal().range(DEFAULT_COLORS);
+
+        var x0 = d3.scale
+          .ordinal()
+          .rangeRoundBands([0, width], 0.2)
+          .domain(names);
+
+        var y = d3.scale.linear().range([height, 0]).domain([0, maxRps]);
+
+        var xAxis = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[0];
+          });
+        var xAxis2 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[1];
+          });
+        var xAxis3 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[2];
+          });
+
+        var yAxis = d3.svg.axis().scale(y).orient('left');
+
+        var chart = d3
+          .select(elSelector)
+          .attr('viewBox', '0 0 ' + fullWidth + ' ' + fullHeight)
+          .append('g')
+          .attr(
+            'transform',
+            'translate(' + margin.left + ',' + margin.top + ')'
+          );
+
+        chart
+          .append('g')
+          .attr('class', 'x axis')
+          .attr('transform', 'translate(0,' + height + ')')
+          .call(xAxis);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 14) + ')')
+          .call(xAxis2);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 28) + ')')
+          .call(xAxis3);
+
+        chart
+          .append('g')
+          .attr('class', 'y axis')
+          .call(yAxis)
+          .append('text')
+          .attr('transform', 'rotate(-90)')
+          .attr('y', 6)
+          .attr('dy', '.71em')
+          .style('text-anchor', 'end')
+          .text('Throughput (iterations / sec)');
+
+        chart
+          .selectAll('rect')
+          .data(benchmarks)
+          .enter()
+          .append('rect')
+          .style('fill', function (d, i) {
+            return color(0);
+          })
+          .attr('width', x0.rangeBand())
+          .attr('x', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('y', function (d) {
+            return y(d.qps);
+          })
+          .attr('height', function (d) {
+            return height - y(d.qps);
+          })
+          .on('mouseover', function (d, i) {
+            focusRect.attr('y', y(d.qps) - 9);
+
+            focusLine.attr('y1', y(d.qps)).attr('y2', y(d.qps));
+
+            focusText
+              .attr('y', y(d.qps))
+              .text(d3.format('0,000')(Math.round(d.qps)));
+
+            focus.style('display', null);
+          })
+          .on('mouseout', function () {
+            focus.style('display', 'none');
+          });
+
+        var focus = chart
+          .append('g')
+          .attr('class', 'focus')
+          .style('display', 'none');
+        var focusRect = focus
+          .append('rect')
+          .attr('x', -margin.left)
+          .attr('width', margin.left - 6)
+          .attr('y', 0)
+          .attr('height', 18)
+          .attr('fill', 'rgba(255, 255, 255, 0.9)');
+        var focusLine = focus
+          .append('line')
+          .attr('x1', -6)
+          .attr('x2', width - 20)
+          .attr('y1', 0)
+          .attr('y2', 0)
+          .style('stroke-dasharray', '2,2');
+        var focusText = focus
+          .append('text')
+          .attr('y', 0)
+          .attr('x', -9)
+          .attr('text-anchor', 'end')
+          .attr('alignment-baseline', 'middle');
+      }
+
+      function drawLats(elSelector, data, options) {
+        'use strict';
+        options = options || {};
+
+        // geometry
+
+        var fullWidth = options.width || 1000,
+          fullHeight = options.height || 370,
+          margin = {top: 10, right: 65, bottom: 55, left: 65},
+          width = fullWidth - margin.left - margin.right,
+          height = fullHeight - margin.top - margin.bottom,
+          benchmarks = _copyAndSortBenchmarks(data, options);
+
+        // data reshape
+
+        var maxLat = 0;
+        benchmarks.forEach(function (v) {
+          if (v.latency_percentiles[4][1] > maxLat) {
+            maxLat = v.latency_percentiles[4][1];
+          }
+        });
+
+        var names = benchmarks.map(function (d) {
+          return d.implementation;
+        });
+
+        // charting
+
+        var color = d3.scale.ordinal().range(DEFAULT_COLORS);
+
+        var x0 = d3.scale
+          .ordinal()
+          .rangeRoundBands([0, width], 0.2)
+          .domain(names);
+
+        var y = d3.scale.linear().range([height, 0]).domain([0, maxLat]);
+
+        var xAxis = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[0];
+          });
+        var xAxis2 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[1];
+          });
+        var xAxis3 = d3.svg
+          .axis()
+          .scale(x0)
+          .orient('bottom')
+          .tickFormat(function (d) {
+            return d.split(' ')[2];
+          });
+
+        var yAxis = d3.svg.axis().scale(y).orient('left');
+
+        var chart = d3
+          .select(elSelector)
+          .attr('viewBox', '0 0 ' + fullWidth + ' ' + fullHeight)
+          .append('g')
+          .attr(
+            'transform',
+            'translate(' + margin.left + ',' + margin.top + ')'
+          );
+
+        chart
+          .append('g')
+          .attr('class', 'x axis')
+          .attr('transform', 'translate(0,' + height + ')')
+          .call(xAxis);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 14) + ')')
+          .call(xAxis2);
+
+        chart
+          .append('g')
+          .attr('class', 'x axis x2')
+          .attr('transform', 'translate(0,' + (height + 28) + ')')
+          .call(xAxis3);
+
+        chart
+          .append('g')
+          .attr('class', 'y axis')
+          .call(yAxis)
+          .append('text')
+          .attr('transform', 'rotate(-90)')
+          .attr('y', 6)
+          .attr('dy', '.71em')
+          .style('text-anchor', 'end')
+          .text('Latency (msec)');
+
+        var g = chart
+          .selectAll('rect')
+          .data(benchmarks)
+          .enter()
+          .append('g')
+          .attr('class', 'sub');
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_percentiles[4][1]);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[4][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand();
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          });
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_min);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_min);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand();
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          });
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_percentiles[1][1]);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[1][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand();
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          });
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_min);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[0][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          })
+          .style('stroke-dasharray', '2,2');
+
+        g.append('line')
+          .attr('y1', function (d) {
+            return y(d.latency_percentiles[4][1]);
+          })
+          .attr('y2', function (d) {
+            return y(d.latency_percentiles[2][1]);
+          })
+          .attr('x1', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .attr('x2', function (d, i) {
+            return x0(d.implementation) + x0.rangeBand() / 2;
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          })
+          .style('stroke-dasharray', '2,2');
+
+        g.append('rect')
+          .attr('y', function (d) {
+            return y(d.latency_percentiles[2][1]);
+          })
+          .attr('x', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('width', x0.rangeBand())
+          .attr('height', function (d) {
+            return Math.abs(
+              y(d.latency_percentiles[2][1]) - y(d.latency_percentiles[0][1])
+            );
+          })
+          .style('stroke', function (d, i) {
+            return color(0);
+          })
+          .style('fill', 'rgba(0, 0, 0, 0)');
+
+        g.append('rect')
+          .attr('y', 0)
+          .attr('height', height)
+          .attr('x', function (d, i) {
+            return x0(d.implementation);
+          })
+          .attr('width', function (d) {
+            return x0.rangeBand();
+          })
+          .style('fill', 'rgba(0, 0, 0, 0)')
+          .on('mouseout', function (d, i) {
+            d3.select(this).style('fill', 'rgba(0, 0, 0, 0)');
+            focus.style('display', 'none');
+          })
+          .on('mouseover', function (d, i) {
+            d3.select(this).style('fill', 'rgba(0, 0, 0, 0.04)');
+
+            var yMedian = y(d.latency_percentiles[1][1]);
+
+            focus.style('display', null);
+
+            focusLine.attr('y1', yMedian).attr('y2', yMedian);
+
+            focusRect.attr('y', yMedian - 9);
+
+            focusLine.attr('y1', yMedian).attr('y2', yMedian);
+
+            focusText
+              .attr('y', yMedian)
+              .text(d3.format('.2f')(d.latency_percentiles[1][1]));
+          });
+
+        var focus = chart
+          .append('g')
+          .attr('class', 'focus')
+          .style('display', 'none');
+        var focusRect = focus
+          .append('rect')
+          .attr('x', -margin.left)
+          .attr('width', margin.left - 6)
+          .attr('y', 0)
+          .attr('height', 18)
+          .attr('fill', 'rgba(255, 255, 255, 0.9)');
+        var focusLine = focus
+          .append('line')
+          .attr('x1', -6)
+          .attr('x2', width - 20)
+          .attr('y1', 0)
+          .attr('y2', 0)
+          .style('stroke-dasharray', '2,2');
+        var focusText = focus
+          .append('text')
+          .attr('y', 0)
+          .attr('x', -9)
+          .attr('text-anchor', 'end')
+          .attr('alignment-baseline', 'middle');
+      }
+
+      function renderSamples(root_el, data) {
+        for (let bench of data) {
+          let inner = document.createElement('div');
+          let title = document.createElement('h5');
+          title.innerHTML = bench.implementation;
+          inner.appendChild(title);
+
+          let s_el = document.createElement('div');
+          let body = document.createElement('div');
+          for (let sample of bench.samples) {
+            let f = new JSONFormatter(JSON.parse(sample), 0);
+            body.appendChild(f.render());
+            body.appendChild(document.createElement('hr'));
+          }
+          body.classList.add('json-out');
+          s_el.appendChild(body);
+          inner.appendChild(s_el);
+
+          root_el.appendChild(inner);
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <p><em>Fri Oct 30 08:11:56 2026</em></p>
+
+    <h1>Benchmark Report</h1>
+
+    <p>
+      The results below were generating using the IMDBench benchmarking suite:
+      <a href="https://github.com/edgedb/imdbench" target="_blank"
+        >github.com/edgedb/imdbench</a
+      >.
+    </p>
+    <br /><br />
+
+    <dl>
+      <dt>Targets</dt>
+      <dd>
+        <ul>
+          
+          <li>TypeORM</li>
+          
+          <li>Prisma</li>
+          
+          <li>MonOrm (Node.js)</li>
+          
+          <li>PostgreSQL (Node.js, pg)</li>
+          
+        </ul>
+      </dd>
+      <dt>Test environment</dt>
+      <dd>
+        <code>Linux 6.18.44-fc-v185 (Ubuntu 24.04, x86_64) on Intel(R) Xeon(R) Processor @ 2.80GHz</code>
+      </dd>
+      <dt>Duration (per benchmark)</dt>
+      <dd>10 seconds</dd>
+      <dt>Concurrency</dt>
+      <dd>1 clients</dd>
+      <dt>Simulated client-to-database latency</dt>
+      <dd>~1ms</dd>
+    </dl>
+    <br />
+
+     
+    <h2>Overall Results</h2>
+
+    <p class="bench-description">
+      The charts below show the geometric average of all benchmark results.
+    </p>
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-mean" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-mean" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_mean = [{"implementation": "TypeORM", "duration": 10.0, "queries": 1769.3, "qps": 176.92, "latency_min": 2.789, "latency_mean": 5.649, "latency_max": 48.402, "latency_std": 2.556, "latency_cv": 45.25, "latency_percentiles": [[25, 4.272], [50, 5.114], [75, 6.229], [90, 7.682], [99, 14.671], [99.99, 48.402]]}, {"implementation": "Prisma", "duration": 10.0, "queries": 2223.11, "qps": 222.22, "latency_min": 2.564, "latency_mean": 4.492, "latency_max": 34.466, "latency_std": 1.794, "latency_cv": 39.93, "latency_percentiles": [[25, 3.64], [50, 4.159], [75, 4.821], [90, 5.837], [99, 9.641], [99.99, 34.473]]}, {"implementation": "MonOrm (Node.js)", "duration": 10.0, "queries": 3831.13, "qps": 382.99, "latency_min": 1.605, "latency_mean": 2.607, "latency_max": 21.612, "latency_std": 0.941, "latency_cv": 36.11, "latency_percentiles": [[25, 2.17], [50, 2.438], [75, 2.718], [90, 3.229], [99, 6.352], [99.99, 21.613]]}, {"implementation": "PostgreSQL (Node.js, pg)", "duration": 10.0, "queries": 4247.82, "qps": 424.71, "latency_min": 1.39, "latency_mean": 2.35, "latency_max": 30.62, "latency_std": 1.005, "latency_cv": 42.75, "latency_percentiles": [[25, 1.902], [50, 2.114], [75, 2.428], [90, 3.052], [99, 6.433], [99.99, 30.62]]}];
+      drawBars('#bars-mean', DATA_mean, {sort: true});
+      drawLats('#lats-mean', DATA_mean, {sort: true});
+    </script>
+
+    
+    <h2>Individual benchmarks</h2>
+       
+    <h3>POST /movie (existing cast)</h3>
+    <p class="bench-description">Create a new movie record, linking existing directors and cast.</p>
+
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-insert_movie" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-insert_movie" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_insert_movie = [{"duration": 10.0, "queries": 1752, "qps": 175.19, "latency_min": 3.64, "latency_mean": 5.694, "latency_max": 62.97, "latency_std": 2.343, "latency_cv": 41.15, "latency_percentiles": [[25, 4.645], [50, 5.188], [75, 5.995], [90, 7.433], [99, 12.57], [99.99, 62.976]], "samples": ["{\"id\":821308,\"image\":\"insert_test__image123518.jpeg\",\"title\":\"insert_test__123518\",\"year\":123518,\"description\":\"insert_test__description123518\",\"directors\":[{\"id\":1,\"full_name\":\"Austyn Quigley\",\"image\":\"pd303249980365.jpeg\"}],\"cast\":[{\"id\":2,\"full_name\":\"Isabelle Jacobson\",\"image\":\"pl218777711817.jpeg\"},{\"id\":3,\"full_name\":\"Alfonso Dietrich\",\"image\":\"pf205513938137.jpeg\"},{\"id\":4,\"full_name\":\"Ibrahim Alexa Keebler\",\"image\":\"pe299144587704.jpeg\"}]}", "{\"id\":821292,\"image\":\"insert_test__image4883.jpeg\",\"title\":\"insert_test__4883\",\"year\":4883,\"description\":\"insert_test__description4883\",\"directors\":[{\"id\":1,\"full_name\":\"Austyn Quigley\",\"image\":\"pd303249980365.jpeg\"}],\"cast\":[{\"id\":2,\"full_name\":\"Isabelle Jacobson\",\"image\":\"pl218777711817.jpeg\"},{\"id\":3,\"full_name\":\"Alfonso Dietrich\",\"image\":\"pf205513938137.jpeg\"},{\"id\":4,\"full_name\":\"Ibrahim Alexa Keebler\",\"image\":\"pe299144587704.jpeg\"}]}", "{\"id\":821284,\"image\":\"insert_test__image677285.jpeg\",\"title\":\"insert_test__677285\",\"year\":677285,\"description\":\"insert_test__description677285\",\"directors\":[{\"id\":1,\"full_name\":\"Austyn Quigley\",\"image\":\"pd303249980365.jpeg\"}],\"cast\":[{\"id\":2,\"full_name\":\"Isabelle Jacobson\",\"image\":\"pl218777711817.jpeg\"},{\"id\":3,\"full_name\":\"Alfonso Dietrich\",\"image\":\"pf205513938137.jpeg\"},{\"id\":4,\"full_name\":\"Ibrahim Alexa Keebler\",\"image\":\"pe299144587704.jpeg\"}]}"], "implementation": "TypeORM"}, {"duration": 10.0, "queries": 2004, "qps": 200.32, "latency_min": 3.1, "latency_mean": 4.976, "latency_max": 89.14, "latency_std": 2.541, "latency_cv": 51.06, "latency_percentiles": [[25, 4.178], [50, 4.753], [75, 5.334], [90, 6.006], [99, 8.959], [99.99, 89.146]], "samples": ["{\"id\":111923,\"title\":\"insert_test__19357\",\"image\":\"insert_test__image19357.jpeg\",\"description\":\"insert_test__description19357\",\"year\":19357,\"directors\":[{\"id\":1,\"full_name\":\"Arnold Turcotte\",\"image\":\"px816870774161.jpeg\"}],\"cast\":[{\"id\":4,\"full_name\":\"Isabelle Jacobson\",\"image\":\"pl218777711817.jpeg\"},{\"id\":5,\"full_name\":\"Austyn Quigley\",\"image\":\"pd303249980365.jpeg\"},{\"id\":6,\"full_name\":\"Nico Bailey\",\"image\":\"pp172207497742.jpeg\"}]}", "{\"id\":111920,\"title\":\"insert_test__835947\",\"image\":\"insert_test__image835947.jpeg\",\"description\":\"insert_test__description835947\",\"year\":835947,\"directors\":[{\"id\":1,\"full_name\":\"Arnold Turcotte\",\"image\":\"px816870774161.jpeg\"}],\"cast\":[{\"id\":4,\"full_name\":\"Isabelle Jacobson\",\"image\":\"pl218777711817.jpeg\"},{\"id\":5,\"full_name\":\"Austyn Quigley\",\"image\":\"pd303249980365.jpeg\"},{\"id\":6,\"full_name\":\"Nico Bailey\",\"image\":\"pp172207497742.jpeg\"}]}", "{\"id\":111921,\"title\":\"insert_test__69742\",\"image\":\"insert_test__image69742.jpeg\",\"description\":\"insert_test__description69742\",\"year\":69742,\"directors\":[{\"id\":1,\"full_name\":\"Arnold Turcotte\",\"image\":\"px816870774161.jpeg\"}],\"cast\":[{\"id\":4,\"full_name\":\"Isabelle Jacobson\",\"image\":\"pl218777711817.jpeg\"},{\"id\":5,\"full_name\":\"Austyn Quigley\",\"image\":\"pd303249980365.jpeg\"},{\"id\":6,\"full_name\":\"Nico Bailey\",\"image\":\"pp172207497742.jpeg\"}]}"], "implementation": "Prisma"}, {"duration": 10.0, "queries": 2831, "qps": 283.01, "latency_min": 2.21, "latency_mean": 3.521, "latency_max": 20.84, "latency_std": 1.12, "latency_cv": 31.81, "latency_percentiles": [[25, 2.924], [50, 3.258], [75, 3.685], [90, 4.524], [99, 8.004], [99.99, 20.844]], "samples": ["{\"id\":114880,\"image\":\"insert_test__image166877.jpeg\",\"title\":\"insert_test__166877\",\"year\":166877,\"description\":\"insert_test__description166877\",\"directors\":[{\"id\":23668,\"full_name\":\"Hester Herzog\",\"image\":\"pv902528769681.jpeg\"}],\"cast\":[{\"id\":65515,\"full_name\":\"Reagan Franecki\",\"image\":\"pj161497847926.jpeg\"},{\"id\":79142,\"full_name\":\"Vincenza Shanahan\",\"image\":\"pg540190503736.jpeg\"},{\"id\":91350,\"full_name\":\"Roselyn Jaskolski\",\"image\":\"pt142555971194.jpeg\"}]}", "{\"id\":114879,\"image\":\"insert_test__image892613.jpeg\",\"title\":\"insert_test__892613\",\"year\":892613,\"description\":\"insert_test__description892613\",\"directors\":[{\"id\":23668,\"full_name\":\"Hester Herzog\",\"image\":\"pv902528769681.jpeg\"}],\"cast\":[{\"id\":65515,\"full_name\":\"Reagan Franecki\",\"image\":\"pj161497847926.jpeg\"},{\"id\":79142,\"full_name\":\"Vincenza Shanahan\",\"image\":\"pg540190503736.jpeg\"},{\"id\":91350,\"full_name\":\"Roselyn Jaskolski\",\"image\":\"pt142555971194.jpeg\"}]}", "{\"id\":114883,\"image\":\"insert_test__image710418.jpeg\",\"title\":\"insert_test__710418\",\"year\":710418,\"description\":\"insert_test__description710418\",\"directors\":[{\"id\":23668,\"full_name\":\"Hester Herzog\",\"image\":\"pv902528769681.jpeg\"}],\"cast\":[{\"id\":65515,\"full_name\":\"Reagan Franecki\",\"image\":\"pj161497847926.jpeg\"},{\"id\":79142,\"full_name\":\"Vincenza Shanahan\",\"image\":\"pg540190503736.jpeg\"},{\"id\":91350,\"full_name\":\"Roselyn Jaskolski\",\"image\":\"pt142555971194.jpeg\"}]}"], "implementation": "MonOrm (Node.js)"}, {"duration": 10.0, "queries": 2918, "qps": 291.75, "latency_min": 1.9, "latency_mean": 3.413, "latency_max": 30.02, "latency_std": 1.352, "latency_cv": 39.61, "latency_percentiles": [[25, 2.683], [50, 3.065], [75, 3.629], [90, 4.713], [99, 8.746], [99.99, 30.024]], "samples": ["{\"id\":119026,\"title\":\"insert_test__33109\",\"image\":\"insert_test__image33109.jpeg\",\"description\":\"insert_test__description33109\",\"year\":33109,\"directors\":[{\"id\":7124,\"full_name\":\"Reva Hickle\",\"image\":\"pa422833299544.jpeg\"}],\"cast\":[{\"id\":18689,\"full_name\":\"Domenica Herman\",\"image\":\"pm726137768670.jpeg\"},{\"id\":20811,\"full_name\":\"Allison Purdy\",\"image\":\"pg652744918714.jpeg\"},{\"id\":43322,\"full_name\":\"Murl Huel\",\"image\":\"pq332979604247.jpeg\"}]}", "{\"id\":119031,\"title\":\"insert_test__585854\",\"image\":\"insert_test__image585854.jpeg\",\"description\":\"insert_test__description585854\",\"year\":585854,\"directors\":[{\"id\":7124,\"full_name\":\"Reva Hickle\",\"image\":\"pa422833299544.jpeg\"}],\"cast\":[{\"id\":18689,\"full_name\":\"Domenica Herman\",\"image\":\"pm726137768670.jpeg\"},{\"id\":20811,\"full_name\":\"Allison Purdy\",\"image\":\"pg652744918714.jpeg\"},{\"id\":43322,\"full_name\":\"Murl Huel\",\"image\":\"pq332979604247.jpeg\"}]}", "{\"id\":119034,\"title\":\"insert_test__767229\",\"image\":\"insert_test__image767229.jpeg\",\"description\":\"insert_test__description767229\",\"year\":767229,\"directors\":[{\"id\":7124,\"full_name\":\"Reva Hickle\",\"image\":\"pa422833299544.jpeg\"}],\"cast\":[{\"id\":18689,\"full_name\":\"Domenica Herman\",\"image\":\"pm726137768670.jpeg\"},{\"id\":20811,\"full_name\":\"Allison Purdy\",\"image\":\"pg652744918714.jpeg\"},{\"id\":43322,\"full_name\":\"Murl Huel\",\"image\":\"pq332979604247.jpeg\"}]}"], "implementation": "PostgreSQL (Node.js, pg)"}];
+      drawBars('#bars-insert_movie', DATA_insert_movie, {sort: true});
+      drawLats('#lats-insert_movie', DATA_insert_movie, {sort: true});
+    </script>
+
+    
+    <h4>Sample Outputs</h4>
+
+    <div id="samples-insert_movie"></div>
+
+    <script>
+      renderSamples(document.getElementById('samples-insert_movie'), DATA_insert_movie);
+    </script>
+       
+    <h3>GET /movie/:id</h3>
+    <p class="bench-description">Get information about a given movie: title, year, directors, cast, recent reviews, and average review rating.</p>
+
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-get_movie" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-get_movie" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_get_movie = [{"duration": 10.0, "queries": 426, "qps": 42.6, "latency_min": 7.27, "latency_mean": 23.504, "latency_max": 82.53, "latency_std": 10.134, "latency_cv": 43.12, "latency_percentiles": [[25, 15.77], [50, 22.04], [75, 29.8], [90, 35.138], [99, 57.675], [99.99, 82.539]], "samples": ["{\"id\":206249,\"image\":\"mb349530604752.jpeg\",\"title\":\"benchmark 24/365 portals\",\"year\":1984,\"description\":\"integrate B2B users\",\"directors\":[{\"id\":258,\"full_name\":\"Berneice Trantow\",\"image\":\"pz340918705333.jpeg\"}],\"cast\":[{\"id\":14184,\"full_name\":\"Fern Fritsch\",\"image\":\"pm589969037542.jpeg\"},{\"id\":14185,\"full_name\":\"Elinor Pfeffer\",\"image\":\"pg593607005912.jpeg\"},{\"id\":14186,\"full_name\":\"Magnus Hintz\",\"image\":\"pb010807600239.jpeg\"},{\"id\":14187,\"full_name\":\"Blake Tatum Windler\",\"image\":\"pn202637241562.jpeg\"},{\"id\":14188,\"full_name\":\"Hermina Purdy\",\"image\":\"pt691053953675.jpeg\"},{\"id\":14189,\"full_name\":\"Hilma Halvorson\",\"image\":\"pd655017786239.jpeg\"},{\"id\":14190,\"full_name\":\"Rosemary Carter\",\"image\":\"pf905328835772.jpeg\"},{\"id\":14191,\"full_name\":\"Gerald X. Herzog\",\"image\":\"pk284275831663.jpeg\"},{\"id\":14192,\"full_name\":\"Ardith Weber\",\"image\":\"pv765623856798.jpeg\"},{\"id\":14193,\"full_name\":\"Marietta Kasey Kunze\",\"image\":\"pi724316166841.jpeg\"},{\"id\":14194,\"full_name\":\"Dorothy Hegmann\",\"image\":\"pb590000390890.jpeg\"},{\"id\":14195,\"full_name\":\"Buddy King\",\"image\":\"pz255530321563.jpeg\"},{\"id\":14196,\"full_name\":\"Khalid Jast\",\"image\":\"pf383470426755.jpeg\"}],\"reviews\":[{\"id\":406249,\"body\":\"brand end-to-end solutions\",\"rating\":3,\"author\":{\"id\":181249,\"name\":\"garret_qui\",\"image\":\"ut467723479728.jpeg\"}},{\"id\":531249,\"body\":\"monetize end-to-end solutions\",\"rating\":2,\"author\":{\"id\":106249,\"name\":\"bertram_placeat\",\"image\":\"un338473114181.jpeg\"}},{\"id\":356249,\"body\":\"aggregate proactive web services\",\"rating\":4,\"author\":{\"id\":131249,\"name\":\"ella_totam\",\"image\":\"uh918139591418.jpeg\"}},{\"id\":231249,\"body\":\"synergize cross-platform channels\",\"rating\":1,\"author\":{\"id\":106249,\"name\":\"bertram_placeat\",\"image\":\"un338473114181.jpeg\"}},{\"id\":606249,\"body\":\"cultivate transparent platforms\",\"rating\":3,\"author\":{\"id\":181249,\"name\":\"garret_qui\",\"image\":\"ut467723479728.jpeg\"}},{\"id\":506249,\"body\":\"expedite plug-and-play schemas\",\"rating\":3,\"author\":{\"id\":181249,\"name\":\"garret_qui\",\"image\":\"ut467723479728.jpeg\"}},{\"id\":256249,\"body\":\"disintermediate transparent systems\",\"rating\":5,\"author\":{\"id\":131249,\"name\":\"ella_totam\",\"image\":\"uh918139591418.jpeg\"}},{\"id\":331249,\"body\":\"strategize robust schemas\",\"rating\":4,\"author\":{\"id\":106249,\"name\":\"bertram_placeat\",\"image\":\"un338473114181.jpeg\"}},{\"id\":431249,\"body\":\"orchestrate one-to-one functionalities\",\"rating\":3,\"author\":{\"id\":106249,\"name\":\"bertram_placeat\",\"image\":\"un338473114181.jpeg\"}},{\"id\":581249,\"body\":\"maximize back-end e-tailers\",\"rating\":5,\"author\":{\"id\":156249,\"name\":\"enrique_velit\",\"image\":\"uc689439724321.jpeg\"}},{\"id\":706249,\"body\":\"syndicate transparent ROI\",\"rating\":5,\"author\":{\"id\":181249,\"name\":\"garret_qui\",\"image\":\"ut467723479728.jpeg\"}},{\"id\":481249,\"body\":\"implement 24/7 communities\",\"rating\":4,\"author\":{\"id\":156249,\"name\":\"enrique_velit\",\"image\":\"uc689439724321.jpeg\"}},{\"id\":281249,\"body\":\"monetize B2C metrics\",\"rating\":1,\"author\":{\"id\":156249,\"name\":\"enrique_velit\",\"image\":\"uc689439724321.jpeg\"}},{\"id\":681249,\"body\":\"harness distributed users\",\"rating\":4,\"author\":{\"id\":156249,\"name\":\"enrique_velit\",\"image\":\"uc689439724321.jpeg\"}},{\"id\":656249,\"body\":\"disintermediate collaborative convergence\",\"rating\":2,\"author\":{\"id\":131249,\"name\":\"ella_totam\",\"image\":\"uh918139591418.jpeg\"}},{\"id\":556249,\"body\":\"generate distributed networks\",\"rating\":1,\"author\":{\"id\":131249,\"name\":\"ella_totam\",\"image\":\"uh918139591418.jpeg\"}},{\"id\":456249,\"body\":\"enable extensible ROI\",\"rating\":5,\"author\":{\"id\":131249,\"name\":\"ella_totam\",\"image\":\"uh918139591418.jpeg\"}},{\"id\":631249,\"body\":\"brand sticky web-readiness\",\"rating\":4,\"author\":{\"id\":106249,\"name\":\"bertram_placeat\",\"image\":\"un338473114181.jpeg\"}},{\"id\":381249,\"body\":\"innovate virtual eyeballs\",\"rating\":5,\"author\":{\"id\":156249,\"name\":\"enrique_velit\",\"image\":\"uc689439724321.jpeg\"}},{\"id\":306249,\"body\":\"recontextualize dynamic relationships\",\"rating\":2,\"author\":{\"id\":181249,\"name\":\"garret_qui\",\"image\":\"ut467723479728.jpeg\"}}],\"avg_rating\":3.3}", "{\"id\":206104,\"image\":\"mz316446600971.jpeg\",\"title\":\"incubate next-generation platforms\",\"year\":1950,\"description\":\"expedite web-enabled architectures\",\"directors\":[{\"id\":106,\"full_name\":\"Rowan Schneider\",\"image\":\"pc932583494486.jpeg\"}],\"cast\":[{\"id\":9346,\"full_name\":\"Alford Marvin\",\"image\":\"pc718531507967.jpeg\"},{\"id\":9347,\"full_name\":\"Katelynn Miller\",\"image\":\"pc274953069667.jpeg\"},{\"id\":9348,\"full_name\":\"Kelsi Beatty\",\"image\":\"pt049285749821.jpeg\"},{\"id\":9349,\"full_name\":\"Brooklyn Schroeder\",\"image\":\"pu613790905611.jpeg\"},{\"id\":9350,\"full_name\":\"Valentine D. Bayer\",\"image\":\"pt263867830115.jpeg\"},{\"id\":9351,\"full_name\":\"Elise Kohler\",\"image\":\"pb260944160654.jpeg\"},{\"id\":9352,\"full_name\":\"Geraldine Tremblay\",\"image\":\"pp784198680962.jpeg\"},{\"id\":9353,\"full_name\":\"Henderson Bryon Braun\",\"image\":\"pr555498315966.jpeg\"},{\"id\":9354,\"full_name\":\"Brice Quitzon\",\"image\":\"pm597564970599.jpeg\"},{\"id\":9355,\"full_name\":\"Omer Torphy\",\"image\":\"pr154306548832.jpeg\"},{\"id\":9356,\"full_name\":\"Neva Runte\",\"image\":\"pk960175406634.jpeg\"},{\"id\":9357,\"full_name\":\"Royce Berge\",\"image\":\"pl329829687319.jpeg\"},{\"id\":9358,\"full_name\":\"Amparo Bartell\",\"image\":\"pj987268464551.jpeg\"},{\"id\":9359,\"full_name\":\"Agustina Larkin\",\"image\":\"po111688979847.jpeg\"},{\"id\":9360,\"full_name\":\"Layne Collier\",\"image\":\"po318859577737.jpeg\"},{\"id\":9361,\"full_name\":\"Nico I. Gerlach\",\"image\":\"pc853056752442.jpeg\"},{\"id\":9362,\"full_name\":\"Alaina Gaylord\",\"image\":\"pt946678354248.jpeg\"},{\"id\":9363,\"full_name\":\"Dorian Crooks\",\"image\":\"py906041690758.jpeg\"},{\"id\":9364,\"full_name\":\"Jocelyn Elisabeth Reinger\",\"image\":\"pr429261192101.jpeg\"},{\"id\":9365,\"full_name\":\"Celestino Larkin\",\"image\":\"pq070190528551.jpeg\"},{\"id\":9366,\"full_name\":\"Matt Krystel Denesik\",\"image\":\"pg802995733082.jpeg\"},{\"id\":9367,\"full_name\":\"Anthony McKenzie\",\"image\":\"pc178134044675.jpeg\"},{\"id\":9368,\"full_name\":\"Amos Deckow\",\"image\":\"pj292904799479.jpeg\"},{\"id\":9369,\"full_name\":\"River W. Lehner\",\"image\":\"pu339570476252.jpeg\"},{\"id\":9370,\"full_name\":\"Jefferey Vandervort\",\"image\":\"pl993117948982.jpeg\"},{\"id\":9371,\"full_name\":\"Ada Yost\",\"image\":\"pu860558839323.jpeg\"},{\"id\":9372,\"full_name\":\"Wilbert Rau\",\"image\":\"pb350933010179.jpeg\"},{\"id\":9373,\"full_name\":\"Ward Lexus Terry\",\"image\":\"pe070351709352.jpeg\"},{\"id\":9374,\"full_name\":\"Sigurd Powlowski\",\"image\":\"pe753707797592.jpeg\"},{\"id\":9375,\"full_name\":\"Electa Cronin\",\"image\":\"pk730598374239.jpeg\"}],\"reviews\":[{\"id\":356104,\"body\":\"synthesize efficient technologies\",\"rating\":1,\"author\":{\"id\":131104,\"name\":\"damien_animi\",\"image\":\"uh078696905363.jpeg\"}},{\"id\":256104,\"body\":\"unleash granular models\",\"rating\":1,\"author\":{\"id\":131104,\"name\":\"damien_animi\",\"image\":\"uh078696905363.jpeg\"}},{\"id\":406104,\"body\":\"embrace cross-platform markets\",\"rating\":4,\"author\":{\"id\":181104,\"name\":\"giles_repudiandae\",\"image\":\"uv213146929539.jpeg\"}},{\"id\":681104,\"body\":\"harness visionary ROI\",\"rating\":2,\"author\":{\"id\":156104,\"name\":\"emmet_porro\",\"image\":\"ua017350646769.jpeg\"}},{\"id\":631104,\"body\":\"exploit killer paradigms\",\"rating\":5,\"author\":{\"id\":106104,\"name\":\"myrtice_a\",\"image\":\"un568250834465.jpeg\"}},{\"id\":456104,\"body\":\"scale bleeding-edge web-readiness\",\"rating\":3,\"author\":{\"id\":131104,\"name\":\"damien_animi\",\"image\":\"uh078696905363.jpeg\"}},{\"id\":581104,\"body\":\"transform open-source partnerships\",\"rating\":4,\"author\":{\"id\":156104,\"name\":\"emmet_porro\",\"image\":\"ua017350646769.jpeg\"}},{\"id\":331104,\"body\":\"incubate granular architectures\",\"rating\":2,\"author\":{\"id\":106104,\"name\":\"myrtice_a\",\"image\":\"un568250834465.jpeg\"}},{\"id\":606104,\"body\":\"enable best-of-breed applications\",\"rating\":3,\"author\":{\"id\":181104,\"name\":\"giles_repudiandae\",\"image\":\"uv213146929539.jpeg\"}},{\"id\":381104,\"body\":\"extend web-enabled content\",\"rating\":2,\"author\":{\"id\":156104,\"name\":\"emmet_porro\",\"image\":\"ua017350646769.jpeg\"}},{\"id\":281104,\"body\":\"seize frictionless networks\",\"rating\":4,\"author\":{\"id\":156104,\"name\":\"emmet_porro\",\"image\":\"ua017350646769.jpeg\"}},{\"id\":556104,\"body\":\"incubate e-business e-markets\",\"rating\":3,\"author\":{\"id\":131104,\"name\":\"damien_animi\",\"image\":\"uh078696905363.jpeg\"}},{\"id\":231104,\"body\":\"optimize ubiquitous systems\",\"rating\":5,\"author\":{\"id\":106104,\"name\":\"myrtice_a\",\"image\":\"un568250834465.jpeg\"}},{\"id\":656104,\"body\":\"unleash dynamic e-services\",\"rating\":2,\"author\":{\"id\":131104,\"name\":\"damien_animi\",\"image\":\"uh078696905363.jpeg\"}},{\"id\":531104,\"body\":\"repurpose distributed markets\",\"rating\":3,\"author\":{\"id\":106104,\"name\":\"myrtice_a\",\"image\":\"un568250834465.jpeg\"}},{\"id\":506104,\"body\":\"matrix one-to-one relationships\",\"rating\":5,\"author\":{\"id\":181104,\"name\":\"giles_repudiandae\",\"image\":\"uv213146929539.jpeg\"}},{\"id\":481104,\"body\":\"transform frictionless models\",\"rating\":4,\"author\":{\"id\":156104,\"name\":\"emmet_porro\",\"image\":\"ua017350646769.jpeg\"}},{\"id\":431104,\"body\":\"leverage dot-com schemas\",\"rating\":4,\"author\":{\"id\":106104,\"name\":\"myrtice_a\",\"image\":\"un568250834465.jpeg\"}},{\"id\":306104,\"body\":\"transition collaborative e-commerce\",\"rating\":1,\"author\":{\"id\":181104,\"name\":\"giles_repudiandae\",\"image\":\"uv213146929539.jpeg\"}},{\"id\":706104,\"body\":\"matrix impactful communities\",\"rating\":5,\"author\":{\"id\":181104,\"name\":\"giles_repudiandae\",\"image\":\"uv213146929539.jpeg\"}}],\"avg_rating\":3.15}", "{\"id\":206138,\"image\":\"mf096270094460.jpeg\",\"title\":\"reinvent killer supply-chains\",\"year\":1965,\"description\":\"e-enable interactive bandwidth\",\"directors\":[{\"id\":141,\"full_name\":\"Stewart Cummerata\",\"image\":\"pr004527848558.jpeg\"}],\"cast\":[{\"id\":10473,\"full_name\":\"Sarah Renner\",\"image\":\"pv791137394847.jpeg\"},{\"id\":10474,\"full_name\":\"Tamia U. Schowalter\",\"image\":\"pe823673138150.jpeg\"},{\"id\":10475,\"full_name\":\"Veda Koelpin\",\"image\":\"pj882600521506.jpeg\"},{\"id\":10476,\"full_name\":\"Abby Runte\",\"image\":\"pm283716035250.jpeg\"},{\"id\":10477,\"full_name\":\"Kevin Hoppe\",\"image\":\"pz810475686109.jpeg\"},{\"id\":10478,\"full_name\":\"Sage Hilpert\",\"image\":\"pf384688516681.jpeg\"},{\"id\":10479,\"full_name\":\"Deangelo Osinski\",\"image\":\"pz583525244350.jpeg\"},{\"id\":10480,\"full_name\":\"Adell Grant\",\"image\":\"ph500569774030.jpeg\"},{\"id\":10481,\"full_name\":\"Jayne Jaycee Nikolaus\",\"image\":\"pb692997189302.jpeg\"},{\"id\":10482,\"full_name\":\"Roosevelt Lueilwitz\",\"image\":\"pk755832123212.jpeg\"},{\"id\":10483,\"full_name\":\"Zoey W. Rohan\",\"image\":\"pg326107014071.jpeg\"},{\"id\":10484,\"full_name\":\"Raoul Doyle\",\"image\":\"ph039754762463.jpeg\"},{\"id\":10485,\"full_name\":\"Rosemarie Monica Funk\",\"image\":\"pk962474894714.jpeg\"},{\"id\":10486,\"full_name\":\"Beulah Lucienne Koelpin\",\"image\":\"pj440280334683.jpeg\"},{\"id\":10487,\"full_name\":\"Pansy Gardner Gulgowski\",\"image\":\"pq718253101738.jpeg\"},{\"id\":10488,\"full_name\":\"Leopoldo Jones\",\"image\":\"pm925078346190.jpeg\"},{\"id\":10489,\"full_name\":\"Janelle Greenfelder\",\"image\":\"pd017141031467.jpeg\"},{\"id\":10490,\"full_name\":\"Shakira Olaf DuBuque\",\"image\":\"pk986244821324.jpeg\"},{\"id\":10491,\"full_name\":\"Justus Renner\",\"image\":\"pe313989558957.jpeg\"},{\"id\":10492,\"full_name\":\"Jaydon Corwin\",\"image\":\"pc189209945889.jpeg\"},{\"id\":10493,\"full_name\":\"Jovanny Aubrey Jast\",\"image\":\"pw269971198883.jpeg\"},{\"id\":10494,\"full_name\":\"Koby Kub\",\"image\":\"pd155504479587.jpeg\"},{\"id\":10495,\"full_name\":\"Deanna Bergnaum\",\"image\":\"ph751747770103.jpeg\"},{\"id\":10496,\"full_name\":\"Dax Aufderhar\",\"image\":\"ps174182111930.jpeg\"},{\"id\":10497,\"full_name\":\"Humberto Fisher\",\"image\":\"pu989021105693.jpeg\"},{\"id\":10498,\"full_name\":\"Howard Howell\",\"image\":\"pp991646237821.jpeg\"},{\"id\":10499,\"full_name\":\"Jovan Johnson\",\"image\":\"pe346783395821.jpeg\"},{\"id\":10500,\"full_name\":\"Ashly Padberg\",\"image\":\"pu394192329198.jpeg\"},{\"id\":10501,\"full_name\":\"Kiley West\",\"image\":\"pe442823852667.jpeg\"},{\"id\":10502,\"full_name\":\"Judson Osinski\",\"image\":\"pd891712117397.jpeg\"},{\"id\":10503,\"full_name\":\"Gail Wiza\",\"image\":\"pb787366698349.jpeg\"},{\"id\":10504,\"full_name\":\"Titus Hermann\",\"image\":\"pp816373253691.jpeg\"},{\"id\":10505,\"full_name\":\"Felipa Corwin\",\"image\":\"pg310023475585.jpeg\"},{\"id\":10506,\"full_name\":\"Samantha Renner\",\"image\":\"pr012854556038.jpeg\"},{\"id\":10507,\"full_name\":\"Sonya Reilly\",\"image\":\"pq147656043183.jpeg\"},{\"id\":10508,\"full_name\":\"Ibrahim Bauch\",\"image\":\"ps431829486932.jpeg\"},{\"id\":10509,\"full_name\":\"Madilyn Bednar\",\"image\":\"pe083157746832.jpeg\"},{\"id\":10510,\"full_name\":\"Marlen Grady\",\"image\":\"pa595115975097.jpeg\"},{\"id\":10511,\"full_name\":\"Hollis Lockman\",\"image\":\"pm811829899025.jpeg\"},{\"id\":10512,\"full_name\":\"Dino Hills\",\"image\":\"pf031005939429.jpeg\"},{\"id\":10513,\"full_name\":\"Darrick Gutmann\",\"image\":\"pb751485120009.jpeg\"},{\"id\":10514,\"full_name\":\"Adelle Lockman\",\"image\":\"pr907053762265.jpeg\"},{\"id\":10515,\"full_name\":\"Dawson Yundt\",\"image\":\"pl335959270360.jpeg\"},{\"id\":10516,\"full_name\":\"Frieda Gibson\",\"image\":\"pb278616575747.jpeg\"},{\"id\":10517,\"full_name\":\"Domenica Considine\",\"image\":\"pb075512045775.jpeg\"},{\"id\":10518,\"full_name\":\"Keven Hegmann\",\"image\":\"pj013552172323.jpeg\"},{\"id\":10519,\"full_name\":\"Meagan Hammes\",\"image\":\"pa340460085385.jpeg\"},{\"id\":10520,\"full_name\":\"Jazlyn Terry\",\"image\":\"pw816269314868.jpeg\"},{\"id\":10521,\"full_name\":\"Rhett Blair Mayert\",\"image\":\"pp021034055880.jpeg\"},{\"id\":10522,\"full_name\":\"Trevion Rempel\",\"image\":\"pl605219205759.jpeg\"},{\"id\":10523,\"full_name\":\"Leilani Anderson\",\"image\":\"pj886376509951.jpeg\"},{\"id\":10524,\"full_name\":\"Kaitlin Keeling\",\"image\":\"pp523186613233.jpeg\"}],\"reviews\":[{\"id\":231138,\"body\":\"engineer seamless paradigms\",\"rating\":2,\"author\":{\"id\":106138,\"name\":\"cornell_voluptatum\",\"image\":\"uo726698488845.jpeg\"}},{\"id\":656138,\"body\":\"engineer real-time models\",\"rating\":5,\"author\":{\"id\":131138,\"name\":\"carley_at\",\"image\":\"ug385920713355.jpeg\"}},{\"id\":606138,\"body\":\"engage robust platforms\",\"rating\":0,\"author\":{\"id\":181138,\"name\":\"lionel_rem\",\"image\":\"uh056468033189.jpeg\"}},{\"id\":581138,\"body\":\"redefine integrated metrics\",\"rating\":5,\"author\":{\"id\":156138,\"name\":\"lilian_accusantium\",\"image\":\"ud714771576564.jpeg\"}},{\"id\":381138,\"body\":\"mesh web-enabled e-commerce\",\"rating\":4,\"author\":{\"id\":156138,\"name\":\"lilian_accusantium\",\"image\":\"ud714771576564.jpeg\"}},{\"id\":681138,\"body\":\"expedite user-centric communities\",\"rating\":5,\"author\":{\"id\":156138,\"name\":\"lilian_accusantium\",\"image\":\"ud714771576564.jpeg\"}},{\"id\":356138,\"body\":\"strategize scalable supply-chains\",\"rating\":3,\"author\":{\"id\":131138,\"name\":\"carley_at\",\"image\":\"ug385920713355.jpeg\"}},{\"id\":331138,\"body\":\"deliver efficient channels\",\"rating\":2,\"author\":{\"id\":106138,\"name\":\"cornell_voluptatum\",\"image\":\"uo726698488845.jpeg\"}},{\"id\":406138,\"body\":\"maximize ubiquitous relationships\",\"rating\":4,\"author\":{\"id\":181138,\"name\":\"lionel_rem\",\"image\":\"uh056468033189.jpeg\"}},{\"id\":256138,\"body\":\"facilitate one-to-one web-readiness\",\"rating\":5,\"author\":{\"id\":131138,\"name\":\"carley_at\",\"image\":\"ug385920713355.jpeg\"}},{\"id\":631138,\"body\":\"scale wireless solutions\",\"rating\":3,\"author\":{\"id\":106138,\"name\":\"cornell_voluptatum\",\"image\":\"uo726698488845.jpeg\"}},{\"id\":431138,\"body\":\"grow integrated eyeballs\",\"rating\":4,\"author\":{\"id\":106138,\"name\":\"cornell_voluptatum\",\"image\":\"uo726698488845.jpeg\"}},{\"id\":706138,\"body\":\"grow extensible content\",\"rating\":4,\"author\":{\"id\":181138,\"name\":\"lionel_rem\",\"image\":\"uh056468033189.jpeg\"}},{\"id\":306138,\"body\":\"benchmark out-of-the-box schemas\",\"rating\":2,\"author\":{\"id\":181138,\"name\":\"lionel_rem\",\"image\":\"uh056468033189.jpeg\"}},{\"id\":506138,\"body\":\"incentivize B2C interfaces\",\"rating\":4,\"author\":{\"id\":181138,\"name\":\"lionel_rem\",\"image\":\"uh056468033189.jpeg\"}},{\"id\":531138,\"body\":\"whiteboard seamless partnerships\",\"rating\":4,\"author\":{\"id\":106138,\"name\":\"cornell_voluptatum\",\"image\":\"uo726698488845.jpeg\"}},{\"id\":556138,\"body\":\"grow extensible users\",\"rating\":3,\"author\":{\"id\":131138,\"name\":\"carley_at\",\"image\":\"ug385920713355.jpeg\"}},{\"id\":481138,\"body\":\"incentivize end-to-end ROI\",\"rating\":4,\"author\":{\"id\":156138,\"name\":\"lilian_accusantium\",\"image\":\"ud714771576564.jpeg\"}},{\"id\":281138,\"body\":\"embrace web-enabled web-readiness\",\"rating\":5,\"author\":{\"id\":156138,\"name\":\"lilian_accusantium\",\"image\":\"ud714771576564.jpeg\"}},{\"id\":456138,\"body\":\"integrate integrated deliverables\",\"rating\":4,\"author\":{\"id\":131138,\"name\":\"carley_at\",\"image\":\"ug385920713355.jpeg\"}}],\"avg_rating\":3.6}"], "implementation": "TypeORM"}, {"duration": 10.0, "queries": 1566, "qps": 156.54, "latency_min": 3.83, "latency_mean": 6.385, "latency_max": 17.1, "latency_std": 1.666, "latency_cv": 26.09, "latency_percentiles": [[25, 5.32], [50, 6.055], [75, 6.9], [90, 8.206], [99, 12.237], [99.99, 17.107]], "samples": ["{\"id\":573,\"image\":\"md068227428414.jpeg\",\"title\":\"cultivate cross-platform markets\",\"year\":1960,\"description\":\"incubate impactful experiences\",\"directors\":[{\"id\":598,\"full_name\":\"Stefan Waelchi\",\"image\":\"pt206450049990.jpeg\"}],\"cast\":[{\"id\":24779,\"full_name\":\"Davon Deckow\",\"image\":\"pj727154381271.jpeg\"},{\"id\":24780,\"full_name\":\"Cloyd Cormier\",\"image\":\"pu304027452822.jpeg\"},{\"id\":24782,\"full_name\":\"Albert J. Koepp\",\"image\":\"po042622488683.jpeg\"},{\"id\":24783,\"full_name\":\"Isai Johns\",\"image\":\"pa255804796774.jpeg\"},{\"id\":24785,\"full_name\":\"Mikayla O'Connell\",\"image\":\"pt411404814446.jpeg\"},{\"id\":24789,\"full_name\":\"Arnulfo Kerluke\",\"image\":\"pl948094512159.jpeg\"},{\"id\":24786,\"full_name\":\"Felipe Sipes\",\"image\":\"py264244062838.jpeg\"},{\"id\":24787,\"full_name\":\"Lacy Paucek\",\"image\":\"po460743576326.jpeg\"},{\"id\":24794,\"full_name\":\"Kiel Feest\",\"image\":\"po127923109677.jpeg\"},{\"id\":24798,\"full_name\":\"Telly Rahsaan Rogahn\",\"image\":\"ps391661609207.jpeg\"},{\"id\":24800,\"full_name\":\"Gloria Lubowitz\",\"image\":\"pe751014941770.jpeg\"},{\"id\":24788,\"full_name\":\"Ernest Hoppe\",\"image\":\"pk617486776182.jpeg\"},{\"id\":24790,\"full_name\":\"Chelsea Lang\",\"image\":\"pf729545919249.jpeg\"},{\"id\":24792,\"full_name\":\"Kenneth O'Connell\",\"image\":\"pd982349947468.jpeg\"},{\"id\":24791,\"full_name\":\"Idella Stracke\",\"image\":\"pk974940809303.jpeg\"},{\"id\":24793,\"full_name\":\"Tony Walter\",\"image\":\"pf344128190779.jpeg\"},{\"id\":24795,\"full_name\":\"Logan T. Nienow\",\"image\":\"pj000803374824.jpeg\"},{\"id\":24796,\"full_name\":\"Ocie Konopelski\",\"image\":\"pk009961907464.jpeg\"},{\"id\":24797,\"full_name\":\"Jedidiah Huels\",\"image\":\"pm233971941491.jpeg\"}],\"reviews\":[{\"id\":275569,\"body\":\"architect holistic partnerships\",\"rating\":5,\"author\":{\"id\":75569,\"name\":\"ayden_omnis\",\"image\":\"ux051721225674.jpeg\"}},{\"id\":25572,\"body\":\"matrix extensible models\",\"rating\":5,\"author\":{\"id\":25566,\"name\":\"mackenzie_nostrum\",\"image\":\"uh764606425954.jpeg\"}},{\"id\":300568,\"body\":\"unleash vertical technologies\",\"rating\":2,\"author\":{\"id\":584,\"name\":\"raheem_quia\",\"image\":\"uj880223266487.jpeg\"}},{\"id\":50567,\"body\":\"architect out-of-the-box infrastructures\",\"rating\":3,\"author\":{\"id\":50582,\"name\":\"pattie_reiciendis\",\"image\":\"ue268243022775.jpeg\"}},{\"id\":325572,\"body\":\"brand interactive synergies\",\"rating\":4,\"author\":{\"id\":25566,\"name\":\"mackenzie_nostrum\",\"image\":\"uh764606425954.jpeg\"}},{\"id\":150583,\"body\":\"engage frictionless ROI\",\"rating\":2,\"author\":{\"id\":50582,\"name\":\"pattie_reiciendis\",\"image\":\"ue268243022775.jpeg\"}},{\"id\":75575,\"body\":\"disintermediate synergistic partnerships\",\"rating\":4,\"author\":{\"id\":75569,\"name\":\"ayden_omnis\",\"image\":\"ux051721225674.jpeg\"}},{\"id\":250566,\"body\":\"orchestrate revolutionary infomediaries\",\"rating\":5,\"author\":{\"id\":50582,\"name\":\"pattie_reiciendis\",\"image\":\"ue268243022775.jpeg\"}},{\"id\":225565,\"body\":\"benchmark open-source bandwidth\",\"rating\":2,\"author\":{\"id\":25566,\"name\":\"mackenzie_nostrum\",\"image\":\"uh764606425954.jpeg\"}},{\"id\":569,\"body\":\"revolutionize scalable functionalities\",\"rating\":3,\"author\":{\"id\":584,\"name\":\"raheem_quia\",\"image\":\"uj880223266487.jpeg\"}},{\"id\":100567,\"body\":\"drive plug-and-play e-business\",\"rating\":4,\"author\":{\"id\":584,\"name\":\"raheem_quia\",\"image\":\"uj880223266487.jpeg\"}},{\"id\":450556,\"body\":\"brand seamless schemas\",\"rating\":2,\"author\":{\"id\":50582,\"name\":\"pattie_reiciendis\",\"image\":\"ue268243022775.jpeg\"}},{\"id\":475574,\"body\":\"redefine plug-and-play infomediaries\",\"rating\":2,\"author\":{\"id\":75569,\"name\":\"ayden_omnis\",\"image\":\"ux051721225674.jpeg\"}},{\"id\":125569,\"body\":\"redefine world-class deliverables\",\"rating\":2,\"author\":{\"id\":25566,\"name\":\"mackenzie_nostrum\",\"image\":\"uh764606425954.jpeg\"}},{\"id\":175571,\"body\":\"architect interactive vortals\",\"rating\":2,\"author\":{\"id\":75569,\"name\":\"ayden_omnis\",\"image\":\"ux051721225674.jpeg\"}},{\"id\":200561,\"body\":\"exploit next-generation convergence\",\"rating\":4,\"author\":{\"id\":584,\"name\":\"raheem_quia\",\"image\":\"uj880223266487.jpeg\"}},{\"id\":400574,\"body\":\"synthesize synergistic methodologies\",\"rating\":5,\"author\":{\"id\":584,\"name\":\"raheem_quia\",\"image\":\"uj880223266487.jpeg\"}},{\"id\":350570,\"body\":\"extend end-to-end web-readiness\",\"rating\":4,\"author\":{\"id\":50582,\"name\":\"pattie_reiciendis\",\"image\":\"ue268243022775.jpeg\"}},{\"id\":375566,\"body\":\"incentivize holistic web services\",\"rating\":4,\"author\":{\"id\":75569,\"name\":\"ayden_omnis\",\"image\":\"ux051721225674.jpeg\"}},{\"id\":425570,\"body\":\"leverage sticky functionalities\",\"rating\":3,\"author\":{\"id\":25566,\"name\":\"mackenzie_nostrum\",\"image\":\"uh764606425954.jpeg\"}}],\"avg_rating\":3.35}", "{\"id\":482,\"image\":\"mk651198198315.jpeg\",\"title\":\"iterate world-class vortals\",\"year\":2012,\"description\":\"enable customized systems\",\"directors\":[{\"id\":498,\"full_name\":\"Cristal Gleichner\",\"image\":\"pr245009340091.jpeg\"}],\"cast\":[{\"id\":21521,\"full_name\":\"Jairo Morar\",\"image\":\"ps246755366260.jpeg\"},{\"id\":21531,\"full_name\":\"Devin Ziemann\",\"image\":\"pz665201472690.jpeg\"},{\"id\":21523,\"full_name\":\"Peyton Erdman\",\"image\":\"ph301960573553.jpeg\"},{\"id\":21534,\"full_name\":\"Jackson Wisozk\",\"image\":\"pm937754243462.jpeg\"},{\"id\":21529,\"full_name\":\"Melody Kuhlman\",\"image\":\"py231340008365.jpeg\"},{\"id\":21526,\"full_name\":\"Davonte Gleichner\",\"image\":\"ph667210425787.jpeg\"},{\"id\":21527,\"full_name\":\"Shaylee Huels\",\"image\":\"pj275878434714.jpeg\"},{\"id\":21528,\"full_name\":\"Jorge Farrell\",\"image\":\"po743797701266.jpeg\"},{\"id\":21530,\"full_name\":\"Krista Donnelly\",\"image\":\"ph930900875361.jpeg\"},{\"id\":21538,\"full_name\":\"Kian Cormier\",\"image\":\"pa836707478271.jpeg\"},{\"id\":21535,\"full_name\":\"Fay Auer\",\"image\":\"pf735852897634.jpeg\"},{\"id\":21533,\"full_name\":\"Erika Herzog\",\"image\":\"ps046037900449.jpeg\"}],\"reviews\":[{\"id\":75475,\"body\":\"extend world-class technologies\",\"rating\":5,\"author\":{\"id\":75488,\"name\":\"ashtyn_doloremque\",\"image\":\"uw061139026955.jpeg\"}},{\"id\":50475,\"body\":\"redefine 24/365 communities\",\"rating\":2,\"author\":{\"id\":50478,\"name\":\"graham_nostrum\",\"image\":\"uw934123093844.jpeg\"}},{\"id\":375475,\"body\":\"transition strategic markets\",\"rating\":3,\"author\":{\"id\":75488,\"name\":\"ashtyn_doloremque\",\"image\":\"uw061139026955.jpeg\"}},{\"id\":400471,\"body\":\"drive clicks-and-mortar users\",\"rating\":4,\"author\":{\"id\":473,\"name\":\"murl_nesciunt\",\"image\":\"uw693794140661.jpeg\"}},{\"id\":225477,\"body\":\"envisioneer intuitive supply-chains\",\"rating\":4,\"author\":{\"id\":25475,\"name\":\"tessie_consequatur\",\"image\":\"uj619588213730.jpeg\"}},{\"id\":250464,\"body\":\"incentivize bricks-and-clicks solutions\",\"rating\":3,\"author\":{\"id\":50478,\"name\":\"graham_nostrum\",\"image\":\"uw934123093844.jpeg\"}},{\"id\":25478,\"body\":\"incubate killer vortals\",\"rating\":4,\"author\":{\"id\":25475,\"name\":\"tessie_consequatur\",\"image\":\"uj619588213730.jpeg\"}},{\"id\":100472,\"body\":\"unleash extensible e-markets\",\"rating\":5,\"author\":{\"id\":473,\"name\":\"murl_nesciunt\",\"image\":\"uw693794140661.jpeg\"}},{\"id\":175473,\"body\":\"reinvent extensible eyeballs\",\"rating\":5,\"author\":{\"id\":75488,\"name\":\"ashtyn_doloremque\",\"image\":\"uw061139026955.jpeg\"}},{\"id\":150476,\"body\":\"exploit innovative content\",\"rating\":2,\"author\":{\"id\":50478,\"name\":\"graham_nostrum\",\"image\":\"uw934123093844.jpeg\"}},{\"id\":275474,\"body\":\"enhance world-class paradigms\",\"rating\":0,\"author\":{\"id\":75488,\"name\":\"ashtyn_doloremque\",\"image\":\"uw061139026955.jpeg\"}},{\"id\":125474,\"body\":\"reintermediate leading-edge portals\",\"rating\":4,\"author\":{\"id\":25475,\"name\":\"tessie_consequatur\",\"image\":\"uj619588213730.jpeg\"}},{\"id\":300475,\"body\":\"recontextualize transparent metrics\",\"rating\":4,\"author\":{\"id\":473,\"name\":\"murl_nesciunt\",\"image\":\"uw693794140661.jpeg\"}},{\"id\":325474,\"body\":\"morph robust eyeballs\",\"rating\":3,\"author\":{\"id\":25475,\"name\":\"tessie_consequatur\",\"image\":\"uj619588213730.jpeg\"}},{\"id\":476,\"body\":\"cultivate compelling applications\",\"rating\":3,\"author\":{\"id\":473,\"name\":\"murl_nesciunt\",\"image\":\"uw693794140661.jpeg\"}},{\"id\":350472,\"body\":\"deploy strategic mindshare\",\"rating\":2,\"author\":{\"id\":50478,\"name\":\"graham_nostrum\",\"image\":\"uw934123093844.jpeg\"}},{\"id\":425478,\"body\":\"deliver one-to-one convergence\",\"rating\":5,\"author\":{\"id\":25475,\"name\":\"tessie_consequatur\",\"image\":\"uj619588213730.jpeg\"}},{\"id\":475473,\"body\":\"embrace next-generation architectures\",\"rating\":3,\"author\":{\"id\":75488,\"name\":\"ashtyn_doloremque\",\"image\":\"uw061139026955.jpeg\"}},{\"id\":450473,\"body\":\"architect 24/365 synergies\",\"rating\":3,\"author\":{\"id\":50478,\"name\":\"graham_nostrum\",\"image\":\"uw934123093844.jpeg\"}},{\"id\":200487,\"body\":\"orchestrate magnetic partnerships\",\"rating\":3,\"author\":{\"id\":473,\"name\":\"murl_nesciunt\",\"image\":\"uw693794140661.jpeg\"}}],\"avg_rating\":3.35}", "{\"id\":2077,\"image\":\"my026869146924.jpeg\",\"title\":\"monetize cross-media portals\",\"year\":1979,\"description\":\"cultivate intuitive users\",\"directors\":[{\"id\":2173,\"full_name\":\"Rowland H. Kilback\",\"image\":\"pj414641292594.jpeg\"}],\"cast\":[{\"id\":72737,\"full_name\":\"Gianni Wolff\",\"image\":\"po328143038717.jpeg\"},{\"id\":72738,\"full_name\":\"Seth S. McDermott\",\"image\":\"pg569003374220.jpeg\"},{\"id\":72741,\"full_name\":\"Roselyn Thompson\",\"image\":\"po436795399434.jpeg\"},{\"id\":72740,\"full_name\":\"Pat Wintheiser\",\"image\":\"ph034673771810.jpeg\"},{\"id\":72739,\"full_name\":\"Kraig Greenfelder\",\"image\":\"px208795258620.jpeg\"},{\"id\":72742,\"full_name\":\"Bettye Macejkovic\",\"image\":\"pc369171080766.jpeg\"},{\"id\":72759,\"full_name\":\"Mandy Prosacco\",\"image\":\"pk369943683278.jpeg\"},{\"id\":72743,\"full_name\":\"Marty Botsford\",\"image\":\"pi460924450418.jpeg\"},{\"id\":72744,\"full_name\":\"Sophia Eichmann\",\"image\":\"pv580357542594.jpeg\"},{\"id\":72747,\"full_name\":\"Yolanda Toy\",\"image\":\"pa808800737480.jpeg\"},{\"id\":72745,\"full_name\":\"Nova Kuphal\",\"image\":\"pp020401133400.jpeg\"},{\"id\":72746,\"full_name\":\"Earlene Gislason\",\"image\":\"pt442588027605.jpeg\"},{\"id\":72748,\"full_name\":\"Gabe Bruen\",\"image\":\"ph396357416128.jpeg\"},{\"id\":72749,\"full_name\":\"Damion Huels\",\"image\":\"pq392729954152.jpeg\"}],\"reviews\":[{\"id\":427074,\"body\":\"aggregate distributed infomediaries\",\"rating\":4,\"author\":{\"id\":27068,\"name\":\"alan_vero\",\"image\":\"uz453181640469.jpeg\"}},{\"id\":452083,\"body\":\"enhance global e-commerce\",\"rating\":5,\"author\":{\"id\":52084,\"name\":\"jaylon_architecto\",\"image\":\"um956953083133.jpeg\"}},{\"id\":202083,\"body\":\"streamline customized infrastructures\",\"rating\":4,\"author\":{\"id\":2085,\"name\":\"jamarcus_quam\",\"image\":\"uy044044491409.jpeg\"}},{\"id\":352079,\"body\":\"deploy intuitive schemas\",\"rating\":4,\"author\":{\"id\":52084,\"name\":\"jaylon_architecto\",\"image\":\"um956953083133.jpeg\"}},{\"id\":2085,\"body\":\"monetize interactive channels\",\"rating\":3,\"author\":{\"id\":2085,\"name\":\"jamarcus_quam\",\"image\":\"uy044044491409.jpeg\"}},{\"id\":377079,\"body\":\"matrix robust paradigms\",\"rating\":1,\"author\":{\"id\":77083,\"name\":\"solon_voluptate\",\"image\":\"uo413442191582.jpeg\"}},{\"id\":227087,\"body\":\"engineer killer action-items\",\"rating\":4,\"author\":{\"id\":27068,\"name\":\"alan_vero\",\"image\":\"uz453181640469.jpeg\"}},{\"id\":277083,\"body\":\"transition intuitive ROI\",\"rating\":3,\"author\":{\"id\":77083,\"name\":\"solon_voluptate\",\"image\":\"uo413442191582.jpeg\"}},{\"id\":52097,\"body\":\"integrate dot-com deliverables\",\"rating\":2,\"author\":{\"id\":52084,\"name\":\"jaylon_architecto\",\"image\":\"um956953083133.jpeg\"}},{\"id\":152083,\"body\":\"scale dynamic e-tailers\",\"rating\":4,\"author\":{\"id\":52084,\"name\":\"jaylon_architecto\",\"image\":\"um956953083133.jpeg\"}},{\"id\":127089,\"body\":\"incentivize user-centric architectures\",\"rating\":5,\"author\":{\"id\":27068,\"name\":\"alan_vero\",\"image\":\"uz453181640469.jpeg\"}},{\"id\":27082,\"body\":\"reintermediate e-business solutions\",\"rating\":4,\"author\":{\"id\":27068,\"name\":\"alan_vero\",\"image\":\"uz453181640469.jpeg\"}},{\"id\":402078,\"body\":\"grow ubiquitous initiatives\",\"rating\":3,\"author\":{\"id\":2085,\"name\":\"jamarcus_quam\",\"image\":\"uy044044491409.jpeg\"}},{\"id\":252082,\"body\":\"reinvent cross-platform schemas\",\"rating\":4,\"author\":{\"id\":52084,\"name\":\"jaylon_architecto\",\"image\":\"um956953083133.jpeg\"}},{\"id\":327085,\"body\":\"streamline seamless infomediaries\",\"rating\":2,\"author\":{\"id\":27068,\"name\":\"alan_vero\",\"image\":\"uz453181640469.jpeg\"}},{\"id\":477081,\"body\":\"utilize B2B channels\",\"rating\":3,\"author\":{\"id\":77083,\"name\":\"solon_voluptate\",\"image\":\"uo413442191582.jpeg\"}},{\"id\":102079,\"body\":\"embrace robust bandwidth\",\"rating\":0,\"author\":{\"id\":2085,\"name\":\"jamarcus_quam\",\"image\":\"uy044044491409.jpeg\"}},{\"id\":77083,\"body\":\"exploit bricks-and-clicks paradigms\",\"rating\":5,\"author\":{\"id\":77083,\"name\":\"solon_voluptate\",\"image\":\"uo413442191582.jpeg\"}},{\"id\":177086,\"body\":\"generate dot-com e-business\",\"rating\":4,\"author\":{\"id\":77083,\"name\":\"solon_voluptate\",\"image\":\"uo413442191582.jpeg\"}},{\"id\":302084,\"body\":\"embrace leading-edge e-business\",\"rating\":3,\"author\":{\"id\":2085,\"name\":\"jamarcus_quam\",\"image\":\"uy044044491409.jpeg\"}}],\"avg_rating\":3.35}"], "implementation": "Prisma"}, {"duration": 10.0, "queries": 3446, "qps": 344.49, "latency_min": 1.8, "latency_mean": 2.901, "latency_max": 31.72, "latency_std": 1.129, "latency_cv": 38.92, "latency_percentiles": [[25, 2.446], [50, 2.731], [75, 3.021], [90, 3.469], [99, 6.605], [99.99, 31.723]], "samples": ["{\"id\":6166,\"image\":\"mk664198840076.jpeg\",\"title\":\"reintermediate B2B infomediaries\",\"year\":1989,\"description\":\"engage seamless paradigms\",\"avg_rating\":3.15,\"directors\":[{\"id\":6451,\"full_name\":\"Alexander Boyle\",\"image\":\"px283992499833.jpeg\"}],\"cast\":[{\"id\":103134,\"full_name\":\"Haleigh Bergnaum\",\"image\":\"pp457677772701.jpeg\"},{\"id\":103135,\"full_name\":\"Santiago Quentin Bayer\",\"image\":\"pw613908632363.jpeg\"},{\"id\":103137,\"full_name\":\"Adrianna Williamson\",\"image\":\"py142990655423.jpeg\"},{\"id\":103139,\"full_name\":\"Holly Langosh\",\"image\":\"pc731208172659.jpeg\"},{\"id\":103140,\"full_name\":\"Carolina Effertz\",\"image\":\"pc871332589969.jpeg\"},{\"id\":103138,\"full_name\":\"Elbert Borer\",\"image\":\"pv905144232930.jpeg\"},{\"id\":103136,\"full_name\":\"Elenora Kovacek\",\"image\":\"pe952093768279.jpeg\"},{\"id\":103143,\"full_name\":\"Laurel Swaniawski\",\"image\":\"pw044767021160.jpeg\"},{\"id\":103142,\"full_name\":\"Lura Boehm\",\"image\":\"pe518589000983.jpeg\"},{\"id\":103141,\"full_name\":\"Amara Thiel\",\"image\":\"pi920451729735.jpeg\"},{\"id\":103145,\"full_name\":\"Sheila Blick\",\"image\":\"pt908446720559.jpeg\"},{\"id\":103144,\"full_name\":\"Agustina Hattie Davis\",\"image\":\"pi441223403398.jpeg\"},{\"id\":103148,\"full_name\":\"Everette Rogers Runolfsson\",\"image\":\"pf872966242723.jpeg\"},{\"id\":103147,\"full_name\":\"Juliet Monahan\",\"image\":\"pg784498564418.jpeg\"},{\"id\":103146,\"full_name\":\"Russel Stamm\",\"image\":\"pg958476408198.jpeg\"},{\"id\":103155,\"full_name\":\"Earnest Grimes\",\"image\":\"py154400883684.jpeg\"},{\"id\":103154,\"full_name\":\"Raleigh Swift\",\"image\":\"pj812909345497.jpeg\"},{\"id\":103152,\"full_name\":\"Fleta Beahan\",\"image\":\"pz984076359292.jpeg\"},{\"id\":103150,\"full_name\":\"Francisca Kuvalis\",\"image\":\"pv211259145125.jpeg\"},{\"id\":103151,\"full_name\":\"Willard Skiles\",\"image\":\"pw492368602395.jpeg\"},{\"id\":103149,\"full_name\":\"Hassan Sauer\",\"image\":\"pa626245108635.jpeg\"},{\"id\":103161,\"full_name\":\"Damaris O'Keefe\",\"image\":\"pe843334820063.jpeg\"},{\"id\":103153,\"full_name\":\"Rylan Cassin\",\"image\":\"pe277869134089.jpeg\"},{\"id\":103157,\"full_name\":\"Karolann Okuneva\",\"image\":\"ps422213951768.jpeg\"},{\"id\":103160,\"full_name\":\"Marcelino Donnelly\",\"image\":\"pn941552711573.jpeg\"},{\"id\":103156,\"full_name\":\"Lempi Berge\",\"image\":\"pv906144308695.jpeg\"},{\"id\":103166,\"full_name\":\"Wava Kshlerin\",\"image\":\"pe454192069068.jpeg\"},{\"id\":103158,\"full_name\":\"Eleanore Brakus\",\"image\":\"po644907924310.jpeg\"},{\"id\":103159,\"full_name\":\"Oscar Mante\",\"image\":\"ph264792739668.jpeg\"},{\"id\":103163,\"full_name\":\"Anastacio B. Jast\",\"image\":\"pg781807023705.jpeg\"},{\"id\":103172,\"full_name\":\"Hailey Watsica\",\"image\":\"pj448182116897.jpeg\"},{\"id\":103164,\"full_name\":\"Destany Emard\",\"image\":\"pi411819648532.jpeg\"},{\"id\":103165,\"full_name\":\"Kara Yundt\",\"image\":\"pd613732882246.jpeg\"},{\"id\":103169,\"full_name\":\"Savanna Reichel\",\"image\":\"pq704051985041.jpeg\"},{\"id\":103173,\"full_name\":\"Korbin Wuckert\",\"image\":\"pa750284185749.jpeg\"},{\"id\":103176,\"full_name\":\"Rafael Upton\",\"image\":\"pc209665924685.jpeg\"},{\"id\":103174,\"full_name\":\"Clifton Metz\",\"image\":\"pb377277358022.jpeg\"},{\"id\":103162,\"full_name\":\"Humberto Denesik\",\"image\":\"pb817056614645.jpeg\"},{\"id\":103180,\"full_name\":\"Ubaldo Oberbrunner\",\"image\":\"ps855210613010.jpeg\"},{\"id\":103183,\"full_name\":\"Ellen Kirlin\",\"image\":\"pu331738038816.jpeg\"},{\"id\":103167,\"full_name\":\"Samara Lindgren\",\"image\":\"pu267062060019.jpeg\"},{\"id\":103168,\"full_name\":\"Amy Becker\",\"image\":\"px924999123383.jpeg\"},{\"id\":103185,\"full_name\":\"Filomena Rutherford\",\"image\":\"pr106551233808.jpeg\"},{\"id\":103186,\"full_name\":\"Bette Senger\",\"image\":\"pe596930712132.jpeg\"},{\"id\":103179,\"full_name\":\"Antonietta Justice Cremin\",\"image\":\"pf779231657369.jpeg\"},{\"id\":103170,\"full_name\":\"Tia Schroeder\",\"image\":\"pc409250136100.jpeg\"}],\"reviews\":[{\"id\":206164,\"body\":\"extend turn-key synergies\",\"rating\":5,\"author\":{\"id\":6162,\"name\":\"ephraim_voluptatibus\",\"image\":\"ud082146613869.jpeg\"}},{\"id\":456167,\"body\":\"implement value-added eyeballs\",\"rating\":1,\"author\":{\"id\":56162,\"name\":\"darrion_porro\",\"image\":\"uc097375514223.jpeg\"}},{\"id\":381164,\"body\":\"monetize rich web services\",\"rating\":4,\"author\":{\"id\":81166,\"name\":\"alphonso_molestiae\",\"image\":\"us871747900901.jpeg\"}},{\"id\":481163,\"body\":\"scale sticky platforms\",\"rating\":3,\"author\":{\"id\":81166,\"name\":\"alphonso_molestiae\",\"image\":\"us871747900901.jpeg\"}},{\"id\":356167,\"body\":\"monetize bricks-and-clicks functionalities\",\"rating\":2,\"author\":{\"id\":56162,\"name\":\"darrion_porro\",\"image\":\"uc097375514223.jpeg\"}},{\"id\":81159,\"body\":\"revolutionize holistic communities\",\"rating\":4,\"author\":{\"id\":81166,\"name\":\"alphonso_molestiae\",\"image\":\"us871747900901.jpeg\"}},{\"id\":231166,\"body\":\"generate customized eyeballs\",\"rating\":1,\"author\":{\"id\":31165,\"name\":\"maude_consequatur\",\"image\":\"uo694861840809.jpeg\"}},{\"id\":106170,\"body\":\"visualize world-class e-markets\",\"rating\":4,\"author\":{\"id\":6162,\"name\":\"ephraim_voluptatibus\",\"image\":\"ud082146613869.jpeg\"}},{\"id\":331167,\"body\":\"harness transparent technologies\",\"rating\":5,\"author\":{\"id\":31165,\"name\":\"maude_consequatur\",\"image\":\"uo694861840809.jpeg\"}},{\"id\":181169,\"body\":\"repurpose plug-and-play e-tailers\",\"rating\":4,\"author\":{\"id\":81166,\"name\":\"alphonso_molestiae\",\"image\":\"us871747900901.jpeg\"}},{\"id\":156163,\"body\":\"syndicate clicks-and-mortar markets\",\"rating\":3,\"author\":{\"id\":56162,\"name\":\"darrion_porro\",\"image\":\"uc097375514223.jpeg\"}},{\"id\":281166,\"body\":\"aggregate open-source relationships\",\"rating\":2,\"author\":{\"id\":81166,\"name\":\"alphonso_molestiae\",\"image\":\"us871747900901.jpeg\"}},{\"id\":256166,\"body\":\"synthesize real-time infrastructures\",\"rating\":4,\"author\":{\"id\":56162,\"name\":\"darrion_porro\",\"image\":\"uc097375514223.jpeg\"}},{\"id\":306160,\"body\":\"redefine back-end users\",\"rating\":4,\"author\":{\"id\":6162,\"name\":\"ephraim_voluptatibus\",\"image\":\"ud082146613869.jpeg\"}},{\"id\":56164,\"body\":\"evolve interactive infomediaries\",\"rating\":3,\"author\":{\"id\":56162,\"name\":\"darrion_porro\",\"image\":\"uc097375514223.jpeg\"}},{\"id\":31171,\"body\":\"seize scalable infomediaries\",\"rating\":1,\"author\":{\"id\":31165,\"name\":\"maude_consequatur\",\"image\":\"uo694861840809.jpeg\"}},{\"id\":131159,\"body\":\"enhance collaborative relationships\",\"rating\":5,\"author\":{\"id\":31165,\"name\":\"maude_consequatur\",\"image\":\"uo694861840809.jpeg\"}},{\"id\":6164,\"body\":\"e-enable interactive ROI\",\"rating\":3,\"author\":{\"id\":6162,\"name\":\"ephraim_voluptatibus\",\"image\":\"ud082146613869.jpeg\"}},{\"id\":431165,\"body\":\"seize one-to-one users\",\"rating\":3,\"author\":{\"id\":31165,\"name\":\"maude_consequatur\",\"image\":\"uo694861840809.jpeg\"}},{\"id\":406166,\"body\":\"utilize synergistic initiatives\",\"rating\":2,\"author\":{\"id\":6162,\"name\":\"ephraim_voluptatibus\",\"image\":\"ud082146613869.jpeg\"}}]}", "{\"id\":18714,\"image\":\"mv238372814013.jpeg\",\"title\":\"embrace back-end solutions\",\"year\":1993,\"description\":\"aggregate seamless eyeballs\",\"avg_rating\":3,\"directors\":[{\"id\":5605,\"full_name\":\"Stephany Hudson\",\"image\":\"pc312439651892.jpeg\"}],\"cast\":[{\"id\":103456,\"full_name\":\"Gretchen Nitzsche\",\"image\":\"ps400978035339.jpeg\"},{\"id\":103457,\"full_name\":\"Talia Schroeder\",\"image\":\"pt984135351753.jpeg\"},{\"id\":103459,\"full_name\":\"Geo Rau\",\"image\":\"pt950580026685.jpeg\"},{\"id\":103463,\"full_name\":\"America Matt Grant\",\"image\":\"pc359505962208.jpeg\"},{\"id\":103462,\"full_name\":\"Gail Mandy Hamill\",\"image\":\"pv933820471600.jpeg\"},{\"id\":103461,\"full_name\":\"Verona Gutmann\",\"image\":\"pp816277218483.jpeg\"},{\"id\":103465,\"full_name\":\"Verla Bins\",\"image\":\"pg116738376398.jpeg\"},{\"id\":103458,\"full_name\":\"Felicita Abshire\",\"image\":\"pq633647622805.jpeg\"},{\"id\":103455,\"full_name\":\"Davonte Zemlak\",\"image\":\"pi014550746347.jpeg\"},{\"id\":103453,\"full_name\":\"Matilda M. Romaguera\",\"image\":\"pi696957450432.jpeg\"},{\"id\":103454,\"full_name\":\"Lorena Williamson\",\"image\":\"pu108457177089.jpeg\"},{\"id\":103452,\"full_name\":\"Asha Weissnat\",\"image\":\"ph448033431880.jpeg\"},{\"id\":103451,\"full_name\":\"Jeanne McCullough\",\"image\":\"pq992734600624.jpeg\"},{\"id\":103467,\"full_name\":\"Shyann Watsica\",\"image\":\"ph927472236250.jpeg\"},{\"id\":103464,\"full_name\":\"Charlotte Nikolaus\",\"image\":\"pb235949524376.jpeg\"},{\"id\":103471,\"full_name\":\"Gloria Pollich\",\"image\":\"pl708764747308.jpeg\"},{\"id\":103466,\"full_name\":\"Oran Hauck\",\"image\":\"pg066823536123.jpeg\"},{\"id\":103468,\"full_name\":\"Skylar Quigley\",\"image\":\"pf747493865436.jpeg\"},{\"id\":103469,\"full_name\":\"Mabelle Kessler\",\"image\":\"ps188130360630.jpeg\"},{\"id\":103460,\"full_name\":\"Gerald Hayes\",\"image\":\"pa931639988464.jpeg\"},{\"id\":103470,\"full_name\":\"Trever Emmerich\",\"image\":\"pw965285670842.jpeg\"},{\"id\":103477,\"full_name\":\"Jaeden Trantow\",\"image\":\"py131372217557.jpeg\"},{\"id\":103475,\"full_name\":\"Zula Larkin\",\"image\":\"pf005081449621.jpeg\"},{\"id\":103473,\"full_name\":\"Brooke Borer\",\"image\":\"pa825740773062.jpeg\"},{\"id\":103474,\"full_name\":\"Mia Bailey\",\"image\":\"po893397353909.jpeg\"},{\"id\":103472,\"full_name\":\"Madge Buckridge\",\"image\":\"ph101336553317.jpeg\"},{\"id\":103482,\"full_name\":\"Edd McDermott\",\"image\":\"pw826382997093.jpeg\"},{\"id\":103476,\"full_name\":\"Yvette Y. Graham\",\"image\":\"pl692959296447.jpeg\"},{\"id\":103479,\"full_name\":\"Kody Kilback\",\"image\":\"pj952205695100.jpeg\"},{\"id\":103478,\"full_name\":\"Albin Brekke\",\"image\":\"px713462969835.jpeg\"},{\"id\":103484,\"full_name\":\"Marcelino J. Schowalter\",\"image\":\"pb738101965937.jpeg\"},{\"id\":103487,\"full_name\":\"Earl Brakus\",\"image\":\"pr464235080014.jpeg\"},{\"id\":103480,\"full_name\":\"Jazmin Monahan\",\"image\":\"pi559660815250.jpeg\"},{\"id\":103481,\"full_name\":\"Chesley McKenzie\",\"image\":\"pl005641707652.jpeg\"},{\"id\":103485,\"full_name\":\"Jeramie Beatty\",\"image\":\"pu272746411172.jpeg\"}],\"reviews\":[{\"id\":18714,\"body\":\"harness visionary initiatives\",\"rating\":3,\"author\":{\"id\":18706,\"name\":\"beryl_inventore\",\"image\":\"ul382747987952.jpeg\"}},{\"id\":193715,\"body\":\"recontextualize dot-com supply-chains\",\"rating\":1,\"author\":{\"id\":93712,\"name\":\"etha_nam\",\"image\":\"uy122280514793.jpeg\"}},{\"id\":93721,\"body\":\"syndicate next-generation mindshare\",\"rating\":1,\"author\":{\"id\":93712,\"name\":\"etha_nam\",\"image\":\"uy122280514793.jpeg\"}},{\"id\":168709,\"body\":\"exploit revolutionary vortals\",\"rating\":5,\"author\":{\"id\":68712,\"name\":\"wilburn_voluptate\",\"image\":\"uj972415452714.jpeg\"}},{\"id\":268714,\"body\":\"generate extensible experiences\",\"rating\":2,\"author\":{\"id\":68712,\"name\":\"wilburn_voluptate\",\"image\":\"uj972415452714.jpeg\"}},{\"id\":493718,\"body\":\"empower frictionless technologies\",\"rating\":3,\"author\":{\"id\":93712,\"name\":\"etha_nam\",\"image\":\"uy122280514793.jpeg\"}},{\"id\":343715,\"body\":\"synergize wireless web-readiness\",\"rating\":2,\"author\":{\"id\":43714,\"name\":\"mohammad_rerum\",\"image\":\"uk359439333114.jpeg\"}},{\"id\":368705,\"body\":\"visualize robust relationships\",\"rating\":5,\"author\":{\"id\":68712,\"name\":\"wilburn_voluptate\",\"image\":\"uj972415452714.jpeg\"}},{\"id\":468714,\"body\":\"engage impactful applications\",\"rating\":3,\"author\":{\"id\":68712,\"name\":\"wilburn_voluptate\",\"image\":\"uj972415452714.jpeg\"}},{\"id\":443715,\"body\":\"deliver wireless e-tailers\",\"rating\":3,\"author\":{\"id\":43714,\"name\":\"mohammad_rerum\",\"image\":\"uk359439333114.jpeg\"}},{\"id\":43712,\"body\":\"envisioneer synergistic schemas\",\"rating\":4,\"author\":{\"id\":43714,\"name\":\"mohammad_rerum\",\"image\":\"uk359439333114.jpeg\"}},{\"id\":218714,\"body\":\"exploit e-business communities\",\"rating\":3,\"author\":{\"id\":18706,\"name\":\"beryl_inventore\",\"image\":\"ul382747987952.jpeg\"}},{\"id\":318714,\"body\":\"integrate cutting-edge bandwidth\",\"rating\":2,\"author\":{\"id\":18706,\"name\":\"beryl_inventore\",\"image\":\"ul382747987952.jpeg\"}},{\"id\":68716,\"body\":\"drive frictionless models\",\"rating\":5,\"author\":{\"id\":68712,\"name\":\"wilburn_voluptate\",\"image\":\"uj972415452714.jpeg\"}},{\"id\":418716,\"body\":\"reintermediate collaborative deliverables\",\"rating\":3,\"author\":{\"id\":18706,\"name\":\"beryl_inventore\",\"image\":\"ul382747987952.jpeg\"}},{\"id\":293714,\"body\":\"morph global supply-chains\",\"rating\":3,\"author\":{\"id\":93712,\"name\":\"etha_nam\",\"image\":\"uy122280514793.jpeg\"}},{\"id\":393710,\"body\":\"embrace sticky deliverables\",\"rating\":2,\"author\":{\"id\":93712,\"name\":\"etha_nam\",\"image\":\"uy122280514793.jpeg\"}},{\"id\":118703,\"body\":\"integrate viral architectures\",\"rating\":3,\"author\":{\"id\":18706,\"name\":\"beryl_inventore\",\"image\":\"ul382747987952.jpeg\"}},{\"id\":243715,\"body\":\"reintermediate dot-com channels\",\"rating\":2,\"author\":{\"id\":43714,\"name\":\"mohammad_rerum\",\"image\":\"uk359439333114.jpeg\"}},{\"id\":143709,\"body\":\"engineer B2C systems\",\"rating\":5,\"author\":{\"id\":43714,\"name\":\"mohammad_rerum\",\"image\":\"uk359439333114.jpeg\"}}]}", "{\"id\":17929,\"image\":\"mx909222543810.jpeg\",\"title\":\"drive cross-media portals\",\"year\":2002,\"description\":\"incentivize seamless metrics\",\"avg_rating\":3.5,\"directors\":[{\"id\":4777,\"full_name\":\"Fay Carroll\",\"image\":\"pb123880039162.jpeg\"}],\"cast\":[{\"id\":78707,\"full_name\":\"Keeley Koelpin\",\"image\":\"pd307116073426.jpeg\"},{\"id\":78706,\"full_name\":\"Vergie Wuckert\",\"image\":\"py727860540268.jpeg\"},{\"id\":78694,\"full_name\":\"Clemmie Von\",\"image\":\"pz796156523065.jpeg\"},{\"id\":78712,\"full_name\":\"Marcia Nitzsche\",\"image\":\"pm202254563480.jpeg\"},{\"id\":78709,\"full_name\":\"Asha Kohler\",\"image\":\"py257505987706.jpeg\"},{\"id\":78700,\"full_name\":\"Marcos Kunze\",\"image\":\"pk424928505442.jpeg\"},{\"id\":78703,\"full_name\":\"Weston Tromp\",\"image\":\"px093483918395.jpeg\"},{\"id\":78714,\"full_name\":\"Deontae Padberg\",\"image\":\"pm876809179013.jpeg\"},{\"id\":78715,\"full_name\":\"Milan Buckridge\",\"image\":\"pw204944786959.jpeg\"},{\"id\":78747,\"full_name\":\"Linnie Hauck\",\"image\":\"pl530243116633.jpeg\"},{\"id\":78735,\"full_name\":\"Madaline Bailey\",\"image\":\"pu786037168058.jpeg\"},{\"id\":78717,\"full_name\":\"Philip Ritchie\",\"image\":\"pk294432973133.jpeg\"},{\"id\":78718,\"full_name\":\"Cyril Johns\",\"image\":\"pk311017350791.jpeg\"},{\"id\":78721,\"full_name\":\"Kendra Hoeger\",\"image\":\"ps495464446595.jpeg\"},{\"id\":78746,\"full_name\":\"Heidi Walsh\",\"image\":\"po091731618159.jpeg\"},{\"id\":78743,\"full_name\":\"Blaise Lockman\",\"image\":\"pc011821759519.jpeg\"},{\"id\":78720,\"full_name\":\"Daisy Borer\",\"image\":\"pf265592895762.jpeg\"},{\"id\":78740,\"full_name\":\"Mavis Lemke\",\"image\":\"pj718427282957.jpeg\"},{\"id\":78719,\"full_name\":\"Elbert Koch\",\"image\":\"pz084466917702.jpeg\"},{\"id\":78716,\"full_name\":\"Clifton Fadel\",\"image\":\"pw578684725804.jpeg\"},{\"id\":78722,\"full_name\":\"Mckenna Koss\",\"image\":\"pp142002359336.jpeg\"},{\"id\":78723,\"full_name\":\"Laura White\",\"image\":\"pv913691997622.jpeg\"},{\"id\":78724,\"full_name\":\"Chloe Kirlin\",\"image\":\"pb444649731265.jpeg\"},{\"id\":78732,\"full_name\":\"Bobby Brakus\",\"image\":\"px460810307719.jpeg\"},{\"id\":78739,\"full_name\":\"Guiseppe Dooley\",\"image\":\"pr371850355749.jpeg\"},{\"id\":78742,\"full_name\":\"Coby Emard\",\"image\":\"pf373582250584.jpeg\"},{\"id\":78727,\"full_name\":\"Tommie Murphy\",\"image\":\"pg823866182049.jpeg\"},{\"id\":78725,\"full_name\":\"Kitty Reilly\",\"image\":\"ph426596265474.jpeg\"},{\"id\":78728,\"full_name\":\"Friedrich Lindgren\",\"image\":\"pb560229609154.jpeg\"},{\"id\":78726,\"full_name\":\"Deangelo Balistreri\",\"image\":\"pp748423294025.jpeg\"},{\"id\":78733,\"full_name\":\"Haylie Kris\",\"image\":\"ph503441154598.jpeg\"},{\"id\":78750,\"full_name\":\"Brock Dicki\",\"image\":\"pd994193616080.jpeg\"},{\"id\":78738,\"full_name\":\"Alivia Wehner\",\"image\":\"pg298461211393.jpeg\"},{\"id\":78734,\"full_name\":\"Haven Gorczany\",\"image\":\"py050512046583.jpeg\"},{\"id\":78731,\"full_name\":\"Eloy Lemke\",\"image\":\"pu901713564173.jpeg\"},{\"id\":78737,\"full_name\":\"Ariel Walker\",\"image\":\"pa461755379366.jpeg\"},{\"id\":78729,\"full_name\":\"Maryse Wintheiser\",\"image\":\"po379530539167.jpeg\"},{\"id\":78730,\"full_name\":\"Emerson Boyle\",\"image\":\"pg060646494844.jpeg\"},{\"id\":78741,\"full_name\":\"Florida Von\",\"image\":\"pm095826677744.jpeg\"},{\"id\":78745,\"full_name\":\"Violet Volkman\",\"image\":\"ph266048476670.jpeg\"},{\"id\":78744,\"full_name\":\"Isaias Quigley\",\"image\":\"pn318416575397.jpeg\"},{\"id\":78749,\"full_name\":\"Pearlie Becker\",\"image\":\"pe790418977094.jpeg\"},{\"id\":78748,\"full_name\":\"Rudy Schulist\",\"image\":\"pe016930379939.jpeg\"},{\"id\":78756,\"full_name\":\"Milton Rippin\",\"image\":\"ph779973986169.jpeg\"},{\"id\":78751,\"full_name\":\"Annette Ernser\",\"image\":\"pl898392412842.jpeg\"},{\"id\":78752,\"full_name\":\"Pat I. Wiegand\",\"image\":\"pd620062997008.jpeg\"},{\"id\":78736,\"full_name\":\"Veronica Hickle\",\"image\":\"pq136746625258.jpeg\"},{\"id\":78753,\"full_name\":\"Trenton Torp\",\"image\":\"pm567033529113.jpeg\"},{\"id\":78754,\"full_name\":\"Gertrude Kshlerin\",\"image\":\"pf858374210644.jpeg\"},{\"id\":78755,\"full_name\":\"Eloise Hand\",\"image\":\"pr628587540449.jpeg\"},{\"id\":78757,\"full_name\":\"Ellsworth Muller\",\"image\":\"pv897455875424.jpeg\"}],\"reviews\":[{\"id\":492937,\"body\":\"matrix dynamic e-business\",\"rating\":2,\"author\":{\"id\":92936,\"name\":\"yoshiko_qui\",\"image\":\"ur673153472145.jpeg\"}},{\"id\":117935,\"body\":\"enhance magnetic technologies\",\"rating\":5,\"author\":{\"id\":17927,\"name\":\"karelle_asperiores\",\"image\":\"uk811923202132.jpeg\"}},{\"id\":392936,\"body\":\"optimize out-of-the-box applications\",\"rating\":1,\"author\":{\"id\":92936,\"name\":\"yoshiko_qui\",\"image\":\"ur673153472145.jpeg\"}},{\"id\":242932,\"body\":\"mesh cutting-edge e-tailers\",\"rating\":4,\"author\":{\"id\":42933,\"name\":\"frieda_quia\",\"image\":\"uv072307812954.jpeg\"}},{\"id\":167935,\"body\":\"maximize intuitive experiences\",\"rating\":5,\"author\":{\"id\":67939,\"name\":\"juana_doloribus\",\"image\":\"uf946532496461.jpeg\"}},{\"id\":142936,\"body\":\"maximize holistic mindshare\",\"rating\":2,\"author\":{\"id\":42933,\"name\":\"frieda_quia\",\"image\":\"uv072307812954.jpeg\"}},{\"id\":417946,\"body\":\"benchmark out-of-the-box markets\",\"rating\":3,\"author\":{\"id\":17927,\"name\":\"karelle_asperiores\",\"image\":\"uk811923202132.jpeg\"}},{\"id\":292935,\"body\":\"redefine leading-edge web-readiness\",\"rating\":5,\"author\":{\"id\":92936,\"name\":\"yoshiko_qui\",\"image\":\"ur673153472145.jpeg\"}},{\"id\":192943,\"body\":\"generate world-class web-readiness\",\"rating\":3,\"author\":{\"id\":92936,\"name\":\"yoshiko_qui\",\"image\":\"ur673153472145.jpeg\"}},{\"id\":267931,\"body\":\"exploit extensible ROI\",\"rating\":5,\"author\":{\"id\":67939,\"name\":\"juana_doloribus\",\"image\":\"uf946532496461.jpeg\"}},{\"id\":317934,\"body\":\"mesh clicks-and-mortar solutions\",\"rating\":3,\"author\":{\"id\":17927,\"name\":\"karelle_asperiores\",\"image\":\"uk811923202132.jpeg\"}},{\"id\":367933,\"body\":\"redefine world-class e-tailers\",\"rating\":3,\"author\":{\"id\":67939,\"name\":\"juana_doloribus\",\"image\":\"uf946532496461.jpeg\"}},{\"id\":92930,\"body\":\"target extensible markets\",\"rating\":3,\"author\":{\"id\":92936,\"name\":\"yoshiko_qui\",\"image\":\"ur673153472145.jpeg\"}},{\"id\":67935,\"body\":\"iterate synergistic metrics\",\"rating\":4,\"author\":{\"id\":67939,\"name\":\"juana_doloribus\",\"image\":\"uf946532496461.jpeg\"}},{\"id\":342932,\"body\":\"benchmark back-end portals\",\"rating\":4,\"author\":{\"id\":42933,\"name\":\"frieda_quia\",\"image\":\"uv072307812954.jpeg\"}},{\"id\":217936,\"body\":\"syndicate real-time e-markets\",\"rating\":3,\"author\":{\"id\":17927,\"name\":\"karelle_asperiores\",\"image\":\"uk811923202132.jpeg\"}},{\"id\":442941,\"body\":\"transition synergistic mindshare\",\"rating\":3,\"author\":{\"id\":42933,\"name\":\"frieda_quia\",\"image\":\"uv072307812954.jpeg\"}},{\"id\":17935,\"body\":\"cultivate cutting-edge vortals\",\"rating\":3,\"author\":{\"id\":17927,\"name\":\"karelle_asperiores\",\"image\":\"uk811923202132.jpeg\"}},{\"id\":467934,\"body\":\"seize enterprise portals\",\"rating\":4,\"author\":{\"id\":67939,\"name\":\"juana_doloribus\",\"image\":\"uf946532496461.jpeg\"}},{\"id\":42934,\"body\":\"e-enable clicks-and-mortar experiences\",\"rating\":5,\"author\":{\"id\":42933,\"name\":\"frieda_quia\",\"image\":\"uv072307812954.jpeg\"}}]}"], "implementation": "MonOrm (Node.js)"}, {"duration": 10.0, "queries": 2848, "qps": 284.75, "latency_min": 2.05, "latency_mean": 3.509, "latency_max": 27.16, "latency_std": 1.162, "latency_cv": 33.1, "latency_percentiles": [[25, 2.964], [50, 3.253], [75, 3.628], [90, 4.471], [99, 8.587], [99.99, 27.164]], "samples": ["{\"id\":4682,\"image\":\"mx481881348703.jpeg\",\"title\":\"unleash cross-platform channels\",\"year\":1956,\"description\":\"cultivate world-class action-items\",\"avg_rating\":\"2.9000000000000000\",\"directors\":[{\"id\":4892,\"full_name\":\"Madeline Buckridge\",\"image\":\"pp352165577852.jpeg\"}],\"cast\":[{\"id\":56380,\"full_name\":\"Korey Lowe\",\"image\":\"pz899244755724.jpeg\"},{\"id\":56385,\"full_name\":\"Bradford Bergstrom\",\"image\":\"pm059128405283.jpeg\"},{\"id\":56375,\"full_name\":\"Jermey Connelly\",\"image\":\"pp556898222732.jpeg\"},{\"id\":56386,\"full_name\":\"Fabiola Sawayn\",\"image\":\"pm154169029507.jpeg\"},{\"id\":56389,\"full_name\":\"Rosella Weimann\",\"image\":\"pu795368157878.jpeg\"},{\"id\":56393,\"full_name\":\"Ayla Stehr\",\"image\":\"pm023062840057.jpeg\"},{\"id\":56387,\"full_name\":\"Alvis Connor Kautzer\",\"image\":\"pm521459183007.jpeg\"},{\"id\":56388,\"full_name\":\"Elvis Hermann\",\"image\":\"pq110775481255.jpeg\"},{\"id\":56398,\"full_name\":\"Maurine Rodriguez\",\"image\":\"pq067206388381.jpeg\"},{\"id\":56390,\"full_name\":\"Vickie Ullrich\",\"image\":\"px528458018312.jpeg\"},{\"id\":56400,\"full_name\":\"Camylle Lindgren\",\"image\":\"pw222990606057.jpeg\"},{\"id\":56391,\"full_name\":\"Judy Kozey\",\"image\":\"ps543963505761.jpeg\"},{\"id\":56392,\"full_name\":\"Annette Torp\",\"image\":\"py145144599829.jpeg\"},{\"id\":56395,\"full_name\":\"Zachery Sharon Gleichner\",\"image\":\"po100745795763.jpeg\"},{\"id\":56396,\"full_name\":\"Payton Dibbert\",\"image\":\"pb081540996949.jpeg\"},{\"id\":56403,\"full_name\":\"Delphia Ruecker\",\"image\":\"pc734364336260.jpeg\"},{\"id\":56394,\"full_name\":\"Toni Stoltenberg\",\"image\":\"pc195188619347.jpeg\"},{\"id\":56399,\"full_name\":\"Madeline Kuvalis\",\"image\":\"pg849246290907.jpeg\"},{\"id\":56397,\"full_name\":\"Francis Yost\",\"image\":\"pi539741096292.jpeg\"},{\"id\":56402,\"full_name\":\"Bernadine Ortiz\",\"image\":\"pw311974024435.jpeg\"},{\"id\":56401,\"full_name\":\"Pascale Zboncak\",\"image\":\"pp684800665541.jpeg\"},{\"id\":56413,\"full_name\":\"Kayleigh U. Ebert\",\"image\":\"pm716692394488.jpeg\"},{\"id\":56408,\"full_name\":\"Damion Balistreri\",\"image\":\"py025037211062.jpeg\"},{\"id\":56406,\"full_name\":\"Chadd Marvin\",\"image\":\"pd411654772044.jpeg\"},{\"id\":56405,\"full_name\":\"Terrence McDermott\",\"image\":\"pd992212242498.jpeg\"},{\"id\":56404,\"full_name\":\"Jeremy Kutch\",\"image\":\"pc213151164294.jpeg\"},{\"id\":56407,\"full_name\":\"Ned Gerhold\",\"image\":\"pz286745551054.jpeg\"},{\"id\":56409,\"full_name\":\"Martine Buckridge\",\"image\":\"pt384823596899.jpeg\"}],\"reviews\":[{\"id\":254660,\"body\":\"synergize dynamic supply-chains\",\"rating\":2,\"author\":{\"id\":54674,\"name\":\"madelynn_ut\",\"image\":\"up141383881624.jpeg\"}},{\"id\":479674,\"body\":\"integrate one-to-one e-tailers\",\"rating\":1,\"author\":{\"id\":79674,\"name\":\"pearlie_nulla\",\"image\":\"um090583765257.jpeg\"}},{\"id\":454677,\"body\":\"engineer world-class web-readiness\",\"rating\":4,\"author\":{\"id\":54674,\"name\":\"madelynn_ut\",\"image\":\"up141383881624.jpeg\"}},{\"id\":429671,\"body\":\"transition sexy partnerships\",\"rating\":4,\"author\":{\"id\":29686,\"name\":\"vince_necessitatibus\",\"image\":\"ui633761943525.jpeg\"}},{\"id\":354649,\"body\":\"disintermediate transparent channels\",\"rating\":2,\"author\":{\"id\":54674,\"name\":\"madelynn_ut\",\"image\":\"up141383881624.jpeg\"}},{\"id\":379673,\"body\":\"aggregate interactive content\",\"rating\":1,\"author\":{\"id\":79674,\"name\":\"pearlie_nulla\",\"image\":\"um090583765257.jpeg\"}},{\"id\":4672,\"body\":\"transition sticky infrastructures\",\"rating\":2,\"author\":{\"id\":4673,\"name\":\"wilhelm_sed\",\"image\":\"uc701324365846.jpeg\"}},{\"id\":79674,\"body\":\"e-enable synergistic relationships\",\"rating\":5,\"author\":{\"id\":79674,\"name\":\"pearlie_nulla\",\"image\":\"um090583765257.jpeg\"}},{\"id\":329663,\"body\":\"redefine enterprise convergence\",\"rating\":2,\"author\":{\"id\":29686,\"name\":\"vince_necessitatibus\",\"image\":\"ui633761943525.jpeg\"}},{\"id\":154674,\"body\":\"reintermediate front-end platforms\",\"rating\":3,\"author\":{\"id\":54674,\"name\":\"madelynn_ut\",\"image\":\"up141383881624.jpeg\"}},{\"id\":304674,\"body\":\"monetize enterprise e-commerce\",\"rating\":3,\"author\":{\"id\":4673,\"name\":\"wilhelm_sed\",\"image\":\"uc701324365846.jpeg\"}},{\"id\":404682,\"body\":\"embrace intuitive users\",\"rating\":2,\"author\":{\"id\":4673,\"name\":\"wilhelm_sed\",\"image\":\"uc701324365846.jpeg\"}},{\"id\":204674,\"body\":\"engineer real-time deliverables\",\"rating\":3,\"author\":{\"id\":4673,\"name\":\"wilhelm_sed\",\"image\":\"uc701324365846.jpeg\"}},{\"id\":129689,\"body\":\"evolve strategic platforms\",\"rating\":4,\"author\":{\"id\":29686,\"name\":\"vince_necessitatibus\",\"image\":\"ui633761943525.jpeg\"}},{\"id\":54671,\"body\":\"innovate integrated schemas\",\"rating\":3,\"author\":{\"id\":54674,\"name\":\"madelynn_ut\",\"image\":\"up141383881624.jpeg\"}},{\"id\":279664,\"body\":\"morph bricks-and-clicks supply-chains\",\"rating\":3,\"author\":{\"id\":79674,\"name\":\"pearlie_nulla\",\"image\":\"um090583765257.jpeg\"}},{\"id\":229674,\"body\":\"enhance rich methodologies\",\"rating\":4,\"author\":{\"id\":29686,\"name\":\"vince_necessitatibus\",\"image\":\"ui633761943525.jpeg\"}},{\"id\":29675,\"body\":\"e-enable value-added e-business\",\"rating\":3,\"author\":{\"id\":29686,\"name\":\"vince_necessitatibus\",\"image\":\"ui633761943525.jpeg\"}},{\"id\":179671,\"body\":\"repurpose open-source niches\",\"rating\":4,\"author\":{\"id\":79674,\"name\":\"pearlie_nulla\",\"image\":\"um090583765257.jpeg\"}},{\"id\":104672,\"body\":\"grow value-added communities\",\"rating\":3,\"author\":{\"id\":4673,\"name\":\"wilhelm_sed\",\"image\":\"uc701324365846.jpeg\"}}]}", "{\"id\":15936,\"image\":\"mo903466652447.jpeg\",\"title\":\"incubate ubiquitous action-items\",\"year\":1995,\"description\":\"optimize next-generation action-items\",\"avg_rating\":\"2.9500000000000000\",\"directors\":[{\"id\":2702,\"full_name\":\"Nia Harris\",\"image\":\"py189913424553.jpeg\"}],\"cast\":[{\"id\":15263,\"full_name\":\"Thalia Ankunding\",\"image\":\"pr346665558852.jpeg\"},{\"id\":15258,\"full_name\":\"Blake Dickens\",\"image\":\"pt678568616121.jpeg\"},{\"id\":15259,\"full_name\":\"Cade Weber\",\"image\":\"pj189967619101.jpeg\"},{\"id\":15260,\"full_name\":\"Ricky Bogan\",\"image\":\"pw676228549810.jpeg\"},{\"id\":15261,\"full_name\":\"Conor Hoppe\",\"image\":\"pe057136244883.jpeg\"},{\"id\":15264,\"full_name\":\"Nia Stroman\",\"image\":\"pl447646249017.jpeg\"},{\"id\":15262,\"full_name\":\"Eugene Maggio\",\"image\":\"pc169087724004.jpeg\"},{\"id\":15268,\"full_name\":\"Georgiana Fisher\",\"image\":\"pr940803386299.jpeg\"},{\"id\":15267,\"full_name\":\"Addie Schowalter\",\"image\":\"px222808498968.jpeg\"},{\"id\":15270,\"full_name\":\"Euna Hayes\",\"image\":\"pp471076659728.jpeg\"},{\"id\":15272,\"full_name\":\"Jacinthe Erdman\",\"image\":\"pc355171846018.jpeg\"},{\"id\":15269,\"full_name\":\"Carter Schowalter\",\"image\":\"pw066892884833.jpeg\"},{\"id\":15275,\"full_name\":\"Korbin Garland Brown\",\"image\":\"pv117051117947.jpeg\"},{\"id\":15276,\"full_name\":\"Abdiel Howe\",\"image\":\"pn562146953841.jpeg\"},{\"id\":15274,\"full_name\":\"Kayli Damaris Ortiz\",\"image\":\"pw948723869236.jpeg\"},{\"id\":15271,\"full_name\":\"Adolph Kuphal\",\"image\":\"pp844963993721.jpeg\"}],\"reviews\":[{\"id\":315927,\"body\":\"expedite web-enabled relationships\",\"rating\":4,\"author\":{\"id\":15942,\"name\":\"chelsey_ut\",\"image\":\"ui551654619678.jpeg\"}},{\"id\":290943,\"body\":\"exploit ubiquitous users\",\"rating\":3,\"author\":{\"id\":90938,\"name\":\"jedidiah_et\",\"image\":\"uh255321699054.jpeg\"}},{\"id\":265940,\"body\":\"reintermediate robust partnerships\",\"rating\":3,\"author\":{\"id\":65937,\"name\":\"marjory_architecto\",\"image\":\"uu385344082525.jpeg\"}},{\"id\":240935,\"body\":\"optimize B2B web services\",\"rating\":3,\"author\":{\"id\":40940,\"name\":\"ivory_repellat\",\"image\":\"ue404380258638.jpeg\"}},{\"id\":40941,\"body\":\"scale dot-com e-markets\",\"rating\":4,\"author\":{\"id\":40940,\"name\":\"ivory_repellat\",\"image\":\"ue404380258638.jpeg\"}},{\"id\":490940,\"body\":\"enable collaborative architectures\",\"rating\":2,\"author\":{\"id\":90938,\"name\":\"jedidiah_et\",\"image\":\"uh255321699054.jpeg\"}},{\"id\":65931,\"body\":\"grow open-source paradigms\",\"rating\":4,\"author\":{\"id\":65937,\"name\":\"marjory_architecto\",\"image\":\"uu385344082525.jpeg\"}},{\"id\":390941,\"body\":\"envisioneer frictionless infrastructures\",\"rating\":4,\"author\":{\"id\":90938,\"name\":\"jedidiah_et\",\"image\":\"uh255321699054.jpeg\"}},{\"id\":15937,\"body\":\"generate dynamic initiatives\",\"rating\":4,\"author\":{\"id\":15942,\"name\":\"chelsey_ut\",\"image\":\"ui551654619678.jpeg\"}},{\"id\":440941,\"body\":\"aggregate granular mindshare\",\"rating\":3,\"author\":{\"id\":40940,\"name\":\"ivory_repellat\",\"image\":\"ue404380258638.jpeg\"}},{\"id\":465940,\"body\":\"grow synergistic communities\",\"rating\":4,\"author\":{\"id\":65937,\"name\":\"marjory_architecto\",\"image\":\"uu385344082525.jpeg\"}},{\"id\":415937,\"body\":\"e-enable robust schemas\",\"rating\":0,\"author\":{\"id\":15942,\"name\":\"chelsey_ut\",\"image\":\"ui551654619678.jpeg\"}},{\"id\":140947,\"body\":\"whiteboard revolutionary partnerships\",\"rating\":3,\"author\":{\"id\":40940,\"name\":\"ivory_repellat\",\"image\":\"ue404380258638.jpeg\"}},{\"id\":90939,\"body\":\"recontextualize proactive initiatives\",\"rating\":0,\"author\":{\"id\":90938,\"name\":\"jedidiah_et\",\"image\":\"uh255321699054.jpeg\"}},{\"id\":165931,\"body\":\"leverage bleeding-edge methodologies\",\"rating\":2,\"author\":{\"id\":65937,\"name\":\"marjory_architecto\",\"image\":\"uu385344082525.jpeg\"}},{\"id\":365942,\"body\":\"matrix killer action-items\",\"rating\":4,\"author\":{\"id\":65937,\"name\":\"marjory_architecto\",\"image\":\"uu385344082525.jpeg\"}},{\"id\":190933,\"body\":\"whiteboard granular eyeballs\",\"rating\":2,\"author\":{\"id\":90938,\"name\":\"jedidiah_et\",\"image\":\"uh255321699054.jpeg\"}},{\"id\":115946,\"body\":\"envisioneer web-enabled platforms\",\"rating\":4,\"author\":{\"id\":15942,\"name\":\"chelsey_ut\",\"image\":\"ui551654619678.jpeg\"}},{\"id\":340944,\"body\":\"disintermediate scalable ROI\",\"rating\":4,\"author\":{\"id\":40940,\"name\":\"ivory_repellat\",\"image\":\"ue404380258638.jpeg\"}},{\"id\":215932,\"body\":\"matrix open-source partnerships\",\"rating\":2,\"author\":{\"id\":15942,\"name\":\"chelsey_ut\",\"image\":\"ui551654619678.jpeg\"}}]}", "{\"id\":15210,\"image\":\"mx088166017773.jpeg\",\"title\":\"productize extensible applications\",\"year\":1962,\"description\":\"reintermediate e-business schemas\",\"avg_rating\":\"3.3000000000000000\",\"directors\":[{\"id\":1942,\"full_name\":\"Dallas Ritchie\",\"image\":\"pm704276000975.jpeg\"},{\"id\":1936,\"full_name\":\"Camden Block\",\"image\":\"pj561998617617.jpeg\"}],\"cast\":[{\"id\":91175,\"full_name\":\"Linda Gislason\",\"image\":\"pd052066749461.jpeg\"},{\"id\":91174,\"full_name\":\"Manuela Gerlach\",\"image\":\"pz150485042206.jpeg\"},{\"id\":91178,\"full_name\":\"Jamir Daniel\",\"image\":\"pz787698843381.jpeg\"},{\"id\":91176,\"full_name\":\"Jaden Moen\",\"image\":\"pi107988133667.jpeg\"},{\"id\":91177,\"full_name\":\"Foster Friesen\",\"image\":\"pu014157938880.jpeg\"},{\"id\":91180,\"full_name\":\"Alfonso Larson\",\"image\":\"pa735071272879.jpeg\"},{\"id\":91179,\"full_name\":\"Jon Metz\",\"image\":\"pp964380188785.jpeg\"},{\"id\":91181,\"full_name\":\"Peter Marvin\",\"image\":\"ps427129711917.jpeg\"},{\"id\":91185,\"full_name\":\"Daphne Trantow\",\"image\":\"pp905464846776.jpeg\"},{\"id\":91183,\"full_name\":\"Dave Champlin\",\"image\":\"pc844371929978.jpeg\"},{\"id\":91182,\"full_name\":\"Kayley Connelly\",\"image\":\"pi782308430014.jpeg\"},{\"id\":91184,\"full_name\":\"Concepcion Waters\",\"image\":\"pl477845833574.jpeg\"},{\"id\":91188,\"full_name\":\"Retha Schiller\",\"image\":\"pc157882991339.jpeg\"},{\"id\":91186,\"full_name\":\"Aylin Bartell\",\"image\":\"po197009430690.jpeg\"},{\"id\":91196,\"full_name\":\"Cindy Kuhlman\",\"image\":\"pm848150245006.jpeg\"},{\"id\":91198,\"full_name\":\"Yolanda Schinner\",\"image\":\"pv728833122558.jpeg\"},{\"id\":91194,\"full_name\":\"Kraig Jenkins\",\"image\":\"pe505956445659.jpeg\"},{\"id\":91195,\"full_name\":\"Tyrel Farrell\",\"image\":\"pt410534722124.jpeg\"},{\"id\":91191,\"full_name\":\"Thad Aufderhar\",\"image\":\"pu298789632707.jpeg\"},{\"id\":91193,\"full_name\":\"Ernestine Hyatt\",\"image\":\"pn795625857073.jpeg\"},{\"id\":91203,\"full_name\":\"Meghan Gleichner\",\"image\":\"pg329872210102.jpeg\"},{\"id\":91197,\"full_name\":\"Bria Sipes\",\"image\":\"pk799623035026.jpeg\"},{\"id\":91192,\"full_name\":\"Jayson Konopelski\",\"image\":\"py107066626077.jpeg\"},{\"id\":91200,\"full_name\":\"Rae Grady\",\"image\":\"pw735493427983.jpeg\"},{\"id\":91199,\"full_name\":\"Alysha Crist\",\"image\":\"pl027261115121.jpeg\"},{\"id\":91201,\"full_name\":\"Nicklaus Conroy\",\"image\":\"pj090105213406.jpeg\"},{\"id\":91189,\"full_name\":\"Sandy Witting\",\"image\":\"pv093935793836.jpeg\"},{\"id\":91187,\"full_name\":\"Tyreek Becker\",\"image\":\"pc147552201410.jpeg\"},{\"id\":91206,\"full_name\":\"Cullen Lebsack\",\"image\":\"pv135844900002.jpeg\"},{\"id\":91205,\"full_name\":\"Abdiel Torphy\",\"image\":\"pi753658789725.jpeg\"},{\"id\":91204,\"full_name\":\"Karley Kerluke\",\"image\":\"pi434946354701.jpeg\"},{\"id\":91190,\"full_name\":\"Monica Crona\",\"image\":\"pe446785382036.jpeg\"},{\"id\":91202,\"full_name\":\"Haskell Theo Nicolas\",\"image\":\"pa327390720565.jpeg\"},{\"id\":91207,\"full_name\":\"Max Zboncak\",\"image\":\"pq163051241115.jpeg\"},{\"id\":91208,\"full_name\":\"Wyatt Dortha Becker\",\"image\":\"pp078538935488.jpeg\"},{\"id\":91211,\"full_name\":\"Darrion Murray\",\"image\":\"po917185677169.jpeg\"},{\"id\":91209,\"full_name\":\"Thaddeus Micah Murphy\",\"image\":\"px926406012855.jpeg\"},{\"id\":91212,\"full_name\":\"Clare Nikolaus\",\"image\":\"pn244909853673.jpeg\"},{\"id\":91210,\"full_name\":\"Lindsay Rau\",\"image\":\"pc485490981921.jpeg\"},{\"id\":91213,\"full_name\":\"Muriel Swaniawski\",\"image\":\"pr432948597160.jpeg\"},{\"id\":91214,\"full_name\":\"Laila Howe\",\"image\":\"pg484281967444.jpeg\"},{\"id\":91215,\"full_name\":\"Marina Towne\",\"image\":\"pr431136902928.jpeg\"}],\"reviews\":[{\"id\":65201,\"body\":\"strategize distributed supply-chains\",\"rating\":3,\"author\":{\"id\":65205,\"name\":\"otis_pariatur\",\"image\":\"uq165206444392.jpeg\"}},{\"id\":265205,\"body\":\"strategize holistic niches\",\"rating\":2,\"author\":{\"id\":65205,\"name\":\"otis_pariatur\",\"image\":\"uq165206444392.jpeg\"}},{\"id\":15206,\"body\":\"monetize dynamic mindshare\",\"rating\":3,\"author\":{\"id\":15203,\"name\":\"zack_repudiandae\",\"image\":\"ug331138621972.jpeg\"}},{\"id\":440219,\"body\":\"architect transparent functionalities\",\"rating\":4,\"author\":{\"id\":40209,\"name\":\"lemuel_et\",\"image\":\"ue479853710309.jpeg\"}},{\"id\":340206,\"body\":\"incubate customized web services\",\"rating\":4,\"author\":{\"id\":40209,\"name\":\"lemuel_et\",\"image\":\"ue479853710309.jpeg\"}},{\"id\":140207,\"body\":\"whiteboard plug-and-play e-tailers\",\"rating\":5,\"author\":{\"id\":40209,\"name\":\"lemuel_et\",\"image\":\"ue479853710309.jpeg\"}},{\"id\":390206,\"body\":\"transform global models\",\"rating\":3,\"author\":{\"id\":90219,\"name\":\"jean_incidunt\",\"image\":\"ue489146802635.jpeg\"}},{\"id\":315207,\"body\":\"matrix sticky infrastructures\",\"rating\":1,\"author\":{\"id\":15203,\"name\":\"zack_repudiandae\",\"image\":\"ug331138621972.jpeg\"}},{\"id\":40204,\"body\":\"integrate transparent systems\",\"rating\":3,\"author\":{\"id\":40209,\"name\":\"lemuel_et\",\"image\":\"ue479853710309.jpeg\"}},{\"id\":465202,\"body\":\"extend bricks-and-clicks e-tailers\",\"rating\":5,\"author\":{\"id\":65205,\"name\":\"otis_pariatur\",\"image\":\"uq165206444392.jpeg\"}},{\"id\":215221,\"body\":\"incubate enterprise metrics\",\"rating\":4,\"author\":{\"id\":15203,\"name\":\"zack_repudiandae\",\"image\":\"ug331138621972.jpeg\"}},{\"id\":190208,\"body\":\"e-enable holistic applications\",\"rating\":4,\"author\":{\"id\":90219,\"name\":\"jean_incidunt\",\"image\":\"ue489146802635.jpeg\"}},{\"id\":240206,\"body\":\"scale compelling deliverables\",\"rating\":3,\"author\":{\"id\":40209,\"name\":\"lemuel_et\",\"image\":\"ue479853710309.jpeg\"}},{\"id\":165205,\"body\":\"incubate back-end eyeballs\",\"rating\":2,\"author\":{\"id\":65205,\"name\":\"otis_pariatur\",\"image\":\"uq165206444392.jpeg\"}},{\"id\":290204,\"body\":\"optimize synergistic mindshare\",\"rating\":4,\"author\":{\"id\":90219,\"name\":\"jean_incidunt\",\"image\":\"ue489146802635.jpeg\"}},{\"id\":90206,\"body\":\"e-enable real-time functionalities\",\"rating\":1,\"author\":{\"id\":90219,\"name\":\"jean_incidunt\",\"image\":\"ue489146802635.jpeg\"}},{\"id\":415204,\"body\":\"cultivate mission-critical e-business\",\"rating\":4,\"author\":{\"id\":15203,\"name\":\"zack_repudiandae\",\"image\":\"ug331138621972.jpeg\"}},{\"id\":365205,\"body\":\"deploy B2B ROI\",\"rating\":4,\"author\":{\"id\":65205,\"name\":\"otis_pariatur\",\"image\":\"uq165206444392.jpeg\"}},{\"id\":490189,\"body\":\"deploy 24/365 synergies\",\"rating\":4,\"author\":{\"id\":90219,\"name\":\"jean_incidunt\",\"image\":\"ue489146802635.jpeg\"}},{\"id\":115202,\"body\":\"architect bricks-and-clicks solutions\",\"rating\":3,\"author\":{\"id\":15203,\"name\":\"zack_repudiandae\",\"image\":\"ug331138621972.jpeg\"}}]}"], "implementation": "PostgreSQL (Node.js, pg)"}];
+      drawBars('#bars-get_movie', DATA_get_movie, {sort: true});
+      drawLats('#lats-get_movie', DATA_get_movie, {sort: true});
+    </script>
+
+    
+    <h4>Sample Outputs</h4>
+
+    <div id="samples-get_movie"></div>
+
+    <script>
+      renderSamples(document.getElementById('samples-get_movie'), DATA_get_movie);
+    </script>
+       
+    <h3>GET /user/:id</h3>
+    <p class="bench-description">Get information about a given user: name and a sample of the latest movie reviews this user authored.</p>
+
+    
+
+    <p class="chart-title">Throughput (more is better)</p>
+    <svg id="bars-get_user" class="chart" style="width: 80vw"></svg>
+    <p class="chart-title">Latency (less is better)</p>
+    <svg id="lats-get_user" class="chart" style="width: 80vw"></svg>
+
+    <script>
+      var DATA_get_user = [{"duration": 10.0, "queries": 7421, "qps": 742.06, "latency_min": 0.82, "latency_mean": 1.347, "latency_max": 21.82, "latency_std": 0.703, "latency_cv": 52.22, "latency_percentiles": [[25, 1.064], [50, 1.17], [75, 1.353], [90, 1.736], [99, 4.356], [99.99, 21.815]], "samples": ["{\"id\":106213,\"name\":\"cathrine_officia\",\"image\":\"uv106969994431.jpeg\",\"latest_reviews\":[{\"id\":431213,\"body\":\"harness enterprise partnerships\",\"rating\":1,\"movie\":{\"id\":206213,\"image\":\"md222971340548.jpeg\",\"title\":\"incentivize proactive web-readiness\",\"avg_rating\":2.65}},{\"id\":531213,\"body\":\"monetize cutting-edge initiatives\",\"rating\":1,\"movie\":{\"id\":206213,\"image\":\"md222971340548.jpeg\",\"title\":\"incentivize proactive web-readiness\",\"avg_rating\":2.65}},{\"id\":631213,\"body\":\"facilitate integrated convergence\",\"rating\":3,\"movie\":{\"id\":206213,\"image\":\"md222971340548.jpeg\",\"title\":\"incentivize proactive web-readiness\",\"avg_rating\":2.65}},{\"id\":331213,\"body\":\"cultivate seamless e-tailers\",\"rating\":2,\"movie\":{\"id\":206213,\"image\":\"md222971340548.jpeg\",\"title\":\"incentivize proactive web-readiness\",\"avg_rating\":2.65}},{\"id\":231213,\"body\":\"benchmark B2B ROI\",\"rating\":4,\"movie\":{\"id\":206213,\"image\":\"md222971340548.jpeg\",\"title\":\"incentivize proactive web-readiness\",\"avg_rating\":2.65}}]}", "{\"id\":106052,\"name\":\"devon_at\",\"image\":\"up754921264058.jpeg\",\"latest_reviews\":[{\"id\":231052,\"body\":\"engineer magnetic web-readiness\",\"rating\":4,\"movie\":{\"id\":206052,\"image\":\"me420527610733.jpeg\",\"title\":\"syndicate compelling systems\",\"avg_rating\":3.2}},{\"id\":431052,\"body\":\"evolve world-class eyeballs\",\"rating\":2,\"movie\":{\"id\":206052,\"image\":\"me420527610733.jpeg\",\"title\":\"syndicate compelling systems\",\"avg_rating\":3.2}},{\"id\":531052,\"body\":\"synthesize customized experiences\",\"rating\":2,\"movie\":{\"id\":206052,\"image\":\"me420527610733.jpeg\",\"title\":\"syndicate compelling systems\",\"avg_rating\":3.2}},{\"id\":331052,\"body\":\"synthesize proactive supply-chains\",\"rating\":2,\"movie\":{\"id\":206052,\"image\":\"me420527610733.jpeg\",\"title\":\"syndicate compelling systems\",\"avg_rating\":3.2}},{\"id\":631052,\"body\":\"reinvent frictionless architectures\",\"rating\":2,\"movie\":{\"id\":206052,\"image\":\"me420527610733.jpeg\",\"title\":\"syndicate compelling systems\",\"avg_rating\":3.2}}]}", "{\"id\":106185,\"name\":\"suzanne_ab\",\"image\":\"up072527956195.jpeg\",\"latest_reviews\":[{\"id\":631185,\"body\":\"deliver dynamic bandwidth\",\"rating\":5,\"movie\":{\"id\":206185,\"image\":\"mm391886345590.jpeg\",\"title\":\"embrace distributed web-readiness\",\"avg_rating\":3.65}},{\"id\":331185,\"body\":\"maximize 24/365 paradigms\",\"rating\":3,\"movie\":{\"id\":206185,\"image\":\"mm391886345590.jpeg\",\"title\":\"embrace distributed web-readiness\",\"avg_rating\":3.65}},{\"id\":431185,\"body\":\"recontextualize synergistic niches\",\"rating\":5,\"movie\":{\"id\":206185,\"image\":\"mm391886345590.jpeg\",\"title\":\"embrace distributed web-readiness\",\"avg_rating\":3.65}},{\"id\":531185,\"body\":\"leverage visionary bandwidth\",\"rating\":4,\"movie\":{\"id\":206185,\"image\":\"mm391886345590.jpeg\",\"title\":\"embrace distributed web-readiness\",\"avg_rating\":3.65}},{\"id\":231185,\"body\":\"syndicate intuitive e-tailers\",\"rating\":4,\"movie\":{\"id\":206185,\"image\":\"mm391886345590.jpeg\",\"title\":\"embrace distributed web-readiness\",\"avg_rating\":3.65}}]}"], "implementation": "TypeORM"}, {"duration": 10.0, "queries": 3501, "qps": 349.96, "latency_min": 1.42, "latency_mean": 2.853, "latency_max": 26.86, "latency_std": 1.364, "latency_cv": 47.8, "latency_percentiles": [[25, 2.17], [50, 2.499], [75, 3.044], [90, 4.035], [99, 8.175], [99.99, 26.863]], "samples": ["{\"id\":2476,\"name\":\"asperiores.cierra\",\"image\":\"uc567843529040.jpeg\",\"latest_reviews\":[{\"id\":2478,\"body\":\"reinvent efficient methodologies\",\"rating\":2,\"movie\":{\"id\":2478,\"image\":\"my879474585932.jpeg\",\"title\":\"synergize leading-edge ROI\",\"avg_rating\":3.15}},{\"id\":202476,\"body\":\"unleash collaborative deliverables\",\"rating\":4,\"movie\":{\"id\":2478,\"image\":\"my879474585932.jpeg\",\"title\":\"synergize leading-edge ROI\",\"avg_rating\":3.15}},{\"id\":402458,\"body\":\"streamline bleeding-edge e-business\",\"rating\":4,\"movie\":{\"id\":2478,\"image\":\"my879474585932.jpeg\",\"title\":\"synergize leading-edge ROI\",\"avg_rating\":3.15}},{\"id\":102474,\"body\":\"generate sexy metrics\",\"rating\":3,\"movie\":{\"id\":2478,\"image\":\"my879474585932.jpeg\",\"title\":\"synergize leading-edge ROI\",\"avg_rating\":3.15}},{\"id\":302476,\"body\":\"facilitate plug-and-play networks\",\"rating\":2,\"movie\":{\"id\":2478,\"image\":\"my879474585932.jpeg\",\"title\":\"synergize leading-edge ROI\",\"avg_rating\":3.15}}]}", "{\"id\":108,\"name\":\"johnathan_perferendis\",\"image\":\"uj214159956293.jpeg\",\"latest_reviews\":[{\"id\":300125,\"body\":\"mesh viral deliverables\",\"rating\":2,\"movie\":{\"id\":102,\"image\":\"mb417773143171.jpeg\",\"title\":\"synergize rich e-commerce\",\"avg_rating\":3.45}},{\"id\":400091,\"body\":\"exploit mission-critical interfaces\",\"rating\":2,\"movie\":{\"id\":102,\"image\":\"mb417773143171.jpeg\",\"title\":\"synergize rich e-commerce\",\"avg_rating\":3.45}},{\"id\":100106,\"body\":\"streamline killer relationships\",\"rating\":5,\"movie\":{\"id\":102,\"image\":\"mb417773143171.jpeg\",\"title\":\"synergize rich e-commerce\",\"avg_rating\":3.45}},{\"id\":200103,\"body\":\"reinvent end-to-end methodologies\",\"rating\":5,\"movie\":{\"id\":102,\"image\":\"mb417773143171.jpeg\",\"title\":\"synergize rich e-commerce\",\"avg_rating\":3.45}},{\"id\":110,\"body\":\"target innovative channels\",\"rating\":2,\"movie\":{\"id\":102,\"image\":\"mb417773143171.jpeg\",\"title\":\"synergize rich e-commerce\",\"avg_rating\":3.45}}]}", "{\"id\":46,\"name\":\"patricia_sed\",\"image\":\"uh233616077522.jpeg\",\"latest_reviews\":[{\"id\":100054,\"body\":\"syndicate distributed synergies\",\"rating\":4,\"movie\":{\"id\":46,\"image\":\"mn062919462662.jpeg\",\"title\":\"maximize dot-com vortals\",\"avg_rating\":2.8}},{\"id\":200046,\"body\":\"visualize cross-platform action-items\",\"rating\":3,\"movie\":{\"id\":46,\"image\":\"mn062919462662.jpeg\",\"title\":\"maximize dot-com vortals\",\"avg_rating\":2.8}},{\"id\":300049,\"body\":\"leverage e-business models\",\"rating\":2,\"movie\":{\"id\":46,\"image\":\"mn062919462662.jpeg\",\"title\":\"maximize dot-com vortals\",\"avg_rating\":2.8}},{\"id\":400045,\"body\":\"mesh sexy architectures\",\"rating\":3,\"movie\":{\"id\":46,\"image\":\"mn062919462662.jpeg\",\"title\":\"maximize dot-com vortals\",\"avg_rating\":2.8}},{\"id\":46,\"body\":\"repurpose end-to-end infrastructures\",\"rating\":5,\"movie\":{\"id\":46,\"image\":\"mn062919462662.jpeg\",\"title\":\"maximize dot-com vortals\",\"avg_rating\":2.8}}]}"], "implementation": "Prisma"}, {"duration": 10.0, "queries": 5764, "qps": 576.21, "latency_min": 1.04, "latency_mean": 1.734, "latency_max": 15.27, "latency_std": 0.659, "latency_cv": 38.02, "latency_percentiles": [[25, 1.429], [50, 1.629], [75, 1.803], [90, 2.145], [99, 4.847], [99.99, 15.268]], "samples": ["{\"id\":78868,\"name\":\"cristobal_dignissimos\",\"image\":\"uo443954191071.jpeg\",\"latest_reviews\":[{\"id\":78859,\"body\":\"enhance distributed synergies\",\"rating\":4,\"movie\":{\"id\":3856,\"image\":\"mm702996701149.jpeg\",\"title\":\"deploy holistic networks\",\"avg_rating\":3.2}},{\"id\":378875,\"body\":\"reinvent wireless initiatives\",\"rating\":5,\"movie\":{\"id\":3856,\"image\":\"mm702996701149.jpeg\",\"title\":\"deploy holistic networks\",\"avg_rating\":3.2}},{\"id\":278849,\"body\":\"embrace front-end e-business\",\"rating\":4,\"movie\":{\"id\":3856,\"image\":\"mm702996701149.jpeg\",\"title\":\"deploy holistic networks\",\"avg_rating\":3.2}},{\"id\":178853,\"body\":\"brand best-of-breed content\",\"rating\":2,\"movie\":{\"id\":3856,\"image\":\"mm702996701149.jpeg\",\"title\":\"deploy holistic networks\",\"avg_rating\":3.2}},{\"id\":478849,\"body\":\"whiteboard magnetic methodologies\",\"rating\":5,\"movie\":{\"id\":3856,\"image\":\"mm702996701149.jpeg\",\"title\":\"deploy holistic networks\",\"avg_rating\":3.2}}]}", "{\"id\":32238,\"name\":\"jody_dicta\",\"image\":\"ur288829579747.jpeg\",\"latest_reviews\":[{\"id\":332247,\"body\":\"deploy distributed bandwidth\",\"rating\":2,\"movie\":{\"id\":7252,\"image\":\"ml587745004379.jpeg\",\"title\":\"recontextualize out-of-the-box networks\",\"avg_rating\":2.95}},{\"id\":432229,\"body\":\"orchestrate sexy relationships\",\"rating\":4,\"movie\":{\"id\":7252,\"image\":\"ml587745004379.jpeg\",\"title\":\"recontextualize out-of-the-box networks\",\"avg_rating\":2.95}},{\"id\":132242,\"body\":\"grow innovative bandwidth\",\"rating\":4,\"movie\":{\"id\":7252,\"image\":\"ml587745004379.jpeg\",\"title\":\"recontextualize out-of-the-box networks\",\"avg_rating\":2.95}},{\"id\":232239,\"body\":\"transform distributed synergies\",\"rating\":2,\"movie\":{\"id\":7252,\"image\":\"ml587745004379.jpeg\",\"title\":\"recontextualize out-of-the-box networks\",\"avg_rating\":2.95}},{\"id\":32269,\"body\":\"e-enable scalable portals\",\"rating\":3,\"movie\":{\"id\":7252,\"image\":\"ml587745004379.jpeg\",\"title\":\"recontextualize out-of-the-box networks\",\"avg_rating\":2.95}}]}", "{\"id\":38277,\"name\":\"rose_est\",\"image\":\"ud866373291901.jpeg\",\"latest_reviews\":[{\"id\":438267,\"body\":\"monetize plug-and-play systems\",\"rating\":3,\"movie\":{\"id\":13282,\"image\":\"ml081852937845.jpeg\",\"title\":\"syndicate collaborative portals\",\"avg_rating\":2.5}},{\"id\":238276,\"body\":\"iterate user-centric action-items\",\"rating\":3,\"movie\":{\"id\":13282,\"image\":\"ml081852937845.jpeg\",\"title\":\"syndicate collaborative portals\",\"avg_rating\":2.5}},{\"id\":338276,\"body\":\"seize dynamic action-items\",\"rating\":1,\"movie\":{\"id\":13282,\"image\":\"ml081852937845.jpeg\",\"title\":\"syndicate collaborative portals\",\"avg_rating\":2.5}},{\"id\":138277,\"body\":\"empower leading-edge initiatives\",\"rating\":4,\"movie\":{\"id\":13282,\"image\":\"ml081852937845.jpeg\",\"title\":\"syndicate collaborative portals\",\"avg_rating\":2.5}},{\"id\":38310,\"body\":\"e-enable bleeding-edge methodologies\",\"rating\":4,\"movie\":{\"id\":13282,\"image\":\"ml081852937845.jpeg\",\"title\":\"syndicate collaborative portals\",\"avg_rating\":2.5}}]}"], "implementation": "MonOrm (Node.js)"}, {"duration": 10.0, "queries": 9223, "qps": 922.15, "latency_min": 0.69, "latency_mean": 1.084, "latency_max": 35.21, "latency_std": 0.646, "latency_cv": 59.59, "latency_percentiles": [[25, 0.865], [50, 0.947], [75, 1.087], [90, 1.349], [99, 3.545], [99.99, 35.202]], "samples": ["{\"id\":33696,\"name\":\"ashton_voluptas\",\"image\":\"ue666524806349.jpeg\",\"latest_reviews\":[{\"id\":333717,\"body\":\"enhance interactive technologies\",\"rating\":4,\"movie\":{\"id\":8681,\"image\":\"mk165466773279.jpeg\",\"title\":\"facilitate seamless infrastructures\",\"avg_rating\":3.25}},{\"id\":233697,\"body\":\"benchmark user-centric applications\",\"rating\":4,\"movie\":{\"id\":8681,\"image\":\"mk165466773279.jpeg\",\"title\":\"facilitate seamless infrastructures\",\"avg_rating\":3.25}},{\"id\":133699,\"body\":\"visualize impactful channels\",\"rating\":4,\"movie\":{\"id\":8681,\"image\":\"mk165466773279.jpeg\",\"title\":\"facilitate seamless infrastructures\",\"avg_rating\":3.25}},{\"id\":433696,\"body\":\"incubate strategic e-commerce\",\"rating\":4,\"movie\":{\"id\":8681,\"image\":\"mk165466773279.jpeg\",\"title\":\"facilitate seamless infrastructures\",\"avg_rating\":3.25}},{\"id\":33696,\"body\":\"facilitate e-business e-commerce\",\"rating\":4,\"movie\":{\"id\":8681,\"image\":\"mk165466773279.jpeg\",\"title\":\"facilitate seamless infrastructures\",\"avg_rating\":3.25}}]}", "{\"id\":43656,\"name\":\"florence_assumenda\",\"image\":\"ut716418749232.jpeg\",\"latest_reviews\":[{\"id\":143606,\"body\":\"transition enterprise portals\",\"rating\":3,\"movie\":{\"id\":18615,\"image\":\"mr780745956093.jpeg\",\"title\":\"synergize open-source architectures\",\"avg_rating\":3.05}},{\"id\":243611,\"body\":\"envisioneer killer deliverables\",\"rating\":0,\"movie\":{\"id\":18615,\"image\":\"mr780745956093.jpeg\",\"title\":\"synergize open-source architectures\",\"avg_rating\":3.05}},{\"id\":43601,\"body\":\"architect transparent interfaces\",\"rating\":1,\"movie\":{\"id\":18615,\"image\":\"mr780745956093.jpeg\",\"title\":\"synergize open-source architectures\",\"avg_rating\":3.05}},{\"id\":443609,\"body\":\"matrix collaborative deliverables\",\"rating\":3,\"movie\":{\"id\":18615,\"image\":\"mr780745956093.jpeg\",\"title\":\"synergize open-source architectures\",\"avg_rating\":3.05}},{\"id\":343617,\"body\":\"orchestrate value-added partnerships\",\"rating\":4,\"movie\":{\"id\":18615,\"image\":\"mr780745956093.jpeg\",\"title\":\"synergize open-source architectures\",\"avg_rating\":3.05}}]}", "{\"id\":48352,\"name\":\"misty_culpa\",\"image\":\"uv670320067845.jpeg\",\"latest_reviews\":[{\"id\":148352,\"body\":\"synthesize user-centric partnerships\",\"rating\":2,\"movie\":{\"id\":23375,\"image\":\"mp125913208672.jpeg\",\"title\":\"brand cutting-edge bandwidth\",\"avg_rating\":3.4}},{\"id\":48352,\"body\":\"extend magnetic niches\",\"rating\":4,\"movie\":{\"id\":23375,\"image\":\"mp125913208672.jpeg\",\"title\":\"brand cutting-edge bandwidth\",\"avg_rating\":3.4}},{\"id\":348352,\"body\":\"harness real-time bandwidth\",\"rating\":4,\"movie\":{\"id\":23375,\"image\":\"mp125913208672.jpeg\",\"title\":\"brand cutting-edge bandwidth\",\"avg_rating\":3.4}},{\"id\":448348,\"body\":\"brand transparent content\",\"rating\":3,\"movie\":{\"id\":23375,\"image\":\"mp125913208672.jpeg\",\"title\":\"brand cutting-edge bandwidth\",\"avg_rating\":3.4}},{\"id\":248347,\"body\":\"target robust e-commerce\",\"rating\":5,\"movie\":{\"id\":23375,\"image\":\"mp125913208672.jpeg\",\"title\":\"brand cutting-edge bandwidth\",\"avg_rating\":3.4}}]}"], "implementation": "PostgreSQL (Node.js, pg)"}];
+      drawBars('#bars-get_user', DATA_get_user, {sort: true});
+      drawLats('#lats-get_user', DATA_get_user, {sort: true});
+    </script>
+
+    
+    <h4>Sample Outputs</h4>
+
+    <div id="samples-get_user"></div>
+
+    <script>
+      renderSamples(document.getElementById('samples-get_user'), DATA_get_user);
+    </script>
+     
+  </body>
+</html>

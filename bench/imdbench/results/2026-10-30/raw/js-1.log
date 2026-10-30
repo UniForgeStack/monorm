@@ -1,0 +1,115 @@
+============ JS ============
+concurrency:	1
+warmup time:	5 seconds
+duration:	10 seconds
+queries:	insert_movie, get_movie, get_user
+benchmarks:	typeorm, prisma, monorm_js, postgres_pg
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query insert_movie --port 15432 typeorm
+== typeorm : insert_movie ==
+queries:	1712
+qps:		171 q/s
+min latency:	3.59ms
+avg latency:	5.83ms
+max latency:	75.21ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_movie --port 15432 typeorm
+== typeorm : get_movie ==
+queries:	460
+qps:		46 q/s
+min latency:	7.45ms
+avg latency:	21.79ms
+max latency:	77.55ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_user --port 15432 typeorm
+== typeorm : get_user ==
+queries:	8486
+qps:		848 q/s
+min latency:	0.80ms
+avg latency:	1.18ms
+max latency:	28.72ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query insert_movie --port 15432 prisma
+== prisma : insert_movie ==
+queries:	2041
+qps:		204 q/s
+min latency:	3.10ms
+avg latency:	4.89ms
+max latency:	60.48ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_movie --port 15432 prisma
+== prisma : get_movie ==
+queries:	1586
+qps:		158 q/s
+min latency:	3.88ms
+avg latency:	6.30ms
+max latency:	46.47ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_user --port 15432 prisma
+== prisma : get_user ==
+queries:	3975
+qps:		397 q/s
+min latency:	1.46ms
+avg latency:	2.51ms
+max latency:	20.32ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query insert_movie --port 15432 monorm_js
+== monorm_js : insert_movie ==
+queries:	2793
+qps:		279 q/s
+min latency:	2.14ms
+avg latency:	3.57ms
+max latency:	63.21ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_movie --port 15432 monorm_js
+== monorm_js : get_movie ==
+queries:	3462
+qps:		346 q/s
+min latency:	1.78ms
+avg latency:	2.89ms
+max latency:	52.22ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_user --port 15432 monorm_js
+== monorm_js : get_user ==
+queries:	5502
+qps:		550 q/s
+min latency:	1.04ms
+avg latency:	1.82ms
+max latency:	29.05ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query insert_movie --port 15432 postgres_pg
+== postgres_pg : insert_movie ==
+queries:	3288
+qps:		328 q/s
+min latency:	1.74ms
+avg latency:	3.03ms
+max latency:	33.32ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_movie --port 15432 postgres_pg
+== postgres_pg : get_movie ==
+queries:	2952
+qps:		295 q/s
+min latency:	2.06ms
+avg latency:	3.39ms
+max latency:	25.98ms
+
+Running benchmark...
+/root/imdbench/jsbench.js --concurrency 1 --duration 10 --timeout 2 --warmup-time 5 --output-format json --host 127.0.0.1 --nsamples 10 --number-of-ids 250 --query get_user --port 15432 postgres_pg
+== postgres_pg : get_user ==
+queries:	9737
+qps:		973 q/s
+min latency:	0.69ms
+avg latency:	1.03ms
+max latency:	7.06ms
+
