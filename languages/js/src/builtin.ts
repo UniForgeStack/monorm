@@ -9,16 +9,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const NAME = "monorm";
+/** The npm name while npm holds `monorm` back; users install it under the alias `monorm`. */
+const PUBLISHED = "@ufstack/monorm";
 
 export interface BundledExtension { id: string; manifest: string; specifier: string }
 
 interface Bundled { extensions?: Record<string, string>; apps?: Record<string, string> }
 
-/** The root of this package: the nearest directory above this file whose `package.json` is named `monorm`. */
+/** The root of this package: the nearest directory above this file whose `package.json` is named `monorm` or `@ufstack/monorm`. */
 export const packageRoot: string = (() => {
   for (let dir = dirname(fileURLToPath(import.meta.url)); ; dir = dirname(dir)) {
     const file = join(dir, "package.json");
-    if (existsSync(file) && (JSON.parse(readFileSync(file, "utf8")) as { name?: string }).name === NAME) return realpathSync(dir);
+    const name = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { name?: string }).name : undefined;
+    if (name === NAME || name === PUBLISHED) return realpathSync(dir);
     if (dirname(dir) === dir) throw new Error(`the ${NAME} package root is not above ${fileURLToPath(import.meta.url)}`);
   }
 })();

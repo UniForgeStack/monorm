@@ -7,7 +7,7 @@ The Python package uses the same engine, schema and queries.
 
 > **Under active development.**
 > It works today, and the author runs it in production.
-> It is version 0.1.0 and not published yet.
+> It is version 0.1.1.
 > Other people should not use it in production yet, or do so at their own risk.
 > Evaluate it against your own app before you rely on it.
 
@@ -20,6 +20,16 @@ Source, method and limits: [bench/RESULTS.md](https://github.com/UniForgeStack/m
 Run the comparison yourself before you decide.
 
 The name is MonOrm.
+
+## Install
+
+Install the package under the alias `monorm`, because the code and the generated models import `monorm`:
+
+```bash
+npm install monorm@npm:@ufstack/monorm      # pnpm add monorm@npm:@ufstack/monorm; bun add monorm@npm:@ufstack/monorm
+```
+
+A plain `npm install @ufstack/monorm` installs, but the imports fail.
 
 ## Quickstart
 

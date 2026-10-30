@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/monorm)](https://pypi.org/project/monorm/)
 [![Python](https://img.shields.io/pypi/pyversions/monorm)](https://pypi.org/project/monorm/)
-[![npm](https://img.shields.io/npm/v/monorm)](https://www.npmjs.com/package/monorm)
+[![npm](https://img.shields.io/npm/v/@ufstack/monorm)](https://www.npmjs.com/package/@ufstack/monorm)
 [![Checks](https://github.com/UniForgeStack/monorm/actions/workflows/checks.yml/badge.svg)](https://github.com/UniForgeStack/monorm/actions/workflows/checks.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -13,7 +13,8 @@ Both languages get the same queries, the same migrations and generated, typed mo
 
 > **Under active development.**
 > It works today, and the author runs it in production.
-> It is version 0.1.0: install it with `pip install monorm` or `npm install monorm`.
+> It is version 0.1.1: install it with `pip install monorm` or `npm install monorm@npm:@ufstack/monorm`.
+> The npm package is `@ufstack/monorm` for now; always install it under the alias `monorm`, because the code imports `monorm`.
 > Other people should not use it in production yet, or do so at their own risk.
 > Evaluate it against your own app before you rely on it.
 
@@ -79,7 +80,7 @@ There is one package for each registry:
 
 ```bash
 pip install monorm      # the engine, every built-in extension and the auth app; `python -m monorm generate`
-npm install monorm      # the same for Node and Bun; `npx monorm generate`
+npm install monorm@npm:@ufstack/monorm      # the same for Node and Bun (the alias is required); `npx monorm generate`
 ```
 
 The `monorm` command line comes with the Python and npm packages.
@@ -112,7 +113,7 @@ pip install monorm
 npm uninstall @ufstack/monorm @ufstack/monorm-native-postgres @ufstack/monorm-native-sqlite @ufstack/monorm-native-combined @ufstack/monorm-native-tooling @ufstack/monorm-auth \
   @ufstack/monorm-timestamps @ufstack/monorm-soft-delete @ufstack/monorm-locking @ufstack/monorm-inherit @ufstack/monorm-query-defaults \
   @ufstack/monorm-generic @ufstack/monorm-proxy @ufstack/monorm-composition @ufstack/monorm-file-storage
-npm install monorm
+npm install monorm@npm:@ufstack/monorm
 ```
 
 The `monorm[postgres]` and `monorm[sqlite]` extras are gone: the wheel has both drivers.

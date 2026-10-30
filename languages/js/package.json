@@ -1,6 +1,6 @@
 {
-  "name": "monorm",
-  "version": "0.1.0",
+  "name": "@ufstack/monorm",
+  "version": "0.1.1",
   "description": "TypeScript ORM with a Rust core: the same engine and schema as the Python package",
   "license": "MIT",
   "author": "mh-alahdadi <mhalah15@gmail.com> (https://github.com/mh-alahdadi)",
@@ -146,6 +146,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "monorm": "file:.",
     "typescript": "^5.9.0"
   },
   "files": [

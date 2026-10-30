@@ -168,14 +168,14 @@ def tgz(directory: Path, file: str, name: str, version: str):
 
 def npm_dir(version: str = "0.1.0") -> Path:
     directory = Path(tempfile.mkdtemp())
-    tgz(directory, "monorm.tgz", "monorm", version)
+    tgz(directory, "monorm.tgz", "@ufstack/monorm", version)
     return directory
 
 
 class PublishListsTest(unittest.TestCase):
     def test_a_release_is_12_wheels_of_one_pypi_project_and_one_npm_package(self):
         self.assertEqual(publish_lists.PYPI, {"monorm": ("wheel",) * 12})
-        self.assertEqual(publish_lists.NPM, ["monorm"])
+        self.assertEqual(publish_lists.NPM, ["@ufstack/monorm"])
 
     def test_a_complete_pypi_directory_passes(self):
         directory = pypi_dir()
@@ -286,15 +286,15 @@ class NpmPublishTest(unittest.TestCase):
         self.assertNotIn("--tag", self.log.read_text())
 
     def test_a_version_that_is_up_is_skipped(self):
-        result = self.publish("real", FAKE_NPM_UP="monorm@0.1.0")
+        result = self.publish("real", FAKE_NPM_UP="@ufstack/monorm@0.1.0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.publishes(), [])
-        self.assertIn("skip monorm@0.1.0", result.stdout)
+        self.assertIn("skip @ufstack/monorm@0.1.0", result.stdout)
 
     def test_a_failed_publish_stops_the_run(self):
         result = self.publish("real", FAKE_NPM_FAIL="1")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("npm publish failed for monorm@0.1.0", result.stderr)
+        self.assertIn("npm publish failed for @ufstack/monorm@0.1.0", result.stderr)
 
 
 try:

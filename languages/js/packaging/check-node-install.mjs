@@ -28,8 +28,8 @@ for (const needed of ["dist/src/index.js", "dist/src/auth/index.js", "auth/schem
 if (!names.some((name) => /^prebuilt\/[^/]+\/monorm\.node$/.test(name))) throw new Error("the tarball holds no native addon");
 
 const consumers = [
-  { runtime: process.execPath, name: "node", install: (dir) => execFileSync(npm, ["install", "--no-audit", "--no-fund", tarball], { cwd: dir, env, stdio: "inherit" }) },
-  { runtime: "bun", name: "bun", install: (dir) => execFileSync("bun", ["add", tarball], { cwd: dir, env, stdio: "inherit" }) },
+  { runtime: process.execPath, name: "node", install: (dir) => execFileSync(npm, ["install", "--no-audit", "--no-fund", `monorm@file:${tarball}`], { cwd: dir, env, stdio: "inherit" }) },
+  { runtime: "bun", name: "bun", install: (dir) => execFileSync("bun", ["add", `monorm@file:${tarball}`], { cwd: dir, env, stdio: "inherit" }) },
 ];
 for (const { runtime, name, install } of consumers) {
   if (name === "bun" && spawnSync("bun", ["--version"], { stdio: "ignore" }).status !== 0) {

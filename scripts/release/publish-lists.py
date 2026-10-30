@@ -17,7 +17,7 @@ from versions import forms  # noqa: E402
 # The wheels of 3 operating systems and 4 Python versions. An sdist would lack the libraries and auth.
 WHEELS = 12
 PYPI = {"monorm": ("wheel",) * WHEELS}
-NPM = ["monorm"]
+NPM = ["@ufstack/monorm"]
 
 
 def normalize(name: str) -> str:

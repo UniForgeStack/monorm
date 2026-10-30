@@ -2,7 +2,7 @@
 """Main seam on one platform: install the one `monorm` wheel and the one `monorm` tarball in fresh consumers and run them.
 
 usage: check-assembled-consumers.py <dist-dir> <dialect,...>
-`<dist-dir>` holds `monorm-*.whl`, `monorm-*.tgz` and the wheel and tarball of the outside extension `acme.outside`.
+`<dist-dir>` holds `monorm-*.whl`, `ufstack-monorm-*.tgz` and the wheel and tarball of the outside extension `acme.outside`.
 Works on Linux, macOS and Windows. A dialect is `sqlite` or `postgres` (the latter reads ORM_TEST_DATABASE_URL).
 """
 import glob
@@ -58,7 +58,9 @@ def one(pattern):
 (ROOT / "target").mkdir(exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix="assembled-seam-", dir=ROOT / "target"))
 npm, node, uv, bun = tool("npm"), tool("node"), tool("uv"), tool("bun")
-monorm_wheel, monorm_tarball = one("monorm-*.whl"), one("monorm-*.tgz")
+monorm_wheel, monorm_tarball = one("monorm-*.whl"), one("ufstack-monorm-*.tgz")
+# Users install the npm package under the alias `monorm`; the code imports `monorm`.
+monorm_tarball = f"monorm@file:{monorm_tarball}"
 outside_wheel, outside_tarball = one("acme_outside-*.whl"), one("acme-outside-*.tgz")
 copies = work / "copies"
 copy_wheel, copy_npm = subprocess.run([sys.executable, TESTS / "builtin_copy.py", copies], check=True, capture_output=True, text=True).stdout.split("\n")[:2]

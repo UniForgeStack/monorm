@@ -144,13 +144,13 @@ jobs:
           python3 scripts/check-assembled-packages.py target/assembled target/outside
       - name: Record the tarball size
         run: |
-          for pack in target/npm-packs/monorm-*.tgz; do
+          for pack in target/npm-packs/ufstack-monorm-*.tgz; do
             echo "$(basename "$pack"): $(wc -c < "$pack") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           done
       - uses: actions/upload-artifact@v4
         with:
           name: npm-package
-          path: target/npm-packs/monorm-*.tgz
+          path: target/npm-packs/ufstack-monorm-*.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: outside-packages

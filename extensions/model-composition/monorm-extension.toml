@@ -1,5 +1,5 @@
 id = "monorm.composition"
-version = "0.1.0"
+version = "0.1.1"
 abi = "0.2"
 library = "monorm_composition"
 schema_contract = "5.0"

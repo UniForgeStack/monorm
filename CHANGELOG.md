@@ -4,6 +4,10 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-30
+
+- The npm package is `@ufstack/monorm`, because npm rejected the name `monorm`. Install it under the alias `monorm`: `npm install monorm@npm:@ufstack/monorm`. Imports stay `monorm`.
+
 ## [0.1.0] - 2026-10-30
 
 - Renamed from `orm` to `monorm`. The CLI is `monorm` and the Python module is `monorm`.
