@@ -5,10 +5,29 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '47 3 * * *'
 permissions:
   contents: read
+  actions: read # the push base is the head of the last green run
 jobs:
+  # Runs only when the `packages` group is selected (scripts/ci/affected.py); a schedule, a dispatch and a `v*` tag (the release workflow calls this one) select every group.
+  affected:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      groups: ${{ steps.affected.outputs.groups }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: affected
+        uses: ./.github/actions/affected
+        with:
+          workflow: extension-packages.yml
   installed-packages:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'packages')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
@@ -46,6 +65,8 @@ jobs:
             !target/assembled-seam-*/**/node_modules
             !target/assembled-seam-*/**/lib
   release-guards:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'packages')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:

@@ -1,13 +1,35 @@
 name: Checks
+# One job per check group. `affected` picks the groups from the changed files (scripts/ci/affected.py).
+# A schedule, a dispatch and a `v*` tag run every group. `checks-ok` is the one status to require.
 on:
   workflow_dispatch:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '23 3 * * *'
 permissions:
   contents: read
+  actions: read # the push base is the head of the last green run
+env:
+  CARGO_INCREMENTAL: 0
 jobs:
-  checks:
+  affected:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      groups: ${{ steps.affected.outputs.groups }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: affected
+        uses: ./.github/actions/affected
+
+  rust:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'rust')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     services:
@@ -22,7 +44,6 @@ jobs:
       ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
       ORM_RUST_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost/orm_test_rs
       PYTHON: python3.14
-      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
       - name: Create isolated Rust test database
@@ -33,18 +54,53 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@v6
+      # The cargo typing tests run mypy and pyright from PATH.
+      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python mypy pyright
+      - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      # The init tests assert the staged (gitignored) languages/python/monorm_*/ manifests.
+      - run: python languages/python/packaging/stage.py
+      # The extension-package tests compile TypeScript with languages/js/node_modules/.bin/tsc.
+      - run: npm install
+        working-directory: languages/js
+      - run: cargo test -q
+      - run: cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm -p monorm-extension-package
+
+  python:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'python')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+      PYTHON: python3.14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
       - uses: astral-sh/setup-uv@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: checks-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest 'pytest-asyncio>=0.24' mypy pyright maturin
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python languages/python/packaging/stage.py
@@ -53,17 +109,91 @@ jobs:
       - run: npm install
         working-directory: languages/js
       - run: python -m pytest -q
-      - run: cargo test -q
-      - run: cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm -p monorm-extension-package
       - run: mypy --strict languages/python/monorm && pyright languages/python/monorm
-      - run: npm install && npm run assemble && npm test && npm run test:bun && npm run typecheck
-        working-directory: languages/js
-      - run: npm test
-        working-directory: languages/js/create-monorm
       - run: python -m pytest -q apps/auth/python/tests
       - run: python extensions/inherit/tests/public/python.py
       - run: python extensions/query-defaults/tests/public/python.py
-      - run: node ../../extensions/inherit/tests/public/node.mjs
+
+  node:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'node') || contains(fromJSON(needs.affected.outputs.groups), 'create-monorm')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+      PYTHON: python3.14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # `assemble` does not build languages/js/dist, which the create-monorm tests need; `npm test` builds it only for the node group.
+      - run: npm install && npm run assemble && npm run build
         working-directory: languages/js
-      - run: node ../../extensions/query-defaults/tests/public/node.mjs
+      - if: contains(fromJSON(needs.affected.outputs.groups), 'node')
+        run: npm test && npm run test:bun && npm run typecheck
         working-directory: languages/js
+      - if: contains(fromJSON(needs.affected.outputs.groups), 'create-monorm')
+        run: npm test
+        working-directory: languages/js/create-monorm
+      - if: contains(fromJSON(needs.affected.outputs.groups), 'node')
+        run: |
+          node ../../extensions/inherit/tests/public/node.mjs
+          node ../../extensions/query-defaults/tests/public/node.mjs
+        working-directory: languages/js
+
+  release-scripts:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'release-scripts')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest scripts/tests/test_check_glibc.py scripts/tests/test_release_versions.py
+      - run: python3 scripts/release/versions.py check --allow-tbd
+
+  docs:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'docs')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/ci/check_links.py
+
+  test-twins:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'test-twins')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The script does not exist until the test-twin job lands.
+      - if: hashFiles('scripts/check-test-twins.py') != ''
+        run: python3 scripts/check-test-twins.py
+
+  checks-ok:
+    needs: [affected, rust, python, node, release-scripts, docs, test-twins]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

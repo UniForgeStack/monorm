@@ -1,0 +1,41 @@
+name: Affected check groups
+description: Run scripts/ci/affected.py for this event. A schedule, a dispatch and a tag select every group. A push diffs from the last green run of the workflow on main. Needs a checkout with full history and the actions read permission.
+inputs:
+  workflow:
+    description: File name of the calling workflow, whose last green run on main is the base of a push
+    default: checks.yml
+outputs:
+  groups:
+    description: JSON array of the check groups to run
+    value: ${{ steps.plan.outputs.groups }}
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        REF_TYPE: ${{ github.ref_type }}
+        BEFORE: ${{ github.event.before }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.sha }}
+        WORKFLOW: ${{ inputs.workflow }}
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        case "$EVENT" in
+          schedule|workflow_dispatch) args=(--all) ;;
+          pull_request) args=(--merge-base "$PR_BASE" "$HEAD_SHA") ;;
+          *)
+            if [ "$REF_TYPE" = tag ]; then
+              args=(--all)
+            else
+              # A red run does not move the base, so a later docs-only commit cannot hide the failure.
+              # Without a green run, or when the lookup fails, the base is the previous head of the push.
+              green=$(gh run list --workflow "$WORKFLOW" --branch main --status success --limit 1 --json headSha --jq '.[0].headSha // empty' || true)
+              args=("${green:-$BEFORE}" "$HEAD_SHA")
+            fi ;;
+        esac
+        plan=$(python3 scripts/ci/affected.py "${args[@]}")
+        echo "$plan"
+        echo "groups=$(jq -c .groups <<<"$plan")" >> "$GITHUB_OUTPUT"

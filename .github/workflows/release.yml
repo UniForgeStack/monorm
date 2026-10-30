@@ -40,6 +40,9 @@ jobs:
   extensions:
     needs: version
     uses: ./.github/workflows/extension-packages.yml
+    permissions:
+      contents: read
+      actions: read # the called workflow asks for it; a tag run never reads it
   collect:
     needs: [version, builds, extensions]
     runs-on: ubuntu-24.04
