@@ -68,6 +68,25 @@ class ExtractTest(unittest.TestCase):
         source = "for (const p of ps) {\n  test(`crud works (${p})`, async () => {});\n}\n"
         self.assertEqual(twins.typescript_cases(source, "f"), {"f::crud_works"})
 
+    def test_typescript_finds_a_subtest_and_a_scenario_helper_of_a_wrapper(self):
+        source = (
+            'const scenario = (what: string, body: () => void) => { test(`nested ${what} (pg)`, body); };\n'
+            'scenario("insert round-trips", async () => {});\n'
+            '  await t.test("a subtest", async () => {});\n'
+        )
+        self.assertEqual(twins.typescript_cases(source, "n"), {"n::insert_round_trips", "n::a_subtest"})
+
+    def test_typescript_wrapper_test_with_a_name_hole_is_no_case(self):
+        source = "async function run(name: string, body: () => void) {\n  test(`${name} (${provider})`, body);\n}\nawait run(\"one case\", async () => {});\n"
+        self.assertEqual(twins.typescript_cases(source, "p"), {"p::one_case"})
+
+    def test_typescript_scenario_with_a_kind_argument_is_no_case(self):
+        source = 'async function scenario(kind: string, body: () => void) {}\nawait scenario("postgres", async () => {});\n'
+        self.assertEqual(twins.typescript_cases(source, "d"), set())
+
+    def test_typescript_scenario_without_a_wrapper_definition_is_no_case(self):
+        self.assertEqual(twins.typescript_cases('scenario("x", () => {});\n', "d"), set())
+
     def test_typescript_case_comment_sets_the_id(self):
         source = '// case: Shared name\ntest("a clumsy sentence", () => {});\ntest("plain", () => {});\n'
         self.assertEqual(twins.typescript_cases(source, "f"), {"f::shared_name", "f::plain"})

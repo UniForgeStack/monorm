@@ -7,7 +7,7 @@
 "languages/python/tests/test_benchmark_report.py" = "Python-only tool: bench/compare/report.py"
 "languages/python/tests/test_benchmark_schema.py" = "Python-only tool: the Prisma benchmark setup"
 "languages/python/tests/test_typing.py" = "Python type test: mypy and pyright run over check_models.py; TypeScript runs `npm run typecheck`"
-"languages/python/tests/test_soft_delete_typing.py" = "Python type test: mypy and pyright; the TypeScript twin type-checks in `npm run typecheck`"
+"languages/python/tests/test_soft_delete_typing.py" = "Python type test: mypy and pyright; the twin is the tsc test in soft-delete-typing.test.ts"
 
 [python-only.ids]
 # languages/python/tests/test_advisory.py
@@ -284,23 +284,13 @@
 # languages/python/tests/test_nested.py
 "nested::a_re_prepared_registry_keeps_its_nested_types" = "unreviewed"
 "nested::example_models_are_current" = "unreviewed"
-"nested::filter_by_subfield_whole_value_and_null" = "unreviewed"
 "nested::generated_value_classes" = "unreviewed"
-"nested::insert_round_trips_values_and_nulls" = "unreviewed"
 "nested::insert_takes_a_dict_with_defaults_and_rejects_a_bad_one" = "unreviewed"
 "nested::json_values_keep_decimal_bigint_and_datetime_exact" = "unreviewed"
-"nested::leaf_names_are_hidden" = "unreviewed"
 "nested::load_and_defer_keep_a_group_whole" = "unreviewed"
 "nested::ne_on_a_whole_field_is_three_valued" = "unreviewed"
 "nested::nested_types_in_a_non_empty_registry" = "unreviewed"
-"nested::null_clears_the_whole_value" = "unreviewed"
-"nested::order_by_a_subfield_and_never_by_a_whole_field" = "unreviewed"
-"nested::patch_changes_only_the_named_subfields" = "unreviewed"
-"nested::patch_validation" = "unreviewed"
-"nested::replace_sets_the_whole_value_and_resets_omitted_subfields" = "unreviewed"
-"nested::select_gives_values_and_scalars" = "unreviewed"
 "nested::the_scenario_two_levels_deep_with_a_nullable_middle_level" = "unreviewed"
-"nested::update_many_and_instance_update" = "unreviewed"
 "nested::value_classes_are_immutable_equal_and_picklable" = "unreviewed"
 # languages/python/tests/test_nested_decode.py
 "nested_decode::an_unknown_enum_value_in_a_json_cell_raises_decode_error" = "unreviewed"
@@ -308,12 +298,7 @@
 "nested_decode::select_of_a_list_leaf_on_json_storage" = "unreviewed"
 # languages/python/tests/test_nested_entry_points.py
 "nested_entry_points::get_or_insert_keeps_a_leaf_column_name_valid" = "unreviewed"
-"nested_entry_points::get_or_insert_rejects_a_nested_key" = "unreviewed"
 "nested_entry_points::update_many_refuses_a_dict_for_a_nested_field" = "unreviewed"
-# languages/python/tests/test_nested_lists.py
-"nested_lists::a_list_of_typed_elements_keeps_them_exact" = "unreviewed"
-"nested_lists::a_list_subfield_on_columns_storage_round_trips" = "unreviewed"
-"nested_lists::an_empty_list_round_trips" = "unreviewed"
 # languages/python/tests/test_nested_migrations.py
 "nested_migrations::a_columns_to_json_change_copies_every_leaf_type_and_down_reverses_it" = "unreviewed"
 "nested_migrations::a_downgrade_refills_a_required_leaf_it_re_adds" = "unreviewed"
@@ -349,13 +334,8 @@
 "nested_patch_expr::a_json_patch_takes_an_expression_for_each_leaf_type" = "unreviewed"
 "nested_patch_expr::a_json_patch_takes_an_expression_over_a_subfield" = "unreviewed"
 # languages/python/tests/test_nested_required.py
-"nested_required::a_non_null_columns_group_loads_and_round_trips" = "unreviewed"
-"nested_required::a_non_null_group_keeps_a_value_whose_middle_level_is_null" = "unreviewed"
 "nested_required::a_non_null_group_refuses_none" = "unreviewed"
-"nested_required::an_omitted_non_null_group_of_optional_subfields_is_an_empty_value" = "unreviewed"
 # languages/python/tests/test_nested_writes.py
-"nested_writes::a_columns_subfield_with_a_dynamic_default_may_be_left_out" = "unreviewed"
-"nested_writes::a_datetime_for_a_date_subfield_is_stored_as_a_date" = "unreviewed"
 "nested_writes::a_json_field_refuses_a_dynamic_default_below_a_nested_level" = "unreviewed"
 "nested_writes::a_json_field_refuses_a_type_with_a_dynamic_default" = "unreviewed"
 # languages/python/tests/test_null_methods.py
@@ -366,18 +346,7 @@
 "null_methods::set_on_a_nullable_link_target_clears_every_link_and_keeps_none_by_accident" = "unreviewed"
 "null_methods::the_strict_rule_does_not_run_in_case_or_select" = "unreviewed"
 # languages/python/tests/test_null_paths.py
-"null_paths::a_column_ne_keeps_the_column_rule" = "unreviewed"
-"null_paths::a_function_of_a_to_one_column_gives_the_rows_of_the_column_form" = "unreviewed"
-"null_paths::a_method_on_one_comparison_wins_over_the_path" = "unreviewed"
-"null_paths::a_not_null_target_column_is_not_a_nullable_value" = "unreviewed"
-"null_paths::a_null_method_on_a_to_one_hop_after_a_to_many_hop_applies_per_related_row" = "unreviewed"
-"null_paths::a_nullable_target_column_takes_the_strict_rule_and_the_methods" = "unreviewed"
-"null_paths::a_path_rule_reaches_a_function_of_the_path_column" = "unreviewed"
-"null_paths::a_to_one_ne_against_a_root_column_keeps_the_rows_with_no_related_row" = "unreviewed"
-"null_paths::a_to_one_relation_ne_keeps_the_rows_with_no_related_row" = "unreviewed"
 "null_paths::the_check_runs_in_a_join_on_and_an_aggregate_filter" = "unreviewed"
-"null_paths::the_methods_apply_per_related_row_on_a_to_many_path" = "unreviewed"
-"null_paths::the_path_level_rule_covers_the_missing_row_and_every_nullable_column" = "unreviewed"
 # languages/python/tests/test_null_strict.py
 "null_strict::a_comparison_with_no_null_rule_builds_no_value_key" = "unreviewed"
 "null_strict::a_method_on_one_comparison_does_not_cover_another_column" = "unreviewed"
@@ -465,7 +434,6 @@
 "query_api::cli_reads_query_sets_from_pyproject" = "unreviewed"
 "query_api::cli_rejects_duplicate_query_set_flags" = "unreviewed"
 "query_api::column_rejects_unknown_own_field" = "unreviewed"
-"query_api::custom_methods_chain_with_builder_methods" = "unreviewed"
 "query_api::describe_array_python_type_is_list" = "unreviewed"
 "query_api::describe_autoincrement_remains_insertable" = "unreviewed"
 "query_api::describe_optional_belongs_to_is_nullable" = "unreviewed"
@@ -484,7 +452,6 @@
 "query_api::orm_prefetch_is_removed" = "unreviewed"
 "query_api::query_set_class_is_checked" = "unreviewed"
 "query_api::query_set_class_rejects_relation_subclasses" = "unreviewed"
-"query_api::relation_sets_have_the_custom_methods" = "unreviewed"
 "query_api::unlabeled_one_row_load_suggests_label" = "unreviewed"
 # languages/python/tests/test_query_features.py
 "query_features::aggregate_over_a_to_one_argument_gives_one_value_per_group" = "unreviewed"
@@ -735,7 +702,7 @@
 [typescript-only.files]
 "languages/js/test/sync-require.test.ts" = "TypeScript-only: a synchronous require() of the ESM package"
 "languages/js/test/profiles.test.ts" = "TypeScript-only: the Node addon loader and its platform profiles"
-"languages/js/test/schema-warnings.test.ts" = "TypeScript-only: warnings go through process.emitWarning"
+"languages/js/test/schema-warnings.test.ts" = "Twin: the warning tests of test_schema_expressions.py; the file stem differs, so the IDs do not meet"
 "languages/js/test/lazy-write-context.test.ts" = "TypeScript-only: lazy statements use the async stores of Node at their first await"
 "languages/js/test/bind-merge.test.ts" = "TypeScript-only: a JS Decimal loses its scale before it binds; the Python twin is in test_grouped_expressions.py"
 "languages/js/test/auth/hashers.test.ts" = "The Python twin is in apps/auth/python/tests/test_hashers.py"
@@ -926,7 +893,6 @@
 "migrations::the_second_migration_alters_in_place" = "unreviewed"
 "migrations::upgrade_and_downgrade_round_trip" = "unreviewed"
 # languages/js/test/model-classes.test.ts
-"model_classes::a_method_named_collides_with_a_model_member" = "unreviewed"
 "model_classes::a_methods_class_may_override_to_string_other_object_members_still_collide" = "unreviewed"
 "model_classes::a_schema_in_the_package_of_the_output_keeps_relative_paths" = "unreviewed"
 "model_classes::a_schema_outside_a_package_gives_paths_relative_to_the_models_file" = "unreviewed"
@@ -948,16 +914,7 @@
 # languages/js/test/nested-decode.test.ts
 "nested_decode::an_unknown_enum_value_in_a_json_cell_raises_a_decode_error" = "unreviewed"
 "nested_decode::select_of_a_list_leaf_postgres" = "unreviewed"
-# languages/js/test/nested-entry-points.test.ts
-"nested_entry_points::nested_entry_points" = "unreviewed"
-# languages/js/test/nested-lists.test.ts
-"nested_lists::nested_lists_postgres" = "unreviewed"
-# languages/js/test/nested-patch-expr.test.ts
-"nested_patch_expr::nested_patch_expression" = "unreviewed"
-# languages/js/test/nested-required.test.ts
-"nested_required::nested_required" = "unreviewed"
 # languages/js/test/nested-writes.test.ts
-"nested_writes::nested_writes" = "unreviewed"
 "nested_writes::nested_writes_a_json_field_refuses_a_dynamic_default_below_a_nested_level" = "unreviewed"
 "nested_writes::nested_writes_a_json_field_refuses_a_type_with_a_dynamic_default" = "unreviewed"
 # languages/js/test/nested.test.ts
@@ -970,7 +927,6 @@
 "null_methods::the_method_binds_before_not" = "unreviewed"
 "null_methods::the_strict_rule_does_not_run_in_case_or_select_on_a_computed_value" = "unreviewed"
 # languages/js/test/null-paths.test.ts
-"null_paths::" = "unreviewed"
 "null_paths::a_column_ne_keeps_the_column_rule_in_a_join_on_and_an_aggregate_filter" = "unreviewed"
 # languages/js/test/null-strict.test.ts
 "null_strict::a_method_on_one_comparison_does_not_cover_another" = "unreviewed"
@@ -1099,7 +1055,6 @@
 "query_hooks::the_statements_of_a_hook_give_no_events_and_no_n_1_count" = "unreviewed"
 # languages/js/test/reference-loading.test.ts
 "reference_loading::a_set_key_with_no_target_row_gives_a_not_loaded_that_says_why" = "unreviewed"
-"reference_loading::a_to_one_reference_key_returns_the_parent_after_load_and_a_bound_load" = "unreviewed"
 "reference_loading::explicit_loads_identity_reload_absence_integrity_invalidation_context_and_races" = "unreviewed"
 "reference_loading::instance_load_fills_partial_rows_and_accepts_nested_paths_and_relation_querysets" = "unreviewed"
 "reference_loading::load_member_collision_fails_atomically" = "unreviewed"
@@ -1243,3 +1198,21 @@
 "writes::related_lazy_inserts_join_the_transaction_at_await" = "unreviewed"
 "writes::replica_database_names_are_relative_to_the_current_worker_database" = "unreviewed"
 "writes::timestamp_write_read_with_a_non_utc_database" = "unreviewed"
+# languages/js/test/nested.test.ts
+"nested::insert_takes_an_object_with_defaults_and_rejects_a_bad_one" = "unreviewed"
+# languages/js/test/nested.test.ts
+"nested::load_keeps_a_group_whole" = "unreviewed"
+# languages/js/test/nested.test.ts
+"nested::two_levels_deep_with_a_nullable_middle_level" = "unreviewed"
+# languages/js/test/nested-entry-points.test.ts
+"nested_entry_points::update_many_refuses_an_object_for_a_nested_field" = "unreviewed"
+# languages/js/test/nested-patch-expr.test.ts
+"nested_patch_expr::swaps_two_leaves" = "unreviewed"
+# languages/js/test/nested-patch-expr.test.ts
+"nested_patch_expr::takes_a_column_for_each_leaf_type" = "unreviewed"
+# languages/js/test/nested-patch-expr.test.ts
+"nested_patch_expr::takes_an_expression_over_a_subfield" = "unreviewed"
+# languages/js/test/nested-required.test.ts
+"nested_required::a_non_null_group_refuses_null" = "unreviewed"
+# languages/js/test/query-api.test.ts
+"query_api::a_relation_query_set_uses_them" = "unreviewed"

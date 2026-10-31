@@ -4,6 +4,8 @@
 A case ID is `<file stem>::<test name>`, normalized by `normalize`.
 A Python test sets its own ID with `@pytest.mark.case("...")`.
 A TypeScript test sets its own ID with a `// case: ...` comment on the line above.
+A TypeScript test is `test(`, `it(`, `await t.test(`, or a call of a local `scenario(` or `run(` helper that wraps `test(`.
+A wrapper call whose name holds `${what}` or `${name}` is no test.
 `languages/test-twins.toml` lists the IDs and files that have no twin.
 The check fails on a one-language ID that the file does not list.
 """
@@ -19,7 +21,10 @@ PYTHON_DIR = ROOT / "languages/python/tests"
 TYPESCRIPT_DIR = ROOT / "languages/js/test"
 ALLOW_LIST = ROOT / "languages/test-twins.toml"
 
-TS_TEST = re.compile(r"""^\s*(?:test|it)(?:\.\w+)?\(\s*(?P<q>["'`])(?P<name>.*?)(?P=q)\s*[,)]""")
+TS_TEST = re.compile(r"""^\s*(?:await\s+)?(?P<fn>t\.test|test|it|scenario|run)(?:\.\w+)?\(\s*(?P<q>["'`])(?P<name>.*?)(?P=q)\s*[,)]""")
+# A local helper that wraps `test(...${what}...)`: its calls name the tests, the wrapper call is no test.
+TS_WRAPPER_DEF = re.compile(r"(?:const|function)\s+(?P<fn>scenario|run)\b\s*=?\s*\(\s*(?:what|name)\b")
+TS_WRAPPER_NAME = re.compile(r"\$\{\s*(?:what|name)\s*\}")
 TS_CASE = re.compile(r"^\s*//\s*case:\s*(?P<id>.+?)\s*$")
 TS_HOLE = re.compile(r"\$\{[^}]*\}")
 
@@ -69,8 +74,13 @@ def python_cases(source: str, stem: str) -> set[str]:
 def typescript_cases(source: str, stem: str) -> set[str]:
     ids = set()
     previous = ""
+    wrappers = {m["fn"] for m in TS_WRAPPER_DEF.finditer(source)}
     for line in source.splitlines():
         match = TS_TEST.match(line)
+        if match and match["fn"] in ("scenario", "run") and match["fn"] not in wrappers:
+            match = None
+        if match and TS_WRAPPER_NAME.search(match["name"]):
+            match = None
         if match:
             declared = TS_CASE.match(previous)
             if declared:
