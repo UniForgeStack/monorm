@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Self
+
 from ._native import (
     DatabaseError,
     IntegrityError,
@@ -29,6 +32,7 @@ __all__ = [
     "TransactionRequired",
     "WriteProtected",
     "VersionConflict",
+    "ValidationError",
     "DecodeError",
 ]
 
@@ -65,6 +69,63 @@ class TransactionRequired(ORMError, RuntimeError):
 class VersionConflict(ORMError):
     """An instance ``update()`` or ``delete()`` found a newer ``@@locking.version`` of
     its row: another writer changed the row after it was loaded."""
+
+
+class ValidationError(ORMError, ValueError):
+    """App code rejects a value: messages per field path, and non-field messages that belong to no field.
+
+    A path joins field names and list indexes with dots: ``address.city``, ``lines.2.qty``.
+    A dot in a field name is not escaped, so a name with a dot reads as a nested path.
+    ``fields`` maps a path to its messages and keeps the order of first use; ``non_field_messages`` holds the
+    messages that belong to no field. ``ValidationError("text")`` is one message with no field.
+    """
+
+    fields: dict[str, list[str]]
+    non_field_messages: list[str]
+
+    def __init__(
+        self,
+        fields: Mapping[str, str | Sequence[str]] | str | None = None,
+        *,
+        non_field_messages: Sequence[str] = (),
+    ) -> None:
+        self.fields = {}
+        self.non_field_messages = []
+        if isinstance(fields, str):
+            self.non_field_messages.append(fields)
+        elif fields is not None:
+            for path, texts in fields.items():
+                for text in [texts] if isinstance(texts, str) else texts:
+                    self.add(path, text)
+        self.non_field_messages.extend(non_field_messages)
+        super().__init__(self.fields, self.non_field_messages)
+
+    def add(self, path: str | Sequence[str | int], message: str) -> Self:
+        """Add ``message`` to the field at ``path`` (a dotted string, or its parts)."""
+        key = path if isinstance(path, str) else ".".join(str(part) for part in path)
+        self.fields.setdefault(key, []).append(message)
+        return self
+
+    def add_non_field_message(self, message: str) -> Self:
+        """Add a message that belongs to no field."""
+        self.non_field_messages.append(message)
+        return self
+
+    def __str__(self) -> str:
+        parts = [
+            *self.non_field_messages,
+            *(f"{path}: {text}" for path, texts in self.fields.items() for text in texts),
+        ]
+        return "; ".join(parts) if parts else "validation failed"
+
+    def __reduce__(self) -> tuple[object, ...]:
+        return (_restore_validation_error, (type(self), self.fields, self.non_field_messages))
+
+
+def _restore_validation_error(
+    cls: type[ValidationError], fields: dict[str, list[str]], non_field_messages: list[str]
+) -> ValidationError:
+    return cls(fields, non_field_messages=non_field_messages)
 
 
 class DecodeError(ORMError, ValueError):

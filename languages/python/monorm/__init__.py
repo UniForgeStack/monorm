@@ -28,6 +28,7 @@ from .errors import (
     SchemaWarning,
     TransactionAborted,
     TransactionRequired,
+    ValidationError,
     VersionConflict,
     WriteProtected,
 )
@@ -153,6 +154,7 @@ __all__ = [
     "NestedRef",
     "NestedValue",
     "NotLoaded",
+    "ValidationError",
     "VersionConflict",
     "NotConnected",
     "TransactionAborted",

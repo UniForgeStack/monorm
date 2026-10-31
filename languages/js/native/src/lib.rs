@@ -39,7 +39,7 @@ use monorm_engine::db::{self, DbError, Driver, ErrorKind, Executor, RowSet};
 use monorm_engine::exec::{self, Conflict, Fetched, Outcome};
 use monorm_engine::plan::{self, Output, Planner};
 use monorm_engine::migrate as engine_migrate;
-use monorm_engine::{parse_op, protect, Error};
+use monorm_engine::{parse_op, protect, Error, ValidationError};
 
 // -- errors ---------------------------------------------------------------------------------
 
@@ -88,7 +88,59 @@ fn engine_err(e: Error) -> napi::Error {
         Error::Db(e) => db_tagged(e),
         Error::Value(m) => tagged("TypeError", m),
         Error::WriteProtected(m) => tagged("WriteProtected", format!("{m} is write-protected (@@protected_write); write it inside allowWrites([{m}], ...)")),
+        Error::Validation(v) => validation_tagged(&v),
         Error::Binding(e) => tagged("TypeError", e),
+    }
+}
+
+/// `[monorm:ValidationError+] <json>\n<message>`, with `{"fields": [[path, [message, ...]], ...], "nonFieldMessages": [...]}`
+/// as the JSON: the fields are pairs, because a JS object moves integer-like paths to the front.
+fn validation_tagged(v: &ValidationError) -> napi::Error {
+    let json = serde_json::json!({ "fields": v.fields(), "nonFieldMessages": v.non_field_messages() });
+    napi::Error::from_reason(format!("[monorm:ValidationError+] {json}\n{v}"))
+}
+
+/// The paths and messages of a `ValidationError` thrown in JS; `None` for any other value,
+/// and for every value while no class is registered.
+fn validation_from_js(env: &Env, error: V) -> napi::Result<Option<ValidationError>> {
+    let js = Js(env.raw());
+    let class = match env.get_instance_data::<Shared>()? {
+        Some(Shared { validation: Some(r), .. }) => js.deref(*r)?,
+        _ => return Ok(None),
+    };
+    if !js.instance_of(error, class)? {
+        return Ok(None);
+    }
+    let mut out = ValidationError::new();
+    let fields = js.array_from(js.get(error, "fields")?)?;
+    for pair in js.elements(fields)? {
+        let path = js.string(js.element(pair, 0)?)?;
+        for message in js.elements(js.element(pair, 1)?)? {
+            out.add(path.clone(), js.string(message)?);
+        }
+    }
+    for message in js.elements(js.get(error, "nonFieldMessages")?)? {
+        out.add_non_field_message(js.string(message)?);
+    }
+    Ok(Some(out))
+}
+
+/// Test hook, the crossing of the binding: reads a JS `ValidationError` into the engine's typed error and
+/// throws that error back. Any other value is thrown as it is.
+#[napi(js_name = "_testRaiseValidationError")]
+pub fn test_raise_validation_error(env: &Env, error: Unknown<'_>) -> napi::Result<()> {
+    match validation_from_js(env, error.raw())? {
+        Some(v) => Err(engine_err(Error::Validation(v))),
+        None => Err(napi::Error::from(error)),
+    }
+}
+
+/// Test hook: the engine's text of a JS `ValidationError`.
+#[napi(js_name = "_testValidationText")]
+pub fn test_validation_text(env: &Env, error: Unknown<'_>) -> napi::Result<String> {
+    match validation_from_js(env, error.raw())? {
+        Some(v) => Ok(v.to_string()),
+        None => Err(tagged("TypeError", "expected a ValidationError")),
     }
 }
 
@@ -102,9 +154,18 @@ fn schema_err(msg: impl std::fmt::Display) -> napi::Error {
 
 // -- shared state -----------------------------------------------------------------------------
 
-/// Per-environment data: the `Decimal` class decimal values are built with.
+/// Per-environment data: the `Decimal` class decimal values are built with, and the
+/// `ValidationError` class that thrown errors are read by.
 struct Shared {
     decimal: Option<sys::napi_ref>,
+    validation: Option<sys::napi_ref>,
+}
+
+fn shared(env: &Env) -> napi::Result<&'static mut Shared> {
+    if env.get_instance_data::<Shared>()?.is_none() {
+        env.set_instance_data(Shared { decimal: None, validation: None }, (), |_| {})?;
+    }
+    env.get_instance_data::<Shared>()?.ok_or_else(|| napi::Error::from_reason("the per-environment data is missing"))
 }
 
 /// Registers the class decimal values are read as (and recognized by, as parameters):
@@ -112,17 +173,23 @@ struct Shared {
 #[napi]
 pub fn set_decimal_class(env: &Env, ctor: Unknown<'_>) -> napi::Result<()> {
     let r = Js(env.raw()).reference(ctor.raw())?;
-    match env.get_instance_data::<Shared>()? {
-        Some(s) => s.decimal = Some(r),
-        None => env.set_instance_data(Shared { decimal: Some(r) }, (), |_| {})?,
-    }
+    shared(env)?.decimal = Some(r);
+    Ok(())
+}
+
+/// Registers the class a thrown error is recognized by (`validation_from_js`): the package's
+/// `ValidationError`. The runtime calls this once when it loads.
+#[napi]
+pub fn set_validation_class(env: &Env, ctor: Unknown<'_>) -> napi::Result<()> {
+    let r = Js(env.raw()).reference(ctor.raw())?;
+    shared(env)?.validation = Some(r);
     Ok(())
 }
 
 fn conv(env: &Env) -> napi::Result<Conv> {
     let js = Js(env.raw());
     let decimal = match env.get_instance_data::<Shared>()? {
-        Some(Shared { decimal: Some(r) }) => Some(js.deref(*r)?),
+        Some(Shared { decimal: Some(r), .. }) => Some(js.deref(*r)?),
         _ => None,
     };
     Ok(Conv { js, decimal })

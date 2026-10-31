@@ -23,7 +23,7 @@ test("the native loader rejects an incompatible artifact before use", () => {
     ["--input-type=module", "-e", `const { native } = await import(${JSON.stringify(nativeUrl)}); native();`],
     { env: { ...process.env, MONORM_NATIVE: path, ...env }, stdio: "pipe" });
   try {
-    writeFileSync(path, `module.exports={setDecimalClass(){},profileMetadata(){return ${JSON.stringify(JSON.stringify(metadata))}}};`);
+    writeFileSync(path, `module.exports={setDecimalClass(){},setValidationClass(){},profileMetadata(){return ${JSON.stringify(JSON.stringify(metadata))}}};`);
     run();
     writeFileSync(path, `module.exports={profileMetadata(){return ${JSON.stringify(JSON.stringify({ ...metadata, abi: 2 }))}}};`);
     assert.throws(() => run(), /incompatible monorm native artifact/);

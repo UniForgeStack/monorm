@@ -70,6 +70,7 @@ export {
   SchemaError,
   TransactionAborted,
   TransactionRequired,
+  ValidationError,
   VersionConflict,
   WriteProtected,
 } from "./errors.js";

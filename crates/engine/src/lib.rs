@@ -17,8 +17,10 @@ pub mod params;
 pub mod plan;
 pub mod protect;
 pub mod trace;
+pub mod validation;
 
 pub use error::{Error, Result};
+pub use validation::ValidationError;
 pub use params::{NoParams, Params};
 
 use monorm_core::ir::Operation;

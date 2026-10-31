@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { packageRoot } from "./builtin.js";
 import { Decimal } from "./decimal.js";
-import { fromNative } from "./errors.js";
+import { fromNative, ValidationError } from "./errors.js";
 
 /** Rows of one statement: `n` rows of `width` cells, row after row. The engine hands the
  * cells over packed; `cellsOf` (`rows.ts`) decodes them into `values`. */
@@ -199,6 +199,11 @@ interface Addon {
   compileSchemaFile(path: string, apps?: Record<string, string> | null, extensions?: Record<string, string> | null): string;
   generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null, modelMethods?: Record<string, string> | null, apps?: Record<string, string> | null, extensions?: Record<string, string> | null): string;
   setDecimalClass(ctor: unknown): void;
+  setValidationClass(ctor: unknown): void;
+  /** Test hook: reads a `ValidationError` into the engine's typed error and throws that error; any other value is thrown as it is. */
+  _testRaiseValidationError(error: unknown): void;
+  /** Test hook: the engine's text of a `ValidationError`. */
+  _testValidationText(error: unknown): string;
   cli(argv: string[]): Promise<number>;
   cliSchema(argv: string[]): string;
   cliMigrateArgs(argv: string[]): (string | null)[] | null;
@@ -250,6 +255,7 @@ function load(): Addon {
   const addon = createRequire(import.meta.url)(process.env["MONORM_NATIVE"] || addonPath()) as Addon;
   validate(addon);
   addon.setDecimalClass(Decimal);
+  addon.setValidationClass(ValidationError);
   return addon;
 }
 

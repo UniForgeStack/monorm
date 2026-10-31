@@ -1676,7 +1676,28 @@ factory_boy has no async support, so a `SubFactory` with `create` gives a corout
 | `monorm.NotConnected` | no default database |
 | `monorm.TransactionRequired` | `lock()` or `db.lock()` outside a transaction |
 | `monorm.WriteProtected` | a write to a `@@protected_write` model outside `allow_writes` |
+| `monorm.ValidationError` | app code rejects a value: `fields` maps a path (`address.city`, `lines.2.qty`) to messages, and `non_field_messages` holds the messages with no field (see below) |
 | `monorm.debug.NPlusOne` | the N+1 finder with `fail=True` |
+
+### ValidationError
+
+App code raises `monorm.ValidationError` to reject a value.
+`fields` maps a dotted path to a list of messages, in the order of first use, and `non_field_messages` lists the messages with no field.
+A path reaches a field of a nested type and an item of a list.
+A dot in a field name is not escaped: the field `a.b` and the path `("a", "b")` are one path.
+
+```python
+error = monorm.ValidationError({"address.city": "is required"}, non_field_messages=["The order is locked."])
+error.add(("lines", 2, "qty"), "must be positive")   # the path is "lines.2.qty"
+error.add_non_field_message("Try again later.")
+raise error
+```
+
+`str(error)` lists the messages with no field first, then `path: message`, joined by `; `.
+The error is a `ValueError`.
+An error that your code raises while the engine converts a value reaches the caller unchanged, with its own class.
+When Rust reads the error as `monorm_engine::ValidationError`, it keeps the paths and messages and not the subclass: Rust raises a new `monorm.ValidationError`.
+The TypeScript `ValidationError` has the same shape: `fields` (a `Map`), `nonFieldMessages`, `add(path, message)` and `addNonFieldMessage(message)`.
 
 ## The FFI boundary
 
