@@ -31,7 +31,7 @@ records why the syntax looks the way it does and how the `.orm` syntax maps onto
 * **No `generator monorm { }` block.** Prisma accepts generator blocks without error, but
   `provider = "monorm"` makes `prisma generate` look for a `monorm` generator program and
   fail. We don't need a marker: the `monorm` CLI is given the schema path (flag or
-  `[tool.monorm] schema` in `pyproject.toml`), and settings stay where they are today.
+  `schema` in `monorm.toml`, `[tool.monorm]` in `pyproject.toml` or `"monorm"` in `package.json`), and settings stay where they are today.
 
 ## Formatter rules (tested)
 

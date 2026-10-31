@@ -1093,7 +1093,7 @@ fn cli(py: Python<'_>, argv: Vec<String>) -> i32 {
 #[cfg(feature = "cli")]
 #[pyfunction]
 fn cli_schema(argv: Vec<String>) -> PathBuf {
-    monorm_cli::schema_path(&argv, monorm_cli::Host::Python)
+    monorm_cli::schema_path(&argv)
 }
 
 /// For `python -m monorm migrate`: `(schema, dir, url, target)` as the CLI resolves them,
@@ -1101,7 +1101,7 @@ fn cli_schema(argv: Vec<String>) -> PathBuf {
 #[cfg(feature = "cli")]
 #[pyfunction]
 fn cli_migrate_args(argv: Vec<String>) -> Option<(PathBuf, PathBuf, Option<String>, Option<String>)> {
-    monorm_cli::migrate_args(&argv, monorm_cli::Host::Python)
+    monorm_cli::migrate_args(&argv)
 }
 
 /// Migration folders of `dir` in order: `[(name, path)]`.

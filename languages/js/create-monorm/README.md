@@ -13,7 +13,7 @@ In a terminal it asks for the database (SQLite or PostgreSQL) and the built-in e
 Other arguments go to `monorm init`: `--db`, `--url`, `--ext a,b` and `--yes`.
 Without a terminal, it uses the defaults and does not ask.
 
-The project holds a `schema.prisma` file with two models, an `index.ts` script, `package.json`, `.gitignore` and `README.md`.
+The project holds a `schema.prisma` file with two models, an `index.ts` script, `package.json`, `monorm.toml`, `.gitignore` and `README.md`.
 The script creates the tables, inserts a user with two posts, and reads the users that have a published post.
 
 ```bash

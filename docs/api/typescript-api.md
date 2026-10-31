@@ -53,7 +53,7 @@ It runs `npx monorm init my-app --lang typescript` with the package manager of t
 The command asks for the database (SQLite or PostgreSQL) and the built-in extensions.
 `create-monorm` sets the language and the tool, so it never asks for them.
 Flags answer each question: `--tool pnpm --db sqlite --ext timestamps,locking --yes`.
-It writes `schema.prisma`, `index.ts`, `package.json`, `.gitignore` and `README.md`, and prints the next commands, for example `npm install` and `npm start`.
+It writes `schema.prisma`, `monorm.toml`, `index.ts`, `package.json`, `.gitignore` and `README.md`, and prints the next commands, for example `npm install` and `npm start`.
 `npm start` runs `node index.ts`, which needs Node 22.18 or newer; with Bun, it runs `bun index.ts`.
 
 ## Models: the generated module
@@ -122,7 +122,7 @@ Generate the models with the class, as `specifier#Export` (the specifier is rela
 npx monorm generate --query-set Post=./queries.js#PostQueries
 ```
 
-or in `package.json`: `"monorm": { "querySets": { "Post": "./queries.js#PostQueries" } }`.
+or in `monorm.toml` (`[query_sets]`, `Post = "./queries.js#PostQueries"`), or in `package.json`: `"monorm": { "querySets": { "Post": "./queries.js#PostQueries" } }` when the project has no `monorm.toml`.
 
 The tooling native addon's `generateTypescript` function also accepts the mapping
 as its optional third argument:
@@ -172,7 +172,7 @@ export class UserMethods {
   The class is read on the first use of the model, so `methods.ts` can import `models.ts` (use `import type`) without an import cycle.
   `useModelMethods(Model, cls)` also takes the class itself, for models from `define()` or `loads()`. A second call throws once a class is applied (a class is applied at once, a function that gives the class at the first row).
   A function is replaced by a second call until the first row.
-* A consumer replaces the class with `--model-methods User=specifier#Export`, `"monorm": { "modelMethods": { "User": "..." } }` in `package.json`, or the fourth argument of the tooling addon's `generateTypescript`.
+* A consumer replaces the class with `--model-methods User=specifier#Export`, `model_methods` in `monorm.toml`, `"monorm": { "modelMethods": { "User": "..." } }` in `package.json`, or the fourth argument of the tooling addon's `generateTypescript`.
 * A method name that is a field, a relation, or a member of the row (for example `delete`) throws `TypeError: User.delete: model method collision`.
   A class passed directly is checked at the call. A function that returns the class is checked on the first row, not when the model is prepared: the function must stay lazy for the import cycle.
   A methods class may override `toString`. `valueOf` and the other members of the row still collide.

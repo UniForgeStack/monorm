@@ -436,3 +436,142 @@ fn fmt_native_rejects_a_proposed_target_that_cannot_retain_history() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), source);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn monorm_toml_is_the_first_settings_file_and_the_others_stay_a_fallback() {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("from-toml")).unwrap();
+    std::fs::create_dir_all(dir.join("from-pyproject")).unwrap();
+    std::fs::create_dir_all(dir.join("from-json")).unwrap();
+    for sub in ["from-toml", "from-pyproject", "from-json"] {
+        std::fs::write(dir.join(sub).join("schema.prisma"), SCHEMA).unwrap();
+    }
+    let ok = |args: &[&str]| {
+        let out = monorm(&dir, args);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        text(&out.stdout)
+    };
+
+    // package.json alone, then pyproject.toml over it, then monorm.toml over both: the files do not merge
+    std::fs::write(dir.join("package.json"), "{\"monorm\": {\"schema\": \"from-json/schema.prisma\"}}").unwrap();
+    assert_eq!(ok(&["check"]), "from-json/schema.prisma: ok (1 models)\n");
+    std::fs::write(dir.join("pyproject.toml"), "[tool.monorm]\nschema = \"from-pyproject/schema.prisma\"\n").unwrap();
+    assert_eq!(ok(&["check"]), "from-pyproject/schema.prisma: ok (1 models)\n");
+    std::fs::write(dir.join("monorm.toml"), "migrations = \"db/migrations\"\n").unwrap();
+    let no_schema = monorm(&dir, &["check"]);
+    assert_eq!(no_schema.status.code(), Some(1), "monorm.toml has no schema key, so the default schema.prisma is missing");
+    std::fs::write(dir.join("monorm.toml"), "schema = \"from-toml/schema.prisma\"\n[admin]\napp = \"shop.admin:admin\"\n").unwrap();
+    assert_eq!(ok(&["check"]), "from-toml/schema.prisma: ok (1 models)\n");
+    assert_eq!(ok(&["--schema", "from-json/schema.prisma", "check"]), "from-json/schema.prisma: ok (1 models)\n");
+
+    // a wrong type is a usage error that names the file and the key
+    std::fs::write(dir.join("monorm.toml"), "schema = 3\n").unwrap();
+    let bad = monorm(&dir, &["check"]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(text(&bad.stderr).contains("monorm.toml: `schema` must be a string"), "{}", text(&bad.stderr));
+    std::fs::write(dir.join("monorm.toml"), "schema = \n").unwrap();
+    let broken = monorm(&dir, &["check"]);
+    assert_eq!(broken.status.code(), Some(2));
+    assert!(text(&broken.stderr).contains("monorm.toml: "), "{}", text(&broken.stderr));
+
+    // generate reads query_sets from the winning file
+    std::fs::write(dir.join("monorm.toml"), "schema = \"from-toml/schema.prisma\"\n[query_sets]\nBook = \"app.queries:BookQueries\"\n").unwrap();
+    assert!(monorm(&dir, &["generate", "python"]).status.success());
+    let models = std::fs::read_to_string(dir.join("from-toml/models.py")).unwrap();
+    assert!(
+        models.contains("use_query_set(Book, \"app.queries:BookQueries\")"),
+        "{models}"
+    );
+    std::fs::write(dir.join("monorm.toml"), "schema = \"from-toml/schema.prisma\"\n[query_sets]\nBook = 1\n").unwrap();
+    let bad_targets = monorm(&dir, &["generate", "python"]);
+    assert_eq!(bad_targets.status.code(), Some(2));
+    assert!(text(&bad_targets.stderr).contains("monorm.toml: `query_sets.Book` must be a string"), "{}", text(&bad_targets.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_flag_overrides_a_wrong_setting_and_a_command_reads_only_the_keys_it_uses() {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-flag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("schema.prisma"), SCHEMA).unwrap();
+
+    // the flag is not read against the key, and `check` does not read `migrations`
+    std::fs::write(dir.join("monorm.toml"), "schema = 3\nmigrations = 3\n").unwrap();
+    let flagged = monorm(&dir, &["--schema", "schema.prisma", "check"]);
+    assert!(flagged.status.success(), "{}", text(&flagged.stderr));
+    assert_eq!(text(&flagged.stdout), "schema.prisma: ok (1 models)\n");
+    std::fs::write(dir.join("monorm.toml"), "migrations = 3\n").unwrap();
+    let check = monorm(&dir, &["check"]);
+    assert!(check.status.success(), "{}", text(&check.stderr));
+
+    // a command that uses the migrations directory names the key, and `--dir` answers it
+    let make = monorm(&dir, &["makemigrations", "initial"]);
+    assert_eq!(make.status.code(), Some(2));
+    assert!(
+        text(&make.stderr).contains("monorm.toml: `migrations` must be a string"),
+        "{}",
+        text(&make.stderr)
+    );
+    let make = monorm(&dir, &["--dir", "db", "makemigrations", "initial"]);
+    assert!(make.status.success(), "{}", text(&make.stderr));
+    assert!(dir.join("db/0001_initial").is_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_spelling_of_another_file_format_is_an_error_that_names_the_file_and_the_key() {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-spelling-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("schema.prisma"), SCHEMA).unwrap();
+    let rejects = |file: &str, content: &str, args: &[&str], message: &str| {
+        for name in ["monorm.toml", "pyproject.toml", "package.json"] {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+        std::fs::write(dir.join(file), content).unwrap();
+        let out = monorm(&dir, args);
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+        assert!(text(&out.stderr).contains(message), "{}", text(&out.stderr));
+    };
+
+    // the TOML files spell `query_sets` and `model_methods`, `package.json` spells `querySets` and `modelMethods`
+    let python = ["generate", "python"];
+    let typescript = ["generate", "typescript", "-o", "models.ts"];
+    rejects(
+        "monorm.toml",
+        "[querySets]\nBook = \"app.queries:BookQueries\"\n",
+        &python,
+        "query set: monorm.toml: `querySets` is not a setting; use `query_sets`",
+    );
+    rejects(
+        "monorm.toml",
+        "[modelMethods]\nBook = \"app.methods:BookMethods\"\n",
+        &python,
+        "model methods: monorm.toml: `modelMethods` is not a setting; use `model_methods`",
+    );
+    rejects(
+        "pyproject.toml",
+        "[tool.monorm.querySets]\nBook = \"app.queries:BookQueries\"\n",
+        &python,
+        "query set: pyproject.toml: `tool.monorm.querySets` is not a setting; use `query_sets`",
+    );
+    rejects(
+        "package.json",
+        "{\"monorm\": {\"query_sets\": {\"Book\": \"./q.js#Book\"}}}",
+        &typescript,
+        "query set: package.json: `monorm.query_sets` is not a setting; use `querySets`",
+    );
+    rejects(
+        "package.json",
+        "{\"monorm\": {\"model_methods\": {\"Book\": \"./m.js#Book\"}}}",
+        &typescript,
+        "model methods: package.json: `monorm.model_methods` is not a setting; use `modelMethods`",
+    );
+    assert!(
+        !dir.join("models.py").exists() && !dir.join("models.ts").exists(),
+        "a rejected setting writes nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

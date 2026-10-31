@@ -17,6 +17,13 @@ grep -q "python main.py" "$WORK/py.out"
 (cd "$WORK/py-app" && "$PYTHON" main.py | tee "$WORK/py-run.out")
 grep -q "Alice" "$WORK/py-run.out"
 
+# monorm.toml is the settings file of the project: a moved schema is found through it, with no flag.
+test -f "$WORK/py-app/monorm.toml"
+mkdir "$WORK/py-app/db" && mv "$WORK/py-app/schema.prisma" "$WORK/py-app/db/"
+printf 'schema = "db/schema.prisma"\n' > "$WORK/py-app/monorm.toml"
+(cd "$WORK/py-app" && "$PYTHON" -m monorm check | tee "$WORK/py-check.out")
+grep -q "db/schema.prisma: ok" "$WORK/py-check.out"
+
 # Python with every built-in extension: the example must run, not only pass `check`.
 "$PYTHON" -m monorm init "$WORK/py-all" --lang python --tool pip --ext all --yes > /dev/null
 (cd "$WORK/py-all" && "$PYTHON" main.py | tee "$WORK/py-all-run.out")
@@ -38,6 +45,13 @@ node -e '
 grep -q "Alice" "$WORK/node-run.out"
 (cd "$WORK/ts-app" && rm -f dev.db && bun index.ts | tee "$WORK/bun-run.out")
 grep -q "Alice" "$WORK/bun-run.out"
+
+# The same for TypeScript: monorm.toml, not package.json, holds the settings.
+test -f "$WORK/ts-app/monorm.toml"
+mkdir "$WORK/ts-app/db" && mv "$WORK/ts-app/schema.prisma" "$WORK/ts-app/db/"
+printf 'schema = "db/schema.prisma"\n' > "$WORK/ts-app/monorm.toml"
+(cd "$WORK/ts-app" && node "$JS/dist/src/cli.js" check | tee "$WORK/ts-check.out")
+grep -q "db/schema.prisma: ok" "$WORK/ts-check.out"
 
 # TypeScript with every built-in extension: the project installs the packed tarball, because a `file:` link
 # makes the extension libraries resolve outside the project. The example must run, not only pass `check`.

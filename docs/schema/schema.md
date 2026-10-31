@@ -573,7 +573,7 @@ model User {
     The `package.json` of the package must list `"./schema.prisma"`, `"./queries.js"` and `"./methods.js"` in `exports`.
   * TypeScript, your own project (the nearest `package.json` of the schema also holds the generated file), or no `package.json`: the import is relative to the generated models file (`./queries.js#UserQueries`).
     `generateTypescript(schema)` of the tooling addon assumes `models.ts` is next to the schema file.
-* A consumer replaces the schema class: `--query-set User=...` and `--model-methods User=...` (or `[tool.monorm.query_sets]` / `[tool.monorm.model_methods]`, `"monorm": {"querySets"}` / `{"modelMethods"}`).
+* A consumer replaces the schema class: `--query-set User=...` and `--model-methods User=...` (or `query_sets` / `model_methods` in the settings file: a table in `monorm.toml`, `[tool.monorm.query_sets]` / `[tool.monorm.model_methods]`, `"monorm": {"querySets"}` / `{"modelMethods"}`).
   The order is flag, then config, then the attribute.
 * The attributes create no DDL. Migrations ignore them. The model IR keeps both names.
 * A method name that is also a model member (a field, a relation, a member of the model or an extension member) is an error when the model is prepared, in both languages: `User.delete: model method collision`.
@@ -745,12 +745,21 @@ standalone `monorm` binary (`cargo install --path cli`) all run it, through the 
 extension, the Node addon or on their own, so they take the same arguments, write the
 same files and apply migrations the same way. A migration with a data step is the
 exception: only the host of its language applies it (see "Data migrations"). The bindings only change the defaults:
-the name in `--help`, the configuration file read first, and the language `generate`
+the name in `--help` and the language `generate`
 writes (the binary needs `python` / `typescript`, or an `-o` path that tells).
 
-Settings come from flags (`--schema`, `--dir`, `--url`), else `[tool.monorm]` in
-`pyproject.toml` or the `"monorm"` key of `package.json` (`schema`, `migrations`), and the
-URL from `MONORM_DATABASE_URL`. Exit codes: 0 success, 1 failure (including
+Settings come from flags (`--schema`, `--dir`, `--url`), else from the first settings file:
+`monorm.toml`, then `[tool.monorm]` in `pyproject.toml`, then the `"monorm"` key of `package.json`, as ruff does.
+The files are not merged: the first file that holds settings wins.
+The keys are `schema` and `migrations`, and `query_sets` and `model_methods` for `generate`
+(`querySets` and `modelMethods` in `package.json`; the other spelling is an error).
+Other sections, such as `[admin]`, belong to their owner and use the same lookup.
+A wrong key type is an error that names the file and the key.
+The `query_sets` and `model_methods` tables come from the winning file for every language, so a project with Python and TypeScript code keeps one settings file per language directory.
+The lookup reads the working directory only.
+The URL comes from `MONORM_DATABASE_URL`.
+`monorm init` writes a `monorm.toml` with the default `schema` and `migrations`.
+Exit codes: 0 success, 1 failure (including
 `makemigrations --check` finding changes and `drift` finding differences), 2 bad usage. This
 repository's `pyproject.toml` points at the blog example; its first migration is
 [`examples/blog/migrations/0001_initial`](../../examples/blog/migrations/0001_initial/up.sql).

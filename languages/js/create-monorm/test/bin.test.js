@@ -30,7 +30,7 @@ test("writes a TypeScript project on SQLite with the npm commands", () => {
   const dest = join(root, "my-app");
   const result = run(dest);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(readdirSync(dest).sort(), [".gitignore", "README.md", "index.ts", "package.json", "schema.prisma"]);
+  assert.deepEqual(readdirSync(dest).sort(), [".gitignore", "README.md", "index.ts", "monorm.toml", "package.json", "schema.prisma"]);
   const manifest = JSON.parse(readFileSync(join(dest, "package.json"), "utf8"));
   assert.equal(manifest.name, "my-app");
   assert.match(manifest.dependencies.monorm, /^npm:@ufstack\/monorm@\^\d+\.\d+\.\d+/);
