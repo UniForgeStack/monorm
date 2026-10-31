@@ -5,7 +5,7 @@
 [`bench/compare`](../bench/compare/README.md): the public Python and TypeScript APIs of `monorm` against Django 6.1.2 and SQLAlchemy 2.1.6 (sync and async), Prisma 7.10.1, Drizzle 0.45.4 and raw `pg` 8.23.1 (the floor), on one shared schema and seed. The run (`bench/compare/run.sh`, no flags) used release builds at `d428e01`: 20 rounds × 20 timed iterations, 50 untimed warm-up calls per case, one fresh process per contender and round, rotated order.
 Results directory: [`bench/compare/results/2026-10-28-d428e01/`](../bench/compare/results/2026-10-28-d428e01/summary.md) (`summary.md`, raw JSON per contender, `run.json`, `environment.json`, logs).
 
-Machine (from `environment.json`): cloud VM `vm`, Linux 6.18.44 x86_64, PostgreSQL 16.15 over TCP on localhost. CPython 3.14.6, Node v22.22.0, Bun 1.4.4. The CPU model is not in this run's `environment.json`. The VM comes from the same cloud service as the 2026-10-21 run, so it probably has the same Intel Xeon 2.80GHz, 4 cores and 16 GB (owner's statement, not recorded).
+Machine (from `environment.json`): cloud VM `vm`, Linux 6.18.44 x86_64, PostgreSQL 16.15 over TCP on localhost. CPython 3.14.6, Node v22.22.0, Bun 1.4.4. The CPU model is not in this run's `environment.json`. The VM comes from the same cloud service as earlier runs, so it probably has the same Intel Xeon 2.80GHz, 4 cores and 16 GB (owner's statement, not recorded).
 
 All numbers below are **measured** on 2026-10-28 on that VM and copied from `summary.md` unchanged. `run.json` marks the run valid: the 1-minute load was 1.00 at the start and 1.13 at the end, and 1.14 to 1.97 before each round (limit 2). The machine is a shared cloud VM, so treat differences whose interval overlaps 1.00 as no difference.
 
@@ -31,8 +31,7 @@ CPU split (build query + make SQL, contender time / `monorm` time): approximate,
 
 All numbers are **measured** on this machine: 20 rounds x 20 iterations per case (the warm-up calls are not timed), the contender order rotated every round, one fresh process per contender and round. Each cell is `median [95 percent cluster bootstrap interval]` of the per-round medians; each speed-up is the median of the paired per-round values (contender time / monorm time) with its interval.
 
-Per-case tables (median and 95% cluster bootstrap interval), the `concurrent` throughput, the CPU split per contender and the per-contender notes: [`bench/RESULTS.md`](../bench/RESULTS.md#python-and-typescript-versus-django-sqlalchemy-prisma-and-drizzle--2026-10-28).
-The 2026-10-21 run (`c9bbf7c`, no SQLAlchemy or Drizzle) is superseded and stays there as a record.
+Per-case tables (median and 95% cluster bootstrap interval), the `concurrent` throughput, the CPU split per contender and the per-contender notes: [`summary.md`](../bench/compare/results/2026-10-28-d428e01/summary.md). All verdicts: [`bench/README.md`](../bench/README.md).
 
 ### Read the numbers with care
 
@@ -46,17 +45,11 @@ From [`bench/compare/README.md`](../bench/compare/README.md#read-the-numbers-wit
 - Prepared statements: `monorm` prepares once per connection and caches. psycopg prepares after 5 runs of a statement. `adapter-pg` of Prisma sends unnamed statements.
 - `monorm` returns full rows from `bulk-insert-*` (`returning()` has no key-only form); Prisma selects ids only. `summary.md` prints this and the other per-contender notes.
 
-## Build-time extension cost gate
+## Extension cost
 
-A build with extensions must cost less than 1% on warm operations, compared with the same behavior written by hand into the core.
-`bench/build-time-extensions` measures it: paired batches of handwritten built-in controls against the generated extension build, for Python and Node, on PostgreSQL and SQLite.
-A case passes when its paired 95% upper bound is below 1%.
-
-The latest run (2026-10-08, `10663b5`, Apple M5, PostgreSQL in Docker) has **not passed** (measured, load 1.9 to 4.3):
-0 warm regressions, 20 of 44 cases accepted, 24 inconclusive.
-Most inconclusive cases change by −2.1% to +1.4%, but their intervals are too wide on a loaded machine to clear 1%.
-Definition (setup) cost and artifact size are reported separately: the disabled native library is 5.5% (Python) and 5.4% (Node) larger, from contract and IR decoders (measured at `360685a`).
-Details: [`gate-2026-10-08/summary.md`](../bench/build-time-extensions/results/gate-2026-10-08/summary.md), [`bench/RESULTS.md`](../bench/RESULTS.md).
+A build with extensions must cost less than 1% on warm operations, compared with the core build.
+The `monorm-all / monorm` column of the [2026-10-28 run](../bench/compare/results/2026-10-28-d428e01/summary.md) measures it end to end, per case (measured).
+On that shared VM most intervals include 1.00×, so the run cannot resolve a 1% cost.
 
 ## Optimization opportunities
 
@@ -67,8 +60,8 @@ workload or language binding.
 
 ### Evidence and scope
 
-The [benchmark report](../bench/RESULTS.md#diesel-investigation-and-pool-setting-correction--2026-10-03)
-contains the source investigation, corrected ORM comparisons, and raw results.
+The [Rust benchmark results](../bench/rust-compare/results/2026-10-03-7b7538e/results.md)
+contain the matched ORM comparison, the read-path diagnosis, and raw results.
 The [diagnostic harness](../bench/rust-compare/src/bin/diagnose.rs) compares
 identical owned Rust models on PostgreSQL 18.6, with one pooled connection per
 variant, release builds, and three independent runs. It checks every returned
@@ -141,8 +134,7 @@ operations directly can avoid JSON parsing independently of plan caching.
   default per-checkout health pings while our engine and Diesel used fast
   recycling; use the corrected results when assessing implementation costs.
 - Run release benchmarks sequentially after compilation finishes. Preserve raw
-  measurements, rotate execution order, and report variability. The retained
-  diagnostic calibration run overlapped compilation and is excluded.
+  measurements, rotate execution order, and report variability.
 - Assert complete result equality and write-state correctness. Include small
   reads as well as large reads to detect regressions.
 - Before shipping an engine change, exercise joins, projections, nested

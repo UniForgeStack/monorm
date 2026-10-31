@@ -1,7 +1,7 @@
-From 305e34c603d30da49c802af58de7f1e02efb17ad Mon Sep 17 00:00:00 2001
+From 056e33d9489035bb00cb2034c6744b628cacde04 Mon Sep 17 00:00:00 2001
 From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
 Date: Mon, 26 Oct 2026 23:54:57 +0330
-Subject: [PATCH 1/4] Add MonOrm contenders (Python asyncio and Node.js)
+Subject: [PATCH 1/7] Add MonOrm contenders (Python asyncio and Node.js)
 
 _monorm/queries.py and _monorm/index.mjs run the 7 IMDBench queries
 with load() and the expression API, on the tables of the _postgres load.
@@ -743,13 +743,13 @@ index 0000000..bcd6872
 +  @@map("reviews")
 +}
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 
 
-From 20952d87ba55272800545024e39d3f81d1b75b47 Mon Sep 17 00:00:00 2001
+From 6a338bbae1b6a3b007f8a6c9fb7322dac606d938 Mon Sep 17 00:00:00 2001
 From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
 Date: Mon, 26 Oct 2026 23:54:57 +0330
-Subject: [PATCH 2/4] Register the MonOrm contenders and document them
+Subject: [PATCH 2/7] Register the MonOrm contenders and document them
 
 _shared.py: monorm and monorm_js entries (import guarded when MonOrm is absent).
 jsbench.js: monorm_js choice, getApp branch and close call.
@@ -991,13 +991,13 @@ index 443b707..e0a13de 100755
    }
  }
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 
 
-From 61fecae70c6cad2ab44e121318bbfa654a1db496 Mon Sep 17 00:00:00 2001
+From 0069e24be5ce049db11a9cb2a6caab22414345a4 Mon Sep 17 00:00:00 2001
 From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
 Date: Mon, 26 Oct 2026 23:54:57 +0330
-Subject: [PATCH 3/4] Add a result check and local run tools for MonOrm
+Subject: [PATCH 3/7] Add a result check and local run tools for MonOrm
 
 check_results.py compares MonOrm (Python and JS) with SQLAlchemy and Prisma
 for the same ids on all 7 queries and fails on any difference or leftover row.
@@ -1547,13 +1547,13 @@ index 0000000..154c577
 +await monorm.close();
 +console.log(JSON.stringify(result));
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 
 
-From c960751f8b5401ce0ca99e3912b46db672b7f757 Mon Sep 17 00:00:00 2001
+From 9f96c820188c56138bd71569b548a9fec8c90654 Mon Sep 17 00:00:00 2001
 From: "muhammad.alhaddadi@fastbundle.co" <muhammad.alhaddadi@fastbundle.co>
 Date: Fri, 30 Oct 2026 15:46:26 +0330
-Subject: [PATCH 4/4] Use the released MonOrm 0.1.1 packages
+Subject: [PATCH 4/7] Use the released MonOrm 0.1.1 packages
 
 Python: monorm from PyPI. JS: @ufstack/monorm under the alias monorm.
 ---
@@ -1648,5 +1648,121 @@ index e7b6f7b..ae55ef2 100644
      monorm_queries = None
  
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
+
+
+From 50086ca1120a601a212fff4452a15bbb8b842f79 Mon Sep 17 00:00:00 2001
+From: bench <bench@localhost>
+Date: Fri, 30 Oct 2026 12:26:17 +0000
+Subject: [PATCH 5/7] check_results: pick people in the same order in both id
+ spaces for insert_movie
+
+---
+ _monorm/tools/check_results.py | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/_monorm/tools/check_results.py b/_monorm/tools/check_results.py
+index e828726..ebe6fc1 100644
+--- a/_monorm/tools/check_results.py
++++ b/_monorm/tools/check_results.py
+@@ -201,7 +201,7 @@ async def main():
+         "get_person": [r[0] for r in await c.fetch("select id from persons order by id")],
+     }
+     updates = [dict(r) for r in await c.fetch("select id, title from movies order by id limit 5")]
+-    people = [r[0] for r in await c.fetch("select id from persons order by id limit 4")]
++    all_people = [r[0] for r in await c.fetch("select id from persons order by id")]
+     await c.close()
+ 
+     # The SQLAlchemy loader gives other ids, so the entities are paired by a unique natural key.
+@@ -224,6 +224,14 @@ async def main():
+         "get_person": [pub2sa["person"][i] for i in ids["get_person"]],
+     }
+     sa_updates = [{"id": pub2sa["movie"][u["id"]]} for u in updates]
++    # insert_movie makes the person with the lowest id the director, in each contender's own id space.
++    # Pick 4 people whose order is the same in both id spaces, so every contender gives them the same roles.
++    people = []
++    for i in all_people:
++        if not people or pub2sa["person"][i] > pub2sa["person"][people[-1]]:
++            people.append(i)
++        if len(people) == 4:
++            break
+     sa_people = [pub2sa["person"][i] for i in people]
+ 
+     results = {}
+-- 
+2.43.0
+
+
+From c957fcf436021cc35deb07cdd2db4b1c4e5be15b Mon Sep 17 00:00:00 2001
+From: bench <bench@localhost>
+Date: Fri, 30 Oct 2026 12:46:54 +0000
+Subject: [PATCH 6/7] jsbench: load the EdgeDB and Sequelize apps on first use
+
+---
+ jsbench.js | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/jsbench.js b/jsbench.js
+index e0a13de..9874a0b 100755
+--- a/jsbench.js
++++ b/jsbench.js
+@@ -12,9 +12,11 @@ const argparse = require('argparse');
+ const _ = require('lodash');
+ const process = require('process');
+ const typeormapp = require('./_typeorm/build/index');
+-const sequelizeapp = require('./_sequelize/index');
++// Loaded on first use: its native libpq addon does not build on every Node.js version.
++const sequelizeapp = {get App() { return require('./_sequelize/index').App; }};
+ const pgapp = require('./_postgres/index');
+-const edgedbapp = require('./_edgedb_js/index');
++// Loaded on first use: its query builder is generated from a running EdgeDB server.
++const edgedbapp = {get App() { return require('./_edgedb_js/index').App; }};
+ const prismaapp = require('./_prisma/index');
+ const drizzleapp = require('./_drizzle/index');
+ 
+-- 
+2.43.0
+
+
+From c404d9520e6ca2ff5ced4915ebac06f7bba39c4d Mon Sep 17 00:00:00 2001
+From: bench <bench@localhost>
+Date: Fri, 30 Oct 2026 12:49:23 +0000
+Subject: [PATCH 7/7] prisma: PostgreSQL syntax for the insert_movie setup
+
+---
+ _prisma/index.js | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/_prisma/index.js b/_prisma/index.js
+index f914755..1b87f66 100644
+--- a/_prisma/index.js
++++ b/_prisma/index.js
+@@ -597,6 +597,25 @@ class App extends PrismaClient {
+         WHERE
+             users.name LIKE 'insert_test__%';
+       `;
++    } else if (
++      (query == 'insert_movie' || query == 'insert_movie_plus') &&
++      !process.env.IMDBENCH_MYSQL
++    ) {
++      // PostgreSQL has no multi-table DELETE ... JOIN.
++      await this.$executeRaw`
++          DELETE FROM directors as D USING movies as M
++          WHERE D.movie_id = M.id AND M.image LIKE 'insert_test__%';
++      `;
++      await this.$executeRaw`
++          DELETE FROM actors as A USING movies as M
++          WHERE A.movie_id = M.id AND M.image LIKE 'insert_test__%';
++      `;
++      await this.$executeRaw`
++          DELETE FROM movies as M WHERE M.image LIKE 'insert_test__%';
++      `;
++      return await this.$executeRaw`
++          DELETE FROM persons as P WHERE P.image LIKE 'insert_test__%';
++      `;
+     } else if (query == 'insert_movie' || query == 'insert_movie_plus') {
+       await this.$executeRaw`
+           DELETE D FROM
+-- 
+2.43.0
 

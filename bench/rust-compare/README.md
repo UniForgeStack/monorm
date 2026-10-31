@@ -50,9 +50,8 @@ and decodes directly into the same Rust model used by the other contenders.
 The model derives both SeaORM's entity mapping and Diesel's `Queryable`.
 
 The expanded comparison uses four contenders and 16 rounds, so each contender
-occupies each execution-order position four times. The default output is now
-`results-diesel.json`; `ORM_BENCH_OUT` selects another filename. Historical
-three-contender output files remain unchanged.
+occupies each execution-order position four times. The default output is
+`results-diesel.json`; `ORM_BENCH_OUT` selects another filename.
 
 All contenders pass the same complete read-result checks and the same independent
 update-state checks. This is a comparison with Diesel's async adapter, rather
@@ -70,13 +69,12 @@ It requires the same disposable `ORM_BENCH_URL`; its table
 The default output is `results-diagnose.json`, overridable with `ORM_BENCH_OUT`.
 
 Do not run benchmarks while compilation or another benchmark is running.
-The retained calibration run overlapped a build and is excluded from reported
-results. Diagnostic rounds rotate all nine variants through eighteen batches.
+Diagnostic rounds rotate all nine variants through eighteen batches.
 
 The original five-case harness accepts `ORM_BENCH_SEA_FAST=1` to disable
 SeaORM's default per-checkout ping for a matched-setting experiment. With that
 variable omitted, it retains the original default-health-check configuration.
-The JSON records this setting. Historical result files remain available.
+The JSON records this setting.
 
 ## Environment
 
@@ -85,20 +83,20 @@ a release build with LTO, isolated Homebrew PostgreSQL 18.6, localhost TCP
 with TLS disabled, default PostgreSQL durability, one pooled connection per
 contender and one current-thread Tokio runtime. These are measured results;
 CPU model, OS version, source commit and machine load were not recorded.
-See [the result record](../RESULTS.md#current-rust-engine-versus-seaorm--2026-10-03).
+Results: [`results/2026-10-03-7b7538e/results.md`](results/2026-10-03-7b7538e/results.md).
 Do not substitute today's environment for missing historical metadata.
 
 Both executables now collect `commit` (`git rev-parse HEAD`), `rustc` (`rustc -V`),
 `postgres_version` (`SELECT version()`), `os` (OS and architecture) and `cpu`
 (macOS `sysctl` or Linux `/proc/cpuinfo`) before timing. The fields are at the
 JSON root, with `"unknown"` for failed reads. `database` remains a legacy nested
-query-result alias of `postgres_version`. Old JSON files are unchanged.
+query-result alias of `postgres_version`. The retained 2026-10-03 files predate these fields.
 
 ## Reproduce
 
 Use a quiet machine. Build both binaries before timing. From the repository
 root, in Bash with the PostgreSQL client tools installed, after starting the disposable database described in
-[the benchmark guide](../README.md#disposable-database):
+[the benchmark guide](../RUNNING.md#disposable-database):
 
 ```bash
 export ORM_BENCH_URL=postgres://postgres:postgres@localhost:55432/orm_bench
@@ -106,14 +104,15 @@ until pg_isready -h localhost -p 55432 -U postgres -d orm_bench; do sleep 1; don
 unset CARGO_PROFILE_RELEASE_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS
 cargo build --release --manifest-path bench/rust-compare/Cargo.toml --bins
 cd bench/rust-compare
-ORM_BENCH_SEA_FAST=1 ORM_BENCH_OUT=results-matched-local.json target/release/monorm-rust-compare
-ORM_BENCH_OUT=results-diagnose-local.json target/release/diagnose
+OUT=results/$(date -u +%F)-$(git rev-parse --short=7 HEAD) && mkdir -p "$OUT"
+ORM_BENCH_SEA_FAST=1 ORM_BENCH_OUT=$OUT/results-matched-1.json target/release/monorm-rust-compare
+ORM_BENCH_OUT=$OUT/results-diagnose-1.json target/release/diagnose
 ```
 
 Use the selected host port in both the readiness check and URL.
 Run the binaries sequentially, with no builds
 or other benchmarks running. The default Cargo target directory above is the
 standalone workspace's `target/`; adjust the paths if using `CARGO_TARGET_DIR`.
-Keep local output files separate from the retained results. Record whether the
+Repeat each binary 3 times (`-2`, `-3`), write `$OUT/results.md` in the shape of the latest one, and delete the previous results folder. Record whether the
 machine was loaded when reporting any measured number. These Rust-only results
 support no speed claim about the Python or TypeScript API.

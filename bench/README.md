@@ -1,96 +1,70 @@
-# Benchmarks
+# Benchmark results
 
-Each directory or script below runs on the current API.
-Recorded results and their dates, commits and machines are in [`RESULTS.md`](RESULTS.md).
-Run benchmarks on a quiet machine, after every build has finished, against a disposable PostgreSQL database.
-Mark each number you report as measured (and say if the machine was loaded), estimated, or vendor-reported.
+The verdict of each benchmark, from its latest run.
+Every number is **measured** on the machine its detail file names.
+Each section links to the detail: per-case tables, method, machine and raw data.
+Older runs are not kept; `git log -- bench/` finds them.
+How to run each benchmark: [`RUNNING.md`](RUNNING.md).
 
-| Benchmark | Measures | Extension build |
-|---|---|---|
-| [`engine_bench.py`](engine_bench.py) | The public Python API on the blog models, end to end: reads, `select_related`, prefetch, inserts, updates, a transaction, concurrent gets | Runs on any build (core features only) |
-| [`copy_insert.py`](copy_insert.py) | PostgreSQL COPY versus batched `insert_many()` through Python on the blog models | Runs on any PostgreSQL build |
-| [`aggregates_pagination.py`](aggregates_pagination.py) | Scalar versus LATERAL relation aggregates with an unindexed parent sort, LIMIT 20 and OFFSET 10; 100,000 users / 1,000,000 posts by default | Runs on any build (PostgreSQL) |
-| [`rust-compare/`](rust-compare) | `monorm-engine` (typed IR and JSON IR) against SeaORM 2.0.4 and Diesel-async, in Rust only; `diagnose` adds raw SQLx and a streaming read | Not applicable (engine only) |
-| [`compare/`](compare) | Our ORM against Django and SQLAlchemy (sync and async), Prisma 7, Drizzle and `pg` on one schema: 20 cases, equality check, release builds, `run.sh` and `report.py` | `monorm-all` row uses the `all` extension artifact |
-| [`shared-behavior/`](shared-behavior) | Paired A/B of `Database.lock` advisory locks: the earlier Python/TypeScript key hashing against the Rust helper, through the public API | Not applicable (core) |
-| [`build-time-extensions/`](build-time-extensions) | The cost gate of build-time extensions: handwritten built-in controls against generated extension code, Python and Node, PostgreSQL and SQLite; allocation and artifact-size probes | This is the extension benchmark |
-| [`internal/`](internal) | Where one monorm call spends its time: unprepared, `prepare()` and direct-IR calls in Python and TypeScript (Node) on six cases, with engine-only (Rust) and driver-only rows; PostgreSQL and SQLite; `run.sh` and `report.py` | Not applicable (core) |
-| [`imdbench/`](imdbench) | MonOrm 0.1.1 (Python and Node) in the public IMDBench against Django, SQLAlchemy, TypeORM, Prisma and the raw drivers; a patch for the IMDBench repo, the run procedure and the results | Not applicable (released packages) |
+| Benchmark | Scenarios | Latest run (date, `main` commit, machine) | Results |
+|---|---|---|---|
+| [Our scenarios](#speed-up-summary) | 20 cases of our own, Python and TypeScript, against Django, SQLAlchemy, Prisma, Drizzle and `pg` | 2026-10-28, `d428e01`, cloud VM | [`summary.md`](compare/results/2026-10-28-d428e01/summary.md) |
+| [IMDBench scenarios](#imdbench-scenarios) | The 3 IMDBench queries, Python and Node, against Django, SQLAlchemy, TypeORM, Prisma and the raw drivers | 2026-10-30, `5e1379d` (MonOrm 0.1.1), cloud VM | [`results.md`](imdbench/results/2026-10-30-5e1379d/results.md) |
+| [Where a call spends its time](#where-a-call-spends-its-time) | 6 cases through 3 call paths, Python and Node, PostgreSQL and SQLite | 2026-10-30, `6332db55`, cloud VM | [`2026-10-30-report.md`](internal/results/2026-10-30-report.md) |
+| [Rust engine only](#rust-engine-only) | 5 cases and 9 read paths, against SeaORM, Diesel and raw SQLx | 2026-10-03, `7b7538e` (inferred), macOS arm64 | [`results.md`](rust-compare/results/2026-10-03-7b7538e/results.md) |
 
-## Disposable database
+## Speed-up summary
 
-From the repository root, in Bash (Docker must be running):
+Our own 20 cases ([`compare/`](compare/README.md)), end to end with the database round trip.
+Speed-up is contender time / `monorm` time: `2.3×` means `monorm` is 2.3 times faster.
+Geometric mean over the cases; the range names the slowest and fastest case.
 
-```bash
-docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orm_bench postgres:18
+| `monorm` on | vs | Geometric mean | Range | Cases |
+|---|---|---:|---|---:|
+| Python | `django-sync` | 1.59× | 1.03× (tx-5) to 3.36× (concurrent) | 20 |
+| Python | `django-async` | 1.97× | 1.10× (tx-5) to 3.55× (m2m) | 20 |
+| Python | `sqlalchemy-sync` | 2.25× | 0.92×, slower (tx-5) to 11.57× (bulk-insert-1000) | 20 |
+| Python | `sqlalchemy-async` | 2.56× | 1.19× (tx-5) to 13.23× (bulk-insert-1000) | 20 |
+| Node | `prisma` | 1.90× | 1.03× (delete-100) to 11.68× (upsert-100) | 20 |
+| Node | `drizzle` | 1.50× | 0.97×, slower (tx-5) to 3.95× (m2m) | 20 |
+| Bun | `prisma` | 2.48× | 1.61× (read-1000) to 3.61× (bulk-insert-1000) | 3 |
+| Bun | `drizzle` | 1.46× | 1.24× (read-1000) to 1.63× (bulk-insert-1000) | 3 |
+
+```mermaid
+xychart-beta
+    title "Our scenarios: monorm speed-up, geometric mean (×)"
+    x-axis ["py/django-sync", "py/django-async", "py/sqla-sync", "py/sqla-async", "node/prisma", "node/drizzle", "bun/prisma", "bun/drizzle"]
+    y-axis "× faster" 0 --> 3
+    bar [1.59, 1.97, 2.25, 2.56, 1.90, 1.50, 2.48, 1.46]
 ```
 
-Wait until PostgreSQL accepts connections. This needs a free host port 55432;
-choose another port if it is already occupied. The database is disposable and
-removed when the container stops. See [the exact Rust run steps](rust-compare/README.md#reproduce).
+- `monorm` is faster on average than every ORM contender; it is slower only on `tx-5`, against `sqlalchemy-sync` and `drizzle`, by 8% and 3%.
+- Without the database (query build plus SQL, approximate), Python `monorm` is 4.1× Django and 10.2× SQLAlchemy, and Node `monorm` is 2.4× Drizzle.
+- The build with every extension (`monorm-all`) costs no measurable time in most cases: its interval includes 1.00×.
+- The machine is a shared cloud VM (1-minute load 1.14 to 1.97): read a speed-up whose interval includes 1.00× as no difference.
 
-## engine_bench.py
+## IMDBench scenarios
 
-```bash
-python languages/python/packaging/stage.py && maturin develop --release
-python bench/engine_bench.py --url postgres://postgres:postgres@localhost/orm_bench [--rounds 15] [--out results.json]
-```
+The upstream [IMDBench](https://github.com/geldata/imdbench) queries, run by us on one VM ([`imdbench/`](imdbench/RUNNING.md)), requests/s, geometric mean of 3 queries.
 
-It drops and creates the blog tables in that database.
-The one wheel holds the built-in extensions, so the same command covers them.
+| Language | MonOrm | vs ORMs | Raw driver (floor) |
+|---|---:|---|---|
+| Python | 282.5 | 1.41× SQLAlchemy (199.8), 2.85× Django (99.1) | `asyncpg` 1,083.3: 3.8× MonOrm |
+| Node | 383.0 | 1.65× Prisma (232.5), 2.18× TypeORM (175.6) | `pg` 431.0: 1.13× MonOrm |
 
-## aggregates_pagination.py
+MonOrm leads every ORM on every query, except Python `get_user`, where it ties SQLAlchemy inside the run spread.
 
-The pagination benchmark reads `ORM_TEST_DATABASE_URL` (or `--url`) and drops and
-creates the blog tables there. It checks equal results, alternates the two forms
-after warm-up, and reports median milliseconds as measured on a loaded machine.
-`--parents`, `--posts-per-parent`, `--rounds` and `--out` control the fixture and
-JSON output; the output includes both SQL forms and `EXPLAIN (ANALYZE, BUFFERS)`.
+## Where a call spends its time
 
-## rust-compare
+[`internal/`](internal/README.md) splits one MonOrm call into layers.
 
-```bash
-cd bench/rust-compare
-ORM_BENCH_URL=postgres://... cargo run --release --bin monorm-rust-compare # writes results-diesel.json
-ORM_BENCH_URL=postgres://... cargo run --release --bin diagnose
-```
+- Building model instances (hop + instances) is the largest MonOrm layer everywhere: 770–1,475 µs for 1,000 rows on PostgreSQL.
+- The Python query builder is next: a fifth to a third of a primary-key get.
+- Value binding is small; the engine layer cannot be read on PostgreSQL (the Rust driver is faster than `psycopg` and `pg`).
 
-A separate Cargo workspace with path dependencies on `crates/core/` and `crates/engine/`.
-The tables `monorm_rust_compare_post` and `monorm_rust_diagnose_post` must not exist before a run.
-`ORM_BENCH_OUT` sets the output file; `ORM_BENCH_SEA_FAST=1` turns off SeaORM's per-checkout health ping (a matched-setting run).
-See [`rust-compare/README.md`](rust-compare/README.md).
+## Rust engine only
 
-## shared-behavior
+[`rust-compare/`](rust-compare/README.md), with matched pool checkout settings.
 
-Needs the release native library (`python languages/python/packaging/stage.py && maturin develop --release`, `node languages/js/scripts/build-native.mjs --release`, `npm --prefix languages/js run build`), Nushell, and an isolated `orm_test` database.
-
-```nu
-nu bench/shared-behavior/run.nu --url postgres://postgres:postgres@127.0.0.1:5432/orm_test --out bench/shared-behavior/results
-.venv/bin/python bench/shared-behavior/report.py --check      # summary of the recorded results
-```
-
-`locks.py` and `locks.mjs` take `--rounds`, `--inner`, `--connections` and `--only` for a shorter run; they read `ORM_TEST_DATABASE_URL`.
-See [`shared-behavior/README.md`](shared-behavior/README.md).
-
-## build-time-extensions
-
-From the repository root, with `CARGO_INCREMENTAL=0` and Cargo dependencies fetched (the builds are `--offline --locked`):
-
-```bash
-.venv/bin/python bench/build-time-extensions/controls.py --out /tmp/monorm-controls     # release builds of both sides
-.venv/bin/python bench/build-time-extensions/run.py --native-profile \
-  --before /tmp/monorm-controls --after /tmp/monorm-controls --url <isolated-pg-url> --out <results-dir>
-.venv/bin/python bench/build-time-extensions/report.py --native-profile --check --directory <results-dir>
-```
-
-`run.py` takes `--repetitions`, `--batches` and `--iterations` (defaults 3, 24, 100).
-`report.py` writes `<results-dir>/summary.md`; do not point it at a recorded directory unless you mean to rewrite that summary.
-`controls.py` builds fat-LTO release libraries for both backends and both sides; it takes long.
-Other scripts: `build.py` (old-versus-new snapshot builds against baseline `3a710ca`), `size.py` (artifact size attribution), and the one-off diagnostics `audit.py`, `finalize-builds.py`, `focused.py`, `focused-report.py` and `cpu.mjs` that produced results in `results/`.
-See [`build-time-extensions/README.md`](build-time-extensions/README.md).
-
-## Removed
-
-The Phase 0 harness (the SeaORM `ormcore` prototype against Django, SQLAlchemy, Drizzle, GORM and pgx) and `query-construction/` were removed after `889f1c4`: they measured code that no longer exists. Their findings stay in `RESULTS.md`; `git show 889f1c4:bench/<path>` recovers those files.
-
-`profile_query.py` has also been removed: its required `profile_probes.patch` was deleted in `bdec377`, so the script could no longer run.
+- Our engine is faster than SeaORM in all 5 cases (about 1.5× on a primary-key get).
+- Diesel async is faster for 1,000-row reads (263 vs 303 µs); a streamed-rows prototype closes that gap (248 µs).

@@ -791,7 +791,7 @@ latest.sql(user=1, n=20, skip=0)                # the SQL with these values, for
 A call copies the stored parameter list, fills in the values and hands the stored IR
 JSON to the engine. It skips building the query set, the expression tree, the IR and
 its JSON: −22% on `get` by primary key and −13% to −31% on a 50-row read with two filters
-(`bench/RESULTS.md`, "Prepared queries"). Rust still plans each call, and Postgres
+(measured; `git show 493e2472:bench/RESULTS.md`, "Prepared queries"). Rust still plans each call, and Postgres
 reuses the statement, which is prepared once per connection.
 
 * A `param()` stands for one value: in comparisons and arithmetic, `like` / `contains`
@@ -1700,8 +1700,8 @@ IR costs ~15 µs of Python. A 1-row read is ~0.1 ms over a bare `SELECT 1` on th
 connection. Reading 1000 posts takes ~1.9 ms, and
 1000 posts + author via `load(Post.author)` ~3.1 ms. Building instances in
 Rust took these from ~2.3 / ~4.3 ms
-(`bench/engine_bench.py`, numbers in
-[`bench/RESULTS.md`](../../bench/RESULTS.md#instances-built-in-rust)).
+(`bench/engine_bench.py`, measured; numbers in
+`git show 493e2472:bench/RESULTS.md`, "Instances built in Rust").
 
 ## Decisions
 
@@ -1773,7 +1773,7 @@ entities, relations and loaders need Rust types compiled per schema, and its
 `find_also_related` / `load_many` are what `load()` already
 do). Replacing it with tokio-postgres made most operations 5–33% faster with TLS off (with
 TLS on, the TLS cost hides the difference)
-(`bench/engine_bench.py`, numbers in [`bench/RESULTS.md`](../../bench/RESULTS.md#engine-seaorm-vs-tokio-postgres)).
+(`bench/engine_bench.py`, measured; numbers in `git show 493e2472:bench/RESULTS.md`, "Engine: SeaORM vs tokio-postgres").
 
 ## Query inspection counters
 

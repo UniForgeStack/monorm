@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 COMPARE = Path(__file__).resolve().parents[3] / "bench" / "compare"
-RUN = COMPARE / "results" / "2026-10-21-c9bbf7c"
+RUN = COMPARE / "results" / "2026-10-28-d428e01"
 
 
 def geomean_of(text: str, line_start: str) -> float:
@@ -19,8 +19,8 @@ def test_report_summary_speedups(tmp_path):
     subprocess.run([sys.executable, str(COMPARE / "report.py"), str(RUN), str(out)], check=True)
     text = out.read_text()
     summary = text.split("## Summary")[1].split("## Python")[0]
-    assert abs(geomean_of(summary, "- Python vs `django-async`") - 1.95) <= 0.05
-    assert abs(geomean_of(summary, "- Node vs `prisma`") - 1.77) <= 0.05
+    assert abs(geomean_of(summary, "- Python vs `django-async`") - 1.97) <= 0.05
+    assert abs(geomean_of(summary, "- Node vs `prisma`") - 1.90) <= 0.05
     assert "end to end" in summary and "approximate" in summary
     assert "%" not in text
     assert "(slower)" in text

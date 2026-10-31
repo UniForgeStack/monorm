@@ -83,4 +83,4 @@ One commit holds one concept. Squash fixup commits before you push.
 
 - [docs/README.md](docs/README.md): the documentation index.
 - [examples/quickstart](examples/quickstart): the first query, in Python and TypeScript.
-- [bench/README.md](bench/README.md): how to run the benchmarks.
+- [bench/RUNNING.md](bench/RUNNING.md): how to run the benchmarks; [bench/README.md](bench/README.md): the results.

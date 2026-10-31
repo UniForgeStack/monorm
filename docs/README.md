@@ -59,8 +59,8 @@ An app is a schema that you import with `import "app:<name>"`, and a package for
 | Doc | What |
 |---|---|
 | [performance.md](performance.md) | The cost gate of build-time extensions, and measured engine opportunities |
-| [../bench/README.md](../bench/README.md) | The benchmarks and how to run them |
-| [../bench/RESULTS.md](../bench/RESULTS.md) | Recorded results |
+| [../bench/README.md](../bench/README.md) | Benchmark results |
+| [../bench/RUNNING.md](../bench/RUNNING.md) | How to run the benchmarks |
 
 ## Example
 

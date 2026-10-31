@@ -19,7 +19,7 @@ Both languages get the same queries, the same migrations and generated, typed mo
 > Evaluate it against your own app before you rely on it.
 
 **About 1.97× faster end to end than Django (async), up to 3.55×.**
-Source: the geometric mean of 20 cases in one run on one machine, with the database round trip included ([results](bench/RESULTS.md#speed-up-summary)).
+Source: the geometric mean of 20 cases in one run on one machine, with the database round trip included ([results](bench/README.md#speed-up-summary)).
 Method, limits and the cases where it is not faster: [Benchmarks](#benchmarks).
 
 The name is MonOrm.
@@ -233,7 +233,7 @@ Every number is measured and end to end: it includes the database round trip.
 - Against Django sync the Python geometric mean is 1.59× faster, against SQLAlchemy sync 2.25×.
 - It is one run on a shared VM. Treat a difference whose interval overlaps 1.00 as no difference. Django async has no async `atomic()`, which affects `tx-5`.
 
-Full tables, the method and the raw data: [`bench/RESULTS.md`](bench/RESULTS.md#speed-up-summary) and [`bench/compare/README.md`](bench/compare/README.md).
+Full tables, the method and the raw data: [`bench/README.md`](bench/README.md#speed-up-summary) and [`bench/compare/README.md`](bench/compare/README.md).
 Run the comparison yourself before you decide.
 
 ## Status and limits

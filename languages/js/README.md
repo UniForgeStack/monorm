@@ -15,7 +15,7 @@ On Bun, the three measured cases are 1.61× to 3.61× faster than Prisma.
 "End to end" means the database round trip is included.
 Measured on 2026-10-28 (run `d428e01`), one run on a shared cloud VM with PostgreSQL 16.15.
 Against Drizzle (geometric mean 1.50× faster) it is slower or level in a few cases, for example `tx-5` (0.97×, slower).
-Source, method and limits: [bench/RESULTS.md](https://github.com/UniForgeStack/monorm/blob/main/bench/RESULTS.md#speed-up-summary).
+Source, method and limits: [bench/README.md](https://github.com/UniForgeStack/monorm/blob/main/bench/README.md#speed-up-summary).
 Run the comparison yourself before you decide.
 
 The name is MonOrm.

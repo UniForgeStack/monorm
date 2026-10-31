@@ -64,11 +64,6 @@ reason = "Test and bench variables stay; the owner may rename them later (Q3 in 
 
 [[allow]]
 glob = "**"
-pattern = 'ORM_(?:CORE_COMPOSITION|ENGINE_COMPOSITION|PYTHON_METHODS|NODE_METHODS)\b'
-reason = "Build-time variables read by the extension build scripts; no user sets them."
-
-[[allow]]
-glob = "**"
 pattern = 'ORM_(?:PACKAGE_PYTHON|SOURCE|EXTENSION_[A-Z_]+)\b'
 reason = "Variables of the extension build and test scripts; they are not part of the public surface."
 
