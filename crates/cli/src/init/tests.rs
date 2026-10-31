@@ -66,7 +66,7 @@ fn every_combination_writes_its_files_and_passes_check() {
         let request = Request { dir: Some(dir.to_str().unwrap()), ..request(lang, db, ext) };
         assert_eq!(run(&request, Host::Binary, &Env::default()).unwrap(), 0);
 
-        let mut expected = vec![".gitignore", "README.md", "schema.prisma"];
+        let mut expected = vec![".gitignore", "README.md", "monorm.toml", "schema.prisma"];
         expected.push(if lang == "python" { "main.py" } else { "index.ts" });
         expected.push(if lang == "python" { "pyproject.toml" } else { "package.json" });
         if ext == "all" { expected.push("schema.identities.json"); }
@@ -79,6 +79,9 @@ fn every_combination_writes_its_files_and_passes_check() {
         let project = dsl::compile_project_file_with(&schema, &installed).unwrap_or_else(|e| panic!("{lang} {db} {ext}: {e}"));
         assert!(project.warnings.is_empty(), "{lang} {db} {ext}: {:?}", project.warnings);
         assert_eq!(command(&["check", "--schema", schema.to_str().unwrap()]).unwrap(), 0, "{lang} {db} {ext}");
+        let settings = monorm_core::settings::Settings::load(&dir).unwrap();
+        assert_eq!(settings.source(), Some(monorm_core::settings::Source::MonormToml), "{lang} {db} {ext}");
+        assert_eq!(settings.string("schema").unwrap().as_deref(), Some("schema.prisma"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

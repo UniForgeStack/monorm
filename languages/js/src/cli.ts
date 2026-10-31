@@ -3,9 +3,9 @@
  * `npx monorm`: the `monorm` command line, the same Rust code as the standalone `monorm` binary
  * and `python -m monorm` (`crates/cli/`). See `npx monorm --help`.
  *
- * The schema file and migrations directory come from `--schema` / `--dir`, or from the
- * `"monorm"` key of `package.json` (`{"schema": "schema.prisma", "migrations":
- * "migrations"}`). The database URL comes from `--url` or `MONORM_DATABASE_URL`.
+ * The schema file and migrations directory come from `--schema` / `--dir`, or from `monorm.toml`,
+ * else `[tool.monorm]` in `pyproject.toml`, else the `"monorm"` key of `package.json`
+ * (`{"schema": "schema.prisma", "migrations": "migrations"}`). The database URL comes from `--url` or `MONORM_DATABASE_URL`.
  */
 
 import { realpathSync } from "node:fs";

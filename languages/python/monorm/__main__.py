@@ -14,8 +14,8 @@
     python -m monorm init [dir]                        # a starter project; also `uvx monorm init`
 
 The schema file and migrations directory come from ``--schema`` / ``--dir`` or from
-``[tool.monorm]`` in ``pyproject.toml`` (``schema = "schema.prisma"``,
-``migrations = "migrations"``). The database URL comes from ``--url`` or
+``monorm.toml`` (``schema = "schema.prisma"``, ``migrations = "migrations"``), else
+``[tool.monorm]`` in ``pyproject.toml``, else the ``"monorm"`` key of ``package.json``. The database URL comes from ``--url`` or
 ``MONORM_DATABASE_URL``.
 """
 

@@ -1229,7 +1229,7 @@ pub fn cli<'env>(env: &'env Env, argv: Vec<String>) -> napi::Result<PromiseRaw<'
 #[cfg(feature = "cli")]
 #[napi]
 pub fn cli_schema(argv: Vec<String>) -> String {
-    monorm_cli::schema_path(&argv, monorm_cli::Host::Node).to_string_lossy().into_owned()
+    monorm_cli::schema_path(&argv).to_string_lossy().into_owned()
 }
 
 /// For `npx monorm migrate`: `[schema, dir, url, target]` as the CLI resolves them (null
@@ -1237,7 +1237,7 @@ pub fn cli_schema(argv: Vec<String>) -> String {
 #[cfg(feature = "cli")]
 #[napi]
 pub fn cli_migrate_args(argv: Vec<String>) -> Option<Vec<Option<String>>> {
-    monorm_cli::migrate_args(&argv, monorm_cli::Host::Node).map(|(schema, dir, url, target)| {
+    monorm_cli::migrate_args(&argv).map(|(schema, dir, url, target)| {
         vec![Some(schema.to_string_lossy().into_owned()), Some(dir.to_string_lossy().into_owned()), url, target]
     })
 }

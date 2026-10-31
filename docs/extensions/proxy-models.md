@@ -42,7 +42,7 @@ A proxy cannot declare `@@protected_write`; it shares the protection of its root
 For example, a proxy of a soft-delete model has `all_with_deleted()`, `deleted_only()`, `undelete()` and `hard_delete()`.
 A model gets the members of an extension when the prepared record of that extension names it, a proxy too.
 A proxy also uses the user query-set class of its root model, unless it names its own.
-This holds in generated Python and TypeScript code (`--query-set`) and in `[tool.monorm.query_sets]`.
+This holds in generated Python and TypeScript code (`--query-set`) and in `query_sets` of the settings file.
 A direct `use_query_set` or `useQuerySet` call on the root model does not reach its proxies.
 A method of that class may name a column of the root model, such as `Post.published.eq(true)`.
 A query accepts a column of any model on the same table and resolves it by name on its own model.

@@ -17,6 +17,7 @@ pub mod ir;
 pub mod migrate;
 pub mod partition;
 pub mod schema;
+pub mod settings;
 
 pub mod features;
 

@@ -21,11 +21,12 @@
 //! ```
 //!
 //! The schema file and the migrations directory come from `--schema` / `--dir`, else
-//! from `[tool.monorm]` in `pyproject.toml` or the `"monorm"` key of `package.json`
-//! (`schema`, `migrations`), else `schema.prisma` and `migrations`. The database URL
-//! comes from `--url` or `MONORM_DATABASE_URL`. `generate` also reads the query-set classes
-//! from `[tool.monorm.query_sets]` (Python) or `"monorm": {"querySets": ...}` (TypeScript),
-//! and the model-methods classes from `[tool.monorm.model_methods]` or `"monorm": {"modelMethods": ...}`.
+//! from the settings (`schema`, `migrations`), else `schema.prisma` and `migrations`.
+//! The settings come from the first of `monorm.toml`, `[tool.monorm]` in `pyproject.toml` and
+//! the `"monorm"` key of `package.json` (see `monorm_core::settings`; the files are not merged).
+//! The database URL comes from `--url` or `MONORM_DATABASE_URL`. `generate` also reads the query-set classes
+//! from `query_sets` (`"querySets"` in `package.json`) and the model-methods classes from `model_methods`
+//! (`"modelMethods"`); each is a table of model name to target. Other sections, such as `[admin]`, belong to their owner.
 //!
 //! `--app NAME=PATH` (repeatable) gives the schema file of an installed app for `import "app:NAME"`;
 //! `python -m monorm` and `npx monorm` add it for the apps they find.
@@ -41,12 +42,12 @@ mod package_lock;
 
 use std::path::{Path, PathBuf};
 
+use monorm_core::settings::{Settings, Source};
 use monorm_core::{codegen, dsl, migrate as files};
 use monorm_engine::introspect;
 use monorm_engine::migrate::{self, Down};
 
-/// Which program is running the CLI: it decides the name in the help, which
-/// configuration file is read first and what `generate` writes by default.
+/// Which program is running the CLI: it decides the name in the help and what `generate` writes by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Host {
     /// The standalone `monorm` binary.
@@ -95,8 +96,9 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
   drift                                    compare the database with the last migration's
                                            snapshot; exit 1 if they differ
 
-The schema and migrations directory come from --schema / --dir, else from [tool.monorm]
-in pyproject.toml or \"monorm\" in package.json, else schema.prisma and migrations/.
+The schema and migrations directory come from --schema / --dir, else from the first settings
+file: monorm.toml, [tool.monorm] in pyproject.toml, or \"monorm\" in package.json (the files
+are not merged), else schema.prisma and migrations/.
 The database URL comes from --url or MONORM_DATABASE_URL.";
 
 fn usage(host: Host) -> String {
@@ -209,55 +211,52 @@ impl Args {
     }
 }
 
-/// `schema` and `migrations` from the project's configuration file.
-#[derive(Default)]
-struct Config {
-    schema: Option<String>,
-    migrations: Option<String>,
+/// The settings of the project in the working directory: `monorm.toml`, else `pyproject.toml`, else `package.json`.
+fn settings() -> Result<Settings> {
+    Settings::load(Path::new(".")).map_err(Failure::Setup)
 }
 
-fn pyproject() -> Option<Config> {
-    let text = std::fs::read_to_string("pyproject.toml").ok()?;
-    let doc: toml::Table = text.parse().ok()?;
-    let monorm = doc.get("tool")?.get("monorm")?;
-    let get = |k: &str| monorm.get(k).and_then(|v| v.as_str()).map(String::from);
-    Some(Config { schema: get("schema"), migrations: get("migrations") })
-}
-
-fn package_json() -> Option<Config> {
-    let text = std::fs::read_to_string("package.json").ok()?;
-    let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let monorm = doc.get("monorm")?;
-    let get = |k: &str| monorm.get(k).and_then(|v| v.as_str()).map(String::from);
-    Some(Config { schema: get("schema"), migrations: get("migrations") })
-}
-
-/// The `what` classes of `language` from its configuration file: `[tool.monorm.<py_key>]`
-/// in `pyproject.toml` (Python) or `"monorm": {"<js_key>": ...}` in `package.json`.
-fn configured_targets(language: &str, what: &str, py_key: &str, js_key: &str) -> Result<std::collections::BTreeMap<String, String>> {
-    if language == "rust" { return Ok(Default::default()); }
-    let table: Option<Vec<(String, Option<String>)>> = if language == "python" {
-        std::fs::read_to_string("pyproject.toml").ok().and_then(|t| t.parse::<toml::Table>().ok()).and_then(|doc| {
-            let sets = doc.get("tool")?.get("monorm")?.get(py_key)?.as_table()?.clone();
-            Some(sets.into_iter().map(|(k, v)| (k, v.as_str().map(String::from))).collect())
-        })
-    } else {
-        std::fs::read_to_string("package.json").ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|doc| {
-            let sets = doc.get("monorm")?.get(js_key)?.as_object()?.clone();
-            Some(sets.into_iter().map(|(k, v)| (k, v.as_str().map(String::from))).collect())
-        })
-    };
-    table.unwrap_or_default().into_iter()
-        .map(|(model, target)| target.map(|t| (model.clone(), t)).ok_or_else(|| Failure::Setup(format!("{what} of {model} must be a string"))))
-        .collect()
-}
-
-fn config(host: Host) -> Config {
-    match host {
-        Host::Node => package_json().or_else(pyproject),
-        _ => pyproject().or_else(package_json),
+/// The path that `flag` names, else the setting `key`, else `default`. The setting is not read when the flag is given.
+fn path_option(
+    args: &Args,
+    settings: &Settings,
+    flag: &str,
+    key: &str,
+    default: &str,
+) -> Result<PathBuf> {
+    if let Some(value) = args.opt(&[flag]) {
+        return Ok(PathBuf::from(value));
     }
-    .unwrap_or_default()
+    let from_settings = settings.string(key).map_err(Failure::Setup)?;
+    Ok(PathBuf::from(
+        from_settings.unwrap_or_else(|| default.into()),
+    ))
+}
+
+/// The schema file: `--schema`, else `schema`, else `schema.prisma`.
+fn schema_file(args: &Args, settings: &Settings) -> Result<PathBuf> {
+    path_option(args, settings, "--schema", "schema", "schema.prisma")
+}
+
+/// The migrations directory: `--dir`, else `migrations`, else `migrations`. Only a command that uses it reads it,
+/// so a wrong `migrations` setting does not stop the others.
+fn migrations_dir(args: &Args, settings: &Settings) -> Result<PathBuf> {
+    path_option(args, settings, "--dir", "migrations", "migrations")
+}
+
+/// The `what` classes of the project's settings: `query_sets` (`querySets` in `package.json`) and the like.
+/// The spelling of the other file format is an error, so a setting does not fail silently.
+fn configured_targets(settings: &Settings, language: &str, what: &str, py_key: &str, js_key: &str) -> Result<std::collections::BTreeMap<String, String>> {
+    if language == "rust" { return Ok(Default::default()); }
+    let (key, other) = if settings.source() == Some(Source::PackageJson) {
+        (js_key, py_key)
+    } else {
+        (py_key, js_key)
+    };
+    settings
+        .reject_spelling(other, key)
+        .and_then(|()| settings.string_table(key))
+        .map_err(|m| Failure::Setup(format!("{what}: {m}")))
 }
 
 fn load(path: &Path, args: &Args) -> Result<(monorm_core::ir::SchemaIr, monorm_core::schema::Schema)> {
@@ -282,15 +281,17 @@ fn write(path: &Path, text: &str) -> Result<()> {
 /// For a `migrate` command line: the schema file, the migrations directory, the database
 /// URL and the target, as [`run`] resolves them; `None` for anything else. The Python
 /// and Node hosts use it to apply migrations with a data step themselves.
-pub fn migrate_args(argv: &[String], host: Host) -> Option<(PathBuf, PathBuf, Option<String>, Option<String>)> {
+pub fn migrate_args(argv: &[String]) -> Option<(PathBuf, PathBuf, Option<String>, Option<String>)> {
     let args = Args::parse(argv).ok()?;
     if args.positional.first().map(String::as_str) != Some("migrate") || args.flag("-h") || args.flag("--help") {
         return None;
     }
     args.allow("migrate", &[], 1).ok()?;
-    let cfg = config(host);
-    let schema = PathBuf::from(args.opt(&["--schema"]).or(cfg.schema.as_deref()).unwrap_or("schema.prisma"));
-    let dir = PathBuf::from(args.opt(&["--dir"]).or(cfg.migrations.as_deref()).unwrap_or("migrations"));
+    let settings = settings().ok()?;
+    let (schema, dir) = (
+        schema_file(&args, &settings).ok()?,
+        migrations_dir(&args, &settings).ok()?,
+    );
     let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let url = args.opt(&["--url"]).map(String::from).or(env);
     Some((schema, dir, url, args.arg(0).map(String::from)))
@@ -298,9 +299,11 @@ pub fn migrate_args(argv: &[String], host: Host) -> Option<(PathBuf, PathBuf, Op
 
 /// The schema file a command line reads, as [`run`] resolves it. The Python and Node hosts
 /// scan it for `import "app:NAME"` before they run the command.
-pub fn schema_path(argv: &[String], host: Host) -> PathBuf {
-    let schema = Args::parse(argv).ok().and_then(|args| args.opt(&["--schema"]).map(String::from));
-    PathBuf::from(schema.or(config(host).schema).unwrap_or_else(|| "schema.prisma".into()))
+pub fn schema_path(argv: &[String]) -> PathBuf {
+    Args::parse(argv)
+        .ok()
+        .and_then(|args| schema_file(&args, &settings().ok()?).ok())
+        .unwrap_or_else(|| PathBuf::from("schema.prisma"))
 }
 
 /// Runs the command line `argv` (without the program name) and gives the exit code.
@@ -366,9 +369,8 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         };
         return init::run(&request, host, &init::Env::current());
     }
-    let cfg = config(host);
-    let schema = PathBuf::from(args.opt(&["--schema"]).or(cfg.schema.as_deref()).unwrap_or("schema.prisma"));
-    let dir = PathBuf::from(args.opt(&["--dir"]).or(cfg.migrations.as_deref()).unwrap_or("migrations"));
+    let settings = settings()?;
+    let schema = schema_file(&args, &settings)?;
     match command {
         "identities" => {
             args.allow(command, &["--rename", "--restore"], 0)?;
@@ -396,6 +398,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         "fmt" => {
             args.allow(command, &["--native"], 0)?;
             if !args.flag("--native") { return Err(Failure::Usage("fmt requires --native".into())); }
+            let dir = migrations_dir(&args, &settings)?;
             let previous = files::files::latest_snapshot(&dir).map_err(Failure::Failed)?;
             let conversion = dsl::native::prepare(&schema, &args.installed()?, &previous).map_err(Failure::Failed)?;
             for report in conversion.reports { eprintln!("{report}"); }
@@ -421,10 +424,11 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         }
         "generate" => {
             args.allow(command, &["-o", "--out", "--import", "--query-set", "--model-methods", "--ext-dir"], 1)?;
-            generate(&args, host, &schema)?;
+            generate(&args, host, &schema, &settings)?;
         }
         "makemigrations" => {
             args.allow(command, &["--name", "--empty", "--check"], 1)?;
+            let dir = migrations_dir(&args, &settings)?;
             let (_, compiled) = load(&schema, &args)?;
             if args.flag("--check") {
                 let plan = files::files::next(&dir, &compiled).map_err(Failure::Failed)?;
@@ -454,7 +458,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         "sqlmigrate" => {
             args.allow(command, &["--down"], 1)?;
             let name = args.arg(0).ok_or_else(|| Failure::Usage("sqlmigrate needs a migration".into()))?;
-            let m = migrate::find(&dir, name)?;
+            let m = migrate::find(&migrations_dir(&args, &settings)?, name)?;
             print!("{}", if args.flag("--down") { m.down_sql()? } else { m.up_sql()? });
         }
         "migrate" | "rollback" | "showmigrations" | "pull" | "baseline" | "drift" => {
@@ -470,14 +474,14 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
                     return Err(Failure::Setup(format!("{} exists; pass --force to overwrite it, or -o FILE", out.display())));
                 }
             }
-            return database(command, &args, &dir, &schema).await;
+            return database(command, &args, &migrations_dir(&args, &settings)?, &schema).await;
         }
         other => return Err(Failure::Usage(format!("unknown command {other}"))),
     }
     Ok(0)
 }
 
-fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
+fn generate(args: &Args, host: Host, schema: &Path, settings: &Settings) -> Result<()> {
     let out = args.opt(&["-o", "--out"]).map(PathBuf::from);
     let ext = out.as_ref().and_then(|o| o.extension()).and_then(|e| e.to_str());
     let language = match (args.arg(0), ext, host) {
@@ -493,7 +497,7 @@ fn generate(args: &Args, host: Host, schema: &Path) -> Result<()> {
     print_warnings(&project);
     let (ir, compiled) = dsl::check(project.ir).map_err(Failure::Failed)?;
     let source = schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut options = codegen::Options { query_sets: configured_targets(language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(language, "model methods", "model_methods", "modelMethods")?, ..codegen::Options::default() };
+    let mut options = codegen::Options { query_sets: configured_targets(settings, language, "query set", "query_sets", "querySets")?, model_methods: configured_targets(settings, language, "model methods", "model_methods", "modelMethods")?, ..codegen::Options::default() };
     if language != "rust" {
         let mut modules = std::collections::BTreeMap::new();
         for (key, value) in &args.options {

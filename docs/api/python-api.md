@@ -50,7 +50,7 @@ python examples/blog/demo.py sqlite://:memory:
 To start a project, run `uvx monorm init my-app` (or `pipx run monorm init my-app`, or `python -m monorm init my-app` after `pip install monorm`).
 The command asks for the language, the tool, the database (SQLite or PostgreSQL) and the built-in extensions.
 Flags answer each question: `--lang python --tool uv --db sqlite --ext timestamps,locking --yes`.
-It writes `schema.prisma`, `main.py`, `pyproject.toml`, `.gitignore` and `README.md`, and prints the next commands, for example `uv run main.py`.
+It writes `schema.prisma`, `monorm.toml`, `main.py`, `pyproject.toml`, `.gitignore` and `README.md`, and prints the next commands, for example `uv run main.py`.
 It refuses a directory that is not empty.
 
 ## Models: the generated module
@@ -138,12 +138,14 @@ Generate the models with the class, as `module:Class`:
 python -m monorm generate --query-set Post=blog.queries:PostQueries
 ```
 
-or in `pyproject.toml`:
+or in `monorm.toml`:
 
 ```toml
-[tool.monorm.query_sets]
+[query_sets]
 Post = "blog.queries:PostQueries"
 ```
+
+(`[tool.monorm.query_sets]` in `pyproject.toml` works too, when the project has no `monorm.toml`).
 
 The native tooling generator accepts the same mapping explicitly:
 
@@ -194,7 +196,7 @@ class UserMethods:
 
 * `models.py` declares `class User(UserMethods, monorm.Model)`, so `models.pyi` types the methods.
   The methods module must not import `auth.models` at import time: use `TYPE_CHECKING`, as above.
-* A consumer replaces the class with `--model-methods User=module:Class`, `[tool.monorm.model_methods]` in `pyproject.toml`, or the `model_methods=` argument of `_native.generate_python`.
+* A consumer replaces the class with `--model-methods User=module:Class`, `model_methods` in `monorm.toml` (or `[tool.monorm.model_methods]` in `pyproject.toml`), or the `model_methods=` argument of `_native.generate_python`.
 * `define(..., model_methods={"User": UserMethods})`, `monorm.load(path, model_methods=...)` and `monorm.loads(text, model_methods=...)` set it for a model from a schema file or text.
 * A method name that is a field, a relation, a member of `Model` or an extension member (for example `delete`) raises `TypeError: User.delete: model method collision` when the model is prepared.
   A methods class may define `__str__` and `__repr__`; every other `object` member (`__eq__`, `__hash__`) still raises.

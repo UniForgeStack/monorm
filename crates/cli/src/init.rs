@@ -15,6 +15,8 @@ use crate::{Failure, Host, Result};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAIN_PY: &str = include_str!("../templates/main.py");
 const INDEX_TS: &str = include_str!("../templates/index.ts");
+/// The settings file of a new project: the defaults, written down so that the file is the place to change them.
+const MONORM_TOML: &str = "# Settings of the `monorm` commands. A flag overrides a key.\nschema = \"schema.prisma\"\nmigrations = \"migrations\"\n";
 const SQLITE_URL: &str = "sqlite://dev.db";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -402,7 +404,7 @@ impl Plan {
     fn readme(&self) -> String {
         let script = if self.lang == Lang::Python { "main.py" } else { "index.ts" };
         let mut out = format!(
-            "# {}\n\nA MonOrm project.\n`schema.prisma` holds the models.\n`{script}` creates the tables, writes two posts and reads them back.\n\n## Run\n\n```bash\n{}\n```\n",
+            "# {}\n\nA MonOrm project.\n`schema.prisma` holds the models.\n`monorm.toml` holds the settings of the `monorm` commands.\n`{script}` creates the tables, writes two posts and reads them back.\n\n## Run\n\n```bash\n{}\n```\n",
             self.name, self.next_commands().join("\n"));
         if self.lang == Lang::TypeScript {
             out.push_str("\nThe `start` script needs Node 22.18 or later, or Bun.\n");
@@ -428,6 +430,7 @@ impl Plan {
             ("schema.prisma", self.schema()),
             (script, self.script()),
             self.package_file(),
+            ("monorm.toml", MONORM_TOML.to_owned()),
             (".gitignore", self.gitignore().to_owned()),
             ("README.md", self.readme()),
         ];
