@@ -16,3 +16,5 @@ jobs:
         run: python3 scripts/rename/rename.py --check
       - name: Publish metadata
         run: python3 -m unittest scripts/tests/test_package_metadata.py
+      - name: No SQL text in the bindings
+        run: python3 -m unittest scripts/tests/test_check_thin_bindings.py && python3 scripts/check-thin-bindings.py

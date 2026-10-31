@@ -85,6 +85,7 @@ RULES: list[tuple[str, set[str]]] = [
         r"|tests/(test_extension_package\.py|builtin_copy\.py|[a-z]+_consumer\.[a-z]+))$",
         {"packages", "python"},
     ),
+    (r"^scripts/(check-thin-bindings\.py|tests/test_check_thin_bindings\.py)$", {"python"}),  # `names` runs the check itself
     (r"^scripts/check-init\.sh$", set()),  # no CI job runs it
     (r"^scripts/(tests/test_internal_bench\.py|bench-hook-seam\.(py|sh))$", {"python"}),
     (r"^(scripts/check-test-twins\.py|scripts/tests/test_check_test_twins\.py|languages/test-twins\.toml)$", {"test-twins", "python"}),
