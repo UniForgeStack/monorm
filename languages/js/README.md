@@ -7,7 +7,6 @@ The Python package uses the same engine, schema and queries.
 
 > **Under active development.**
 > It works today, and the author runs it in production.
-> It is version 0.1.1.
 > Other people should not use it in production yet, or do so at their own risk.
 > Evaluate it against your own app before you rely on it.
 
@@ -21,7 +20,7 @@ Run the comparison yourself before you decide.
 
 The name is MonOrm.
 
-## Install
+## Installation
 
 Install the package under the alias `monorm`, because the code and the generated models import `monorm`:
 
@@ -31,7 +30,7 @@ npm install monorm@npm:@ufstack/monorm      # pnpm add monorm@npm:@ufstack/monor
 
 A plain `npm install @ufstack/monorm` installs, but the imports fail.
 
-## Quickstart
+## Usage
 
 There is no registry install line yet. Build from source (you need Rust and Node 20.19+ or 22.12+, or Bun):
 
@@ -82,6 +81,10 @@ try {
 }
 ```
 
+The API is in the [TypeScript API](https://github.com/UniForgeStack/monorm/blob/main/docs/api/typescript-api.md).
+A larger project with generated models and migrations is [examples/blog](https://github.com/UniForgeStack/monorm/tree/main/examples/blog).
+Breaking changes are in [upgrade.md](https://github.com/UniForgeStack/monorm/blob/main/languages/js/upgrade.md).
+
 ## Features
 
 - Prisma schema syntax ([docs](https://github.com/UniForgeStack/monorm/blob/main/docs/schema/prisma-syntax.md)).
@@ -100,6 +103,37 @@ The full feature table is in the [root README](https://github.com/UniForgeStack/
 | Databases | PostgreSQL and SQLite |
 
 The API is async only. There is no MySQL driver.
+
+## Development
+
+Run these commands in `languages/js`.
+You need Rust and Node 20.19+ or 22.12+; Bun is for the Bun tests.
+This package converts types, maps errors and drives the async runtime.
+It holds no SQL text (`scripts/check-thin-bindings.py` checks this).
+
+```bash
+npm install
+npm run assemble   # the Node addon and the built-in extension libraries
+npm run build      # the TypeScript source into dist/
+```
+
+| Path | Content |
+|---|---|
+| `src/` | The TypeScript package |
+| `native/` | The Rust crate `monorm-node`: it calls the engine |
+| `packaging/` | The npm package scripts |
+| `test/` | The TypeScript tests |
+
+## Testing
+
+```bash
+npm test && npm run test:bun && npm run typecheck
+(cd create-monorm && npm test)
+cargo test -q -p monorm-node && cargo clippy -q -p monorm-node
+```
+
+The tests need `postgres:postgres@localhost/orm_test`, or set `ORM_TEST_DATABASE_URL`.
+Each TypeScript test has a Python twin: see `scripts/check-test-twins.py`.
 
 ## Links
 

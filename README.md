@@ -13,7 +13,7 @@ Both languages get the same queries, the same migrations and generated, typed mo
 
 > **Under active development.**
 > It works today, and the author runs it in production.
-> It is version 0.1.1: install it with `pip install monorm` or `npm install monorm@npm:@ufstack/monorm`.
+> Install it with `pip install monorm` or `npm install monorm@npm:@ufstack/monorm`.
 > The npm package is `@ufstack/monorm` for now; always install it under the alias `monorm`, because the code imports `monorm`.
 > Other people should not use it in production yet, or do so at their own risk.
 > Evaluate it against your own app before you rely on it.

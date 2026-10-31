@@ -56,7 +56,15 @@ The schema (`schema.prisma`), the migrations and the generated SQL do not change
    A test case has the ID `<file stem>::<test name>` in every language, and `scripts/check-test-twins.py` fails on a case that exists in one language only.
    Give the new language its own column in that script, and list a case that has no twin in `languages/test-twins.toml` with a reason.
 5. Add packaging for the registry of the language.
-6. Add the new commands to the check lists in [CLAUDE.md](../../CLAUDE.md) and [CONTRIBUTING.md](../../CONTRIBUTING.md).
+6. Add the file set of a language directory (`languages/<lang>/`):
+   - `README.md` with the sections Installation, Usage, Development and Testing.
+     Usage links the API doc and [examples/blog](../../examples/blog).
+   - `upgrade.md` with the breaking changes of each version, taken from [CHANGELOG.md](../../CHANGELOG.md).
+   - `native/src` for the binding crate, the package source, `packaging/` and `tests/`.
+   - No `examples/` directory, unless the language has an example that no other language has.
+7. Add the new directories to `SCANNED` in `scripts/check-thin-bindings.py`.
+   The script fails on SQL statement text in a binding, because the Rust core builds all SQL.
+8. Add the new commands to the check lists in [CLAUDE.md](../../CLAUDE.md) and [CONTRIBUTING.md](../../CONTRIBUTING.md).
    Keep the two lists in step.
    After a change to code generation, regenerate the example models.
 
