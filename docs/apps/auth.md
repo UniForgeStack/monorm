@@ -130,27 +130,47 @@ A name without a label is an error: `ValueError` in Python and `TypeError` in Ty
 * `has_perms` uses one query for each name, and it stops at the first name that the user does not have.
 * `with_perm` returns a query set, so you can add more filters.
 
-### Create the default permissions
+### Create permissions
 
-Call `sync_permissions` once for each set of models, for example after a migration:
+`sync_permissions` takes the names to create, as `<label>.<codename>`, and creates the absent ones in one bulk insert.
+It has no strategy of its own: the caller decides the names.
 
 ```python
 from monorm_auth import sync_permissions
 
-await sync_permissions([Post, Comment], "blog")
+await sync_permissions(["orders.see_total", "shops.see_credential"])
 ```
 
 ```ts
 import { syncPermissions } from "monorm/auth";
 
-await syncPermissions([Post, Comment], "blog");
+await syncPermissions(["orders.see_total", "shops.see_credential"]);
 ```
 
-It creates `add`, `change`, `delete` and `view` for each model, in one bulk insert.
-The names are `blog.add_post`, `blog.view_comment` and so on.
 Rows that exist stay as they are.
+The function deletes nothing: the caller finds the stale names.
+A name that is not `<label>.<codename>` raises an error before any row is written.
+One string in place of a list raises `TypeError` in both languages, also before any row is written.
+The `name` of a new row is `Can ` and the codename with spaces, for example `Can see total`.
 The function returns the number of new rows.
 The app never calls it by itself.
+
+For the Django-style set, pass the names that `model_permission_names` gives:
+
+```python
+from monorm_auth import model_permission_names, sync_permissions
+
+await sync_permissions(model_permission_names([Post, Comment], "blog"))
+```
+
+```ts
+import { modelPermissionNames, syncPermissions } from "monorm/auth";
+
+await syncPermissions(modelPermissionNames([Post, Comment], "blog"));
+```
+
+It gives `add`, `change`, `delete` and `view` for each model: `blog.add_post`, `blog.view_comment` and so on.
+Call `sync_permissions` once for each set of models, for example after a migration.
 
 ## Out of scope
 

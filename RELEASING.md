@@ -77,6 +77,8 @@ The proof publishes only to TestPyPI.
 
 1. Run `python3 scripts/release/versions.py set 0.1.0`.
    Replace `TBD` in the `## [0.1.0]` heading of `CHANGELOG.md` with the date.
+   Rename the `## Unreleased` heading (if there is one) in `languages/python/upgrade.md` and `languages/js/upgrade.md` to the release version, for example `## 0.1.0`.
+   No script does this: `versions.py` does not read `upgrade.md`.
    Commit these files on `main`.
 2. Do owner-setup steps 5 and 7.
 3. Push the tag `v0.1.0`.

@@ -1,4 +1,4 @@
-/** Permission names (`"blog.add_post"`) and `syncPermissions()`. */
+/** Permission names (`"blog.add_post"`), `modelPermissionNames()` and `syncPermissions()`. */
 
 import { registry as defaultRegistry, type Database, type ModelClass, type ModelSpec, type Registry } from "../index.js";
 import { behaviorValue } from "../ext.js";
@@ -25,19 +25,25 @@ export function activeModel(name: string, registry: Registry = defaultRegistry):
   return registry.get(Object.hasOwn(overrides, name) ? overrides[name]! : name).model as AnyModel;
 }
 
+/** The Django-style names `<label>.<action>_<model name in lower case>`: `add`, `change`, `delete` and `view` for each model. */
+export function modelPermissionNames(models: readonly ModelClass<ModelSpec>[], label: string): string[] {
+  return models.flatMap((m) => ACTIONS.map((action) => `${label}.${action}_${m._meta.name.toLowerCase()}`));
+}
+
 /**
- * Creates `add`, `change`, `delete` and `view` for each model in one bulk insert; rows that exist stay.
- * The permission names are `<label>.<action>_<model name in lower case>`. Returns the number of new rows.
+ * Creates the permissions in `names` (`<label>.<codename>`) that are absent, in one bulk insert; rows that exist stay.
+ * It deletes nothing. The `name` of a new row is `Can <codename with spaces>`. Returns the number of new rows.
  */
 export async function syncPermissions(
-  models: readonly ModelClass<ModelSpec>[],
-  label: string,
+  names: readonly string[],
   options: { using?: Database; registry?: Registry } = {},
 ): Promise<number> {
+  if (typeof names === "string") throw new TypeError("names must be a list of permission names, not one string");
   const Permission = activeModel("Permission", options.registry);
-  const rows = models.flatMap((m) =>
-    ACTIONS.map((action) => ({ label, codename: `${action}_${m._meta.name.toLowerCase()}`, name: `Can ${action} ${m._meta.name.toLowerCase()}` })),
-  );
+  const rows = [...new Set(names)].map((n) => {
+    const [label, codename] = splitPerm(n);
+    return { label, codename, name: `Can ${codename.replaceAll("_", " ")}` };
+  });
   if (rows.length === 0) return 0;
   const query = Permission.objects.using(options.using).insertMany(rows);
   return (await query.onConflict([Permission.label, Permission.codename], { update: false })) as number;

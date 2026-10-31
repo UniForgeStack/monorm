@@ -15,3 +15,11 @@ The project changed its name from `orm` to `monorm`.
 
 No change for Python.
 The npm package name changed, and only TypeScript code is affected.
+
+## Unreleased
+
+`sync_permissions` takes the permission names, not models and a label.
+
+- Before: `await sync_permissions([Post, Comment], "blog")`.
+- After: `await sync_permissions(model_permission_names([Post, Comment], "blog"))`.
+- Import `model_permission_names` from `monorm_auth`.
