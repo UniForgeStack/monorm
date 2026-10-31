@@ -153,7 +153,7 @@ async def test_required_integrity_optional_missing_and_retry(references):
     assert (await load_relation(row, "owner")).id == 1
 
 
-async def test_dangling_key_message_says_why(references):
+async def test_a_set_key_with_no_target_row_gives_a_not_loaded_that_says_why(references):
     db, m = references
     row = await seed(db, m)
     with pytest.raises(monorm.NotLoaded) as plain:
@@ -222,7 +222,7 @@ async def test_cancelled_waiter_failure_and_inflight_refresh(references, monkeyp
     assert (await load_relation(row, "owner", reload=True)).id == 2
 
 
-def test_collision_rejected_atomically():
+def test_load_member_collision_fails_atomically():
     registry = monorm.Registry()
     before = registry.ir()
     with pytest.raises(TypeError, match="reserved"):

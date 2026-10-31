@@ -39,7 +39,7 @@ async def shop():
     await db.close()
 
 
-async def test_a_loader_in_a_loop_raises_with_the_shape_the_site_and_the_fix(shop):
+async def test_a_loader_in_a_loop_throws_with_the_shape_the_call_site_and_the_fix(shop):
     Person, Customer, db = shop
     customers = await Customer.objects.using(db).order_by(Customer.id)
     with pytest.raises(debug.NPlusOne) as raised:

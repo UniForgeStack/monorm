@@ -8,7 +8,7 @@ import monorm
 
 
 @pytest.mark.parametrize("key", ["", "import", "ورود 🔒", "x" * 128, "x" * 129, "x" * 4096])
-async def test_string_and_numeric_keys_contend(db, key):
+async def test_a_string_key_contends_with_its_blake2b_numeric_key(db, key):
     other = await monorm.connect(db.url, default=False, max_connections=1)
     numeric = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=8).digest(), "big", signed=True)
     try:
@@ -23,7 +23,7 @@ async def test_string_and_numeric_keys_contend(db, key):
         await other.close()
 
 
-async def test_lock_validation(db):
+async def test_lock_validation_checks_the_transaction_before_the_key(db):
     with pytest.raises(monorm.TransactionRequired):
         await db.lock(True)
     async with db.transaction():

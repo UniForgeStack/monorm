@@ -92,7 +92,7 @@ test("sql of each form", () => {
   );
 });
 
-test("a precedence trap throws instead of guessing", () => {
+test("a precedence trap raises instead of guessing", () => {
   const col = Comment.authorId;
   assert.throws(() => Comment.id.gt(20n).not().orNull(), { name: "TypeError", message: /applies to one comparison/ });
   assert.throws(() => col.gt(1n).or(col.lt(0n)).orNull(), /applies to one comparison/);
@@ -100,7 +100,7 @@ test("a precedence trap throws instead of guessing", () => {
   assert.throws(() => col.ne(null).orNull(), /Comment\.authorId IS NOT NULL/);
 });
 
-test("a NOT NULL column throws", () => {
+test("a NOT NULL column raises", () => {
   assert.throws(() => User.email.eq("a").orNull(), (e) => e instanceof QueryError && /NOT NULL/.test(e.message));
   assert.throws(() => User.email.like("a%").andNotNull(), /NOT NULL/);
 });

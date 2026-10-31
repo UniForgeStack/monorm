@@ -81,7 +81,7 @@ async def test_a_non_null_group_keeps_a_value_whose_middle_level_is_null(world):
     assert opt == {1: None, 2: Tagged(tag="x", inner=None)}
 
 
-async def test_a_non_null_group_refuses_none(world):
+async def test_a_non_null_group_refuses_null(world):
     db, classes = world
     Plain, Wrapped = classes["Plain"], classes["Wrapped"]
     with pytest.raises(ValueError, match="not nullable"):

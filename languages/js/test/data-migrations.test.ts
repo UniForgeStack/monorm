@@ -214,7 +214,7 @@ test("concurrent upgrades run a data step once", async () => {
   assert.deepEqual(await db.fetchText("SELECT count(*) FROM author"), [["1"]]);
 });
 
-test("npx monorm migrate needs no schema file and skips applied data steps", () => {
+test("cli migrate needs no schema file and skips applied data steps", () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);

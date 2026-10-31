@@ -115,6 +115,7 @@ for (const provider of Object.keys(urls)) {
   });
 }
 
+// case: writes::on_conflict_index_list_sends_the_and_of_the_predicates
 test("onConflict index list sends the AND of the predicates (postgresql)", { skip: !urls["postgresql"] }, async () => {
   const { db, Note, events } = await setup("postgresql");
   try {

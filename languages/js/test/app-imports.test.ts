@@ -40,7 +40,7 @@ function pkg(root: string, name: string, schema: string, app: string | null = ".
 
 const tables = (ir: string): string[] => (JSON.parse(ir) as { models: { table: string }[] }).models.map((m) => m.table);
 
-test("an npm package and the app it imports resolve from node_modules", (t) => {
+test("an installed package and the app it imports resolve", (t) => {
   const dir = directory(t);
   const schema = write(join(dir, "schema.prisma"), PROJECT);
   const auth = pkg(join(dir, "node_modules"), "acme-auth", AUTH);
@@ -70,14 +70,14 @@ test("an app that is not installed is left for the loader to report", (t) => {
   assert.throws(() => native().compileSchemaFile(schema, {}), /app:acme-auth.*not installed.*install the `acme-auth` package/s);
 });
 
-test("an app without schema metadata names the missing package.json key", (t) => {
+test("an app without schema metadata names the missing declaration", (t) => {
   const dir = directory(t);
   const schema = write(join(dir, "schema.prisma"), PROJECT);
   pkg(join(dir, "node_modules"), "acme-auth", AUTH, null);
   assert.throws(() => resolveApps(schema), (e) => e instanceof SchemaError && /`acme-auth` package declares no schema.*"monorm"/s.test(e.message));
 });
 
-test("an app whose package.json names no file is an error", (t) => {
+test("an app whose schema declaration names no file is an error", (t) => {
   const dir = directory(t);
   const schema = write(join(dir, "schema.prisma"), PROJECT);
   pkg(join(dir, "node_modules"), "acme-auth", AUTH, "./missing.prisma");

@@ -142,6 +142,7 @@ async def test_model_indexes_offer_the_unique_indexes(notes):
         Note.indexes.notes_body_slug
 
 
+@pytest.mark.case("on_conflict_index::a_field_named_indexes_keeps_its_column")
 def test_a_field_named_indexes_keeps_its_column():
     Shadow = monorm.loads(
         """
@@ -179,7 +180,7 @@ async def test_on_conflict_index_picks_a_partial_index(notes, observe_queries):
     assert await notes_.count() == 3
 
 
-async def test_on_conflict_index_list_takes_the_and_of_the_predicates(notes, observe_queries):
+async def test_on_conflict_index_list_sends_the_and_of_the_predicates(notes, observe_queries):
     db, Note, _ = notes
     notes_ = Note.objects.using(db)
     both = [Note.indexes.notes_slug_live, Note.indexes.notes_slug_shown]
@@ -289,7 +290,7 @@ async def test_insert_many_gives_a_count_and_returning_the_rows(clean):
     assert await Tag.objects.insert_many(tags).on_conflict(Tag.name, update=True) == 3
 
 
-async def test_single_upsert_gives_a_count(clean):
+async def test_a_single_upsert_gives_a_count(clean):
     alice = await User.objects.insert(email="a@x.io", name="A")
     assert await User.objects.insert(email="a@x.io", name="B").on_conflict(User.email, update=False) == 0
     assert await User.objects.insert(email="b@x.io", name="B").on_conflict(User.email, update=False) == 1
@@ -297,7 +298,7 @@ async def test_single_upsert_gives_a_count(clean):
     assert (await User.objects.get(User.id == alice.id)).name == "A2"
 
 
-async def test_on_conflict_update_fields_and_values(clean):
+async def test_on_conflict_update_fields_and_update_values(clean):
     alice = await User.objects.insert(email="a@x.io", name="A")
     p = await Post.objects.insert(author=alice, title="t", body="b", views=3)
     again = {"id": p.id, "author": alice, "title": "t2", "body": "b2", "views": 4}
@@ -496,7 +497,7 @@ async def test_copy_column_types(clean):
     assert (await Tag.objects.get(Tag.name == "a")).priority == Priority.high
 
 
-async def test_copy_stops_at_a_duplicate_key(clean):
+async def test_insert_many_copy_stops_at_a_duplicate_key(clean):
     await Tag.objects.insert(name="taken")
     rows = [{"name": f"n{i}"} for i in range(1000)] + [{"name": "taken"}]
     with pytest.raises(monorm.IntegrityError):
@@ -504,7 +505,7 @@ async def test_copy_stops_at_a_duplicate_key(clean):
     assert await Tag.objects.count() == 1
 
 
-async def test_copy_in_a_transaction(clean):
+async def test_insert_many_copy_in_a_transaction(clean):
     with pytest.raises(RuntimeError):
         async with clean.transaction():
             assert await Tag.objects.insert_many([{"name": "a"}, {"name": "b"}], copy=True) == 2
@@ -540,7 +541,7 @@ async def narrow_views():
         await narrow.close()
 
 
-async def test_copy_fits_narrow_columns(clean):
+async def test_insert_many_copy_fits_narrow_columns(clean):
     # Binary COPY has no parameter types: an Int field must go to smallint as 2 bytes.
     async with narrow_views() as narrow:
         alice = await User.objects.using(narrow).insert(email="a@x.io", name="A")
@@ -629,7 +630,7 @@ async def test_copy_rejections(clean):
     assert await Tag.objects.insert_many([], copy=True) == 0
 
 
-async def test_timestamp_write_read_with_non_utc_database():
+async def test_timestamp_write_read_with_a_non_utc_database():
     registry = monorm.Registry()
     Row = monorm.loads(
         """

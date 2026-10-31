@@ -81,7 +81,7 @@ async def test_a_savepoint_in_a_try_keeps_the_other_writes(case):
     assert await count(c) == 3 and seen == ["outer"]
 
 
-async def test_a_caught_error_in_a_savepoint_block_aborts_that_savepoint(case):
+async def test_a_caught_error_in_a_savepoint_block_aborts_that_savepoint_only(case):
     c = case
     await seed(c)
     async with c.db.transaction():
@@ -118,7 +118,7 @@ async def test_savepoint_false_joins_the_enclosing_transaction(case):
     assert await count(c) == 3
 
 
-async def test_an_uncaught_error_rolls_back_and_raises_the_original(case):
+async def test_an_uncaught_error_rolls_back_and_raises_the_original_error(case):
     c = case
     await seed(c)
     with pytest.raises(monorm.IntegrityError) as e:
@@ -129,7 +129,7 @@ async def test_an_uncaught_error_rolls_back_and_raises_the_original(case):
     assert await count(c) == 1
 
 
-async def test_joined_application_error_keeps_original_cause(case):
+async def test_joined_application_failures_retain_the_first_original_cause(case):
     c = case
     original = ValueError("application failure")
     with pytest.raises(monorm.TransactionAborted) as commit:
@@ -154,7 +154,7 @@ async def test_joined_application_error_keeps_original_cause(case):
 
 
 @pytest.mark.parametrize("application_error", [False, True])
-async def test_joined_failure_in_savepoint_leaves_outer_usable(case, application_error):
+async def test_a_joined_failure_in_a_savepoint_leaves_the_outer_usable(case, application_error):
     c, seen = case, []
     await seed(c)
     async with c.db.transaction():
@@ -174,7 +174,7 @@ async def test_joined_failure_in_savepoint_leaves_outer_usable(case, application
 
 
 @pytest.mark.parametrize("application_error", [False, True])
-async def test_caught_data_migration_failure_rolls_back(case, tmp_path, application_error):
+async def test_a_caught_data_migration_failure_rolls_back_sql_data_history_and_callbacks(case, tmp_path, application_error):
     from monorm.migrations import Migration, Migrations, Migrator
 
     c, seen = case, []

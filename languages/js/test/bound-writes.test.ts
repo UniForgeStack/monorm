@@ -27,7 +27,7 @@ model Note {
   @@map("bw_note")
 }`;
 
-test("a bound write above the parameter cap is a QueryError (sqlite)", async () => {
+test("a bound write above the parameter cap is a QueryError", async () => {
   const [db, { Note }] = await open("sqlite", plain);
   try {
     const rows = Array.from({ length: 33_000 }, (_, i) => ({ id: i + 1, title: "t" }));
@@ -63,7 +63,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`bound update of two objects cannot assign a key field (${dialect})`, async () => {
+  test(`a bound update of two objects cannot assign a key field (${dialect}) (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {
       const notes = await Note.objects.using(db).insertMany([1, 2, 3].map((id: number) => ({ id, title: `t${id}` }))).returning();
@@ -86,7 +86,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`bound update of a partial object keeps its shape (${dialect})`, async () => {
+  test(`a bound update of a partial object keeps its shape (${dialect}) (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {
       await Note.objects.using(db).insertMany([{ id: 1, title: "a" }, { id: 2, title: "b" }]);

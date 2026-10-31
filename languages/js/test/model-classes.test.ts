@@ -99,7 +99,7 @@ test("a consumer target replaces the schema class", async (t) => {
 });
 
 // the strict-mode program takes seconds, and Bun times a test out after 5 s
-test("the methods module may import the models module (import cycle)", { timeout: 120_000 }, async (t) => {
+test("the methods module may import the models module", { timeout: 120_000 }, async (t) => {
   const dir = directory(t);
   const schema = schemaIn(dir, "monorm/auth");
   const methodsSource = [

@@ -376,7 +376,7 @@ test("get() cannot be labeled for loading", () => {
   assert.throws(() => User.posts.objects.get().label("uniquePost"), { name: "TypeError", message: /get\(\) can't be loaded per parent; use \[0\]\.label\(name\)/ });
 });
 
-test("unlabeled one-row loads suggest label()", () => {
+test("unlabeled one-row load suggests label()", () => {
   // @ts-expect-error a one-row load requires a label
   assert.throws(() => User.objects.load(User.posts.objects.at(0)), { name: "TypeError", message: /needs \.label\(name\)/ });
 });
@@ -416,7 +416,7 @@ test("column() from a dotted path", async () => {
 // -- mutation regressions --------------------------------------------------------------------
 
 for (const key of ["db", "loads", "withoutDefaults"] as const) {
-  test(`or() rejects right-side ${key}`, () => {
+  test(`or() rejects right-side state (${key}) ${key}`, () => {
     const left = Post.objects.filter(Post.published.eq(true));
     // Isolate loads: public load() also sets derived state with independent guards.
     class LoadOnlyQueries extends QuerySet<PostSpec> {
@@ -430,7 +430,7 @@ for (const key of ["db", "loads", "withoutDefaults"] as const) {
 }
 
 for (const side of ["left", "right"] as const) {
-  test(`or() rejects an offset without a limit on the ${side}`, () => {
+  test(`or() rejects an offset without a limit (${side}) ${side}`, () => {
     const plain = Post.objects.filter(Post.published.eq(true));
     const sliced = plain.slice(1);
     assert.throws(() => side === "left" ? sliced.or(plain) : plain.or(sliced), {
@@ -454,7 +454,7 @@ test("or() with an unfiltered left returns all rows", async () => {
 class InvalidRelatedQueries extends RelatedSet<PostSpec> {}
 class InvalidManyRelatedQueries extends ManyRelatedSet<PostSpec> {}
 for (const Invalid of [InvalidRelatedQueries, InvalidManyRelatedQueries]) {
-  test(`query-set classes reject ${Invalid.name}`, (t) => {
+  test(`query-set class rejects relation subclasses (${Invalid.name}) ${Invalid.name}`, (t) => {
     t.after(() => useQuerySet(Post, QuerySet));
     assert.throws(() => useQuerySet(Post, Invalid), { name: "TypeError", message: /extends QuerySet/ });
   });

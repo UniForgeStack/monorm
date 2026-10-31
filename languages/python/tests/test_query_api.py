@@ -261,7 +261,7 @@ async def test_bound_load_reads_keys_from_the_instances(clean):
     assert [(c.post.title, c.post.author.name) for c in comments] == [("draft", "Alice"), ("bob", "Bob")]
 
 
-def test_orm_prefetch_is_removed():
+def test_monorm_prefetch_is_removed():
     assert not hasattr(monorm, "prefetch") and "prefetch" not in monorm.__all__
 
 
@@ -657,7 +657,7 @@ def test_or_rejects_right_side_state(slot):
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
-def test_or_rejects_offset_without_limit(side):
+def test_or_rejects_an_offset_without_a_limit(side):
     plain = Post.objects.filter(Post.published)
     sliced = Post.objects[1:]
     with pytest.raises(monorm.QueryError, match="sliced"):
@@ -711,12 +711,12 @@ async def test_bound_load_rejects_a_model_subclass(clean):
         await monorm.of([alice, special]).load(User.posts)
 
 
-def test_column_rejects_unknown_own_field():
+def test_column_rejects_an_unknown_own_field():
     with pytest.raises(LookupError, match="Post has no field 'nope'"):
         monorm.column(Post, "nope")
 
 
-def test_describe_primary_key_is_unique():
+def test_describe_marks_a_single_primary_key_unique():
     fields = {f["name"]: f for f in monorm.describe(Post)["fields"]}
     assert fields["id"]["unique"] is True
 
@@ -727,7 +727,7 @@ def test_describe_reports_client_default():
     assert fields["n"]["default"] == "client"
 
 
-def test_describe_autoincrement_remains_insertable():
+def test_describe_keeps_an_autoincrement_field_insertable():
     fields = {f["name"]: f for f in monorm.describe(Post)["fields"]}
     assert fields["id"]["insert"] is True
 
@@ -737,7 +737,7 @@ def test_describe_array_python_type_is_list():
     assert fields["links"]["python_type"] is list
 
 
-async def test_or_with_unfiltered_left_returns_all_rows(clean):
+async def test_or_with_an_unfiltered_left_returns_all_rows(clean):
     await seed()
     rows = await (Post.objects | Post.objects.filter(Post.title == "missing"))
     assert {p.title for p in rows} == {"draft", "hit", "quiet", "bob"}

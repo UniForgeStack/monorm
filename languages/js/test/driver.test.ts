@@ -28,7 +28,7 @@ async function serverHasTls(): Promise<boolean> {
   return (await own.fetchText("SHOW ssl"))[0]![0] === "on";
 }
 
-test("an unknown URL scheme", async () => {
+test("unknown URL scheme", async () => {
   await assert.rejects(connect("mysql://root@localhost/x", { default: false }), (e: unknown) => e instanceof DatabaseError && /unsupported database URL scheme/.test(e.message));
 });
 
@@ -36,7 +36,7 @@ test("an unknown sslmode", async () => {
   await assert.rejects(connect(`${BASE}?sslmode=sometimes`, { default: false }), /unknown sslmode/);
 });
 
-test("a bad password fails at connect", async (t) => {
+test("bad password fails at connect", async (t) => {
   const url = BASE.replace("postgres:postgres@", "postgres:wrong@");
   if (url === BASE) {
     t.skip("the test URL has no postgres:postgres credentials");
@@ -62,7 +62,7 @@ for (const mode of ["disable", "prefer", "require"]) {
   });
 }
 
-test("verify-full rejects an untrusted certificate", async (t) => {
+test("verify-full rejects untrusted certificate", async (t) => {
   if (!(await serverHasTls())) {
     t.skip("the server has no TLS");
     return;
@@ -71,7 +71,7 @@ test("verify-full rejects an untrusted certificate", async (t) => {
   await assert.rejects(connect(`${BASE}?sslmode=verify-full`, { default: false }), DatabaseError);
 });
 
-test("an abandoned transaction is rolled back", async (t) => {
+test("abandoned transaction is rolled back", async (t) => {
   const g = globalThis as { gc?: () => void; Bun?: { gc(sync: boolean): void } };
   const gc = g.gc ?? (g.Bun ? () => g.Bun!.gc(true) : undefined);
   if (!gc) {
@@ -95,7 +95,7 @@ test("an abandoned transaction is rolled back", async (t) => {
   assert.deepEqual(counts, [0, 0, 0, 0, 0, 0]);
 });
 
-test("a finished transaction rejects queries", async () => {
+test("finished transaction rejects queries", async () => {
   const { wait } = await import("../src/native.js");
   const tx = await own.engine.begin(null);
   await tx.commit();

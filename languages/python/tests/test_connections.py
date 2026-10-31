@@ -19,7 +19,7 @@ async def sqlite_db():
     return await monorm.connect("sqlite://:memory:", registry=registry, default=False)
 
 
-async def test_on_commit_runs_after_the_outer_commit(clean):
+async def test_on_commit_runs_after_the_outer_commit_and_a_rolled_back_savepoint_drops_its_callbacks(clean):
     db = clean
     other = await monorm.connect(db.url, default=False, max_connections=1)
     seen = []
@@ -43,7 +43,7 @@ async def test_on_commit_runs_after_the_outer_commit(clean):
         await other.close()
 
 
-async def test_on_commit_is_dropped_on_rollback_and_runs_at_once_outside(clean):
+async def test_on_commit_is_dropped_on_rollback_and_runs_at_once_outside_a_transaction(clean):
     db = clean
     seen = []
     with pytest.raises(ZeroDivisionError):
@@ -123,7 +123,7 @@ async def test_on_commit_after_the_transaction_ended_raises(tmp_path):
         await b.close()
 
 
-async def test_on_commit_errors_reach_the_caller_after_the_commit(clean):
+async def test_an_on_commit_error_reaches_the_caller_after_the_commit(clean):
     db = clean
     with pytest.raises(RuntimeError, match="boom"):
         async with db.transaction():
@@ -148,7 +148,7 @@ async def test_on_commit_on_sqlite():
         await db.close()
 
 
-async def test_session_lock_outside_a_transaction_with_a_timeout(db):
+async def test_a_session_lock_holds_outside_a_transaction_and_times_out(db):
     other = await monorm.connect(db.url, default=False, max_connections=2)
     try:
         async with db.lock("import", session=True, timeout=5):
@@ -170,7 +170,7 @@ async def test_session_lock_outside_a_transaction_with_a_timeout(db):
         await other.close()
 
 
-async def test_session_lock_is_released_on_error_and_shared_locks_share(db):
+async def test_a_session_lock_is_released_on_error_and_shared_locks_share(db):
     other = await monorm.connect(db.url, default=False, max_connections=2)
     try:
         with pytest.raises(ZeroDivisionError):
@@ -241,7 +241,7 @@ async def test_session_lock_timeout_bounds(db):
             await db.lock(5, timeout=1)  # type: ignore[call-overload]
 
 
-async def test_session_lock_validation():
+async def test_a_session_lock_needs_postgres():
     db = await sqlite_db()
     try:
         with pytest.raises(monorm.QueryError, match="sqlite does not support advisory locks"):
@@ -412,7 +412,7 @@ CREATE POLICY tenant ON s6_notes
 )
 
 
-async def test_tenant_sets_app_tenant_for_row_level_security(db):
+async def test_tenant_sets_app_tenant_in_each_transaction_for_row_level_security(db):
     registry = monorm.Registry()
     Note = monorm.loads(NOTES, registry=registry)["Note"]
     admin = await monorm.connect(db.url, registry=registry, default=False, max_connections=1)
@@ -705,7 +705,7 @@ async def test_query_hooks_see_replica_reads_and_session_locks(clean):
         await routed.close()
 
 
-async def test_waiting_session_lock_does_not_hold_a_pool_slot(db):
+async def test_a_waiting_session_lock_does_not_hold_a_pool_slot(db):
     other = await monorm.connect(db.url, default=False, max_connections=1)
     try:
         async with db.lock(31, session=True):

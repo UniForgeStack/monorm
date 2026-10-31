@@ -291,7 +291,7 @@ model Doc {
 }`), /default name is set by both monorm\.soft-delete default "deleted" and monorm\.query-defaults default "deleted"/);
   });
 
-  test(`a reference to a soft-deleted row loads null (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
+  test(`a reference to a soft-deleted row loads nothing (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
     const [db, models] = await open(dialect, `
 model Author {
   id      Int       @id
@@ -320,7 +320,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an instance update after a query-set soft delete throws VersionConflict (${dialect})`, versionedSkip, async () => {
+  test(`an instance update after a query-set soft delete gives VersionConflict (${dialect})`, versionedSkip, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -413,7 +413,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a second delete of the same instance throws nothing (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.locking") }, async () => {
+  test(`a second delete of the same instance gives no error (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, versionedSoftDelete);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
     try {
@@ -528,7 +528,7 @@ model Doc {
 for (const dialect of ["sqlite", "postgres"]) {
   for (const mode of [null, "application", "database"]) {
     for (const operation of ["update", "delete"]) {
-      test(`stale proxy instance checks the loaded version (${dialect}, ${operation}, ${mode})`, {
+      test(`a stale proxy instance checks the loaded version (${dialect}, ${operation}, ${mode})`, {
         skip: !hasExtension("monorm.proxy", "monorm.locking") || (mode !== null && !hasExtension("monorm.soft-delete")),
       }, async () => {
         const [db, models] = await open(dialect, `
@@ -570,7 +570,7 @@ model Review {
     }
   }
 
-  test(`instance rejects an explicit version (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
+  test(`an instance rejects an explicit version (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
  id Int @id
@@ -634,23 +634,23 @@ const trackingFields = async (source: string) => {
 };
 
 for (const { extension, attribute, name, field, customName, customField } of TRACKING) {
-  test(`${attribute} adds the field with its default or given name, TypeScript shows camelCase`, { skip: !hasExtension(extension) }, async () => {
+  test(`${attribute}: the model attribute adds the field with its default or given name (${attribute})`, { skip: !hasExtension(extension) }, async () => {
     assert.ok((await trackingFields(trackingSchema(attribute))).includes(field));
     const custom = await trackingFields(trackingSchema(`${attribute}("${customName}")`));
     assert.ok(custom.includes(customField) && !custom.includes(field));
   });
 
-  test(`${attribute} with a field of the same name is an error that names both`, { skip: !hasExtension(extension) }, () => {
+  test(`${attribute}: a field of the same name is an error that names both (${attribute})`, { skip: !hasExtension(extension) }, () => {
     const source = `model Story {\n  id Int @id\n  ${customName} Int\n  ${attribute}("${customName}")\n}\n`;
     assert.throws(() => loads(source, { registry: new Registry() }), (e: Error) => e.message.includes(`Story.${customName}`) && e.message.includes(attribute.slice(2)) && e.message.includes("already exists"));
   });
 
-  test(`${attribute} with a field on the same column is an error that names both`, { skip: !hasExtension(extension) }, () => {
+  test(`${attribute}: a field on the same column is an error that names both (${attribute})`, { skip: !hasExtension(extension) }, () => {
     const source = `model Story {\n  id Int @id\n  taken Int @map("${name}")\n  ${attribute}\n}\n`;
     assert.throws(() => loads(source, { registry: new Registry() }), (e: Error) => e.message.includes(`adds the field Story.${name}, but the field Story.taken already uses the column ${name}`));
   });
 
-  test(`${attribute} on an abstract or extends base reaches each concrete child`, { skip: !hasExtension(extension, "monorm.inherit") }, async () => {
+  test(`${attribute}: a tracking attribute on a base reaches each concrete child (${attribute})`, { skip: !hasExtension(extension, "monorm.inherit") }, async () => {
     const [db, models] = await open("sqlite", inheritedSchema(attribute));
     try {
       assert.deepEqual(Object.keys(models).sort(), ["Child", "Grandchild"]);
@@ -701,7 +701,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     const argument = upsert === undefined ? "" : `, upsert: "${upsert}"`;
     const label = `upsert ${upsert ?? "default"} ${kept ? "keeps" : "drops"} the field in the default upsert list (${dialect})`;
 
-    test(`timestamps ${label}`, { skip: !hasExtension("monorm.timestamps") }, async () => {
+    test(`timestamps upsert pick keeps the field in the default upsert list (${upsert ?? "default"}, ${dialect}) ${label}`, { skip: !hasExtension("monorm.timestamps") }, async () => {
       const [db, models] = await open(dialect, `
 model Doc {
   id    Int    @id
@@ -721,7 +721,7 @@ model Doc {
       } finally { await db.dropTables(); await db.close(); }
     });
 
-    test(`locking ${label}`, { skip: !hasExtension("monorm.locking") }, async () => {
+    test(`locking upsert pick keeps the field in the default upsert list (${upsert ?? "default"}, ${dialect}) ${label}`, { skip: !hasExtension("monorm.locking") }, async () => {
       const [db, models] = await open(dialect, `
 model Doc {
   id    Int    @id

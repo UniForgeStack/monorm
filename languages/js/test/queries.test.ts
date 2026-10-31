@@ -163,7 +163,7 @@ test("load a to-one relation", async () => {
   assert.equal(anon!.author, null); // nullable FK, LEFT JOIN with no match
 });
 
-test("an unloaded to-one relation throws", async () => {
+test("an unloaded to-one relation gives NotLoaded", async () => {
   await seed();
   const post = (await Post.objects.first())!;
   assert.throws(() => (post as unknown as { author: unknown }).author, (e: unknown) => e instanceof NotLoaded && /load\(Post\.author\)/.test(e.message));

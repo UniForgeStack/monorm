@@ -50,7 +50,7 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return site
 
 
-def test_an_installed_extension_resolves_by_id_without_importing_its_package(site: Path) -> None:
+def test_an_installed_extension_resolves_by_id_to_its_manifest(site: Path) -> None:
     manifest = install(site, "acme-fixture", "acme_fixture")
     assert resolve_extensions()["acme.fixture"] == str(manifest)
 
@@ -66,7 +66,7 @@ def test_a_dotted_module_resolves_to_its_directory(site: Path) -> None:
     assert resolve_extensions()["acme.ns"] == str(site / "acme_ns" / "inner" / "monorm-extension.toml")
 
 
-def test_a_package_without_a_manifest_names_the_entry_point(site: Path) -> None:
+def test_a_package_without_a_manifest_file_is_an_error(site: Path) -> None:
     install(site, "acme-fixture", "acme_fixture", manifest=False)
     with pytest.raises(SchemaError, match=r"entry point of `acme.fixture`.*monorm-extension.toml"):
         resolve_extensions()

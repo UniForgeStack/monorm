@@ -29,7 +29,7 @@ async def test_query_set_load_sets_the_label(clean):
     assert [(p.title, p.n) for p in posts] == [("p1", 2), ("p2", 0)]
 
 
-async def test_labeled_load_keeps_the_other_columns_and_relations(clean):
+async def test_a_labeled_load_keeps_the_other_columns_and_relations(clean):
     await seed()
     posts = await Post.objects.load(Post.title, Post.author, n_comments()).order_by(Post.title)
     assert [(p.title, p.n, p.author.name) for p in posts] == [("p1", 2, "Alice"), ("p2", 0, "Alice")]
@@ -41,13 +41,13 @@ async def test_labeled_load_only_adds_to_the_full_row(clean):
     assert [p.body for p in posts] == ["", ""]
 
 
-async def test_relation_query_set_nests_the_aggregate(clean):
+async def test_a_relation_query_set_nests_the_aggregate(clean):
     await seed()
     (alice,) = await User.objects.load(User.posts.objects.load(n_comments()))
     assert sorted((p.title, p.n) for p in alice.posts.cached) == [("p1", 2), ("p2", 0)]
 
 
-async def test_labeled_relation_query_set_nests_the_aggregate(clean):
+async def test_a_labeled_relation_query_set_nests_the_aggregate(clean):
     await seed()
     (alice,) = await User.objects.load(User.posts.objects.load(n_comments()).label("counted"))
     assert sorted((p.title, p.n) for p in alice.counted) == [("p1", 2), ("p2", 0)]
@@ -68,7 +68,7 @@ async def test_instance_load_of_a_label_does_not_read_other_columns(clean):
     assert "body" not in post.__dict__
 
 
-async def test_cached_relation_set_is_not_used_when_it_has_a_label(clean):
+async def test_a_cached_relation_set_is_not_used_when_it_has_a_label(clean):
     await seed()
     (alice,) = await User.objects.load(User.posts)
     posts = await alice.posts.load(n_comments())
@@ -84,7 +84,7 @@ async def test_instance_load_reads_a_loaded_label_again(clean):
     assert post.n == 3
 
 
-async def test_aggregate_over_a_filtered_relation(clean):
+async def test_an_aggregate_over_a_filtered_relation(clean):
     await seed()
     posts = await Post.objects.load(func.count(Post.comments, filter=Post.comments.body == "x").label("n")).order_by(
         Post.title
@@ -147,7 +147,7 @@ async def seed_views():
     return alice, bob, carol
 
 
-async def test_join_a_cte_filters_and_annotates_instances(clean):
+async def test_join_filters_and_annotates_a_bound_set(clean):
     alice, bob, carol = await seed_views()
     totals = totals_cte()
     users = await User.objects.all()
@@ -160,7 +160,7 @@ async def test_join_a_cte_filters_and_annotates_instances(clean):
     assert [(u.name, u.total_views) for u in result] == [("Alice", 120)]
 
 
-async def test_join_a_cte_on_a_query_set_loads_the_column(clean):
+async def test_join_annotates_a_query_set(clean):
     await seed_views()
     totals = totals_cte()
     users = await User.objects.join(totals, totals.c.author_id == User.id).load(totals.c.views.label("total_views")).order_by(User.name)
@@ -199,7 +199,7 @@ async def test_a_bound_join_counts_each_object_once(clean):
     assert await outer.count() == 3
 
 
-async def test_a_bound_outer_join_without_a_match_gives_none(clean):
+async def test_an_outer_join_gives_null_for_an_object_without_a_match(clean):
     await seed_views()
     totals = totals_cte()
     users = await User.objects.order_by(User.name).all()
@@ -230,7 +230,7 @@ def test_load_rejects_an_expression_without_a_label():
         Post.objects.load(func.count(Post.comments))
 
 
-def test_label_must_not_name_a_field_relation_or_member():
+def test_a_label_must_not_name_a_field_relation_or_member():
     for name in ("title", "author", "pk"):
         with pytest.raises(ValueError, match="is a field, relation or member"):
             Post.objects.load(func.count(Post.comments).label(name))
@@ -245,7 +245,7 @@ def test_label_must_be_unique_among_loads():
         Post.objects.load(Post.comments.objects.label("n")).load(n_comments())
 
 
-def test_relation_query_set_checks_its_own_labels():
+def test_a_relation_query_set_checks_its_own_labels():
     with pytest.raises(ValueError, match="is a field, relation or member"):
         User.objects.load(User.posts.objects.load(func.count(Post.comments).label("title")))
 

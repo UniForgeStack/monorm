@@ -134,7 +134,7 @@ for (const [attribute, extension] of [
   ['@@soft_delete.deleted_at("deleted")', "monorm.soft-delete"],
   ['@@timestamps.updated_at("changed")', "monorm.timestamps"],
 ] as const) {
-  test(`a role on a composed model is rejected (${extension})`, { skip: !enabled || !hasExtension(extension) }, () => {
+  test(`a tracking attribute on a composed model is rejected (${extension}) (${extension})`, { skip: !enabled || !hasExtension(extension) }, () => {
     const roleSource = `datasource db {\n provider = "sqlite"\n}
 model Person {
  id Int @id

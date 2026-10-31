@@ -146,7 +146,7 @@ def test_two_mixins_chain_through_super_in_dependency_order(project, monkeypatch
     assert [c.__name__ for c in type(Post.objects).__mro__[:3]] == ["PostQuerySet", "BQuerySet", "AQuerySet"]
 
 
-def test_declared_instance_overrides_call_super_to_the_host(project, monkeypatch):
+def test_an_instance_override_calls_super_down_the_chain_to_the_host_member(project, monkeypatch):
     def instance_source(tag):
         return f'''from monorm import QuerySet
 from monorm.ext import ModelT
@@ -186,7 +186,7 @@ def test_user_query_set_comes_first(project, monkeypatch):
     assert Post.objects.chain() == ["mine", "a"]
 
 
-def test_undeclared_collision_fails_at_define(project, monkeypatch):
+def test_an_undeclared_collision_fails_at_define(project, monkeypatch):
     clash = BASE.replace("def everything", "def where").replace(
         'def chain(self):\n        return ["a"]', "def filter(self):\n        return 1"
     )

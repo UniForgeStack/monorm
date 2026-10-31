@@ -93,7 +93,7 @@ async def open_db(dialect, defaults):
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
-async def test_partial_selection(dialect):
+async def test_partial_model_shapes(dialect):
     db, Author, Book = await open_db(dialect, defaults=False)
     a, b = Author.objects.using(db), Book.objects.using(db)
     try:
@@ -284,7 +284,7 @@ async def test_default_annotation_keeps_model_instances(dialect):
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
-async def test_default_annotation_applies_to_prefetched_rows(dialect):
+async def test_a_default_annotation_applies_to_prefetched_rows(dialect):
     db, Author, Book = await open_annotated(dialect)
     a, b = Author.objects.using(db), Book.objects.using(db)
     try:
@@ -516,6 +516,7 @@ async def test_one_row_index_errors(one_row_topics):
         await limited.prepare().get(limit=0)
 
 
+@pytest.mark.case("queries::at_param_reads_the_row_at_a_position_bound_at_run_time")
 async def test_one_row_param_index(one_row_topics):
     db, Topic, t = one_row_topics
     prepared = t[monorm.param("n")].prepare()
@@ -661,7 +662,7 @@ async def test_a_joined_model_brings_its_related_default():
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
-async def test_a_missing_reference_is_none_only_when_the_engine_filtered_the_join(request, dialect):
+async def test_a_missing_reference_is_null_only_when_the_engine_filtered_the_join(request, dialect):
     db, A, B, P = await open_unset(request, dialect, True)
     try:
         for Model in (B, P):
@@ -694,7 +695,7 @@ async def test_the_target_flag_does_not_depend_on_model_order(request, dialect):
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
-async def test_load_path_with_columns_unites_the_default_selection(dialect):
+async def test_load_of_a_path_with_columns_unites_the_default_selection(dialect):
     db, Author, Book = await open_db(dialect, defaults=True)
     a, b = Author.objects.using(db), Book.objects.using(db)
     try:

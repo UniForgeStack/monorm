@@ -40,7 +40,7 @@ async def docs(request):
     await db.close()
 
 
-async def test_hostile_keys_filter_select_and_group(docs, observe_queries):
+async def test_hostile_json_keys_filter_select_and_group(docs, observe_queries):
     db, Doc, objects, setting = docs
     assert await db.fetch(SETTING) == [{"v": setting}]
     for i, key in enumerate(KEYS):

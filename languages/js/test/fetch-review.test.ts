@@ -23,7 +23,7 @@ async function single() {
   return connect(DATABASE_URL, { registry: new Registry(), default: false, maxConnections: 1 });
 }
 
-test("a fetch after a schema change prepares again", async () => {
+test("postgres: a fetch after a schema change prepares again", async () => {
   const db = await single();
   try {
     await db.execute("DROP TABLE IF EXISTS fx_stale");

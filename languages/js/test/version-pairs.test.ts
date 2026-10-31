@@ -94,7 +94,7 @@ async function titles(models: Models, db: Database, name = "Doc"): Promise<Recor
 }
 
 for (const dialect of ["sqlite", "postgres"]) {
-  test(`a bound update with a stale object throws and changes no row (${dialect})`, locking, async () => {
+  test(`a bound update with a stale object is a conflict and changes no row (${dialect})`, locking, async () => {
     const [db, models, statements] = await open(dialect);
     const { Doc } = models;
     try {
@@ -125,7 +125,7 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`a bound delete with a stale object throws and deletes no row (${dialect})`, locking, async () => {
+  test(`a bound delete with a stale object is a conflict and deletes no row (${dialect})`, locking, async () => {
     const [db, models] = await open(dialect);
     const { Doc } = models;
     try {

@@ -51,7 +51,7 @@ for (const [provider, url] of [
   });
 }
 
-test("missing/conflicting manifest fails during schema definition", async () => {
+test("missing or conflicting manifest fails during schema definition", async () => {
   const dir = mkdtempSync(join(scratch, "invalid-"));
   const path = join(dir, "schema.prisma");
   try {
@@ -66,6 +66,7 @@ test("missing/conflicting manifest fails during schema definition", async () => 
   } finally { rmSync(dir, { recursive: true }); }
 });
 
+// case: generic_identities::a_generic_relation_schema_loads_and_round_trips
 test("a generic relation schema loads and round-trips", async () => {
   const dir = mkdtempSync(join(scratch, "generic-"));
   const path = join(dir, "schema.prisma");

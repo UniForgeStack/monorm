@@ -363,7 +363,7 @@ model Named {
 
 
 @pytest.mark.skipif(not has_extension("monorm.proxy"), reason="requires the monorm-proxy package")
-async def test_a_proxy_narrowed_order_column(postgres):
+async def test_a_proxy_narrowed_order_column_postgres(postgres):
     models, db = await postgres(PROXY)
     User, Named = models["User"], models["Named"]
     await User.objects.using(db).insert_many(

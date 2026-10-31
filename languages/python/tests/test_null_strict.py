@@ -29,7 +29,7 @@ def where(qs) -> str:
         lambda: Comment.objects.exclude(Comment.id == 1, x == 1),
     ],
 )
-def test_a_negation_of_a_nullable_comparison_raises(build):
+def test_raises(build):
     with pytest.raises(QueryError, match=r"or_null\(\) drops NULL rows under negation, and_not_null\(\) keeps them"):
         build()
 
@@ -70,7 +70,7 @@ def test_the_method_on_the_comparison_is_accepted(method):
     assert Comment.objects.filter(~m(Comment.author == ALICE)).sql()
 
 
-def test_a_method_on_one_comparison_does_not_cover_another_column():
+def test_a_method_on_one_comparison_does_not_cover_another():
     with pytest.raises(QueryError, match="or_null"):
         ~((x > 1).or_null() & (x < 9))
 

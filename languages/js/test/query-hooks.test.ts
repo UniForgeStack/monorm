@@ -76,7 +76,7 @@ test("a failed statement gives an event with the error", async () => {
   } finally { await db.close(); }
 });
 
-test("hooks run in the caller's context and see prepared queries", async () => {
+test("hooks run in the callers context and see prepared queries", async () => {
   const { Person, db } = await shop();
   try {
     const request = new AsyncLocalStorage<string>();
@@ -89,7 +89,7 @@ test("hooks run in the caller's context and see prepared queries", async () => {
   } finally { await db.close(); }
 });
 
-test("an error a hook throws rejects the call", async () => {
+test("a hook error reaches the caller", async () => {
   const { Person, db } = await shop();
   try {
     db.onQuery(() => { throw new Error("exporter down"); });
@@ -97,7 +97,7 @@ test("an error a hook throws rejects the call", async () => {
   } finally { await db.close(); }
 });
 
-test("an async hook is awaited, and its rejection rejects the call", async () => {
+test("an async hook is awaited and its error reaches the caller", async () => {
   const { Person, db } = await shop();
   try {
     const seen: string[] = [];
@@ -126,7 +126,7 @@ test("a hook error does not replace the error of the call", async () => {
   } finally { await db.close(); }
 });
 
-test("every hook gets every event before the first hook error rejects the call", async () => {
+test("every hook gets every event before the first hook error reaches the caller", async () => {
   const { Person, db } = await shop();
   try {
     const calls: string[] = [];
@@ -141,7 +141,7 @@ test("every hook gets every event before the first hook error rejects the call",
   } finally { await db.close(); }
 });
 
-test("the statements of a hook give no events and no N+1 count", async () => {
+test("the statements of a hook give no events and no N plus one count", async () => {
   const { Person, db } = await shop();
   try {
     await db.execute("CREATE TABLE audit (sql TEXT)");

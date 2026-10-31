@@ -64,7 +64,7 @@ for (const kind of ["postgres", "sqlite"] as const) {
       });
     };
 
-    scenario("updateMany refuses an object for a nested field", async (S, q, A) => {
+    scenario("update many refuses a plain object for a nested field", async (S, q, A) => {
       const mk = (city: string): Any => new A({ city, big: 1n, open: true, opened: WHEN });
       await q.insertMany([{ id: 1, address: mk("Oslo") }, { id: 2, address: null }]);
       const before = (await q.orderBy(S.id)).map((s: Any) => s.address);

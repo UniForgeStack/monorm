@@ -129,7 +129,7 @@ async def test_a_selected_relation_set_loads_beside_another_relation(clean):
     assert users[0].profile is None
 
 
-async def test_a_select_in_load_needs_a_label(clean):
+async def test_a_select_in_load_needs_a_label_and_a_relation(clean):
     with pytest.raises(TypeError, match="needs .label"):
         User.objects.load(User.posts.objects.select(Post.id))
     with pytest.raises(TypeError, match="relation query set"):

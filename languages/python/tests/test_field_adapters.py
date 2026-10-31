@@ -82,7 +82,7 @@ async def test_a_value_that_needs_no_prepare_writes_without_a_call():
         await db.close()
 
 
-async def test_validation_runs_before_any_prepare():
+async def test_validation_and_the_statement_check_run_before_any_prepare():
     db, models, body = await setup()
     try:
         objects = models["Doc"].objects.using(db)
@@ -130,7 +130,7 @@ async def test_an_expression_for_an_adapted_field_is_rejected_before_prepare():
         await db.close()
 
 
-async def test_unique_update_prepares_once():
+async def test_a_unique_update_prepares_once():
     db, models, body = await setup()
     try:
         Doc = models["Doc"]
@@ -160,7 +160,7 @@ async def test_a_filtered_update_prepares_once_and_writes_the_same_value_to_ever
         await db.close()
 
 
-async def test_instance_update_runs_the_pipeline():
+async def test_an_instance_update_runs_the_pipeline():
     db, models, body = await setup()
     try:
         row = await models["Doc"].objects.using(db).insert(id=1, title="a")
@@ -432,7 +432,7 @@ async def test_a_pending_batch_value_is_rejected_in_a_conflict_write_and_in_copy
         await db.close()
 
 
-async def test_inspect_on_an_adapted_batch_shows_the_placeholder_and_calls_no_prepare():
+async def test_inspect_on_an_adapted_batch_shows_the_placeholder_statement_and_calls_no_prepare():
     db, models, body = await setup()
     try:
         objects = models["Doc"].objects.using(db)

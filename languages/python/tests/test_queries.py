@@ -64,7 +64,7 @@ def names(users):
     return sorted(u.name for u in users)
 
 
-async def test_insert_returns_row_with_server_defaults(clean):
+async def test_insert_returns_the_row_with_server_defaults(clean):
     u = await User.objects.insert(email="x@example.com", name="X")
     assert isinstance(u.id, int)
     assert u.created_at.tzinfo is not None
@@ -73,7 +73,7 @@ async def test_insert_returns_row_with_server_defaults(clean):
     assert p.views == 0 and p.published is False  # DDL defaults, read back via RETURNING
 
 
-async def test_insert_many_mixed_columns(clean):
+async def test_insert_many_with_mixed_columns(clean):
     u = await User.objects.insert(email="x@example.com", name="X")
     posts = await Post.objects.insert_many(
         [
@@ -191,7 +191,7 @@ async def test_result_cache(clean, observe_queries):
     assert bad._result is not failed
 
 
-async def test_filter_across_to_many_autojoins(clean):
+async def test_filter_across_a_to_many_relation(clean):
     await seed()
     # The motivating example: users with a post created before yesterday.
     users = await User.objects.filter(User.posts.created_at < YESTERDAY)
@@ -229,7 +229,7 @@ async def test_exclude_and_negation(clean):
     ]
 
 
-async def test_or_with_local_column(clean):
+async def test_or_with_a_local_column(clean):
     await seed()
     users = await User.objects.filter((User.name == "Carol") | (User.posts.views >= 100))
     assert names(users) == ["Bob", "Carol"]
@@ -260,7 +260,7 @@ async def test_load_to_one(clean, observe_queries):
     assert anon.author is None  # nullable FK, LEFT JOIN with no match
 
 
-async def test_unloaded_to_one_raises(clean):
+async def test_an_unloaded_to_one_relation_gives_not_loaded(clean):
     await seed()
     post = await Post.objects.first()
     with pytest.raises(monorm.NotLoaded, match=r"load\(Post.author\)"):
@@ -286,7 +286,7 @@ async def test_load_to_many(clean, observe_queries):
     assert alice.posts.cached[0].author is alice  # reverse relation filled in
 
 
-async def test_related_set_queries_and_insert(clean):
+async def test_related_sets_queries_and_inserts(clean):
     alice, *_ = await seed()
     with pytest.raises(monorm.NotLoaded):
         alice.posts.cached  # noqa: B018

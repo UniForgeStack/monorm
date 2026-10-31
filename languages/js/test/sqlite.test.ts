@@ -125,7 +125,7 @@ test("SQLite migrations, target checks and file persistence", async () => {
   }
 });
 
-test("SQLite rebuilds after a rename ignore the kept rename hints", async () => {
+test("kept rename hints do not redirect later rebuilds", async () => {
   const root = [join(import.meta.dirname, "..", "..", ".."), join(import.meta.dirname, "..", "..", "..", "..")].find((d) => {
     try { readFileSync(join(d, "examples/sqlite/schema.prisma")); return true; } catch { return false; }
   })!;
@@ -159,7 +159,7 @@ test("SQLite rebuilds after a rename ignore the kept rename hints", async () => 
   }
 });
 
-test("SQLite outer() through a relation path", async () => {
+test("outer() through a relation path", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
@@ -182,7 +182,7 @@ test("SQLite related sets use the database of their instance", async () => {
   } finally { await db.close(); }
 });
 
-test("SQLite string functions and concatenation", async () => {
+test("string functions and concatenation", async () => {
   const registry = new Registry();
   const Note = loads(`
     datasource db { provider = "sqlite" }
@@ -250,7 +250,7 @@ test("SQLite CASE", async () => {
   } finally { await db.close(); }
 });
 
-test("SQLite aggregate FILTER", async () => {
+test("aggregate FILTER", async () => {
   const registry = new Registry();
   const Note = loads(`
     datasource db { provider = "sqlite" }
@@ -271,7 +271,7 @@ test("SQLite aggregate FILTER", async () => {
   } finally { await db.close(); }
 });
 
-test("SQLite aggregate FILTER through relations", async () => {
+test("aggregate FILTER through relations", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
@@ -288,7 +288,7 @@ test("SQLite aggregate FILTER through relations", async () => {
   } finally { await db.close(); }
 });
 
-test("SQLite UUID, date, timestamp and inline trigger conversions", async () => {
+test("UUID, date, timestamp and inline trigger", async () => {
   const registry = new Registry();
   const Event = loads(`
     datasource db { provider = "sqlite" }
@@ -366,7 +366,7 @@ test("SQLite related lazy inserts join the transaction at await", async () => {
   } finally { await db.close(); }
 });
 
-test("SQLite bound load guards and withoutRelated", async () => {
+test("bound load guards and withoutRelated", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();

@@ -40,7 +40,7 @@ test("LIMIT and OFFSET are parameters", () => {
 
 // -- prepared queries -------------------------------------------------------------------------------
 
-test("a prepared query's SQL matches the plain query's", () => {
+test("prepared SQL matches the plain query", () => {
   const plain = Post.objects.filter(Post.authorId.eq(3), Post.title.contains("x_%")).orderBy(Post.id).slice(5, 15);
   const prepared = Post.objects
     .filter(Post.authorId.eq(param("a")), Post.title.contains(param("t")))

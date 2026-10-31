@@ -88,7 +88,7 @@ def test_a_consumer_target_replaces_the_schema_class(tmp_path):
     assert _native.cli([*args, "--model-methods", "Nope=mine.methods:A"]) != 0
 
 
-async def test_the_methods_module_may_import_the_models_under_type_checking(tmp_path, monkeypatch):
+async def test_the_methods_module_may_import_the_models_module(tmp_path, monkeypatch):
     package, schema = _package(tmp_path)
     (package / "methods.py").write_text(
         "from __future__ import annotations\n"

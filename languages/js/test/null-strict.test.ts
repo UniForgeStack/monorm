@@ -14,7 +14,7 @@ function where(qs: { sql(): string }): string {
 const underNegation = /orNull\(\) drops NULL rows under negation, andNotNull\(\) keeps them/;
 const positiveNe = /orNull\(\) keeps NULL rows, andNotNull\(\) drops them/;
 
-test("a negation of a nullable comparison throws", () => {
+test("...raises", () => {
   const builds: [string, () => unknown][] = [
     ["not()", () => not(x.gt(20n))],
     [".not()", () => x.eq(1n).not()],
@@ -30,7 +30,7 @@ test("a negation of a nullable comparison throws", () => {
   }
 });
 
-test("ne and notIn on a nullable column throw in a positive filter", () => {
+test("ne and notIn on a nullable column raise in a positive filter", () => {
   const builds: [string, () => unknown][] = [
     ["ne", () => Comment.objects.filter(x.ne(1n))],
     ["notIn", () => Comment.objects.filter(x.notIn([1n, 2n]))],

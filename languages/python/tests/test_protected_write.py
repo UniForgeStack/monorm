@@ -45,7 +45,7 @@ async def blog():
     await db.close()
 
 
-async def test_every_write_method_fails_outside_the_scope_and_works_inside(blog):
+async def test_every_write_method_fails_outside_allow_writes_and_works_inside(blog):
     models, db = blog
     Post = models["Post"]
     posts = Post.objects.using(db)

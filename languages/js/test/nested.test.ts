@@ -100,7 +100,7 @@ for (const kind of ["postgres", "sqlite"] as const) {
       assert.equal(rows.get(4), null);
     });
 
-    scenario("insert takes an object with defaults and rejects a bad one", async (_w, _S, q) => {
+    scenario("insert takes subfields with defaults and rejects a bad one", async (_w, _S, q) => {
       const one = await q.insert({ id: 1, address: { city: "A", big: 1n, open: false, opened: WHEN } });
       assert.equal(one.address.floor, 7);
       assert.equal(one.address.geo, null);

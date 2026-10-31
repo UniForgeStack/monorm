@@ -272,7 +272,7 @@ test('replicas answer reads outside a transaction; writes and transactions use t
   await assertBackends(url, before);
 });
 
-test('db.tenant inside a transaction of another tenant throws', async () => {
+test('tenant inside a transaction of another tenant raises', async () => {
   const registry = new Registry();
   const Note = loads(NOTES, { registry })['Note'] as any;
   const url = getDatabase().url;
@@ -375,7 +375,7 @@ CREATE POLICY tenant ON s6_js_notes
   WITH CHECK (tenant = current_setting('app.tenant', true));
 `;
 
-test('db.tenant sets app.tenant in each transaction for row-level security', async () => {
+test('tenant sets app.tenant in each transaction for row-level security', async () => {
   const registry = new Registry();
   const Note = loads(NOTES, { registry })['Note'] as any;
   const url = getDatabase().url;

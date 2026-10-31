@@ -5,7 +5,7 @@ import { useDatabase, otherDatabase } from './helpers.js';
 
 useDatabase();
 
-test('advisory keys match Python blake2b with an eight-byte digest', async () => {
+test('a string key contends with its blake2b numeric key', async () => {
   const db = getDatabase(), other = await otherDatabase();
   try {
     for (const [name, numeric] of [
@@ -27,7 +27,7 @@ test('advisory keys match Python blake2b with an eight-byte digest', async () =>
   }
 });
 
-test('advisory validation retains errors and precedence', async () => {
+test('lock validation checks the transaction before the key', async () => {
   const db = getDatabase();
   await assert.rejects(db.lock(true as never), TransactionRequired);
   await db.transaction(async () => {

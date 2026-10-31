@@ -228,7 +228,7 @@ async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
 @requires("monorm.locking")
 @requires("monorm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
-async def test_an_instance_update_after_a_query_set_soft_delete_raises(dialect):
+async def test_an_instance_update_after_a_query_set_soft_delete_gives_version_conflict(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
     Doc = models["Doc"]
     try:
@@ -314,7 +314,7 @@ async def test_the_soft_delete_triggers_bump_the_version(dialect):
 @requires("monorm.soft-delete")
 @requires("monorm.locking")
 @pytest.mark.parametrize("dialect", DATABASES)
-async def test_a_second_delete_of_the_same_instance_raises_nothing(dialect):
+async def test_a_second_delete_of_the_same_instance_gives_no_error(dialect):
     db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
     Doc = models["Doc"]
     try:
@@ -1019,7 +1019,7 @@ model Book {
 
 @requires("monorm.soft-delete")
 @pytest.mark.parametrize("dialect", DATABASES)
-async def test_a_reference_to_a_soft_deleted_row_loads_none(dialect):
+async def test_a_reference_to_a_soft_deleted_row_loads_nothing(dialect):
     db, models = await connect(dialect, REFERENCE_TO_SOFT_DELETED)
     Author, Book = models["Author"], models["Book"]
     try:

@@ -66,7 +66,7 @@ async def titles(session, model="Doc"):
 
 
 @requires("monorm.locking")
-async def test_a_bound_update_with_a_stale_object_raises_and_changes_no_row(session):
+async def test_a_bound_update_with_a_stale_object_is_a_conflict_and_changes_no_row(session):
     Doc = session.models["Doc"]
     a, b, c = await seed(session)
     other = await Doc.objects.using(session.db).get(Doc.id == 2)
@@ -95,7 +95,7 @@ async def test_a_bound_update_of_fresh_objects_writes_one_statement_and_bumps_th
 
 
 @requires("monorm.locking")
-async def test_a_bound_delete_with_a_stale_object_raises_and_deletes_no_row(session):
+async def test_a_bound_delete_with_a_stale_object_is_a_conflict_and_deletes_no_row(session):
     Doc = session.models["Doc"]
     a, b, c = await seed(session)
     await (await Doc.objects.using(session.db).get(Doc.id == 3)).update(title="newer")
@@ -107,7 +107,7 @@ async def test_a_bound_delete_with_a_stale_object_raises_and_deletes_no_row(sess
 
 
 @requires("monorm.locking")
-async def test_a_stale_conflict_rolls_back_only_the_bound_write_inside_a_transaction(session):
+async def test_a_conflict_rolls_back_only_the_bound_write_inside_a_transaction(session):
     Doc = session.models["Doc"]
     a, b, c = await seed(session)
     await (await Doc.objects.using(session.db).get(Doc.id == 1)).update(title="newer")

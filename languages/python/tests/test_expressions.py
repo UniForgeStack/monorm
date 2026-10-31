@@ -98,14 +98,14 @@ async def test_json_containment_and_keys(docs):
     assert await objects.filter(~Doc.meta.has_key("tags")).select(Doc.title).scalars() == ["c"]
 
 
-async def test_json_merge_in_update(docs):
+async def test_json_merge_in_an_update(docs):
     Doc, objects = docs
     await objects.filter(Doc.title == "c").update(meta=Doc.meta.json_merge({"n": 10, "seen": True}))
     doc = await objects.get(Doc.title == "c")
     assert doc.meta == {"kind": "post", "n": 10, "seen": True}
 
 
-async def test_json_merge_with_a_path_keeps_the_object(docs):
+async def test_json_merge_with_a_path_on_the_right_keeps_the_object(docs):
     Doc, objects = docs
     await objects.insert_many([{"title": "d", "meta": {"a": {"x": 1}, "b": 2, "k": "v"}}])
     await objects.filter(Doc.title == "d").update(meta=Doc.meta.json_merge(Doc.meta["a"]))
@@ -119,7 +119,7 @@ async def test_json_merge_with_a_column(docs):
     assert (await objects.get(Doc.title == "c")).meta == {"kind": "post", "n": 9}
 
 
-async def test_json_methods_refuse_none(docs):
+async def test_json_methods_refuse_null(docs):
     Doc, objects = docs
     for call in (Doc.meta.json_merge, Doc.meta.json_contains, Doc.meta.json_contained_by):
         with pytest.raises(TypeError, match="not None"):
@@ -127,7 +127,7 @@ async def test_json_methods_refuse_none(docs):
     assert (await objects.get(Doc.title == "c")).meta == {"kind": "post", "n": 9}
 
 
-async def test_json_contains_prepared_param(docs):
+async def test_json_containment_takes_a_param(docs):
     Doc, objects = docs
     contains = objects.filter(Doc.meta.json_contains(monorm.param("v"))).order_by(Doc.title).prepare()
     assert [d.title for d in await contains(v={"kind": "post"})] == ["a", "c"]
@@ -139,7 +139,7 @@ async def test_json_contains_prepared_param(docs):
         Doc.meta.json_contains(Doc.meta["a"])
 
 
-def test_json_index_out_of_range(docs):
+def test_a_json_index_outside_the_32_bit_range_is_an_error(docs):
     Doc, objects = docs
     assert "-> 2147483647" in objects.select(Doc.meta["arr"][2**31 - 1]).sql()
     for index in (2**31, 2**62, -(2**31) - 1, -(2**63)):
@@ -147,7 +147,7 @@ def test_json_index_out_of_range(docs):
             objects.select(Doc.meta["arr"][index]).sql()
 
 
-async def test_json_on_sqlite_is_an_error():
+async def test_json_operators_on_sqlite_are_an_error():
     registry, Doc = load(
         'datasource db { provider = "sqlite" }\n' + SOURCE.replace("  tags  String[] @default([])\n", "")
     )
@@ -312,6 +312,7 @@ async def test_full_text_search():
         await db.close()
 
 
+@pytest.mark.case("sqlite::full_text_search_on_sqlite_is_an_error")
 async def test_full_text_search_on_sqlite_is_an_error():
     from monorm import func
 

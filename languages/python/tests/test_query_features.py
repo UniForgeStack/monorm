@@ -151,7 +151,7 @@ async def test_string_functions_and_concatenation(clean):
     assert await Post.objects.filter(Post.title == "b1").select(func.concat(Post.views, "!")).scalar() == "100!"
 
 
-async def test_case_null_first_branch(clean):
+async def test_case_with_a_null_first_branch(clean):
     await seed()
     rows = await Post.objects.order_by(Post.title).select(func.case((Post.views >= 50, None), default=1)).scalars()
     assert rows == [1, None, 1, None]
@@ -302,6 +302,7 @@ async def test_relation_count_with_an_outer_filter(clean):
     assert [tuple(r) for r in rows] == [("Alice", 3), ("Bob", 0), ("Carol", 0)]
 
 
+@pytest.mark.case("queries::a_lateral_group_reads_a_to_one_join")
 async def test_lateral_group_reads_a_to_one_join(clean):
     (alice, bob, _), (_, a2, _, b1) = await seed()
     c_a2, c_b1 = await Comment.objects.insert_many(
@@ -658,7 +659,7 @@ async def test_named_window_limits(clean):
         await Post.objects.select(func.sum(Post.views).over(w))[:3]
 
 
-async def test_join_cte(clean):
+async def test_joining_a_cte(clean):
     (alice, bob, carol), _ = await seed()
     totals = (
         Post.objects.select(Post.author_id, func.sum(Post.views).label("views"), func.count().label("n"))
@@ -698,7 +699,7 @@ async def test_join_cte(clean):
         User.objects.join(totals, totals.c.author_id == User.id).join(totals, totals.c.n > 0)
 
 
-async def test_recursive_cte_with_join(clean):
+async def test_a_recursive_cte_with_a_join(clean):
     users = await User.objects.insert_many([{"email": f"u{i}@x.io", "name": f"u{i}"} for i in range(5)]).returning()
     first = users[0].id
     walk = (
@@ -771,7 +772,7 @@ async def test_cte_select_and_subqueries(clean):
     assert await Post.objects.filter(Post.author_id.in_(totals.select(totals.c.author_id))).delete() == 4
 
 
-async def test_recursive_cte(clean):
+async def test_recursive_ctes(clean):
     users = await User.objects.insert_many([{"email": f"u{i}@x.io", "name": f"u{i}"} for i in range(5)]).returning()
     first = users[0].id
     chain = User.objects.filter(User.id == first).cte(
@@ -985,7 +986,7 @@ async def small_params(clean):
     await db.close()
 
 
-async def test_max_params_option_is_checked(clean):
+async def test_an_invalid_max_params_option_is_rejected(clean):
     with pytest.raises(monorm.QueryError, match="invalid"):
         await monorm.connect(DATABASE_URL, default=False, _disable=("max_params=abc",))
 
@@ -1125,7 +1126,7 @@ async def test_bound_query_refuses_standalone(clean, operation):
 @pytest.mark.parametrize("change", ["filter", "order", "limit", "offset", "defaults"])
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_load_path_query_collision(change, nested, reverse):
+def test_load_rejects_paths_combined_with_a_query_that_changes_their_rows(change, nested, reverse):
     qs = {
         "filter": User.posts.objects.filter(Post.views > 10),
         "order": User.posts.objects.order_by(Post.id),
@@ -1144,7 +1145,7 @@ def test_load_path_query_collision(change, nested, reverse):
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-async def test_load_set_with_columns_keeps_sibling_columns(clean, reverse):
+async def test_load_keeps_a_column_beside_a_set_with_its_own_columns(clean, reverse):
     await seed()
     for qs, column in ((User.posts.objects.load(Post.title), User.posts.views),):
         items = (column, qs) if reverse else (qs, column)
@@ -1162,7 +1163,7 @@ async def test_load_set_with_columns_keeps_sibling_columns(clean, reverse):
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-async def test_load_bare_path_and_set_with_columns_loads_all_fields(clean, reverse):
+async def test_load_gives_a_bare_path_beside_a_set_the_normal_selection(clean, reverse):
     await seed()
     items = (User.posts, User.posts.objects.load(Post.title))
     users = await User.objects.load(*(items[::-1] if reverse else items)).order_by(User.id)

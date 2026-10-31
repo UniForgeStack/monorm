@@ -490,7 +490,7 @@ test("a correlated in() subquery", async () => {
 
 // -- prefetch over many parents: keys split across queries -----------------------------------------
 
-test("an invalid max_params option", async () => {
+test("an invalid max_params option is rejected", async () => {
   await assert.rejects(connect(DATABASE_URL, { default: false, disable: ["max_params=abc"] }), QueryError);
 });
 

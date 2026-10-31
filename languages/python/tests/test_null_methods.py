@@ -73,7 +73,7 @@ def where(qs) -> str:
     return qs.sql().split(" WHERE ", 1)[1]
 
 
-def test_method_binds_before_not():
+def test_the_method_binds_before_not():
     c = ~(Comment.author_id > 20).or_null()
     assert where(Comment.objects.filter(c)) == 'NOT ("comments"."author_id" > 20 OR "comments"."author_id" IS NULL)'
     c = ~(Comment.author_id > 20).and_not_null()
@@ -104,7 +104,7 @@ def test_a_precedence_trap_raises_instead_of_guessing():
         (Comment.author_id != None).or_null()  # noqa: E711
 
 
-def test_a_not_null_value_raises():
+def test_a_not_null_column_raises():
     with pytest.raises(QueryError, match="NOT NULL"):
         (User.email == "a").or_null()
     with pytest.raises(QueryError, match="NOT NULL"):
@@ -272,7 +272,7 @@ def test_differs_keeps_a_null_row_and_passes_a_null_test_through():
     assert where(User.objects.filter(differs(User.email, "a"))) == '"users"."email" <> \'a\''
 
 
-async def test_set_on_a_nullable_link_target_clears_every_link_and_keeps_none_by_accident(models):
+async def test_set_on_a_nullable_link_target_clears_every_link(models):
     db, _, _, _, m = models
     Note, Label, NoteLabel = m["Note"], m["Label"], m["NoteLabel"]
     note, other = await Note.objects.using(db).insert_many([{}, {}]).returning()
@@ -411,7 +411,7 @@ def test_the_strict_rule_runs_in_a_join_on_and_an_aggregate_filter_on_a_computed
     assert fn.count(filter=fn.coalesce(Comment.author_id, 0) != 1) is not None
 
 
-def test_the_strict_rule_does_not_run_in_case_or_select():
+def test_the_strict_rule_does_not_run_in_case_or_select_on_a_computed_value():
     fn, x = monorm.func, Comment.author_id
     assert Comment.objects.select(fn.case((fn.abs(x) != 1, 1), default=0)).sql()
     assert Comment.objects.select((fn.abs(x) != 1).label("different")).sql()
@@ -578,7 +578,7 @@ async def test_a_json_path_is_strict(models):
     assert await ids((path != 1).and_not_null()) == {b.id}
 
 
-def test_outer_is_strict():
+def test_an_outer_column_is_strict():
     outer = monorm.outer(Comment.author_id)
     with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows"):
         Post.objects.filter(Post.id != outer)

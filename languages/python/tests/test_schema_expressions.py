@@ -81,6 +81,7 @@ async def test_a_native_check_gives_the_same_answer_on_both_dialects(provider, c
         assert await objects.count() == 1
 
 
+@pytest.mark.case("schema_warnings::a_plain_string_check_warns_with_file_line_and_column_and_names_raw")
 def test_a_plain_string_check_warns_with_file_line_column_and_names_raw(tmp_path):
     schema = tmp_path / "schema.prisma"
     schema.write_text(source("sqlite", "t", '"qty > 0"'))
@@ -89,7 +90,7 @@ def test_a_plain_string_check_warns_with_file_line_column_and_names_raw(tmp_path
     assert len(caught) == 1
 
 
-def test_generate_python_raises_the_schema_warnings(tmp_path):
+def test_the_code_generator_emits_the_schema_warnings(tmp_path):
     schema = tmp_path / "schema.prisma"
     schema.write_text(source("sqlite", "t", '"qty > 0"'))
     with pytest.warns(monorm.SchemaWarning, match=r"schema\.prisma:10:11: warning: .*raw\(") as caught:
@@ -97,6 +98,7 @@ def test_generate_python_raises_the_schema_warnings(tmp_path):
     assert len(caught) == 1
 
 
+@pytest.mark.case("schema_warnings::a_native_or_raw_check_does_not_warn")
 def test_a_native_or_raw_check_does_not_warn():
     with warnings.catch_warnings():
         warnings.simplefilter("error")

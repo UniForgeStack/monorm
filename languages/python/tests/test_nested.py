@@ -106,7 +106,7 @@ async def test_insert_round_trips_values_and_nulls(shop):
     assert rows[4] is None
 
 
-async def test_insert_takes_a_dict_with_defaults_and_rejects_a_bad_one(shop):
+async def test_insert_takes_subfields_with_defaults_and_rejects_a_bad_one(shop):
     q, S, classes, _ = shop
     one = await q.insert(id=1, address={"city": "A", "big": 1, "open": False, "opened": WHEN})
     assert one.address.floor == 7 and one.address.geo is None
@@ -253,7 +253,7 @@ async def test_update_many_and_instance_update(shop):
     assert (await q.get(S.id == 3)).address.city == "Inst"
 
 
-async def test_load_and_defer_keep_a_group_whole(shop):
+async def test_load_keeps_a_group_whole(shop):
     q, S, classes, _ = shop
     await seed(shop)
     only = await q.load(S.address.city).order_by(S.id)
@@ -265,7 +265,7 @@ async def test_load_and_defer_keep_a_group_whole(shop):
     assert only[3].address is None
 
 
-async def test_the_scenario_two_levels_deep_with_a_nullable_middle_level(shop):
+async def test_two_levels_deep_with_a_nullable_middle_level(shop):
     q, S, classes, _ = shop
     await seed(shop)
     await q.filter(S.address.geo.lat == 9.0).update(address={"geo": {"lat": 10.0}})

@@ -66,6 +66,7 @@ async def test_runtime_and_generated_identities_roundtrip(tmp_path, url, provide
         await db.close()
 
 
+@pytest.mark.case("identities::missing_or_conflicting_manifest_fails_during_schema_definition")
 def test_missing_stale_or_conflicting_manifest_fails_before_definition(tmp_path):
     schema = tmp_path / "schema.prisma"
     schema.write_text("model Post {\nid Int @id\n}\nmodel Tag {\nid Int @id\nkind ContentType\n}")
@@ -133,7 +134,7 @@ async def test_retirement_migration_requires_reference_cleanup(tmp_path, url, pr
         await db.close()
 
 
-async def test_generic_relation_schema_loads_and_round_trips(tmp_path):
+async def test_a_generic_relation_schema_loads_and_round_trips(tmp_path):
     from monorm import _native
 
     schema = tmp_path / "schema.prisma"
@@ -201,6 +202,7 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path):
         await db.close()
 
 
+@pytest.mark.case("identities::moving_to_the_generic_field_form_needs_no_migration")
 def test_moving_to_the_generic_field_form_needs_no_migration(tmp_path):
     from monorm import _native
     from monorm.migrations import Migrations
@@ -256,6 +258,7 @@ async def test_a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads
         monorm.load(schema, registry=monorm.Registry())
 
 
+@pytest.mark.case("identities::models_generated_for_contract_2_ask_for_regeneration")
 @pytest.mark.parametrize(
     "behavior",
     ['{"schema_contract": 2, "generic_relations": [{"model": "Tag"}]}', '{"schema_contract": 2}'],

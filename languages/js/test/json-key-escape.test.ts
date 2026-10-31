@@ -17,7 +17,7 @@ model KeyDoc {
 const KEYS = ["a'); DROP TABLE json_key_docs_js;--\\", "$1", "it's", "back\\slash", "--", ";", "line\nbreak", "\\'", "$", "'"];
 
 for (const setting of ["on", "off"]) {
-  test(`hostile JSON keys filter, select and group (standard_conforming_strings ${setting})`, async () => {
+  test(`hostile json keys filter select and group (${setting})`, async () => {
     const registry = new Registry();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const Doc = loads(SCHEMA, { registry })["KeyDoc"] as any;

@@ -135,7 +135,7 @@ test("savepoint false joins the enclosing transaction", () =>
     assert.equal(await c.count(), 3);
   }));
 
-test("an uncaught error rolls back and throws the original error", () =>
+test("an uncaught error rolls back and raises the original error", () =>
   run(async (c) => {
     await c.insert("dup");
     const err = await c.db

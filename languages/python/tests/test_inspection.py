@@ -48,7 +48,7 @@ def test_ctes_are_counted_separately_from_subqueries():
     assert result.statements[0] == monorm.StatementInspection(set_uncorrelated=1, cte_count=1)
 
 
-async def test_empty_parents_skip_prefetch_execution(clean):
+async def test_empty_parents_skip_planned_prefetches_inspection_sends_no_statements(clean):
     query = User.objects.load(User.posts.comments)
     planned = query.inspect()
     batched = monorm.StatementInspection(has_batching=True)
@@ -64,7 +64,7 @@ async def test_empty_parents_skip_prefetch_execution(clean):
     assert len(events) == 1
 
 
-async def test_prefetch_templates_repeat_for_key_batches(clean):
+async def test_prefetch_template_counts_differ_from_actual_key_batches(clean):
     db = await monorm.connect(clean.url, default=False, _disable=("max_params=2",))
     try:
         await User.objects.insert_many([{"email": f"u{i}@x", "name": f"U{i}"} for i in range(5)])
@@ -120,7 +120,7 @@ async def test_mutations_inspect_generated_subqueries(clean):
     assert await delete == []
 
 
-def test_prepared_inspection_binds_parameters():
+def test_prepared_inspection_validates_and_binds_parameters():
     query = Post.objects.filter(Post.views > monorm.param("minimum")).prepare()
     assert query.inspect(minimum=5) == Post.objects.filter(Post.views > 5).inspect()
     with pytest.raises(TypeError):

@@ -139,7 +139,7 @@ async def test_a_hook_error_does_not_replace_the_error_of_the_call(shop):
     assert any("exporter down" in note for note in caught.value.__notes__)
 
 
-async def test_every_hook_gets_every_event_before_the_first_hook_error_is_raised(shop):
+async def test_every_hook_gets_every_event_before_the_first_hook_error_reaches_the_caller(shop):
     Person, _, db = shop
     calls: list[str] = []
 

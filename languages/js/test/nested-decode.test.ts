@@ -101,7 +101,7 @@ for (const kind of ["postgres", "sqlite"] as const) {
     });
   });
 
-  test(`an unknown enum value in a json cell raises a decode error (${kind})`, async () => {
+  test(`an unknown enum value in a json cell raises DecodeError (${kind}) (${kind})`, async () => {
     await scenario(kind, async (m, db) => {
       const J = m.TJ;
       await J.objects.using(db).insertMany([{ id: 1, item: { ...PLAIN, price: "1" } }]);

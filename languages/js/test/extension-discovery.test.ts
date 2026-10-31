@@ -56,7 +56,7 @@ function project(root: string, dependencies: Record<string, string>, key = "depe
   write(join(root, "package.json"), JSON.stringify({ name: "app", [key]: dependencies }));
 }
 
-test("a direct dependency with an extension id resolves to its manifest", (t) => {
+test("an installed extension resolves by id to its manifest", (t) => {
   const root = directory(t);
   const manifest = pkg(root, "acme-fixture", "acme.fixture");
   pkg(root, "left-pad", null);
@@ -94,7 +94,7 @@ test("no package.json means no extensions", (t) => {
   assert.deepEqual(outside(resolveExtensions(join(directory(t), "schema.prisma"))), {});
 });
 
-test("a package without a manifest file names the package", (t) => {
+test("a package without a manifest file is an error", (t) => {
   const root = directory(t);
   pkg(root, "acme-fixture", "acme.fixture", false);
   project(root, { "acme-fixture": "1.0.0" });

@@ -6,7 +6,7 @@ from test_nested import address, seed, shop, world  # noqa: F401
 from monorm.write import lookup_values
 
 
-async def test_update_many_refuses_a_dict_for_a_nested_field(shop):
+async def test_update_many_refuses_a_plain_object_for_a_nested_field(shop):
     q, S, classes, _ = shop
     await seed(shop)
     before = {s.id: s.address for s in await q.order_by(S.id)}

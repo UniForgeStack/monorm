@@ -211,7 +211,7 @@ def data_migration(migrations: Migrations, name: str, file: str, text: str, sql:
     return folder
 
 
-async def test_data_step_transactions_and_on_commit(tmp_path):
+async def test_a_data_step_can_nest_transactions_and_register_on_commit_callbacks(tmp_path):
     db, migrations = await fresh(tmp_path)
     try:
         data_migration(migrations, "0002_nested", "data.py", NESTED)
@@ -272,7 +272,7 @@ async def test_concurrent_upgrades_run_a_data_step_once(tmp_path):
         await db.close()
 
 
-def test_python_m_orm_migrate_needs_no_schema_and_skips_applied_steps(tmp_path):
+def test_cli_migrate_needs_no_schema_file_and_skips_applied_data_steps(tmp_path):
     schema = tmp_path / "schema.prisma"
     migrations = Migrations(tmp_path / "migrations", schema)
     schema.write_text(SQLITE + V1)

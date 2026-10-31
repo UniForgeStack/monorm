@@ -75,7 +75,7 @@ def test_query_defaults_filter_never_merges_with_user_conditions():
     assert query.sql().count("EXISTS") == 1
 
 
-def test_alias_is_for_filter_conditions_only():
+def test_alias_works_in_filter_conditions_only():
     other = User.posts.alias()
     with pytest.raises(QueryError, match=r"alias\(\)"):
         User.objects.load(other)
@@ -117,7 +117,7 @@ def test_negation_stays_outside_subquery():
     assert "NOT EXISTS" in where(query)
 
 
-def test_nested_relation_nests_subqueries():
+def test_nested_relations_nest_subqueries_like_patterns_are_escaped():
     query = User.objects.filter(User.posts.comments.body.contains("50%"))
     assert query.inspect().statements[0] == monorm.StatementInspection(set_correlated=2)
     w = where(query)
@@ -141,7 +141,7 @@ def test_column_to_column_across_relation():
     assert '"t1"."created_at" < "posts"."created_at"' in w
 
 
-def test_to_one_load_and_order_use_left_joins():
+def test_a_to_one_load_and_order_by_use_left_joins():
     query = Comment.objects.load(Comment.post.author).order_by(Comment.post.title.desc())
     assert query.inspect() == monorm.QueryInspection(
         1, False, (monorm.StatementInspection(joins_count=2),)
@@ -276,7 +276,7 @@ def test_update_many_validation():
         Post.objects.update_many([{"id": 1, "views": 1}], batch_size=0)
 
 
-def test_select_group_by_having():
+def test_select_with_group_by_and_having():
     sql = (
         Post.objects.filter(Post.published)
         .select(Post.author_id, func.count().label("n"), func.sum(Post.views))
@@ -290,7 +290,7 @@ def test_select_group_by_having():
     )
 
 
-def test_aggregate_over_relation_is_a_correlated_subquery():
+def test_an_aggregate_over_a_relation_is_a_correlated_subquery():
     query = User.objects.select(User.id, func.count(User.posts))
     assert query.inspect().statements[0] == monorm.StatementInspection(scalar_correlated=1)
     one = query.sql()
@@ -354,7 +354,7 @@ def test_lateral_join_comes_after_the_to_one_joins():
     assert sql.index('LEFT JOIN "users" AS "j') < sql.index("LEFT JOIN LATERAL")
 
 
-def test_aggregate_over_a_to_one_key_is_a_join_at_the_root():
+def test_an_aggregate_over_a_to_one_key_is_a_join_at_the_root():
     sql = Post.objects.select(func.array_agg(Post.title, order_by=[Post.author.name, Post.id])).sql()
     assert sql.count('LEFT JOIN "users" AS "j1"') == 1
     assert "LATERAL" not in sql and "(SELECT" not in sql
@@ -418,7 +418,7 @@ def test_paginated_relation_aggregates_keep_scalar_subqueries(limit, offset):
     assert "LATERAL" in ordered.sql()
 
 
-def test_select_to_one_columns_join_and_to_many_is_rejected():
+def test_selected_to_one_columns_join_to_many_ones_are_rejected():
     query = Post.objects.select(Post.title, Post.author.name.label("author"))
     assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(joins_count=1),))
     sql = query.sql()
@@ -429,7 +429,7 @@ def test_select_to_one_columns_join_and_to_many_is_rejected():
         User.objects.select(User.posts.title).sql()
 
 
-def test_subquery_and_distinct():
+def test_subqueries_and_distinct():
     inner = User.objects.filter(User.name == "A").select(User.id)
     assert Post.objects.filter(Post.author_id.in_(inner)).inspect().statements[0] == monorm.StatementInspection(
         set_uncorrelated=1
@@ -580,7 +580,7 @@ def test_minus_column_is_a_descending_order():
         -(Post.views + 1)  # type: ignore[operator]
 
 
-def test_nulls_first_and_last():
+def test_orderings_place_nulls_first_or_last():
     assert (
         Comment.objects.order_by(Comment.author_id.desc(nulls="last"))
         .sql()
@@ -596,7 +596,7 @@ def test_nulls_first_and_last():
         Comment.author_id.desc(nulls="middle")  # type: ignore[arg-type]
 
 
-def test_string_functions_and_concatenation():
+def test_string_functions_and_concatenation_sql():
     sql = Post.objects.select(
         func.concat(Post.title, " by ", Post.views),
         Post.title.concat("!"),
@@ -621,7 +621,7 @@ def test_string_functions_and_concatenation():
         func.concat()
 
 
-def test_array_element_and_unnest():
+def test_array_element_and_unnest_sql():
     sql = Profile.objects.select(Profile.links[1], func.unnest(Profile.links)).sql()
     assert sql == 'SELECT ("profiles"."links")[1], UNNEST("profiles"."links") FROM "profiles"'
     with pytest.raises(QueryError, match="only be a select\\(\\) column"):
@@ -632,7 +632,7 @@ def test_array_element_and_unnest():
         list(Profile.links)
 
 
-def test_case_expression():
+def test_case_expression_sql():
     sql = (
         Post.objects.select(Post.author_id, func.sum(func.case((Post.published, 1), default=0)).label("n"))
         .group_by(Post.author_id)

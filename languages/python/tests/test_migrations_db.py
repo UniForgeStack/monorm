@@ -61,6 +61,7 @@ async def scalar(db: monorm.Database, sql: str) -> str | None:
     return rows[0][0] if rows else None
 
 
+@pytest.mark.case("migrations::upgrade_and_downgrade_round_trip")
 async def test_upgrade_downgrade_round_trip(tmp_path):
     reg1, reg2 = v1(), v2()
     db = await connect(reg2)
@@ -113,6 +114,7 @@ async def test_upgrade_downgrade_round_trip(tmp_path):
         await db.close()
 
 
+@pytest.mark.case("migrations::an_edited_applied_migration_is_refused")
 async def test_edited_applied_migration_is_refused(tmp_path):
     db = await connect(v1())
     await reset(db)
@@ -130,6 +132,7 @@ async def test_edited_applied_migration_is_refused(tmp_path):
         await db.close()
 
 
+@pytest.mark.case("migrations::a_failed_migration_rolls_back")
 async def test_failed_migration_rolls_back(tmp_path):
     db = await connect(v1())
     await reset(db)

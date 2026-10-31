@@ -54,13 +54,13 @@ async function world(kind: "postgres" | "sqlite"): Promise<World> {
 }
 
 for (const field of ["at DateTime @default(now())", 'at String @client_default("x")', `at String @default(dbgenerated("'x'"))`]) {
-  test(`nested writes: a json field refuses a type with a dynamic default (${field})`, () => {
+  test(`a json field refuses a type with a dynamic default (${field}) (${field})`, () => {
     const schema = `type Stamp {\n  ${field}\n}\nmodel M {\n  id Int @id\n  s Stamp @storage(json)\n}`;
     assert.throws(() => loads(schema, { registry: new Registry() }), /Stamp\.at has a dynamic default/);
   });
 }
 
-test("nested writes: a json field refuses a dynamic default below a nested level", () => {
+test("a json field refuses a dynamic default below a nested level", () => {
   const schema = "type In {\n  at DateTime @default(now())\n}\ntype Out {\n  i In\n}\nmodel M {\n  id Int @id\n  o Out @storage(json)\n}";
   assert.throws(() => loads(schema, { registry: new Registry() }), /In\.at has a dynamic default/);
 });

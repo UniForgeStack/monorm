@@ -166,14 +166,14 @@ def test_migrations_from_a_schema_file(tmp_path):
     assert m is not None and (m.path / "snapshot.json").is_file()
 
 
-def test_generated_blog_module_is_current():
+def test_the_generated_models_are_current():
     module, stub = monorm._native.generate_python(str(ROOT / "examples/blog/schema.prisma"))
     committed = (ROOT / "examples/blog/models.py").read_text()
     assert committed == module, "run `python -m monorm generate`"
     assert (ROOT / "examples/blog/models.pyi").read_text() == stub, "run `python -m monorm generate`"
 
 
-def test_cli(tmp_path, capfd, monkeypatch):
+def test_the_cli(tmp_path, capfd, monkeypatch):
     (tmp_path / "schema.prisma").write_text(V1)
     monkeypatch.chdir(tmp_path)
     assert cli(["check"]) == 0

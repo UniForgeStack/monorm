@@ -147,7 +147,7 @@ async def test_the_methods_apply_per_related_row_on_a_to_many_path(rows):
     assert await writers(~(Writer.notes.score == 2).or_null()) == ids(w3)
 
 
-def test_the_check_runs_in_a_join_on_and_an_aggregate_filter():
+def test_a_column_ne_keeps_the_column_rule_in_a_join_on_and_an_aggregate_filter():
     totals = Post.objects.select(Post.author_id, func.sum(Post.views).label("views")).group_by(Post.author_id).cte("totals")
     with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows"):
         Comment.objects.join(totals, Comment.author_id != 1)

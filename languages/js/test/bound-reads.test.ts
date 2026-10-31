@@ -147,7 +147,7 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
-  test(`a load of relations only runs no root query (${provider})`, { skip: !url }, async () => {
+  test(`a relation-only load runs no root query (${provider}) (${provider})`, { skip: !url }, async () => {
     const { db, Writer, Entry, count } = await setup();
     try {
       const entries = await Entry.objects.using(db).orderBy("id");
@@ -245,7 +245,7 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
-  test(`objects of two databases need using() (${provider})`, { skip: provider !== "sqlite" }, async () => {
+  test(`objects from two databases need using() (${provider}) (${provider})`, { skip: provider !== "sqlite" }, async () => {
     const { db, Entry, Writer } = await setup();
     const other = await connect("sqlite://:memory:", { registry: Entry._meta.registry, default: false });
     try {

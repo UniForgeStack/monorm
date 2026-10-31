@@ -78,7 +78,7 @@ async def test_sqlite_not_null_check_and_unique_have_a_sqlstate(lite):
     assert (e.value.sqlstate, e.value.constraint) == ("23505", None)
 
 
-async def test_postgres_not_null_and_check_have_a_sqlstate(single):
+async def test_postgres_not_null_and_check_give_a_sqlstate(single):
     await single.execute("DROP TABLE IF EXISTS fx_stale")
     await single.execute("CREATE TABLE fx_stale (id int NOT NULL, c int CONSTRAINT fx_c CHECK (c > 0))")
     with pytest.raises(monorm.IntegrityError) as e:

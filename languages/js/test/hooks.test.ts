@@ -12,7 +12,7 @@ async function open() {
   return { db, Report, objects: Report.objects.using(db) as import("../src/index.js").QuerySet<any> };
 }
 
-test("prepareInsert checks before execute and inserts the given values", async () => {
+test("prepareInsert checks before execute and inserts replaced values", async () => {
   const { db, objects } = await open();
   try {
     assert.throws(() => objects.prepareInsert({ id: 1, code: "a" }), /size is required/);

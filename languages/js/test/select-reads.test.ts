@@ -126,7 +126,7 @@ test("prepare counts groups", async () => {
   assert.equal(await q.count({ min: 50 }), 1);
 });
 
-test("prepare require throws on no row", async () => {
+test("prepare with require gives DoesNotExist on no row", async () => {
   await seed();
   const q = Post.objects.filter(Post.views.gt(param("min"))).select({ t: Post.title }).require().prepare();
   await assert.rejects(() => q.first({ min: 1000 }), DoesNotExist);
@@ -154,7 +154,7 @@ test("first and get are lazy", async () => {
   assert.equal(first.sql().toLowerCase().split("limit").length - 1, 1);
 });
 
-test("at reads the row at a position", async () => {
+test("reads the row at a position", async () => {
   await seed();
   const q = Post.objects.select({ t: Post.title }).orderBy(Post.title);
   assert.deepEqual(await q.at(0), { t: "a1" });
@@ -171,7 +171,7 @@ test("last reverses the order", async () => {
   assert.equal(Number((await perAuthor().orderBy(Post.authorId).last())!.n), 1);
 });
 
-test("last and at need an order on grouped and distinct selects", () => {
+test("last and a position need an order on grouped and distinct selects", () => {
   for (const q of [
     perAuthor(),
     Post.objects.select({ a: Post.authorId }).distinct(),
@@ -190,7 +190,7 @@ test("last refuses an order past the distinct(on) columns", () => {
   assert.doesNotThrow(() => q.orderBy(Post.authorId).last());
 });
 
-test("at takes a param", async () => {
+test("a position takes a param", async () => {
   await seed();
   const q = Post.objects.select({ t: Post.title }).orderBy(Post.title).at(param("n")).prepare();
   assert.deepEqual(await q.run({ n: 1 }), { t: "a2" });

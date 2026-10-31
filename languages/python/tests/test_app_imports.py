@@ -47,7 +47,7 @@ def project(tmp_path: Path, text: str = PROJECT) -> Path:
     return schema
 
 
-def test_a_python_package_and_the_app_it_imports_resolve_without_importing_them(site: Path, tmp_path: Path) -> None:
+def test_an_installed_package_and_the_app_it_imports_resolve(site: Path, tmp_path: Path) -> None:
     auth = install(site, "monorm-fixture-auth", AUTH, "monorm_fixture_auth:schema.prisma")
     billing = install(site, "monorm-billing", BILLING, "monorm_billing:schema.prisma")
     schema = project(tmp_path)
@@ -64,13 +64,13 @@ def test_an_app_that_is_not_installed_is_left_for_the_loader_to_report(tmp_path:
         _native.compile_schema_file(str(schema), {})
 
 
-def test_an_app_without_schema_metadata_names_the_missing_entry_point(site: Path, tmp_path: Path) -> None:
+def test_an_app_without_schema_metadata_names_the_missing_declaration(site: Path, tmp_path: Path) -> None:
     install(site, "monorm-fixture-auth", AUTH, None)
     with pytest.raises(SchemaError, match="`monorm-fixture-auth` package declares no schema.*monorm.apps"):
         resolve_apps(project(tmp_path))
 
 
-def test_an_entry_point_that_names_no_file_is_an_error(site: Path, tmp_path: Path) -> None:
+def test_an_app_whose_schema_declaration_names_no_file_is_an_error(site: Path, tmp_path: Path) -> None:
     install(site, "monorm-fixture-auth", None, "monorm_fixture_auth:schema.prisma")
     with pytest.raises(SchemaError, match="monorm_fixture_auth:schema.prisma.*not a schema file"):
         resolve_apps(project(tmp_path))

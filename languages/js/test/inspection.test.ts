@@ -28,7 +28,7 @@ test("implicit and explicit nested subqueries have their own enclosing dependenc
   assert.deepStrictEqual(Post.objects.filter(Post.views.gt(average)).inspect().statements, [statementInspection({ scalarCorrelated: 1 })]);
 });
 
-test("CTE and FROM dependencies are independent of placement", () => {
+test("CTEs are counted separately from subqueries", () => {
   const recent = Post.objects.filter(Post.views.gt(5)).cte("recent");
   assert.deepStrictEqual(Post.objects.from(recent).inspect().statements, [statementInspection({ cteCount: 1 })]);
   const totals = Post.objects.select({ authorId: Post.authorId, n: func.count() }).groupBy(Post.authorId).cte("totals");

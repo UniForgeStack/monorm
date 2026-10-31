@@ -103,7 +103,7 @@ async def test_prepare_counts_groups(clean):
     assert await q.count(min=50) == 1
 
 
-async def test_prepare_require_raises_on_no_row(clean):
+async def test_prepare_with_require_gives_does_not_exist_on_no_row(clean):
     await seed()
     q = Post.objects.filter(Post.views > monorm.param("min")).select(Post.title).require().prepare()
     with pytest.raises(DoesNotExist):
@@ -136,7 +136,7 @@ async def test_first_and_get_are_lazy(clean):
     assert first.sql().lower().count("limit") == 1
 
 
-async def test_index_reads_the_row_at_a_position(clean):
+async def test_reads_the_row_at_a_position(clean):
     await seed()
     q = Post.objects.select(Post.title).order_by(Post.title)
     assert tuple(await q[0]) == ("a1",)
@@ -154,7 +154,7 @@ async def test_last_reverses_the_order(clean):
     assert tuple(await per_author().order_by(Post.author_id).last())[1] == 1
 
 
-async def test_last_and_index_need_an_order_on_grouped_and_distinct_selects():
+async def test_last_and_a_position_need_an_order_on_grouped_and_distinct_selects():
     for q in (per_author(), Post.objects.select(Post.author_id).distinct(), Post.objects.select(func.sum(Post.views))):
         with pytest.raises(TypeError, match="order_by"):
             q.last()
@@ -174,7 +174,7 @@ async def test_last_refuses_an_order_past_the_distinct_on_columns(clean):
     assert (await q.order_by(Post.author_id).last()) is not None
 
 
-async def test_index_takes_a_param(clean):
+async def test_a_position_takes_a_param(clean):
     await seed()
     q = Post.objects.select(Post.title).order_by(Post.title)[monorm.param("n")].prepare()
     assert tuple(await q(n=1)) == ("a2",)
@@ -273,7 +273,7 @@ async def test_batches_and_iterate_read_every_row(clean):
     assert sorted([r.n async for r in grouped.iterate(1)]) == [1, 2]
 
 
-def test_select_has_no_lock():
+def test_a_select_has_no_lock():
     assert not hasattr(Post.objects.select(Post.id), "lock")
 
 

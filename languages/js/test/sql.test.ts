@@ -39,7 +39,7 @@ test("inspection has flat counters and counts CTE definitions separately", () =>
   assert.deepStrictEqual(User.objects.from(chain).inspect().statements, [statementInspection({ cteCount: 1 })]);
 });
 
-test("a to-many filter is EXISTS", () => {
+test("to-many filter is EXISTS", () => {
   assert.equal(
     User.objects.filter(User.posts.createdAt.lt(Y)).sql(),
     `${USER_COLS} WHERE EXISTS(SELECT 1 FROM "posts" AS "t1" ` +
@@ -55,7 +55,7 @@ test("one path is one related row for the whole query: in one filter() call or a
   assert.equal(split, same);
 });
 
-test("alias() asks for another related row; one alias in two conditions is one row", () => {
+test("alias() asks for another related row", () => {
   const other = User.posts.alias();
   assert.equal(count(where(User.objects.filter(User.posts.views.gt(10), other.published.eq(true))), "EXISTS"), 2);
   assert.equal(count(where(User.objects.filter(other.views.gt(10), other.published.eq(true))), "EXISTS"), 1);
@@ -133,7 +133,7 @@ test("aggregates over the same relation share one LATERAL join", () => {
   assert.deepStrictEqual(filtered, [statementInspection({ scalarCorrelated: 2 })]);
 });
 
-test("the LATERAL join comes after the to-one joins", () => {
+test("LATERAL join comes after the to-one joins", () => {
   const sql = Post.objects
     .select({ name: Post.author.name, n: func.count(Post.comments, { filter: Post.comments.body.eq(Post.author.name) }), last: func.max(Post.comments.id) })
     .sql();
@@ -199,7 +199,7 @@ test("rejected queries", () => {
   assert.throws(() => Post.objects.filter(User.email.eq("x") as never).sql(), /belongs to User/);
 });
 
-test("locks", () => {
+test("lock", () => {
   assert.equal(User.objects.lock().sql(), `${USER_COLS} FOR UPDATE OF "users"`);
   assert.ok(User.objects.lock({ exclusive: false }).sql().endsWith('FOR SHARE OF "users"'));
   assert.ok(User.objects.lock({ nowait: true }).sql().endsWith('FOR UPDATE OF "users" NOWAIT'));
@@ -319,7 +319,7 @@ test("exists() with outer() correlates", () => {
   );
 });
 
-test("a subquery over the same table gets an alias", () => {
+test("subquery over the same table gets an alias", () => {
   const avg = Post.objects.filter(Post.authorId.eq(outer(Post.authorId))).select({ a: func.avg(Post.views) }).asScalar();
   assert.ok(where(Post.objects.filter(Post.views.gt(avg))).includes('FROM "posts" AS "s1" WHERE "s1"."author_id" = "posts"."author_id"'));
 });
@@ -348,7 +348,7 @@ test("CTE SQL", () => {
   assert.ok(sql.endsWith('IN (SELECT "totals"."authorId" FROM "totals" WHERE "totals"."n" > 2)'), sql);
 });
 
-test("a recursive CTE joins itself", () => {
+test("recursive CTE joins itself", () => {
   const chain = User.objects.filter(User.id.eq(1)).cte("chain", { recursive: (c) => User.objects.filter(User.id.eq(c.c.id.add(1))) });
   const sql = User.objects.from(chain).sql();
   assert.ok(sql.startsWith('WITH RECURSIVE "chain"'));
@@ -356,7 +356,7 @@ test("a recursive CTE joins itself", () => {
   assert.ok(sql.endsWith('FROM "chain"'));
 });
 
-test("a many-to-many filter is one EXISTS through the join table", () => {
+test("many-to-many filter is one EXISTS through the join table", () => {
   assert.equal(
     where(Post.objects.filter(Post.tags.name.eq("x"))),
     'EXISTS(SELECT 1 FROM "tags" AS "t1" INNER JOIN "post_tags" AS "t2" ON "t2"."tag_id" = "t1"."id" ' +
@@ -389,7 +389,7 @@ test("orderings place NULLs first or last", () => {
   assert.throws(() => Comment.authorId.desc({ nulls: "middle" as never }), /nulls is "first" or "last"/);
 });
 
-test("CASE SQL", () => {
+test("CASE expression SQL", () => {
   const sql = Post.objects.select({ a: Post.authorId, n: func.sum(func.case([Post.published, 1], { default: 0 })) }).groupBy(Post.authorId).sql();
   assert.equal(sql, 'SELECT "posts"."author_id", CAST(SUM(CASE WHEN "posts"."published" = TRUE THEN 1 ELSE 0 END) AS BIGINT) FROM "posts" GROUP BY "posts"."author_id"');
   const heat = func.case([Post.views.gt(100), "hot"], [Post.views.gt(10), "warm"], { default: "cold" });

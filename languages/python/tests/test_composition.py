@@ -33,7 +33,7 @@ model Customer {
 
 
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
-async def test_composed_create_attach_update_delete(provider):
+async def test_composed_create_attach_update_and_delete(provider):
     url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
     if not url:
         pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")

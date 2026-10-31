@@ -487,7 +487,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 
 
 for (const dialect of ["sqlite", "postgres"] as const) for (const composite of [false, true]) for (const filtered of [false, true]) for (const method of ["join", "prefetch", "instance"]) {
-  test(`absent reference message tracks the loaded key: ${dialect} composite=${composite} filtered=${filtered} method=${method}`, async (t) => {
+  test(`absent reference message tracks the loaded key (${dialect}, ${composite}, ${filtered}, ${method})`, async (t) => {
     if (filtered && !queryDefaults) { t.skip("needs query-defaults"); return; }
     const { db, Book, Profile } = await openUnset(dialect, filtered, composite);
     const specific = (error: unknown) => error instanceof NotLoaded && error.message.includes("the key is set and no row of the target has it");

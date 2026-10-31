@@ -170,7 +170,7 @@ test("nested scopes count in the outer scope; updateMany counts; a changed relat
   } finally { await db.close(); }
 });
 
-test("one updateMany call counts once and a loop of insertMany is an N+1", async () => {
+test("one updateMany call counts once and a loop of insertMany is an N plus one", async () => {
   const { Person, Customer, db } = await shop();
   try {
     const people = [...Array(8).keys()].map((i) => ({ id: i, name: `q${i}` }));

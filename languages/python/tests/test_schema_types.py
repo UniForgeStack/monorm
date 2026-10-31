@@ -48,7 +48,7 @@ async def test_decimal_values_are_exact(clean):
         await q.update(balance=Decimal("1e20"))
 
 
-async def test_decimal_wire_format_round_trips(clean):
+async def test_the_decimal_wire_format_round_trips(clean):
     # SUM over no rows is NULL, so COALESCE gives the parameter back: any precision
     for text in ["0", "-1", "12345678901234567890.123456789", "0.000001", "-0.5", "100000000", "1E+3"]:
         back = await Profile.objects.select(func.coalesce(func.sum(Profile.balance), Decimal(text))).scalar()
@@ -63,7 +63,7 @@ async def test_decimal_wire_format_round_trips(clean):
 # -- enums --------------------------------------------------------------------------------
 
 
-async def test_native_enum(clean):
+async def test_a_native_enum(clean):
     alice, bob = await users()
     a = await Profile.objects.insert(user=alice)
     assert a.role is Role.member  # the default, read back as the member
@@ -79,7 +79,7 @@ async def test_native_enum(clean):
         await a.update(role="owner")
 
 
-async def test_int_enum(clean):
+async def test_an_int_enum(clean):
     t = await Tag.objects.insert(name="news")
     assert t.priority is Priority.normal
     hot = await Tag.objects.insert(name="hot", priority=Priority.high)
@@ -126,7 +126,7 @@ async def test_array_columns(clean):
 # -- one-to-one ---------------------------------------------------------------------------
 
 
-async def test_has_one(clean):
+async def test_a_has_one_relation(clean):
     alice, bob = await users()
     p = await Profile.objects.insert(user=alice, role=Role.admin)
     with pytest.raises(monorm.NotLoaded):

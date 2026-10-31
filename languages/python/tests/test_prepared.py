@@ -33,7 +33,7 @@ def _ir(qs):
     return json.dumps(qs._select_ir("select", params)), params
 
 
-def test_limit_offset_are_parameters():
+def test_limit_and_offset_are_parameters():
     a, pa = _ir(Post.objects.order_by(Post.id)[10:20])
     b, pb = _ir(Post.objects.order_by(Post.id)[30:35])
     assert a == b  # one IR document (and one SQL text) for every page
@@ -137,7 +137,7 @@ async def test_prepared_has_and_prefetch(clean, observe_queries):
     assert [[p.title for p in u.posts.cached] for u in users] == [["a_2%", "a3"], ["b1"]]
 
 
-async def test_prepared_runs_in_the_current_transaction(clean):
+async def test_prepared_queries_run_in_the_current_transaction(clean):
     await seed()
     q = Post.objects.filter(Post.views > param("v")).lock().prepare()
     with pytest.raises(monorm.TransactionRequired):

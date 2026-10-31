@@ -39,6 +39,7 @@ test("a plain string check warns with file, line and column, and names raw()", a
   }
 });
 
+// case: schema_expressions::the_code_generator_emits_the_schema_warnings
 test("generateTypescript emits the schema warnings", async () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-warning-"));
   try {

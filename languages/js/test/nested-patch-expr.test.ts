@@ -64,7 +64,7 @@ for (const kind of ["postgres", "sqlite"] as const) {
       });
     };
 
-    scenario("takes a column for each leaf type", async (S, q) => {
+    scenario("a json patch takes an expression for each leaf type", async (S, q) => {
       const patch: Record<string, unknown> = { big: S.bigsrc, open: S.opensrc, opened: S.datesrc, meta: S.metasrc };
       if (!sqlite) patch["rent"] = S.rentsrc;
       await q.filter(S.id.eq(1)).update({ address: patch });
@@ -77,13 +77,13 @@ for (const kind of ["postgres", "sqlite"] as const) {
       if (!sqlite) assert.ok(a.rent.eq("12.50"));
     });
 
-    scenario("takes an expression over a subfield", async (S, q) => {
+    scenario("a json patch takes an expression over a subfield", async (S, q) => {
       await q.filter(S.id.eq(1)).update({ address: { city: S.address.country, floor: S.address.floor.add(41) } });
       const a = (await q.get(S.id.eq(1))).address;
       assert.deepEqual([a.city, a.floor, a.country], ["Norway", 42, "Norway"]);
     });
 
-    scenario("swaps two leaves", async (S, q) => {
+    scenario("a json patch swaps two leaves", async (S, q) => {
       await q.filter(S.id.eq(1)).update({ address: { city: S.address.country, country: S.address.city } });
       const a = (await q.get(S.id.eq(1))).address;
       assert.deepEqual([a.city, a.country], ["Norway", "Oslo"]);
