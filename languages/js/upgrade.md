@@ -17,3 +17,12 @@ The npm package is `@ufstack/monorm`, because npm rejected the name `monorm`.
 - Install it under the alias `monorm`: `npm install monorm@npm:@ufstack/monorm`.
 - Imports stay `monorm`.
 - A plain `npm install @ufstack/monorm` installs, but the imports fail.
+
+## Unreleased
+
+`syncPermissions` takes the permission names, not models and a label.
+The options are now the second argument.
+
+- Before: `await syncPermissions([Post, Comment], "blog")`.
+- After: `await syncPermissions(modelPermissionNames([Post, Comment], "blog"))`.
+- Import `modelPermissionNames` from `monorm/auth`.

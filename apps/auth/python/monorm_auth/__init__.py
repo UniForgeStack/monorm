@@ -3,7 +3,7 @@
 from .auth import authenticate
 from .hashers import check_password, make_password, needs_update
 from .methods import UserMethods
-from .permissions import sync_permissions
+from .permissions import model_permission_names, sync_permissions
 from .queries import UserQueries
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "authenticate",
     "check_password",
     "make_password",
+    "model_permission_names",
     "needs_update",
     "sync_permissions",
 ]

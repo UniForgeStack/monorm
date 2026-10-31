@@ -1,4 +1,4 @@
-"""Permission names (`"blog.add_post"`) and `sync_permissions()`."""
+"""Permission names (`"blog.add_post"`), `model_permission_names()` and `sync_permissions()`."""
 
 from __future__ import annotations
 
@@ -31,18 +31,24 @@ def _active_model(name: str, registry: Registry | None = None) -> Any:
     return reg.get(overrides.get(name, name))
 
 
-async def sync_permissions(
-    models: Iterable[type[Any]], label: str, *, using: Database | None = None, registry: Registry | None = None
-) -> int:
-    """Create `add`, `change`, `delete` and `view` for each model in one bulk insert; rows that exist stay.
+def model_permission_names(models: Iterable[type[Any]], label: str) -> list[str]:
+    """The Django-style names `<label>.<action>_<model name in lower case>`: `add`, `change`, `delete` and `view` for each model."""
+    return [f"{label}.{action}_{m.__name__.lower()}" for m in models for action in ACTIONS]
 
-    The permission names are `<label>.<action>_<model name in lower case>`. Returns the number of new rows.
+
+async def sync_permissions(
+    names: Iterable[str], *, using: Database | None = None, registry: Registry | None = None
+) -> int:
+    """Create the permissions in `names` (`<label>.<codename>`) that are absent, in one bulk insert; rows that exist stay.
+
+    It deletes nothing. The `name` of a new row is `Can <codename with spaces>`. Returns the number of new rows.
     """
+    if isinstance(names, str):
+        raise TypeError("names must be a list of permission names, not one string")
     Permission = _active_model("Permission", registry)
     rows = [
-        {"label": label, "codename": f"{action}_{name}", "name": f"Can {action} {name}"}
-        for name in (m.__name__.lower() for m in models)
-        for action in ACTIONS
+        {"label": label, "codename": codename, "name": f"Can {codename.replace('_', ' ')}"}
+        for label, codename in (split_perm(n) for n in dict.fromkeys(names))
     ]
     if not rows:
         return 0

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 import monorm_auth
-from monorm_auth import authenticate, check_password, make_password, needs_update, sync_permissions
+from monorm_auth import authenticate, check_password, make_password, model_permission_names, needs_update, sync_permissions
 
 from auth_support import Auth
 
@@ -137,17 +137,51 @@ async def test_with_perm(auth: Auth) -> None:
 
 
 async def test_sync_permissions_adds_the_missing_rows_once(auth: Auth) -> None:
+    kw: dict[str, Any] = {"using": auth.db, "registry": auth.registry}
+    assert await sync_permissions(["blog.add_post", "blog.view_post"], **kw) == 2
+    assert await sync_permissions(["blog.add_post", "blog.view_post", "shop.see_credential"], **kw) == 1
+    assert await sync_permissions(["blog.add_post", "shop.see_credential"], **kw) == 0
+    assert await sync_permissions([], **kw) == 0
+    rows = await auth.Permission.objects.using(auth.db).all()
+    assert sorted((r.label, r.codename) for r in rows) == [
+        ("blog", "add_post"),
+        ("blog", "view_post"),
+        ("shop", "see_credential"),
+    ]
+    assert {r.name for r in rows if r.codename == "add_post"} == {"Can add post"}
+
+
+async def test_sync_permissions_creates_each_repeated_name_once_and_deletes_nothing(auth: Auth) -> None:
+    kw: dict[str, Any] = {"using": auth.db, "registry": auth.registry}
+    assert await sync_permissions(["admin.access", "admin.access", "orders.see.total"], **kw) == 2
+    assert await sync_permissions(["admin.access"], **kw) == 0
+    rows = await auth.Permission.objects.using(auth.db).filter(auth.Permission.label.in_(["admin", "orders"])).all()
+    assert sorted((r.label, r.codename) for r in rows) == [("admin", "access"), ("orders", "see.total")]
+
+
+async def test_sync_permissions_refuses_a_name_without_a_label_or_a_codename(auth: Auth) -> None:
+    kw: dict[str, Any] = {"using": auth.db, "registry": auth.registry}
+    for bad in ("add_post", ".add_post", "blog."):
+        with pytest.raises(ValueError, match="must have the form"):
+            await sync_permissions(["blog.view_post", bad], **kw)
+    assert await auth.Permission.objects.using(auth.db).all() == []
+
+
+async def test_sync_permissions_refuses_one_name_in_place_of_a_list(auth: Auth) -> None:
+    kw: dict[str, Any] = {"using": auth.db, "registry": auth.registry}
+    with pytest.raises(TypeError, match="not one string"):
+        await sync_permissions("blog.add_post", **kw)
+    assert await auth.Permission.objects.using(auth.db).all() == []
+
+
+async def test_model_permission_names_gives_the_four_django_names_for_each_model(auth: Auth) -> None:
     class Post: ...
 
     class Comment: ...
 
+    names = model_permission_names([Post, Comment], "blog")
+    assert names == [f"blog.{a}_{n}" for n in ("post", "comment") for a in ("add", "change", "delete", "view")]
+    assert model_permission_names([], "blog") == []
     kw: dict[str, Any] = {"using": auth.db, "registry": auth.registry}
-    assert await sync_permissions([Post], "blog", **kw) == 4
-    assert await sync_permissions([Post, Comment], "blog", **kw) == 4
-    assert await sync_permissions([Post, Comment], "blog", **kw) == 0
-    assert await sync_permissions([], "blog", **kw) == 0
-    rows = await auth.Permission.objects.using(auth.db).filter(auth.Permission.label == "blog").all()
-    assert sorted(r.codename for r in rows) == sorted(
-        f"{a}_{n}" for a in ("add", "change", "delete", "view") for n in ("post", "comment")
-    )
-    assert {r.name for r in rows if r.codename == "add_post"} == {"Can add post"}
+    assert await sync_permissions(names, **kw) == 8
+    assert await sync_permissions(names, **kw) == 0

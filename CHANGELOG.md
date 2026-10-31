@@ -5,6 +5,7 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 ## [Unreleased]
 
 - `monorm init [dir]` starts a Python or TypeScript project: it asks for the language, the tool, the database and the built-in extensions, and flags answer each question. `uvx monorm init`, `python -m monorm init`, `npx monorm init` and `npm create monorm` run the same code. The PyPI package now has a `monorm` console script, and `create-monorm` depends on `@ufstack/monorm`.
+- Auth: `sync_permissions` / `syncPermissions` takes the permission names (`<label>.<codename>`) and creates the absent ones in one bulk insert. It deletes nothing. `model_permission_names` / `modelPermissionNames` gives the Django-style per-model names. Breaking: the call `sync_permissions([Post], "blog")` becomes `sync_permissions(model_permission_names([Post], "blog"))`.
 
 ## [0.1.2] - 2026-10-31
 

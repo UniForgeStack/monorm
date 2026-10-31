@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { boundMeta } from "../../src/ext.js";
 
-import { UserMethods, UserQueries, authenticate, checkPassword, makePassword, needsUpdate, syncPermissions } from "../../src/auth/index.js";
+import { UserMethods, UserQueries, authenticate, checkPassword, makePassword, modelPermissionNames, needsUpdate, syncPermissions } from "../../src/auth/index.js";
 import { Auth, PACKAGE, PROVIDERS, VARIANTS, makeAuth, type Provider, type Rows } from "./support.js";
 
 const django = (raw: string): string => `pbkdf2_sha256$600000$salt$${pbkdf2Sync(raw, "salt", 600000, 32, "sha256").toString("base64")}`;
@@ -125,20 +125,52 @@ each("withPerm", async (_t, auth) => {
 });
 
 each("syncPermissions adds the missing rows once", async (_t, auth) => {
+  const using = { using: auth.db, registry: auth.registry };
+  assert.equal(await syncPermissions(["blog.add_post", "blog.view_post"], using), 2);
+  assert.equal(await syncPermissions(["blog.add_post", "blog.view_post", "shop.see_credential"], using), 1);
+  assert.equal(await syncPermissions(["blog.add_post", "shop.see_credential"], using), 0);
+  assert.equal(await syncPermissions([], using), 0);
+  const rows = (await auth.Permission.objects.using(auth.db).all()) as Rows[];
+  assert.deepEqual(rows.map((r) => `${r["label"]}.${r["codename"]}`).sort(), ["blog.add_post", "blog.view_post", "shop.see_credential"]);
+  assert.ok(rows.some((r) => r["name"] === "Can add post"));
+});
+
+each("syncPermissions creates each repeated name once and deletes nothing", async (_t, auth) => {
+  const using = { using: auth.db, registry: auth.registry };
+  assert.equal(await syncPermissions(["admin.access", "admin.access", "orders.see.total"], using), 2);
+  assert.equal(await syncPermissions(["admin.access"], using), 0);
+  const rows = (await auth.Permission.objects.using(auth.db).filter(auth.Permission.label.in(["admin", "orders"])).all()) as Rows[];
+  assert.deepEqual(rows.map((r) => `${r["label"]}.${r["codename"]}`).sort(), ["admin.access", "orders.see.total"]);
+});
+
+each("syncPermissions refuses a name without a label or a codename", async (_t, auth) => {
+  const using = { using: auth.db, registry: auth.registry };
+  for (const bad of ["add_post", ".add_post", "blog."]) {
+    await assert.rejects(syncPermissions(["blog.view_post", bad], using), /must have the form/);
+  }
+  assert.deepEqual(await auth.Permission.objects.using(auth.db).all(), []);
+});
+
+each("syncPermissions refuses one name in place of a list", async (_t, auth) => {
+  const using = { using: auth.db, registry: auth.registry };
+  await assert.rejects(syncPermissions("blog.add_post" as never, using), /not one string/);
+  assert.deepEqual(await auth.Permission.objects.using(auth.db).all(), []);
+});
+
+each("modelPermissionNames gives the four Django names for each model", async (_t, auth) => {
   class Post {
     static _meta = { name: "Post" };
   }
   class Comment {
     static _meta = { name: "Comment" };
   }
+  const names = modelPermissionNames([Post as never, Comment as never], "blog");
+  assert.deepEqual(
+    names,
+    ["post", "comment"].flatMap((n) => ["add", "change", "delete", "view"].map((a) => `blog.${a}_${n}`)),
+  );
+  assert.deepEqual(modelPermissionNames([], "blog"), []);
   const using = { using: auth.db, registry: auth.registry };
-  assert.equal(await syncPermissions([Post as never], "blog", using), 4);
-  assert.equal(await syncPermissions([Post as never, Comment as never], "blog", using), 4);
-  assert.equal(await syncPermissions([Post as never, Comment as never], "blog", using), 0);
-  assert.equal(await syncPermissions([], "blog", using), 0);
-  const rows = (await auth.Permission.objects.using(auth.db).filter(auth.Permission.label.eq("blog")).all()) as Rows[];
-  assert.deepEqual(rows.map((r) => r["codename"] as string).sort(), [
-    "add_comment", "add_post", "change_comment", "change_post", "delete_comment", "delete_post", "view_comment", "view_post",
-  ]);
-  assert.ok(rows.some((r) => r["name"] === "Can add post"));
+  assert.equal(await syncPermissions(names, using), 8);
+  assert.equal(await syncPermissions(names, using), 0);
 });
